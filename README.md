@@ -129,7 +129,7 @@ Injects:
 - Optional richer TUI actions (toggle include-claude/auto-pin).
 
 ## License
-License not yet declared in this repository.
+MIT License © 2025 athola. See [LICENSE](LICENSE).
 
 ## Acknowledgements
 README structure inspired by high-signal Rust projects like Tokio, emphasizing overview → install → quick start → examples → support. citeturn0search7turn0search3
