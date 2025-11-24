@@ -1,18 +1,18 @@
 # Changelog (highlights)
 
-## 2025-11-24
-- Split into a Rust workspace: `crates/core` (library/MCP server) and
-  `crates/cli` (binary wrapper).
-- Added structured `_meta` outputs across tools with priority ranks and
-  duplicate info.
-- Synced AGENTS.md generation to include per-skill `priority_rank` and overall
-  priority list.
-- Refreshed README with clearer install/usage, universal sync, TUI, and
-  structured output examples.
+## 0.1.1
+- One-command installer now wires the Codex hook/MCP registration by default
+  (opt-out via CODEX_SKILLS_NO_HOOK; universal sync via CODEX_SKILLS_UNIVERSAL).
+- mdBook added with Pages deploy; Makefile gains book/docs targets and CLI demos.
+- CI workflow runs fmt, clippy, tests, docs, and mdbook; release assets named
+  `codex-mcp-skills-<target>.tar.gz`.
+- Docs expanded on child-process safety, cache TTL manifest option, and
+  installer defaults.
 
-## 2025-11-22
-- Exposed AGENTS.md as `doc://agents` with manifest/env opt-out.
-- Added universal sync helper and hook installer flags.
-- Improved duplicate handling and diagnostics during autoload.
+## 0.1.0
+- Workspace split: `crates/core` (MCP server/lib) and `crates/cli` (binary).
+- Structured `_meta` across tools with priority ranks and duplicate info.
+- AGENTS.md sync includes per-skill priority rank and priority list.
+- README refreshed: install/usage, universal sync, TUI, structured outputs.
 
-For the full history, see `docs/CHANGELOG.md` in the repository.
+For full details see `docs/CHANGELOG.md` in the repo.
