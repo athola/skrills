@@ -8,9 +8,6 @@ Rust MCP server that exposes local `SKILL.md` files as MCP resources and tools. 
 - [`scripts/`](scripts): Install + sync helpers.
 - [`docs/`](docs): Process guidance and roadmap (`process-guidelines.md`, `plans/2025-11-22-skill-autoload-mcp.md`).
 
-## Why this exists
-Rust projects lead with clarity on what problem they solve, how to install, and where to find docs. We mirror that approach: concise overview, fast install, runnable examples, and linked guides.
-
 ## Features
 - MCP server over stdio exposing every discovered `SKILL.md` as `skill://<source>/<relative>`.
 - Autoload tool that filters by prompt terms, pins, and priority; emits structured JSON.
@@ -22,7 +19,10 @@ Rust projects lead with clarity on what problem they solve, how to install, and 
 
 ## Installation
 
-### Standalone installers (uv-style)
+### Standalone installers
+
+We were inspired by the maintainers at [uv](https://github.com/astral-sh/uv?tab=readme-ov-file#installation) to create an intuitive and extensible install script.
+
 ```bash
 # macOS / Linux
 curl -LsSf https://raw.githubusercontent.com/${CODEX_SKILLS_GH_REPO:-athola/codex-mcp-skills}/main/scripts/install.sh | sh
@@ -132,4 +132,4 @@ Injects:
 MIT License © 2025 athola. See [LICENSE](LICENSE).
 
 ## Acknowledgements
-README structure inspired by high-signal Rust projects like Tokio, emphasizing overview → install → quick start → examples → support. citeturn0search7turn0search3
+README structure inspired by high-signal Rust projects like Tokio, emphasizing overview → install → quick start → examples → support.

@@ -1,14 +1,16 @@
 #!/usr/bin/env sh
-# Install codex-mcp-skills binary from GitHub releases (uv-style installer).
+# Install codex-mcp-skills and wire it into Codex (uv-style installer).
 # Usage:
 #   curl -LsSf https://raw.githubusercontent.com/${CODEX_SKILLS_GH_REPO:-athola/codex-mcp-skills}/main/scripts/install.sh | sh
 # Env overrides:
-#   CODEX_SKILLS_GH_REPO   owner/repo (default: codex-mcp-skills/codex-mcp-skills)
+#   CODEX_SKILLS_GH_REPO   owner/repo (default: athola/codex-mcp-skills)
 #   CODEX_SKILLS_VERSION   release tag without leading v (default: latest)
 #   CODEX_SKILLS_BIN_DIR   install directory (default: $HOME/.codex/bin)
 #   CODEX_SKILLS_BIN_NAME  binary name (default: codex-mcp-skills)
 #   CODEX_SKILLS_TARGET    explicit target triple override
 #   CODEX_SKILLS_SKIP_PATH_MESSAGE  set to 1 to silence PATH reminder
+#   CODEX_SKILLS_NO_HOOK   set to 1 to skip hook/MCP registration
+#   CODEX_SKILLS_UNIVERSAL set to 1 to also sync ~/.agent/skills
 set -euo pipefail
 
 # --- helpers ---------------------------------------------------------------
@@ -118,6 +120,20 @@ DOWNLOAD_AND_EXTRACT()
   echo "Installed $bin_name to $bin_dir"
 }
 
+install_hook_and_mcp()
+{
+  if [ "${CODEX_SKILLS_NO_HOOK:-0}" = 1 ]; then
+    echo "Skipping hook/MCP registration (CODEX_SKILLS_NO_HOOK=1)"
+    return
+  fi
+  if [ ! -x "$bin_dir/$bin_name" ]; then
+    echo "Warning: binary not found at $bin_dir/$bin_name; skipping hook." >&2
+    return
+  fi
+  CODEX_SKILLS_BIN="$bin_dir/$bin_name" CODEX_SKILLS_UNIVERSAL="${CODEX_SKILLS_UNIVERSAL:-0}" \
+    "$PWD/scripts/install-codex-skills.sh"
+}
+
 ensure_path_hint()
 {
   [ "${CODEX_SKILLS_SKIP_PATH_MESSAGE:-0}" = 1 ] && return
@@ -133,3 +149,4 @@ asset_url=$(SELECT_ASSET_URL)
 [ -n "$asset_url" ] || fail "no release asset found matching target $(TARGET); check releases or specify CODEX_SKILLS_TARGET/CODEX_SKILLS_GH_REPO"
 DOWNLOAD_AND_EXTRACT "$asset_url" "$bin_dir" "$bin_name"
 ensure_path_hint "$bin_dir"
+install_hook_and_mcp
