@@ -1960,6 +1960,7 @@ mod tests {
     #[test]
     fn list_resources_includes_agents_doc() -> Result<()> {
         let tmp = tempdir()?;
+        let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
         std::env::remove_var("CODEX_SKILLS_MANIFEST");
         let svc = SkillService {
@@ -1970,12 +1971,20 @@ mod tests {
         assert!(resources
             .iter()
             .any(|r| r.uri == AGENTS_URI && r.name == AGENTS_NAME));
+
+        // Restore original HOME
+        if let Some(home) = original_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
         Ok(())
     }
 
     #[test]
     fn read_resource_returns_agents_doc() -> Result<()> {
         let tmp = tempdir()?;
+        let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
         let svc = SkillService {
             cache: Arc::new(Mutex::new(SkillCache::new(vec![]))),
@@ -1987,6 +1996,13 @@ mod tests {
             _ => anyhow::bail!("expected text content"),
         };
         assert!(text.contains("AI Agent Development Guidelines"));
+
+        // Restore original HOME
+        if let Some(home) = original_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
         Ok(())
     }
 
@@ -2195,6 +2211,7 @@ mod tests {
     #[test]
     fn manifest_can_disable_agents_doc() -> Result<()> {
         let tmp = tempdir()?;
+        let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
         let manifest = tmp.path().join(".codex/skills-manifest.json");
         fs::create_dir_all(manifest.parent().unwrap())?;
@@ -2213,12 +2230,20 @@ mod tests {
         let err = svc.read_resource_sync(AGENTS_URI).unwrap_err();
         assert!(err.to_string().contains("not found"));
         std::env::remove_var("CODEX_SKILLS_MANIFEST");
+
+        // Restore original HOME
+        if let Some(home) = original_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
         Ok(())
     }
 
     #[test]
     fn manifest_can_set_cache_ttl() -> Result<()> {
         let tmp = tempdir()?;
+        let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
         let manifest = tmp.path().join(".codex/skills-manifest.json");
         fs::create_dir_all(manifest.parent().unwrap())?;
@@ -2233,6 +2258,13 @@ mod tests {
             .ttl();
         assert_eq!(ttl, Duration::from_millis(2500));
         std::env::remove_var("CODEX_SKILLS_MANIFEST");
+
+        // Restore original HOME
+        if let Some(home) = original_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
         Ok(())
     }
 
@@ -2398,6 +2430,7 @@ mod tests {
     #[test]
     fn manifest_priority_overrides_default() -> Result<()> {
         let tmp = tempdir()?;
+        let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
         let manifest = tmp.path().join(".codex/skills-manifest.json");
         fs::create_dir_all(manifest.parent().unwrap())?;
@@ -2408,6 +2441,13 @@ mod tests {
         let order: Vec<_> = roots.into_iter().map(|r| r.source.label()).collect();
         assert_eq!(order, vec!["agent", "codex", "mirror", "claude"]);
         std::env::remove_var("CODEX_SKILLS_MANIFEST");
+
+        // Restore original HOME
+        if let Some(home) = original_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
         Ok(())
     }
 

@@ -25,16 +25,13 @@ jobs:
         uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: codex-mcp-skills
-          targets: |
+          target: |
             x86_64-unknown-linux-gnu
             aarch64-unknown-linux-gnu
-          archive: tar.gz
+          tar: gz
           checksum: sha256
-          bin-dir: ./target
-          strip: false
-          lock: false
           include: README.md LICENSE docs/release-artifacts.md
-          asset: "codex-mcp-skills-{{ target }}.tar.gz"
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   macos:
     name: macOS builds
@@ -48,13 +45,13 @@ jobs:
         uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: codex-mcp-skills
-          targets: |
+          target: |
             aarch64-apple-darwin
             x86_64-apple-darwin
-          archive: tar.gz
+          tar: gz
           checksum: sha256
           include: README.md LICENSE docs/release-artifacts.md
-          asset: "codex-mcp-skills-{{ target }}.tar.gz"
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   windows:
     name: Windows builds
@@ -68,10 +65,10 @@ jobs:
         uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: codex-mcp-skills
-          targets: |
+          target: |
             x86_64-pc-windows-msvc
             aarch64-pc-windows-msvc
-          archive: tar.gz
+          zip
           checksum: sha256
           include: README.md LICENSE docs/release-artifacts.md
-          asset: "codex-mcp-skills-{{ target }}.tar.gz"
+          token: ${{ secrets.GITHUB_TOKEN }}
