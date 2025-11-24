@@ -28,7 +28,8 @@ jobs:
           target: |
             x86_64-unknown-linux-gnu
             aarch64-unknown-linux-gnu
-          tar: gz
+          tar: unix
+          zip: none
           checksum: sha256
           include: README.md LICENSE docs/release-artifacts.md
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -48,7 +49,8 @@ jobs:
           target: |
             aarch64-apple-darwin
             x86_64-apple-darwin
-          tar: gz
+          tar: unix
+          zip: none
           checksum: sha256
           include: README.md LICENSE docs/release-artifacts.md
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -68,7 +70,8 @@ jobs:
           target: |
             x86_64-pc-windows-msvc
             aarch64-pc-windows-msvc
-          zip: true
+          tar: none
+          zip: windows
           checksum: sha256
           include: README.md LICENSE docs/release-artifacts.md
           token: ${{ secrets.GITHUB_TOKEN }}
