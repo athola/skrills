@@ -6,7 +6,7 @@
 curl -LsSf https://raw.githubusercontent.com/athola/codex-mcp-skills/HEAD/scripts/install.sh | sh
 
 # Windows
-powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/athola/codex-mcp-skills/HEAD/scripts/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -NoLogo -NoProfile -Command "Remove-Item alias:curl -ErrorAction SilentlyContinue; iwr https://raw.githubusercontent.com/athola/codex-mcp-skills/HEAD/scripts/install.ps1 -UseBasicParsing | iex"
 ```
 Env overrides: `CODEX_SKILLS_GH_REPO`, `CODEX_SKILLS_VERSION`, `CODEX_SKILLS_BIN_DIR`, `CODEX_SKILLS_TARGET`.
 

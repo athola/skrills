@@ -35,7 +35,7 @@ We were inspired by the maintainers at [uv](https://github.com/astral-sh/uv?tab=
 curl -LsSf https://raw.githubusercontent.com/${CODEX_SKILLS_GH_REPO:-athola/codex-mcp-skills}/HEAD/scripts/install.sh | sh
 
 # Windows
-powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/athola/codex-mcp-skills/HEAD/scripts/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -NoLogo -NoProfile -Command "Remove-Item alias:curl -ErrorAction SilentlyContinue; iwr https://raw.githubusercontent.com/athola/codex-mcp-skills/HEAD/scripts/install.ps1 -UseBasicParsing | iex"
 ```
 Environment overrides:
 - `CODEX_SKILLS_GH_REPO` (default `athola/codex-mcp-skills`)

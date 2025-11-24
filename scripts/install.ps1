@@ -40,9 +40,11 @@ function Get-ApiUrl {
 }
 
 function Select-AssetUrl {
-    Require "curl"
+    # Explicitly call native curl.exe to avoid the PowerShell alias that
+    # maps "curl" to Invoke-WebRequest (which doesn't support -fsSL).
+    Require "curl.exe"
     $apiUrl = Get-ApiUrl
-    $json = curl -fsSL $apiUrl
+    $json = curl.exe -fsSL $apiUrl
     $target = Get-OsArchTarget
     $obj = $json | ConvertFrom-Json
     foreach ($a in $obj.assets) {
@@ -54,12 +56,12 @@ function Select-AssetUrl {
 }
 
 function Download-And-Extract($url, $binDir, $binName) {
-    Require "curl"
+    Require "curl.exe"
     Require "tar"
     $tmp = New-Item -ItemType Directory -Path ([IO.Path]::GetTempPath()) -Name ("codex-install-" + [IO.Path]::GetRandomFileName())
     try {
         $archive = Join-Path $tmp "pkg.tar.gz"
-        curl -fL $url -o $archive
+        curl.exe -fL $url -o $archive
         $out = Join-Path $tmp "out"
         New-Item -ItemType Directory -Path $out | Out-Null
         tar -xzf $archive -C $out
