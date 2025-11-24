@@ -1,6 +1,6 @@
 # Install codex-mcp-skills on Windows from GitHub releases (uv-style).
 # Usage:
-#   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/$Env:CODEX_SKILLS_GH_REPO/main/scripts/install.ps1 | iex"
+#   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/$Env:CODEX_SKILLS_GH_REPO/HEAD/scripts/install.ps1 | iex"
 # Env overrides:
 #   CODEX_SKILLS_GH_REPO   owner/repo (default: codex-mcp-skills/codex-mcp-skills)
 #   CODEX_SKILLS_VERSION   release tag without leading v (default: latest)

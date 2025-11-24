@@ -3,7 +3,7 @@
 Install scripts select a release asset whose filename contains the target triple. Publish archives accordingly:
 
 ```
-<name>-<target>.tar.gz
+codex-mcp-skills-<target>.tar.gz
 ```
 
 Where `<target>` is one of:

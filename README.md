@@ -1,12 +1,18 @@
 # codex-mcp-skills
 
+<p align="center">
+  <img src="assets/icon.png" alt="codex-mcp-skills icon" width="640" height="320">
+</p>
+
 Rust MCP server that exposes local `SKILL.md` files as MCP resources and tools. It mirrors Claude skills, auto-loads relevant skills into Codex prompts, and keeps AGENTS.md in sync for non-MCP agents.
 
 ## Contents
 - [`crates/core`](crates/core): MCP server and library.
 - [`crates/cli`](crates/cli): Binary wrapper (`codex-mcp-skills`).
 - [`scripts/`](scripts): Install + sync helpers.
-- [`docs/`](docs): Process guidance and roadmap (`process-guidelines.md`, `plans/2025-11-22-skill-autoload-mcp.md`).
+- [`docs/`](docs): Process guidance, FAQ, roadmap (`process-guidelines.md`, `FAQ.md`, `plans/2025-11-22-skill-autoload-mcp.md`).
+- [`book/`](book): mdBook with comparison, FAQ, and release details (build via `make book`).
+- [`assets/icon.png`](assets/icon.png): Social/brand image (1280×640, 8-bit).
 
 ## Features
 - MCP server over stdio exposing every discovered `SKILL.md` as `skill://<source>/<relative>`.
@@ -16,6 +22,7 @@ Rust MCP server that exposes local `SKILL.md` files as MCP resources and tools. 
 - TUI for pin/unpin and optional Claude→Codex sync.
 - AGENTS.md sync: embeds `<available_skills>` XML with per-skill priority rank.
 - Structured outputs with `_meta` (priority, duplicates, ranks).
+- mdBook docs: `make book` builds and opens locally; `make book-serve` live-reloads on port 3000.
 
 ## Installation
 
@@ -25,10 +32,10 @@ We were inspired by the maintainers at [uv](https://github.com/astral-sh/uv?tab=
 
 ```bash
 # macOS / Linux
-curl -LsSf https://raw.githubusercontent.com/${CODEX_SKILLS_GH_REPO:-athola/codex-mcp-skills}/main/scripts/install.sh | sh
+curl -LsSf https://raw.githubusercontent.com/${CODEX_SKILLS_GH_REPO:-athola/codex-mcp-skills}/HEAD/scripts/install.sh | sh
 
 # Windows
-powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/athola/codex-mcp-skills/main/scripts/install.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/athola/codex-mcp-skills/HEAD/scripts/install.ps1 | iex"
 ```
 Environment overrides:
 - `CODEX_SKILLS_GH_REPO` (default `athola/codex-mcp-skills`)
@@ -37,9 +44,22 @@ Environment overrides:
 - `CODEX_SKILLS_TARGET` to force a specific target triple.
 
 Release asset naming:
-- Archives must include the target triple in the filename, e.g. `codex-mcp-skills-x86_64-unknown-linux-gnu.tar.gz`.
+- Archives are published per target as `codex-mcp-skills-<target>.tar.gz`, e.g. `codex-mcp-skills-x86_64-unknown-linux-gnu.tar.gz`.
 - Archive root should contain the binary `codex-mcp-skills` (`.exe` on Windows).
 - Default release repo: `athola/codex-mcp-skills`; override with `CODEX_SKILLS_GH_REPO` if using a fork.
+
+### At a glance: how this compares
+
+| Project type | Primary goal | Install model | Runtime | Key gap vs. codex-mcp-skills |
+| --- | --- | --- | --- | --- |
+| **codex-mcp-skills** (this project) | MCP server + CLI to surface and sync skills across Codex & Claude | Single binary + hook installers (curl/PowerShell) | MCP over stdio | — |
+| Static skill bundles | Publish ready-to-use skill files for manual placement | Copy files into agent skill dirs | None beyond skill files | No MCP server; no cross-agent sync |
+| CI doc/render pipelines | Convert SKILL-style docs into prompt-ready text during CI | GitHub/CI workflow | N/A (build-time) | No runtime serving or discovery |
+| Shared rules repositories | Curated rules/skills held in a repo | Manual consumption | N/A | No installer or transport layer |
+| Local skill sync CLIs | Sync/rank local skills and optionally mirror them | Rust/Node CLIs, `cargo install` or releases | Local file sync only | No MCP server or Codex hook |
+| Tutorials/how-to guides | Explain how to author skills | None | N/A | No automation or runtime tooling |
+
+Where we can still improve: tighter version pinning for skills, richer health diagnostics in the MCP server, and first-class Windows path defaults.
 
 ### From source
 ```bash

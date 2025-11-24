@@ -4,3 +4,5 @@ docs/plans/
 .cargo/
 book/book
 *.txt
+.venv_image/
+mage-doc-review/

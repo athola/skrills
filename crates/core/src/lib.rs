@@ -1,11 +1,11 @@
 //! Core library for the Codex skills system.
 //!
-//! This crate provides foundational logic for managing skills: discovery,
-//! caching, execution, and interaction with `SKILL.md` files. It handles
-//! tool calling, resource management, and integrates with the `rmcp` protocol.
+//! This crate manages skills, handling their discovery, caching, and execution.
+//! It processes `SKILL.md` files, manages tool calls and resources, and integrates
+//! with the `rmcp` protocol.
 //!
 //! On Unix, this crate installs a `SIGCHLD` handler (`SA_NOCLDWAIT`) to prevent
-//! accidental child processes from becoming zombies when the server is embedded.
+//! child processes from becoming zombies when the server is embedded.
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
@@ -63,6 +63,7 @@ fn priority_labels_and_rank_map() -> (Vec<String>, JsonMap<String, serde_json::V
     (labels, rank_map)
 }
 
+/// Represents the origin of a skill, indicating where it was discovered.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Hash)]
 enum SkillSource {
     Codex,
@@ -217,12 +218,14 @@ enum Commands {
     },
 }
 
+/// Reports the outcome of a synchronization operation.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct SyncReport {
     copied: usize,
     skipped: usize,
 }
 
+/// Represents settings loaded from the manifest file.
 #[derive(Debug, Default, Deserialize)]
 struct ManifestSettings {
     #[serde(default)]
@@ -233,14 +236,17 @@ struct ManifestSettings {
     cache_ttl_ms: Option<u64>,
 }
 
+/// Stores diagnostic information related to skill processing,
+/// including included, skipped, and found duplicate skills.
 #[derive(Default, Serialize, Deserialize)]
 struct Diagnostics {
     included: Vec<(String, String, String, String)>, // name, source, root, location
     skipped: Vec<(String, String)>,                  // name, reason
-    duplicates: Vec<DuplicateInfo>,                  // captured duplicates
+    duplicates: Vec<DuplicateInfo>,                  // found duplicates
     truncated: bool,
 }
 
+/// Represents an entry in the skill usage history.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct HistoryEntry {
     ts: u64,
@@ -872,6 +878,7 @@ fn sync_from_claude(claude_root: &Path, mirror_root: &Path) -> Result<SyncReport
     Ok(report)
 }
 
+/// Information about a duplicate skill that was skipped.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct DuplicateInfo {
     name: String,
@@ -913,10 +920,12 @@ impl SkillCache {
         self.ttl
     }
 
+    /// Returns the paths of the root directories being watched.
     fn watched_roots(&self) -> Vec<PathBuf> {
         self.roots.iter().map(|r| r.root.clone()).collect()
     }
 
+    /// Invalidates the cache, forcing a rescan on the next access.
     fn invalidate(&mut self) {
         self.last_scan = None;
     }
@@ -945,11 +954,13 @@ impl SkillCache {
         Ok(())
     }
 
+    /// Returns the current list of skills and any recorded duplicate information.
     fn skills_with_dups(&mut self) -> Result<(Vec<SkillMeta>, Vec<DuplicateInfo>)> {
         self.refresh_if_stale()?;
         Ok((self.skills.clone(), self.duplicates.clone()))
     }
 
+    /// Retrieves a skill by its URI.
     fn get_by_uri(&mut self, uri: &str) -> Result<SkillMeta> {
         self.refresh_if_stale()?;
         if let Some(idx) = self.uri_index.get(uri).copied() {
@@ -966,6 +977,7 @@ struct ContentCache {
 }
 
 impl ContentCache {
+    /// Reads the full content of a skill, utilizing the cache if available.
     fn read_full(&mut self, meta: &SkillMeta) -> Result<String> {
         if let Some((hash, text)) = self.by_path.get(&meta.path) {
             if hash == &meta.hash {
@@ -978,6 +990,7 @@ impl ContentCache {
         Ok(text)
     }
 
+    /// Reads a specified prefix of a skill's content, utilizing the cache.
     fn read_prefix(&mut self, meta: &SkillMeta, max: usize) -> Result<String> {
         let text = self.read_full(meta)?;
         if text.len() <= max {
@@ -998,6 +1011,7 @@ struct SkillService {
     content_cache: Arc<Mutex<ContentCache>>,
 }
 
+/// Starts a filesystem watcher to invalidate caches when skill files change.
 #[cfg(feature = "watch")]
 fn start_fs_watcher(service: &SkillService) -> Result<RecommendedWatcher> {
     let cache = service.cache.clone();
@@ -1032,6 +1046,8 @@ fn start_fs_watcher(service: &SkillService) -> Result<RecommendedWatcher> {
     Ok(watcher)
 }
 
+/// Placeholder for the filesystem watcher when the 'watch' feature is disabled.
+/// Returns an error if called.
 #[cfg(not(feature = "watch"))]
 fn start_fs_watcher(_service: &SkillService) -> Result<()> {
     Err(anyhow!(
@@ -1148,6 +1164,7 @@ impl SkillService {
         })
     }
 
+    /// Reads the content of a skill from the cache.
     fn read_skill_cached(&self, meta: &SkillMeta) -> Result<String> {
         let mut cache = self
             .content_cache
@@ -1156,6 +1173,7 @@ impl SkillService {
         cache.read_full(meta)
     }
 
+    /// Reads a prefix of a skill's content from the cache.
     fn read_prefix_cached(&self, meta: &SkillMeta, max: usize) -> Result<String> {
         let mut cache = self
             .content_cache
@@ -1164,6 +1182,7 @@ impl SkillService {
         cache.read_prefix(meta, max)
     }
 
+    /// Renders an autoload snippet, using cached skill content.
     fn render_autoload_cached(
         &self,
         skills: &[SkillMeta],
@@ -1177,6 +1196,7 @@ impl SkillService {
         )
     }
 
+    /// Determines whether the AGENTS.md document should be exposed as a resource.
     fn expose_agents_doc(&self) -> Result<bool> {
         let path = manifest_file()?;
         if path.exists() {
@@ -1283,7 +1303,6 @@ fn tui_flow(extra_dirs: &[PathBuf]) -> Result<()> {
 
 /// Build a compact XML summary for AGENTS.md consumers (with priority + per-skill rank).
 fn render_available_skills_xml(skills: &[SkillMeta]) -> String {
-    // Build a compact XML summary for AGENTS.md consumers.
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -1349,6 +1368,7 @@ fn sync_agents_with_skills(path: &Path, skills: &[SkillMeta]) -> Result<()> {
 }
 
 impl ServerHandler for SkillService {
+    /// Lists all available resources, including skills and the AGENTS.md document.
     fn list_resources(
         &self,
         _request: Option<PaginatedRequestParam>,
@@ -1365,6 +1385,7 @@ impl ServerHandler for SkillService {
         std::future::ready(result)
     }
 
+    /// Reads the content of a specific resource identified by its URI.
     fn read_resource(
         &self,
         request: ReadResourceRequestParam,
@@ -1790,6 +1811,7 @@ fn ignore_sigchld() -> Result<()> {
 }
 
 #[cfg(not(unix))]
+/// Stub for `ignore_sigchld` on non-Unix platforms.
 fn ignore_sigchld() -> Result<()> {
     Ok(())
 }

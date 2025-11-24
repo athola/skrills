@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # Install codex-mcp-skills and wire it into Codex (uv-style installer).
 # Usage:
-#   curl -LsSf https://raw.githubusercontent.com/${CODEX_SKILLS_GH_REPO:-athola/codex-mcp-skills}/main/scripts/install.sh | sh
+#   curl -LsSf https://raw.githubusercontent.com/${CODEX_SKILLS_GH_REPO:-athola/codex-mcp-skills}/HEAD/scripts/install.sh | sh
 # Env overrides:
 #   CODEX_SKILLS_GH_REPO   owner/repo (default: athola/codex-mcp-skills)
 #   CODEX_SKILLS_VERSION   release tag without leading v (default: latest)

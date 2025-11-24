@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2 - 2025-11-24
+- Added social/brand icon (8-bit 1280×640) at `assets/icon.png` and linked it in README.
+- Installer docs now use branch-agnostic `/HEAD/` URLs; README/book/FAQ updated.
+- Makefile `book` target builds and opens the mdBook (replaces book-open).
+- Added comparison + FAQ chapters to the book and FAQ to `docs/`.
+- Release workflow assets now interpolate target correctly; audit workflow runs `cargo audit` directly.
+
 ## 0.1.1 - 2025-11-24
 - Added single-command installer that also registers the Codex hook/MCP server by default (opt-out/env toggles).
 - Introduced mdBook documentation and GitHub Pages deploy workflow.

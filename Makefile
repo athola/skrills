@@ -23,7 +23,7 @@ help:
 	@echo "  serve-help         binary --help smoke check"
 	@echo "  emit-autoload      sample emit-autoload run"
 	@echo "  demo-all           run CLI demos (list/pin/history/sync, etc.)"
-	@echo "  book               build mdBook and open index"
+		@echo "  book               build mdBook then open in default browser"
 	@echo "  book-serve         live-reload mdBook on localhost:3000"
 	@echo "  clean              cargo clean"
 	@echo "  clean-demo         remove demo HOME sandbox"
@@ -64,11 +64,11 @@ docs:
 	else echo "Docs built, index not found at $$doc_index"; fi
 
 book:
-	@if ! command -v $(MDBOOK) >/dev/null 2>&1; then \
-	  echo "mdbook not found; installing to $(CARGO_HOME)/bin"; \
-	  CARGO_HOME=$(CARGO_HOME) $(CARGO) install mdbook --locked >/dev/null; \
-	fi
-	CARGO_HOME=$(CARGO_HOME) $(MDBOOK) build book
+		@if ! command -v $(MDBOOK) >/dev/null 2>&1; then \
+		  echo "mdbook not found; installing to $(CARGO_HOME)/bin"; \
+		  CARGO_HOME=$(CARGO_HOME) $(CARGO) install mdbook --locked >/dev/null; \
+		fi
+		CARGO_HOME=$(CARGO_HOME) $(MDBOOK) build book
 	@book_index="$(CURDIR)/book/book/index.html"; \
 	if [ -f "$$book_index" ]; then \
 	  if command -v xdg-open >/dev/null 2>&1; then xdg-open "$$book_index" >/dev/null 2>&1 || true; \

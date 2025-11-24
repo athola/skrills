@@ -10,8 +10,8 @@
   `CODEX_SKILLS_GH_REPO`.
 - **CI**: GitHub Actions build and upload the assets on `v*` tags; mdBook is
   deployed to GitHub Pages.
-- **Docs**: `make docs` (cargo doc) and `make book` (mdBook). Live reload via
-  `make book-serve`.
+- **Docs**: `make docs` (cargo doc) and `make book` (mdBook, opens locally).
+  Live reload via `make book-serve`.
 - **Features**: `watch` (default) enables filesystem watching; minimal builds
   use `--no-default-features` or `make build-min`.
 
