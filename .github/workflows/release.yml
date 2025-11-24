@@ -34,7 +34,7 @@ jobs:
           strip: false
           lock: false
           include: README.md LICENSE docs/release-artifacts.md
-          asset: "codex-mcp-skills-$target.tar.gz"
+          asset: "codex-mcp-skills-{{ target }}.tar.gz"
 
   macos:
     name: macOS builds
@@ -54,7 +54,7 @@ jobs:
           archive: tar.gz
           checksum: sha256
           include: README.md LICENSE docs/release-artifacts.md
-          asset: "codex-mcp-skills-$target.tar.gz"
+          asset: "codex-mcp-skills-{{ target }}.tar.gz"
 
   windows:
     name: Windows builds
@@ -74,4 +74,4 @@ jobs:
           archive: tar.gz
           checksum: sha256
           include: README.md LICENSE docs/release-artifacts.md
-          asset: "codex-mcp-skills-$target.tar.gz"
+          asset: "codex-mcp-skills-{{ target }}.tar.gz"

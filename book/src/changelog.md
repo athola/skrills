@@ -1,5 +1,13 @@
 # Changelog (highlights)
 
+## 0.1.3
+- Installer now builds from source in a temp cargo home when no release asset
+  is available, then installs to the requested bin dir.
+- Asset selection prefers `jq` with an awk fallback (no Python); pipefail is
+  optional for portability.
+- Release assets use the action `{{ target }}` placeholder to publish the
+  correct platform tarballs.
+
 ## 0.1.2
 - Added social/brand icon (8-bit 1280×640) at `assets/icon.png` and linked it in README.
 - Installer docs now use branch-agnostic `/HEAD/` URLs; README/book/FAQ updated.

@@ -11,7 +11,9 @@
 #   CODEX_SKILLS_SKIP_PATH_MESSAGE  set to 1 to silence PATH reminder
 #   CODEX_SKILLS_NO_HOOK   set to 1 to skip hook/MCP registration
 #   CODEX_SKILLS_UNIVERSAL set to 1 to also sync ~/.agent/skills
-set -euo pipefail
+set -eu
+# Some /bin/sh variants (dash/busybox) lack pipefail; try but ignore if unsupported.
+(set -o pipefail 2>/dev/null) || true
 
 # --- helpers ---------------------------------------------------------------
 fail() { echo "install error: $*" >&2; exit 1; }
@@ -77,22 +79,33 @@ SELECT_ASSET_URL()
   need_cmd curl
   release_json=$(curl -fsSL "$url_json") || fail "failed to fetch release metadata from $url_json"
   target="$(TARGET)"
-  if command -v python3 >/dev/null 2>&1; then
-    python3 - "$target" <<'PY'
-import json,sys,sys
-j=json.loads(sys.stdin.read())
-needle=sys.argv[1]
-for asset in j.get("assets", []):
-    name=asset.get("name","")
-    if needle in name:
-        print(asset.get("browser_download_url",""))
-        sys.exit(0)
-print("")
-PY
-  else
-    need_cmd jq
-    echo "$release_json" | jq -r --arg target "$target" '.assets[] | select(.name | contains($target)) | .browser_download_url' | head -n1
+  if command -v jq >/dev/null 2>&1; then
+    echo "$release_json" \
+      | jq -r --arg target "$target" '.assets[]? | select(.name | contains($target)) | .browser_download_url' \
+      | head -n1
+    return
   fi
+
+  # jq not available: fallback to a simple awk-based extractor (no Python dependency).
+  # This is a minimal parser that looks for an asset object containing the target
+  # and then grabs its browser_download_url value.
+  echo "$release_json" \
+    | tr -d '\n' \
+    | awk -v tgt="$target" '{
+        n = split($0, parts, /"assets":\[/);
+        if (n < 2) exit;
+        split(parts[2], assets, /\}\s*,\s*\{/);
+        for (i = 1; i <= length(assets); i++) {
+          blk = assets[i];
+          if (index(blk, tgt)) {
+            if (match(blk, /"browser_download_url":"([^"]+)"/, m)) {
+              gsub(/\\u0026/, "\\&", m[1]); # decode encoded ampersands if present
+              print m[1];
+              exit;
+            }
+          }
+        }
+      }'
 }
 
 DOWNLOAD_AND_EXTRACT()
@@ -118,6 +131,31 @@ DOWNLOAD_AND_EXTRACT()
   fi
   chmod +x "$bin_dir/$bin_name"
   echo "Installed $bin_name to $bin_dir"
+}
+
+BUILD_FROM_SOURCE()
+{
+  bin_dir="$1"
+  bin_name="$2"
+  need_cmd cargo
+  repo="$(REPO)"
+  tmpdir=$(mktemp -d)
+  trap 'rm -rf "$tmpdir"' EXIT INT TERM
+  tag_arg=""
+  if [ -n "${CODEX_SKILLS_VERSION:-}" ]; then
+    tag_arg="--tag v${CODEX_SKILLS_VERSION}"
+  fi
+  echo "No release asset available; building from source via cargo install..."
+  export CARGO_HOME="$tmpdir/cargo-home"
+  export CARGO_TARGET_DIR="$tmpdir/target"
+  # Install into a temp root to avoid polluting user cargo/bin, then copy.
+  cargo install --git "https://github.com/${repo}.git" $tag_arg --bin "codex-mcp-skills" --root "$tmpdir/cargo-root" --locked --force
+  built_bin="$tmpdir/cargo-root/bin/codex-mcp-skills"
+  [ -x "$built_bin" ] || fail "cargo install did not produce codex-mcp-skills"
+  mkdir -p "$bin_dir"
+  mv "$built_bin" "$bin_dir/$bin_name"
+  chmod +x "$bin_dir/$bin_name"
+  echo "Built from source and installed $bin_name to $bin_dir"
 }
 
 install_hook_and_mcp()
@@ -146,7 +184,11 @@ ensure_path_hint()
 bin_name="$(BIN_NAME)"
 bin_dir="${CODEX_SKILLS_BIN_DIR:-$HOME/.codex/bin}"
 asset_url=$(SELECT_ASSET_URL)
-[ -n "$asset_url" ] || fail "no release asset found matching target $(TARGET); check releases or specify CODEX_SKILLS_TARGET/CODEX_SKILLS_GH_REPO"
-DOWNLOAD_AND_EXTRACT "$asset_url" "$bin_dir" "$bin_name"
+if [ -n "$asset_url" ]; then
+  DOWNLOAD_AND_EXTRACT "$asset_url" "$bin_dir" "$bin_name"
+else
+  echo "Warning: no release asset found matching target $(TARGET) at $(API_URL)"
+  BUILD_FROM_SOURCE "$bin_dir" "$bin_name"
+fi
 ensure_path_hint "$bin_dir"
 install_hook_and_mcp
