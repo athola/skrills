@@ -36,10 +36,7 @@ jobs:
           tar: unix
           zip: none
           checksum: sha256
-          include: |
-            README.md
-            LICENSE
-            docs/release-artifacts.md
+          include: LICENSE,README.md,docs/release-artifacts.md
           token: ${{ secrets.GITHUB_TOKEN }}
 
   macos:
@@ -64,10 +61,7 @@ jobs:
           tar: unix
           zip: none
           checksum: sha256
-          include: |
-            README.md
-            LICENSE
-            docs/release-artifacts.md
+          include: LICENSE,README.md,docs/release-artifacts.md
           token: ${{ secrets.GITHUB_TOKEN }}
 
   windows:
@@ -92,8 +86,5 @@ jobs:
           tar: none
           zip: windows
           checksum: sha256
-          include: |
-            README.md
-            LICENSE
-            docs/release-artifacts.md
+          include: LICENSE,README.md,docs/release-artifacts.md
           token: ${{ secrets.GITHUB_TOKEN }}
