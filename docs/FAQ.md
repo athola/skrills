@@ -37,6 +37,9 @@ No. The MCP server reads skills from default locations and can mirror Claude ski
 ### How does this project differ from other skill management efforts?
 `codex-mcp-skills` provides an MCP server, a Codex hook, and cross-agent synchronization capabilities, transforming skills into runtime resources rather than just static files. Other efforts typically involve static skill bundles, CI-driven documentation rendering, or local-only synchronization tools. For a more detailed comparison, refer to the [Comparison to Similar Projects](../../book/src/comparison.md) section in the project book.
 
+### How does autoloading stay cheap on tokens?
+We hook into `UserPromptSubmit`, parse the prompt for intent, and pull only matching skills from a cached index into the context window. That avoids preloading every skill or re-reading disk each turn. Compared to alternatives that either dump all skill names at startup, require explicit tool calls per skill fetch, or ship static bundles baked into prompts, this approach keeps both latency and token use low while still honoring pins, history, and byte budgets.
+
 ### How are the project's documentation built locally?
 Use `make book` to build and open the `mdBook` documentation. For live-reloading during development, run `make book-serve` (accessible at `http://localhost:3000`). For Rust API documentation, use `make docs`.
 

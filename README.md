@@ -27,6 +27,7 @@ Rust MCP server that exposes local `SKILL.md` files as MCP resources and tools. 
 - **Universal Sync**: An optional "universal" mode copies skills to `~/.agent/skills`, allowing them to be reused by other agents.
 - **TUI**: A terminal user interface for pinning and unpinning skills, and for syncing skills from Claude to Codex.
 - **`AGENTS.md` Sync**: Automatically embeds an `<available_skills>` XML block in `AGENTS.md`, including the priority rank of each skill.
+- **Prompt hook, not tool spam**: On every `UserPromptSubmit` we parse intent, hit the cached discovery/index, and lazily hydrate only the needed skills into context. This avoids preloading full skill text or repeated disk scans, cutting token and latency costs versus approaches that stream every skill name at startup or require explicit tool calls to fetch content.
 - **Structured Outputs**: All outputs include a `_meta` field with information about priority, duplicates, and ranks.
 - **mdBook Documentation**: The project includes an `mdBook` for documentation. Run `make book` to build and open it locally, or `make book-serve` to view it with live-reloading on port 3000.
 
