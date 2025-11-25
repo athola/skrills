@@ -77,19 +77,24 @@ SELECT_ASSET_URL()
 {
   url_json="$(API_URL)"
   need_cmd curl
-  release_json=$(curl -fsSL "$url_json") || fail "failed to fetch release metadata from $url_json"
+  release_json=$(curl -fsSL -H "Accept: application/vnd.github+json" "$url_json") \
+    || fail "failed to fetch release metadata from $url_json"
   target="$(TARGET)"
   if command -v jq >/dev/null 2>&1; then
-    echo "$release_json" \
-      | jq -r --arg target "$target" '.assets[]? | select(.name | contains($target)) | .browser_download_url' \
-      | head -n1
-    return
+    asset_url=$(printf '%s' "$release_json" \
+      | jq -er --arg target "$target" '.assets[]? | select(.name | contains($target)) | .browser_download_url' 2>/dev/null \
+      | head -n1 || true)
+    if [ -n "$asset_url" ]; then
+      echo "$asset_url"
+      return
+    fi
+    echo "Warning: jq failed to extract asset URL, falling back to awk parser." >&2
   fi
 
   # jq not available: fallback to a simple awk-based extractor (no Python dependency).
   # This is a minimal parser that looks for an asset object containing the target
   # and then grabs its browser_download_url value.
-  echo "$release_json" \
+  printf '%s' "$release_json" \
     | tr -d '\n' \
     | awk -v tgt="$target" '{
         n = split($0, parts, /"assets":\[/);
