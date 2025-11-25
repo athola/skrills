@@ -12,11 +12,31 @@ jobs:
   create-release:
     name: Create GitHub release
     runs-on: ubuntu-latest
+    outputs:
+      is-draft: ${{ steps.release-info.outputs.is_draft }}
     steps:
       - uses: actions/checkout@v4
-      - uses: taiki-e/create-gh-release-action@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Ensure draft release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; leaving as-is."
+          else
+            gh release create "$TAG" --repo "$REPO" --draft --title "$TAG" --notes ""
+          fi
+      - name: Capture release state
+        id: release-info
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          is_draft=$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft)
+          echo "is_draft=$is_draft" >> "$GITHUB_OUTPUT"
 
   linux:
     name: Linux builds
@@ -28,16 +48,24 @@ jobs:
           - aarch64-unknown-linux-gnu
     needs: create-release
     steps:
+      - name: Explain skip if published
+        if: needs.create-release.outputs.is-draft != 'true'
+        run: echo "Release is already published; skipping uploads."
       - uses: actions/checkout@v4
+        if: needs.create-release.outputs.is-draft == 'true'
       - uses: dtolnay/rust-toolchain@stable
+        if: needs.create-release.outputs.is-draft == 'true'
         with:
           targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        if: needs.create-release.outputs.is-draft == 'true'
       - uses: taiki-e/install-action@v2
+        if: needs.create-release.outputs.is-draft == 'true'
         with:
           tool: cross
       - name: Upload Linux binaries
+        if: needs.create-release.outputs.is-draft == 'true'
         uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: codex-mcp-skills
@@ -59,12 +87,19 @@ jobs:
           - x86_64-apple-darwin
     needs: create-release
     steps:
+      - name: Explain skip if published
+        if: needs.create-release.outputs.is-draft != 'true'
+        run: echo "Release is already published; skipping uploads."
       - uses: actions/checkout@v4
+        if: needs.create-release.outputs.is-draft == 'true'
       - uses: dtolnay/rust-toolchain@stable
+        if: needs.create-release.outputs.is-draft == 'true'
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
+        if: needs.create-release.outputs.is-draft == 'true'
       - name: Upload macOS binaries
+        if: needs.create-release.outputs.is-draft == 'true'
         uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: codex-mcp-skills
@@ -85,12 +120,19 @@ jobs:
           - aarch64-pc-windows-msvc
     needs: create-release
     steps:
+      - name: Explain skip if published
+        if: needs.create-release.outputs.is-draft != 'true'
+        run: echo "Release is already published; skipping uploads."
       - uses: actions/checkout@v4
+        if: needs.create-release.outputs.is-draft == 'true'
       - uses: dtolnay/rust-toolchain@stable
+        if: needs.create-release.outputs.is-draft == 'true'
         with:
           targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
+        if: needs.create-release.outputs.is-draft == 'true'
       - name: Upload Windows binaries
+        if: needs.create-release.outputs.is-draft == 'true'
         uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: codex-mcp-skills
@@ -100,3 +142,20 @@ jobs:
           checksum: sha256
           include: LICENSE,README.md,docs/release-artifacts.md
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-release:
+    name: Publish GitHub release
+    runs-on: ubuntu-latest
+    needs:
+      - linux
+      - macos
+      - windows
+    if: needs.create-release.outputs.is-draft == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: gh release edit "$TAG" --repo "$REPO" --draft=false
