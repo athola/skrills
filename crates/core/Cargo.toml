@@ -1,6 +1,6 @@
 [package]
 name = "codex-mcp-skills-core"
-version = "0.1.3"
+version = "0.1.14"
 edition = "2021"
 
 [lib]
@@ -23,6 +23,8 @@ pathdiff.workspace = true
 dirs.workspace = true
 libc.workspace = true
 dialoguer.workspace = true
+toml.workspace = true
+hex.workspace = true
 notify = { version = "6", default-features = true, optional = true }
 
 [features]

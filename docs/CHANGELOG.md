@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.1.14 - 2025-11-25
+- Added `codex-mcp-skills doctor` to inspect Codex MCP config (`mcp_servers.json` and `config.toml`) and verify `type = "stdio"` plus binary paths.
+- Hardened MCP tool schemas to always include `type = "object"` so Codex no longer raises `missing field "type"` during startup.
+- `serve` gains `--trace-wire` / `CODEX_SKILLS_TRACE_WIRE=1` to hex+UTF-8 log MCP initialize traffic; warm-up now defers until after handshake and scans log when slow.
+- Installers now write `type = "stdio"` to both Codex config files, tolerate permission failures, add POSIX `--local` build flag, and keep PowerShell parity.
+
+## 0.1.13 - 2025-11-25
+- Installer filters release archives more strictly and falls back to source build when no match is found.
+- CI jobs are now gated by relevant path changes to avoid unnecessary runs.
+
+## 0.1.12 - 2025-11-25
+- Hardened installer release-asset lookup for resiliency across GitHub responses.
+
+## 0.1.11 - 2025-11-25
+- Release workflow now skips asset uploads when a release already exists, preventing duplicate publishes.
+
+## 0.1.10 - 2025-11-25
+- Release workflow creates the GitHub release before uploading assets to eliminate race conditions.
+
+## 0.1.9 - 2025-11-25
+- Fixed release upload include patterns to ensure platform archives are attached correctly.
+
+## 0.1.8 - 2025-11-25
+- Respected manifest flag when hiding agents documentation in autoload outputs.
+- Cached cargo artifacts in the audit workflow to speed up security checks.
+- Corrected release include paths across workflows.
+
+## 0.1.7 - 2025-11-25
+- Added release dry-run builds and cache reuse in CI to validate artifacts ahead of tagging.
+
+## 0.1.6 - 2025-11-24
+- Switched to supported archive options in the release workflow for better cross-platform packaging.
+
+## 0.1.5 - 2025-11-24
+- Set the ZIP flag in the Windows upload step to produce valid Windows artifacts.
+
+## 0.1.4 - 2025-11-24
+- Fixed CI upload action inputs for Rust binaries.
+- Stabilized core tests by fixing race conditions around environment variable handling.
+
 ## 0.1.3 - 2025-11-24
 - Installer falls back to building from source in an isolated cargo home when release assets are missing, then installs into the requested bin dir.
 - Asset selection favors `jq` with an awk fallback (no Python) and optional `pipefail` for POSIX shells.

@@ -2,6 +2,7 @@
 # Install codex-mcp-skills and wire it into Codex (uv-style installer).
 # Usage:
 #   curl -LsSf https://raw.githubusercontent.com/${CODEX_SKILLS_GH_REPO:-athola/codex-mcp-skills}/HEAD/scripts/install.sh | sh
+#   ./scripts/install.sh [--local]
 # Env overrides:
 #   CODEX_SKILLS_GH_REPO   owner/repo (default: athola/codex-mcp-skills)
 #   CODEX_SKILLS_VERSION   release tag without leading v (default: latest)
@@ -11,6 +12,8 @@
 #   CODEX_SKILLS_SKIP_PATH_MESSAGE  set to 1 to silence PATH reminder
 #   CODEX_SKILLS_NO_HOOK   set to 1 to skip hook/MCP registration
 #   CODEX_SKILLS_UNIVERSAL set to 1 to also sync ~/.agent/skills
+# Flags:
+#   --local  Build from the current checkout with cargo and install that binary
 set -eu
 # Some /bin/sh variants (dash/busybox) lack pipefail; try but ignore if unsupported.
 (set -o pipefail 2>/dev/null) || true
@@ -185,7 +188,7 @@ install_hook_and_mcp()
     echo "Warning: binary not found at $bin_dir/$bin_name; skipping hook." >&2
     return
   fi
-  CODEX_SKILLS_BIN="$bin_dir/$bin_name" CODEX_SKILLS_UNIVERSAL="${CODEX_SKILLS_UNIVERSAL:-0}" \
+  BIN_PATH="$bin_dir/$bin_name" CODEX_SKILLS_UNIVERSAL="${CODEX_SKILLS_UNIVERSAL:-0}" \
     "$PWD/scripts/install-codex-skills.sh"
 }
 
@@ -197,18 +200,83 @@ ensure_path_hint()
     *) echo "Add $1 to your PATH (e.g., export PATH=\"$1:\$PATH\")" ;; esac
 }
 
+usage()
+{
+  cat <<'USAGE'
+Install codex-mcp-skills and wire it into Codex.
+
+Options:
+  --local          Build from the current checkout with cargo and install that binary
+  -h, --help       Show this help
+
+Environment:
+  CODEX_SKILLS_BIN_DIR   install directory (default: $HOME/.codex/bin)
+  CODEX_SKILLS_BIN_NAME  binary name (default: codex-mcp-skills)
+  CODEX_SKILLS_TARGET    optional cargo --target triple for builds
+  CODEX_SKILLS_GH_REPO   owner/repo for release download (default: athola/codex-mcp-skills)
+  CODEX_SKILLS_VERSION   release tag (no leading v) if pinning a specific version
+  CODEX_SKILLS_NO_HOOK   set to 1 to skip hook/MCP registration
+  CODEX_SKILLS_UNIVERSAL set to 1 to also sync ~/.agent/skills
+  CODEX_SKILLS_SKIP_PATH_MESSAGE set to 1 to silence PATH hint
+USAGE
+}
+
+parse_args()
+{
+  LOCAL_BUILD=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --local) LOCAL_BUILD=1 ;;
+      -h|--help) usage; exit 0 ;;
+      *) fail "unknown option: $1" ;;
+    esac
+    shift
+  done
+}
+
+BUILD_LOCAL()
+{
+  bin_dir="$1"
+  bin_name="$2"
+  need_cmd cargo
+
+  build_args="--release"
+  build_target_dir="target/release"
+  if [ -n "${CODEX_SKILLS_TARGET:-}" ]; then
+    build_args="$build_args --target ${CODEX_SKILLS_TARGET}"
+    build_target_dir="target/${CODEX_SKILLS_TARGET}/release"
+  fi
+
+  echo "Building locally with: cargo build $build_args"
+  cargo build $build_args
+
+  built_bin="$build_target_dir/$bin_name"
+  [ -x "$built_bin" ] || fail "local build did not produce $built_bin"
+
+  mkdir -p "$bin_dir"
+  install -m 0755 "$built_bin" "$bin_dir/$bin_name"
+  echo "Installed $bin_name from local build to $bin_dir"
+}
+
 # --- main ------------------------------------------------------------------
+parse_args "$@"
 bin_name="$(BIN_NAME)"
 bin_dir="${CODEX_SKILLS_BIN_DIR:-$HOME/.codex/bin}"
-asset_url=$(SELECT_ASSET_URL)
-if [ -n "$asset_url" ]; then
-  if ! DOWNLOAD_AND_EXTRACT "$asset_url" "$bin_dir" "$bin_name"; then
-    echo "Falling back to source build because binary extraction failed." >&2
+
+if [ "$LOCAL_BUILD" = 1 ]; then
+  BUILD_LOCAL "$bin_dir" "$bin_name"
+else
+  asset_url=$(SELECT_ASSET_URL)
+  if [ -n "$asset_url" ]; then
+    if ! DOWNLOAD_AND_EXTRACT "$asset_url" "$bin_dir" "$bin_name"; then
+      echo "Falling back to source build because binary extraction failed." >&2
+      BUILD_FROM_SOURCE "$bin_dir" "$bin_name"
+    fi
+  else
+    echo "Warning: no release asset found matching target $(TARGET) at $(API_URL)"
     BUILD_FROM_SOURCE "$bin_dir" "$bin_name"
   fi
-else
-  echo "Warning: no release asset found matching target $(TARGET) at $(API_URL)"
-  BUILD_FROM_SOURCE "$bin_dir" "$bin_name"
 fi
+
 ensure_path_hint "$bin_dir"
 install_hook_and_mcp

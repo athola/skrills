@@ -16,7 +16,10 @@ Where we can still improve:
 - Offer optional signed artifacts and stronger version pinning for synced skills.
 - Make Windows defaults and path detection even smoother.
 
-## Key takeaways
-- Our differentiator is the MCP server that exposes skills uniformly to Codex and Claude while keeping stdio transport. Similar efforts to provide Skills within Codex are either static skill packs, CI renderers, or local sync tools without an MCP layer.
-- Release artifacts and installers are turnkey (`curl | sh` / `irm | iex`) with per-target binaries; others rely on manual copies or Cargo installs.
-- Autoload hook plus TUI provides end-user ergonomics; others focus on content, not runtime integration.
+## Summary
+
+`codex-mcp-skills` is primarily differentiated by its MCP server, which exposes skills to both Codex and Claude over a standard stdio interface. Other projects in this space tend to be static collections of skills, CI tools for rendering documentation, or local synchronization tools without an MCP layer.
+
+The project also provides convenient installers (`curl | sh` and `irm | iex`) for per-target binaries, in contrast to projects that require manual copying of files or installation via `cargo`.
+
+Finally, the autoload hook and terminal user interface are focused on runtime integration and ease of use, whereas many other projects focus more on the content of the skills themselves.

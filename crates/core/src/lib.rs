@@ -4,8 +4,9 @@
 //! It processes `SKILL.md` files, manages tool calls and resources, and integrates
 //! with the `rmcp` protocol.
 //!
-//! On Unix, this crate installs a `SIGCHLD` handler (`SA_NOCLDWAIT`) to prevent
-//! child processes from becoming zombies when the server is embedded.
+//! On Unix-like systems, this crate installs a `SIGCHLD` handler with `SA_NOCLDWAIT`
+//! at startup. This prevents child processes from becoming zombies when the server
+//! is embedded, by automatically reaping unexpected subprocesses.
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
@@ -30,10 +31,15 @@ use std::io::IsTerminal;
 #[cfg(unix)]
 use std::mem;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 #[cfg(unix)]
 use std::ptr;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::runtime::Runtime;
 use walkdir::WalkDir;
 
@@ -143,6 +149,9 @@ enum Commands {
         /// Cache TTL for skill discovery in milliseconds (overrides env CODEX_SKILLS_CACHE_TTL_MS)
         #[arg(long = "cache-ttl-ms", value_name = "MILLIS")]
         cache_ttl_ms: Option<u64>,
+        /// Dump raw MCP initialize traffic (stdin/stdout) as hex+UTF8 for debugging
+        #[arg(long, env = "CODEX_SKILLS_TRACE_WIRE", default_value_t = false)]
+        trace_wire: bool,
         #[cfg(feature = "watch")]
         /// Watch filesystem for changes and invalidate caches immediately
         #[arg(long, default_value_t = false)]
@@ -210,6 +219,8 @@ enum Commands {
     },
     /// Copy skills from ~/.claude into ~/.codex/skills-mirror
     Sync,
+    /// Diagnose Codex MCP configuration for this server
+    Doctor,
     /// Interactive TUI for sync and pin management
     Tui {
         /// Additional skill directories (repeatable)
@@ -437,6 +448,7 @@ fn auto_pin_from_history(history: &[HistoryEntry]) -> HashSet<String> {
         .collect()
 }
 
+/// Prints the recent skill usage history to stdout.
 fn print_history(limit: usize) -> Result<()> {
     let history = load_history().unwrap_or_default();
     let mut entries: Vec<_> = history.into_iter().rev().take(limit).collect();
@@ -450,7 +462,7 @@ fn print_history(limit: usize) -> Result<()> {
     Ok(())
 }
 
-/// Resolves a user-provided spec (exact or unique substring) to a skill name.
+/// Resolves a user-provided specification (either an exact skill name or a unique substring) to a full skill name.
 fn resolve_skill<'a>(spec: &str, skills: &'a [SkillMeta]) -> Result<&'a str> {
     let spec_l = spec.to_ascii_lowercase();
     let mut matches: Vec<&str> = skills
@@ -520,8 +532,33 @@ fn cache_ttl() -> Duration {
     Duration::from_millis(DEFAULT_CACHE_TTL_MS)
 }
 
+/// Returns the user's home directory.
 fn home_dir() -> Result<PathBuf> {
     dirs::home_dir().ok_or_else(|| anyhow!("HOME not set"))
+}
+
+/// Wrap stdio transport with optional wire tracing for debugging Codex MCP handshakes.
+fn stdio_with_optional_trace(
+    trace: bool,
+) -> (
+    Pin<Box<dyn AsyncRead + Unpin + Send + 'static>>,
+    Pin<Box<dyn AsyncWrite + Unpin + Send + 'static>>,
+) {
+    let (stdin, stdout) = transport::stdio();
+    if !trace {
+        return (Box::pin(stdin), Box::pin(stdout));
+    }
+
+    (
+        Box::pin(LoggingReader {
+            inner: stdin,
+            label: "in",
+        }),
+        Box::pin(LoggingWriter {
+            inner: stdout,
+            label: "out",
+        }),
+    )
 }
 
 /// Defines the directories searched for SKILL.md files, in priority order.
@@ -941,6 +978,7 @@ impl SkillCache {
             return Ok(());
         }
 
+        let scan_started = Instant::now();
         let mut dup_log = Vec::new();
         let skills = collect_skills_from(&self.roots, Some(&mut dup_log))?;
         let mut uri_index = HashMap::new();
@@ -951,6 +989,24 @@ impl SkillCache {
         self.duplicates = dup_log;
         self.uri_index = uri_index;
         self.last_scan = Some(now);
+        let elapsed_ms = scan_started.elapsed().as_millis();
+        if elapsed_ms > 250 {
+            tracing::info!(
+                target: "codex-skills::scan",
+                elapsed_ms,
+                roots = self.roots.len(),
+                skills = self.skills.len(),
+                "skill discovery completed"
+            );
+        } else {
+            tracing::debug!(
+                target: "codex-skills::scan",
+                elapsed_ms,
+                roots = self.roots.len(),
+                skills = self.skills.len(),
+                "skill discovery completed"
+            );
+        }
         Ok(())
     }
 
@@ -1009,6 +1065,83 @@ impl ContentCache {
 struct SkillService {
     cache: Arc<Mutex<SkillCache>>,
     content_cache: Arc<Mutex<ContentCache>>,
+    warmup_started: AtomicBool,
+}
+
+/// Logs stdin/stdout traffic for debugging MCP handshakes.
+struct LoggingReader<R> {
+    inner: R,
+    label: &'static str,
+}
+
+struct LoggingWriter<W> {
+    inner: W,
+    label: &'static str,
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for LoggingReader<R> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let poll = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+        if let std::task::Poll::Ready(Ok(())) = &poll {
+            let after = buf.filled().len();
+            let read = after.saturating_sub(before);
+            if read > 0 {
+                let bytes = &buf.filled()[after - read..after];
+                tracing::debug!(
+                    target: "codex-skills::wire",
+                    dir = self.label,
+                    len = read,
+                    hex = %hex::encode(bytes),
+                    text = %String::from_utf8_lossy(bytes),
+                    "wire read"
+                );
+            }
+        }
+        poll
+    }
+}
+
+impl<W: AsyncWrite + Unpin> AsyncWrite for LoggingWriter<W> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let poll = std::pin::Pin::new(&mut self.inner).poll_write(cx, buf);
+        if let std::task::Poll::Ready(Ok(written)) = &poll {
+            if *written > 0 {
+                let bytes = &buf[..*written];
+                tracing::debug!(
+                    target: "codex-skills::wire",
+                    dir = self.label,
+                    len = *written,
+                    hex = %hex::encode(bytes),
+                    text = %String::from_utf8_lossy(bytes),
+                    "wire write"
+                );
+            }
+        }
+        poll
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
 }
 
 /// Starts a filesystem watcher to invalidate caches when skill files change.
@@ -1064,10 +1197,19 @@ impl SkillService {
 
     /// Builds a skill service with a custom cache TTL.
     fn new_with_ttl(extra_dirs: Vec<PathBuf>, ttl: Duration) -> Result<Self> {
+        let build_started = Instant::now();
         let roots = skill_roots(&extra_dirs)?;
+        let elapsed_ms = build_started.elapsed().as_millis();
+        tracing::info!(
+            target: "codex-skills::startup",
+            elapsed_ms,
+            roots = roots.len(),
+            "constructed SkillService (discovery deferred until after initialize)"
+        );
         Ok(Self {
             cache: Arc::new(Mutex::new(SkillCache::new_with_ttl(roots, ttl))),
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
+            warmup_started: AtomicBool::new(false),
         })
     }
 
@@ -1211,6 +1353,37 @@ impl SkillService {
 
         Ok(true)
     }
+
+    /// Kicks off a background cache warm-up after `initialize` returns, so startup
+    /// handshake stays fast even with large skill trees. The warm-up is best-effort
+    /// and logs its duration for diagnostics.
+    fn spawn_warmup_if_needed(&self) {
+        if self.warmup_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        let cache = self.cache.clone();
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let result = cache
+                .lock()
+                .map_err(|e| anyhow!("skill cache poisoned: {e}"))
+                .and_then(|mut cache| cache.refresh_if_stale());
+
+            match result {
+                Ok(()) => tracing::info!(
+                    target: "codex-skills::warmup",
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "background cache warm-up finished"
+                ),
+                Err(e) => tracing::warn!(
+                    target: "codex-skills::warmup",
+                    error = %e,
+                    "background cache warm-up failed"
+                ),
+            }
+        });
+    }
 }
 
 /// Inserts location and optional priority rank into readResource responses.
@@ -1237,6 +1410,112 @@ fn text_with_location(
         text: text.into(),
         meta: Some(meta),
     }
+}
+
+/// Prints diagnostics about Codex MCP config entries for this server, helping pinpoint
+/// the common "missing field `type`" startup error on the client side.
+fn doctor_report() -> Result<()> {
+    let home = home_dir()?;
+    let mcp_path = home.join(".codex/mcp_servers.json");
+    let cfg_path = home.join(".codex/config.toml");
+    let expected_cmd = home.join(".codex/bin/codex-mcp-skills");
+
+    println!("== codex-mcp-skills doctor ==");
+
+    // Inspect ~/.codex/mcp_servers.json
+    if mcp_path.exists() {
+        let raw = fs::read_to_string(&mcp_path)?;
+        match serde_json::from_str::<serde_json::Value>(&raw) {
+            Ok(json) => {
+                if let Some(entry) = json.get("mcpServers").and_then(|m| m.get("codex-skills")) {
+                    let typ = entry
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("<missing>");
+                    let cmd = entry
+                        .get("command")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("<missing>");
+                    println!(
+                        "mcp_servers.json: type={typ} command={cmd} args={:?} ({})",
+                        entry.get("args").and_then(|v| v.as_array()),
+                        mcp_path.display()
+                    );
+                    if typ != "stdio" {
+                        println!("  ! expected type=\"stdio\"");
+                    }
+                    if Path::new(cmd) != expected_cmd {
+                        println!(
+                            "  i command differs; ensure binary path is correct and executable"
+                        );
+                    }
+                    if !Path::new(cmd).exists() {
+                        println!("  ! command path does not exist on disk");
+                    }
+                } else {
+                    println!(
+                        "mcp_servers.json: missing codex-skills entry ({})",
+                        mcp_path.display()
+                    );
+                }
+            }
+            Err(e) => println!(
+                "mcp_servers.json: failed to parse ({:?}): {}",
+                mcp_path.display(),
+                e
+            ),
+        }
+    } else {
+        println!("mcp_servers.json: not found at {}", mcp_path.display());
+    }
+
+    // Inspect ~/.codex/config.toml
+    if cfg_path.exists() {
+        let raw = fs::read_to_string(&cfg_path)?;
+        match toml::from_str::<toml::Value>(&raw) {
+            Ok(toml_val) => {
+                let entry = toml_val
+                    .get("mcp_servers")
+                    .and_then(|m| m.get("codex-skills"));
+                if let Some(e) = entry {
+                    let typ = e
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("<missing>");
+                    let cmd = e
+                        .get("command")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("<missing>");
+                    println!(
+                        "config.toml:    type={typ} command={cmd} args={:?} ({})",
+                        e.get("args"),
+                        cfg_path.display()
+                    );
+                    if typ != "stdio" {
+                        println!("  ! expected type=\"stdio\"");
+                    }
+                    if !Path::new(cmd).exists() {
+                        println!("  ! command path does not exist on disk");
+                    }
+                } else {
+                    println!(
+                        "config.toml:    missing [mcp_servers.codex-skills] ({})",
+                        cfg_path.display()
+                    );
+                }
+            }
+            Err(e) => println!(
+                "config.toml:    failed to parse ({:?}): {}",
+                cfg_path.display(),
+                e
+            ),
+        }
+    } else {
+        println!("config.toml:    not found at {}", cfg_path.display());
+    }
+
+    println!("Hint: Codex CLI raises 'missing field `type`' when either file lacks type=\"stdio\" for codex-skills.");
+    Ok(())
 }
 
 /// Simple interactive TUI for sync + pin management.
@@ -1400,7 +1679,14 @@ impl ServerHandler for SkillService {
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListToolsResult, rmcp::ErrorData>> + Send + '_
     {
-        let schema = std::sync::Arc::new(JsonMap::new());
+        // Codex CLI expects every tool input_schema to include a JSON Schema "type".
+        // An empty map triggers "missing field `type`" during MCP → OpenAI conversion,
+        // so we explicitly mark parameterless tools as taking an empty object.
+        let mut schema_map = JsonMap::new();
+        schema_map.insert("type".into(), json!("object"));
+        schema_map.insert("properties".into(), json!({}));
+        schema_map.insert("additionalProperties".into(), json!(false));
+        let schema = std::sync::Arc::new(schema_map);
         let tools = vec![
             Tool {
                 name: "list-skills".into(),
@@ -1658,6 +1944,9 @@ impl ServerHandler for SkillService {
     /// This includes server capabilities and a brief instruction message,
     /// indicating that this service acts as a bridge for `SKILL.md` files.
     fn get_info(&self) -> InitializeResult {
+        // Start background warm-up only after the handshake path is hit to
+        // keep the initialize response fast.
+        self.spawn_warmup_if_needed();
         InitializeResult {
             capabilities: ServerCapabilities {
                 resources: Some(Default::default()),
@@ -1817,12 +2106,14 @@ pub fn run() -> Result<()> {
     match cli.command.unwrap_or(Commands::Serve {
         skill_dirs: Vec::new(),
         cache_ttl_ms: None,
+        trace_wire: false,
         #[cfg(feature = "watch")]
         watch: false,
     }) {
         Commands::Serve {
             skill_dirs,
             cache_ttl_ms,
+            trace_wire,
             #[cfg(feature = "watch")]
             watch,
         } => {
@@ -1837,7 +2128,7 @@ pub fn run() -> Result<()> {
                 None
             };
 
-            let transport = transport::stdio();
+            let transport = stdio_with_optional_trace(trace_wire);
             let rt = Runtime::new()?;
             let running = rt.block_on(async {
                 serve_server(service, transport)
@@ -1935,6 +2226,7 @@ pub fn run() -> Result<()> {
             println!("copied: {}, skipped: {}", report.copied, report.skipped);
             Ok(())
         }
+        Commands::Doctor => doctor_report(),
         Commands::Tui { skill_dirs } => tui_flow(&merge_extra_dirs(&skill_dirs)),
     }
 }
@@ -1957,6 +2249,7 @@ mod tests {
         let svc = SkillService {
             cache: Arc::new(Mutex::new(SkillCache::new(vec![]))),
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
+            warmup_started: AtomicBool::new(false),
         };
         let resources = svc.list_resources_payload()?;
         assert!(resources
@@ -1980,6 +2273,7 @@ mod tests {
         let svc = SkillService {
             cache: Arc::new(Mutex::new(SkillCache::new(vec![]))),
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
+            warmup_started: AtomicBool::new(false),
         };
         let result = svc.read_resource_sync(AGENTS_URI)?;
         let text = match &result.contents[0] {
@@ -2053,6 +2347,7 @@ mod tests {
                 source: SkillSource::Codex,
             }]))),
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
+            warmup_started: AtomicBool::new(false),
         };
         let result = svc.read_resource_sync("skill://codex/alpha/SKILL.md")?;
         match &result.contents[0] {
@@ -2145,6 +2440,7 @@ mod tests {
                 Duration::from_millis(5),
             ))),
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
+            warmup_started: AtomicBool::new(false),
         };
 
         let (skills_first, _) = svc.current_skills_with_dups()?;
@@ -2177,6 +2473,7 @@ mod tests {
                 Duration::from_millis(1),
             ))),
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
+            warmup_started: AtomicBool::new(false),
         };
 
         let uri = "skill://codex/alpha/SKILL.md";
@@ -2215,6 +2512,7 @@ mod tests {
         let svc = SkillService {
             cache: Arc::new(Mutex::new(SkillCache::new(vec![]))),
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
+            warmup_started: AtomicBool::new(false),
         };
         let resources = svc.list_resources_payload()?;
         assert!(!resources.iter().any(|r| r.uri == AGENTS_URI));

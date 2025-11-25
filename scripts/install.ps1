@@ -81,3 +81,45 @@ Write-Output "Installed $binName to $binDir"
 if (-not ($env:PATH -split ';' | Where-Object { $_ -eq $binDir })) {
     Write-Output "Add $binDir to PATH (setx PATH \"$binDir;%PATH%\")"
 }
+
+# --- MCP registration (Codex MCP clients require type="stdio") ---
+$mcpPath = Join-Path $HOME ".codex/mcp_servers.json"
+$mcpDir = Split-Path $mcpPath -Parent
+if (-not (Test-Path $mcpDir)) { New-Item -ItemType Directory -Path $mcpDir -Force | Out-Null }
+
+$mcpJson = if (Test-Path $mcpPath) {
+    Get-Content $mcpPath -Raw | ConvertFrom-Json
+} else {
+    [pscustomobject]@{ mcpServers = @{} }
+}
+
+if (-not $mcpJson.mcpServers) { $mcpJson | Add-Member -NotePropertyName mcpServers -NotePropertyValue @{} }
+$mcpJson.mcpServers."codex-skills" = @{
+    type    = "stdio"
+    command = (Join-Path $binDir $binName)
+    args    = @("serve")
+}
+$mcpJson | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 $mcpPath
+Write-Output "Registered codex-skills MCP server in $mcpPath"
+
+# Keep config.toml in sync (preferred by Codex)
+$configToml = Join-Path $HOME ".codex/config.toml"
+if (-not (Test-Path $configToml)) {
+    if (-not (Test-Path (Split-Path $configToml -Parent))) { New-Item -ItemType Directory -Path (Split-Path $configToml -Parent) -Force | Out-Null }
+    "model = ""gpt-5.1-codex-max`""" | Set-Content -Encoding UTF8 $configToml
+}
+$config = Get-Content $configToml -Raw
+if ($config -notmatch '\[mcp_servers\."codex-skills"\]') {
+    Add-Content -Encoding UTF8 $configToml @"
+
+[mcp_servers."codex-skills"]
+type = "stdio"
+command = "$(Join-Path $binDir $binName)"
+args = ["serve"]
+"@
+    Write-Output "Added codex-skills section to $configToml"
+} elseif ($config -notmatch '(?ms)\[mcp_servers\."codex-skills"\].*type\s*=') {
+    $updated = $config -replace '(\[mcp_servers\."codex-skills"\]\s*)', "`$1type = ""stdio""`n"
+    $updated | Set-Content -Encoding UTF8 $configToml
+    Write-Output "Ensured type = \"stdio\" in $configToml"
+}

@@ -18,10 +18,12 @@ if [ "${CODEX_SKILLS_UNIVERSAL:-0}" != "0" ]; then
   UNIVERSAL=1
 fi
 
-BIN_PATH="${BIN_PATH:-$HOME/.cargo/bin/codex-mcp-skills}"
+# Preferred binary path (can be set by outer installer via BIN_PATH or CODEX_SKILLS_BIN).
+BIN_PATH="${BIN_PATH:-${CODEX_SKILLS_BIN:-$HOME/.cargo/bin/codex-mcp-skills}}"
 HOOK_DIR="$HOME/.codex/hooks/codex"
 HOOK_PATH="$HOOK_DIR/prompt.on_user_prompt_submit"
 MCP_PATH="$HOME/.codex/mcp_servers.json"
+CONFIG_TOML="$HOME/.codex/config.toml"
 REPO_ROOT="$(cd "${0%/*}/.." && pwd)"
 
 sync_universal() {
@@ -54,8 +56,10 @@ if [ "$UNIVERSAL_ONLY" -eq 1 ]; then
 fi
 
 mkdir -p "$HOOK_DIR"
-
-cat <<'HOOK' > "$HOOK_PATH"
+write_hook() {
+  local tmp
+  tmp=$(mktemp)
+  cat > "$tmp" <<'HOOK' || { echo "Warning: unable to write hook (permission denied?). Skipping hook install." >&2; rm -f "$tmp"; return; }
 #!/usr/bin/env bash
 # Inject SKILL.md content into Codex on prompt submit via codex-mcp-skills
 set -euo pipefail
@@ -96,30 +100,119 @@ if [ -n "${OUTPUT:-}" ]; then
   echo "$OUTPUT"
 fi
 HOOK
-chmod +x "$HOOK_PATH"
-
-echo "Hook written to $HOOK_PATH"
+  if mv "$tmp" "$HOOK_PATH"; then
+    chmod +x "$HOOK_PATH"
+    echo "Hook written to $HOOK_PATH"
+  else
+    echo "Warning: unable to move hook into place at $HOOK_PATH" >&2
+    rm -f "$tmp"
+  fi
+}
+write_hook
 
 # Ensure mcp_servers.json exists
 if [ ! -f "$MCP_PATH" ]; then
   mkdir -p "$(dirname "$MCP_PATH")"
-  cat <<'JSON' > "$MCP_PATH"
+  if ! cat <<'JSON' > "$MCP_PATH"; then
 {
   "mcpServers": {}
 }
 JSON
+    echo "Warning: unable to create $MCP_PATH (permission denied?)" >&2
+  fi
 fi
 
-# Merge/insert codex-skills entry using jq if available
+# Merge/insert codex-skills entry; prefer jq, fall back to Python stdlib
 if command -v jq >/dev/null 2>&1; then
   tmp=$(mktemp)
-  jq '.mcpServers."codex-skills" = {"command": "'"$BIN_PATH"'", "args": ["serve"]}' "$MCP_PATH" > "$tmp"
-  mv "$tmp" "$MCP_PATH"
+  jq '.mcpServers."codex-skills" = {"type": "stdio", "command": "'"$BIN_PATH"'", "args": ["serve"]}' "$MCP_PATH" > "$tmp"
+  if mv "$tmp" "$MCP_PATH"; then
+    :
+  else
+    echo "Warning: unable to update $MCP_PATH (permission denied?)" >&2
+    rm -f "$tmp"
+  fi
+elif command -v awk >/dev/null 2>&1; then
+  tmp=$(mktemp)
+  backup="${MCP_PATH}.bak.$(date +%s)"
+  cp "$MCP_PATH" "$backup" 2>/dev/null || true
+  awk -v bin="$BIN_PATH" '
+    BEGIN {
+      found = 0
+    }
+    {
+      if ($0 ~ /"codex-skills"[[:space:]]*:/) { found = 1 }
+      print
+    }
+    END {
+      if (!found) {
+        printf "%s\n", (NR ? "," : "{");
+        print "  \"mcpServers\": {"
+        print "    \"codex-skills\": {"
+        print "      \"type\": \"stdio\","
+        printf "      \"command\": \"%s\",\n", bin
+        print "      \"args\": [\"serve\"]"
+        print "    }"
+        print "  }"
+        if (NR) { print "}" }
+      }
+    }
+  ' "$MCP_PATH" > "$tmp"
+  if mv "$tmp" "$MCP_PATH"; then
+    echo "Updated $MCP_PATH without jq (backup: $backup)"
+  else
+    echo "Warning: unable to update $MCP_PATH (permission denied?)" >&2
+    rm -f "$tmp"
+  fi
 else
-  echo "jq not found; please add codex-skills entry to $MCP_PATH manually." >&2
+  echo "Warning: jq not found and awk unavailable; please add codex-skills entry to $MCP_PATH manually." >&2
 fi
 
 echo "Registered codex-skills MCP server in $MCP_PATH"
+
+# Also ensure codex-skills is present in config.toml (Codex prefers this over mcp_servers.json)
+if [ ! -f "$CONFIG_TOML" ]; then
+  mkdir -p "$(dirname "$CONFIG_TOML")"
+  if ! printf 'model = "gpt-5.1-codex-max"\n\n' > "$CONFIG_TOML"; then
+    echo "Warning: unable to create $CONFIG_TOML (permission denied?)" >&2
+  fi
+fi
+if [ -w "$CONFIG_TOML" ] && ! grep -q '\[mcp_servers\."codex-skills"\]' "$CONFIG_TOML"; then
+  cat <<EOF >> "$CONFIG_TOML"
+
+[mcp_servers."codex-skills"]
+type = "stdio"
+command = "$BIN_PATH"
+args = ["serve"]
+EOF
+  echo "Registered codex-skills MCP server in $CONFIG_TOML"
+elif grep -q '\[mcp_servers\."codex-skills"\]' "$CONFIG_TOML"; then
+  # Ensure type is present in the existing section (Codex MCP now requires it).
+  tmp=$(mktemp)
+  awk '
+    BEGIN { in_section = 0; found_type = 0 }
+    /^\[mcp_servers\."codex-skills"\]/ {
+      in_section = 1
+      found_type = 0
+      print
+      next
+    }
+    /^\[/ {
+      if (in_section && !found_type) { print "type = \"stdio\"" }
+      in_section = 0
+    }
+    {
+      if (in_section && $0 ~ /^type[[:space:]]*=/) { found_type = 1 }
+      print
+    }
+    END {
+      if (in_section && !found_type) { print "type = \"stdio\"" }
+    }
+  ' "$CONFIG_TOML" > "$tmp" && mv "$tmp" "$CONFIG_TOML"
+  echo "codex-skills already present in $CONFIG_TOML (type ensured)"
+else
+  echo "Warning: unable to update $CONFIG_TOML (permission denied?)" >&2
+fi
 
 echo "Install complete. To mirror Claude skills: run 'codex-mcp-skills sync' (binary must be built)."
 

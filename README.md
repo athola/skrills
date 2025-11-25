@@ -15,14 +15,14 @@ Rust MCP server that exposes local `SKILL.md` files as MCP resources and tools. 
 - [`assets/icon.png`](assets/icon.png): Social/brand image (1280×640, 8-bit).
 
 ## Features
-- MCP server over stdio exposing every discovered `SKILL.md` as `skill://<source>/<relative>`.
-- Autoload tool that filters by prompt terms, pins, and priority; emits structured JSON.
-- Duplicate-aware priority ordering: codex → mirror → claude → agent.
-- Universal sync: optional copy to `~/.agent/skills` for multi-agent reuse.
-- TUI for pin/unpin and optional Claude→Codex sync.
-- AGENTS.md sync: embeds `<available_skills>` XML with per-skill priority rank.
-- Structured outputs with `_meta` (priority, duplicates, ranks).
-- mdBook docs: `make book` builds and opens locally; `make book-serve` live-reloads on port 3000.
+- **MCP Server**: Exposes all discovered `SKILL.md` files as `skill://` resources over stdio.
+- **Skill Autoloader**: Filters skills based on prompt keywords, pinned skills, and priority, then emits a structured JSON output for the agent.
+- **Priority System**: A a duplicate-aware priority system determines which skill to use when multiple skills with the same name are found. The default order is `codex` → `mirror` → `claude` → `agent`.
+- **Universal Sync**: An optional "universal" mode copies skills to `~/.agent/skills`, allowing them to be reused by other agents.
+- **TUI**: A terminal user interface for pinning and unpinning skills, and for syncing skills from Claude to Codex.
+- **`AGENTS.md` Sync**: Automatically embeds an `<available_skills>` XML block in `AGENTS.md`, including the priority rank of each skill.
+- **Structured Outputs**: All outputs include a `_meta` field with information about priority, duplicates, and ranks.
+- **mdBook Documentation**: The project includes an `mdBook` for documentation. Run `make book` to build and open it locally, or `make book-serve` to view it with live-reloading on port 3000.
 
 ## Installation
 
@@ -42,6 +42,7 @@ Environment overrides:
 - `CODEX_SKILLS_VERSION` (tag without `v`, default latest)
 - `CODEX_SKILLS_BIN_DIR` (default `~/.codex/bin`)
 - `CODEX_SKILLS_TARGET` to force a specific target triple.
+- Flag: `--local` builds from the current checkout with cargo instead of downloading a release.
 
 Release asset naming:
 - Archives are published per target as `codex-mcp-skills-<target>.tar.gz`, e.g. `codex-mcp-skills-x86_64-unknown-linux-gnu.tar.gz`.
@@ -71,7 +72,7 @@ cargo install --path crates/cli --force
 ./scripts/install-codex-skills.sh [--universal] [--universal-only]
 ```
 - Hook written to `~/.codex/hooks/codex/prompt.on_user_prompt_submit`
-- MCP server registered in `~/.codex/mcp_servers.json`
+- MCP server registered in `~/.codex/mcp_servers.json` (with `type = "stdio"` as required by newer Codex MCP clients)
 - `--universal` also copies skills into `~/.agent/skills`; `--universal-only` performs just that copy.
 
 ## Quick start
@@ -79,18 +80,36 @@ cargo install --path crates/cli --force
 codex-mcp-skills serve                  # start MCP server
 codex-mcp-skills list                   # view discovered skills
 codex-mcp-skills emit-autoload --prompt "python testing" --diagnose
+codex-mcp-skills doctor                 # verify Codex MCP config has type="stdio" and correct paths
 codex-mcp-skills tui                    # interactive pin/sync
 ```
 Trigger any Codex prompt; the hook injects filtered `additionalContext` automatically.
 
 ## Usage
 ### Commands (CLI)
-- `serve [--skill-dir DIR]...`
-- `emit-autoload [--include-claude] [--max-bytes N] [--prompt TEXT] [--auto-pin] [--diagnose] [--skill-dir DIR]...`
-- `list`, `list-pinned`, `pin ...`, `unpin ...`, `autopin --enable/--disable`, `history [--limit N]`
-- `sync` (mirror Claude → Codex)
-- `sync-agents [--path AGENTS.md] [--skill-dir DIR]...` (writes `<available_skills>` XML with ranks)
-- `tui` (optional sync, then checkbox pinning with source/location/priority)
+- `serve`: Starts the MCP server.
+  - `--skill-dir DIR`: Specify one or more directories to search for skills.
+  - `--trace-wire`: Trace the wire protocol.
+- `emit-autoload`: Emits the autoload snippet.
+  - `--include-claude`: Include skills from Claude.
+  - `--max-bytes N`: Set the maximum number of bytes for the snippet.
+  - `--prompt TEXT`: The prompt to use for filtering skills.
+  - `--auto-pin`: Enable or disable auto-pinning.
+  - `--diagnose`: Run diagnostics.
+  - `--skill-dir DIR`: Specify one or more directories to search for skills.
+- `list`: Lists all discovered skills.
+- `list-pinned`: Lists all pinned skills.
+- `pin <SKILL>`: Pins a skill.
+- `unpin <SKILL>`: Unpins a skill.
+- `autopin --enable|--disable`: Enables or disables auto-pinning.
+- `history`: Shows the history of autoloaded snippets.
+  - `--limit N`: Limit the number of entries shown.
+- `sync`: Mirrors skills from Claude to Codex.
+- `sync-agents`: Writes the `<available_skills>` XML block to `AGENTS.md`.
+  - `--path AGENTS.md`: Specify the path to `AGENTS.md`.
+  - `--skill-dir DIR`: Specify one or more directories to search for skills.
+- `tui`: Starts the terminal user interface for interactive pinning and syncing.
+- `doctor`: Checks the Codex MCP configuration for the `codex-skills` entry.
 
 ### Structured outputs
 `list-skills` returns:

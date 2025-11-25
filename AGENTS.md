@@ -1,115 +1,96 @@
 # AI Agent Development Guidelines
 
-Pragmatic guidance for AI coding agents. Focus on working code, clear decisions, continuous improvement.
+Practical guidance for building AI coding agents that produce working code.
 
 ---
 
 ## Core Philosophy
 
-### Foundational Beliefs
-- Incremental over big-bang: Small, working iterations beat rewrites
-- Context-aware application: Adapt to project realities, not rigid rules
-- Pragmatic engineering: Balance competing concerns
-- Evidence-based decisions: Measure, don't guess
-- Diverse solution exploration: Generate multiple approaches before committing
-
-### Simplicity Standards
-- Single responsibility per component
-- Avoid premature abstractions (Rule of Three)
-- Prefer boring, proven solutions over clever tricks
-- If code needs extensive comments, it's too complex--refactor
-
-### Innovation & Diversity Standards
-- Multiple approaches: Always generate 3-5 distinct solutions
-- Explicit trade-offs: Make pros/cons and confidence levels clear
-- Creative exploration: Consider unconventional options when appropriate
-- Mode collapse avoidance: Don't default to familiar patterns
+- **Incremental progress**: Small, working iterations are better than large, risky rewrites.
+- **Context-aware application**: Adapt to project realities instead of rigidly applying rules.
+- **Pragmatic engineering**: Balance competing concerns like performance and readability based on the situation.
+- **Evidence-based decisions**: Use metrics and measurements to guide decisions, not just intuition.
+- **Diverse solution exploration**: Generate multiple approaches before choosing one.
+- **Simplicity**: Prefer simple, proven solutions. If code becomes so complex it requires extensive comments, refactor it.
+- **Single responsibility**: Each component should have one clear purpose.
+- **Avoid premature abstractions**: Don't create abstractions until a clear pattern has emerged (see the Rule of Three).
+- **Explicit trade-offs**: Clearly document the pros, cons, and confidence level for each proposed solution.
+- **Avoid pattern fixation**: If you find yourself using the same design pattern for every problem, you may be experiencing "mode collapse". Actively explore different approaches.
 
 ---
 
 ## Development Workflow
 
-### Standard Implementation Cycle
-1. Understand - Read existing code, identify patterns, check tests
-2. Diversify - Generate multiple approaches with trade-offs
-3. Test - Write failing test first (TDD when applicable)
-4. Implement - Write minimal code to pass tests
-5. Refactor - Clean up with tests green
-6. Commit - Clear message explaining "why"
+### Implementation Cycle
+1.  **Understand**: Read existing code, identify patterns, and check tests.
+2.  **Explore**: Generate multiple approaches with clear trade-offs.
+3.  **Test**: Write a failing test first (when applicable).
+4.  **Implement**: Write the minimum code required to pass the test.
+5.  **Refactor**: Clean up the code while all tests are passing.
+6.  **Commit**: Write a clear commit message explaining the "why" behind the change.
 
-### When Stuck (3-Strike Rule)
-After 3 failed attempts:
-1. Document failures with full error output
-2. Research 2-3 alternative approaches
-3. Question fundamental assumptions
-4. Try completely different angle or simplify
-5. If still stuck, request help with context from above steps
+### When Stuck
+If you've made three unsuccessful attempts to solve a problem:
+1.  Document the failures, including the full error output.
+2.  Research two or three alternative approaches.
+3.  Question your fundamental assumptions about the problem.
+4.  Try a completely different approach or simplify the problem.
+5.  If you're still stuck, ask for help and provide the context from the previous steps.
 
-### Agent Architecture Patterns
-
-#### Master-Clone over Lead-Specialist
-- Use built-in `Task()` for delegation
-- Prefer Master-Clone architecture over Lead-Specialist
-- Skills > MCP for most workflows
-- Scripting model more flexible than API abstraction
-
-#### Session Management
-- Resume sessions for error analysis
-- Use session history for improvement
-- "Document & Clear" for complex tasks
-- Block-at-submit hooks, not block-at-write
+### Session Management
+- Use session history to analyze errors and track the development process.
+- For complex tasks, it can be useful to document the current state and clear the session to start fresh.
 
 ---
 
 ## Quality Standards
 
-### Every Commit Must
-- [ ] Compile/build successfully
-- [ ] Pass ALL existing tests (no skips)
-- [ ] Include new tests for new functionality
-- [ ] Follow project linting rules (zero warnings)
-- [ ] Have clear commit message explaining "why"
+### Commit Requirements
+Every commit must:
+- Compile or build successfully.
+- Pass all existing tests, with no tests skipped.
+- Include new tests for any new functionality.
+- Adhere to project linting rules, generating zero warnings.
+- Have a clear commit message that explains the "why" behind the change.
 
 ### Pre-Commit Workflow
+This command should be run before committing to ensure all quality checks pass:
 ```bash
 make format && make lint && make test --quiet && make build
 ```
 
-### Verbalized Sampling Pattern
-Based on research from arXiv:2510.01171:
+### Effective Prompting
+A well-structured prompt is more likely to yield good results.
 
-Instead of: "How should I implement user authentication?"
-Use: "Generate 4 different authentication approaches. For each: (a) Implementation outline, (b) Security trade-offs, (c) Complexity assessment, (d) Confidence score (0-100%)"
+For example, instead of asking a general question like:
+> "How should I implement user authentication?"
 
-### Role Prompting for Domain Expertise
-Transform AI agents into virtual domain experts through system prompts and role definitions:
+Ask for a detailed comparison:
+> "Generate four different approaches to user authentication. For each, provide:
+> a) An implementation outline.
+> b) Security trade-offs.
+> c) A complexity assessment.
+> d) A confidence score (0-100%)."
 
-Benefits:
-- Enhanced accuracy for complex domains (legal, financial, technical)
-- Tailored communication style matching role (CFO vs. Copywriter)
-- Improved focus and consistency across sessions
-- Reduced ambiguity through clear identity
+### Role Prompting
+You can improve an agent's performance by assigning it a role. This helps the agent adopt a specific point of view, such as a security expert or a senior developer.
 
-Implementation:
+For example, you can add this to a project's `AGENTS.md` or `CLAUDE.md` file:
 ```markdown
-# In project AGENTS.md or CLAUDE.md
-You are a Senior Python Developer with 15 years of backend experience,
-specializing in API design and performance optimization.
+You are a Senior Python Developer with 15 years of backend experience, specializing in API design and performance optimization.
 
 Approach all tasks with:
-- Test-driven development mindset
-- Functional Core, Imperative Shell architecture
-- Security-first thinking
-- Clear documentation
+- A test-driven development mindset.
+- A "Functional Core, Imperative Shell" architectural style.
+- A security-first approach.
+- Clear documentation.
 ```
 
-Specificity Matters:
-- Generic: "You are a data scientist"
-- Specific: "You are a Senior Data Scientist at Fortune 500 retail, specializing in customer churn prediction and A/B testing"
+The more specific the role, the better. For instance, "Senior Data Scientist at a Fortune 500 retail company, specializing in customer churn prediction and A/B testing" is better than "a data scientist".
 
-XML Tags for Structure:
+Using XML tags can also help structure prompts and responses:
 ```xml
-<role>You are a Security Researcher specializing in web vulnerabilities</role>
+<role>You are a Security Researcher specializing in web vulnerabilities.</role>
 
 <context>
 Project: Payment gateway integration
@@ -117,7 +98,7 @@ Stack: Python, FastAPI, PostgreSQL
 </context>
 
 <instruction>
-Review authentication implementation for OWASP Top 10 vulnerabilities
+Review the authentication implementation for OWASP Top 10 vulnerabilities.
 </instruction>
 
 <output_format>
@@ -126,126 +107,125 @@ Review authentication implementation for OWASP Top 10 vulnerabilities
 </output_format>
 ```
 
-Best Practices:
-- Place role definition at top of project config files
-- Align role with task domain (security role for security tasks)
-- Combine role + XML + examples for maximum effectiveness
-- Test specificity variations to find optimal level
-- Use consistent XML tag names across prompts
+Some best practices for role prompting:
+- Place the role definition at the top of project configuration files.
+- Align the role with the task's domain (e.g., assign a security role for security tasks).
+- For best results, combine a role definition with XML structure and examples.
+- Experiment with different levels of specificity to find what works best.
+- Use consistent XML tag names across prompts.
 
-### Creative Problem-Solving Framework
-1. Divergent Phase: Generate 5+ distinct approaches without judgment
-2. Convergent Phase: Systematically evaluate trade-offs and constraints
-3. Selection Phase: Choose optimal approach with clear rationale
-4. Documentation Phase: Record rejected alternatives and reasoning
+### Creative Problem-Solving
+1.  **Diverge**: Generate at least five distinct approaches without judging them.
+2.  **Converge**: Evaluate the trade-offs and constraints of each approach.
+3.  **Select**: Choose the best approach and document why you chose it.
+4.  **Document**: Record the other approaches you considered and why you rejected them. This can be valuable context for future developers.
 
 ---
 
 ## Architecture Guidelines
 
 ### Design Principles
-- Composition over inheritance - Favor interfaces and delegation
-- Explicit over implicit - Clarity beats cleverness
-- Interfaces over singletons - Dependency injection for testability
-- Stable public APIs - Internal changes shouldn't break consumers
-- Error handling everywhere - No bare `except:`, no swallowed errors
+- **Composition over inheritance**: Favor interfaces and delegation.
+- **Explicit over implicit**: Write clear code that doesn't hide its behavior.
+- **Interfaces over singletons**: Use dependency injection to make code more testable.
+- **Stable public APIs**: Internal changes should not break external consumers.
+- **Thorough error handling**: Avoid broad `except:` clauses that can hide bugs.
 
-### Decision-Making Framework
-When choosing approaches, evaluate:
-1. Testability - Can I easily write tests for this?
-2. Readability - Will this make sense in 6 months?
-3. Consistency - Does it match existing project patterns?
-4. Simplicity - Is this the simplest solution that works?
-5. Reversibility - How hard to change if wrong?
-6. Maintainability - Can others understand and modify this?
+### Decision-Making
+When choosing an approach, evaluate it on:
+- **Testability**: How easily can I write tests for this?
+- **Readability**: Will this make sense to a new developer in six months?
+- **Consistency**: Does this match the project's existing patterns?
+- **Simplicity**: Is this the simplest solution that works?
+- **Reversibility**: How difficult would it be to change this decision later?
+- **Maintainability**: Can other developers easily understand and modify this code?
 
 ### Security Principles
-- Design in, don't bolt on security
-- Defense in depth - Multiple security layers
-- Least privilege - Minimum permissions necessary
-- Never commit secrets - Use environment variables
-- Input validation everywhere - Trust nothing from users
-- Parameterized queries only - No string concatenation in SQL
-- Govern outcomes, not just inputs - Real-time control plane monitoring
-- Detect invisible threats - Scan for hidden malicious content
+- **Build security in from the start**: Don't treat security as an afterthought.
+- **Defense in depth**: Use multiple layers of security controls.
+- **Least privilege**: Grant only the minimum permissions necessary.
+- **Never commit secrets**: Use environment variables or a secrets management system.
+- **Validate all input**: Trust no data coming from external sources.
+- **Use parameterized queries**: Do not use string concatenation to build SQL queries.
+- **Monitor outcomes**: Don't just validate inputs; monitor the behavior of the system in real-time.
+- **Scan for hidden threats**: Check for malicious content that may be hidden in uploads or other data.
 
 ### Performance Principles
-- Measure before optimizing - Profile first, guess never
-- Architectural over micro-optimization - Fix algorithms before loops
-- Security-performance trade-offs - Document why security wins
-- Cache invalidation strategy - Plan before implementing caching
+- **Measure before you optimize**: Use a profiler to identify bottlenecks, don't guess.
+- **Focus on architectural improvements**: Algorithmic changes usually have a bigger impact than micro-optimizations.
+- **Document security-performance trade-offs**: If a security measure impacts performance, document the reasoning.
+- **Plan for cache invalidation**: Before you implement a cache, have a clear strategy for invalidating it.
 
 ---
 
-## Project Integration
+## Integrating with Existing Codebases
 
-### Learning New Codebases
-Before writing code:
-1. Find 3 similar features to the one you're building
-2. Identify common patterns (error handling, testing, naming)
-3. Use existing libraries/utilities (don't reinvent)
-4. Follow established test patterns exactly
+### Learning a New Codebase
+Before writing any code, get familiar with the project:
+1.  Find three features that are similar to what you're building.
+2.  Identify common patterns for things like error handling, testing, and naming.
+3.  Use the project's existing libraries and utility functions instead of reinventing the wheel.
+4.  Follow the established patterns for writing tests.
 
-### Tooling Approach
-- Use project's existing systems
-- Don't introduce new tools without justification
-- Follow project conventions and patterns
-- Prefer built-in functionality over external dependencies
+### Tooling and Dependencies
+- Use the project's existing tools and systems.
+- Don't introduce new tools without a clear justification.
+- Follow the project's conventions and patterns.
+- Prefer built-in functionality over new external dependencies.
 
-### Enterprise Integration
-- GitHub Actions for PR automation
-- Strict configuration maintenance for monorepos
-- Session history analysis for improvement
-- Consistent patterns across projects
+### Automation and Consistency
+- Use automation, like GitHub Actions, to handle pull request checks.
+- Maintain consistent configuration, especially in a monorepo.
+- Strive for consistent patterns across different projects within an organization.
 
 ---
 
 ## Context Management
 
-### Command Optimization (Blog Insights)
-Avoid verbose commands:
-- npm install, pip install without silent flags
-- git log, git diff without output limits
-- ls -la, find . without head/tail limits
+### Command Optimization
+Avoid commands that produce a large amount of output. Be specific.
 
-Use targeted commands:
-- npm install --silent, pip install --quiet
-- git log --oneline -5, git diff --stat
-- ls -1 | head -20, find . -name "*.py" | head -10
+Verbose commands to avoid:
+- `npm install` or `pip install` without a "silent" or "quiet" flag.
+- `git log` or `git diff` without limits.
+- `ls -la` or `find .` without limits.
+
+Targeted commands to use instead:
+- `npm install --silent` or `pip install --quiet`.
+- `git log --oneline -5` or `git diff --stat`.
+- `ls -1 | head -20` or `find . -name "*.py" | head -10`.
 
 ### Session Management
-- Use /context to monitor token usage
-- Avoid /compact (opaque, error-prone)
-- Use /clear + /catchup for clean restarts
-- Resume sessions for error analysis
+- Use `/context` to monitor token usage.
+- Avoid using `/compact`, as it can be opaque and error-prone.
+- Use `/clear` and `/catchup` for clean restarts.
+- Resume sessions to analyze errors.
 
 ---
 
 ## Common Anti-Patterns
 
-### Code Quality Anti-Patterns
-- Overengineering: Consolidate repeated logic, skip tutorial docstrings
-- Hidden fragility: Check algorithms, edge cases, context integration
-- Library discipline: No hallucinated libraries, maintain consistent style
-- AI slop: Generic names (data, value), machine-perfect formatting
+### Code Quality
+- **Over-engineering**: Don't build complex systems for simple problems.
+- **Hidden fragility**: Be aware of edge cases and how different parts of the system interact.
+- **Library misuse**: Don't use libraries without understanding them, and don't invent libraries that don't exist.
+- **"AI slop"**: Avoid generic names like `data` or `value`, and don't obsess over "machine-perfect" formatting.
 
-### Security Anti-Patterns
-- Eyeball test assumption: Relying on visual inspection for security
-- Static defense mindset: Traditional input filtering vs dynamic agents
-- Invisible content neglect: Ignoring hidden text/metadata threats
-- Outcome governance gaps: Focusing on input prevention over result validation
+### Security
+- **The "eyeball test"**: Don't assume code is secure just by looking at it.
+- **Static defense**: Don't just filter inputs; monitor the system's behavior.
+- **Ignoring invisible content**: Scan for threats hidden in metadata or other non-visible parts of data.
+- **Governing inputs, not outcomes**: Don't just focus on preventing bad inputs; make sure the system's outputs are also correct and safe.
 
-### Workflow Anti-Patterns
-- Big bang changes: Large, untested commits
-- Premature abstraction: Complex frameworks for simple problems
-- Documentation debt: Forgetting to update docs as you code
-- Commit without context: Messages that don't explain "why"
-
-### Process Anti-Patterns
-- Skip testing: "I'll test it later" mentality
-- Ignore linting: "It's just a warning" mindset
-- Cargo culting: Copying patterns without understanding
-- Analysis paralysis: Over-planning without implementation
+### Workflow
+- **"Big bang" changes**: Avoid large, untested commits.
+- **Premature abstraction**: Don't create complex abstractions for simple problems.
+- **Documentation debt**: Update documentation as you change the code.
+- **Commits without context**: Write commit messages that explain the "why" of the change.
+- **Skipping tests**: Don't defer writing tests.
+- **Ignoring linting**: Pay attention to linter warnings; they often point to real issues.
+- **"Cargo culting"**: Don't copy code or patterns without understanding why they are used.
+- **Analysis paralysis**: Avoid over-planning at the expense of getting things done.
 
 ---
 
@@ -253,40 +233,36 @@ Use targeted commands:
 
 ### Essential Commands
 ```bash
-# Development cycle
+# Run the full development cycle of formatting, linting, and testing.
 make format && make lint && make test --quiet
 
-# Testing
+# Run different test suites.
 make test --quiet
 make test-coverage --quiet
 make test-unit --quiet
 
-# Git operations
+# Common Git operations.
 git log --oneline -5
 git diff --stat
 git status --porcelain
 
-# File operations
+# File and directory operations.
 ls -1 | head -20
 find . -name "*.py" | head -10
 ```
 
 ### Decision Checklist
-Before implementing:
-- [ ] Understood the problem completely?
-- [ ] Generated multiple approaches?
-- [ ] Chose simplest working solution?
-- [ ] Written tests first?
-- [ ] Followed project patterns?
+Before implementing a solution, ask yourself:
+- Have I fully understood the problem?
+- Have I generated multiple approaches?
+- Have I chosen the simplest working solution?
+- Have I written tests first?
+- Have I followed the project's existing patterns?
 
 ### Commit Checklist
-Before committing:
-- [ ] Code compiles/builds successfully?
-- [ ] All tests pass?
-- [ ] New tests included?
-- [ ] Linting clean?
-- [ ] Commit message explains "why"?
-
----
-
-Guidelines optimized for practical application while maintaining engineering rigor and creative problem-solving.
+Before committing code, ensure that:
+- The code compiles or builds successfully.
+- All tests pass.
+- New tests for new functionality are included.
+- The code is free of linting errors.
+- The commit message explains the "why" behind the change.

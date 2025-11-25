@@ -1,24 +1,57 @@
 # Development
 
-## Toolchain
-- Rust 1.78+ (via rustup), `cargo fmt`, `clippy`.
-- Optional: `mdbook` for this book (`cargo install mdbook --locked`).
+This page provides information for developers who want to contribute to the project.
 
-## Make targets
+## Toolchain
+
+-   **Rust**: Version 1.78 or newer (installed via `rustup`).
+-   **Formatting and Linting**: `cargo fmt` and `clippy` are used.
+-   **Documentation**: This book is built with `mdbook`. You can install it by running `cargo install mdbook --locked`.
+
+## Make Targets
+
+The `Makefile` provides several convenient targets:
+
 ```bash
-make fmt lint check test build build-min
-make serve-help emit-autoload
-make demo-all     # sandboxed CLI dogfood
-make docs         # cargo doc with warnings denied
-make book         # mdBook build + open index
-make book-serve   # live-reload book (localhost:3000)
-make clean clean-demo
+# Code quality checks
+make fmt
+make lint
+make check
+
+# Testing
+make test
+
+# Building
+make build
+make build-min
+
+# Running common commands
+make serve-help
+make emit-autoload
+
+# End-to-end demo
+make demo-all
+
+# Documentation
+make docs         # Build rustdoc documentation
+make book         # Build and open the mdBook
+make book-serve   # Serve the mdBook with live-reloading on localhost:3000
+
+# Cleaning up
+make clean
+make clean-demo
 ```
 
-## Demo sandbox
-`make demo-all` builds the release binary, prepares a temporary HOME with a demo
-skill, and runs list/pin/unpin/auto-pin/history/sync-agents/sync/emit-autoload
-commands to validate end-to-end behavior without touching your real `$HOME`.
+## Demo Sandbox
+
+The `make demo-all` target provides a sandboxed environment for testing the CLI. It builds a release binary, prepares a temporary home directory with a demo skill, and runs a series of commands (`list`, `pin`, `unpin`, `auto-pin`, `history`, `sync-agents`, `sync`, and `emit-autoload`) to validate the end-to-end behavior of the CLI without affecting your real home directory.
 
 ## Testing
-`cargo test --workspace --all-features` (also wired to `make test` and `make ci`).
+
+To run the full test suite, use the following command:
+
+```bash
+cargo test --workspace --all-features
+```
+
+This is also aliased to `make test` and is run as part of the continuous integration pipeline (`make ci`).
