@@ -25,6 +25,7 @@ base64.workspace = true
 tempfile.workspace = true
 hex.workspace = true
 notify = { version = "6", optional = true }
+toml.workspace = true
 
 codex-mcp-skills-discovery = { path = "../discovery" }
 codex-mcp-skills-state = { path = "../state" }
