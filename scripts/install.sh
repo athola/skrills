@@ -82,7 +82,14 @@ SELECT_ASSET_URL()
   target="$(TARGET)"
   if command -v jq >/dev/null 2>&1; then
     asset_url=$(printf '%s' "$release_json" \
-      | jq -er --arg target "$target" '.assets[]? | select(.name | contains($target)) | .browser_download_url' 2>/dev/null \
+      | jq -er --arg target "$target" '
+          .assets[]? 
+          | select(
+              (.name | contains($target))
+              and ((.name | endswith(".tar.gz")) or (.name | endswith(".zip")))
+            )
+          | .browser_download_url
+        ' 2>/dev/null \
       | head -n1 || true)
     if [ -n "$asset_url" ]; then
       echo "$asset_url"
@@ -103,10 +110,12 @@ SELECT_ASSET_URL()
         for (i = 1; i <= length(assets); i++) {
           blk = assets[i];
           if (index(blk, tgt)) {
-            if (match(blk, /"browser_download_url":"([^"]+)"/, m)) {
-              gsub(/\\u0026/, "\\&", m[1]); # decode encoded ampersands if present
-              print m[1];
-              exit;
+            if (match(blk, /"name":"([^"]+\.(tar\.gz|zip))"/, n)) {
+              if (match(blk, /"browser_download_url":"([^"]+)"/, m)) {
+                gsub(/\\u0026/, "\\&", m[1]); # decode encoded ampersands if present
+                print m[1];
+                exit;
+              }
             }
           }
         }
@@ -124,7 +133,10 @@ DOWNLOAD_AND_EXTRACT()
   need_cmd curl
   curl -fL "$download_url" -o "$archive" || fail "download failed: $download_url"
   mkdir -p "$tmpdir/out"
-  tar -xzf "$archive" -C "$tmpdir/out" || fail "unable to unpack archive"
+  if ! tar -xzf "$archive" -C "$tmpdir/out"; then
+    echo "Warning: unable to unpack archive from $download_url; falling back to cargo build." >&2
+    return 1
+  fi
   mkdir -p "$bin_dir"
   if [ -f "$tmpdir/out/$bin_name" ]; then
     mv "$tmpdir/out/$bin_name" "$bin_dir/$bin_name"
@@ -190,7 +202,10 @@ bin_name="$(BIN_NAME)"
 bin_dir="${CODEX_SKILLS_BIN_DIR:-$HOME/.codex/bin}"
 asset_url=$(SELECT_ASSET_URL)
 if [ -n "$asset_url" ]; then
-  DOWNLOAD_AND_EXTRACT "$asset_url" "$bin_dir" "$bin_name"
+  if ! DOWNLOAD_AND_EXTRACT "$asset_url" "$bin_dir" "$bin_name"; then
+    echo "Falling back to source build because binary extraction failed." >&2
+    BUILD_FROM_SOURCE "$bin_dir" "$bin_name"
+  fi
 else
   echo "Warning: no release asset found matching target $(TARGET) at $(API_URL)"
   BUILD_FROM_SOURCE "$bin_dir" "$bin_name"
