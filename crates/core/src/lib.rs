@@ -537,13 +537,11 @@ fn home_dir() -> Result<PathBuf> {
     dirs::home_dir().ok_or_else(|| anyhow!("HOME not set"))
 }
 
+type StdioReader = Pin<Box<dyn AsyncRead + Unpin + Send + 'static>>;
+type StdioWriter = Pin<Box<dyn AsyncWrite + Unpin + Send + 'static>>;
+
 /// Wrap stdio transport with optional wire tracing for debugging Codex MCP handshakes.
-fn stdio_with_optional_trace(
-    trace: bool,
-) -> (
-    Pin<Box<dyn AsyncRead + Unpin + Send + 'static>>,
-    Pin<Box<dyn AsyncWrite + Unpin + Send + 'static>>,
-) {
+fn stdio_with_optional_trace(trace: bool) -> (StdioReader, StdioWriter) {
     let (stdin, stdout) = transport::stdio();
     if !trace {
         return (Box::pin(stdin), Box::pin(stdout));
