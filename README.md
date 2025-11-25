@@ -1,5 +1,11 @@
 # codex-mcp-skills
 
+[![CI](https://img.shields.io/github/actions/workflow/status/athola/codex-mcp-skills/ci.yml?branch=master)](https://github.com/athola/codex-mcp-skills/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/github/actions/workflow/status/athola/codex-mcp-skills/coverage.yml?branch=master&label=coverage)](https://github.com/athola/codex-mcp-skills/actions/workflows/coverage.yml)
+[![Codecov](https://codecov.io/gh/athola/codex-mcp-skills/branch/master/graph/badge.svg)](https://codecov.io/gh/athola/codex-mcp-skills)
+[![Security Audit](https://img.shields.io/github/actions/workflow/status/athola/codex-mcp-skills/audit.yml?branch=master&label=audit)](https://github.com/athola/codex-mcp-skills/actions/workflows/audit.yml)
+[![Docs](https://img.shields.io/github/actions/workflow/status/athola/codex-mcp-skills/book-pages.yml?branch=master&label=docs)](https://github.com/athola/codex-mcp-skills/actions/workflows/book-pages.yml)
+
 <p align="center">
   <img src="assets/icon.png" alt="codex-mcp-skills icon" width="640" height="320">
 </p>
@@ -158,10 +164,11 @@ Injects:
 ```
 
 ## Development
-- Workspace: `crates/core` (lib) + `crates/cli` (bin).
+- Workspace crates: `crates/discovery` (skill scanning + hashes), `crates/state` (persistence/env), `crates/server` (CLI + MCP runtime), `crates/cli` (thin binary).
 - Format/tests: `cargo fmt && cargo test`.
+- Coverage (local): `cargo llvm-cov --workspace --html` or `cargo llvm-cov --workspace --lcov --output-path lcov.info`.
 - Helpful scripts: `scripts/install-codex-skills.sh`, `scripts/install-codex-skills.sh --universal-only`.
-- Internal docs: 
+- Internal docs:
   * [docs/process-guidelines.md](docs/process-guidelines.md)
   * [docs/release-artifacts.md](docs/release-artifacts.md)
   * [docs/CHANGELOG.md](docs/CHANGELOG.md)
