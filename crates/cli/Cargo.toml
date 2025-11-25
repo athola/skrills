@@ -4,5 +4,5 @@ version = "0.1.14"
 edition = "2021"
 
 [dependencies]
-codex-mcp-skills-core = { path = "../core" }
+codex-mcp-skills-server = { path = "../server" }
 anyhow.workspace = true

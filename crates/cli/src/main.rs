@@ -4,5 +4,5 @@
 //! its core functionality to the `codex-mcp-skills-core` crate.
 
 fn main() -> anyhow::Result<()> {
-    codex_mcp_skills_core::run()
+    codex_mcp_skills_server::run()
 }

@@ -207,16 +207,32 @@ name = "codex-mcp-skills"
 version = "0.1.14"
 dependencies = [
  "anyhow",
- "codex-mcp-skills-core",
+ "codex-mcp-skills-server",
 ]
 
 [[package]]
-name = "codex-mcp-skills-core"
-version = "0.1.14"
+name = "codex-mcp-skills-discovery"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "pathdiff",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tracing",
+ "walkdir",
+]
+
+[[package]]
+name = "codex-mcp-skills-server"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64",
  "clap",
+ "codex-mcp-skills-discovery",
+ "codex-mcp-skills-state",
  "dialoguer",
  "dirs",
  "hex",
@@ -228,12 +244,22 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
- "thiserror 2.0.17",
  "tokio",
- "toml",
  "tracing",
  "tracing-subscriber",
  "walkdir",
+]
+
+[[package]]
+name = "codex-mcp-skills-state"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+ "tracing",
 ]
 
 [[package]]
