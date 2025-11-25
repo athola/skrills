@@ -1198,26 +1198,17 @@ impl SkillService {
 
     /// Determines whether the AGENTS.md document should be exposed as a resource.
     fn expose_agents_doc(&self) -> Result<bool> {
-        let path = manifest_file()?;
-        if path.exists() {
-            if let Ok(raw) = fs::read_to_string(&path) {
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
-                    if let Some(flag) = val.get("expose_agents").and_then(|v| v.as_bool()) {
-                        return Ok(flag);
-                    }
-                }
-            }
-        }
-        let manifest = load_manifest_settings()?;
-        if let Some(flag) = manifest.expose_agents {
-            return Ok(flag);
-        }
-
         if let Ok(val) = std::env::var(ENV_EXPOSE_AGENTS) {
             if let Ok(parsed) = val.parse::<bool>() {
                 return Ok(parsed);
             }
         }
+
+        let manifest = load_manifest_settings()?;
+        if let Some(flag) = manifest.expose_agents {
+            return Ok(flag);
+        }
+
         Ok(true)
     }
 }
