@@ -57,8 +57,8 @@ flowchart LR
   B --> C{Filter}
   C -->|keywords| D["Match set"]
   C -->|pins / auto-pin| D
-  C -->|trigram similarity (embed_threshold)| D
-  D --> E["Manifest builder (max_bytes, include_claude)"]
+  C -->|trigram similarity\n(embed_threshold)| D
+  D --> E["Manifest builder\nmax_bytes + include_claude"]
   E --> F["Diagnostics + manifest-first payload"]
   F --> G["Client injects additionalContext"]
   D -.-> H["render-preview tool"] -.-> G
