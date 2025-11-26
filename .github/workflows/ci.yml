@@ -99,8 +99,12 @@ jobs:
       - name: Fetch master for baseline
         run: git fetch origin master --depth=1
       - name: Public API check (skrills-server)
-        working-directory: crates/server
-        run: cargo +nightly public-api diff --deny removed --deny changed origin/master..HEAD
+        run: |
+          set -euo pipefail
+          git_root="$(git rev-parse --show-toplevel)"
+          cd "$git_root/crates/server"
+          GIT_DIR="$git_root/.git" GIT_WORK_TREE="$git_root" \
+            cargo +nightly public-api diff --deny removed --deny changed origin/master..HEAD
 
   release-build-check:
     name: Release build (dry run)
