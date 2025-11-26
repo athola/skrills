@@ -1,17 +1,17 @@
 #!/usr/bin/env sh
-# Install codex-mcp-skills and wire it into Codex (uv-style installer).
+# Install skrills and wire it into Codex (uv-style installer).
 # Usage:
-#   curl -LsSf https://raw.githubusercontent.com/${CODEX_SKILLS_GH_REPO:-athola/codex-mcp-skills}/HEAD/scripts/install.sh | sh
+#   curl -LsSf https://raw.githubusercontent.com/${SKRILLS_GH_REPO:-athola/skrills}/HEAD/scripts/install.sh | sh
 #   ./scripts/install.sh [--local]
 # Env overrides:
-#   CODEX_SKILLS_GH_REPO   owner/repo (default: athola/codex-mcp-skills)
-#   CODEX_SKILLS_VERSION   release tag without leading v (default: latest)
-#   CODEX_SKILLS_BIN_DIR   install directory (default: $HOME/.codex/bin)
-#   CODEX_SKILLS_BIN_NAME  binary name (default: codex-mcp-skills)
-#   CODEX_SKILLS_TARGET    explicit target triple override
-#   CODEX_SKILLS_SKIP_PATH_MESSAGE  set to 1 to silence PATH reminder
-#   CODEX_SKILLS_NO_HOOK   set to 1 to skip hook/MCP registration
-#   CODEX_SKILLS_UNIVERSAL set to 1 to also sync ~/.agent/skills
+#   SKRILLS_GH_REPO   owner/repo (default: athola/skrills)
+#   SKRILLS_VERSION   release tag without leading v (default: latest)
+#   SKRILLS_BIN_DIR   install directory (default: $HOME/.codex/bin)
+#   SKRILLS_BIN_NAME  binary name (default: skrills)
+#   SKRILLS_TARGET    explicit target triple override
+#   SKRILLS_SKIP_PATH_MESSAGE  set to 1 to silence PATH reminder
+#   SKRILLS_NO_HOOK   set to 1 to skip hook/MCP registration
+#   SKRILLS_UNIVERSAL set to 1 to also sync ~/.agent/skills
 # Flags:
 #   --local  Build from the current checkout with cargo and install that binary
 set -eu
@@ -42,8 +42,8 @@ ARCH()
 
 TARGET()
 {
-  if [ -n "${CODEX_SKILLS_TARGET:-}" ]; then
-    echo "$CODEX_SKILLS_TARGET"; return
+  if [ -n "${SKRILLS_TARGET:-}" ]; then
+    echo "$SKRILLS_TARGET"; return
   fi
   os="$(OS)"; arch="$(ARCH)"
   case "$os" in
@@ -57,19 +57,19 @@ TARGET()
 
 REPO()
 {
-  echo "${CODEX_SKILLS_GH_REPO:-athola/codex-mcp-skills}";
+  echo "${SKRILLS_GH_REPO:-athola/skrills}";
 }
 
 BIN_NAME()
 {
-  echo "${CODEX_SKILLS_BIN_NAME:-codex-mcp-skills}";
+  echo "${SKRILLS_BIN_NAME:-skrills}";
 }
 
 API_URL()
 {
   repo="$(REPO)"
-  if [ -n "${CODEX_SKILLS_VERSION:-}" ]; then
-    echo "https://api.github.com/repos/${repo}/releases/tags/v${CODEX_SKILLS_VERSION}";
+  if [ -n "${SKRILLS_VERSION:-}" ]; then
+    echo "https://api.github.com/repos/${repo}/releases/tags/v${SKRILLS_VERSION}";
   else
     echo "https://api.github.com/repos/${repo}/releases/latest";
   fi
@@ -162,16 +162,16 @@ BUILD_FROM_SOURCE()
   tmpdir=$(mktemp -d)
   trap 'rm -rf "$tmpdir"' EXIT INT TERM
   tag_arg=""
-  if [ -n "${CODEX_SKILLS_VERSION:-}" ]; then
-    tag_arg="--tag v${CODEX_SKILLS_VERSION}"
+  if [ -n "${SKRILLS_VERSION:-}" ]; then
+    tag_arg="--tag v${SKRILLS_VERSION}"
   fi
   echo "No release asset available; building from source via cargo install..."
   export CARGO_HOME="$tmpdir/cargo-home"
   export CARGO_TARGET_DIR="$tmpdir/target"
   # Install into a temp root to avoid polluting user cargo/bin, then copy.
-  cargo install --git "https://github.com/${repo}.git" $tag_arg --bin "codex-mcp-skills" --root "$tmpdir/cargo-root" --locked --force
-  built_bin="$tmpdir/cargo-root/bin/codex-mcp-skills"
-  [ -x "$built_bin" ] || fail "cargo install did not produce codex-mcp-skills"
+  cargo install --git "https://github.com/${repo}.git" $tag_arg --bin "skrills" --root "$tmpdir/cargo-root" --locked --force
+  built_bin="$tmpdir/cargo-root/bin/skrills"
+  [ -x "$built_bin" ] || fail "cargo install did not produce skrills"
   mkdir -p "$bin_dir"
   mv "$built_bin" "$bin_dir/$bin_name"
   chmod +x "$bin_dir/$bin_name"
@@ -180,21 +180,21 @@ BUILD_FROM_SOURCE()
 
 install_hook_and_mcp()
 {
-  if [ "${CODEX_SKILLS_NO_HOOK:-0}" = 1 ]; then
-    echo "Skipping hook/MCP registration (CODEX_SKILLS_NO_HOOK=1)"
+  if [ "${SKRILLS_NO_HOOK:-0}" = 1 ]; then
+    echo "Skipping hook/MCP registration (SKRILLS_NO_HOOK=1)"
     return
   fi
   if [ ! -x "$bin_dir/$bin_name" ]; then
     echo "Warning: binary not found at $bin_dir/$bin_name; skipping hook." >&2
     return
   fi
-  BIN_PATH="$bin_dir/$bin_name" CODEX_SKILLS_UNIVERSAL="${CODEX_SKILLS_UNIVERSAL:-0}" \
-    "$PWD/scripts/install-codex-skills.sh"
+  BIN_PATH="$bin_dir/$bin_name" SKRILLS_UNIVERSAL="${SKRILLS_UNIVERSAL:-0}" \
+    "$PWD/scripts/install-skrills.sh"
 }
 
 ensure_path_hint()
 {
-  [ "${CODEX_SKILLS_SKIP_PATH_MESSAGE:-0}" = 1 ] && return
+  [ "${SKRILLS_SKIP_PATH_MESSAGE:-0}" = 1 ] && return
   case ":$PATH:" in
     *:"${1}":*) ;; # already in PATH
     *) echo "Add $1 to your PATH (e.g., export PATH=\"$1:\$PATH\")" ;; esac
@@ -203,21 +203,21 @@ ensure_path_hint()
 usage()
 {
   cat <<'USAGE'
-Install codex-mcp-skills and wire it into Codex.
+Install skrills and wire it into Codex.
 
 Options:
   --local          Build from the current checkout with cargo and install that binary
   -h, --help       Show this help
 
 Environment:
-  CODEX_SKILLS_BIN_DIR   install directory (default: $HOME/.codex/bin)
-  CODEX_SKILLS_BIN_NAME  binary name (default: codex-mcp-skills)
-  CODEX_SKILLS_TARGET    optional cargo --target triple for builds
-  CODEX_SKILLS_GH_REPO   owner/repo for release download (default: athola/codex-mcp-skills)
-  CODEX_SKILLS_VERSION   release tag (no leading v) if pinning a specific version
-  CODEX_SKILLS_NO_HOOK   set to 1 to skip hook/MCP registration
-  CODEX_SKILLS_UNIVERSAL set to 1 to also sync ~/.agent/skills
-  CODEX_SKILLS_SKIP_PATH_MESSAGE set to 1 to silence PATH hint
+  SKRILLS_BIN_DIR   install directory (default: $HOME/.codex/bin)
+  SKRILLS_BIN_NAME  binary name (default: skrills)
+  SKRILLS_TARGET    optional cargo --target triple for builds
+  SKRILLS_GH_REPO   owner/repo for release download (default: athola/skrills)
+  SKRILLS_VERSION   release tag (no leading v) if pinning a specific version
+  SKRILLS_NO_HOOK   set to 1 to skip hook/MCP registration
+  SKRILLS_UNIVERSAL set to 1 to also sync ~/.agent/skills
+  SKRILLS_SKIP_PATH_MESSAGE set to 1 to silence PATH hint
 USAGE
 }
 
@@ -242,9 +242,9 @@ BUILD_LOCAL()
 
   build_args="--release"
   build_target_dir="target/release"
-  if [ -n "${CODEX_SKILLS_TARGET:-}" ]; then
-    build_args="$build_args --target ${CODEX_SKILLS_TARGET}"
-    build_target_dir="target/${CODEX_SKILLS_TARGET}/release"
+  if [ -n "${SKRILLS_TARGET:-}" ]; then
+    build_args="$build_args --target ${SKRILLS_TARGET}"
+    build_target_dir="target/${SKRILLS_TARGET}/release"
   fi
 
   echo "Building locally with: cargo build $build_args"
@@ -261,7 +261,7 @@ BUILD_LOCAL()
 # --- main ------------------------------------------------------------------
 parse_args "$@"
 bin_name="$(BIN_NAME)"
-bin_dir="${CODEX_SKILLS_BIN_DIR:-$HOME/.codex/bin}"
+bin_dir="${SKRILLS_BIN_DIR:-$HOME/.codex/bin}"
 
 if [ "$LOCAL_BUILD" = 1 ]; then
   BUILD_LOCAL "$bin_dir" "$bin_name"

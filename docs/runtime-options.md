@@ -15,11 +15,11 @@
   - Output: matched skill names, manifest byte size, estimated token count, truncation flags; useful for logging/gating payloads before injection
 
 ### CLI hints
-- Check the installed version: `codex-mcp-skills --version` (pre-1.0, best-effort compatibility).
-- Discover the available commands: `codex-mcp-skills --help` (MCP tools include `runtime-status` and `set-runtime-options`).
+- Check the installed version: `skrills --version` (pre-1.0, best-effort compatibility).
+- Discover the available commands: `skrills --help` (MCP tools include `runtime-status` and `set-runtime-options`).
 
 ## Precedence
-runtime overrides > env (`CODEX_SKILLS_MANIFEST_FIRST`, `CODEX_SKILLS_RENDER_MODE_LOG`) > manifest file defaults.
+runtime overrides > env (`SKRILLS_MANIFEST_FIRST`, `SKRILLS_RENDER_MODE_LOG`) > manifest file defaults.
 
 ## Notes
 - Render mode log emits at INFO when enabled.

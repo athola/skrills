@@ -1,4 +1,4 @@
-//! Runtime override helpers exposed by `codex-mcp-skills-server`.
+//! Runtime override helpers exposed by `skrills-server`.
 //!
 //! These helpers are part of the public surface area consumed by the CLI and
 //! MCP runtime tools (`runtime-status`, `set-runtime-options`). They are
@@ -17,8 +17,8 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
 
-use codex_mcp_skills_state::{env_manifest_first, env_render_mode_log, runtime_overrides_path};
 use once_cell::sync::Lazy;
+use skrills_state::{env_manifest_first, env_render_mode_log, runtime_overrides_path};
 use std::sync::Mutex;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -61,7 +61,7 @@ impl RuntimeOverrides {
 
     pub fn manifest_minimal(&self) -> bool {
         self.manifest_minimal
-            .unwrap_or_else(codex_mcp_skills_state::env_manifest_minimal)
+            .unwrap_or_else(skrills_state::env_manifest_minimal)
     }
 }
 

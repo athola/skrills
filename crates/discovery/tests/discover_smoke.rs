@@ -1,4 +1,4 @@
-use codex_mcp_skills_discovery::{discover_skills, extra_skill_roots, hash_file, SkillSource};
+use skrills_discovery::{discover_skills, extra_skill_roots, hash_file, SkillSource};
 use std::fs;
 use tempfile::tempdir;
 

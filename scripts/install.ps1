@@ -1,12 +1,12 @@
-# Install codex-mcp-skills on Windows from GitHub releases (uv-style).
+# Install skrills on Windows from GitHub releases (uv-style).
 # Usage:
-#   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/$Env:CODEX_SKILLS_GH_REPO/HEAD/scripts/install.ps1 | iex"
+#   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/$Env:SKRILLS_GH_REPO/HEAD/scripts/install.ps1 | iex"
 # Env overrides:
-#   CODEX_SKILLS_GH_REPO   owner/repo (default: codex-mcp-skills/codex-mcp-skills)
-#   CODEX_SKILLS_VERSION   release tag without leading v (default: latest)
-#   CODEX_SKILLS_BIN_DIR   install directory (default: $HOME\.codex\bin)
-#   CODEX_SKILLS_BIN_NAME  binary name (default: codex-mcp-skills.exe)
-#   CODEX_SKILLS_TARGET    target triple override (default: x86_64-pc-windows-msvc or aarch64-pc-windows-msvc)
+#   SKRILLS_GH_REPO   owner/repo (default: skrills/skrills)
+#   SKRILLS_VERSION   release tag without leading v (default: latest)
+#   SKRILLS_BIN_DIR   install directory (default: $HOME\.codex\bin)
+#   SKRILLS_BIN_NAME  binary name (default: skrills.exe)
+#   SKRILLS_TARGET    target triple override (default: x86_64-pc-windows-msvc or aarch64-pc-windows-msvc)
 
 $ErrorActionPreference = "Stop"
 
@@ -14,7 +14,7 @@ function Fail($msg) { Write-Error $msg; exit 1 }
 function Require($cmd) { if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) { Fail "Missing required command: $cmd" } }
 
 function Get-OsArchTarget {
-    $arch = $env:CODEX_SKILLS_TARGET
+    $arch = $env:SKRILLS_TARGET
     if ($arch) { return $arch }
     $os = "windows"
     $cpu = (Get-CimInstance Win32_Processor).Architecture
@@ -27,14 +27,14 @@ function Get-OsArchTarget {
 }
 
 function Get-Repo {
-    if ($env:CODEX_SKILLS_GH_REPO) { return $env:CODEX_SKILLS_GH_REPO }
-    return "athola/codex-mcp-skills"
+    if ($env:SKRILLS_GH_REPO) { return $env:SKRILLS_GH_REPO }
+    return "athola/skrills"
 }
 
 function Get-ApiUrl {
     $repo = Get-Repo
-    if ($env:CODEX_SKILLS_VERSION) {
-        return "https://api.github.com/repos/$repo/releases/tags/v$($env:CODEX_SKILLS_VERSION)"
+    if ($env:SKRILLS_VERSION) {
+        return "https://api.github.com/repos/$repo/releases/tags/v$($env:SKRILLS_VERSION)"
     }
     return "https://api.github.com/repos/$repo/releases/latest"
 }
@@ -73,8 +73,8 @@ function Download-And-Extract($url, $binDir, $binName) {
     finally { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
-$binName = if ($env:CODEX_SKILLS_BIN_NAME) { $env:CODEX_SKILLS_BIN_NAME } else { "codex-mcp-skills.exe" }
-$binDir = if ($env:CODEX_SKILLS_BIN_DIR) { $env:CODEX_SKILLS_BIN_DIR } else { Join-Path $HOME ".codex/bin" }
+$binName = if ($env:SKRILLS_BIN_NAME) { $env:SKRILLS_BIN_NAME } else { "skrills.exe" }
+$binDir = if ($env:SKRILLS_BIN_DIR) { $env:SKRILLS_BIN_DIR } else { Join-Path $HOME ".codex/bin" }
 $assetUrl = Select-AssetUrl
 Download-And-Extract $assetUrl $binDir $binName
 Write-Output "Installed $binName to $binDir"
@@ -94,13 +94,13 @@ $mcpJson = if (Test-Path $mcpPath) {
 }
 
 if (-not $mcpJson.mcpServers) { $mcpJson | Add-Member -NotePropertyName mcpServers -NotePropertyValue @{} }
-$mcpJson.mcpServers."codex-skills" = @{
+$mcpJson.mcpServers."skrills" = @{
     type    = "stdio"
     command = (Join-Path $binDir $binName)
     args    = @("serve")
 }
 $mcpJson | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 $mcpPath
-Write-Output "Registered codex-skills MCP server in $mcpPath"
+Write-Output "Registered skrills MCP server in $mcpPath"
 
 # Keep config.toml in sync (preferred by Codex)
 $configToml = Join-Path $HOME ".codex/config.toml"
@@ -109,17 +109,17 @@ if (-not (Test-Path $configToml)) {
     "model = ""gpt-5.1-codex-max`""" | Set-Content -Encoding UTF8 $configToml
 }
 $config = Get-Content $configToml -Raw
-if ($config -notmatch '\[mcp_servers\."codex-skills"\]') {
+if ($config -notmatch '\[mcp_servers\."skrills"\]') {
     Add-Content -Encoding UTF8 $configToml @"
 
-[mcp_servers."codex-skills"]
+[mcp_servers."skrills"]
 type = "stdio"
 command = "$(Join-Path $binDir $binName)"
 args = ["serve"]
 "@
-    Write-Output "Added codex-skills section to $configToml"
-} elseif ($config -notmatch '(?ms)\[mcp_servers\."codex-skills"\].*type\s*=') {
-    $updated = $config -replace '(\[mcp_servers\."codex-skills"\]\s*)', "`$1type = ""stdio""`n"
+    Write-Output "Added skrills section to $configToml"
+} elseif ($config -notmatch '(?ms)\[mcp_servers\."skrills"\].*type\s*=') {
+    $updated = $config -replace '(\[mcp_servers\."skrills"\]\s*)', "`$1type = ""stdio""`n"
     $updated | Set-Content -Encoding UTF8 $configToml
     Write-Output "Ensured type = \"stdio\" in $configToml"
 }

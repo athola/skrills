@@ -58,7 +58,7 @@ This is also aliased to `make test` and is run as part of the continuous integra
 
 ### Public API guardrails
 
-The `codex-mcp-skills-server` crate is pre-1.0. Follow the SemVer guidance in
+The `skrills-server` crate is pre-1.0. Follow the SemVer guidance in
 [Public API & SemVer](semver.md) and run the public API check locally before
 submitting changes.
 

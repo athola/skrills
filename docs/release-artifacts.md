@@ -5,7 +5,7 @@ This document details the naming conventions and internal structure for release 
 Install scripts select a release asset whose filename contains the target triple. Therefore, archives should be published following this pattern:
 
 ```
-codex-mcp-skills-<target>.tar.gz
+skrills-<target>.tar.gz
 ```
 
 Where `<target>` is one of the supported target triples:
@@ -16,6 +16,6 @@ Where `<target>` is one of the supported target triples:
 - `x86_64-pc-windows-msvc`
 - `aarch64-pc-windows-msvc`
 
-Inside each archive, the binary must be located at the archive root and named `codex-mcp-skills` (or `codex-mcp-skills.exe` for Windows builds).
+Inside each archive, the binary must be located at the archive root and named `skrills` (or `skrills.exe` for Windows builds).
 
-The default release repository is `athola/codex-mcp-skills`. This can be overridden by setting the `CODEX_SKILLS_GH_REPO` environment variable if necessary.
+The default release repository is `athola/skrills`. This can be overridden by setting the `SKRILLS_GH_REPO` environment variable if necessary.

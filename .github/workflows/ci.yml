@@ -96,8 +96,8 @@ jobs:
         run: cargo install cargo-public-api --locked
       - name: Fetch main for baseline
         run: git fetch origin main --depth=1
-      - name: Public API check (codex-mcp-skills-server)
-        run: cargo public-api -p codex-mcp-skills-server --deny-breaking --baseline-git-ref origin/main
+      - name: Public API check (skrills-server)
+        run: cargo public-api -p skrills-server --deny-breaking --baseline-git-ref origin/main
 
   release-build-check:
     name: Release build (dry run)
@@ -148,5 +148,5 @@ jobs:
           while IFS= read -r target; do
             [ -z "$target" ] && continue
             echo "Building target $target with $cmd"
-            $cmd build --release --bin codex-mcp-skills --target "$target"
+            $cmd build --release --bin skrills --target "$target"
           done <<< "${{ matrix.target_list }}"

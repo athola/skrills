@@ -1,7 +1,7 @@
-use codex_mcp_skills_server::runtime::{reset_runtime_cache_for_tests, runtime_overrides_cached};
 use rmcp::transport::TokioChildProcess;
 use rmcp::{model::CallToolRequestParam, service::serve_client};
 use serde_json::json;
+use skrills_server::runtime::{reset_runtime_cache_for_tests, runtime_overrides_cached};
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::AsyncReadExt;
@@ -25,9 +25,9 @@ async fn runtime_tools_round_trip_over_mcp() -> anyhow::Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|_| workspace_root.join("target"));
     let binary_path = target_dir.join("debug").join(if cfg!(windows) {
-        "codex-mcp-skills.exe"
+        "skrills.exe"
     } else {
-        "codex-mcp-skills"
+        "skrills"
     });
     let cargo_home = std::env::var("CARGO_HOME").unwrap_or_else(|_| {
         workspace_root
@@ -36,14 +36,11 @@ async fn runtime_tools_round_trip_over_mcp() -> anyhow::Result<()> {
             .into_owned()
     });
     let status = Command::new("cargo")
-        .args(["build", "-p", "codex-mcp-skills"])
+        .args(["build", "-p", "skrills"])
         .env("CARGO_HOME", &cargo_home)
         .status()
         .await?;
-    assert!(
-        status.success(),
-        "cargo build failed to produce codex-mcp-skills"
-    );
+    assert!(status.success(), "cargo build failed to produce skrills");
 
     // Start the real CLI server over stdio and talk to it via MCP client transport.
     let mut command = Command::new(&binary_path);
@@ -74,7 +71,8 @@ async fn runtime_tools_round_trip_over_mcp() -> anyhow::Result<()> {
     assert!(tools.iter().any(|t| t.name == "set-runtime-options"));
 
     // Update runtime options through the MCP tool.
-    let args = json!({ "manifest_first": false, "render_mode_log": true, "manifest_minimal": true });
+    let args =
+        json!({ "manifest_first": false, "render_mode_log": true, "manifest_minimal": true });
     let result = peer
         .call_tool(CallToolRequestParam {
             name: "set-runtime-options".into(),
@@ -95,9 +93,7 @@ async fn runtime_tools_round_trip_over_mcp() -> anyhow::Result<()> {
         Some(true)
     );
     assert_eq!(
-        structured
-            .get("manifest_minimal")
-            .and_then(|v| v.as_bool()),
+        structured.get("manifest_minimal").and_then(|v| v.as_bool()),
         Some(true)
     );
     assert_eq!(

@@ -1,4 +1,4 @@
-use codex_mcp_skills_state::{auto_pin_from_history, load_history, save_history, HistoryEntry};
+use skrills_state::{auto_pin_from_history, load_history, save_history, HistoryEntry};
 use tempfile::tempdir;
 
 #[test]

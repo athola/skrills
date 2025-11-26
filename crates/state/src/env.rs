@@ -24,16 +24,16 @@ pub fn home_dir() -> Result<PathBuf> {
     std::env::var("HOME")
         .ok()
         .map(PathBuf::from)
-        .or_else(|| dirs::home_dir())
+        .or_else(dirs::home_dir)
         .ok_or_else(|| anyhow!("HOME not set"))
 }
 
 /// Determines the path to the `skills-manifest.json` file.
 ///
-/// It first checks the `CODEX_SKILLS_MANIFEST` environment variable. If not set,
+/// It first checks the `SKRILLS_MANIFEST` environment variable. If not set,
 /// it defaults to `~/.codex/skills-manifest.json`.
 pub fn manifest_file() -> Result<PathBuf> {
-    if let Ok(custom) = std::env::var("CODEX_SKILLS_MANIFEST") {
+    if let Ok(custom) = std::env::var("SKRILLS_MANIFEST") {
         return Ok(PathBuf::from(custom));
     }
     Ok(home_dir()?.join(".codex/skills-manifest.json"))
@@ -79,11 +79,11 @@ pub fn load_manifest_settings() -> Result<ManifestSettings> {
     Err(anyhow!("invalid manifest format"))
 }
 
-/// Parses a colon-separated list of extra skill directories from the `CODEX_SKILLS_EXTRA_DIRS` environment variable.
+/// Parses a colon-separated list of extra skill directories from the `SKRILLS_EXTRA_DIRS` environment variable.
 ///
 /// Returns a `Vec` of `PathBuf` for each valid directory specified.
 pub fn extra_dirs_from_env() -> Vec<PathBuf> {
-    std::env::var("CODEX_SKILLS_EXTRA_DIRS")
+    std::env::var("SKRILLS_EXTRA_DIRS")
         .ok()
         .map(|v| {
             v.split(':')
@@ -94,32 +94,32 @@ pub fn extra_dirs_from_env() -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-/// Checks the `CODEX_SKILLS_INCLUDE_CLAUDE` environment variable to determine if Claude skills should be included.
+/// Checks the `SKRILLS_INCLUDE_CLAUDE` environment variable to determine if Claude skills should be included.
 ///
 /// Returns `true` if the environment variable is set to "1" or "true" (case-insensitive), otherwise `false`.
 pub fn env_include_claude() -> bool {
-    std::env::var("CODEX_SKILLS_INCLUDE_CLAUDE")
+    std::env::var("SKRILLS_INCLUDE_CLAUDE")
         .ok()
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
 }
 
-/// Checks the `CODEX_SKILLS_DIAG` environment variable to determine if diagnostic information should be emitted.
+/// Checks the `SKRILLS_DIAG` environment variable to determine if diagnostic information should be emitted.
 ///
 /// Returns `true` if the environment variable is set to "1" or "true" (case-insensitive), otherwise `false`.
 pub fn env_diag() -> bool {
-    std::env::var("CODEX_SKILLS_DIAG")
+    std::env::var("SKRILLS_DIAG")
         .ok()
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
 }
 
-/// Checks the `CODEX_SKILLS_AUTO_PIN` environment variable to determine if auto-pinning is enabled.
+/// Checks the `SKRILLS_AUTO_PIN` environment variable to determine if auto-pinning is enabled.
 ///
 /// If the environment variable is set to "1" or "true" (case-insensitive), it returns `true`.
 /// Otherwise, it returns the provided `default` value.
 pub fn env_auto_pin(default: bool) -> bool {
-    if let Ok(v) = std::env::var("CODEX_SKILLS_AUTO_PIN") {
+    if let Ok(v) = std::env::var("SKRILLS_AUTO_PIN") {
         return v == "1" || v.eq_ignore_ascii_case("true");
     }
     default
@@ -127,14 +127,14 @@ pub fn env_auto_pin(default: bool) -> bool {
 
 /// Reads an optional max-bytes override for autoload payloads from env.
 pub fn env_max_bytes() -> Option<usize> {
-    std::env::var("CODEX_SKILLS_AUTOLOAD_MAX_BYTES")
+    std::env::var("SKRILLS_AUTOLOAD_MAX_BYTES")
         .ok()
         .and_then(|s| s.parse().ok())
 }
 
 /// Whether to log autoload render mode (INFO). Defaults off.
 pub fn env_render_mode_log() -> bool {
-    std::env::var("CODEX_SKILLS_RENDER_MODE_LOG")
+    std::env::var("SKRILLS_RENDER_MODE_LOG")
         .ok()
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
@@ -153,7 +153,7 @@ pub fn runtime_overrides_path() -> Option<std::path::PathBuf> {
 
 /// Whether to emit manifest-first autoload output (defaults to true).
 pub fn env_manifest_first() -> bool {
-    std::env::var("CODEX_SKILLS_MANIFEST_FIRST")
+    std::env::var("SKRILLS_MANIFEST_FIRST")
         .ok()
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(true)
@@ -161,16 +161,16 @@ pub fn env_manifest_first() -> bool {
 
 /// Whether to emit minimal manifest entries (no paths/previews). Defaults off.
 pub fn env_manifest_minimal() -> bool {
-    std::env::var("CODEX_SKILLS_MANIFEST_MINIMAL")
+    std::env::var("SKRILLS_MANIFEST_MINIMAL")
         .ok()
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
 }
 
 /// Returns the in-memory cache TTL for skill discovery in milliseconds.
-/// Precedence: env CODEX_SKILLS_CACHE_TTL_MS > manifest cache_ttl_ms > default.
+/// Precedence: env SKRILLS_CACHE_TTL_MS > manifest cache_ttl_ms > default.
 pub fn cache_ttl(load_manifest: &dyn Fn() -> Result<ManifestSettings>) -> Duration {
-    if let Some(ms) = std::env::var("CODEX_SKILLS_CACHE_TTL_MS")
+    if let Some(ms) = std::env::var("SKRILLS_CACHE_TTL_MS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
     {

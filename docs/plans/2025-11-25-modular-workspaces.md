@@ -21,7 +21,7 @@
 **Step 1: Write the failing test**
 
 ```bash
-cargo check -p codex-mcp-skills-core
+cargo check -p skrills-core
 ```
 
 Expected: FAIL (package not found) after removing/renaming core.
@@ -29,14 +29,14 @@ Expected: FAIL (package not found) after removing/renaming core.
 **Step 2: Run test to verify it fails**
 
 ```bash
-cargo check -p codex-mcp-skills-core
+cargo check -p skrills-core
 ```
 
 **Step 3: Write minimal implementation**
 
 - Update root `Cargo.toml` members to `["crates/discovery", "crates/state", "crates/server", "crates/cli"]`.
-- Set new package names: `codex-mcp-skills-discovery`, `codex-mcp-skills-state`, `codex-mcp-skills-server`.
-- Point `crates/cli` dependency to `codex-mcp-skills-server`.
+- Set new package names: `skrills-discovery`, `skrills-state`, `skrills-server`.
+- Point `crates/cli` dependency to `skrills-server`.
 - Add minimal `lib.rs` stubs returning `todo!()` to satisfy compiler.
 
 Example `crates/server/src/lib.rs` stub:
@@ -74,7 +74,7 @@ git commit -m "chore: scaffold discovery/state/server crates"
 **Step 1: Write the failing test**
 
 ```bash
-cargo check -p codex-mcp-skills-server
+cargo check -p skrills-server
 ```
 
 Expected: FAIL due to missing types after removal from core.
@@ -87,12 +87,12 @@ Same command, confirm errors reference moved symbols.
 
 - In `discovery/src/types.rs`, define `SkillSource`, `SkillRoot`, `SkillMeta`, `Diagnostics`, `DuplicateInfo` with serde derives and helper methods currently in core.
 - Re-export in `discovery/src/lib.rs` with `pub use`.
-- In `server/src/lib.rs`, replace old definitions with imports from `codex_mcp_skills_discovery`.
+- In `server/src/lib.rs`, replace old definitions with imports from `skrills_discovery`.
 
 **Step 4: Run test to verify it passes**
 
 ```bash
-cargo check -p codex-mcp-skills-server
+cargo check -p skrills-server
 ```
 
 Expected: PASS.
@@ -117,7 +117,7 @@ git commit -m "refactor: move shared types into discovery crate"
 **Step 1: Write the failing test**
 
 ```bash
-cargo check -p codex-mcp-skills-server
+cargo check -p skrills-server
 ```
 
 Expected: FAIL after stubbing out persistence in server.
@@ -160,7 +160,7 @@ git commit -m "refactor: split persistence and env helpers into state crate"
 **Step 1: Write the failing test**
 
 ```bash
-cargo check -p codex-mcp-skills-server
+cargo check -p skrills-server
 ```
 
 Expected: FAIL after removing discovery functions from server.
@@ -174,7 +174,7 @@ Confirm errors for `discover_skills`, `load_skill_roots`, `hash_file`, `priority
 - Move filesystem walking, hashing (Sha256), AGENTS parsing (`extract_refs_from_agents`), duplicate detection, priority mapping into `scanner.rs`.
 - Expose `DiscoveryConfig { roots, cache_ttl_ms, priority_override }`, `discover_skills(cfg) -> (Vec<SkillMeta>, Diagnostics)`.
 - Keep watchdog feature off; no persistence here.
-- Replace server calls to use `codex_mcp_skills_discovery::discover_skills`.
+- Replace server calls to use `skrills_discovery::discover_skills`.
 
 **Step 4: Run test to verify it passes**
 
@@ -203,7 +203,7 @@ git commit -m "refactor: move discovery pipeline into discovery crate"
 **Step 1: Write the failing test**
 
 ```bash
-cargo check -p codex-mcp-skills-server
+cargo check -p skrills-server
 ```
 
 Expected: FAIL until run() reassembles CLI & MCP wiring.
@@ -216,7 +216,7 @@ Same command; note undefined functions.
 
 - Implement `run()` to parse CLI (clap derive moved here), wire subcommands to discovery/state APIs, start rmcp server runtime, SIGCHLD handler, optional `notify` watcher.
 - Ensure module organization inside server (cli.rs, commands.rs if helpful) but within crate.
-- Update `crates/cli/src/main.rs` to call `codex_mcp_skills_server::run()`.
+- Update `crates/cli/src/main.rs` to call `skrills_server::run()`.
 - Delete `crates/core/src/lib.rs` and remove crate entry from workspace.
 
 **Step 4: Run test to verify it passes**
@@ -249,7 +249,7 @@ git commit -m "feat: assemble server crate and remove monolithic core"
 **Step 1: Write the failing test**
 
 ```bash
-cargo test -p codex-mcp-skills-discovery -p codex-mcp-skills-state
+cargo test -p skrills-discovery -p skrills-state
 ```
 
 Expected: FAIL (tests not yet implemented).

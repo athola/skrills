@@ -1,6 +1,6 @@
 # Autoloading Skills
 
-This document describes how `codex-mcp-skills` discovers and autoloads skills.
+This document describes how `skrills` discovers and autoloads skills.
 
 ## Skill Discovery
 
@@ -24,9 +24,9 @@ This allows logging or controlling payload size before sending `additionalContex
 
 ## Caching
 
-To improve performance, `codex-mcp-skills` uses two levels of caching:
+To improve performance, `skrills` uses two levels of caching:
 
--   **Discovery Cache**: This cache stores the list of discovered skills and has a configurable time-to-live (TTL). The TTL can be set with the `CODEX_SKILLS_CACHE_TTL_MS` environment variable or the `cache_ttl_ms` setting in the manifest file. The cache is invalidated by a file watcher (when using the `--watch` flag) or by manually running the `refresh-cache` command.
+-   **Discovery Cache**: This cache stores the list of discovered skills and has a configurable time-to-live (TTL). The TTL can be set with the `SKRILLS_CACHE_TTL_MS` environment variable or the `cache_ttl_ms` setting in the manifest file. The cache is invalidated by a file watcher (when using the `--watch` flag) or by manually running the `refresh-cache` command.
 -   **Content Cache**: This cache stores the content of the skills, keyed by their path and a hash of their content. The cache is automatically refreshed when a file is changed or its hash no longer matches.
 
 ## Approach vs other loaders (feature-level)

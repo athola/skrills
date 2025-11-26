@@ -1,24 +1,24 @@
 # Installation
 
-This guide provides instructions on how to install `codex-mcp-skills`.
+This guide provides instructions on how to install `skrills`.
 
 ## One-Liners (Recommended)
 
-These commands offer a streamlined method for installing `codex-mcp-skills` on your system.
+These commands offer a streamlined method for installing `skrills` on your system.
 
 ```bash
 # macOS / Linux
-curl -LsSf https://raw.githubusercontent.com/athola/codex-mcp-skills/HEAD/scripts/install.sh | sh
+curl -LsSf https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh | sh
 
 # Windows
-powershell -ExecutionPolicy Bypass -NoLogo -NoProfile -Command "Remove-Item alias:curl -ErrorAction SilentlyContinue; iwr https://raw.githubusercontent.com/athola/codex-mcp-skills/HEAD/scripts/install.ps1 -UseBasicParsing | iex"
+powershell -ExecutionPolicy Bypass -NoLogo -NoProfile -Command "Remove-Item alias:curl -ErrorAction SilentlyContinue; iwr https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.ps1 -UseBasicParsing | iex"
 ```
 
 You can customize the installation using these environment variables:
-- `CODEX_SKILLS_GH_REPO`: Overrides the default GitHub repository (`athola/codex-mcp-skills`). Useful if you are using a fork.
-- `CODEX_SKILLS_VERSION`: Specifies a particular version to install (e.g., `1.0.0`). Uses the latest stable version by default.
-- `CODEX_SKILLS_BIN_DIR`: Sets the installation directory for the binary (defaults to `~/.codex/bin`).
-- `CODEX_SKILLS_TARGET`: Forces installation for a specific target triple (e.g., `x86_64-unknown-linux-gnu`).
+- `SKRILLS_GH_REPO`: Overrides the default GitHub repository (`athola/skrills`). Useful if you are using a fork.
+- `SKRILLS_VERSION`: Specifies a particular version to install (e.g., `1.0.0`). Uses the latest stable version by default.
+- `SKRILLS_BIN_DIR`: Sets the installation directory for the binary (defaults to `~/.codex/bin`).
+- `SKRILLS_TARGET`: Forces installation for a specific target triple (e.g., `x86_64-unknown-linux-gnu`).
 
 Additionally, the `--local` flag can be used to build and install from your current local checkout using `cargo`, instead of downloading a pre-built release.
 
@@ -35,10 +35,10 @@ cargo install --path crates/cli --force
 The installer automatically sets up the necessary hooks and registers the MCP server:
 
 ```bash
-./scripts/install-codex-skills.sh [--universal] [--universal-only]
+./scripts/install-skrills.sh [--universal] [--universal-only]
 ```
 
--   **Hook**: The `prompt.on_user_prompt_submit` hook is written to `~/.codex/hooks/codex/`. This hook allows `codex-mcp-skills` to process prompts.
+-   **Hook**: The `prompt.on_user_prompt_submit` hook is written to `~/.codex/hooks/codex/`. This hook allows `skrills` to process prompts.
 -   **MCP Server Registration**: The MCP server is registered in `~/.codex/mcp_servers.json`. The installer ensures `type = "stdio"` is correctly configured, as required by newer Codex MCP clients.
 -   `--universal`: This flag also mirrors skills into `~/.agent/skills`, making them available for other agents.
 -   `--universal-only`: Performs only the mirroring step without installing the main binary or hooks.

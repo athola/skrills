@@ -215,72 +215,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1d728cc89cf3aee9ff92b05e62b19ee65a02b5702cff7d5a377e32c6ae29d8d"
 
 [[package]]
-name = "codex-mcp-skills"
-version = "0.1.14"
-dependencies = [
- "anyhow",
- "codex-mcp-skills-server",
-]
-
-[[package]]
-name = "codex-mcp-skills-discovery"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64",
- "pathdiff",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "tracing",
- "walkdir",
-]
-
-[[package]]
-name = "codex-mcp-skills-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64",
- "clap",
- "codex-mcp-skills-discovery",
- "codex-mcp-skills-state",
- "dialoguer",
- "dirs",
- "flate2",
- "hex",
- "libc",
- "notify",
- "once_cell",
- "pathdiff",
- "rmcp",
- "semver",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
- "walkdir",
-]
-
-[[package]]
-name = "codex-mcp-skills-state"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dirs",
- "serde",
- "serde_json",
- "tempfile",
- "toml",
- "tracing",
-]
-
-[[package]]
 name = "colorchoice"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1227,6 +1161,72 @@ name = "simd-adler32"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d66dc143e6b11c1eddc06d5c423cfc97062865baf299914ab64caa38182078fe"
+
+[[package]]
+name = "skrills"
+version = "0.1.14"
+dependencies = [
+ "anyhow",
+ "skrills-server",
+]
+
+[[package]]
+name = "skrills-discovery"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "pathdiff",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tracing",
+ "walkdir",
+]
+
+[[package]]
+name = "skrills-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "clap",
+ "dialoguer",
+ "dirs",
+ "flate2",
+ "hex",
+ "libc",
+ "notify",
+ "once_cell",
+ "pathdiff",
+ "rmcp",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "skrills-discovery",
+ "skrills-state",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "walkdir",
+]
+
+[[package]]
+name = "skrills-state"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+ "tracing",
+]
 
 [[package]]
 name = "slab"

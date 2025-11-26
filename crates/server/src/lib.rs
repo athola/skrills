@@ -23,18 +23,6 @@ use anyhow::{anyhow, Result};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use clap::{Parser, Subcommand};
-use codex_mcp_skills_discovery::{
-    default_priority, discover_skills, extract_refs_from_agents, hash_file, load_priority_override,
-    priority_labels as disc_priority_labels,
-    priority_labels_and_rank_map as disc_priority_labels_and_rank_map, Diagnostics, DuplicateInfo,
-    SkillMeta, SkillRoot, SkillSource,
-};
-use codex_mcp_skills_state::{
-    auto_pin_from_history, cache_ttl, env_auto_pin, env_diag, env_include_claude,
-    env_manifest_first, env_max_bytes, env_render_mode_log, extra_dirs_from_env, home_dir,
-    load_auto_pin_flag, load_history, load_manifest_settings, load_pinned, print_history,
-    save_auto_pin_flag, save_history, save_pinned, HistoryEntry, env_manifest_minimal,
-};
 use dialoguer::{theme::ColorfulTheme, Confirm, MultiSelect};
 use flate2::{write::GzEncoder, Compression};
 #[cfg(feature = "watch")]
@@ -51,6 +39,18 @@ use rmcp::transport;
 use rmcp::ServerHandler;
 use serde::Deserialize;
 use serde_json::{json, Map as JsonMap};
+use skrills_discovery::{
+    default_priority, discover_skills, extract_refs_from_agents, hash_file, load_priority_override,
+    priority_labels as disc_priority_labels,
+    priority_labels_and_rank_map as disc_priority_labels_and_rank_map, Diagnostics, DuplicateInfo,
+    SkillMeta, SkillRoot, SkillSource,
+};
+use skrills_state::{
+    auto_pin_from_history, cache_ttl, env_auto_pin, env_diag, env_include_claude,
+    env_manifest_first, env_manifest_minimal, env_max_bytes, env_render_mode_log,
+    extra_dirs_from_env, home_dir, load_auto_pin_flag, load_history, load_manifest_settings,
+    load_pinned, print_history, save_auto_pin_flag, save_history, save_pinned, HistoryEntry,
+};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{IsTerminal, Write};
@@ -77,7 +77,7 @@ const AGENTS_URI: &str = "doc://agents";
 const AGENTS_NAME: &str = "AGENTS.md";
 const AGENTS_DESCRIPTION: &str = "AI Agent Development Guidelines";
 const AGENTS_TEXT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../AGENTS.md"));
-const ENV_EXPOSE_AGENTS: &str = "CODEX_SKILLS_EXPOSE_AGENTS";
+const ENV_EXPOSE_AGENTS: &str = "SKRILLS_EXPOSE_AGENTS";
 const AGENTS_SECTION_START: &str = "<!-- available_skills:start -->";
 const AGENTS_SECTION_END: &str = "<!-- available_skills:end -->";
 const DEFAULT_EMBED_PREVIEW_BYTES: usize = 4096;
@@ -94,7 +94,7 @@ fn priority_labels_and_rank_map() -> (Vec<String>, JsonMap<String, serde_json::V
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "codex-mcp-skills",
+    name = "skrills",
     about = "MCP server exposing local SKILL.md files for Codex"
 )]
 struct Cli {
@@ -109,11 +109,11 @@ enum Commands {
         /// Additional skill directories (repeatable)
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
-        /// Cache TTL for skill discovery in milliseconds (overrides env CODEX_SKILLS_CACHE_TTL_MS)
+        /// Cache TTL for skill discovery in milliseconds (overrides env SKRILLS_CACHE_TTL_MS)
         #[arg(long = "cache-ttl-ms", value_name = "MILLIS")]
         cache_ttl_ms: Option<u64>,
         /// Dump raw MCP initialize traffic (stdin/stdout) as hex+UTF8 for debugging
-        #[arg(long, env = "CODEX_SKILLS_TRACE_WIRE", default_value_t = false)]
+        #[arg(long, env = "SKRILLS_TRACE_WIRE", default_value_t = false)]
         trace_wire: bool,
         #[cfg(feature = "watch")]
         /// Watch filesystem for changes and invalidate caches immediately
@@ -168,7 +168,7 @@ enum Commands {
         /// Maximum bytes of additionalContext payload
         #[arg(long)]
         max_bytes: Option<usize>,
-        /// Prompt text to filter relevant skills (optional; falls back to env CODEX_SKILLS_PROMPT)
+        /// Prompt text to filter relevant skills (optional; falls back to env SKRILLS_PROMPT)
         #[arg(long)]
         prompt: Option<String>,
         /// Embedding similarity threshold (0-1) for fuzzy prompt matching
@@ -269,7 +269,7 @@ fn env_auto_pin_default() -> bool {
 }
 
 fn env_embed_threshold() -> f32 {
-    std::env::var("CODEX_SKILLS_EMBED_THRESHOLD")
+    std::env::var("SKRILLS_EMBED_THRESHOLD")
         .ok()
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(DEFAULT_EMBED_THRESHOLD)
@@ -359,7 +359,7 @@ fn cosine_similarity(a: &HashMap<String, usize>, b: &HashMap<String, usize>) -> 
     let mut dot = 0f32;
     let mut norm_a = 0f32;
     let mut norm_b = 0f32;
-    for (&ref gram, &count) in a.iter() {
+    for (gram, &count) in a.iter() {
         norm_a += (count as f32).powi(2);
         if let Some(&b_count) = b.get(gram) {
             dot += (count as f32) * (b_count as f32);
@@ -389,20 +389,15 @@ fn read_prefix(path: &Path, max: usize) -> Result<String> {
     Ok(String::from_utf8_lossy(&buf).to_string())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 enum RenderMode {
     /// Emit manifest plus full content (backward compatible).
+    #[default]
     Dual,
     /// Emit only manifest (for manifest-capable clients).
     ManifestOnly,
     /// Emit only concatenated content (legacy).
     ContentOnly,
-}
-
-impl Default for RenderMode {
-    fn default() -> Self {
-        RenderMode::Dual
-    }
 }
 
 #[derive(Default)]
@@ -465,7 +460,7 @@ where
     let embed_threshold = embed_threshold.unwrap_or_else(env_embed_threshold);
 
     let preview_len = max_bytes
-        .map(|m| m.saturating_div(4).max(64).min(512))
+        .map(|m| m.saturating_div(4).clamp(64, 512))
         .unwrap_or(512);
 
     let mut manifest = Vec::new();
@@ -559,7 +554,11 @@ where
     };
     let names: Vec<String> = manifest
         .iter()
-        .filter_map(|v| v.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+        .filter_map(|v| {
+            v.get("name")
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string())
+        })
         .collect();
 
     let mut output = String::new();
@@ -623,7 +622,9 @@ where
                         d.truncated_content = true;
                     }
                 } else {
-                    return Err(anyhow!("autoload payload exceeds byte limit (even gzipped manifest)"));
+                    return Err(anyhow!(
+                        "autoload payload exceeds byte limit (even gzipped manifest)"
+                    ));
                 }
             } else {
                 return Err(anyhow!("autoload payload exceeds byte limit"));
@@ -696,8 +697,8 @@ fn render_preview_stats(
         |meta| read_skill(&meta.path),
         |meta, max| read_prefix(&meta.path, max),
     )?;
-    let manifest_bytes = content.as_bytes().len();
-    let estimated_tokens = (manifest_bytes + 3) / 4; // rough UTF-8→token estimate
+    let manifest_bytes = content.len();
+    let estimated_tokens = manifest_bytes.div_ceil(4); // rough UTF-8→token estimate
     let mut matched_vec: Vec<String> = matched.into_iter().collect();
     matched_vec.sort();
     Ok(PreviewStats {
@@ -735,7 +736,7 @@ fn manifest_render_mode(runtime: &RuntimeOverrides, peer_info: Option<&ClientInf
 
 /// Whether the peer can accept gzipped manifest payloads.
 fn peer_accepts_gzip(peer_info: Option<&ClientInfo>) -> bool {
-    if std::env::var("CODEX_SKILLS_ACCEPT_GZIP")
+    if std::env::var("SKRILLS_ACCEPT_GZIP")
         .ok()
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
@@ -752,7 +753,7 @@ fn peer_accepts_gzip(peer_info: Option<&ClientInfo>) -> bool {
 }
 
 /// Allowlist-driven manifest capability detection.
-/// Optional JSON file: CODEX_SKILLS_MANIFEST_ALLOWLIST
+/// Optional JSON file: SKRILLS_MANIFEST_ALLOWLIST
 /// Format: [{"name_substr": "codex", "min_version": "1.2.3"}]
 fn manifest_allowlist_match(info: &ClientInfo) -> bool {
     if let Some(entries) = ALLOWLIST_CACHE.get_or_init() {
@@ -820,7 +821,7 @@ fn reset_allowlist_cache_for_tests() {
 }
 
 fn load_allowlist() -> Option<Vec<AllowlistEntry>> {
-    let path = std::env::var("CODEX_SKILLS_MANIFEST_ALLOWLIST").ok()?;
+    let path = std::env::var("SKRILLS_MANIFEST_ALLOWLIST").ok()?;
     let text = match fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) => {
@@ -962,7 +963,7 @@ impl SkillCache {
         let elapsed_ms = scan_started.elapsed().as_millis();
         if elapsed_ms > 250 {
             tracing::info!(
-                target: "codex-skills::scan",
+                target: "skrills::scan",
                 elapsed_ms,
                 roots = self.roots.len(),
                 skills = self.skills.len(),
@@ -970,7 +971,7 @@ impl SkillCache {
             );
         } else {
             tracing::debug!(
-                target: "codex-skills::scan",
+                target: "skrills::scan",
                 elapsed_ms,
                 roots = self.roots.len(),
                 skills = self.skills.len(),
@@ -1064,7 +1065,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for LoggingReader<R> {
             if read > 0 {
                 let bytes = &buf.filled()[after - read..after];
                 tracing::debug!(
-                    target: "codex-skills::wire",
+                    target: "skrills::wire",
                     dir = self.label,
                     len = read,
                     hex = %hex::encode(bytes),
@@ -1088,7 +1089,7 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for LoggingWriter<W> {
             if *written > 0 {
                 let bytes = &buf[..*written];
                 tracing::debug!(
-                    target: "codex-skills::wire",
+                    target: "skrills::wire",
                     dir = self.label,
                     len = *written,
                     hex = %hex::encode(bytes),
@@ -1172,7 +1173,7 @@ impl SkillService {
         let roots = skill_roots(&extra_dirs)?;
         let elapsed_ms = build_started.elapsed().as_millis();
         tracing::info!(
-            target: "codex-skills::startup",
+            target: "skrills::startup",
             elapsed_ms,
             roots = roots.len(),
             "constructed SkillService (discovery deferred until after initialize)"
@@ -1330,7 +1331,7 @@ impl SkillService {
             }
         }
         // Legacy/edge: explicit manifest JSON without manifest schema parsing.
-        if let Ok(custom) = std::env::var("CODEX_SKILLS_MANIFEST") {
+        if let Ok(custom) = std::env::var("SKRILLS_MANIFEST") {
             if let Ok(text) = fs::read_to_string(&custom) {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
                     if let Some(flag) = val.get("expose_agents").and_then(|v| v.as_bool()) {
@@ -1361,12 +1362,12 @@ impl SkillService {
 
             match result {
                 Ok(()) => tracing::info!(
-                    target: "codex-skills::warmup",
+                    target: "skrills::warmup",
                     elapsed_ms = started.elapsed().as_millis(),
                     "background cache warm-up finished"
                 ),
                 Err(e) => tracing::warn!(
-                    target: "codex-skills::warmup",
+                    target: "skrills::warmup",
                     error = %e,
                     "background cache warm-up failed"
                 ),
@@ -1407,16 +1408,16 @@ fn doctor_report() -> Result<()> {
     let home = home_dir()?;
     let mcp_path = home.join(".codex/mcp_servers.json");
     let cfg_path = home.join(".codex/config.toml");
-    let expected_cmd = home.join(".codex/bin/codex-mcp-skills");
+    let expected_cmd = home.join(".codex/bin/skrills");
 
-    println!("== codex-mcp-skills doctor ==");
+    println!("== skrills doctor ==");
 
     // Inspect ~/.codex/mcp_servers.json
     if mcp_path.exists() {
         let raw = fs::read_to_string(&mcp_path)?;
         match serde_json::from_str::<serde_json::Value>(&raw) {
             Ok(json) => {
-                if let Some(entry) = json.get("mcpServers").and_then(|m| m.get("codex-skills")) {
+                if let Some(entry) = json.get("mcpServers").and_then(|m| m.get("skrills")) {
                     let typ = entry
                         .get("type")
                         .and_then(|v| v.as_str())
@@ -1443,7 +1444,7 @@ fn doctor_report() -> Result<()> {
                     }
                 } else {
                     println!(
-                        "mcp_servers.json: missing codex-skills entry ({})",
+                        "mcp_servers.json: missing skrills entry ({})",
                         mcp_path.display()
                     );
                 }
@@ -1463,9 +1464,7 @@ fn doctor_report() -> Result<()> {
         let raw = fs::read_to_string(&cfg_path)?;
         match toml::from_str::<toml::Value>(&raw) {
             Ok(toml_val) => {
-                let entry = toml_val
-                    .get("mcp_servers")
-                    .and_then(|m| m.get("codex-skills"));
+                let entry = toml_val.get("mcp_servers").and_then(|m| m.get("skrills"));
                 if let Some(e) = entry {
                     let typ = e
                         .get("type")
@@ -1488,7 +1487,7 @@ fn doctor_report() -> Result<()> {
                     }
                 } else {
                     println!(
-                        "config.toml:    missing [mcp_servers.codex-skills] ({})",
+                        "config.toml:    missing [mcp_servers.skrills] ({})",
                         cfg_path.display()
                     );
                 }
@@ -1503,7 +1502,7 @@ fn doctor_report() -> Result<()> {
         println!("config.toml:    not found at {}", cfg_path.display());
     }
 
-    println!("Hint: Codex CLI raises 'missing field `type`' when either file lacks type=\"stdio\" for codex-skills.");
+    println!("Hint: Codex CLI raises 'missing field `type`' when either file lacks type=\"stdio\" for skrills.");
     Ok(())
 }
 
@@ -1903,7 +1902,7 @@ impl ServerHandler for SkillService {
                             max_bytes: args.max_bytes.or(env_max_bytes()),
                             prompt: args
                                 .prompt
-                                .or_else(|| std::env::var("CODEX_SKILLS_PROMPT").ok())
+                                .or_else(|| std::env::var("SKRILLS_PROMPT").ok())
                                 .as_deref(),
                             embed_threshold: Some(
                                 args.embed_threshold
@@ -1985,7 +1984,7 @@ impl ServerHandler for SkillService {
                             max_bytes: args.max_bytes.or(env_max_bytes()),
                             prompt: args
                                 .prompt
-                                .or_else(|| std::env::var("CODEX_SKILLS_PROMPT").ok())
+                                .or_else(|| std::env::var("SKRILLS_PROMPT").ok())
                                 .as_deref(),
                             embed_threshold: Some(
                                 args.embed_threshold
@@ -2202,26 +2201,26 @@ fn emit_autoload(
         None
     };
     let preload_terms_ref = preload_terms.as_ref();
-    let prompt = prompt.or_else(|| std::env::var("CODEX_SKILLS_PROMPT").ok());
+    let prompt = prompt.or_else(|| std::env::var("SKRILLS_PROMPT").ok());
     let runtime = runtime_overrides_cached();
     let render_mode = manifest_render_mode(&runtime, None);
     let content = render_autoload(
         &skills,
-            AutoloadOptions {
-                include_claude,
-                max_bytes: max_bytes.or(env_max_bytes()),
-                prompt: prompt.as_deref(),
-                embed_threshold: Some(embed_threshold.unwrap_or_else(env_embed_threshold)),
-                preload_terms: preload_terms_ref,
-                pinned: Some(&effective_pins),
-                matched: Some(&mut matched),
-                diagnostics: diag.as_mut(),
-                render_mode,
-                log_render_mode: runtime.render_mode_log(),
-                gzip_ok: false,
-                minimal_manifest: runtime.manifest_minimal(),
-            },
-        )?;
+        AutoloadOptions {
+            include_claude,
+            max_bytes: max_bytes.or(env_max_bytes()),
+            prompt: prompt.as_deref(),
+            embed_threshold: Some(embed_threshold.unwrap_or_else(env_embed_threshold)),
+            preload_terms: preload_terms_ref,
+            pinned: Some(&effective_pins),
+            matched: Some(&mut matched),
+            diagnostics: diag.as_mut(),
+            render_mode,
+            log_render_mode: runtime.render_mode_log(),
+            gzip_ok: false,
+            minimal_manifest: runtime.manifest_minimal(),
+        },
+    )?;
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -2425,8 +2424,8 @@ pub fn run() -> Result<()> {
 mod tests {
     use super::*;
     use crate::runtime::reset_runtime_cache_for_tests;
-    use codex_mcp_skills_state::runtime_overrides_path;
     use flate2::read::GzDecoder;
+    use skrills_state::runtime_overrides_path;
     use std::collections::HashSet;
     use std::fs;
     use std::io::Read;
@@ -2439,7 +2438,7 @@ mod tests {
         let tmp = tempdir()?;
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
-        std::env::remove_var("CODEX_SKILLS_MANIFEST");
+        std::env::remove_var("SKRILLS_MANIFEST");
         std::env::remove_var(ENV_EXPOSE_AGENTS);
         let svc = SkillService {
             cache: Arc::new(Mutex::new(SkillCache::new(vec![]))),
@@ -2686,8 +2685,10 @@ mod tests {
     fn manifest_render_mode_respects_runtime_and_allowlist() {
         reset_runtime_cache_for_tests();
         reset_allowlist_cache_for_tests();
-        let mut rt = RuntimeOverrides::default();
-        rt.manifest_first = Some(false);
+        let mut rt = RuntimeOverrides {
+            manifest_first: Some(false),
+            ..Default::default()
+        };
         assert_eq!(manifest_render_mode(&rt, None), RenderMode::ContentOnly);
 
         rt.manifest_first = Some(true);
@@ -2701,7 +2702,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let allow = tmp.path().join("allow.json");
         fs::write(&allow, r#"[{"name_substr":"codex","min_version":"2.0.0"}]"#).unwrap();
-        std::env::set_var("CODEX_SKILLS_MANIFEST_ALLOWLIST", &allow);
+        std::env::set_var("SKRILLS_MANIFEST_ALLOWLIST", &allow);
         reset_allowlist_cache_for_tests();
         let mut codex = ClientInfo::default();
         codex.client_info.name = "codex-cli".into();
@@ -2769,7 +2770,7 @@ mod tests {
             &manifest,
             r#"{ "priority": ["codex","claude"], "expose_agents": false }"#,
         )?;
-        std::env::set_var("CODEX_SKILLS_MANIFEST", &manifest);
+        std::env::set_var("SKRILLS_MANIFEST", &manifest);
 
         let svc = SkillService {
             cache: Arc::new(Mutex::new(SkillCache::new(vec![]))),
@@ -2782,7 +2783,7 @@ mod tests {
         assert!(!resources.iter().any(|r| r.uri == AGENTS_URI));
         let err = svc.read_resource_sync(AGENTS_URI).unwrap_err();
         assert!(err.to_string().contains("not found"));
-        std::env::remove_var("CODEX_SKILLS_MANIFEST");
+        std::env::remove_var("SKRILLS_MANIFEST");
 
         // Restore original HOME
         if let Some(home) = original_home {
@@ -2801,7 +2802,7 @@ mod tests {
         let manifest = tmp.path().join(".codex/skills-manifest.json");
         fs::create_dir_all(manifest.parent().unwrap())?;
         fs::write(&manifest, r#"{ "cache_ttl_ms": 2500 }"#)?;
-        std::env::set_var("CODEX_SKILLS_MANIFEST", &manifest);
+        std::env::set_var("SKRILLS_MANIFEST", &manifest);
 
         let svc = SkillService::new(vec![])?;
         let ttl = svc
@@ -2810,7 +2811,7 @@ mod tests {
             .map_err(|e| anyhow!("poisoned: {e}"))?
             .ttl();
         assert_eq!(ttl, Duration::from_millis(2500));
-        std::env::remove_var("CODEX_SKILLS_MANIFEST");
+        std::env::remove_var("SKRILLS_MANIFEST");
 
         // Restore original HOME
         if let Some(home) = original_home {
@@ -3075,7 +3076,7 @@ mod tests {
             hash: hash_file(&skill_path)?,
         }];
 
-        std::env::set_var("CODEX_SKILLS_EMBED_THRESHOLD", "0.9");
+        std::env::set_var("SKRILLS_EMBED_THRESHOLD", "0.9");
         let content = render_autoload(
             &skills,
             AutoloadOptions {
@@ -3084,7 +3085,7 @@ mod tests {
                 ..Default::default()
             },
         )?;
-        std::env::remove_var("CODEX_SKILLS_EMBED_THRESHOLD");
+        std::env::remove_var("SKRILLS_EMBED_THRESHOLD");
 
         assert!(
             !content.contains("analysis/SKILL.md"),
@@ -3154,7 +3155,10 @@ mod tests {
         fs::create_dir_all(&codex_dir)?;
         let skill_path = codex_dir.join("analysis/SKILL.md");
         fs::create_dir_all(skill_path.parent().unwrap())?;
-        fs::write(&skill_path, "Guide to analyse pipeline performance and resilience.")?;
+        fs::write(
+            &skill_path,
+            "Guide to analyse pipeline performance and resilience.",
+        )?;
 
         let skills = vec![SkillMeta {
             name: "analysis/SKILL.md".into(),
@@ -3258,7 +3262,7 @@ mod tests {
             gzip_base64(&manifest_json_full)?
         );
         let limit = gz_wrapped_full.len(); // smaller than raw manifest to force gzip path
-        let preview_len = limit.saturating_div(4).max(64).min(512);
+        let preview_len = limit.saturating_div(4).clamp(64, 512);
         let preview = read_prefix(&codex_skill, preview_len)?;
         let expected_manifest = json!({
             "skills_manifest": [{
@@ -3355,9 +3359,9 @@ mod tests {
     fn peer_accepts_gzip_prefers_env_then_name() {
         assert!(!peer_accepts_gzip(None));
 
-        std::env::set_var("CODEX_SKILLS_ACCEPT_GZIP", "1");
+        std::env::set_var("SKRILLS_ACCEPT_GZIP", "1");
         assert!(peer_accepts_gzip(None));
-        std::env::remove_var("CODEX_SKILLS_ACCEPT_GZIP");
+        std::env::remove_var("SKRILLS_ACCEPT_GZIP");
 
         let mut client = ClientInfo::default();
         client.client_info.name = "gzip-capable-client".into();
@@ -3394,12 +3398,12 @@ mod tests {
         let manifest = tmp.path().join(".codex/skills-manifest.json");
         fs::create_dir_all(manifest.parent().unwrap())?;
         fs::write(&manifest, r#"["agent","codex"]"#)?;
-        std::env::set_var("CODEX_SKILLS_MANIFEST", &manifest);
+        std::env::set_var("SKRILLS_MANIFEST", &manifest);
 
         let roots = skill_roots(&[])?;
         let order: Vec<_> = roots.into_iter().map(|r| r.source.label()).collect();
         assert_eq!(order, vec!["agent", "codex", "mirror", "claude"]);
-        std::env::remove_var("CODEX_SKILLS_MANIFEST");
+        std::env::remove_var("SKRILLS_MANIFEST");
 
         // Restore original HOME
         if let Some(home) = original_home {

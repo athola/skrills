@@ -9,9 +9,9 @@
 - Added smoke tests for discovery hashing and state persistence/auto-pin.
 
 ## 0.1.14 - 2025-11-25
-- Added `codex-mcp-skills doctor` to inspect Codex MCP config (`mcp_servers.json` and `config.toml`) and verify `type = "stdio"` plus binary paths.
+- Added `skrills doctor` to inspect Codex MCP config (`mcp_servers.json` and `config.toml`) and verify `type = "stdio"` plus binary paths.
 - Hardened MCP tool schemas to always include `type = "object"` so Codex no longer raises `missing field "type"` during startup.
-- `serve` gains `--trace-wire` / `CODEX_SKILLS_TRACE_WIRE=1` to hex+UTF-8 log MCP initialize traffic; warm-up now defers until after handshake and scans log when slow.
+- `serve` gains `--trace-wire` / `SKRILLS_TRACE_WIRE=1` to hex+UTF-8 log MCP initialize traffic; warm-up now defers until after handshake and scans log when slow.
 - Installers now write `type = "stdio"` to both Codex config files, tolerate permission failures, add POSIX `--local` build flag, and keep PowerShell parity.
 
 ## 0.1.13 - 2025-11-25

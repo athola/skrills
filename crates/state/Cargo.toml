@@ -1,5 +1,5 @@
 [package]
-name = "codex-mcp-skills-state"
+name = "skrills-state"
 version = "0.1.0"
 edition = "2021"
 

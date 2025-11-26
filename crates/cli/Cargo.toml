@@ -1,8 +1,8 @@
 [package]
-name = "codex-mcp-skills"
+name = "skrills"
 version = "0.1.14"
 edition = "2021"
 
 [dependencies]
-codex-mcp-skills-server = { path = "../server" }
+skrills-server = { path = "../server" }
 anyhow.workspace = true

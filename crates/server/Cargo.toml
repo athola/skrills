@@ -1,5 +1,5 @@
 [package]
-name = "codex-mcp-skills-server"
+name = "skrills-server"
 version = "0.1.0"
 edition = "2021"
 
@@ -30,8 +30,8 @@ once_cell.workspace = true
 semver.workspace = true
 flate2.workspace = true
 
-codex-mcp-skills-discovery = { path = "../discovery" }
-codex-mcp-skills-state = { path = "../state" }
+skrills-discovery = { path = "../discovery" }
+skrills-state = { path = "../state" }
 
 [features]
 default = ["watch"]

@@ -2,8 +2,8 @@ pub mod env;
 pub mod persistence;
 
 pub use env::{
-    cache_ttl, env_auto_pin, env_diag, env_include_claude, env_manifest_first, env_max_bytes,
-    env_manifest_minimal, env_render_mode_log, extra_dirs_from_env, home_dir,
+    cache_ttl, env_auto_pin, env_diag, env_include_claude, env_manifest_first,
+    env_manifest_minimal, env_max_bytes, env_render_mode_log, extra_dirs_from_env, home_dir,
     load_manifest_settings, manifest_file, runtime_overrides_path, ManifestSettings,
 };
 pub use persistence::{
