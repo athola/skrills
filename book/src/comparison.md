@@ -1,6 +1,6 @@
 # Comparison to Similar Projects
 
-The table below expands on how codex-mcp-skills differs from other public efforts to share or operate “skills” across agents.
+This table compares `codex-mcp-skills` with other approaches for managing and deploying skills across agents.
 
 | Project type | What it ships | Transport/runtime | Automation surface | Strengths | Gaps vs codex-mcp-skills |
 | --- | --- | --- | --- | --- | --- |
@@ -18,8 +18,8 @@ Where we can still improve:
 
 ## Summary
 
-`codex-mcp-skills` is primarily differentiated by its MCP server, which exposes skills to both Codex and Claude over a standard stdio interface. Other projects in this space tend to be static collections of skills, CI tools for rendering documentation, or local synchronization tools without an MCP layer.
+`codex-mcp-skills` stands out due to its MCP server, which exposes skills to both Codex and Claude over a standard stdio interface. Other projects in this area are typically static skill collections, CI tools for documentation rendering, or local synchronization tools lacking an MCP layer.
 
-The project also provides convenient installers (`curl | sh` and `irm | iex`) for per-target binaries, in contrast to projects that require manual copying of files or installation via `cargo`.
+The project also provides direct installers (`curl | sh` and `irm | iex`) for per-target binaries, contrasting with projects that necessitate manual file copying or `cargo` installation.
 
-Finally, the autoload hook and terminal user interface are focused on runtime integration and ease of use, whereas many other projects focus more on the content of the skills themselves.
+The autoload hook and terminal user interface prioritize runtime integration and operational efficiency, whereas many other projects emphasize skill content creation.

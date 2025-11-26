@@ -4,7 +4,7 @@ This guide provides instructions on how to install `codex-mcp-skills`.
 
 ## One-Liners (Recommended)
 
-These commands provide a quick way to install `codex-mcp-skills` on your system.
+These commands offer a streamlined method for installing `codex-mcp-skills` on your system.
 
 ```bash
 # macOS / Linux

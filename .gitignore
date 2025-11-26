@@ -2,6 +2,7 @@
 .cargo-tmp
 docs/plans/
 .cargo/
+.cargo-home/
 book/book
 *.txt
 .venv_image/

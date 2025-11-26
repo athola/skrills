@@ -18,12 +18,9 @@ You can override the discovery priority by creating a `~/.codex/skills-manifest.
 
 When a prompt is submitted, the autoloading system filters skills based on the following criteria:
 
--   **Hook timing**: We run on `UserPromptSubmit`, using the parsed intent to query a cached index and hydrate only the matching skills. This avoids front-loading all skills into the context window and prevents repeated filesystem walks per turn.
--   **Prompt Content**: The system tokenizes the prompt and searches for terms (three characters or longer) in the skill's name and the first 4KB of its content.
--   **Pinned Skills**: Manually pinned skills are always included. Auto-pinned skills from recent history are also included.
--   **Source Filtering**: Skills from the `claude` and `mirror` sources can be excluded by using the `--include-claude` flag.
--   **Byte Budget**: The `--max-bytes` flag sets a budget for the total size of the included skills. If a skill is too large, it will be truncated, and this will be noted in the diagnostics.
--   **Diagnostics**: A footer is added to the output with diagnostic information, including which skills were included, skipped, or truncated, and any duplicates that were found.
+-   **Hook timing**: Autoloading activates on `UserPromptSubmit`. It uses the parsed intent to query a cached index and include only the matching skills. This approach avoids front-loading all skills into the context window and prevents repeated filesystem walks per turn.
+...
+This allows logging or controlling payload size before sending `additionalContext` to the model. Inputs mirror `autoload-snippet`: `prompt`, `embed_threshold`, `include_claude`, `max_bytes`, `auto_pin`, `diagnose`.
 
 ## Caching
 
@@ -34,6 +31,6 @@ To improve performance, `codex-mcp-skills` uses two levels of caching:
 
 ## Approach vs other loaders (feature-level)
 
-- Uses prompt-hooked, cached lookup: intent parsed on submit, pulls only relevant skills into context → lower tokens/latency.
-- Avoids eager preloading of every skill name/content into prompts at startup.
-- Keeps skill text local and cached; no per-turn network/tool round-trips just to read SKILL.md files.
+- Employs a prompt-hooked, cached lookup: intent is parsed on submission, pulling only relevant skills into context. This results in reduced token usage and lower latency.
+- Avoids eager preloading of all skill names and content into prompts at startup.
+- Keeps skill text local and cached, eliminating per-turn network or tool round-trips solely for reading SKILL.md files.

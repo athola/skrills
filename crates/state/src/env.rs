@@ -6,6 +6,9 @@ use std::time::Duration;
 
 const DEFAULT_CACHE_TTL_MS: u64 = 1_500;
 
+/// Represents settings loaded from the `skills-manifest.json` file.
+///
+/// These settings can override default behaviors for skill discovery and rendering.
 #[derive(Debug, Default, Deserialize, Clone)]
 pub struct ManifestSettings {
     #[serde(default)]
@@ -18,9 +21,17 @@ pub struct ManifestSettings {
 
 /// Returns the user's home directory.
 pub fn home_dir() -> Result<PathBuf> {
-    dirs::home_dir().ok_or_else(|| anyhow!("HOME not set"))
+    std::env::var("HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir())
+        .ok_or_else(|| anyhow!("HOME not set"))
 }
 
+/// Determines the path to the `skills-manifest.json` file.
+///
+/// It first checks the `CODEX_SKILLS_MANIFEST` environment variable. If not set,
+/// it defaults to `~/.codex/skills-manifest.json`.
 pub fn manifest_file() -> Result<PathBuf> {
     if let Ok(custom) = std::env::var("CODEX_SKILLS_MANIFEST") {
         return Ok(PathBuf::from(custom));
@@ -28,6 +39,11 @@ pub fn manifest_file() -> Result<PathBuf> {
     Ok(home_dir()?.join(".codex/skills-manifest.json"))
 }
 
+/// Loads and parses the `skills-manifest.json` file.
+///
+/// This function reads the manifest file, if it exists, and deserializes its
+/// content into a `ManifestSettings` struct. It handles both array and object
+/// formats for the manifest.
 pub fn load_manifest_settings() -> Result<ManifestSettings> {
     let path = manifest_file()?;
     if !path.exists() {
@@ -63,6 +79,9 @@ pub fn load_manifest_settings() -> Result<ManifestSettings> {
     Err(anyhow!("invalid manifest format"))
 }
 
+/// Parses a colon-separated list of extra skill directories from the `CODEX_SKILLS_EXTRA_DIRS` environment variable.
+///
+/// Returns a `Vec` of `PathBuf` for each valid directory specified.
 pub fn extra_dirs_from_env() -> Vec<PathBuf> {
     std::env::var("CODEX_SKILLS_EXTRA_DIRS")
         .ok()
@@ -75,6 +94,9 @@ pub fn extra_dirs_from_env() -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
+/// Checks the `CODEX_SKILLS_INCLUDE_CLAUDE` environment variable to determine if Claude skills should be included.
+///
+/// Returns `true` if the environment variable is set to "1" or "true" (case-insensitive), otherwise `false`.
 pub fn env_include_claude() -> bool {
     std::env::var("CODEX_SKILLS_INCLUDE_CLAUDE")
         .ok()
@@ -82,6 +104,9 @@ pub fn env_include_claude() -> bool {
         .unwrap_or(false)
 }
 
+/// Checks the `CODEX_SKILLS_DIAG` environment variable to determine if diagnostic information should be emitted.
+///
+/// Returns `true` if the environment variable is set to "1" or "true" (case-insensitive), otherwise `false`.
 pub fn env_diag() -> bool {
     std::env::var("CODEX_SKILLS_DIAG")
         .ok()
@@ -89,6 +114,10 @@ pub fn env_diag() -> bool {
         .unwrap_or(false)
 }
 
+/// Checks the `CODEX_SKILLS_AUTO_PIN` environment variable to determine if auto-pinning is enabled.
+///
+/// If the environment variable is set to "1" or "true" (case-insensitive), it returns `true`.
+/// Otherwise, it returns the provided `default` value.
 pub fn env_auto_pin(default: bool) -> bool {
     if let Ok(v) = std::env::var("CODEX_SKILLS_AUTO_PIN") {
         return v == "1" || v.eq_ignore_ascii_case("true");
@@ -101,6 +130,41 @@ pub fn env_max_bytes() -> Option<usize> {
     std::env::var("CODEX_SKILLS_AUTOLOAD_MAX_BYTES")
         .ok()
         .and_then(|s| s.parse().ok())
+}
+
+/// Whether to log autoload render mode (INFO). Defaults off.
+pub fn env_render_mode_log() -> bool {
+    std::env::var("CODEX_SKILLS_RENDER_MODE_LOG")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Constructs the path to the `skills-runtime.json` file, which stores runtime overrides.
+///
+/// It uses the user's home directory (derived from `HOME` environment variable or `dirs::home_dir()`).
+pub fn runtime_overrides_path() -> Option<std::path::PathBuf> {
+    std::env::var("HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| home_dir().ok())
+        .map(|h| h.join(".codex/skills-runtime.json"))
+}
+
+/// Whether to emit manifest-first autoload output (defaults to true).
+pub fn env_manifest_first() -> bool {
+    std::env::var("CODEX_SKILLS_MANIFEST_FIRST")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(true)
+}
+
+/// Whether to emit minimal manifest entries (no paths/previews). Defaults off.
+pub fn env_manifest_minimal() -> bool {
+    std::env::var("CODEX_SKILLS_MANIFEST_MINIMAL")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
 /// Returns the in-memory cache TTL for skill discovery in milliseconds.

@@ -1,6 +1,6 @@
 # Release Artifact Naming and Structure
 
-This document details the naming conventions and internal structure for release artifacts. These guidelines ensure that installation scripts can correctly identify and extract the appropriate assets for each target platform.
+This document details the naming conventions and internal structure for release artifacts. Adhering to these guidelines allows installation scripts to correctly identify and extract the appropriate assets for each target platform.
 
 Install scripts select a release asset whose filename contains the target triple. Therefore, archives should be published following this pattern:
 

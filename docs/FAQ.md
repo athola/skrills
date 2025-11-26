@@ -16,7 +16,7 @@ For manual correction:
 
 To verify the setup, run `codex-mcp-skills doctor` to confirm both files are present, readable, and correctly configured.
 
-If the error persists, Codex might be rejecting a tool schema (often due to a missing top-level `type`). While our tools now include `type: "object"`, some third-party MCP servers may emit schemas that Codex rejects (e.g., using `integer` instead of `number`, or complex unions). You can address this by proxying such servers through a schema normalizer:
+If the error persists, Codex might reject a tool schema (often due to a missing top-level `type`). While our tools now include `type: "object"`, some third-party MCP servers may emit schemas that Codex rejects (e.g., using `integer` instead of `number`, or complex unions). Address this by proxying such servers through a schema normalizer:
 
 **Requirements**: Node.js 18+
 
@@ -27,18 +27,18 @@ type = "stdio"
 command = "npx"
 args = ["-y", "codex-mcp-wrapper", "--", "npx", "-y", "@mendable/firecrawl-mcp"]
 ```
-Replace the `command` and `args` with those of the problematic MCP server. The `codex-mcp-wrapper` (available on GitHub at `kazuhideoki/codex-mcp-wrapper`) injects missing `type` fields, converts `integer` to `number`, flattens unions, and filters unsupported schemas before they reach Codex.
+Substitute the `command` and `args` with those of the problematic MCP server. The `codex-mcp-wrapper` (available on GitHub at `kazuhideoki/codex-mcp-wrapper`) injects missing `type` fields, converts `integer` to `number`, flattens unions, and filters unsupported schemas before they reach Codex.
 
-To diagnose what Codex is rejecting, run `codex-mcp-skills serve --trace-wire` and examine the generated log.
+To diagnose schema rejections from Codex, run `codex-mcp-skills serve --trace-wire` and examine the generated log.
 
 ### Does this project replace existing Claude skills directories?
 No. The MCP server reads skills from default locations and can mirror Claude skills. It does not overwrite existing files unless explicit synchronization commands are executed.
 
 ### How does this project differ from other skill management efforts?
-`codex-mcp-skills` provides an MCP server, a Codex hook, and cross-agent synchronization capabilities, transforming skills into runtime resources rather than just static files. Other efforts typically involve static skill bundles, CI-driven documentation rendering, or local-only synchronization tools. For a more detailed comparison, refer to the [Comparison to Similar Projects](../../book/src/comparison.md) section in the project book.
+`codex-mcp-skills` offers an MCP server, a Codex hook, and cross-agent synchronization capabilities, enabling skills to function as runtime resources rather than static files. Other efforts typically involve static skill bundles, CI-driven documentation rendering, or local-only synchronization tools. For a more detailed comparison, refer to the [Comparison to Similar Projects](../../book/src/comparison.md) section in the project book.
 
-### How does autoloading stay cheap on tokens?
-We hook into `UserPromptSubmit`, parse the prompt for intent, and pull only matching skills from a cached index into the context window. That avoids preloading every skill or re-reading disk each turn. Compared to alternatives that either dump all skill names at startup, require explicit tool calls per skill fetch, or ship static bundles baked into prompts, this approach keeps both latency and token use low while still honoring pins, history, and byte budgets.
+### How does autoloading stay efficient with tokens?
+Autoloading integrates with `UserPromptSubmit` to parse the prompt for intent and retrieve only matching skills from a cached index into the context window. This method prevents preloading every skill or re-reading the disk for each turn. Compared to alternatives that either load all skill names at startup, require explicit tool calls for each skill fetch, or ship static bundles within prompts, this approach maintains low latency and token usage while respecting pins, history, and byte budgets.
 
 ### How are the project's documentation built locally?
 Use `make book` to build and open the `mdBook` documentation. For live-reloading during development, run `make book-serve` (accessible at `http://localhost:3000`). For Rust API documentation, use `make docs`.
@@ -47,6 +47,6 @@ Use `make book` to build and open the `mdBook` documentation. For live-reloading
 Yes. Once the binary and necessary skills are present locally, the MCP server and CLI can operate without an active network connection.
 
 ### What are the security considerations?
-The server operates over standard I/O (stdio) and performs file reads with the principle of least privilege. No secrets are bundled with the software, and you retain full control over which skill directories are exposed. Always review third-party skills before integrating them.
+The server operates over standard I/O (stdio) and performs file reads adhering to the principle of least privilege. No secrets are bundled with the software, and users retain full control over which skill directories are exposed. Always review third-party skills before integrating them.
 
-For more in-depth answers and advanced scenarios, consult the main project book's FAQ section.
+For more in-depth answers and advanced scenarios, consult the project book's FAQ section.

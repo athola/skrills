@@ -82,6 +82,23 @@ jobs:
       - name: Build book
         run: mdbook build book
 
+  public-api:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-public-api
+        run: cargo install cargo-public-api --locked
+      - name: Fetch main for baseline
+        run: git fetch origin main --depth=1
+      - name: Public API check (codex-mcp-skills-server)
+        run: cargo public-api -p codex-mcp-skills-server --deny-breaking --baseline-git-ref origin/main
+
   release-build-check:
     name: Release build (dry run)
     needs: changes

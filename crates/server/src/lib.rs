@@ -2,18 +2,27 @@
 //!
 //! This crate manages skills, handling their discovery, caching, and execution.
 //! It processes `SKILL.md` files, manages tool calls and resources, and integrates
-//! with the `rmcp` protocol.
+//! with the `rmcp` protocol. The public surface intended for embedding is limited
+//! to the `run` entrypoint plus the `runtime` module (runtime overrides used by
+//! MCP tools). Everything else is considered internal and may change.
+//!
+//! Stability: The crate is pre-1.0 and adheres to a best-effort compatibility policy,
+//! as described in `docs/semver-policy.md` and the book’s SemVer section. Backward
+//! incompatible changes to the documented surface will be explicitly noted in the
+//! changelog, though semver MAJOR/MINOR boundaries are not yet guaranteed.
+//!
+//! Feature gating: optional `watch` enables filesystem watching for live cache
+//! invalidation. The default feature set keeps watchers enabled; disable the
+//! feature to build without `notify`.
 //!
 //! On Unix-like systems, this crate installs a `SIGCHLD` handler with `SA_NOCLDWAIT`
 //! at startup. This prevents child processes from becoming zombies when the server
 //! is embedded, by automatically reaping unexpected subprocesses.
 
 use anyhow::{anyhow, Result};
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use clap::{Parser, Subcommand};
-use dialoguer::{theme::ColorfulTheme, Confirm, MultiSelect};
-#[cfg(feature = "watch")]
-use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
-use pathdiff::diff_paths;
 use codex_mcp_skills_discovery::{
     default_priority, discover_skills, extract_refs_from_agents, hash_file, load_priority_override,
     priority_labels as disc_priority_labels,
@@ -21,15 +30,21 @@ use codex_mcp_skills_discovery::{
     SkillMeta, SkillRoot, SkillSource,
 };
 use codex_mcp_skills_state::{
-    auto_pin_from_history, env_auto_pin, env_diag, env_include_claude, env_max_bytes,
-    extra_dirs_from_env, home_dir, load_auto_pin_flag, load_history, load_manifest_settings,
-    load_pinned, save_auto_pin_flag, save_history, save_pinned, HistoryEntry, cache_ttl,
-    print_history,
+    auto_pin_from_history, cache_ttl, env_auto_pin, env_diag, env_include_claude,
+    env_manifest_first, env_max_bytes, env_render_mode_log, extra_dirs_from_env, home_dir,
+    load_auto_pin_flag, load_history, load_manifest_settings, load_pinned, print_history,
+    save_auto_pin_flag, save_history, save_pinned, HistoryEntry, env_manifest_minimal,
 };
+use dialoguer::{theme::ColorfulTheme, Confirm, MultiSelect};
+use flate2::{write::GzEncoder, Compression};
+#[cfg(feature = "watch")]
+use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
+use pathdiff::diff_paths;
 use rmcp::model::{
-    CallToolRequestParam, CallToolResult, Content, InitializeResult, ListResourcesResult,
-    ListToolsResult, Meta, PaginatedRequestParam, RawResource, ReadResourceRequestParam,
-    ReadResourceResult, Resource, ResourceContents, ServerCapabilities, Tool, ToolAnnotations,
+    CallToolRequestParam, CallToolResult, ClientInfo, Content, InitializeResult,
+    ListResourcesResult, ListToolsResult, Meta, PaginatedRequestParam, RawResource,
+    ReadResourceRequestParam, ReadResourceResult, Resource, ResourceContents, ServerCapabilities,
+    Tool, ToolAnnotations,
 };
 use rmcp::service::serve_server;
 use rmcp::transport;
@@ -38,7 +53,7 @@ use serde::Deserialize;
 use serde_json::{json, Map as JsonMap};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 #[cfg(unix)]
 use std::mem;
 use std::path::{Path, PathBuf};
@@ -54,6 +69,9 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::runtime::Runtime;
 use walkdir::WalkDir;
 
+pub mod runtime;
+use runtime::{runtime_overrides_cached, RuntimeOverrides};
+
 // Resource IDs and manifest markers
 const AGENTS_URI: &str = "doc://agents";
 const AGENTS_NAME: &str = "AGENTS.md";
@@ -62,6 +80,8 @@ const AGENTS_TEXT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../
 const ENV_EXPOSE_AGENTS: &str = "CODEX_SKILLS_EXPOSE_AGENTS";
 const AGENTS_SECTION_START: &str = "<!-- available_skills:start -->";
 const AGENTS_SECTION_END: &str = "<!-- available_skills:end -->";
+const DEFAULT_EMBED_PREVIEW_BYTES: usize = 4096;
+const DEFAULT_EMBED_THRESHOLD: f32 = 0.18;
 
 /// Convenience re-exports for priority labels and ranks.
 fn priority_labels() -> Vec<String> {
@@ -101,6 +121,7 @@ enum Commands {
         watch: bool,
     },
     /// List discovered skills (debug)
+    #[command(alias = "list-skills")]
     List,
     /// List pinned skills
     ListPinned,
@@ -150,6 +171,9 @@ enum Commands {
         /// Prompt text to filter relevant skills (optional; falls back to env CODEX_SKILLS_PROMPT)
         #[arg(long)]
         prompt: Option<String>,
+        /// Embedding similarity threshold (0-1) for fuzzy prompt matching
+        #[arg(long)]
+        embed_threshold: Option<f32>,
         /// Enable heuristic auto-pinning based on recent prompt matches
         #[arg(long, default_value_t = env_auto_pin_default())]
         auto_pin: bool,
@@ -244,6 +268,13 @@ fn env_auto_pin_default() -> bool {
     env_auto_pin(load_auto_pin_flag().unwrap_or(false))
 }
 
+fn env_embed_threshold() -> f32 {
+    std::env::var("CODEX_SKILLS_EMBED_THRESHOLD")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(DEFAULT_EMBED_THRESHOLD)
+}
+
 fn merge_extra_dirs(cli_dirs: &[PathBuf]) -> Vec<PathBuf> {
     let mut dirs = extra_dirs_from_env();
     dirs.extend(cli_dirs.iter().cloned());
@@ -307,6 +338,48 @@ fn tokenize_prompt(prompt: &str) -> std::collections::HashSet<String> {
         .collect()
 }
 
+fn trigram_counts(text: &str) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    let normalized = text.to_ascii_lowercase();
+    let chars: Vec<char> = normalized.chars().collect();
+    if chars.len() < 3 {
+        return counts;
+    }
+    for window in chars.windows(3) {
+        let gram: String = window.iter().collect();
+        *counts.entry(gram).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn cosine_similarity(a: &HashMap<String, usize>, b: &HashMap<String, usize>) -> f32 {
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let mut dot = 0f32;
+    let mut norm_a = 0f32;
+    let mut norm_b = 0f32;
+    for (&ref gram, &count) in a.iter() {
+        norm_a += (count as f32).powi(2);
+        if let Some(&b_count) = b.get(gram) {
+            dot += (count as f32) * (b_count as f32);
+        }
+    }
+    for &count in b.values() {
+        norm_b += (count as f32).powi(2);
+    }
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+    dot / (norm_a.sqrt() * norm_b.sqrt())
+}
+
+fn trigram_similarity(prompt: &str, text: &str) -> f32 {
+    let prompt_vec = trigram_counts(prompt);
+    let text_vec = trigram_counts(text);
+    cosine_similarity(&prompt_vec, &text_vec)
+}
+
 fn read_prefix(path: &Path, max: usize) -> Result<String> {
     use std::io::Read;
     let mut file = fs::File::open(path)?;
@@ -316,15 +389,45 @@ fn read_prefix(path: &Path, max: usize) -> Result<String> {
     Ok(String::from_utf8_lossy(&buf).to_string())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RenderMode {
+    /// Emit manifest plus full content (backward compatible).
+    Dual,
+    /// Emit only manifest (for manifest-capable clients).
+    ManifestOnly,
+    /// Emit only concatenated content (legacy).
+    ContentOnly,
+}
+
+impl Default for RenderMode {
+    fn default() -> Self {
+        RenderMode::Dual
+    }
+}
+
 #[derive(Default)]
 struct AutoloadOptions<'p, 't, 'm, 'd> {
     include_claude: bool,
     max_bytes: Option<usize>,
     prompt: Option<&'p str>,
+    embed_threshold: Option<f32>,
     preload_terms: Option<&'t HashSet<String>>,
     pinned: Option<&'t HashSet<String>>,
     matched: Option<&'m mut HashSet<String>>,
     diagnostics: Option<&'d mut Diagnostics>,
+    render_mode: RenderMode,
+    log_render_mode: bool,
+    gzip_ok: bool,
+    minimal_manifest: bool,
+}
+
+#[derive(Default)]
+struct PreviewStats {
+    matched: Vec<String>,
+    manifest_bytes: usize,
+    estimated_tokens: usize,
+    truncated: bool,
+    truncated_content: bool,
 }
 
 /// Concatenates skills into an autoload payload, with optional prompt-based filtering and truncation.
@@ -342,10 +445,15 @@ where
         include_claude,
         max_bytes,
         prompt,
+        embed_threshold,
         preload_terms,
         pinned,
         mut matched,
         mut diagnostics,
+        render_mode,
+        log_render_mode,
+        gzip_ok,
+        minimal_manifest,
     } = opts;
 
     let mut terms = prompt.map(tokenize_prompt).unwrap_or_default();
@@ -353,7 +461,14 @@ where
         terms.extend(extra.iter().cloned());
     }
     let term_opt = if terms.is_empty() { None } else { Some(terms) };
+    let prompt_for_embedding = prompt.unwrap_or_default();
+    let embed_threshold = embed_threshold.unwrap_or_else(env_embed_threshold);
 
+    let preview_len = max_bytes
+        .map(|m| m.saturating_div(4).max(64).min(512))
+        .unwrap_or(512);
+
+    let mut manifest = Vec::new();
     let mut buf = String::new();
     for meta in skills.iter().filter(|s| match s.source {
         SkillSource::Codex => true,
@@ -367,6 +482,7 @@ where
         SkillSource::Extra(_) => true,
     }) {
         let is_pinned = pinned.map(|set| set.contains(&meta.name)).unwrap_or(false);
+        let mut prefix_cache: Option<String> = None;
         let relevant = match &term_opt {
             None => true,
             Some(_) if is_pinned => true,
@@ -374,11 +490,18 @@ where
                 let name = meta.name.to_ascii_lowercase();
                 if t.iter().any(|k| name.contains(k)) {
                     true
-                } else if let Ok(prefix) = read_prefix(meta, 4096) {
-                    let text = prefix.to_ascii_lowercase();
-                    t.iter().any(|k| text.contains(k))
                 } else {
-                    false
+                    let prefix = prefix_cache.get_or_insert_with(|| {
+                        read_prefix(meta, DEFAULT_EMBED_PREVIEW_BYTES)
+                            .unwrap_or_else(|_| String::new())
+                    });
+                    let text = prefix.to_ascii_lowercase();
+                    if t.iter().any(|k| text.contains(k)) {
+                        true
+                    } else {
+                        let sim = trigram_similarity(prompt_for_embedding, &text);
+                        sim >= embed_threshold
+                    }
                 }
             }
         };
@@ -402,12 +525,75 @@ where
             ));
         }
 
+        if minimal_manifest {
+            manifest.push(json!({
+                "name": meta.name,
+                "source": meta.source,
+                "hash": meta.hash,
+            }));
+        } else {
+            let preview = read_prefix(meta, preview_len).unwrap_or_else(|_| String::new());
+            manifest.push(json!({
+                "name": meta.name,
+                "source": meta.source,
+                "root": meta.root,
+                "path": meta.path,
+                "hash": meta.hash,
+                "preview": preview
+            }));
+        }
+
+        // Append full content after the manifest to preserve existing behavior.
         if let Ok(text) = read_full(meta) {
             buf.push_str(&format!("\n\n# {}\n\n{}", meta.name, text));
         }
     }
 
-    let mut output = buf.trim().to_string();
+    let include_manifest = !matches!(render_mode, RenderMode::ContentOnly);
+    let include_content = !matches!(render_mode, RenderMode::ManifestOnly);
+
+    let manifest_json = if include_manifest {
+        serde_json::to_string_pretty(&json!({ "skills_manifest": manifest })).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let names: Vec<String> = manifest
+        .iter()
+        .filter_map(|v| v.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+        .collect();
+
+    let mut output = String::new();
+    if include_manifest && !manifest_json.is_empty() {
+        if !names.is_empty() {
+            output.push_str(&format!("[skills] {}\n", names.join(", ")));
+        }
+        output.push_str(&manifest_json);
+    }
+    if include_content && !buf.is_empty() {
+        if !output.is_empty() {
+            output.push_str("\n\n");
+        }
+        output.push_str(buf.trim());
+    }
+    if let Some(d) = diagnostics.as_deref_mut() {
+        d.render_mode = Some(format!("{:?}", render_mode));
+    }
+    if log_render_mode && diagnostics.is_some() {
+        // Avoid per-request log spam; only log when diagnostics are requested.
+        tracing::info!(
+            render_mode = ?render_mode,
+            include_manifest,
+            include_content,
+            "autoload render mode selected"
+        );
+    } else if log_render_mode {
+        tracing::debug!(
+            render_mode = ?render_mode,
+            include_manifest,
+            include_content,
+            "autoload render mode selected"
+        );
+    }
     if let Some(d) = diagnostics.as_deref_mut() {
         if !d.included.is_empty() {
             let mut footer = String::from("\n\n[activated skills]\n");
@@ -417,16 +603,30 @@ where
             output.push_str(&footer);
         }
     }
+
     if let Some(limit) = max_bytes {
         if output.len() > limit {
-            let notice = format!("\n\n[truncated to {limit} bytes]");
-            let keep = limit.saturating_sub(notice.len());
-            let mut truncated = output;
-            truncated.truncate(keep);
-            truncated.push_str(&notice);
-            output = truncated;
-            if let Some(d) = diagnostics.as_deref_mut() {
-                d.truncated = true;
+            if include_manifest && !manifest_json.is_empty() && manifest_json.len() <= limit {
+                // Prefer returning a valid manifest and signal content was dropped.
+                output = manifest_json.clone();
+                if let Some(d) = diagnostics.as_deref_mut() {
+                    d.truncated = true;
+                    d.truncated_content = true;
+                }
+            } else if include_manifest && gzip_ok {
+                let gz = gzip_base64(&manifest_json)?;
+                let gz_wrapped = format!(r#"{{"skills_manifest_gzip_base64":"{}"}}"#, gz);
+                if gz_wrapped.len() <= limit {
+                    output = gz_wrapped;
+                    if let Some(d) = diagnostics.as_deref_mut() {
+                        d.truncated = true;
+                        d.truncated_content = true;
+                    }
+                } else {
+                    return Err(anyhow!("autoload payload exceeds byte limit (even gzipped manifest)"));
+                }
+            } else {
+                return Err(anyhow!("autoload payload exceeds byte limit"));
             }
         }
     }
@@ -459,6 +659,9 @@ where
         if d.truncated {
             header.push_str("note: output truncated\n");
         }
+        if d.truncated_content {
+            header.push_str("note: content omitted to fit manifest size\n");
+        }
         header.push_str("-->\n");
         output = format!("{header}{output}");
     }
@@ -472,6 +675,188 @@ fn render_autoload(skills: &[SkillMeta], opts: AutoloadOptions<'_, '_, '_, '_>) 
         |meta| read_skill(&meta.path),
         |meta, max| read_prefix(&meta.path, max),
     )
+}
+
+fn render_preview_stats(
+    skills: &[SkillMeta],
+    opts: AutoloadOptions<'_, '_, '_, '_>,
+) -> Result<PreviewStats> {
+    let mut matched = HashSet::new();
+    let mut diagnostics = Diagnostics::default();
+    let content = render_autoload_with_reader(
+        skills,
+        AutoloadOptions {
+            render_mode: RenderMode::ManifestOnly,
+            log_render_mode: false,
+            gzip_ok: false,
+            matched: Some(&mut matched),
+            diagnostics: Some(&mut diagnostics),
+            ..opts
+        },
+        |meta| read_skill(&meta.path),
+        |meta, max| read_prefix(&meta.path, max),
+    )?;
+    let manifest_bytes = content.as_bytes().len();
+    let estimated_tokens = (manifest_bytes + 3) / 4; // rough UTF-8→token estimate
+    let mut matched_vec: Vec<String> = matched.into_iter().collect();
+    matched_vec.sort();
+    Ok(PreviewStats {
+        matched: matched_vec,
+        manifest_bytes,
+        estimated_tokens,
+        truncated: diagnostics.truncated,
+        truncated_content: diagnostics.truncated_content,
+    })
+}
+
+/// Decide render mode based on env + client identity.
+fn manifest_render_mode(runtime: &RuntimeOverrides, peer_info: Option<&ClientInfo>) -> RenderMode {
+    // If explicitly disabled, stick to legacy content-only.
+    if !runtime.manifest_first() {
+        return RenderMode::ContentOnly;
+    }
+
+    if let Some(info) = peer_info {
+        if manifest_allowlist_match(info) {
+            return RenderMode::ManifestOnly;
+        }
+    }
+
+    let manifest_capable = peer_info.map(|info| {
+        let name = info.client_info.name.to_ascii_lowercase();
+        name.contains("claude") || name.contains("anthropic")
+    });
+
+    match manifest_capable {
+        Some(true) => RenderMode::ManifestOnly,
+        _ => RenderMode::Dual,
+    }
+}
+
+/// Whether the peer can accept gzipped manifest payloads.
+fn peer_accepts_gzip(peer_info: Option<&ClientInfo>) -> bool {
+    if std::env::var("CODEX_SKILLS_ACCEPT_GZIP")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if let Some(info) = peer_info {
+        let name = info.client_info.name.to_ascii_lowercase();
+        if name.contains("gzip") {
+            return true;
+        }
+    }
+    false
+}
+
+/// Allowlist-driven manifest capability detection.
+/// Optional JSON file: CODEX_SKILLS_MANIFEST_ALLOWLIST
+/// Format: [{"name_substr": "codex", "min_version": "1.2.3"}]
+fn manifest_allowlist_match(info: &ClientInfo) -> bool {
+    if let Some(entries) = ALLOWLIST_CACHE.get_or_init() {
+        let name_lc = info.client_info.name.to_ascii_lowercase();
+        for item in entries {
+            if !name_lc.contains(&item.name_substr) {
+                continue;
+            }
+            if let Some(min) = &item.min_version {
+                if !version_gte(&info.client_info.version, min) {
+                    continue;
+                }
+            }
+            return true;
+        }
+    }
+    false
+}
+
+/// Minimal dotted version comparison (numeric segments only; non-numeric treated as 0).
+fn version_gte(current: &str, min: &str) -> bool {
+    match (semver::Version::parse(current), semver::Version::parse(min)) {
+        (Ok(c), Ok(m)) => c >= m,
+        _ => false,
+    }
+}
+
+fn gzip_base64(data: &str) -> Result<String> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(data.as_bytes())?;
+    let compressed = encoder.finish()?;
+    Ok(BASE64.encode(compressed))
+}
+
+#[derive(Clone)]
+struct AllowlistEntry {
+    name_substr: String,
+    min_version: Option<String>,
+}
+
+struct AllowlistCache {
+    inner: Mutex<Option<Vec<AllowlistEntry>>>,
+}
+
+impl AllowlistCache {
+    fn get_or_init(&self) -> Option<Vec<AllowlistEntry>> {
+        let mut guard = self.inner.lock().ok()?;
+        if guard.is_none() {
+            *guard = load_allowlist();
+        }
+        guard.clone()
+    }
+}
+
+static ALLOWLIST_CACHE: once_cell::sync::Lazy<AllowlistCache> =
+    once_cell::sync::Lazy::new(|| AllowlistCache {
+        inner: Mutex::new(None),
+    });
+
+#[cfg(test)]
+fn reset_allowlist_cache_for_tests() {
+    if let Ok(mut guard) = ALLOWLIST_CACHE.inner.lock() {
+        *guard = None;
+    }
+}
+
+fn load_allowlist() -> Option<Vec<AllowlistEntry>> {
+    let path = std::env::var("CODEX_SKILLS_MANIFEST_ALLOWLIST").ok()?;
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(path = %path, error = %e, "failed to read manifest allowlist");
+            return None;
+        }
+    };
+    let val: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(path = %path, error = %e, "failed to parse manifest allowlist JSON");
+            return None;
+        }
+    };
+    let arr = match val.as_array() {
+        Some(a) => a,
+        None => {
+            tracing::warn!(path = %path, "manifest allowlist is not an array");
+            return None;
+        }
+    };
+    let mut entries = Vec::new();
+    for item in arr {
+        let Some(sub) = item.get("name_substr").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let min = item
+            .get("min_version")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        entries.push(AllowlistEntry {
+            name_substr: sub.to_ascii_lowercase(),
+            min_version: min,
+        });
+    }
+    Some(entries)
 }
 
 /// Mirrors SKILL.md files from `~/.claude` into a Codex-owned mirror tree.
@@ -651,6 +1036,7 @@ struct SkillService {
     cache: Arc<Mutex<SkillCache>>,
     content_cache: Arc<Mutex<ContentCache>>,
     warmup_started: AtomicBool,
+    runtime: Arc<Mutex<RuntimeOverrides>>,
 }
 
 /// Logs stdin/stdout traffic for debugging MCP handshakes.
@@ -795,6 +1181,7 @@ impl SkillService {
             cache: Arc::new(Mutex::new(SkillCache::new_with_ttl(roots, ttl))),
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
             warmup_started: AtomicBool::new(false),
+            runtime: Arc::new(Mutex::new(RuntimeOverrides::load()?)),
         })
     }
 
@@ -923,17 +1310,34 @@ impl SkillService {
         )
     }
 
+    fn runtime_overrides(&self) -> RuntimeOverrides {
+        self.runtime
+            .lock()
+            .ok()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
     /// Determines whether the AGENTS.md document should be exposed as a resource.
     fn expose_agents_doc(&self) -> Result<bool> {
+        let manifest = load_manifest_settings()?;
+        if let Some(flag) = manifest.expose_agents {
+            return Ok(flag);
+        }
         if let Ok(val) = std::env::var(ENV_EXPOSE_AGENTS) {
             if let Ok(parsed) = val.parse::<bool>() {
                 return Ok(parsed);
             }
         }
-
-        let manifest = load_manifest_settings()?;
-        if let Some(flag) = manifest.expose_agents {
-            return Ok(flag);
+        // Legacy/edge: explicit manifest JSON without manifest schema parsing.
+        if let Ok(custom) = std::env::var("CODEX_SKILLS_MANIFEST") {
+            if let Ok(text) = fs::read_to_string(&custom) {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if let Some(flag) = val.get("expose_agents").and_then(|v| v.as_bool()) {
+                        return Ok(flag);
+                    }
+                }
+            }
         }
 
         Ok(true)
@@ -1272,6 +1676,18 @@ impl ServerHandler for SkillService {
         schema_map.insert("properties".into(), json!({}));
         schema_map.insert("additionalProperties".into(), json!(false));
         let schema = std::sync::Arc::new(schema_map);
+        let mut options_schema = JsonMap::new();
+        options_schema.insert("type".into(), json!("object"));
+        options_schema.insert(
+            "properties".into(),
+            json!({
+                "manifest_first": { "type": "boolean" },
+                "render_mode_log": { "type": "boolean" },
+                "manifest_minimal": { "type": "boolean" }
+            }),
+        );
+        options_schema.insert("additionalProperties".into(), json!(false));
+        let options_schema = std::sync::Arc::new(options_schema);
         let tools = vec![
             Tool {
                 name: "list-skills".into(),
@@ -1288,6 +1704,40 @@ impl ServerHandler for SkillService {
                 title: Some("Autoload SKILL.md content".into()),
                 description: Some("Concatenate SKILL.md markdown for prompt injection".into()),
                 input_schema: schema.clone(),
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
+            Tool {
+                name: "runtime-status".into(),
+                title: Some("Runtime status".into()),
+                description: Some("Show effective runtime overrides and sources".into()),
+                input_schema: schema.clone(),
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
+            Tool {
+                name: "render-preview".into(),
+                title: Some("Preview selected skills with size estimates".into()),
+                description: Some(std::borrow::Cow::Borrowed(
+                    "Return matched skill names plus manifest/preview size and estimated tokens.",
+                )),
+                input_schema: schema.clone(),
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
+            Tool {
+                name: "set-runtime-options".into(),
+                title: Some("Set runtime options".into()),
+                description: Some(
+                    "Adjust manifest/logging overrides for autoload rendering".into(),
+                ),
+                input_schema: options_schema,
                 output_schema: None,
                 annotations: Some(ToolAnnotations::default()),
                 icons: None,
@@ -1331,7 +1781,7 @@ impl ServerHandler for SkillService {
     fn call_tool(
         &self,
         request: CallToolRequestParam,
-        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<CallToolResult, rmcp::ErrorData>> + Send + '_
     {
         let result = || -> Result<CallToolResult> {
@@ -1444,6 +1894,8 @@ impl ServerHandler for SkillService {
                     if let Some(d) = diag.as_mut() {
                         d.duplicates.extend(dup_log.iter().cloned());
                     }
+                    let runtime = self.runtime_overrides();
+                    let render_mode = manifest_render_mode(&runtime, context.peer.peer_info());
                     let content = self.render_autoload_cached(
                         &skills,
                         AutoloadOptions {
@@ -1453,10 +1905,18 @@ impl ServerHandler for SkillService {
                                 .prompt
                                 .or_else(|| std::env::var("CODEX_SKILLS_PROMPT").ok())
                                 .as_deref(),
+                            embed_threshold: Some(
+                                args.embed_threshold
+                                    .unwrap_or_else(env_embed_threshold)
+                            ),
                             preload_terms: preload_terms_ref,
                             pinned: Some(&effective_pins),
                             matched: Some(&mut matched),
                             diagnostics: diag.as_mut(),
+                            render_mode,
+                            log_render_mode: runtime.render_mode_log(),
+                            gzip_ok: peer_accepts_gzip(context.peer.peer_info()),
+                            minimal_manifest: runtime.manifest_minimal(),
                         },
                     )?;
                     let ts = SystemTime::now()
@@ -1484,6 +1944,139 @@ impl ServerHandler for SkillService {
                                 "priority_rank_by_source": rank_map
                             }
                         })),
+                        is_error: Some(false),
+                        meta: None,
+                    })
+                }
+                "render-preview" => {
+                    let (skills, dup_log) = self.current_skills_with_dups()?;
+                    let args: AutoloadArgs = request
+                        .arguments
+                        .as_ref()
+                        .map(|obj| {
+                            serde_json::from_value(json!(obj.clone())).map_err(anyhow::Error::from)
+                        })
+                        .transpose()?
+                        .unwrap_or_default();
+                    let manual_pins = load_pinned().unwrap_or_default();
+                    let history = load_history().unwrap_or_default();
+                    let auto_pins = if args.auto_pin.unwrap_or(env_auto_pin_default()) {
+                        auto_pin_from_history(&history)
+                    } else {
+                        HashSet::new()
+                    };
+                    let mut effective_pins = manual_pins.clone();
+                    effective_pins.extend(auto_pins.iter().cloned());
+                    let preload_terms = if let Some(path) = agents_manifest()? {
+                        if let Ok(text) = fs::read_to_string(&path) {
+                            Some(extract_refs_from_agents(&text))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    let preload_terms_ref = preload_terms.as_ref();
+                    let runtime = self.runtime_overrides();
+                    let stats = render_preview_stats(
+                        &skills,
+                        AutoloadOptions {
+                            include_claude: args.include_claude.unwrap_or(env_include_claude()),
+                            max_bytes: args.max_bytes.or(env_max_bytes()),
+                            prompt: args
+                                .prompt
+                                .or_else(|| std::env::var("CODEX_SKILLS_PROMPT").ok())
+                                .as_deref(),
+                            embed_threshold: Some(
+                                args.embed_threshold
+                                    .unwrap_or_else(env_embed_threshold)
+                            ),
+                            preload_terms: preload_terms_ref,
+                            pinned: Some(&effective_pins),
+                            matched: None,
+                            diagnostics: None,
+                            render_mode: RenderMode::ManifestOnly,
+                            log_render_mode: runtime.render_mode_log(),
+                            gzip_ok: false,
+                            minimal_manifest: runtime.manifest_minimal(),
+                        },
+                    )?;
+                    let text = format!(
+                        "preview matched {} skills, ~{} tokens (~{} bytes)",
+                        stats.matched.len(),
+                        stats.estimated_tokens,
+                        stats.manifest_bytes
+                    );
+                    Ok(CallToolResult {
+                        content: vec![Content::text(text)],
+                        structured_content: Some(json!({
+                            "matched": stats.matched,
+                            "manifest_bytes": stats.manifest_bytes,
+                            "estimated_tokens": stats.estimated_tokens,
+                            "truncated": stats.truncated,
+                            "truncated_content": stats.truncated_content,
+                            "_meta": { "duplicates": dup_log }
+                        })),
+                        is_error: Some(false),
+                        meta: None,
+                    })
+                }
+                "runtime-status" => {
+                    let runtime = self.runtime_overrides();
+            let status = json!({
+                "manifest_first": runtime.manifest_first(),
+                "render_mode_log": runtime.render_mode_log(),
+                "manifest_minimal": runtime.manifest_minimal(),
+                "overrides": {
+                    "manifest_first": runtime.manifest_first,
+                    "render_mode_log": runtime.render_mode_log,
+                    "manifest_minimal": runtime.manifest_minimal,
+                },
+                "env": {
+                    "manifest_first": env_manifest_first(),
+                    "render_mode_log": env_render_mode_log(),
+                    "manifest_minimal": env_manifest_minimal(),
+                }
+            });
+                    Ok(CallToolResult {
+                        content: vec![Content::text("runtime status")],
+                        structured_content: Some(status),
+                        is_error: Some(false),
+                        meta: None,
+                    })
+                }
+                "set-runtime-options" => {
+                    let mut runtime = self.runtime_overrides();
+                    if let Some(args) = request.arguments.as_ref() {
+                        if let Some(val) = args.get("manifest_first").and_then(|v| v.as_bool()) {
+                            runtime.manifest_first = Some(val);
+                        }
+                        if let Some(val) = args.get("render_mode_log").and_then(|v| v.as_bool()) {
+                            runtime.render_mode_log = Some(val);
+                        }
+                        if let Some(val) = args.get("manifest_minimal").and_then(|v| v.as_bool()) {
+                            runtime.manifest_minimal = Some(val);
+                        }
+                        if let Err(e) = runtime.save() {
+                            tracing::warn!(error = %e, "failed to save runtime overrides");
+                        }
+                        if let Ok(mut guard) = self.runtime.lock() {
+                            *guard = runtime.clone();
+                        }
+                    }
+                    let status = json!({
+                        "manifest_first": runtime.manifest_first(),
+                        "render_mode_log": runtime.render_mode_log(),
+                        "manifest_minimal": runtime.manifest_minimal(),
+                        "overrides": {
+                            "manifest_first": runtime.manifest_first,
+                            "render_mode_log": runtime.render_mode_log,
+                            "manifest_minimal": runtime.manifest_minimal.unwrap_or(runtime.manifest_minimal()),
+                        }
+                    });
+                    Ok(CallToolResult {
+                        content: vec![Content::text("runtime options updated")],
+                        structured_content: Some(status),
                         is_error: Some(false),
                         meta: None,
                     })
@@ -1556,6 +2149,8 @@ struct AutoloadArgs {
     max_bytes: Option<usize>,
     /// A prompt string used to filter relevant skills.
     prompt: Option<String>,
+    /// Embedding similarity threshold (0-1) for fuzzy prompt matching.
+    embed_threshold: Option<f32>,
     /// If true, enables heuristic auto-pinning based on recent prompt matches.
     auto_pin: Option<bool>,
     /// If true, diagnostic information (included/skipped skills) is emitted.
@@ -1571,6 +2166,7 @@ fn emit_autoload(
     include_claude: bool,
     max_bytes: Option<usize>,
     prompt: Option<String>,
+    embed_threshold: Option<f32>,
     auto_pin: bool,
     extra_dirs: &[PathBuf],
     diagnose: bool,
@@ -1607,18 +2203,25 @@ fn emit_autoload(
     };
     let preload_terms_ref = preload_terms.as_ref();
     let prompt = prompt.or_else(|| std::env::var("CODEX_SKILLS_PROMPT").ok());
+    let runtime = runtime_overrides_cached();
+    let render_mode = manifest_render_mode(&runtime, None);
     let content = render_autoload(
         &skills,
-        AutoloadOptions {
-            include_claude,
-            max_bytes: max_bytes.or(env_max_bytes()),
-            prompt: prompt.as_deref(),
-            preload_terms: preload_terms_ref,
-            pinned: Some(&effective_pins),
-            matched: Some(&mut matched),
-            diagnostics: diag.as_mut(),
-        },
-    )?;
+            AutoloadOptions {
+                include_claude,
+                max_bytes: max_bytes.or(env_max_bytes()),
+                prompt: prompt.as_deref(),
+                embed_threshold: Some(embed_threshold.unwrap_or_else(env_embed_threshold)),
+                preload_terms: preload_terms_ref,
+                pinned: Some(&effective_pins),
+                matched: Some(&mut matched),
+                diagnostics: diag.as_mut(),
+                render_mode,
+                log_render_mode: runtime.render_mode_log(),
+                gzip_ok: false,
+                minimal_manifest: runtime.manifest_minimal(),
+            },
+        )?;
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -1793,6 +2396,7 @@ pub fn run() -> Result<()> {
             include_claude,
             max_bytes,
             prompt,
+            embed_threshold,
             auto_pin,
             skill_dirs,
             diagnose,
@@ -1800,6 +2404,7 @@ pub fn run() -> Result<()> {
             include_claude,
             max_bytes,
             prompt,
+            embed_threshold,
             auto_pin,
             &merge_extra_dirs(&skill_dirs),
             diagnose,
@@ -1819,8 +2424,12 @@ pub fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::reset_runtime_cache_for_tests;
+    use codex_mcp_skills_state::runtime_overrides_path;
+    use flate2::read::GzDecoder;
     use std::collections::HashSet;
     use std::fs;
+    use std::io::Read;
     use std::process::Command;
     use std::time::Duration;
     use tempfile::tempdir;
@@ -1831,10 +2440,12 @@ mod tests {
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
         std::env::remove_var("CODEX_SKILLS_MANIFEST");
+        std::env::remove_var(ENV_EXPOSE_AGENTS);
         let svc = SkillService {
             cache: Arc::new(Mutex::new(SkillCache::new(vec![]))),
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
             warmup_started: AtomicBool::new(false),
+            runtime: Arc::new(Mutex::new(RuntimeOverrides::default())),
         };
         let resources = svc.list_resources_payload()?;
         assert!(resources
@@ -1855,10 +2466,12 @@ mod tests {
         let tmp = tempdir()?;
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
+        std::env::remove_var(ENV_EXPOSE_AGENTS);
         let svc = SkillService {
             cache: Arc::new(Mutex::new(SkillCache::new(vec![]))),
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
             warmup_started: AtomicBool::new(false),
+            runtime: Arc::new(Mutex::new(RuntimeOverrides::default())),
         };
         let result = svc.read_resource_sync(AGENTS_URI)?;
         let text = match &result.contents[0] {
@@ -1933,6 +2546,7 @@ mod tests {
             }]))),
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
             warmup_started: AtomicBool::new(false),
+            runtime: Arc::new(Mutex::new(RuntimeOverrides::default())),
         };
         let result = svc.read_resource_sync("skill://codex/alpha/SKILL.md")?;
         match &result.contents[0] {
@@ -2026,6 +2640,7 @@ mod tests {
             ))),
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
             warmup_started: AtomicBool::new(false),
+            runtime: Arc::new(Mutex::new(RuntimeOverrides::default())),
         };
 
         let (skills_first, _) = svc.current_skills_with_dups()?;
@@ -2039,6 +2654,66 @@ mod tests {
         let (skills_second, _) = svc.current_skills_with_dups()?;
         assert_eq!(skills_second.len(), 2);
         Ok(())
+    }
+
+    #[test]
+    fn runtime_overrides_cached_memoizes() -> Result<()> {
+        reset_runtime_cache_for_tests();
+        let tmp = tempdir()?;
+        std::env::set_var("HOME", tmp.path());
+        let path = runtime_overrides_path().unwrap();
+        fs::create_dir_all(path.parent().unwrap())?;
+        fs::write(&path, r#"{"manifest_first":false,"render_mode_log":true}"#)?;
+
+        let first = runtime_overrides_cached();
+        assert!(!first.manifest_first());
+        assert!(first.render_mode_log());
+
+        // Modify file; cached value should remain until reset
+        fs::write(&path, r#"{"manifest_first":true,"render_mode_log":false}"#)?;
+        let still_cached = runtime_overrides_cached();
+        assert!(!still_cached.manifest_first());
+        assert!(still_cached.render_mode_log());
+
+        reset_runtime_cache_for_tests();
+        let refreshed = runtime_overrides_cached();
+        assert!(refreshed.manifest_first());
+        assert!(!refreshed.render_mode_log());
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_render_mode_respects_runtime_and_allowlist() {
+        reset_runtime_cache_for_tests();
+        reset_allowlist_cache_for_tests();
+        let mut rt = RuntimeOverrides::default();
+        rt.manifest_first = Some(false);
+        assert_eq!(manifest_render_mode(&rt, None), RenderMode::ContentOnly);
+
+        rt.manifest_first = Some(true);
+        let mut client = ClientInfo::default();
+        client.client_info.name = "claude-desktop".into();
+        assert_eq!(
+            manifest_render_mode(&rt, Some(&client)),
+            RenderMode::ManifestOnly
+        );
+
+        let tmp = tempdir().unwrap();
+        let allow = tmp.path().join("allow.json");
+        fs::write(&allow, r#"[{"name_substr":"codex","min_version":"2.0.0"}]"#).unwrap();
+        std::env::set_var("CODEX_SKILLS_MANIFEST_ALLOWLIST", &allow);
+        reset_allowlist_cache_for_tests();
+        let mut codex = ClientInfo::default();
+        codex.client_info.name = "codex-cli".into();
+        codex.client_info.version = "2.1.0".into();
+        assert_eq!(
+            manifest_render_mode(&rt, Some(&codex)),
+            RenderMode::ManifestOnly
+        );
+
+        codex.client_info.version = "1.0.0".into();
+        reset_allowlist_cache_for_tests();
+        assert_eq!(manifest_render_mode(&rt, Some(&codex)), RenderMode::Dual);
     }
 
     #[test]
@@ -2059,6 +2734,7 @@ mod tests {
             ))),
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
             warmup_started: AtomicBool::new(false),
+            runtime: Arc::new(Mutex::new(RuntimeOverrides::default())),
         };
 
         let uri = "skill://codex/alpha/SKILL.md";
@@ -2086,6 +2762,7 @@ mod tests {
         let tmp = tempdir()?;
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
+        std::env::remove_var(ENV_EXPOSE_AGENTS);
         let manifest = tmp.path().join(".codex/skills-manifest.json");
         fs::create_dir_all(manifest.parent().unwrap())?;
         fs::write(
@@ -2098,7 +2775,9 @@ mod tests {
             cache: Arc::new(Mutex::new(SkillCache::new(vec![]))),
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
             warmup_started: AtomicBool::new(false),
+            runtime: Arc::new(Mutex::new(RuntimeOverrides::default())),
         };
+        assert!(!svc.expose_agents_doc()?);
         let resources = svc.list_resources_payload()?;
         assert!(!resources.iter().any(|r| r.uri == AGENTS_URI));
         let err = svc.read_resource_sync(AGENTS_URI).unwrap_err();
@@ -2214,19 +2893,42 @@ mod tests {
             },
         ];
 
-        let content = render_autoload(
+        // Compute lengths to choose a max_bytes that fits manifest but not full output.
+        let manifest_only = render_autoload(
+            &skills,
+            AutoloadOptions {
+                render_mode: RenderMode::ManifestOnly,
+                ..Default::default()
+            },
+        )?;
+        let full_dual = render_autoload(
             &skills,
             AutoloadOptions {
                 include_claude: false,
-                max_bytes: Some(120),
                 prompt: Some("token efficiency test prompt"),
                 ..Default::default()
             },
         )?;
-        assert!(content.contains("codex/SKILL.md"));
-        assert!(!content.contains("claude/SKILL.md"));
-        assert!(content.len() <= 120);
-        assert!(content.to_lowercase().contains("trunc"));
+        let limit = manifest_only.len() + 16; // slightly above manifest, below full content
+        assert!(limit < full_dual.len());
+
+        let content = render_autoload(
+            &skills,
+            AutoloadOptions {
+                include_claude: false,
+                max_bytes: Some(limit),
+                prompt: Some("token efficiency test prompt"),
+                ..Default::default()
+            },
+        )?;
+        // When truncated, manifest should remain valid JSON and content may be dropped.
+        assert!(content.len() <= limit);
+        let json_part = content
+            .lines()
+            .skip_while(|l| l.starts_with("[skills]"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        serde_json::from_str::<serde_json::Value>(&json_part)?;
         Ok(())
     }
 
@@ -2277,6 +2979,389 @@ mod tests {
         assert!(content.contains("mirror/SKILL.md"));
         // Codex skill is not pinned and the prompt does not match, so it may be filtered out.
         Ok(())
+    }
+
+    #[test]
+    fn autoload_uses_embedding_similarity_for_fuzzy_prompt_hits() -> Result<()> {
+        let tmp = tempdir()?;
+        let codex_dir = tmp.path().join("codex/skills");
+        fs::create_dir_all(&codex_dir)?;
+
+        let skill_path = codex_dir.join("analysis/SKILL.md");
+        fs::create_dir_all(skill_path.parent().unwrap())?;
+        fs::write(
+            &skill_path,
+            "Guide to analyse pipeline performance and resilience.",
+        )?;
+
+        let skills = vec![SkillMeta {
+            name: "analysis/SKILL.md".into(),
+            path: skill_path.clone(),
+            source: SkillSource::Codex,
+            root: codex_dir.clone(),
+            hash: hash_file(&skill_path)?,
+        }];
+
+        let content = render_autoload(
+            &skills,
+            AutoloadOptions {
+                include_claude: false,
+                prompt: Some("plz analyz pipline bugz"),
+                embed_threshold: Some(0.10),
+                ..Default::default()
+            },
+        )?;
+        assert!(
+            content.contains("analysis/SKILL.md"),
+            "embedding similarity should include fuzzy-matched skill"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn autoload_embedding_threshold_blocks_low_similarity() -> Result<()> {
+        let tmp = tempdir()?;
+        let codex_dir = tmp.path().join("codex/skills");
+        fs::create_dir_all(&codex_dir)?;
+
+        let skill_path = codex_dir.join("analysis/SKILL.md");
+        fs::create_dir_all(skill_path.parent().unwrap())?;
+        fs::write(
+            &skill_path,
+            "Guide to analyse pipeline performance and resilience.",
+        )?;
+
+        let skills = vec![SkillMeta {
+            name: "analysis/SKILL.md".into(),
+            path: skill_path.clone(),
+            source: SkillSource::Codex,
+            root: codex_dir.clone(),
+            hash: hash_file(&skill_path)?,
+        }];
+
+        let content = render_autoload(
+            &skills,
+            AutoloadOptions {
+                include_claude: false,
+                prompt: Some("plz analyz pipline bugz"),
+                embed_threshold: Some(0.95),
+                ..Default::default()
+            },
+        )?;
+        assert!(
+            !content.contains("analysis/SKILL.md"),
+            "high similarity threshold should filter out fuzzy matches"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn autoload_respects_env_embed_threshold_default() -> Result<()> {
+        let tmp = tempdir()?;
+        let codex_dir = tmp.path().join("codex/skills");
+        fs::create_dir_all(&codex_dir)?;
+        let skill_path = codex_dir.join("analysis/SKILL.md");
+        fs::create_dir_all(skill_path.parent().unwrap())?;
+        fs::write(
+            &skill_path,
+            "Guide to analyse pipeline performance and resilience.",
+        )?;
+
+        let skills = vec![SkillMeta {
+            name: "analysis/SKILL.md".into(),
+            path: skill_path.clone(),
+            source: SkillSource::Codex,
+            root: codex_dir.clone(),
+            hash: hash_file(&skill_path)?,
+        }];
+
+        std::env::set_var("CODEX_SKILLS_EMBED_THRESHOLD", "0.9");
+        let content = render_autoload(
+            &skills,
+            AutoloadOptions {
+                include_claude: false,
+                prompt: Some("plz analyz pipline bugz"),
+                ..Default::default()
+            },
+        )?;
+        std::env::remove_var("CODEX_SKILLS_EMBED_THRESHOLD");
+
+        assert!(
+            !content.contains("analysis/SKILL.md"),
+            "env-set high threshold should apply when option not provided"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn autoload_keyword_match_still_wins_when_threshold_high() -> Result<()> {
+        // GIVEN a prompt that directly names the skill (keyword path)
+        let tmp = tempdir()?;
+        let codex_dir = tmp.path().join("codex/skills");
+        fs::create_dir_all(&codex_dir)?;
+        let skill_path = codex_dir.join("observability/SKILL.md");
+        fs::create_dir_all(skill_path.parent().unwrap())?;
+        fs::write(&skill_path, "How to add tracing and metrics.")?;
+
+        let skills = vec![SkillMeta {
+            name: "observability/SKILL.md".into(),
+            path: skill_path.clone(),
+            source: SkillSource::Codex,
+            root: codex_dir.clone(),
+            hash: hash_file(&skill_path)?,
+        }];
+
+        // WHEN embed threshold is high but keyword hits
+        let content = render_autoload(
+            &skills,
+            AutoloadOptions {
+                include_claude: false,
+                prompt: Some("need observability best practices"),
+                embed_threshold: Some(0.99),
+                ..Default::default()
+            },
+        )?;
+
+        // THEN the skill is still included
+        assert!(
+            content.contains("observability/SKILL.md"),
+            "direct keyword match should not be blocked by high embed threshold"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn autoload_args_parses_embed_threshold() -> Result<()> {
+        let json = r#"{
+            "include_claude": false,
+            "max_bytes": 1024,
+            "prompt": "typo prompt",
+            "embed_threshold": 0.42,
+            "auto_pin": false,
+            "diagnose": true
+        }"#;
+        let args: AutoloadArgs = serde_json::from_str(json)?;
+        assert_eq!(args.embed_threshold, Some(0.42));
+        assert_eq!(args.prompt, Some("typo prompt".into()));
+        assert_eq!(args.max_bytes, Some(1024));
+        Ok(())
+    }
+
+    #[test]
+    fn render_preview_stats_returns_token_estimate() -> Result<()> {
+        let tmp = tempdir()?;
+        let codex_dir = tmp.path().join("codex/skills");
+        fs::create_dir_all(&codex_dir)?;
+        let skill_path = codex_dir.join("analysis/SKILL.md");
+        fs::create_dir_all(skill_path.parent().unwrap())?;
+        fs::write(&skill_path, "Guide to analyse pipeline performance and resilience.")?;
+
+        let skills = vec![SkillMeta {
+            name: "analysis/SKILL.md".into(),
+            path: skill_path.clone(),
+            source: SkillSource::Codex,
+            root: codex_dir.clone(),
+            hash: hash_file(&skill_path)?,
+        }];
+
+        let stats = render_preview_stats(
+            &skills,
+            AutoloadOptions {
+                include_claude: false,
+                prompt: Some("pipeline review"),
+                embed_threshold: Some(0.05),
+                ..Default::default()
+            },
+        )?;
+
+        assert_eq!(stats.matched, vec!["analysis/SKILL.md"]);
+        assert!(stats.manifest_bytes > 0);
+        assert!(stats.estimated_tokens > 0);
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_only_small_limit_stays_valid_json() -> Result<()> {
+        let tmp = tempdir()?;
+        let codex_dir = tmp.path().join("codex/skills");
+        fs::create_dir_all(&codex_dir)?;
+        let codex_skill = codex_dir.join("SKILL.md");
+        fs::write(&codex_skill, "C token_repeat".repeat(20))?;
+
+        let skills = vec![SkillMeta {
+            name: "codex/SKILL.md".into(),
+            path: codex_skill.clone(),
+            source: SkillSource::Codex,
+            root: codex_dir.clone(),
+            hash: hash_file(&codex_skill)?,
+        }];
+
+        let manifest_only = render_autoload(
+            &skills,
+            AutoloadOptions {
+                render_mode: RenderMode::ManifestOnly,
+                ..Default::default()
+            },
+        )?;
+        let limit = manifest_only.len() + 8;
+
+        let content = render_autoload(
+            &skills,
+            AutoloadOptions {
+                render_mode: RenderMode::ManifestOnly,
+                max_bytes: Some(limit),
+                ..Default::default()
+            },
+        )?;
+
+        // Should parse as JSON and not exceed limit.
+        assert!(content.len() <= limit);
+        let json_part = content
+            .lines()
+            .skip_while(|l| l.starts_with("[skills]"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        serde_json::from_str::<serde_json::Value>(&json_part)?;
+        Ok(())
+    }
+
+    #[test]
+    fn gzipped_manifest_fallback_when_limit_hit_and_supported() -> Result<()> {
+        let tmp = tempdir()?;
+        let codex_dir = tmp.path().join("codex/skills");
+        fs::create_dir_all(&codex_dir)?;
+        let codex_skill = codex_dir.join("SKILL.md");
+        fs::write(&codex_skill, "C token_repeat".repeat(50))?;
+
+        let skills = vec![SkillMeta {
+            name: "codex/SKILL.md".into(),
+            path: codex_skill.clone(),
+            source: SkillSource::Codex,
+            root: codex_dir.clone(),
+            hash: hash_file(&codex_skill)?,
+        }];
+
+        let manifest_only_full = render_autoload(
+            &skills,
+            AutoloadOptions {
+                render_mode: RenderMode::ManifestOnly,
+                ..Default::default()
+            },
+        )?;
+        let manifest_json_full = manifest_only_full
+            .lines()
+            .skip_while(|l| l.starts_with("[skills]"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let gz_wrapped_full = format!(
+            r#"{{"skills_manifest_gzip_base64":"{}"}}"#,
+            gzip_base64(&manifest_json_full)?
+        );
+        let limit = gz_wrapped_full.len(); // smaller than raw manifest to force gzip path
+        let preview_len = limit.saturating_div(4).max(64).min(512);
+        let preview = read_prefix(&codex_skill, preview_len)?;
+        let expected_manifest = json!({
+            "skills_manifest": [{
+                "name": "codex/SKILL.md",
+                "source": SkillSource::Codex,
+                "root": codex_dir,
+                "path": codex_skill,
+                "hash": hash_file(&codex_skill)?,
+                "preview": preview
+            }]
+        });
+
+        let content = render_autoload(
+            &skills,
+            AutoloadOptions {
+                render_mode: RenderMode::ManifestOnly,
+                max_bytes: Some(limit),
+                gzip_ok: true,
+                ..Default::default()
+            },
+        )?;
+
+        let v_compressed: serde_json::Value = serde_json::from_str(&content)?;
+        let b64 = v_compressed
+            .get("skills_manifest_gzip_base64")
+            .and_then(|s| s.as_str())
+            .expect("compressed manifest present");
+        let bytes = BASE64.decode(b64)?;
+        let mut decoder = GzDecoder::new(&bytes[..]);
+        let mut decoded = String::new();
+        decoder.read_to_string(&mut decoded)?;
+        let manifest_val: serde_json::Value = serde_json::from_str(&decoded)?;
+        assert_eq!(manifest_val, expected_manifest);
+        Ok(())
+    }
+
+    #[test]
+    fn minimal_manifest_drops_heavy_fields() -> Result<()> {
+        let tmp = tempdir()?;
+        let codex_dir = tmp.path().join("codex/skills");
+        fs::create_dir_all(&codex_dir)?;
+        let codex_skill = codex_dir.join("SKILL.md");
+        fs::write(&codex_skill, "short content")?;
+
+        let skills = vec![SkillMeta {
+            name: "codex/SKILL.md".into(),
+            path: codex_skill.clone(),
+            source: SkillSource::Codex,
+            root: codex_dir.clone(),
+            hash: hash_file(&codex_skill)?,
+        }];
+
+        let full = render_autoload(
+            &skills,
+            AutoloadOptions {
+                render_mode: RenderMode::ManifestOnly,
+                ..Default::default()
+            },
+        )?;
+        let minimal = render_autoload(
+            &skills,
+            AutoloadOptions {
+                render_mode: RenderMode::ManifestOnly,
+                minimal_manifest: true,
+                ..Default::default()
+            },
+        )?;
+
+        assert!(minimal.len() < full.len());
+        let parse_manifest = |s: &str| -> Result<serde_json::Value> {
+            let body = s
+                .lines()
+                .skip_while(|l| l.starts_with("[skills]"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Ok(serde_json::from_str(&body)?)
+        };
+
+        let full_json = parse_manifest(&full)?;
+        let minimal_json = parse_manifest(&minimal)?;
+        let minimal_skill = minimal_json["skills_manifest"][0].as_object().unwrap();
+        assert!(!minimal_skill.contains_key("path"));
+        assert!(!minimal_skill.contains_key("preview"));
+        assert!(minimal_skill.contains_key("name"));
+        assert!(minimal_skill.contains_key("hash"));
+
+        let full_skill = full_json["skills_manifest"][0].as_object().unwrap();
+        assert!(full_skill.contains_key("path"));
+        assert!(full_skill.contains_key("preview"));
+        Ok(())
+    }
+
+    #[test]
+    fn peer_accepts_gzip_prefers_env_then_name() {
+        assert!(!peer_accepts_gzip(None));
+
+        std::env::set_var("CODEX_SKILLS_ACCEPT_GZIP", "1");
+        assert!(peer_accepts_gzip(None));
+        std::env::remove_var("CODEX_SKILLS_ACCEPT_GZIP");
+
+        let mut client = ClientInfo::default();
+        client.client_info.name = "gzip-capable-client".into();
+        assert!(peer_accepts_gzip(Some(&client)));
     }
 
     #[test]

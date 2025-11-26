@@ -47,12 +47,16 @@ pub fn parse_source_key(key: &str) -> Option<SkillSource> {
     }
 }
 
+/// Represents a root directory where skills are discovered, along with its associated source type.
 #[derive(Debug, Clone)]
 pub struct SkillRoot {
     pub root: PathBuf,
     pub source: SkillSource,
 }
 
+/// Metadata for a discovered skill.
+///
+/// This includes its name, file path, source of discovery, root directory, and content hash.
 #[derive(Debug, Serialize, Clone)]
 pub struct SkillMeta {
     pub name: String,
@@ -80,4 +84,6 @@ pub struct Diagnostics {
     pub skipped: Vec<(String, String)>,                  // name, reason
     pub duplicates: Vec<DuplicateInfo>,                  // found duplicates
     pub truncated: bool,
+    pub truncated_content: bool,
+    pub render_mode: Option<String>,
 }

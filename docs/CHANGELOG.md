@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- Documented MCP runtime tools (`runtime-status`, `set-runtime-options`) with config precedence, CLI `--version`/`--help` examples, and added SemVer/stability notes.
+- Added `render-preview` MCP tool to preview matched skills, manifest size, and token estimates before injecting `additionalContext`.
+- Added public API guardrail job (cargo-public-api) and contributing note about semver checks.
 - Split monolithic core into crates: `discovery` (scan/hash), `state` (persistence/env), `server` (CLI+MCP), `cli` (thin bin).
 - Added coverage workflow (`cargo llvm-cov` + Codecov) and README badges; documented local coverage command.
 - Added smoke tests for discovery hashing and state persistence/auto-pin.

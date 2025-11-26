@@ -32,10 +32,10 @@ GitHub Actions are configured to build and upload release assets when `v*` tags 
 
 ## Build Features
 
--   The `watch` feature, which is enabled by default, allows for filesystem watching.
--   For minimal builds, use `--no-default-features` with `cargo build` or use the `make build-min` command.
+-   The `watch` feature, enabled by default, enables filesystem watching.
+-   For minimal builds, use `--no-default-features` with `cargo build` or the `make build-min` command.
 
-For maintainer notes on artifact layout, please refer to `docs/release-artifacts.md`.
+For maintainer notes on artifact layout, refer to `docs/release-artifacts.md`.
 
 ## Recent Releases
 
