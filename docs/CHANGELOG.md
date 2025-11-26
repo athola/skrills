@@ -7,6 +7,7 @@
 - Split monolithic core into crates: `discovery` (scan/hash), `state` (persistence/env), `server` (CLI+MCP), `cli` (thin bin).
 - Added coverage workflow (`cargo llvm-cov` + Codecov) and README badges; documented local coverage command.
 - Added smoke tests for discovery hashing and state persistence/auto-pin.
+- Installers now clean legacy `codex-mcp-skills` binaries and MCP config entries before wiring skrills to avoid conflicts.
 
 ## 0.1.14 - 2025-11-25
 - Added `skrills doctor` to inspect Codex MCP config (`mcp_servers.json` and `config.toml`) and verify `type = "stdio"` plus binary paths.

@@ -10,7 +10,7 @@ stable, follow the existing patterns, and add tests for new behavior.
 
 ## Public API & stability
 - Pre-1.0, best-effort compatibility for the documented surface (`run` entrypoint and `runtime` module). See `docs/semver-policy.md` for details.
-- Public API guard: run `cargo public-api -p skrills-server --deny-breaking --baseline-git-ref origin/main` before opening a PR. CI enforces the same check.
+- Public API guard: run `cargo public-api diff -p skrills-server --deny removed,changed origin/master..HEAD` before opening a PR. CI enforces the same check.
 - Follow [RFC 1105](https://rust-lang.github.io/rfcs/1105-api-evolution.html) when evaluating potential breakage; prefer additive changes.
 
 ## Tests

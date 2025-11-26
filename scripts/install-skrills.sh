@@ -26,6 +26,67 @@ MCP_PATH="$HOME/.codex/mcp_servers.json"
 CONFIG_TOML="$HOME/.codex/config.toml"
 REPO_ROOT="$(cd "${0%/*}/.." && pwd)"
 
+clean_legacy_codex_mcp_skills() {
+  local removed=0
+  local legacy_bins=(
+    "$HOME/.codex/bin/codex-mcp-skills"
+    "$HOME/.cargo/bin/codex-mcp-skills"
+  )
+  for bin in "${legacy_bins[@]}"; do
+    if [ -e "$bin" ]; then
+      rm -f "$bin" && echo "Removed legacy binary $bin" && removed=1
+    fi
+  done
+
+  if [ -f "$MCP_PATH" ]; then
+    if command -v jq >/dev/null 2>&1; then
+      tmp=$(mktemp)
+      jq 'del(.mcpServers["codex-mcp-skills"])' "$MCP_PATH" > "$tmp" \
+        && mv "$tmp" "$MCP_PATH" \
+        && echo "Removed codex-mcp-skills from $MCP_PATH" \
+        || rm -f "$tmp"
+    else
+      python - <<'PY' "$MCP_PATH"
+import json, os, sys, tempfile
+path = sys.argv[1]
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    sys.exit(0)
+servers = data.get("mcpServers")
+if isinstance(servers, dict) and servers.pop("codex-mcp-skills", None) is not None:
+    tmp_fd, tmp_path = tempfile.mkstemp()
+    with os.fdopen(tmp_fd, "w", encoding="utf-8") as out:
+        json.dump(data, out, indent=2)
+        out.write("\n")
+    os.replace(tmp_path, path)
+    print(f"Removed codex-mcp-skills from {path}")
+PY
+    fi
+  fi
+
+  if [ -f "$CONFIG_TOML" ]; then
+    tmp=$(mktemp)
+    awk '
+      BEGIN { skip = 0 }
+      /^\[mcp_servers\."codex-mcp-skills"\]/ { skip = 1; next }
+      /^\[/ { if (skip) skip = 0 }
+      { if (!skip) print }
+    ' "$CONFIG_TOML" > "$tmp" && mv "$tmp" "$CONFIG_TOML" && \
+      echo "Removed codex-mcp-skills from $CONFIG_TOML" || rm -f "$tmp"
+  fi
+
+  # Clean legacy hook files that used the old name.
+  if [ -d "$HOOK_DIR" ]; then
+    find "$HOOK_DIR" -maxdepth 1 -type f -name '*codex-mcp-skills*' -exec rm -f {} \; 2>/dev/null
+  fi
+
+  if [ "$removed" -eq 1 ]; then
+    echo "Legacy codex-mcp-skills artifacts cleaned."
+  fi
+}
+
 sync_universal() {
   local AGENT_SKILLS="${AGENT_SKILLS_DIR:-$HOME/.agent/skills}"
   local SKRILLS_DIR="${SKRILLS_DIR:-$HOME/.codex/skills}"
@@ -54,6 +115,8 @@ if [ "$UNIVERSAL_ONLY" -eq 1 ]; then
   sync_universal
   exit 0
 fi
+
+clean_legacy_codex_mcp_skills
 
 mkdir -p "$HOOK_DIR"
 write_hook() {

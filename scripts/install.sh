@@ -22,6 +22,21 @@ set -eu
 fail() { echo "install error: $*" >&2; exit 1; }
 need_cmd() { command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"; }
 
+CONFIG_TOML="$HOME/.codex/config.toml"
+
+clean_legacy_codex_config()
+{
+  [ -f "$CONFIG_TOML" ] || return
+  tmp=$(mktemp)
+  awk '
+    BEGIN { skip = 0 }
+    /^\[mcp_servers\."codex-(mcp-)?skills"\]/ { skip = 1; next }
+    /^\[/ { if (skip) skip = 0 }
+    { if (!skip) print }
+  ' "$CONFIG_TOML" > "$tmp" && mv "$tmp" "$CONFIG_TOML" && \
+    echo "Removed legacy codex-skills entry from $CONFIG_TOML" || rm -f "$tmp"
+}
+
 OS()
 {
   case "$(uname -s)" in
@@ -262,6 +277,8 @@ BUILD_LOCAL()
 parse_args "$@"
 bin_name="$(BIN_NAME)"
 bin_dir="${SKRILLS_BIN_DIR:-$HOME/.codex/bin}"
+
+clean_legacy_codex_config
 
 if [ "$LOCAL_BUILD" = 1 ]; then
   BUILD_LOCAL "$bin_dir" "$bin_name"

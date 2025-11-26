@@ -40,6 +40,7 @@ The installer automatically sets up the necessary hooks and registers the MCP se
 
 -   **Hook**: The `prompt.on_user_prompt_submit` hook is written to `~/.codex/hooks/codex/`. This hook allows `skrills` to process prompts.
 -   **MCP Server Registration**: The MCP server is registered in `~/.codex/mcp_servers.json`. The installer ensures `type = "stdio"` is correctly configured, as required by newer Codex MCP clients.
+-   **Legacy cleanup**: Before wiring skrills, the installer removes any older `codex-mcp-skills` binaries and MCP entries to avoid duplicate server registrations.
 -   `--universal`: This flag also mirrors skills into `~/.agent/skills`, making them available for other agents.
 -   `--universal-only`: Performs only the mirroring step without installing the main binary or hooks.
 

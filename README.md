@@ -36,6 +36,7 @@ curl -LsSf https://raw.githubusercontent.com/${SKRILLS_GH_REPO:-athola/skrills}/
 powershell -ExecutionPolicy Bypass -NoLogo -NoProfile -Command "Remove-Item alias:curl -ErrorAction SilentlyContinue; iwr https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.ps1 -UseBasicParsing | iex"
 ```
 Flags: `--local` builds from checkout; env `SKRILLS_BIN_DIR`, `SKRILLS_TARGET`, `SKRILLS_VERSION`, `SKRILLS_GH_REPO` override defaults.
+Installers now also remove legacy `codex-mcp-skills` binaries and MCP entries to prevent duplicate server registrations.
 
 ### Supported platforms
 - Linux, macOS, Windows (x86_64); other targets supported by cargo builds.
