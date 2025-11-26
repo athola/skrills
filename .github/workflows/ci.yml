@@ -94,10 +94,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-public-api
         run: cargo install cargo-public-api --locked
-      - name: Fetch main for baseline
-        run: git fetch origin main --depth=1
+      - name: Fetch master for baseline
+        run: git fetch origin master --depth=1
       - name: Public API check (skrills-server)
-        run: cargo public-api -p skrills-server --deny-breaking --baseline-git-ref origin/main
+        run: cargo public-api -p skrills-server --deny-breaking --baseline-git-ref origin/master
 
   release-build-check:
     name: Release build (dry run)
