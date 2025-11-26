@@ -99,7 +99,8 @@ jobs:
       - name: Fetch master for baseline
         run: git fetch origin master --depth=1
       - name: Public API check (skrills-server)
-        run: cargo +nightly public-api diff -p skrills-server --deny removed --deny changed origin/master..HEAD
+        working-directory: crates/server
+        run: cargo +nightly public-api diff --deny removed --deny changed origin/master..HEAD
 
   release-build-check:
     name: Release build (dry run)
