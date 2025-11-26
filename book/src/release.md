@@ -1,10 +1,10 @@
 # Release and Distribution Process
 
-This document outlines the process for releasing and distributing `codex-mcp-skills`.
+This document outlines the process for releasing and distributing `skrills`.
 
 ## Build Targets
 
-`codex-mcp-skills` is built for the following target architectures:
+`skrills` is built for the following target architectures:
 
 -   `x86_64-unknown-linux-gnu`
 -   `aarch64-unknown-linux-gnu`
@@ -15,11 +15,11 @@ This document outlines the process for releasing and distributing `codex-mcp-ski
 
 ## Asset Naming Convention
 
-Release assets follow the naming convention `codex-mcp-skills-<target>.tar.gz`. Inside each archive, the binary is located at the root and is named `codex-mcp-skills` (or `codex-mcp-skills.exe` for Windows builds).
+Release assets follow the naming convention `skrills-<target>.tar.gz`. Inside each archive, the binary is located at the root and is named `skrills` (or `skrills.exe` for Windows builds).
 
 ## Installers
 
-Our `curl` (for macOS/Linux) and `PowerShell` (for Windows) installation scripts automatically select the correct release asset using the GitHub API. These installers also register the MCP server by adding `type = "stdio"` to both `~/.codex/mcp_servers.json` and `~/.codex/config.toml`. The default GitHub repository is `athola/codex-mcp-skills`, but this can be overridden by setting the `CODEX_SKILLS_GH_REPO` environment variable.
+Our `curl` (for macOS/Linux) and `PowerShell` (for Windows) installation scripts automatically select the correct release asset using the GitHub API. These installers also register the MCP server by adding `type = "stdio"` to both `~/.codex/mcp_servers.json` and `~/.codex/config.toml`. The default GitHub repository is `athola/skrills`, but this can be overridden by setting the `SKRILLS_GH_REPO` environment variable.
 
 ## Continuous Integration (CI)
 
@@ -32,10 +32,10 @@ GitHub Actions are configured to build and upload release assets when `v*` tags 
 
 ## Build Features
 
--   The `watch` feature, which is enabled by default, allows for filesystem watching.
--   For minimal builds, use `--no-default-features` with `cargo build` or use the `make build-min` command.
+-   The `watch` feature, enabled by default, enables filesystem watching.
+-   For minimal builds, use `--no-default-features` with `cargo build` or the `make build-min` command.
 
-For maintainer notes on artifact layout, please refer to `docs/release-artifacts.md`.
+For maintainer notes on artifact layout, refer to `docs/release-artifacts.md`.
 
 ## Recent Releases
 

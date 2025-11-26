@@ -1,5 +1,10 @@
 # Changelog (highlights)
 
+## Unreleased
+- Modularized workspace into `discovery`, `state`, `server`, and `cli`.
+- Added coverage workflow (cargo-llvm-cov + Codecov) and badges.
+- Added smoke tests for discovery hashing and state persistence/auto-pin.
+
 ## 0.1.14
 - Added `doctor` diagnostics, `--trace-wire` logging, and schema hardening (`type = "object"`), plus installers that enforce `type = "stdio"` in Codex configs and support `--local` builds.
 
@@ -50,10 +55,10 @@
 
 ## 0.1.1
 - One-command installer now wires the Codex hook/MCP registration by default
-  (opt-out via CODEX_SKILLS_NO_HOOK; universal sync via CODEX_SKILLS_UNIVERSAL).
+  (opt-out via SKRILLS_NO_HOOK; universal sync via SKRILLS_UNIVERSAL).
 - mdBook added with Pages deploy; Makefile gains book/docs targets and CLI demos.
 - CI workflow runs fmt, clippy, tests, docs, and mdbook; release assets named
-  `codex-mcp-skills-<target>.tar.gz`.
+  `skrills-<target>.tar.gz`.
 - Docs expanded on child-process safety, cache TTL manifest option, and
   installer defaults.
 

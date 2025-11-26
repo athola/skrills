@@ -2,32 +2,58 @@
 //!
 //! This crate manages skills, handling their discovery, caching, and execution.
 //! It processes `SKILL.md` files, manages tool calls and resources, and integrates
-//! with the `rmcp` protocol.
+//! with the `rmcp` protocol. The public surface intended for embedding is limited
+//! to the `run` entrypoint plus the `runtime` module (runtime overrides used by
+//! MCP tools). Everything else is considered internal and may change.
+//!
+//! Stability: The crate is pre-1.0 and adheres to a best-effort compatibility policy,
+//! as described in `docs/semver-policy.md` and the book’s SemVer section. Backward
+//! incompatible changes to the documented surface will be explicitly noted in the
+//! changelog, though semver MAJOR/MINOR boundaries are not yet guaranteed.
+//!
+//! Feature gating: optional `watch` enables filesystem watching for live cache
+//! invalidation. The default feature set keeps watchers enabled; disable the
+//! feature to build without `notify`.
 //!
 //! On Unix-like systems, this crate installs a `SIGCHLD` handler with `SA_NOCLDWAIT`
 //! at startup. This prevents child processes from becoming zombies when the server
 //! is embedded, by automatically reaping unexpected subprocesses.
 
 use anyhow::{anyhow, Result};
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use clap::{Parser, Subcommand};
 use dialoguer::{theme::ColorfulTheme, Confirm, MultiSelect};
+use flate2::{write::GzEncoder, Compression};
 #[cfg(feature = "watch")]
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use pathdiff::diff_paths;
 use rmcp::model::{
-    CallToolRequestParam, CallToolResult, Content, InitializeResult, ListResourcesResult,
-    ListToolsResult, Meta, PaginatedRequestParam, RawResource, ReadResourceRequestParam,
-    ReadResourceResult, Resource, ResourceContents, ServerCapabilities, Tool, ToolAnnotations,
+    CallToolRequestParam, CallToolResult, ClientInfo, Content, InitializeResult,
+    ListResourcesResult, ListToolsResult, Meta, PaginatedRequestParam, RawResource,
+    ReadResourceRequestParam, ReadResourceResult, Resource, ResourceContents, ServerCapabilities,
+    Tool, ToolAnnotations,
 };
 use rmcp::service::serve_server;
 use rmcp::transport;
 use rmcp::ServerHandler;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Map as JsonMap};
-use sha2::{Digest, Sha256};
+use skrills_discovery::{
+    default_priority, discover_skills, extract_refs_from_agents, hash_file, load_priority_override,
+    priority_labels as disc_priority_labels,
+    priority_labels_and_rank_map as disc_priority_labels_and_rank_map, Diagnostics, DuplicateInfo,
+    SkillMeta, SkillRoot, SkillSource,
+};
+use skrills_state::{
+    auto_pin_from_history, cache_ttl, env_auto_pin, env_diag, env_include_claude,
+    env_manifest_first, env_manifest_minimal, env_max_bytes, env_render_mode_log,
+    extra_dirs_from_env, home_dir, load_auto_pin_flag, load_history, load_manifest_settings,
+    load_pinned, print_history, save_auto_pin_flag, save_history, save_pinned, HistoryEntry,
+};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 #[cfg(unix)]
 use std::mem;
 use std::path::{Path, PathBuf};
@@ -43,95 +69,32 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::runtime::Runtime;
 use walkdir::WalkDir;
 
+pub mod runtime;
+use runtime::{runtime_overrides_cached, RuntimeOverrides};
+
 // Resource IDs and manifest markers
 const AGENTS_URI: &str = "doc://agents";
 const AGENTS_NAME: &str = "AGENTS.md";
 const AGENTS_DESCRIPTION: &str = "AI Agent Development Guidelines";
 const AGENTS_TEXT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../AGENTS.md"));
-const ENV_EXPOSE_AGENTS: &str = "CODEX_SKILLS_EXPOSE_AGENTS";
+const ENV_EXPOSE_AGENTS: &str = "SKRILLS_EXPOSE_AGENTS";
 const AGENTS_SECTION_START: &str = "<!-- available_skills:start -->";
 const AGENTS_SECTION_END: &str = "<!-- available_skills:end -->";
+const DEFAULT_EMBED_PREVIEW_BYTES: usize = 4096;
+const DEFAULT_EMBED_THRESHOLD: f32 = 0.18;
 
-/// Returns the default priority labels in order.
+/// Convenience re-exports for priority labels and ranks.
 fn priority_labels() -> Vec<String> {
-    default_priority().into_iter().map(|s| s.label()).collect()
+    disc_priority_labels()
 }
 
-/// Returns both the priority labels and a source→rank map.
 fn priority_labels_and_rank_map() -> (Vec<String>, JsonMap<String, serde_json::Value>) {
-    let labels = priority_labels();
-    let rank_map = JsonMap::from_iter(
-        labels
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (s.clone(), json!(i + 1))),
-    );
-    (labels, rank_map)
-}
-
-/// Represents the origin of a skill, indicating where it was discovered.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Hash)]
-enum SkillSource {
-    Codex,
-    Claude,
-    Mirror,
-    Agent,
-    Extra(u32),
-}
-
-impl SkillSource {
-    /// Returns a stable label for this source.
-    fn label(&self) -> String {
-        match self {
-            SkillSource::Codex => "codex".into(),
-            SkillSource::Claude => "claude".into(),
-            SkillSource::Mirror => "mirror".into(),
-            SkillSource::Agent => "agent".into(),
-            SkillSource::Extra(n) => format!("extra{n}"),
-        }
-    }
-
-    /// Returns a human-friendly location tag for diagnostics.
-    /// - global: user-level shared skills (~/.codex, ~/.claude, mirror)
-    /// - universal: cross-agent shared skills (~/.agent)
-    /// - project: extra/user-specified directories
-    fn location(&self) -> &'static str {
-        match self {
-            SkillSource::Codex | SkillSource::Claude | SkillSource::Mirror => "global",
-            SkillSource::Agent => "universal",
-            SkillSource::Extra(_) => "project",
-        }
-    }
-}
-
-fn parse_source_key(key: &str) -> Option<SkillSource> {
-    match key.to_ascii_lowercase().as_str() {
-        "codex" => Some(SkillSource::Codex),
-        "claude" => Some(SkillSource::Claude),
-        "mirror" => Some(SkillSource::Mirror),
-        "agent" => Some(SkillSource::Agent),
-        _ => None,
-    }
-}
-
-#[derive(Debug, Clone)]
-struct SkillRoot {
-    root: PathBuf,
-    source: SkillSource,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct SkillMeta {
-    name: String,
-    path: PathBuf,
-    source: SkillSource,
-    root: PathBuf,
-    hash: String,
+    disc_priority_labels_and_rank_map()
 }
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "codex-mcp-skills",
+    name = "skrills",
     about = "MCP server exposing local SKILL.md files for Codex"
 )]
 struct Cli {
@@ -146,11 +109,11 @@ enum Commands {
         /// Additional skill directories (repeatable)
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
-        /// Cache TTL for skill discovery in milliseconds (overrides env CODEX_SKILLS_CACHE_TTL_MS)
+        /// Cache TTL for skill discovery in milliseconds (overrides env SKRILLS_CACHE_TTL_MS)
         #[arg(long = "cache-ttl-ms", value_name = "MILLIS")]
         cache_ttl_ms: Option<u64>,
         /// Dump raw MCP initialize traffic (stdin/stdout) as hex+UTF8 for debugging
-        #[arg(long, env = "CODEX_SKILLS_TRACE_WIRE", default_value_t = false)]
+        #[arg(long, env = "SKRILLS_TRACE_WIRE", default_value_t = false)]
         trace_wire: bool,
         #[cfg(feature = "watch")]
         /// Watch filesystem for changes and invalidate caches immediately
@@ -158,6 +121,7 @@ enum Commands {
         watch: bool,
     },
     /// List discovered skills (debug)
+    #[command(alias = "list-skills")]
     List,
     /// List pinned skills
     ListPinned,
@@ -204,11 +168,14 @@ enum Commands {
         /// Maximum bytes of additionalContext payload
         #[arg(long)]
         max_bytes: Option<usize>,
-        /// Prompt text to filter relevant skills (optional; falls back to env CODEX_SKILLS_PROMPT)
+        /// Prompt text to filter relevant skills (optional; falls back to env SKRILLS_PROMPT)
         #[arg(long)]
         prompt: Option<String>,
+        /// Embedding similarity threshold (0-1) for fuzzy prompt matching
+        #[arg(long)]
+        embed_threshold: Option<f32>,
         /// Enable heuristic auto-pinning based on recent prompt matches
-        #[arg(long, default_value_t = env_auto_pin())]
+        #[arg(long, default_value_t = env_auto_pin_default())]
         auto_pin: bool,
         /// Additional skill directories (repeatable)
         #[arg(long = "skill-dir", value_name = "DIR")]
@@ -234,307 +201,6 @@ enum Commands {
 struct SyncReport {
     copied: usize,
     skipped: usize,
-}
-
-/// Represents settings loaded from the manifest file.
-#[derive(Debug, Default, Deserialize)]
-struct ManifestSettings {
-    #[serde(default)]
-    priority: Option<Vec<String>>,
-    #[serde(default)]
-    expose_agents: Option<bool>,
-    #[serde(default)]
-    cache_ttl_ms: Option<u64>,
-}
-
-/// Stores diagnostic information related to skill processing,
-/// including included, skipped, and found duplicate skills.
-#[derive(Default, Serialize, Deserialize)]
-struct Diagnostics {
-    included: Vec<(String, String, String, String)>, // name, source, root, location
-    skipped: Vec<(String, String)>,                  // name, reason
-    duplicates: Vec<DuplicateInfo>,                  // found duplicates
-    truncated: bool,
-}
-
-/// Represents an entry in the skill usage history.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct HistoryEntry {
-    ts: u64,
-    skills: Vec<String>,
-}
-
-const HISTORY_LIMIT: usize = 50;
-const AUTO_PIN_WINDOW: usize = 5;
-const AUTO_PIN_MIN_HITS: usize = 2;
-const DEFAULT_CACHE_TTL_MS: u64 = 1_500;
-
-fn pinned_file() -> Result<PathBuf> {
-    Ok(home_dir()?.join(".codex/skills-pinned.json"))
-}
-
-fn auto_pin_file() -> Result<PathBuf> {
-    Ok(home_dir()?.join(".codex/skills-autopin.json"))
-}
-
-fn history_file() -> Result<PathBuf> {
-    Ok(home_dir()?.join(".codex/skills-history.json"))
-}
-
-fn manifest_file() -> Result<PathBuf> {
-    if let Ok(custom) = std::env::var("CODEX_SKILLS_MANIFEST") {
-        return Ok(PathBuf::from(custom));
-    }
-    Ok(home_dir()?.join(".codex/skills-manifest.json"))
-}
-
-fn load_manifest_settings() -> Result<ManifestSettings> {
-    let path = manifest_file()?;
-    if !path.exists() {
-        return Ok(ManifestSettings::default());
-    }
-    let data = fs::read_to_string(path)?;
-    let val: serde_json::Value = serde_json::from_str(&data)?;
-    if let Some(arr) = val.as_array() {
-        let list: Vec<String> = arr
-            .iter()
-            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-            .collect();
-        return Ok(ManifestSettings {
-            priority: Some(list),
-            expose_agents: None,
-            cache_ttl_ms: None,
-        });
-    }
-    if let Some(obj) = val.as_object() {
-        let priority = obj.get("priority").and_then(|v| v.as_array()).map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect()
-        });
-        let expose_agents = obj.get("expose_agents").and_then(|v| v.as_bool());
-        let cache_ttl_ms = obj.get("cache_ttl_ms").and_then(|v| v.as_u64());
-        return Ok(ManifestSettings {
-            priority,
-            expose_agents,
-            cache_ttl_ms,
-        });
-    }
-    Err(anyhow!("invalid manifest format"))
-}
-
-fn extra_dirs_from_env() -> Vec<PathBuf> {
-    std::env::var("CODEX_SKILLS_EXTRA_DIRS")
-        .ok()
-        .map(|v| {
-            v.split(':')
-                .filter(|s| !s.is_empty())
-                .map(PathBuf::from)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn agents_manifest() -> Result<Option<PathBuf>> {
-    let path = home_dir()?.join(".codex/AGENTS.md");
-    if path.exists() {
-        return Ok(Some(path));
-    }
-    let local = std::env::current_dir()?.join("AGENTS.md");
-    if local.exists() {
-        return Ok(Some(local));
-    }
-    Ok(None)
-}
-
-fn extract_refs_from_agents(md: &str) -> HashSet<String> {
-    let mut refs = HashSet::new();
-    for line in md.lines() {
-        for token in line.split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_') {
-            let t = token.trim();
-            if t.is_empty() {
-                continue;
-            }
-            if t.eq_ignore_ascii_case("skills") || t.eq_ignore_ascii_case("rules") {
-                continue;
-            }
-            refs.insert(t.to_ascii_lowercase());
-        }
-    }
-    refs
-}
-
-fn merge_extra_dirs(cli_dirs: &[PathBuf]) -> Vec<PathBuf> {
-    let mut dirs = extra_dirs_from_env();
-    dirs.extend(cli_dirs.iter().cloned());
-    dirs
-}
-
-fn load_pinned() -> Result<HashSet<String>> {
-    let path = pinned_file()?;
-    if !path.exists() {
-        return Ok(HashSet::new());
-    }
-    let data = fs::read_to_string(path)?;
-    let list: Vec<String> = serde_json::from_str(&data)?;
-    Ok(list.into_iter().collect())
-}
-
-fn save_pinned(pinned: &HashSet<String>) -> Result<()> {
-    let path = pinned_file()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let list: Vec<&String> = pinned.iter().collect();
-    fs::write(path, serde_json::to_string_pretty(&list)?)?;
-    Ok(())
-}
-
-fn load_auto_pin_flag() -> Result<bool> {
-    let path = auto_pin_file()?;
-    if !path.exists() {
-        return Ok(false);
-    }
-    let data = fs::read_to_string(path)?;
-    serde_json::from_str(&data).map_err(Into::into)
-}
-
-fn save_auto_pin_flag(value: bool) -> Result<()> {
-    let path = auto_pin_file()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, serde_json::to_string_pretty(&value)?)?;
-    Ok(())
-}
-
-fn load_history() -> Result<Vec<HistoryEntry>> {
-    let path = history_file()?;
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let data = fs::read_to_string(path)?;
-    let mut list: Vec<HistoryEntry> = serde_json::from_str(&data)?;
-    if list.len() > HISTORY_LIMIT {
-        list.drain(0..list.len() - HISTORY_LIMIT);
-    }
-    Ok(list)
-}
-
-fn save_history(mut history: Vec<HistoryEntry>) -> Result<()> {
-    if history.len() > HISTORY_LIMIT {
-        history.drain(0..history.len() - HISTORY_LIMIT);
-    }
-    let path = history_file()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, serde_json::to_string_pretty(&history)?)?;
-    Ok(())
-}
-
-fn auto_pin_from_history(history: &[HistoryEntry]) -> HashSet<String> {
-    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-    let window_iter = history.iter().rev().take(AUTO_PIN_WINDOW);
-    for entry in window_iter {
-        for skill in entry.skills.iter() {
-            *counts.entry(skill.as_str()).or_default() += 1;
-        }
-    }
-    counts
-        .into_iter()
-        .filter(|(_, c)| *c >= AUTO_PIN_MIN_HITS)
-        .map(|(s, _)| s.to_string())
-        .collect()
-}
-
-/// Prints the recent skill usage history to stdout.
-fn print_history(limit: usize) -> Result<()> {
-    let history = load_history().unwrap_or_default();
-    let mut entries: Vec<_> = history.into_iter().rev().take(limit).collect();
-    if entries.is_empty() {
-        println!("(no history)");
-        return Ok(());
-    }
-    for entry in entries.drain(..) {
-        println!("{} | {}", entry.ts, entry.skills.join(", "));
-    }
-    Ok(())
-}
-
-/// Resolves a user-provided specification (either an exact skill name or a unique substring) to a full skill name.
-fn resolve_skill<'a>(spec: &str, skills: &'a [SkillMeta]) -> Result<&'a str> {
-    let spec_l = spec.to_ascii_lowercase();
-    let mut matches: Vec<&str> = skills
-        .iter()
-        .map(|s| s.name.as_str())
-        .filter(|name| {
-            let nl = name.to_ascii_lowercase();
-            nl == spec_l || nl.contains(&spec_l)
-        })
-        .collect();
-    matches.sort_unstable();
-    matches.dedup();
-    match matches.len() {
-        0 => Err(anyhow!("skill not found for spec: {spec}")),
-        1 => Ok(matches[0]),
-        _ => Err(anyhow!(
-            "spec '{spec}' is ambiguous (matches: {})",
-            matches.join(", ")
-        )),
-    }
-}
-
-fn env_include_claude() -> bool {
-    std::env::var("CODEX_SKILLS_INCLUDE_CLAUDE")
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}
-
-fn env_diag() -> bool {
-    std::env::var("CODEX_SKILLS_DIAG")
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}
-
-fn env_auto_pin() -> bool {
-    if let Ok(v) = std::env::var("CODEX_SKILLS_AUTO_PIN") {
-        return v == "1" || v.eq_ignore_ascii_case("true");
-    }
-    load_auto_pin_flag().unwrap_or(false)
-}
-
-/// Reads an optional max-bytes override for autoload payloads from env.
-fn env_max_bytes() -> Option<usize> {
-    std::env::var("CODEX_SKILLS_AUTOLOAD_MAX_BYTES")
-        .ok()
-        .and_then(|s| s.parse().ok())
-}
-
-/// Returns the in-memory cache TTL for skill discovery in milliseconds.
-/// Precedence: env CODEX_SKILLS_CACHE_TTL_MS > manifest cache_ttl_ms > default.
-fn cache_ttl() -> Duration {
-    if let Some(ms) = std::env::var("CODEX_SKILLS_CACHE_TTL_MS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-    {
-        return Duration::from_millis(ms);
-    }
-
-    if let Ok(manifest) = load_manifest_settings() {
-        if let Some(ms) = manifest.cache_ttl_ms {
-            return Duration::from_millis(ms);
-        }
-    }
-
-    Duration::from_millis(DEFAULT_CACHE_TTL_MS)
-}
-
-/// Returns the user's home directory.
-fn home_dir() -> Result<PathBuf> {
-    dirs::home_dir().ok_or_else(|| anyhow!("HOME not set"))
 }
 
 type StdioReader = Pin<Box<dyn AsyncRead + Unpin + Send + 'static>>;
@@ -563,7 +229,9 @@ fn stdio_with_optional_trace(trace: bool) -> (StdioReader, StdioWriter) {
 fn skill_roots(extra_dirs: &[PathBuf]) -> Result<Vec<SkillRoot>> {
     let home = home_dir()?;
     let order = {
-        if let Some(mut override_list) = load_priority_override()? {
+        if let Some(mut override_list) =
+            load_priority_override(&|| Ok(load_manifest_settings()?.priority.clone()))?
+        {
             let mut seen: std::collections::HashSet<String> =
                 override_list.iter().map(|s| s.label()).collect();
             for src in default_priority() {
@@ -596,33 +264,55 @@ fn skill_roots(extra_dirs: &[PathBuf]) -> Result<Vec<SkillRoot>> {
     Ok(roots)
 }
 
-fn default_priority() -> Vec<SkillSource> {
-    vec![
-        SkillSource::Codex,
-        SkillSource::Mirror,
-        SkillSource::Claude,
-        SkillSource::Agent,
-    ]
+fn env_auto_pin_default() -> bool {
+    env_auto_pin(load_auto_pin_flag().unwrap_or(false))
 }
 
-fn load_priority_override() -> Result<Option<Vec<SkillSource>>> {
-    let settings = load_manifest_settings()?;
-    let Some(list) = settings.priority else {
-        return Ok(None);
-    };
-    let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    for key in list {
-        if let Some(src) = parse_source_key(&key) {
-            if seen.insert(src.label()) {
-                out.push(src);
-            }
-        }
+fn env_embed_threshold() -> f32 {
+    std::env::var("SKRILLS_EMBED_THRESHOLD")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(DEFAULT_EMBED_THRESHOLD)
+}
+
+fn merge_extra_dirs(cli_dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let mut dirs = extra_dirs_from_env();
+    dirs.extend(cli_dirs.iter().cloned());
+    dirs
+}
+
+fn agents_manifest() -> Result<Option<PathBuf>> {
+    let path = home_dir()?.join(".codex/AGENTS.md");
+    if path.exists() {
+        return Ok(Some(path));
     }
-    if out.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(out))
+    let local = std::env::current_dir()?.join("AGENTS.md");
+    if local.exists() {
+        return Ok(Some(local));
+    }
+    Ok(None)
+}
+
+/// Resolves a user-provided specification (either an exact skill name or a unique substring) to a full skill name.
+fn resolve_skill<'a>(spec: &str, skills: &'a [SkillMeta]) -> Result<&'a str> {
+    let spec_l = spec.to_ascii_lowercase();
+    let mut matches: Vec<&str> = skills
+        .iter()
+        .map(|s| s.name.as_str())
+        .filter(|name| {
+            let nl = name.to_ascii_lowercase();
+            nl == spec_l || nl.contains(&spec_l)
+        })
+        .collect();
+    matches.sort_unstable();
+    matches.dedup();
+    match matches.len() {
+        0 => Err(anyhow!("skill not found for spec: {spec}")),
+        1 => Ok(matches[0]),
+        _ => Err(anyhow!(
+            "spec '{spec}' is ambiguous (matches: {})",
+            matches.join(", ")
+        )),
     }
 }
 
@@ -630,71 +320,9 @@ fn is_skill_file(entry: &walkdir::DirEntry) -> bool {
     entry.file_type().is_file() && entry.file_name() == "SKILL.md"
 }
 
-/// Computes the SHA256 hash of a skill file for cache-busting.
-fn file_hash(path: &Path) -> Result<String> {
-    let mut hasher = Sha256::new();
-    let data = fs::read(path)?;
-    hasher.update(data);
-    Ok(format!("{:x}", hasher.finalize()))
-}
-
-/// Collects skill metadata from the provided roots.
-fn collect_skills_from(
-    roots: &[SkillRoot],
-    mut dup_log: Option<&mut Vec<DuplicateInfo>>,
-) -> Result<Vec<SkillMeta>> {
-    let mut skills = Vec::new();
-    let mut seen: std::collections::HashMap<String, (String, String)> =
-        std::collections::HashMap::new(); // name -> (source, root)
-    for root_cfg in roots {
-        let root = &root_cfg.root;
-        if !root.exists() {
-            continue;
-        }
-        for entry in WalkDir::new(root)
-            .min_depth(1)
-            .max_depth(6)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            if !is_skill_file(&entry) {
-                continue;
-            }
-            let path = entry.into_path();
-            let rel = diff_paths(&path, root).unwrap_or_else(|| path.clone());
-            let rel_str = rel.display().to_string();
-            if let Some((kept_source, kept_root)) = seen.get(&rel_str) {
-                if let Some(log) = dup_log.as_mut() {
-                    log.push(DuplicateInfo {
-                        name: rel_str.clone(),
-                        skipped_source: root_cfg.source.label(),
-                        skipped_root: root.display().to_string(),
-                        kept_source: kept_source.clone(),
-                        kept_root: kept_root.clone(),
-                    });
-                }
-                continue;
-            }
-            let hash = file_hash(&path)?;
-            skills.push(SkillMeta {
-                name: rel_str.clone(),
-                path,
-                source: root_cfg.source.clone(),
-                root: root.clone(),
-                hash,
-            });
-            seen.insert(
-                rel_str,
-                (root_cfg.source.label(), root.display().to_string()),
-            );
-        }
-    }
-    Ok(skills)
-}
-
 /// Collects skills from all configured roots.
 fn collect_skills(extra_dirs: &[PathBuf]) -> Result<Vec<SkillMeta>> {
-    collect_skills_from(&skill_roots(extra_dirs)?, None)
+    discover_skills(&skill_roots(extra_dirs)?, None)
 }
 
 /// Reads a SKILL.md file to string.
@@ -710,6 +338,48 @@ fn tokenize_prompt(prompt: &str) -> std::collections::HashSet<String> {
         .collect()
 }
 
+fn trigram_counts(text: &str) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    let normalized = text.to_ascii_lowercase();
+    let chars: Vec<char> = normalized.chars().collect();
+    if chars.len() < 3 {
+        return counts;
+    }
+    for window in chars.windows(3) {
+        let gram: String = window.iter().collect();
+        *counts.entry(gram).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn cosine_similarity(a: &HashMap<String, usize>, b: &HashMap<String, usize>) -> f32 {
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let mut dot = 0f32;
+    let mut norm_a = 0f32;
+    let mut norm_b = 0f32;
+    for (gram, &count) in a.iter() {
+        norm_a += (count as f32).powi(2);
+        if let Some(&b_count) = b.get(gram) {
+            dot += (count as f32) * (b_count as f32);
+        }
+    }
+    for &count in b.values() {
+        norm_b += (count as f32).powi(2);
+    }
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+    dot / (norm_a.sqrt() * norm_b.sqrt())
+}
+
+fn trigram_similarity(prompt: &str, text: &str) -> f32 {
+    let prompt_vec = trigram_counts(prompt);
+    let text_vec = trigram_counts(text);
+    cosine_similarity(&prompt_vec, &text_vec)
+}
+
 fn read_prefix(path: &Path, max: usize) -> Result<String> {
     use std::io::Read;
     let mut file = fs::File::open(path)?;
@@ -719,15 +389,40 @@ fn read_prefix(path: &Path, max: usize) -> Result<String> {
     Ok(String::from_utf8_lossy(&buf).to_string())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum RenderMode {
+    /// Emit manifest plus full content (backward compatible).
+    #[default]
+    Dual,
+    /// Emit only manifest (for manifest-capable clients).
+    ManifestOnly,
+    /// Emit only concatenated content (legacy).
+    ContentOnly,
+}
+
 #[derive(Default)]
 struct AutoloadOptions<'p, 't, 'm, 'd> {
     include_claude: bool,
     max_bytes: Option<usize>,
     prompt: Option<&'p str>,
+    embed_threshold: Option<f32>,
     preload_terms: Option<&'t HashSet<String>>,
     pinned: Option<&'t HashSet<String>>,
     matched: Option<&'m mut HashSet<String>>,
     diagnostics: Option<&'d mut Diagnostics>,
+    render_mode: RenderMode,
+    log_render_mode: bool,
+    gzip_ok: bool,
+    minimal_manifest: bool,
+}
+
+#[derive(Default)]
+struct PreviewStats {
+    matched: Vec<String>,
+    manifest_bytes: usize,
+    estimated_tokens: usize,
+    truncated: bool,
+    truncated_content: bool,
 }
 
 /// Concatenates skills into an autoload payload, with optional prompt-based filtering and truncation.
@@ -745,10 +440,15 @@ where
         include_claude,
         max_bytes,
         prompt,
+        embed_threshold,
         preload_terms,
         pinned,
         mut matched,
         mut diagnostics,
+        render_mode,
+        log_render_mode,
+        gzip_ok,
+        minimal_manifest,
     } = opts;
 
     let mut terms = prompt.map(tokenize_prompt).unwrap_or_default();
@@ -756,7 +456,14 @@ where
         terms.extend(extra.iter().cloned());
     }
     let term_opt = if terms.is_empty() { None } else { Some(terms) };
+    let prompt_for_embedding = prompt.unwrap_or_default();
+    let embed_threshold = embed_threshold.unwrap_or_else(env_embed_threshold);
 
+    let preview_len = max_bytes
+        .map(|m| m.saturating_div(4).clamp(64, 512))
+        .unwrap_or(512);
+
+    let mut manifest = Vec::new();
     let mut buf = String::new();
     for meta in skills.iter().filter(|s| match s.source {
         SkillSource::Codex => true,
@@ -770,6 +477,7 @@ where
         SkillSource::Extra(_) => true,
     }) {
         let is_pinned = pinned.map(|set| set.contains(&meta.name)).unwrap_or(false);
+        let mut prefix_cache: Option<String> = None;
         let relevant = match &term_opt {
             None => true,
             Some(_) if is_pinned => true,
@@ -777,11 +485,18 @@ where
                 let name = meta.name.to_ascii_lowercase();
                 if t.iter().any(|k| name.contains(k)) {
                     true
-                } else if let Ok(prefix) = read_prefix(meta, 4096) {
-                    let text = prefix.to_ascii_lowercase();
-                    t.iter().any(|k| text.contains(k))
                 } else {
-                    false
+                    let prefix = prefix_cache.get_or_insert_with(|| {
+                        read_prefix(meta, DEFAULT_EMBED_PREVIEW_BYTES)
+                            .unwrap_or_else(|_| String::new())
+                    });
+                    let text = prefix.to_ascii_lowercase();
+                    if t.iter().any(|k| text.contains(k)) {
+                        true
+                    } else {
+                        let sim = trigram_similarity(prompt_for_embedding, &text);
+                        sim >= embed_threshold
+                    }
                 }
             }
         };
@@ -805,12 +520,79 @@ where
             ));
         }
 
+        if minimal_manifest {
+            manifest.push(json!({
+                "name": meta.name,
+                "source": meta.source,
+                "hash": meta.hash,
+            }));
+        } else {
+            let preview = read_prefix(meta, preview_len).unwrap_or_else(|_| String::new());
+            manifest.push(json!({
+                "name": meta.name,
+                "source": meta.source,
+                "root": meta.root,
+                "path": meta.path,
+                "hash": meta.hash,
+                "preview": preview
+            }));
+        }
+
+        // Append full content after the manifest to preserve existing behavior.
         if let Ok(text) = read_full(meta) {
             buf.push_str(&format!("\n\n# {}\n\n{}", meta.name, text));
         }
     }
 
-    let mut output = buf.trim().to_string();
+    let include_manifest = !matches!(render_mode, RenderMode::ContentOnly);
+    let include_content = !matches!(render_mode, RenderMode::ManifestOnly);
+
+    let manifest_json = if include_manifest {
+        serde_json::to_string_pretty(&json!({ "skills_manifest": manifest })).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let names: Vec<String> = manifest
+        .iter()
+        .filter_map(|v| {
+            v.get("name")
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string())
+        })
+        .collect();
+
+    let mut output = String::new();
+    if include_manifest && !manifest_json.is_empty() {
+        if !names.is_empty() {
+            output.push_str(&format!("[skills] {}\n", names.join(", ")));
+        }
+        output.push_str(&manifest_json);
+    }
+    if include_content && !buf.is_empty() {
+        if !output.is_empty() {
+            output.push_str("\n\n");
+        }
+        output.push_str(buf.trim());
+    }
+    if let Some(d) = diagnostics.as_deref_mut() {
+        d.render_mode = Some(format!("{:?}", render_mode));
+    }
+    if log_render_mode && diagnostics.is_some() {
+        // Avoid per-request log spam; only log when diagnostics are requested.
+        tracing::info!(
+            render_mode = ?render_mode,
+            include_manifest,
+            include_content,
+            "autoload render mode selected"
+        );
+    } else if log_render_mode {
+        tracing::debug!(
+            render_mode = ?render_mode,
+            include_manifest,
+            include_content,
+            "autoload render mode selected"
+        );
+    }
     if let Some(d) = diagnostics.as_deref_mut() {
         if !d.included.is_empty() {
             let mut footer = String::from("\n\n[activated skills]\n");
@@ -820,16 +602,32 @@ where
             output.push_str(&footer);
         }
     }
+
     if let Some(limit) = max_bytes {
         if output.len() > limit {
-            let notice = format!("\n\n[truncated to {limit} bytes]");
-            let keep = limit.saturating_sub(notice.len());
-            let mut truncated = output;
-            truncated.truncate(keep);
-            truncated.push_str(&notice);
-            output = truncated;
-            if let Some(d) = diagnostics.as_deref_mut() {
-                d.truncated = true;
+            if include_manifest && !manifest_json.is_empty() && manifest_json.len() <= limit {
+                // Prefer returning a valid manifest and signal content was dropped.
+                output = manifest_json.clone();
+                if let Some(d) = diagnostics.as_deref_mut() {
+                    d.truncated = true;
+                    d.truncated_content = true;
+                }
+            } else if include_manifest && gzip_ok {
+                let gz = gzip_base64(&manifest_json)?;
+                let gz_wrapped = format!(r#"{{"skills_manifest_gzip_base64":"{}"}}"#, gz);
+                if gz_wrapped.len() <= limit {
+                    output = gz_wrapped;
+                    if let Some(d) = diagnostics.as_deref_mut() {
+                        d.truncated = true;
+                        d.truncated_content = true;
+                    }
+                } else {
+                    return Err(anyhow!(
+                        "autoload payload exceeds byte limit (even gzipped manifest)"
+                    ));
+                }
+            } else {
+                return Err(anyhow!("autoload payload exceeds byte limit"));
             }
         }
     }
@@ -862,6 +660,9 @@ where
         if d.truncated {
             header.push_str("note: output truncated\n");
         }
+        if d.truncated_content {
+            header.push_str("note: content omitted to fit manifest size\n");
+        }
         header.push_str("-->\n");
         output = format!("{header}{output}");
     }
@@ -875,6 +676,188 @@ fn render_autoload(skills: &[SkillMeta], opts: AutoloadOptions<'_, '_, '_, '_>) 
         |meta| read_skill(&meta.path),
         |meta, max| read_prefix(&meta.path, max),
     )
+}
+
+fn render_preview_stats(
+    skills: &[SkillMeta],
+    opts: AutoloadOptions<'_, '_, '_, '_>,
+) -> Result<PreviewStats> {
+    let mut matched = HashSet::new();
+    let mut diagnostics = Diagnostics::default();
+    let content = render_autoload_with_reader(
+        skills,
+        AutoloadOptions {
+            render_mode: RenderMode::ManifestOnly,
+            log_render_mode: false,
+            gzip_ok: false,
+            matched: Some(&mut matched),
+            diagnostics: Some(&mut diagnostics),
+            ..opts
+        },
+        |meta| read_skill(&meta.path),
+        |meta, max| read_prefix(&meta.path, max),
+    )?;
+    let manifest_bytes = content.len();
+    let estimated_tokens = manifest_bytes.div_ceil(4); // rough UTF-8→token estimate
+    let mut matched_vec: Vec<String> = matched.into_iter().collect();
+    matched_vec.sort();
+    Ok(PreviewStats {
+        matched: matched_vec,
+        manifest_bytes,
+        estimated_tokens,
+        truncated: diagnostics.truncated,
+        truncated_content: diagnostics.truncated_content,
+    })
+}
+
+/// Decide render mode based on env + client identity.
+fn manifest_render_mode(runtime: &RuntimeOverrides, peer_info: Option<&ClientInfo>) -> RenderMode {
+    // If explicitly disabled, stick to legacy content-only.
+    if !runtime.manifest_first() {
+        return RenderMode::ContentOnly;
+    }
+
+    if let Some(info) = peer_info {
+        if manifest_allowlist_match(info) {
+            return RenderMode::ManifestOnly;
+        }
+    }
+
+    let manifest_capable = peer_info.map(|info| {
+        let name = info.client_info.name.to_ascii_lowercase();
+        name.contains("claude") || name.contains("anthropic")
+    });
+
+    match manifest_capable {
+        Some(true) => RenderMode::ManifestOnly,
+        _ => RenderMode::Dual,
+    }
+}
+
+/// Whether the peer can accept gzipped manifest payloads.
+fn peer_accepts_gzip(peer_info: Option<&ClientInfo>) -> bool {
+    if std::env::var("SKRILLS_ACCEPT_GZIP")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if let Some(info) = peer_info {
+        let name = info.client_info.name.to_ascii_lowercase();
+        if name.contains("gzip") {
+            return true;
+        }
+    }
+    false
+}
+
+/// Allowlist-driven manifest capability detection.
+/// Optional JSON file: SKRILLS_MANIFEST_ALLOWLIST
+/// Format: [{"name_substr": "codex", "min_version": "1.2.3"}]
+fn manifest_allowlist_match(info: &ClientInfo) -> bool {
+    if let Some(entries) = ALLOWLIST_CACHE.get_or_init() {
+        let name_lc = info.client_info.name.to_ascii_lowercase();
+        for item in entries {
+            if !name_lc.contains(&item.name_substr) {
+                continue;
+            }
+            if let Some(min) = &item.min_version {
+                if !version_gte(&info.client_info.version, min) {
+                    continue;
+                }
+            }
+            return true;
+        }
+    }
+    false
+}
+
+/// Minimal dotted version comparison (numeric segments only; non-numeric treated as 0).
+fn version_gte(current: &str, min: &str) -> bool {
+    match (semver::Version::parse(current), semver::Version::parse(min)) {
+        (Ok(c), Ok(m)) => c >= m,
+        _ => false,
+    }
+}
+
+fn gzip_base64(data: &str) -> Result<String> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(data.as_bytes())?;
+    let compressed = encoder.finish()?;
+    Ok(BASE64.encode(compressed))
+}
+
+#[derive(Clone)]
+struct AllowlistEntry {
+    name_substr: String,
+    min_version: Option<String>,
+}
+
+struct AllowlistCache {
+    inner: Mutex<Option<Vec<AllowlistEntry>>>,
+}
+
+impl AllowlistCache {
+    fn get_or_init(&self) -> Option<Vec<AllowlistEntry>> {
+        let mut guard = self.inner.lock().ok()?;
+        if guard.is_none() {
+            *guard = load_allowlist();
+        }
+        guard.clone()
+    }
+}
+
+static ALLOWLIST_CACHE: once_cell::sync::Lazy<AllowlistCache> =
+    once_cell::sync::Lazy::new(|| AllowlistCache {
+        inner: Mutex::new(None),
+    });
+
+#[cfg(test)]
+fn reset_allowlist_cache_for_tests() {
+    if let Ok(mut guard) = ALLOWLIST_CACHE.inner.lock() {
+        *guard = None;
+    }
+}
+
+fn load_allowlist() -> Option<Vec<AllowlistEntry>> {
+    let path = std::env::var("SKRILLS_MANIFEST_ALLOWLIST").ok()?;
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(path = %path, error = %e, "failed to read manifest allowlist");
+            return None;
+        }
+    };
+    let val: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(path = %path, error = %e, "failed to parse manifest allowlist JSON");
+            return None;
+        }
+    };
+    let arr = match val.as_array() {
+        Some(a) => a,
+        None => {
+            tracing::warn!(path = %path, "manifest allowlist is not an array");
+            return None;
+        }
+    };
+    let mut entries = Vec::new();
+    for item in arr {
+        let Some(sub) = item.get("name_substr").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let min = item
+            .get("min_version")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        entries.push(AllowlistEntry {
+            name_substr: sub.to_ascii_lowercase(),
+            min_version: min,
+        });
+    }
+    Some(entries)
 }
 
 /// Mirrors SKILL.md files from `~/.claude` into a Codex-owned mirror tree.
@@ -899,7 +882,7 @@ fn sync_from_claude(claude_root: &Path, mirror_root: &Path) -> Result<SyncReport
             fs::create_dir_all(parent)?;
         }
         let should_copy = if dest.exists() {
-            file_hash(&dest)? != file_hash(&src)?
+            hash_file(&dest)? != hash_file(&src)?
         } else {
             true
         };
@@ -911,16 +894,6 @@ fn sync_from_claude(claude_root: &Path, mirror_root: &Path) -> Result<SyncReport
         }
     }
     Ok(report)
-}
-
-/// Information about a duplicate skill that was skipped.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct DuplicateInfo {
-    name: String,
-    skipped_source: String,
-    skipped_root: String,
-    kept_source: String,
-    kept_root: String,
 }
 
 /// In-memory cache for discovered skills to avoid repeated directory walks.
@@ -936,7 +909,7 @@ struct SkillCache {
 impl SkillCache {
     #[allow(dead_code)]
     fn new(roots: Vec<SkillRoot>) -> Self {
-        Self::new_with_ttl(roots, cache_ttl())
+        Self::new_with_ttl(roots, cache_ttl(&load_manifest_settings))
     }
 
     fn new_with_ttl(roots: Vec<SkillRoot>, ttl: Duration) -> Self {
@@ -978,7 +951,7 @@ impl SkillCache {
 
         let scan_started = Instant::now();
         let mut dup_log = Vec::new();
-        let skills = collect_skills_from(&self.roots, Some(&mut dup_log))?;
+        let skills = discover_skills(&self.roots, Some(&mut dup_log))?;
         let mut uri_index = HashMap::new();
         for (idx, s) in skills.iter().enumerate() {
             uri_index.insert(format!("skill://{}/{}", s.source.label(), s.name), idx);
@@ -990,7 +963,7 @@ impl SkillCache {
         let elapsed_ms = scan_started.elapsed().as_millis();
         if elapsed_ms > 250 {
             tracing::info!(
-                target: "codex-skills::scan",
+                target: "skrills::scan",
                 elapsed_ms,
                 roots = self.roots.len(),
                 skills = self.skills.len(),
@@ -998,7 +971,7 @@ impl SkillCache {
             );
         } else {
             tracing::debug!(
-                target: "codex-skills::scan",
+                target: "skrills::scan",
                 elapsed_ms,
                 roots = self.roots.len(),
                 skills = self.skills.len(),
@@ -1064,6 +1037,7 @@ struct SkillService {
     cache: Arc<Mutex<SkillCache>>,
     content_cache: Arc<Mutex<ContentCache>>,
     warmup_started: AtomicBool,
+    runtime: Arc<Mutex<RuntimeOverrides>>,
 }
 
 /// Logs stdin/stdout traffic for debugging MCP handshakes.
@@ -1091,7 +1065,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for LoggingReader<R> {
             if read > 0 {
                 let bytes = &buf.filled()[after - read..after];
                 tracing::debug!(
-                    target: "codex-skills::wire",
+                    target: "skrills::wire",
                     dir = self.label,
                     len = read,
                     hex = %hex::encode(bytes),
@@ -1115,7 +1089,7 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for LoggingWriter<W> {
             if *written > 0 {
                 let bytes = &buf[..*written];
                 tracing::debug!(
-                    target: "codex-skills::wire",
+                    target: "skrills::wire",
                     dir = self.label,
                     len = *written,
                     hex = %hex::encode(bytes),
@@ -1190,7 +1164,7 @@ impl SkillService {
     /// Builds a skill service with the default search roots.
     #[allow(dead_code)]
     fn new(extra_dirs: Vec<PathBuf>) -> Result<Self> {
-        Self::new_with_ttl(extra_dirs, cache_ttl())
+        Self::new_with_ttl(extra_dirs, cache_ttl(&load_manifest_settings))
     }
 
     /// Builds a skill service with a custom cache TTL.
@@ -1199,7 +1173,7 @@ impl SkillService {
         let roots = skill_roots(&extra_dirs)?;
         let elapsed_ms = build_started.elapsed().as_millis();
         tracing::info!(
-            target: "codex-skills::startup",
+            target: "skrills::startup",
             elapsed_ms,
             roots = roots.len(),
             "constructed SkillService (discovery deferred until after initialize)"
@@ -1208,6 +1182,7 @@ impl SkillService {
             cache: Arc::new(Mutex::new(SkillCache::new_with_ttl(roots, ttl))),
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
             warmup_started: AtomicBool::new(false),
+            runtime: Arc::new(Mutex::new(RuntimeOverrides::load()?)),
         })
     }
 
@@ -1336,17 +1311,34 @@ impl SkillService {
         )
     }
 
+    fn runtime_overrides(&self) -> RuntimeOverrides {
+        self.runtime
+            .lock()
+            .ok()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
     /// Determines whether the AGENTS.md document should be exposed as a resource.
     fn expose_agents_doc(&self) -> Result<bool> {
+        let manifest = load_manifest_settings()?;
+        if let Some(flag) = manifest.expose_agents {
+            return Ok(flag);
+        }
         if let Ok(val) = std::env::var(ENV_EXPOSE_AGENTS) {
             if let Ok(parsed) = val.parse::<bool>() {
                 return Ok(parsed);
             }
         }
-
-        let manifest = load_manifest_settings()?;
-        if let Some(flag) = manifest.expose_agents {
-            return Ok(flag);
+        // Legacy/edge: explicit manifest JSON without manifest schema parsing.
+        if let Ok(custom) = std::env::var("SKRILLS_MANIFEST") {
+            if let Ok(text) = fs::read_to_string(&custom) {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if let Some(flag) = val.get("expose_agents").and_then(|v| v.as_bool()) {
+                        return Ok(flag);
+                    }
+                }
+            }
         }
 
         Ok(true)
@@ -1370,12 +1362,12 @@ impl SkillService {
 
             match result {
                 Ok(()) => tracing::info!(
-                    target: "codex-skills::warmup",
+                    target: "skrills::warmup",
                     elapsed_ms = started.elapsed().as_millis(),
                     "background cache warm-up finished"
                 ),
                 Err(e) => tracing::warn!(
-                    target: "codex-skills::warmup",
+                    target: "skrills::warmup",
                     error = %e,
                     "background cache warm-up failed"
                 ),
@@ -1416,16 +1408,16 @@ fn doctor_report() -> Result<()> {
     let home = home_dir()?;
     let mcp_path = home.join(".codex/mcp_servers.json");
     let cfg_path = home.join(".codex/config.toml");
-    let expected_cmd = home.join(".codex/bin/codex-mcp-skills");
+    let expected_cmd = home.join(".codex/bin/skrills");
 
-    println!("== codex-mcp-skills doctor ==");
+    println!("== skrills doctor ==");
 
     // Inspect ~/.codex/mcp_servers.json
     if mcp_path.exists() {
         let raw = fs::read_to_string(&mcp_path)?;
         match serde_json::from_str::<serde_json::Value>(&raw) {
             Ok(json) => {
-                if let Some(entry) = json.get("mcpServers").and_then(|m| m.get("codex-skills")) {
+                if let Some(entry) = json.get("mcpServers").and_then(|m| m.get("skrills")) {
                     let typ = entry
                         .get("type")
                         .and_then(|v| v.as_str())
@@ -1452,7 +1444,7 @@ fn doctor_report() -> Result<()> {
                     }
                 } else {
                     println!(
-                        "mcp_servers.json: missing codex-skills entry ({})",
+                        "mcp_servers.json: missing skrills entry ({})",
                         mcp_path.display()
                     );
                 }
@@ -1472,9 +1464,7 @@ fn doctor_report() -> Result<()> {
         let raw = fs::read_to_string(&cfg_path)?;
         match toml::from_str::<toml::Value>(&raw) {
             Ok(toml_val) => {
-                let entry = toml_val
-                    .get("mcp_servers")
-                    .and_then(|m| m.get("codex-skills"));
+                let entry = toml_val.get("mcp_servers").and_then(|m| m.get("skrills"));
                 if let Some(e) = entry {
                     let typ = e
                         .get("type")
@@ -1497,7 +1487,7 @@ fn doctor_report() -> Result<()> {
                     }
                 } else {
                     println!(
-                        "config.toml:    missing [mcp_servers.codex-skills] ({})",
+                        "config.toml:    missing [mcp_servers.skrills] ({})",
                         cfg_path.display()
                     );
                 }
@@ -1512,7 +1502,7 @@ fn doctor_report() -> Result<()> {
         println!("config.toml:    not found at {}", cfg_path.display());
     }
 
-    println!("Hint: Codex CLI raises 'missing field `type`' when either file lacks type=\"stdio\" for codex-skills.");
+    println!("Hint: Codex CLI raises 'missing field `type`' when either file lacks type=\"stdio\" for skrills.");
     Ok(())
 }
 
@@ -1685,6 +1675,18 @@ impl ServerHandler for SkillService {
         schema_map.insert("properties".into(), json!({}));
         schema_map.insert("additionalProperties".into(), json!(false));
         let schema = std::sync::Arc::new(schema_map);
+        let mut options_schema = JsonMap::new();
+        options_schema.insert("type".into(), json!("object"));
+        options_schema.insert(
+            "properties".into(),
+            json!({
+                "manifest_first": { "type": "boolean" },
+                "render_mode_log": { "type": "boolean" },
+                "manifest_minimal": { "type": "boolean" }
+            }),
+        );
+        options_schema.insert("additionalProperties".into(), json!(false));
+        let options_schema = std::sync::Arc::new(options_schema);
         let tools = vec![
             Tool {
                 name: "list-skills".into(),
@@ -1701,6 +1703,40 @@ impl ServerHandler for SkillService {
                 title: Some("Autoload SKILL.md content".into()),
                 description: Some("Concatenate SKILL.md markdown for prompt injection".into()),
                 input_schema: schema.clone(),
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
+            Tool {
+                name: "runtime-status".into(),
+                title: Some("Runtime status".into()),
+                description: Some("Show effective runtime overrides and sources".into()),
+                input_schema: schema.clone(),
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
+            Tool {
+                name: "render-preview".into(),
+                title: Some("Preview selected skills with size estimates".into()),
+                description: Some(std::borrow::Cow::Borrowed(
+                    "Return matched skill names plus manifest/preview size and estimated tokens.",
+                )),
+                input_schema: schema.clone(),
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
+            Tool {
+                name: "set-runtime-options".into(),
+                title: Some("Set runtime options".into()),
+                description: Some(
+                    "Adjust manifest/logging overrides for autoload rendering".into(),
+                ),
+                input_schema: options_schema,
                 output_schema: None,
                 annotations: Some(ToolAnnotations::default()),
                 icons: None,
@@ -1744,7 +1780,7 @@ impl ServerHandler for SkillService {
     fn call_tool(
         &self,
         request: CallToolRequestParam,
-        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<CallToolResult, rmcp::ErrorData>> + Send + '_
     {
         let result = || -> Result<CallToolResult> {
@@ -1831,7 +1867,7 @@ impl ServerHandler for SkillService {
                         .unwrap_or_default();
                     let manual_pins = load_pinned().unwrap_or_default();
                     let history = load_history().unwrap_or_default();
-                    let auto_pins = if args.auto_pin.unwrap_or(env_auto_pin()) {
+                    let auto_pins = if args.auto_pin.unwrap_or(env_auto_pin_default()) {
                         auto_pin_from_history(&history)
                     } else {
                         HashSet::new()
@@ -1857,6 +1893,8 @@ impl ServerHandler for SkillService {
                     if let Some(d) = diag.as_mut() {
                         d.duplicates.extend(dup_log.iter().cloned());
                     }
+                    let runtime = self.runtime_overrides();
+                    let render_mode = manifest_render_mode(&runtime, context.peer.peer_info());
                     let content = self.render_autoload_cached(
                         &skills,
                         AutoloadOptions {
@@ -1864,12 +1902,20 @@ impl ServerHandler for SkillService {
                             max_bytes: args.max_bytes.or(env_max_bytes()),
                             prompt: args
                                 .prompt
-                                .or_else(|| std::env::var("CODEX_SKILLS_PROMPT").ok())
+                                .or_else(|| std::env::var("SKRILLS_PROMPT").ok())
                                 .as_deref(),
+                            embed_threshold: Some(
+                                args.embed_threshold
+                                    .unwrap_or_else(env_embed_threshold)
+                            ),
                             preload_terms: preload_terms_ref,
                             pinned: Some(&effective_pins),
                             matched: Some(&mut matched),
                             diagnostics: diag.as_mut(),
+                            render_mode,
+                            log_render_mode: runtime.render_mode_log(),
+                            gzip_ok: peer_accepts_gzip(context.peer.peer_info()),
+                            minimal_manifest: runtime.manifest_minimal(),
                         },
                     )?;
                     let ts = SystemTime::now()
@@ -1897,6 +1943,139 @@ impl ServerHandler for SkillService {
                                 "priority_rank_by_source": rank_map
                             }
                         })),
+                        is_error: Some(false),
+                        meta: None,
+                    })
+                }
+                "render-preview" => {
+                    let (skills, dup_log) = self.current_skills_with_dups()?;
+                    let args: AutoloadArgs = request
+                        .arguments
+                        .as_ref()
+                        .map(|obj| {
+                            serde_json::from_value(json!(obj.clone())).map_err(anyhow::Error::from)
+                        })
+                        .transpose()?
+                        .unwrap_or_default();
+                    let manual_pins = load_pinned().unwrap_or_default();
+                    let history = load_history().unwrap_or_default();
+                    let auto_pins = if args.auto_pin.unwrap_or(env_auto_pin_default()) {
+                        auto_pin_from_history(&history)
+                    } else {
+                        HashSet::new()
+                    };
+                    let mut effective_pins = manual_pins.clone();
+                    effective_pins.extend(auto_pins.iter().cloned());
+                    let preload_terms = if let Some(path) = agents_manifest()? {
+                        if let Ok(text) = fs::read_to_string(&path) {
+                            Some(extract_refs_from_agents(&text))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    let preload_terms_ref = preload_terms.as_ref();
+                    let runtime = self.runtime_overrides();
+                    let stats = render_preview_stats(
+                        &skills,
+                        AutoloadOptions {
+                            include_claude: args.include_claude.unwrap_or(env_include_claude()),
+                            max_bytes: args.max_bytes.or(env_max_bytes()),
+                            prompt: args
+                                .prompt
+                                .or_else(|| std::env::var("SKRILLS_PROMPT").ok())
+                                .as_deref(),
+                            embed_threshold: Some(
+                                args.embed_threshold
+                                    .unwrap_or_else(env_embed_threshold)
+                            ),
+                            preload_terms: preload_terms_ref,
+                            pinned: Some(&effective_pins),
+                            matched: None,
+                            diagnostics: None,
+                            render_mode: RenderMode::ManifestOnly,
+                            log_render_mode: runtime.render_mode_log(),
+                            gzip_ok: false,
+                            minimal_manifest: runtime.manifest_minimal(),
+                        },
+                    )?;
+                    let text = format!(
+                        "preview matched {} skills, ~{} tokens (~{} bytes)",
+                        stats.matched.len(),
+                        stats.estimated_tokens,
+                        stats.manifest_bytes
+                    );
+                    Ok(CallToolResult {
+                        content: vec![Content::text(text)],
+                        structured_content: Some(json!({
+                            "matched": stats.matched,
+                            "manifest_bytes": stats.manifest_bytes,
+                            "estimated_tokens": stats.estimated_tokens,
+                            "truncated": stats.truncated,
+                            "truncated_content": stats.truncated_content,
+                            "_meta": { "duplicates": dup_log }
+                        })),
+                        is_error: Some(false),
+                        meta: None,
+                    })
+                }
+                "runtime-status" => {
+                    let runtime = self.runtime_overrides();
+            let status = json!({
+                "manifest_first": runtime.manifest_first(),
+                "render_mode_log": runtime.render_mode_log(),
+                "manifest_minimal": runtime.manifest_minimal(),
+                "overrides": {
+                    "manifest_first": runtime.manifest_first,
+                    "render_mode_log": runtime.render_mode_log,
+                    "manifest_minimal": runtime.manifest_minimal,
+                },
+                "env": {
+                    "manifest_first": env_manifest_first(),
+                    "render_mode_log": env_render_mode_log(),
+                    "manifest_minimal": env_manifest_minimal(),
+                }
+            });
+                    Ok(CallToolResult {
+                        content: vec![Content::text("runtime status")],
+                        structured_content: Some(status),
+                        is_error: Some(false),
+                        meta: None,
+                    })
+                }
+                "set-runtime-options" => {
+                    let mut runtime = self.runtime_overrides();
+                    if let Some(args) = request.arguments.as_ref() {
+                        if let Some(val) = args.get("manifest_first").and_then(|v| v.as_bool()) {
+                            runtime.manifest_first = Some(val);
+                        }
+                        if let Some(val) = args.get("render_mode_log").and_then(|v| v.as_bool()) {
+                            runtime.render_mode_log = Some(val);
+                        }
+                        if let Some(val) = args.get("manifest_minimal").and_then(|v| v.as_bool()) {
+                            runtime.manifest_minimal = Some(val);
+                        }
+                        if let Err(e) = runtime.save() {
+                            tracing::warn!(error = %e, "failed to save runtime overrides");
+                        }
+                        if let Ok(mut guard) = self.runtime.lock() {
+                            *guard = runtime.clone();
+                        }
+                    }
+                    let status = json!({
+                        "manifest_first": runtime.manifest_first(),
+                        "render_mode_log": runtime.render_mode_log(),
+                        "manifest_minimal": runtime.manifest_minimal(),
+                        "overrides": {
+                            "manifest_first": runtime.manifest_first,
+                            "render_mode_log": runtime.render_mode_log,
+                            "manifest_minimal": runtime.manifest_minimal.unwrap_or(runtime.manifest_minimal()),
+                        }
+                    });
+                    Ok(CallToolResult {
+                        content: vec![Content::text("runtime options updated")],
+                        structured_content: Some(status),
                         is_error: Some(false),
                         meta: None,
                     })
@@ -1969,6 +2148,8 @@ struct AutoloadArgs {
     max_bytes: Option<usize>,
     /// A prompt string used to filter relevant skills.
     prompt: Option<String>,
+    /// Embedding similarity threshold (0-1) for fuzzy prompt matching.
+    embed_threshold: Option<f32>,
     /// If true, enables heuristic auto-pinning based on recent prompt matches.
     auto_pin: Option<bool>,
     /// If true, diagnostic information (included/skipped skills) is emitted.
@@ -1984,6 +2165,7 @@ fn emit_autoload(
     include_claude: bool,
     max_bytes: Option<usize>,
     prompt: Option<String>,
+    embed_threshold: Option<f32>,
     auto_pin: bool,
     extra_dirs: &[PathBuf],
     diagnose: bool,
@@ -1994,7 +2176,7 @@ fn emit_autoload(
         None
     };
     let skills = if let Some(d) = &mut diag_opt {
-        collect_skills_from(&skill_roots(extra_dirs)?, Some(&mut d.duplicates))?
+        discover_skills(&skill_roots(extra_dirs)?, Some(&mut d.duplicates))?
     } else {
         collect_skills(extra_dirs)?
     };
@@ -2019,17 +2201,24 @@ fn emit_autoload(
         None
     };
     let preload_terms_ref = preload_terms.as_ref();
-    let prompt = prompt.or_else(|| std::env::var("CODEX_SKILLS_PROMPT").ok());
+    let prompt = prompt.or_else(|| std::env::var("SKRILLS_PROMPT").ok());
+    let runtime = runtime_overrides_cached();
+    let render_mode = manifest_render_mode(&runtime, None);
     let content = render_autoload(
         &skills,
         AutoloadOptions {
             include_claude,
             max_bytes: max_bytes.or(env_max_bytes()),
             prompt: prompt.as_deref(),
+            embed_threshold: Some(embed_threshold.unwrap_or_else(env_embed_threshold)),
             preload_terms: preload_terms_ref,
             pinned: Some(&effective_pins),
             matched: Some(&mut matched),
             diagnostics: diag.as_mut(),
+            render_mode,
+            log_render_mode: runtime.render_mode_log(),
+            gzip_ok: false,
+            minimal_manifest: runtime.manifest_minimal(),
         },
     )?;
     let ts = SystemTime::now()
@@ -2117,7 +2306,7 @@ pub fn run() -> Result<()> {
         } => {
             let ttl = cache_ttl_ms
                 .map(Duration::from_millis)
-                .unwrap_or_else(cache_ttl);
+                .unwrap_or_else(|| cache_ttl(&load_manifest_settings));
             let service = SkillService::new_with_ttl(merge_extra_dirs(&skill_dirs), ttl)?;
             #[cfg(feature = "watch")]
             let _watcher = if watch {
@@ -2206,6 +2395,7 @@ pub fn run() -> Result<()> {
             include_claude,
             max_bytes,
             prompt,
+            embed_threshold,
             auto_pin,
             skill_dirs,
             diagnose,
@@ -2213,6 +2403,7 @@ pub fn run() -> Result<()> {
             include_claude,
             max_bytes,
             prompt,
+            embed_threshold,
             auto_pin,
             &merge_extra_dirs(&skill_dirs),
             diagnose,
@@ -2232,8 +2423,12 @@ pub fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::reset_runtime_cache_for_tests;
+    use flate2::read::GzDecoder;
+    use skrills_state::runtime_overrides_path;
     use std::collections::HashSet;
     use std::fs;
+    use std::io::Read;
     use std::process::Command;
     use std::time::Duration;
     use tempfile::tempdir;
@@ -2243,11 +2438,13 @@ mod tests {
         let tmp = tempdir()?;
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
-        std::env::remove_var("CODEX_SKILLS_MANIFEST");
+        std::env::remove_var("SKRILLS_MANIFEST");
+        std::env::remove_var(ENV_EXPOSE_AGENTS);
         let svc = SkillService {
             cache: Arc::new(Mutex::new(SkillCache::new(vec![]))),
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
             warmup_started: AtomicBool::new(false),
+            runtime: Arc::new(Mutex::new(RuntimeOverrides::default())),
         };
         let resources = svc.list_resources_payload()?;
         assert!(resources
@@ -2268,10 +2465,12 @@ mod tests {
         let tmp = tempdir()?;
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
+        std::env::remove_var(ENV_EXPOSE_AGENTS);
         let svc = SkillService {
             cache: Arc::new(Mutex::new(SkillCache::new(vec![]))),
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
             warmup_started: AtomicBool::new(false),
+            runtime: Arc::new(Mutex::new(RuntimeOverrides::default())),
         };
         let result = svc.read_resource_sync(AGENTS_URI)?;
         let text = match &result.contents[0] {
@@ -2302,7 +2501,7 @@ mod tests {
             path: skill_path.clone(),
             source: SkillSource::Codex,
             root: path.clone(),
-            hash: file_hash(&skill_path).unwrap(),
+            hash: hash_file(&skill_path).unwrap(),
         }];
         let xml = render_available_skills_xml(&skills);
         assert!(xml.contains("location=\"global\""));
@@ -2346,6 +2545,7 @@ mod tests {
             }]))),
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
             warmup_started: AtomicBool::new(false),
+            runtime: Arc::new(Mutex::new(RuntimeOverrides::default())),
         };
         let result = svc.read_resource_sync("skill://codex/alpha/SKILL.md")?;
         match &result.contents[0] {
@@ -2411,7 +2611,7 @@ mod tests {
             },
         ];
         let mut dup_log = Vec::new();
-        let skills = collect_skills_from(&roots, Some(&mut dup_log))?;
+        let skills = discover_skills(&roots, Some(&mut dup_log))?;
         assert_eq!(skills.len(), 1);
         assert_eq!(dup_log.len(), 1);
         let dup = &dup_log[0];
@@ -2439,6 +2639,7 @@ mod tests {
             ))),
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
             warmup_started: AtomicBool::new(false),
+            runtime: Arc::new(Mutex::new(RuntimeOverrides::default())),
         };
 
         let (skills_first, _) = svc.current_skills_with_dups()?;
@@ -2452,6 +2653,68 @@ mod tests {
         let (skills_second, _) = svc.current_skills_with_dups()?;
         assert_eq!(skills_second.len(), 2);
         Ok(())
+    }
+
+    #[test]
+    fn runtime_overrides_cached_memoizes() -> Result<()> {
+        reset_runtime_cache_for_tests();
+        let tmp = tempdir()?;
+        std::env::set_var("HOME", tmp.path());
+        let path = runtime_overrides_path().unwrap();
+        fs::create_dir_all(path.parent().unwrap())?;
+        fs::write(&path, r#"{"manifest_first":false,"render_mode_log":true}"#)?;
+
+        let first = runtime_overrides_cached();
+        assert!(!first.manifest_first());
+        assert!(first.render_mode_log());
+
+        // Modify file; cached value should remain until reset
+        fs::write(&path, r#"{"manifest_first":true,"render_mode_log":false}"#)?;
+        let still_cached = runtime_overrides_cached();
+        assert!(!still_cached.manifest_first());
+        assert!(still_cached.render_mode_log());
+
+        reset_runtime_cache_for_tests();
+        let refreshed = runtime_overrides_cached();
+        assert!(refreshed.manifest_first());
+        assert!(!refreshed.render_mode_log());
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_render_mode_respects_runtime_and_allowlist() {
+        reset_runtime_cache_for_tests();
+        reset_allowlist_cache_for_tests();
+        let mut rt = RuntimeOverrides {
+            manifest_first: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(manifest_render_mode(&rt, None), RenderMode::ContentOnly);
+
+        rt.manifest_first = Some(true);
+        let mut client = ClientInfo::default();
+        client.client_info.name = "claude-desktop".into();
+        assert_eq!(
+            manifest_render_mode(&rt, Some(&client)),
+            RenderMode::ManifestOnly
+        );
+
+        let tmp = tempdir().unwrap();
+        let allow = tmp.path().join("allow.json");
+        fs::write(&allow, r#"[{"name_substr":"codex","min_version":"2.0.0"}]"#).unwrap();
+        std::env::set_var("SKRILLS_MANIFEST_ALLOWLIST", &allow);
+        reset_allowlist_cache_for_tests();
+        let mut codex = ClientInfo::default();
+        codex.client_info.name = "codex-cli".into();
+        codex.client_info.version = "2.1.0".into();
+        assert_eq!(
+            manifest_render_mode(&rt, Some(&codex)),
+            RenderMode::ManifestOnly
+        );
+
+        codex.client_info.version = "1.0.0".into();
+        reset_allowlist_cache_for_tests();
+        assert_eq!(manifest_render_mode(&rt, Some(&codex)), RenderMode::Dual);
     }
 
     #[test]
@@ -2472,6 +2735,7 @@ mod tests {
             ))),
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
             warmup_started: AtomicBool::new(false),
+            runtime: Arc::new(Mutex::new(RuntimeOverrides::default())),
         };
 
         let uri = "skill://codex/alpha/SKILL.md";
@@ -2499,24 +2763,27 @@ mod tests {
         let tmp = tempdir()?;
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
+        std::env::remove_var(ENV_EXPOSE_AGENTS);
         let manifest = tmp.path().join(".codex/skills-manifest.json");
         fs::create_dir_all(manifest.parent().unwrap())?;
         fs::write(
             &manifest,
             r#"{ "priority": ["codex","claude"], "expose_agents": false }"#,
         )?;
-        std::env::set_var("CODEX_SKILLS_MANIFEST", &manifest);
+        std::env::set_var("SKRILLS_MANIFEST", &manifest);
 
         let svc = SkillService {
             cache: Arc::new(Mutex::new(SkillCache::new(vec![]))),
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
             warmup_started: AtomicBool::new(false),
+            runtime: Arc::new(Mutex::new(RuntimeOverrides::default())),
         };
+        assert!(!svc.expose_agents_doc()?);
         let resources = svc.list_resources_payload()?;
         assert!(!resources.iter().any(|r| r.uri == AGENTS_URI));
         let err = svc.read_resource_sync(AGENTS_URI).unwrap_err();
         assert!(err.to_string().contains("not found"));
-        std::env::remove_var("CODEX_SKILLS_MANIFEST");
+        std::env::remove_var("SKRILLS_MANIFEST");
 
         // Restore original HOME
         if let Some(home) = original_home {
@@ -2535,7 +2802,7 @@ mod tests {
         let manifest = tmp.path().join(".codex/skills-manifest.json");
         fs::create_dir_all(manifest.parent().unwrap())?;
         fs::write(&manifest, r#"{ "cache_ttl_ms": 2500 }"#)?;
-        std::env::set_var("CODEX_SKILLS_MANIFEST", &manifest);
+        std::env::set_var("SKRILLS_MANIFEST", &manifest);
 
         let svc = SkillService::new(vec![])?;
         let ttl = svc
@@ -2544,7 +2811,7 @@ mod tests {
             .map_err(|e| anyhow!("poisoned: {e}"))?
             .ttl();
         assert_eq!(ttl, Duration::from_millis(2500));
-        std::env::remove_var("CODEX_SKILLS_MANIFEST");
+        std::env::remove_var("SKRILLS_MANIFEST");
 
         // Restore original HOME
         if let Some(home) = original_home {
@@ -2568,10 +2835,10 @@ mod tests {
             source: SkillSource::Codex,
         }];
 
-        let skills = collect_skills_from(&roots, None)?;
+        let skills = discover_skills(&roots, None)?;
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "alpha/SKILL.md");
-        assert_eq!(skills[0].hash, file_hash(&skill_path)?);
+        assert_eq!(skills[0].hash, hash_file(&skill_path)?);
         assert!(matches!(skills[0].source, SkillSource::Codex));
         Ok(())
     }
@@ -2616,30 +2883,53 @@ mod tests {
                 path: codex_skill.clone(),
                 source: SkillSource::Codex,
                 root: codex_dir.clone(),
-                hash: file_hash(&codex_skill)?,
+                hash: hash_file(&codex_skill)?,
             },
             SkillMeta {
                 name: "claude/SKILL.md".into(),
                 path: claude_skill.clone(),
                 source: SkillSource::Claude,
                 root: claude_dir.clone(),
-                hash: file_hash(&claude_skill)?,
+                hash: hash_file(&claude_skill)?,
             },
         ];
+
+        // Compute lengths to choose a max_bytes that fits manifest but not full output.
+        let manifest_only = render_autoload(
+            &skills,
+            AutoloadOptions {
+                render_mode: RenderMode::ManifestOnly,
+                ..Default::default()
+            },
+        )?;
+        let full_dual = render_autoload(
+            &skills,
+            AutoloadOptions {
+                include_claude: false,
+                prompt: Some("token efficiency test prompt"),
+                ..Default::default()
+            },
+        )?;
+        let limit = manifest_only.len() + 16; // slightly above manifest, below full content
+        assert!(limit < full_dual.len());
 
         let content = render_autoload(
             &skills,
             AutoloadOptions {
                 include_claude: false,
-                max_bytes: Some(120),
+                max_bytes: Some(limit),
                 prompt: Some("token efficiency test prompt"),
                 ..Default::default()
             },
         )?;
-        assert!(content.contains("codex/SKILL.md"));
-        assert!(!content.contains("claude/SKILL.md"));
-        assert!(content.len() <= 120);
-        assert!(content.to_lowercase().contains("trunc"));
+        // When truncated, manifest should remain valid JSON and content may be dropped.
+        assert!(content.len() <= limit);
+        let json_part = content
+            .lines()
+            .skip_while(|l| l.starts_with("[skills]"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        serde_json::from_str::<serde_json::Value>(&json_part)?;
         Ok(())
     }
 
@@ -2664,14 +2954,14 @@ mod tests {
                 path: codex_skill.clone(),
                 source: SkillSource::Codex,
                 root: codex_dir.clone(),
-                hash: file_hash(&codex_skill)?,
+                hash: hash_file(&codex_skill)?,
             },
             SkillMeta {
                 name: "mirror/SKILL.md".into(),
                 path: mirror_skill.clone(),
                 source: SkillSource::Mirror,
                 root: mirror_dir.clone(),
-                hash: file_hash(&mirror_skill)?,
+                hash: hash_file(&mirror_skill)?,
             },
         ];
 
@@ -2690,6 +2980,392 @@ mod tests {
         assert!(content.contains("mirror/SKILL.md"));
         // Codex skill is not pinned and the prompt does not match, so it may be filtered out.
         Ok(())
+    }
+
+    #[test]
+    fn autoload_uses_embedding_similarity_for_fuzzy_prompt_hits() -> Result<()> {
+        let tmp = tempdir()?;
+        let codex_dir = tmp.path().join("codex/skills");
+        fs::create_dir_all(&codex_dir)?;
+
+        let skill_path = codex_dir.join("analysis/SKILL.md");
+        fs::create_dir_all(skill_path.parent().unwrap())?;
+        fs::write(
+            &skill_path,
+            "Guide to analyse pipeline performance and resilience.",
+        )?;
+
+        let skills = vec![SkillMeta {
+            name: "analysis/SKILL.md".into(),
+            path: skill_path.clone(),
+            source: SkillSource::Codex,
+            root: codex_dir.clone(),
+            hash: hash_file(&skill_path)?,
+        }];
+
+        let content = render_autoload(
+            &skills,
+            AutoloadOptions {
+                include_claude: false,
+                prompt: Some("plz analyz pipline bugz"),
+                embed_threshold: Some(0.10),
+                ..Default::default()
+            },
+        )?;
+        assert!(
+            content.contains("analysis/SKILL.md"),
+            "embedding similarity should include fuzzy-matched skill"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn autoload_embedding_threshold_blocks_low_similarity() -> Result<()> {
+        let tmp = tempdir()?;
+        let codex_dir = tmp.path().join("codex/skills");
+        fs::create_dir_all(&codex_dir)?;
+
+        let skill_path = codex_dir.join("analysis/SKILL.md");
+        fs::create_dir_all(skill_path.parent().unwrap())?;
+        fs::write(
+            &skill_path,
+            "Guide to analyse pipeline performance and resilience.",
+        )?;
+
+        let skills = vec![SkillMeta {
+            name: "analysis/SKILL.md".into(),
+            path: skill_path.clone(),
+            source: SkillSource::Codex,
+            root: codex_dir.clone(),
+            hash: hash_file(&skill_path)?,
+        }];
+
+        let content = render_autoload(
+            &skills,
+            AutoloadOptions {
+                include_claude: false,
+                prompt: Some("plz analyz pipline bugz"),
+                embed_threshold: Some(0.95),
+                ..Default::default()
+            },
+        )?;
+        assert!(
+            !content.contains("analysis/SKILL.md"),
+            "high similarity threshold should filter out fuzzy matches"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn autoload_respects_env_embed_threshold_default() -> Result<()> {
+        let tmp = tempdir()?;
+        let codex_dir = tmp.path().join("codex/skills");
+        fs::create_dir_all(&codex_dir)?;
+        let skill_path = codex_dir.join("analysis/SKILL.md");
+        fs::create_dir_all(skill_path.parent().unwrap())?;
+        fs::write(
+            &skill_path,
+            "Guide to analyse pipeline performance and resilience.",
+        )?;
+
+        let skills = vec![SkillMeta {
+            name: "analysis/SKILL.md".into(),
+            path: skill_path.clone(),
+            source: SkillSource::Codex,
+            root: codex_dir.clone(),
+            hash: hash_file(&skill_path)?,
+        }];
+
+        std::env::set_var("SKRILLS_EMBED_THRESHOLD", "0.9");
+        let content = render_autoload(
+            &skills,
+            AutoloadOptions {
+                include_claude: false,
+                prompt: Some("plz analyz pipline bugz"),
+                ..Default::default()
+            },
+        )?;
+        std::env::remove_var("SKRILLS_EMBED_THRESHOLD");
+
+        assert!(
+            !content.contains("analysis/SKILL.md"),
+            "env-set high threshold should apply when option not provided"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn autoload_keyword_match_still_wins_when_threshold_high() -> Result<()> {
+        // GIVEN a prompt that directly names the skill (keyword path)
+        let tmp = tempdir()?;
+        let codex_dir = tmp.path().join("codex/skills");
+        fs::create_dir_all(&codex_dir)?;
+        let skill_path = codex_dir.join("observability/SKILL.md");
+        fs::create_dir_all(skill_path.parent().unwrap())?;
+        fs::write(&skill_path, "How to add tracing and metrics.")?;
+
+        let skills = vec![SkillMeta {
+            name: "observability/SKILL.md".into(),
+            path: skill_path.clone(),
+            source: SkillSource::Codex,
+            root: codex_dir.clone(),
+            hash: hash_file(&skill_path)?,
+        }];
+
+        // WHEN embed threshold is high but keyword hits
+        let content = render_autoload(
+            &skills,
+            AutoloadOptions {
+                include_claude: false,
+                prompt: Some("need observability best practices"),
+                embed_threshold: Some(0.99),
+                ..Default::default()
+            },
+        )?;
+
+        // THEN the skill is still included
+        assert!(
+            content.contains("observability/SKILL.md"),
+            "direct keyword match should not be blocked by high embed threshold"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn autoload_args_parses_embed_threshold() -> Result<()> {
+        let json = r#"{
+            "include_claude": false,
+            "max_bytes": 1024,
+            "prompt": "typo prompt",
+            "embed_threshold": 0.42,
+            "auto_pin": false,
+            "diagnose": true
+        }"#;
+        let args: AutoloadArgs = serde_json::from_str(json)?;
+        assert_eq!(args.embed_threshold, Some(0.42));
+        assert_eq!(args.prompt, Some("typo prompt".into()));
+        assert_eq!(args.max_bytes, Some(1024));
+        Ok(())
+    }
+
+    #[test]
+    fn render_preview_stats_returns_token_estimate() -> Result<()> {
+        let tmp = tempdir()?;
+        let codex_dir = tmp.path().join("codex/skills");
+        fs::create_dir_all(&codex_dir)?;
+        let skill_path = codex_dir.join("analysis/SKILL.md");
+        fs::create_dir_all(skill_path.parent().unwrap())?;
+        fs::write(
+            &skill_path,
+            "Guide to analyse pipeline performance and resilience.",
+        )?;
+
+        let skills = vec![SkillMeta {
+            name: "analysis/SKILL.md".into(),
+            path: skill_path.clone(),
+            source: SkillSource::Codex,
+            root: codex_dir.clone(),
+            hash: hash_file(&skill_path)?,
+        }];
+
+        let stats = render_preview_stats(
+            &skills,
+            AutoloadOptions {
+                include_claude: false,
+                prompt: Some("pipeline review"),
+                embed_threshold: Some(0.05),
+                ..Default::default()
+            },
+        )?;
+
+        assert_eq!(stats.matched, vec!["analysis/SKILL.md"]);
+        assert!(stats.manifest_bytes > 0);
+        assert!(stats.estimated_tokens > 0);
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_only_small_limit_stays_valid_json() -> Result<()> {
+        let tmp = tempdir()?;
+        let codex_dir = tmp.path().join("codex/skills");
+        fs::create_dir_all(&codex_dir)?;
+        let codex_skill = codex_dir.join("SKILL.md");
+        fs::write(&codex_skill, "C token_repeat".repeat(20))?;
+
+        let skills = vec![SkillMeta {
+            name: "codex/SKILL.md".into(),
+            path: codex_skill.clone(),
+            source: SkillSource::Codex,
+            root: codex_dir.clone(),
+            hash: hash_file(&codex_skill)?,
+        }];
+
+        let manifest_only = render_autoload(
+            &skills,
+            AutoloadOptions {
+                render_mode: RenderMode::ManifestOnly,
+                ..Default::default()
+            },
+        )?;
+        let limit = manifest_only.len() + 8;
+
+        let content = render_autoload(
+            &skills,
+            AutoloadOptions {
+                render_mode: RenderMode::ManifestOnly,
+                max_bytes: Some(limit),
+                ..Default::default()
+            },
+        )?;
+
+        // Should parse as JSON and not exceed limit.
+        assert!(content.len() <= limit);
+        let json_part = content
+            .lines()
+            .skip_while(|l| l.starts_with("[skills]"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        serde_json::from_str::<serde_json::Value>(&json_part)?;
+        Ok(())
+    }
+
+    #[test]
+    fn gzipped_manifest_fallback_when_limit_hit_and_supported() -> Result<()> {
+        let tmp = tempdir()?;
+        let codex_dir = tmp.path().join("codex/skills");
+        fs::create_dir_all(&codex_dir)?;
+        let codex_skill = codex_dir.join("SKILL.md");
+        fs::write(&codex_skill, "C token_repeat".repeat(50))?;
+
+        let skills = vec![SkillMeta {
+            name: "codex/SKILL.md".into(),
+            path: codex_skill.clone(),
+            source: SkillSource::Codex,
+            root: codex_dir.clone(),
+            hash: hash_file(&codex_skill)?,
+        }];
+
+        let manifest_only_full = render_autoload(
+            &skills,
+            AutoloadOptions {
+                render_mode: RenderMode::ManifestOnly,
+                ..Default::default()
+            },
+        )?;
+        let manifest_json_full = manifest_only_full
+            .lines()
+            .skip_while(|l| l.starts_with("[skills]"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let gz_wrapped_full = format!(
+            r#"{{"skills_manifest_gzip_base64":"{}"}}"#,
+            gzip_base64(&manifest_json_full)?
+        );
+        let limit = gz_wrapped_full.len(); // smaller than raw manifest to force gzip path
+        let preview_len = limit.saturating_div(4).clamp(64, 512);
+        let preview = read_prefix(&codex_skill, preview_len)?;
+        let expected_manifest = json!({
+            "skills_manifest": [{
+                "name": "codex/SKILL.md",
+                "source": SkillSource::Codex,
+                "root": codex_dir,
+                "path": codex_skill,
+                "hash": hash_file(&codex_skill)?,
+                "preview": preview
+            }]
+        });
+
+        let content = render_autoload(
+            &skills,
+            AutoloadOptions {
+                render_mode: RenderMode::ManifestOnly,
+                max_bytes: Some(limit),
+                gzip_ok: true,
+                ..Default::default()
+            },
+        )?;
+
+        let v_compressed: serde_json::Value = serde_json::from_str(&content)?;
+        let b64 = v_compressed
+            .get("skills_manifest_gzip_base64")
+            .and_then(|s| s.as_str())
+            .expect("compressed manifest present");
+        let bytes = BASE64.decode(b64)?;
+        let mut decoder = GzDecoder::new(&bytes[..]);
+        let mut decoded = String::new();
+        decoder.read_to_string(&mut decoded)?;
+        let manifest_val: serde_json::Value = serde_json::from_str(&decoded)?;
+        assert_eq!(manifest_val, expected_manifest);
+        Ok(())
+    }
+
+    #[test]
+    fn minimal_manifest_drops_heavy_fields() -> Result<()> {
+        let tmp = tempdir()?;
+        let codex_dir = tmp.path().join("codex/skills");
+        fs::create_dir_all(&codex_dir)?;
+        let codex_skill = codex_dir.join("SKILL.md");
+        fs::write(&codex_skill, "short content")?;
+
+        let skills = vec![SkillMeta {
+            name: "codex/SKILL.md".into(),
+            path: codex_skill.clone(),
+            source: SkillSource::Codex,
+            root: codex_dir.clone(),
+            hash: hash_file(&codex_skill)?,
+        }];
+
+        let full = render_autoload(
+            &skills,
+            AutoloadOptions {
+                render_mode: RenderMode::ManifestOnly,
+                ..Default::default()
+            },
+        )?;
+        let minimal = render_autoload(
+            &skills,
+            AutoloadOptions {
+                render_mode: RenderMode::ManifestOnly,
+                minimal_manifest: true,
+                ..Default::default()
+            },
+        )?;
+
+        assert!(minimal.len() < full.len());
+        let parse_manifest = |s: &str| -> Result<serde_json::Value> {
+            let body = s
+                .lines()
+                .skip_while(|l| l.starts_with("[skills]"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Ok(serde_json::from_str(&body)?)
+        };
+
+        let full_json = parse_manifest(&full)?;
+        let minimal_json = parse_manifest(&minimal)?;
+        let minimal_skill = minimal_json["skills_manifest"][0].as_object().unwrap();
+        assert!(!minimal_skill.contains_key("path"));
+        assert!(!minimal_skill.contains_key("preview"));
+        assert!(minimal_skill.contains_key("name"));
+        assert!(minimal_skill.contains_key("hash"));
+
+        let full_skill = full_json["skills_manifest"][0].as_object().unwrap();
+        assert!(full_skill.contains_key("path"));
+        assert!(full_skill.contains_key("preview"));
+        Ok(())
+    }
+
+    #[test]
+    fn peer_accepts_gzip_prefers_env_then_name() {
+        assert!(!peer_accepts_gzip(None));
+
+        std::env::set_var("SKRILLS_ACCEPT_GZIP", "1");
+        assert!(peer_accepts_gzip(None));
+        std::env::remove_var("SKRILLS_ACCEPT_GZIP");
+
+        let mut client = ClientInfo::default();
+        client.client_info.name = "gzip-capable-client".into();
+        assert!(peer_accepts_gzip(Some(&client)));
     }
 
     #[test]
@@ -2722,12 +3398,12 @@ mod tests {
         let manifest = tmp.path().join(".codex/skills-manifest.json");
         fs::create_dir_all(manifest.parent().unwrap())?;
         fs::write(&manifest, r#"["agent","codex"]"#)?;
-        std::env::set_var("CODEX_SKILLS_MANIFEST", &manifest);
+        std::env::set_var("SKRILLS_MANIFEST", &manifest);
 
         let roots = skill_roots(&[])?;
         let order: Vec<_> = roots.into_iter().map(|r| r.source.label()).collect();
         assert_eq!(order, vec!["agent", "codex", "mirror", "claude"]);
-        std::env::remove_var("CODEX_SKILLS_MANIFEST");
+        std::env::remove_var("SKRILLS_MANIFEST");
 
         // Restore original HOME
         if let Some(home) = original_home {
@@ -2781,7 +3457,7 @@ mod tests {
             source: SkillSource::Codex,
         }];
 
-        let result = collect_skills_from(&roots, None);
+        let result = discover_skills(&roots, None);
         assert!(result.is_err());
         Ok(())
     }

@@ -1,8 +1,8 @@
-//! Command-line interface for the `codex-mcp-skills` application.
+//! Command-line interface for the `skrills` application.
 //!
 //! This crate serves as the main entry point for the executable, delegating
-//! its core functionality to the `codex-mcp-skills-core` crate.
+//! its core functionality to the `skrills-core` crate.
 
 fn main() -> anyhow::Result<()> {
-    codex_mcp_skills_core::run()
+    skrills_server::run()
 }

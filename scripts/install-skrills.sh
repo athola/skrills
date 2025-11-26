@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install codex-mcp-skills into ~/.codex (hook + MCP server registration)
+# Install skrills into ~/.codex (hook + MCP server registration)
 # Flags:
 #   --universal        Also sync skills into ~/.agent/skills for cross-agent reuse.
 #   --universal-only   Only perform the universal sync (no hook/server install).
@@ -14,21 +14,82 @@ for arg in "$@"; do
     *) echo "Unknown arg: $arg" >&2; exit 1 ;;
   esac
 done
-if [ "${CODEX_SKILLS_UNIVERSAL:-0}" != "0" ]; then
+if [ "${SKRILLS_UNIVERSAL:-0}" != "0" ]; then
   UNIVERSAL=1
 fi
 
-# Preferred binary path (can be set by outer installer via BIN_PATH or CODEX_SKILLS_BIN).
-BIN_PATH="${BIN_PATH:-${CODEX_SKILLS_BIN:-$HOME/.cargo/bin/codex-mcp-skills}}"
+# Preferred binary path (can be set by outer installer via BIN_PATH or SKRILLS_BIN).
+BIN_PATH="${BIN_PATH:-${SKRILLS_BIN:-$HOME/.cargo/bin/skrills}}"
 HOOK_DIR="$HOME/.codex/hooks/codex"
 HOOK_PATH="$HOOK_DIR/prompt.on_user_prompt_submit"
 MCP_PATH="$HOME/.codex/mcp_servers.json"
 CONFIG_TOML="$HOME/.codex/config.toml"
 REPO_ROOT="$(cd "${0%/*}/.." && pwd)"
 
+clean_legacy_codex_mcp_skills() {
+  local removed=0
+  local legacy_bins=(
+    "$HOME/.codex/bin/codex-mcp-skills"
+    "$HOME/.cargo/bin/codex-mcp-skills"
+  )
+  for bin in "${legacy_bins[@]}"; do
+    if [ -e "$bin" ]; then
+      rm -f "$bin" && echo "Removed legacy binary $bin" && removed=1
+    fi
+  done
+
+  if [ -f "$MCP_PATH" ]; then
+    if command -v jq >/dev/null 2>&1; then
+      tmp=$(mktemp)
+      jq 'del(.mcpServers["codex-mcp-skills"])' "$MCP_PATH" > "$tmp" \
+        && mv "$tmp" "$MCP_PATH" \
+        && echo "Removed codex-mcp-skills from $MCP_PATH" \
+        || rm -f "$tmp"
+    else
+      python - <<'PY' "$MCP_PATH"
+import json, os, sys, tempfile
+path = sys.argv[1]
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    sys.exit(0)
+servers = data.get("mcpServers")
+if isinstance(servers, dict) and servers.pop("codex-mcp-skills", None) is not None:
+    tmp_fd, tmp_path = tempfile.mkstemp()
+    with os.fdopen(tmp_fd, "w", encoding="utf-8") as out:
+        json.dump(data, out, indent=2)
+        out.write("\n")
+    os.replace(tmp_path, path)
+    print(f"Removed codex-mcp-skills from {path}")
+PY
+    fi
+  fi
+
+  if [ -f "$CONFIG_TOML" ]; then
+    tmp=$(mktemp)
+    awk '
+      BEGIN { skip = 0 }
+      /^\[mcp_servers\."codex-mcp-skills"\]/ { skip = 1; next }
+      /^\[/ { if (skip) skip = 0 }
+      { if (!skip) print }
+    ' "$CONFIG_TOML" > "$tmp" && mv "$tmp" "$CONFIG_TOML" && \
+      echo "Removed codex-mcp-skills from $CONFIG_TOML" || rm -f "$tmp"
+  fi
+
+  # Clean legacy hook files that used the old name.
+  if [ -d "$HOOK_DIR" ]; then
+    find "$HOOK_DIR" -maxdepth 1 -type f -name '*codex-mcp-skills*' -exec rm -f {} \; 2>/dev/null
+  fi
+
+  if [ "$removed" -eq 1 ]; then
+    echo "Legacy codex-mcp-skills artifacts cleaned."
+  fi
+}
+
 sync_universal() {
   local AGENT_SKILLS="${AGENT_SKILLS_DIR:-$HOME/.agent/skills}"
-  local CODEX_SKILLS_DIR="${CODEX_SKILLS_DIR:-$HOME/.codex/skills}"
+  local SKRILLS_DIR="${SKRILLS_DIR:-$HOME/.codex/skills}"
   local MIRROR_DIR="${CODEX_MIRROR_DIR:-$HOME/.codex/skills-mirror}"
   mkdir -p "$AGENT_SKILLS"
   echo "Universal sync: copying skills into $AGENT_SKILLS"
@@ -45,7 +106,7 @@ sync_universal() {
   if [ -x "$BIN_PATH" ]; then
     "$BIN_PATH" sync || echo "Warning: sync-from-claude failed (continuing)."
   fi
-  copy_tree "$CODEX_SKILLS_DIR"
+  copy_tree "$SKRILLS_DIR"
   copy_tree "$MIRROR_DIR"
   echo "Universal sync complete."
 }
@@ -55,17 +116,19 @@ if [ "$UNIVERSAL_ONLY" -eq 1 ]; then
   exit 0
 fi
 
+clean_legacy_codex_mcp_skills
+
 mkdir -p "$HOOK_DIR"
 write_hook() {
   local tmp
   tmp=$(mktemp)
   cat > "$tmp" <<'HOOK' || { echo "Warning: unable to write hook (permission denied?). Skipping hook install." >&2; rm -f "$tmp"; return; }
 #!/usr/bin/env bash
-# Inject SKILL.md content into Codex on prompt submit via codex-mcp-skills
+# Inject SKILL.md content into Codex on prompt submit via skrills
 set -euo pipefail
 
-BIN="${CODEX_SKILLS_BIN:-$HOME/.cargo/bin/codex-mcp-skills}"
-REPO="${CODEX_SKILLS_REPO:-$HOME/codex-mcp-skills}"
+BIN="${SKRILLS_BIN:-$HOME/.cargo/bin/skrills}"
+REPO="${SKRILLS_REPO:-$HOME/skrills}"
 CMD_ARGS=(emit-autoload)
 
 # Optionally capture prompt text from stdin (Codex passes event payload on prompt submit).
@@ -77,8 +140,8 @@ if [ ! -t 0 ]; then
   fi
 fi
 
-if [ -n "${CODEX_SKILLS_PROMPT:-}" ]; then
-  PROMPT_INPUT="$CODEX_SKILLS_PROMPT"
+if [ -n "${SKRILLS_PROMPT:-}" ]; then
+  PROMPT_INPUT="$SKRILLS_PROMPT"
 fi
 
 if [ -n "$PROMPT_INPUT" ]; then
@@ -122,10 +185,10 @@ JSON
   fi
 fi
 
-# Merge/insert codex-skills entry; prefer jq, fall back to Python stdlib
+# Merge/insert skrills entry; prefer jq, fall back to Python stdlib
 if command -v jq >/dev/null 2>&1; then
   tmp=$(mktemp)
-  jq '.mcpServers."codex-skills" = {"type": "stdio", "command": "'"$BIN_PATH"'", "args": ["serve"]}' "$MCP_PATH" > "$tmp"
+  jq '.mcpServers."skrills" = {"type": "stdio", "command": "'"$BIN_PATH"'", "args": ["serve"]}' "$MCP_PATH" > "$tmp"
   if mv "$tmp" "$MCP_PATH"; then
     :
   else
@@ -141,14 +204,14 @@ elif command -v awk >/dev/null 2>&1; then
       found = 0
     }
     {
-      if ($0 ~ /"codex-skills"[[:space:]]*:/) { found = 1 }
+      if ($0 ~ /"skrills"[[:space:]]*:/) { found = 1 }
       print
     }
     END {
       if (!found) {
         printf "%s\n", (NR ? "," : "{");
         print "  \"mcpServers\": {"
-        print "    \"codex-skills\": {"
+        print "    \"skrills": {"
         print "      \"type\": \"stdio\","
         printf "      \"command\": \"%s\",\n", bin
         print "      \"args\": [\"serve\"]"
@@ -165,33 +228,33 @@ elif command -v awk >/dev/null 2>&1; then
     rm -f "$tmp"
   fi
 else
-  echo "Warning: jq not found and awk unavailable; please add codex-skills entry to $MCP_PATH manually." >&2
+  echo "Warning: jq not found and awk unavailable; please add skrills entry to $MCP_PATH manually." >&2
 fi
 
-echo "Registered codex-skills MCP server in $MCP_PATH"
+echo "Registered skrills MCP server in $MCP_PATH"
 
-# Also ensure codex-skills is present in config.toml (Codex prefers this over mcp_servers.json)
+# Also ensure skrills is present in config.toml (Codex prefers this over mcp_servers.json)
 if [ ! -f "$CONFIG_TOML" ]; then
   mkdir -p "$(dirname "$CONFIG_TOML")"
   if ! printf 'model = "gpt-5.1-codex-max"\n\n' > "$CONFIG_TOML"; then
     echo "Warning: unable to create $CONFIG_TOML (permission denied?)" >&2
   fi
 fi
-if [ -w "$CONFIG_TOML" ] && ! grep -q '\[mcp_servers\."codex-skills"\]' "$CONFIG_TOML"; then
+if [ -w "$CONFIG_TOML" ] && ! grep -q '\[mcp_servers\."skrills"\]' "$CONFIG_TOML"; then
   cat <<EOF >> "$CONFIG_TOML"
 
-[mcp_servers."codex-skills"]
+[mcp_servers."skrills"]
 type = "stdio"
 command = "$BIN_PATH"
 args = ["serve"]
 EOF
-  echo "Registered codex-skills MCP server in $CONFIG_TOML"
-elif grep -q '\[mcp_servers\."codex-skills"\]' "$CONFIG_TOML"; then
+  echo "Registered skrills MCP server in $CONFIG_TOML"
+elif grep -q '\[mcp_servers\."skrills"\]' "$CONFIG_TOML"; then
   # Ensure type is present in the existing section (Codex MCP now requires it).
   tmp=$(mktemp)
   awk '
     BEGIN { in_section = 0; found_type = 0 }
-    /^\[mcp_servers\."codex-skills"\]/ {
+    /^\[mcp_servers\."skrills"\]/ {
       in_section = 1
       found_type = 0
       print
@@ -209,12 +272,12 @@ elif grep -q '\[mcp_servers\."codex-skills"\]' "$CONFIG_TOML"; then
       if (in_section && !found_type) { print "type = \"stdio\"" }
     }
   ' "$CONFIG_TOML" > "$tmp" && mv "$tmp" "$CONFIG_TOML"
-  echo "codex-skills already present in $CONFIG_TOML (type ensured)"
+  echo "skrills already present in $CONFIG_TOML (type ensured)"
 else
   echo "Warning: unable to update $CONFIG_TOML (permission denied?)" >&2
 fi
 
-echo "Install complete. To mirror Claude skills: run 'codex-mcp-skills sync' (binary must be built)."
+echo "Install complete. To mirror Claude skills: run 'skrills sync' (binary must be built)."
 
 if [ "$UNIVERSAL" -eq 1 ]; then
   sync_universal

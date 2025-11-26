@@ -68,7 +68,7 @@ jobs:
         if: needs.create-release.outputs.is-draft == 'true'
         uses: taiki-e/upload-rust-binary-action@v1
         with:
-          bin: codex-mcp-skills
+          bin: skrills
           target: ${{ matrix.target }}
           build-tool: cross
           tar: unix
@@ -102,7 +102,7 @@ jobs:
         if: needs.create-release.outputs.is-draft == 'true'
         uses: taiki-e/upload-rust-binary-action@v1
         with:
-          bin: codex-mcp-skills
+          bin: skrills
           target: ${{ matrix.target }}
           tar: unix
           zip: none
@@ -135,7 +135,7 @@ jobs:
         if: needs.create-release.outputs.is-draft == 'true'
         uses: taiki-e/upload-rust-binary-action@v1
         with:
-          bin: codex-mcp-skills
+          bin: skrills
           target: ${{ matrix.target }}
           tar: none
           zip: windows

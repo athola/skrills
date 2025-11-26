@@ -5,6 +5,7 @@
 - [CLI Usage](cli.md)
 - [Autoload & Skills](autoload.md)
 - [Development](development.md)
+- [Public API & SemVer](semver.md)
 - [Process & Safety](process.md)
 - [Release & Distribution](release.md)
 - [Comparison](comparison.md)

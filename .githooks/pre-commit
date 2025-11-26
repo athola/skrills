@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+# Use repo-local cargo home to avoid permission issues in sandboxed environments.
+export CARGO_HOME="${ROOT}/.cargo-home"
+
+step() {
+  printf '>> %s\n' "$*"
+}
+
+step "cargo fmt --all -- --check"
+cargo fmt --all -- --check
+
+step "cargo clippy --workspace --all-targets --all-features -D warnings"
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+step "cargo test --workspace --all-features --quiet"
+cargo test --workspace --all-features --quiet
+
+step "pre-commit checks completed"

@@ -2,6 +2,8 @@
 .cargo-tmp
 docs/plans/
 .cargo/
+.cargo-home/
+.rustup-temp/
 book/book
 *.txt
 .venv_image/

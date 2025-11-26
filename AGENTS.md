@@ -56,7 +56,7 @@ Every commit must:
 ### Pre-Commit Workflow
 This command should be run before committing to ensure all quality checks pass:
 ```bash
-make format && make lint && make test --quiet && make build
+make fmt lint test --quiet build
 ```
 
 ### Effective Prompting
@@ -234,7 +234,7 @@ Targeted commands to use instead:
 ### Essential Commands
 ```bash
 # Run the full development cycle of formatting, linting, and testing.
-make format && make lint && make test --quiet
+make fmt lint test --quiet
 
 # Run different test suites.
 make test --quiet

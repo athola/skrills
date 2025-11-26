@@ -1,9 +1,9 @@
-# Common developer and demo tasks for codex-mcp-skills
+# Common developer and demo tasks for skrills
 # Set CARGO_HOME to a writable path to avoid sandbox/root perms issues.
 CARGO ?= cargo
 CARGO_HOME ?= .cargo
 HOME_DIR ?= $(CURDIR)/.home-tmp
-BIN ?= codex-mcp-skills
+BIN ?= skrills
 BIN_PATH ?= target/release/$(BIN)
 MDBOOK ?= mdbook
 
@@ -55,7 +55,7 @@ emit-autoload:
 
 docs:
 	CARGO_HOME=$(CARGO_HOME) RUSTDOCFLAGS="-D warnings" $(CARGO) doc --workspace --all-features --no-deps
-	@doc_index="$(CURDIR)/target/doc/codex_mcp_skills/index.html"; \
+	@doc_index="$(CURDIR)/target/doc/skrills/index.html"; \
 	if [ -f "$$doc_index" ]; then \
 	  if command -v xdg-open >/dev/null 2>&1; then xdg-open "$$doc_index" >/dev/null 2>&1 || true; \
 	  elif command -v open >/dev/null 2>&1; then open "$$doc_index" >/dev/null 2>&1 || true; \

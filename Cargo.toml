@@ -1,5 +1,10 @@
 [workspace]
-members = ["crates/core", "crates/cli"]
+members = [
+    "crates/discovery",
+    "crates/state",
+    "crates/server",
+    "crates/cli",
+]
 resolver = "2"
 
 [workspace.package]
@@ -25,3 +30,6 @@ dialoguer = "0.11"
 tempfile = "3"
 toml = "0.8"
 hex = "0.4"
+once_cell = "1.19"
+semver = "1"
+flate2 = "1"

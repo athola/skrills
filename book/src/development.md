@@ -4,9 +4,9 @@ This page provides information for developers who want to contribute to the proj
 
 ## Toolchain
 
--   **Rust**: Version 1.78 or newer (installed via `rustup`).
--   **Formatting and Linting**: `cargo fmt` and `clippy` are used.
--   **Documentation**: This book is built with `mdbook`. You can install it by running `cargo install mdbook --locked`.
+-   **Rust**: Install version 1.78 or newer via `rustup`.
+-   **Formatting and Linting**: Use `cargo fmt` and `clippy`.
+-   **Documentation**: This book uses `mdbook`. Install it by running `cargo install mdbook --locked`.
 
 ## Make Targets
 
@@ -55,3 +55,14 @@ cargo test --workspace --all-features
 ```
 
 This is also aliased to `make test` and is run as part of the continuous integration pipeline (`make ci`).
+
+### Public API guardrails
+
+The `skrills-server` crate is pre-1.0. Follow the SemVer guidance in
+[Public API & SemVer](semver.md) and run the public API check locally before
+submitting changes.
+
+### Coverage
+
+- Local: `cargo llvm-cov --workspace --html` for an HTML report, or `cargo llvm-cov --workspace --lcov --output-path lcov.info` for CI export.
+- CI: `.github/workflows/coverage.yml` runs the same command and uploads to Codecov.

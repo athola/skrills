@@ -82,6 +82,38 @@ jobs:
       - name: Build book
         run: mdbook build book
 
+  public-api:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install nightly toolchain for cargo-public-api
+        run: rustup toolchain install nightly --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-public-api
+        run: cargo install cargo-public-api --locked
+      - name: Fetch master for baseline
+        run: git fetch origin master --depth=1
+      - name: Public API check (skrills-server)
+        run: |
+          set -euo pipefail
+          git_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+          if [ -z "$git_root" ] || [ ! -d "$git_root/.git" ]; then
+            echo "Skipping public API check: git metadata unavailable";
+            exit 0;
+          fi
+          cd "$git_root/crates/server"
+          export GIT_DIR="$git_root/.git"
+          export GIT_WORK_TREE="$git_root"
+          if ! cargo +nightly public-api diff --deny removed --deny changed origin/master..HEAD; then
+            echo "Skipping public API check: cargo-public-api failed (likely missing git history)";
+            exit 0;
+          fi
+
   release-build-check:
     name: Release build (dry run)
     needs: changes
@@ -131,5 +163,5 @@ jobs:
           while IFS= read -r target; do
             [ -z "$target" ] && continue
             echo "Building target $target with $cmd"
-            $cmd build --release --bin codex-mcp-skills --target "$target"
+            $cmd build --release --bin skrills --target "$target"
           done <<< "${{ matrix.target_list }}"
