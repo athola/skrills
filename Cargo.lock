@@ -1164,7 +1164,7 @@ checksum = "d66dc143e6b11c1eddc06d5c423cfc97062865baf299914ab64caa38182078fe"
 
 [[package]]
 name = "skrills"
-version = "0.1.14"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "skrills-server",
@@ -1172,7 +1172,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-discovery"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -1187,7 +1187,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-server"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -1217,7 +1217,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-state"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "dirs",

@@ -24,12 +24,18 @@ args = ["-y", "codex-mcp-wrapper", "--", "npx", "-y", "@mendable/firecrawl-mcp"]
 Substitute the final command for the server you want to wrap. The wrapper (github.com/kazuhideoki/codex-mcp-wrapper) injects missing `type`, converts `integer` to `number`, flattens unions, and filters schemas that Codex rejects. To capture schema rejections from Codex, run `skrills serve --trace-wire` and share the log.
 
 ### How does this project compare to other skill efforts?
-`skrills` distinguishes itself with its MCP server, engineered in Rust for performance and memory safety. This server, combined with a Codex hook, cross-agent synchronization capabilities, and streamlined installers, enables skills to function as runtime resources. Many other skill efforts, by contrast, typically include:
--   Static skill bundles that require manual copying.
--   CI pipelines that render `SKILL`-like documentation into prompts during build time.
--   Shared rule repositories that lack automation or an MCP layer.
+`skrills` is different from other skill management projects in a few ways:
+
+-   **MCP Server**: It provides an MCP server written in Rust. This allows it to be used by both Codex and Claude.
+-   **Synchronization**: It can synchronize skills between Codex and Claude.
+-   **Installers**: It provides installers for pre-built binaries, so you don't have to build it from source.
+
+Other skill management projects are often one of the following:
+-   Static collections of skills that need to be manually copied.
+-   CI pipelines that render documentation into prompts at build time.
+-   Shared rule repositories without automation.
 -   Local-only synchronization CLIs.
--   Tutorials or how-to guides that offer no automation.
+-   Tutorials or how-to guides without automation.
 
 For a more detailed comparison, refer to the [Comparison to Similar Projects](./comparison.md) section.
 

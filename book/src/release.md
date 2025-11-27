@@ -15,7 +15,7 @@ This document outlines the process for releasing and distributing `skrills`.
 
 ## Asset Naming Convention
 
-Release assets follow the naming convention `skrills-<target>.tar.gz`. Inside each archive, the binary is located at the root and is named `skrills` (or `skrills.exe` for Windows builds).
+Release assets follow the naming convention `skrills-<target>.tar.gz`. Inside each archive, the binary is placed in the root and is named `skrills` (or `skrills.exe` for Windows builds).
 
 ## Installers
 
@@ -24,6 +24,11 @@ Our `curl` (for macOS/Linux) and `PowerShell` (for Windows) installation scripts
 ## Continuous Integration (CI)
 
 GitHub Actions are configured to build and upload release assets when `v*` tags are pushed. The `mdBook` documentation is also automatically deployed to GitHub Pages as part of the CI pipeline.
+
+### crates.io publishing
+- Crates publish in dependency order: `skrills-state`, `skrills-discovery`, `skrills-server`, `skrills`.
+- Releases require `CARGO_REGISTRY_TOKEN` in repository secrets. The release workflow now preflights the token and performs `cargo publish --dry-run` for all crates before uploading.
+- Pull requests touching Cargo/workflow files run a dry-run publish job to catch failures early.
 
 ## Documentation
 
@@ -39,8 +44,10 @@ For maintainer notes on artifact layout, refer to `docs/release-artifacts.md`.
 
 ## Recent Releases
 
+- **0.2.1 (unreleased)**: Version alignment for crates.io publishing (no functional changes).
+- **0.2.0 (2025-11-26)**: Added crates.io publish automation (preflight token + dry-runs), deterministic embedding test overrides, and crates.io/book install docs.
 - **0.1.14 (2025-11-25)**: Added `doctor` diagnostics, `--trace-wire` logging, schema hardening (`type = "object"`), and installers that write `type = "stdio"` to both Codex config files (plus `--local` build flag).
-- **0.1.13 (2025-11-25)**: Installer filters release archives and falls back to source builds; CI jobs gate on relevant path changes.
+- **0.1.13 (2025-11-25)**: Installer filters release archives and uses source builds as a secondary option; CI jobs gate on relevant path changes.
 - **0.1.12 (2025-11-25)**: More robust installer asset lookup.
 - **0.1.11 (2025-11-25)**: Release workflow skips uploads when a release already exists.
 - **0.1.10 (2025-11-25)**: Create the GitHub release before asset uploads to avoid races.

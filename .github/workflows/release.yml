@@ -159,3 +159,92 @@ jobs:
           TAG: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
         run: gh release edit "$TAG" --repo "$REPO" --draft=false
+
+  publish-crates:
+    name: Publish crates.io packages
+    runs-on: ubuntu-latest
+    needs:
+      - create-release
+      - publish-release
+    if: needs.create-release.outputs.is-draft == 'true'
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Preflight token and package/build (no upload)
+        run: |
+          set -euo pipefail
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "CARGO_REGISTRY_TOKEN is not set; cannot publish." >&2
+            exit 1
+          fi
+
+          pkg() {
+            crate="$1"
+            echo "::group::package $crate"
+            cargo package -p "$crate"
+            echo "::endgroup::"
+          }
+
+          # Package leaf crates; build dependents to avoid registry lookup before deps are published.
+          pkg skrills-state
+          pkg skrills-discovery
+
+          echo "::group::check skrills-server"
+          cargo check -p skrills-server
+          echo "::endgroup::"
+
+          echo "::group::check skrills (cli)"
+          cargo check -p skrills
+          echo "::endgroup::"
+      - name: Publish crates in dependency order
+        run: |
+          set -euo pipefail
+
+          require_token() {
+            if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+              echo "CARGO_REGISTRY_TOKEN is not set; cannot publish." >&2
+              exit 1
+            fi
+          }
+
+          crate_version() {
+            python - <<'PY' "$1"
+              import json, sys, subprocess
+              crate = sys.argv[1]
+              meta = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"]))
+              for pkg in meta["packages"]:
+                  if pkg["name"] == crate:
+                      print(pkg["version"])
+                      sys.exit(0)
+              print("crate not found: " + crate, file=sys.stderr)
+              sys.exit(1)
+PY
+          }
+
+          already_published() {
+            crate="$1"
+            version="$2"
+            cargo search "$crate" --limit 1 | grep -q "$crate = \"$version\""
+          }
+
+          publish_one() {
+            crate="$1"
+            version="$(crate_version "$crate")"
+            if already_published "$crate" "$version"; then
+              echo "Skipping $crate v$version (already on crates.io)"
+              return
+            fi
+            echo "Publishing $crate v$version"
+            cargo publish -p "$crate" --token "$CARGO_REGISTRY_TOKEN"
+            # allow index to update before dependents publish
+            sleep 20
+          }
+
+          require_token
+          publish_one skrills-state
+          publish_one skrills-discovery
+          publish_one skrills-server
+          publish_one skrills

@@ -2,9 +2,17 @@
 
 This guide provides instructions on how to install `skrills`.
 
-## One-Liners (Recommended)
+## crates.io (Recommended)
 
-These commands offer a streamlined method for installing `skrills` on your system.
+Install the published binary directly from crates.io:
+
+```bash
+cargo install skrills
+```
+
+## One-Liners (Release Artifacts)
+
+These commands install prebuilt release artifacts and register hooks automatically.
 
 ```bash
 # macOS / Linux

@@ -16,7 +16,7 @@
 - Installers now write `type = "stdio"` to both Codex config files, tolerate permission failures, add POSIX `--local` build flag, and keep PowerShell parity.
 
 ## 0.1.13 - 2025-11-25
-- Installer filters release archives more strictly and falls back to source build when no match is found.
+- Installer filters release archives more strictly and uses a source build as a secondary option when no match is found.
 - CI jobs are now gated by relevant path changes to avoid unnecessary runs.
 
 ## 0.1.12 - 2025-11-25
@@ -50,8 +50,8 @@
 - Stabilized core tests by fixing race conditions around environment variable handling.
 
 ## 0.1.3 - 2025-11-24
-- Installer falls back to building from source in an isolated cargo home when release assets are missing, then installs into the requested bin dir.
-- Asset selection favors `jq` with an awk fallback (no Python) and optional `pipefail` for POSIX shells.
+- Installer builds from source in an isolated cargo home as a secondary option when release assets are missing, then installs into the requested bin dir.
+- Asset selection favors `jq` with an awk secondary (no Python) and optional `pipefail` for POSIX shells.
 - Release workflow asset names now use the action template placeholder (`{{ target }}`) to publish platform tarballs reliably.
 
 ## 0.1.2 - 2025-11-24

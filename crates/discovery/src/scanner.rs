@@ -227,6 +227,7 @@ pub fn priority_with_override(override_order: Option<Vec<SkillSource>>) -> Vec<S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn test_extract_refs() {
@@ -234,5 +235,49 @@ mod tests {
         let refs = extract_refs_from_agents(md);
         assert!(refs.contains("foo"));
         assert!(!refs.contains("rules"));
+    }
+
+    #[test]
+    fn default_roots_use_priority_order() {
+        let tmp = tempdir().unwrap();
+        let roots = default_roots(tmp.path());
+        let labels: Vec<_> = roots.iter().map(|r| r.source.label()).collect();
+        assert_eq!(labels, vec!["codex", "mirror", "claude", "agent"]);
+    }
+
+    #[test]
+    fn extra_skill_roots_preserve_input_order() {
+        let one = PathBuf::from("/tmp/one");
+        let two = PathBuf::from("/tmp/two");
+        let roots = extra_skill_roots(&[one.clone(), two.clone()]);
+        assert_eq!(roots.len(), 2);
+        assert_eq!(roots[0].root, one);
+        assert_eq!(roots[1].root, two);
+        assert!(matches!(roots[0].source, SkillSource::Extra(0)));
+        assert!(matches!(roots[1].source, SkillSource::Extra(1)));
+    }
+
+    #[test]
+    fn discover_skills_errors_on_unreadable_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("codex");
+        fs::create_dir_all(&root).unwrap();
+        let skill = root.join("SKILL.md");
+        fs::write(&skill, "secret").unwrap();
+        let mut perms = fs::metadata(&skill).unwrap().permissions();
+        perms.set_mode(0o000);
+        fs::set_permissions(&skill, perms).unwrap();
+
+        let roots = vec![SkillRoot {
+            root: root.clone(),
+            source: SkillSource::Codex,
+        }];
+        let err = discover_skills(&roots, None).unwrap_err();
+        assert!(
+            err.to_string().contains("Permission denied")
+                || err.to_string().contains("permission denied")
+        );
     }
 }

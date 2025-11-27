@@ -14,7 +14,7 @@ Managing child processes correctly is essential to prevent system instability, s
 
 Adhering to these practices ensures code quality and consistency:
 
--   **Centralize Shared Logic**: All shared functionality must reside in `crates/core`. The `crates/cli` must remain a thin wrapper.
+-   **Centralize Shared Logic**: All shared functionality must be located in `crates/core`. The `crates/cli` must remain a thin wrapper.
 -   **Changelog Updates**: Update the changelog for all user-visible changes, including new CLI flags, output format modifications, `AGENTS` synchronization behavior changes, and priority rule adjustments.
 -   **Pre-Publishing Checks**: Before publishing or releasing any new version, always run `cargo fmt` and `cargo test` to confirm code formatting and test integrity.
 

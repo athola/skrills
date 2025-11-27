@@ -18,8 +18,6 @@ Where we can still improve:
 
 ## Summary
 
-`skrills` stands out due to its MCP server, which exposes skills to both Codex and Claude over a standard stdio interface. Other projects in this area are typically static skill collections, CI tools for documentation rendering, or local synchronization tools lacking an MCP layer.
+The main difference between `skrills` and other similar projects is its focus on providing a runtime MCP server that can be used by both Codex and Claude. Other projects in this space tend to be either static collections of skills, CI tools for rendering documentation, or local synchronization tools that don't have an MCP layer.
 
-The project also provides direct installers (`curl | sh` and `irm | iex`) for per-target binaries, contrasting with projects that necessitate manual file copying or `cargo` installation.
-
-The autoload hook and terminal user interface prioritize runtime integration and operational efficiency, whereas many other projects emphasize skill content creation.
+`skrills` also provides installers for pre-built binaries, which means you don't have to build it from source or manually copy files. The autoload hook and terminal user interface are designed to make it easy to integrate `skrills` into your workflow.

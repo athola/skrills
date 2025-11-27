@@ -16,6 +16,6 @@ Where `<target>` is one of the supported target triples:
 - `x86_64-pc-windows-msvc`
 - `aarch64-pc-windows-msvc`
 
-Inside each archive, the binary must be located at the archive root and named `skrills` (or `skrills.exe` for Windows builds).
+Inside each archive, the binary must be placed in the archive root and named `skrills` (or `skrills.exe` for Windows builds).
 
 The default release repository is `athola/skrills`. This can be overridden by setting the `SKRILLS_GH_REPO` environment variable if necessary.

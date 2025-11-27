@@ -1,23 +1,16 @@
-//! Core library for the Codex skills system.
+//! This crate provides the core functionality for the `skrills` application. It includes
+//! the MCP server, skill discovery, caching, and command-line interface.
 //!
-//! This crate manages skills, handling their discovery, caching, and execution.
-//! It processes `SKILL.md` files, manages tool calls and resources, and integrates
-//! with the `rmcp` protocol. The public surface intended for embedding is limited
-//! to the `run` entrypoint plus the `runtime` module (runtime overrides used by
-//! MCP tools). Everything else is considered internal and may change.
+//! The main entry point is the `run` function, which starts the server. The `runtime`
+//! module provides tools for managing runtime options. Other parts of the crate are
+//! considered internal and may change without notice.
 //!
-//! Stability: The crate is pre-1.0 and adheres to a best-effort compatibility policy,
-//! as described in `docs/semver-policy.md` and the book’s SemVer section. Backward
-//! incompatible changes to the documented surface will be explicitly noted in the
-//! changelog, though semver MAJOR/MINOR boundaries are not yet guaranteed.
+//! For information about stability and versioning, see `docs/semver-policy.md`.
 //!
-//! Feature gating: optional `watch` enables filesystem watching for live cache
-//! invalidation. The default feature set keeps watchers enabled; disable the
-//! feature to build without `notify`.
+//! The `watch` feature enables filesystem watching for live cache invalidation. To
+//! build without this feature, use `--no-default-features`.
 //!
-//! On Unix-like systems, this crate installs a `SIGCHLD` handler with `SA_NOCLDWAIT`
-//! at startup. This prevents child processes from becoming zombies when the server
-//! is embedded, by automatically reaping unexpected subprocesses.
+//! On Unix-like systems, a `SIGCHLD` handler is installed to prevent zombie processes.
 
 use anyhow::{anyhow, Result};
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -168,7 +161,7 @@ enum Commands {
         /// Maximum bytes of additionalContext payload
         #[arg(long)]
         max_bytes: Option<usize>,
-        /// Prompt text to filter relevant skills (optional; falls back to env SKRILLS_PROMPT)
+        /// Prompt text to filter relevant skills (optional; uses env SKRILLS_PROMPT if not provided)
         #[arg(long)]
         prompt: Option<String>,
         /// Embedding similarity threshold (0-1) for fuzzy prompt matching
@@ -380,6 +373,44 @@ fn trigram_similarity(prompt: &str, text: &str) -> f32 {
     cosine_similarity(&prompt_vec, &text_vec)
 }
 
+#[cfg(test)]
+static EMBED_SIM_OVERRIDE: once_cell::sync::Lazy<Mutex<Option<f32>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(None));
+
+#[cfg(test)]
+struct EmbedOverrideGuard;
+
+#[cfg(test)]
+impl EmbedOverrideGuard {
+    fn set(value: f32) -> Self {
+        if let Ok(mut guard) = EMBED_SIM_OVERRIDE.lock() {
+            *guard = Some(value);
+        }
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for EmbedOverrideGuard {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = EMBED_SIM_OVERRIDE.lock() {
+            *guard = None;
+        }
+    }
+}
+
+fn trigram_similarity_checked(prompt: &str, text: &str) -> f32 {
+    #[cfg(test)]
+    {
+        if let Ok(guard) = EMBED_SIM_OVERRIDE.lock() {
+            if let Some(v) = *guard {
+                return v;
+            }
+        }
+    }
+    trigram_similarity(prompt, text)
+}
+
 fn read_prefix(path: &Path, max: usize) -> Result<String> {
     use std::io::Read;
     let mut file = fs::File::open(path)?;
@@ -494,7 +525,7 @@ where
                     if t.iter().any(|k| text.contains(k)) {
                         true
                     } else {
-                        let sim = trigram_similarity(prompt_for_embedding, &text);
+                        let sim = trigram_similarity_checked(prompt_for_embedding, &text);
                         sim >= embed_threshold
                     }
                 }
@@ -2425,6 +2456,7 @@ mod tests {
     use super::*;
     use crate::runtime::reset_runtime_cache_for_tests;
     use flate2::read::GzDecoder;
+    use once_cell::sync::Lazy;
     use skrills_state::runtime_overrides_path;
     use std::collections::HashSet;
     use std::fs;
@@ -2433,8 +2465,86 @@ mod tests {
     use std::time::Duration;
     use tempfile::tempdir;
 
+    // Tests in this module mutate HOME and on-disk runtime cache; serialize to avoid cross-test contamination.
+    static TEST_SERIAL: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        TEST_SERIAL.lock().unwrap()
+    }
+
+    /// Lightweight Given/When/Then helpers to keep autoload tests readable.
+    mod gwt_autoload {
+        use super::*;
+
+        pub struct SkillFixture {
+            pub skills: Vec<SkillMeta>,
+        }
+
+        pub fn given_skill(
+            root: &Path,
+            name: &str,
+            content: &str,
+            source: SkillSource,
+        ) -> Result<SkillFixture> {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap())?;
+            fs::write(&path, content)?;
+            let skills = vec![SkillMeta {
+                name: name.into(),
+                path: path.clone(),
+                source,
+                root: root.to_path_buf(),
+                hash: hash_file(&path)?,
+            }];
+            Ok(SkillFixture { skills })
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        pub fn given_two_skills(
+            one_root: &Path,
+            one_name: &str,
+            one_content: &str,
+            one_source: SkillSource,
+            two_root: &Path,
+            two_name: &str,
+            two_content: &str,
+            two_source: SkillSource,
+        ) -> Result<SkillFixture> {
+            let mut first = given_skill(one_root, one_name, one_content, one_source)?;
+            let second = given_skill(two_root, two_name, two_content, two_source)?;
+            first.skills.extend(second.skills);
+            Ok(first)
+        }
+
+        pub fn when_render_autoload(
+            fixture: &SkillFixture,
+            options: AutoloadOptions<'_, '_, '_, '_>,
+        ) -> Result<String> {
+            render_autoload(&fixture.skills, options)
+        }
+
+        pub fn with_embed_similarity(value: f32) -> EmbedOverrideGuard {
+            EmbedOverrideGuard::set(value)
+        }
+
+        pub fn then_contains(content: &str, needle: &str) {
+            assert!(
+                content.contains(needle),
+                "expected content to contain `{needle}`, but it did not"
+            );
+        }
+
+        pub fn then_not_contains(content: &str, needle: &str) {
+            assert!(
+                !content.contains(needle),
+                "expected content to not contain `{needle}`, but it did"
+            );
+        }
+    }
+
     #[test]
     fn list_resources_includes_agents_doc() -> Result<()> {
+        let _guard = env_guard();
         let tmp = tempdir()?;
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
@@ -2462,6 +2572,7 @@ mod tests {
 
     #[test]
     fn read_resource_returns_agents_doc() -> Result<()> {
+        let _guard = env_guard();
         let tmp = tempdir()?;
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
@@ -2657,6 +2768,7 @@ mod tests {
 
     #[test]
     fn runtime_overrides_cached_memoizes() -> Result<()> {
+        let _guard = TEST_SERIAL.lock().unwrap();
         reset_runtime_cache_for_tests();
         let tmp = tempdir()?;
         std::env::set_var("HOME", tmp.path());
@@ -2760,6 +2872,7 @@ mod tests {
 
     #[test]
     fn manifest_can_disable_agents_doc() -> Result<()> {
+        let _guard = env_guard();
         let tmp = tempdir()?;
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
@@ -2796,6 +2909,7 @@ mod tests {
 
     #[test]
     fn manifest_can_set_cache_ttl() -> Result<()> {
+        let _guard = env_guard();
         let tmp = tempdir()?;
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
@@ -2866,55 +2980,43 @@ mod tests {
     }
 
     #[test]
-    fn autoload_truncates_and_filters_sources() -> Result<()> {
+    fn given_manifest_limit_when_render_autoload_then_manifest_valid_json() -> Result<()> {
+        use gwt_autoload::*;
+
+        // GIVEN codex + claude skills with limited byte budget
         let tmp = tempdir()?;
-        let codex_dir = tmp.path().join("codex/skills");
-        let claude_dir = tmp.path().join("claude");
-        fs::create_dir_all(&codex_dir)?;
-        fs::create_dir_all(&claude_dir)?;
-        let codex_skill = codex_dir.join("SKILL.md");
-        let claude_skill = claude_dir.join("SKILL.md");
-        fs::write(&codex_skill, "C token_repeat".repeat(20))?;
-        fs::write(&claude_skill, "irrelevant content".repeat(5))?;
+        let fixture = given_two_skills(
+            &tmp.path().join("codex/skills"),
+            "codex/SKILL.md",
+            &"C token_repeat".repeat(20),
+            SkillSource::Codex,
+            &tmp.path().join("claude"),
+            "claude/SKILL.md",
+            &"irrelevant content".repeat(5),
+            SkillSource::Claude,
+        )?;
 
-        let skills = vec![
-            SkillMeta {
-                name: "codex/SKILL.md".into(),
-                path: codex_skill.clone(),
-                source: SkillSource::Codex,
-                root: codex_dir.clone(),
-                hash: hash_file(&codex_skill)?,
-            },
-            SkillMeta {
-                name: "claude/SKILL.md".into(),
-                path: claude_skill.clone(),
-                source: SkillSource::Claude,
-                root: claude_dir.clone(),
-                hash: hash_file(&claude_skill)?,
-            },
-        ];
-
-        // Compute lengths to choose a max_bytes that fits manifest but not full output.
-        let manifest_only = render_autoload(
-            &skills,
+        let manifest_only = when_render_autoload(
+            &fixture,
             AutoloadOptions {
                 render_mode: RenderMode::ManifestOnly,
                 ..Default::default()
             },
         )?;
-        let full_dual = render_autoload(
-            &skills,
+        let full_dual = when_render_autoload(
+            &fixture,
             AutoloadOptions {
                 include_claude: false,
                 prompt: Some("token efficiency test prompt"),
                 ..Default::default()
             },
         )?;
-        let limit = manifest_only.len() + 16; // slightly above manifest, below full content
+        let limit = manifest_only.len() + 16;
         assert!(limit < full_dual.len());
 
-        let content = render_autoload(
-            &skills,
+        // WHEN rendering with a tight limit
+        let content = when_render_autoload(
+            &fixture,
             AutoloadOptions {
                 include_claude: false,
                 max_bytes: Some(limit),
@@ -2922,7 +3024,8 @@ mod tests {
                 ..Default::default()
             },
         )?;
-        // When truncated, manifest should remain valid JSON and content may be dropped.
+
+        // THEN output stays under limit and manifest JSON is still parseable
         assert!(content.len() <= limit);
         let json_part = content
             .lines()
@@ -2983,28 +3086,22 @@ mod tests {
     }
 
     #[test]
-    fn autoload_uses_embedding_similarity_for_fuzzy_prompt_hits() -> Result<()> {
-        let tmp = tempdir()?;
-        let codex_dir = tmp.path().join("codex/skills");
-        fs::create_dir_all(&codex_dir)?;
+    fn given_fuzzy_prompt_when_similarity_above_threshold_then_skill_included() -> Result<()> {
+        use gwt_autoload::*;
 
-        let skill_path = codex_dir.join("analysis/SKILL.md");
-        fs::create_dir_all(skill_path.parent().unwrap())?;
-        fs::write(
-            &skill_path,
+        // GIVEN a skill whose name matches the prompt fuzzily
+        let tmp = tempdir()?;
+        let fixture = given_skill(
+            &tmp.path().join("codex/skills"),
+            "analysis/SKILL.md",
             "Guide to analyse pipeline performance and resilience.",
+            SkillSource::Codex,
         )?;
 
-        let skills = vec![SkillMeta {
-            name: "analysis/SKILL.md".into(),
-            path: skill_path.clone(),
-            source: SkillSource::Codex,
-            root: codex_dir.clone(),
-            hash: hash_file(&skill_path)?,
-        }];
-
-        let content = render_autoload(
-            &skills,
+        // WHEN rendering with a permissive embed threshold
+        let _override = with_embed_similarity(0.8);
+        let content = when_render_autoload(
+            &fixture,
             AutoloadOptions {
                 include_claude: false,
                 prompt: Some("plz analyz pipline bugz"),
@@ -3012,36 +3109,29 @@ mod tests {
                 ..Default::default()
             },
         )?;
-        assert!(
-            content.contains("analysis/SKILL.md"),
-            "embedding similarity should include fuzzy-matched skill"
-        );
+
+        // THEN the fuzzy-matched skill is included
+        then_contains(&content, "analysis/SKILL.md");
         Ok(())
     }
 
     #[test]
-    fn autoload_embedding_threshold_blocks_low_similarity() -> Result<()> {
-        let tmp = tempdir()?;
-        let codex_dir = tmp.path().join("codex/skills");
-        fs::create_dir_all(&codex_dir)?;
+    fn given_fuzzy_prompt_when_threshold_strict_then_skill_excluded() -> Result<()> {
+        use gwt_autoload::*;
 
-        let skill_path = codex_dir.join("analysis/SKILL.md");
-        fs::create_dir_all(skill_path.parent().unwrap())?;
-        fs::write(
-            &skill_path,
+        // GIVEN a skill and a fuzzy prompt
+        let tmp = tempdir()?;
+        let fixture = given_skill(
+            &tmp.path().join("codex/skills"),
+            "analysis/SKILL.md",
             "Guide to analyse pipeline performance and resilience.",
+            SkillSource::Codex,
         )?;
 
-        let skills = vec![SkillMeta {
-            name: "analysis/SKILL.md".into(),
-            path: skill_path.clone(),
-            source: SkillSource::Codex,
-            root: codex_dir.clone(),
-            hash: hash_file(&skill_path)?,
-        }];
-
-        let content = render_autoload(
-            &skills,
+        // WHEN the embed threshold is strict
+        let _override = with_embed_similarity(0.2);
+        let content = when_render_autoload(
+            &fixture,
             AutoloadOptions {
                 include_claude: false,
                 prompt: Some("plz analyz pipline bugz"),
@@ -3049,10 +3139,9 @@ mod tests {
                 ..Default::default()
             },
         )?;
-        assert!(
-            !content.contains("analysis/SKILL.md"),
-            "high similarity threshold should filter out fuzzy matches"
-        );
+
+        // THEN the fuzzy match is rejected
+        then_not_contains(&content, "analysis/SKILL.md");
         Ok(())
     }
 
@@ -3392,6 +3481,7 @@ mod tests {
 
     #[test]
     fn manifest_priority_overrides_default() -> Result<()> {
+        let _guard = env_guard();
         let tmp = tempdir()?;
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());

@@ -1,7 +1,15 @@
 [package]
 name = "skrills-discovery"
-version = "0.1.0"
+version = "0.2.1"
 edition = "2021"
+description = "Filesystem discovery and hashing utilities used by the skrills MCP server."
+license = "MIT"
+repository = "https://github.com/athola/skrills"
+homepage = "https://github.com/athola/skrills"
+documentation = "https://github.com/athola/skrills/tree/master/book"
+readme = "README.md"
+keywords = ["mcp", "skills", "discovery", "filesystem", "hashing"]
+categories = ["development-tools", "filesystem"]
 
 [lib]
 path = "src/lib.rs"

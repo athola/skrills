@@ -1,8 +1,16 @@
 [package]
 name = "skrills"
-version = "0.1.14"
+version = "0.2.1"
 edition = "2021"
+description = "A command-line interface and MCP server for managing local SKILL.md files."
+license = "MIT"
+repository = "https://github.com/athola/skrills"
+homepage = "https://github.com/athola/skrills"
+documentation = "https://github.com/athola/skrills/tree/master/book"
+readme = "README.md"
+keywords = ["mcp", "cli", "skills", "agents", "codex"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
-skrills-server = { path = "../server" }
+skrills-server = { path = "../server", version = "0.2.1" }
 anyhow.workspace = true

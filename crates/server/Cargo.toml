@@ -1,7 +1,15 @@
 [package]
 name = "skrills-server"
-version = "0.1.0"
+version = "0.2.1"
 edition = "2021"
+description = "Core library for the skrills MCP server: discovery, filtering, manifest generation, and runtime control."
+license = "MIT"
+repository = "https://github.com/athola/skrills"
+homepage = "https://github.com/athola/skrills"
+documentation = "https://github.com/athola/skrills/tree/master/book"
+readme = "README.md"
+keywords = ["mcp", "skills", "server", "manifest", "cli"]
+categories = ["development-tools", "filesystem"]
 
 [lib]
 path = "src/lib.rs"
@@ -30,8 +38,8 @@ once_cell.workspace = true
 semver.workspace = true
 flate2.workspace = true
 
-skrills-discovery = { path = "../discovery" }
-skrills-state = { path = "../state" }
+skrills-discovery = { path = "../discovery", version = "0.2.1" }
+skrills-state = { path = "../state", version = "0.2.1" }
 
 [features]
 default = ["watch"]

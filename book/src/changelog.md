@@ -9,7 +9,7 @@
 - Added `doctor` diagnostics, `--trace-wire` logging, and schema hardening (`type = "object"`), plus installers that enforce `type = "stdio"` in Codex configs and support `--local` builds.
 
 ## 0.1.13
-- Installer filters archives more strictly and falls back to source builds; CI jobs now gate on relevant path changes.
+- Installer filters archives more strictly and uses source builds as a secondary option; CI jobs now gate on relevant path changes.
 
 ## 0.1.12
 - Hardened release asset lookup in installers.
@@ -41,7 +41,7 @@
 ## 0.1.3
 - Installer now builds from source in a temp cargo home when no release asset
   is available, then installs to the requested bin dir.
-- Asset selection prefers `jq` with an awk fallback (no Python); pipefail is
+- Asset selection prefers `jq` with an awk secondary (no Python); pipefail is
   optional for portability.
 - Release assets use the action `{{ target }}` placeholder to publish the
   correct platform tarballs.

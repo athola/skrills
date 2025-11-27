@@ -1,7 +1,7 @@
 //! Command-line interface for the `skrills` application.
 //!
-//! This crate serves as the main entry point for the executable, delegating
-//! its core functionality to the `skrills-core` crate.
+//! This is the entry point for the `skrills` executable. It delegates to
+//! the `skrills-server` crate.
 
 fn main() -> anyhow::Result<()> {
     skrills_server::run()

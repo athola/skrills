@@ -1,0 +1,41 @@
+name: Publish Dry Run
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**/Cargo.toml"
+      - ".github/workflows/publish-dry-run.yml"
+      - ".github/workflows/release.yml"
+
+jobs:
+  publish-dry-run:
+    name: Dry-run cargo publish (dependency order)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Package/build crates (dry-run)
+        run: |
+          set -euo pipefail
+
+          run_pkg() {
+            crate="$1"
+            echo "::group::package $crate"
+            cargo package -p "$crate"
+            echo "::endgroup::"
+          }
+
+          # Package leaf crates; build dependents to avoid registry lookup.
+          run_pkg skrills-state
+          run_pkg skrills-discovery
+
+          echo "::group::check skrills-server"
+          cargo check -p skrills-server
+          echo "::endgroup::"
+
+          echo "::group::check skrills (cli)"
+          cargo check -p skrills
+          echo "::endgroup::"

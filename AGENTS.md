@@ -4,18 +4,18 @@ Practical guidance for building AI coding agents that produce working code.
 
 ---
 
-## Core Philosophy
+## Guiding Principles
 
-- **Incremental progress**: Small, working iterations are better than large, risky rewrites.
-- **Context-aware application**: Adapt to project realities instead of rigidly applying rules.
-- **Pragmatic engineering**: Balance competing concerns like performance and readability based on the situation.
-- **Evidence-based decisions**: Use metrics and measurements to guide decisions, not just intuition.
-- **Diverse solution exploration**: Generate multiple approaches before choosing one.
-- **Simplicity**: Prefer simple, proven solutions. If code becomes so complex it requires extensive comments, refactor it.
-- **Single responsibility**: Each component should have one clear purpose.
-- **Avoid premature abstractions**: Don't create abstractions until a clear pattern has emerged (see the Rule of Three).
-- **Explicit trade-offs**: Clearly document the pros, cons, and confidence level for each proposed solution.
-- **Avoid pattern fixation**: If you find yourself using the same design pattern for every problem, you may be experiencing "mode collapse". Actively explore different approaches.
+- **Iterate Incrementally**: Start with small, working changes. It's safer and more effective than attempting large, risky rewrites.
+- **Adapt to the Project**: Apply these guidelines with judgment. Every project has its own conventions and constraints; adapt to them rather than rigidly following rules.
+- **Engineer Pragmatically**: Balance trade-offs. Performance, readability, and security are all important, but their relative priority depends on the situation.
+- **Use Evidence**: Make decisions based on data. Use profiling, metrics, and other measurements to support your choices, not just intuition.
+- **Explore Multiple Solutions**: Generate several approaches before committing to one. This helps avoid settling on the first idea that comes to mind.
+- **Keep It Simple**: Prefer simple, proven solutions. If your code needs extensive comments to be understood, it's a sign that it should be refactored.
+- **One Job per Component**: Follow the Single Responsibility Principle. Each part of the system should have one clear purpose.
+- **Delay Abstraction**: Don't create abstractions until you've identified a clear, recurring pattern (see the Rule of Three). Premature abstraction often leads to unnecessary complexity.
+- **State Your Assumptions**: When proposing a solution, document the pros, cons, and your confidence level. This makes the decision-making process transparent.
+- **Avoid "Mode Collapse"**: If you find yourself using the same design pattern for every problem, you may be stuck in a rut. Actively explore different approaches to find the best fit.
 
 ---
 
@@ -122,39 +122,41 @@ Some best practices for role prompting:
 
 ---
 
-## Architecture Guidelines
+## Architecture
 
-### Design Principles
-- **Composition over inheritance**: Favor interfaces and delegation.
-- **Explicit over implicit**: Write clear code that doesn't hide its behavior.
-- **Interfaces over singletons**: Use dependency injection to make code more testable.
-- **Stable public APIs**: Internal changes should not break external consumers.
-- **Thorough error handling**: Avoid broad `except:` clauses that can hide bugs.
+Good architecture is about making decisions that will be easy to live with in the future. Here are a few principles to guide you.
+
+### Design
+- **Favor Composition Over Inheritance**: Instead of creating deep class hierarchies, use interfaces and delegation. It's more flexible and easier to test.
+- **Be Explicit**: Write code that is easy to understand. Avoid clever tricks or implicit behaviors that might confuse other developers.
+- **Use Dependency Injection**: Instead of using singletons, pass dependencies into your components. This makes them easier to test and reuse.
+- **Design Stable APIs**: Once an API is public, you should avoid making breaking changes. Internal refactoring should not affect external users.
+- **Handle Errors Gracefully**: Avoid broad `except:` clauses that can swallow exceptions and hide bugs. Be specific about the errors you catch.
 
 ### Decision-Making
-When choosing an approach, evaluate it on:
-- **Testability**: How easily can I write tests for this?
-- **Readability**: Will this make sense to a new developer in six months?
-- **Consistency**: Does this match the project's existing patterns?
-- **Simplicity**: Is this the simplest solution that works?
-- **Reversibility**: How difficult would it be to change this decision later?
-- **Maintainability**: Can other developers easily understand and modify this code?
+When you're choosing between different approaches, consider these factors:
+- **Testability**: How easy will it be to write tests for this?
+- **Readability**: Will a new developer be able to understand this code in six months?
+- **Consistency**: Does this fit with the existing patterns in the codebase?
+- **Simplicity**: Is this the simplest solution that will work?
+- **Reversibility**: How hard would it be to undo this decision later?
+- **Maintainability**: How easy will it be for other developers to modify this code?
 
-### Security Principles
-- **Build security in from the start**: Don't treat security as an afterthought.
-- **Defense in depth**: Use multiple layers of security controls.
-- **Least privilege**: Grant only the minimum permissions necessary.
-- **Never commit secrets**: Use environment variables or a secrets management system.
-- **Validate all input**: Trust no data coming from external sources.
-- **Use parameterized queries**: Do not use string concatenation to build SQL queries.
-- **Monitor outcomes**: Don't just validate inputs; monitor the behavior of the system in real-time.
-- **Scan for hidden threats**: Check for malicious content that may be hidden in uploads or other data.
+### Security
+- **Build Security In**: Don't treat security as something you can add on at the end. Think about it from the beginning.
+- **Use Multiple Layers**: Employ a "defense in depth" strategy. Don't rely on a single security control.
+- **Grant Minimal Permissions**: Follow the principle of least privilege. Only grant the permissions that are absolutely necessary.
+- **Keep Secrets Out of Code**: Never commit secrets to version control. Use environment variables or a secrets management system.
+- **Validate All Inputs**: Treat all data from external sources as untrusted. Validate it before you use it.
+- **Use Parameterized Queries**: Don't build SQL queries with string concatenation. It's a recipe for SQL injection.
+- **Monitor System Behavior**: Don't just validate inputs; monitor the system's behavior in real-time to detect anomalies.
+- **Scan for Hidden Threats**: Check for malicious content that might be hidden in file uploads or other data.
 
-### Performance Principles
-- **Measure before you optimize**: Use a profiler to identify bottlenecks, don't guess.
-- **Focus on architectural improvements**: Algorithmic changes usually have a bigger impact than micro-optimizations.
-- **Document security-performance trade-offs**: If a security measure impacts performance, document the reasoning.
-- **Plan for cache invalidation**: Before you implement a cache, have a clear strategy for invalidating it.
+### Performance
+- **Measure First**: Don't try to optimize code without knowing where the bottlenecks are. Use a profiler to identify them.
+- **Focus on a Broader Scale**: Algorithmic and architectural improvements usually have a much bigger impact than micro-optimizations.
+- **Document Trade-offs**: If a security measure has a performance impact, document it and explain why it's necessary.
+- **Plan for Cache Invalidation**: Caching is a great way to improve performance, but you need a clear strategy for invalidating the cache when the underlying data changes.
 
 ---
 
