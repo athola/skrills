@@ -18,12 +18,14 @@ You can override the discovery priority by creating a `~/.codex/skills-manifest.
 
 When you submit a prompt, `skrills` filters your skills to find the most relevant ones. Here's how it works:
 
-1.  **Hook Timing**: The autoload process is triggered by the `UserPromptSubmit` hook.
+1.  **Hook Timing**: The autoload process is triggered by the `UserPromptSubmit` hook that the installer creates at `~/.codex/hooks/codex/prompt.on_user_prompt_submit` (Codex does not ship this hook by default).
 2.  **Intent Parsing**: `skrills` parses the prompt to understand its intent.
 3.  **Cached Query**: It then queries a cached index of your skills to find the ones that match the intent.
 4.  **Context Injection**: Only the matching skills are injected into the context window.
 
 This process is designed to be efficient. It avoids loading all of your skills into the context window at once, and it doesn't need to read your skill files from the disk every time you submit a prompt.
+
+If the hook file is missing, autoload will not run. Reinstall or create the hook manually to invoke `skrills serve`/autoload on prompt submission.
 ...
 This allows you to log or control the size of the payload before it's sent to the model. The inputs are the same as for `autoload-snippet`: `prompt`, `embed_threshold`, `include_claude`, `max_bytes`, `auto_pin`, and `diagnose`.
 

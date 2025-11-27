@@ -2468,6 +2468,10 @@ mod tests {
     // Tests in this module mutate HOME and on-disk runtime cache; serialize to avoid cross-test contamination.
     static TEST_SERIAL: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        TEST_SERIAL.lock().unwrap()
+    }
+
     /// Lightweight Given/When/Then helpers to keep autoload tests readable.
     mod gwt_autoload {
         use super::*;
@@ -2540,6 +2544,7 @@ mod tests {
 
     #[test]
     fn list_resources_includes_agents_doc() -> Result<()> {
+        let _guard = env_guard();
         let tmp = tempdir()?;
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
@@ -2567,6 +2572,7 @@ mod tests {
 
     #[test]
     fn read_resource_returns_agents_doc() -> Result<()> {
+        let _guard = env_guard();
         let tmp = tempdir()?;
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
@@ -2866,6 +2872,7 @@ mod tests {
 
     #[test]
     fn manifest_can_disable_agents_doc() -> Result<()> {
+        let _guard = env_guard();
         let tmp = tempdir()?;
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
@@ -2902,6 +2909,7 @@ mod tests {
 
     #[test]
     fn manifest_can_set_cache_ttl() -> Result<()> {
+        let _guard = env_guard();
         let tmp = tempdir()?;
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
@@ -3473,6 +3481,7 @@ mod tests {
 
     #[test]
     fn manifest_priority_overrides_default() -> Result<()> {
+        let _guard = env_guard();
         let tmp = tempdir()?;
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());

@@ -27,8 +27,13 @@ cargo install --path crates/cli
 - CI requires `CARGO_REGISTRY_TOKEN` in repo secrets for publishing; PRs run `cargo publish --dry-run` for all crates.
 
 ## Error handling & panics
-- Library code returns `Result` for recoverable errors; panics are reserved for programmer bugs (e.g., unreachable states).
-- CLI surfaces errors with context; treat panics as bugs and report them.
+- Library code returns `Result` for recoverable errors. If an insurmountable bug is encountered, then panic (e.g., unreachable states).
+- CLI exposes errors with context. Panics should be treated as bugs and be reported.
+
+## How prompt submission is wired
+- Codex does not ship a built-in `UserPromptSubmit` hook. The installer adds a client-side hook file at `~/.codex/hooks/codex/prompt.on_user_prompt_submit`.
+- That hook invokes the local `skrills` MCP server on every prompt submission. `skrills` runs `render_autoload` to tokenize/embed the prompt, filter skills, apply pins/byte limits, and return a manifest-first payload plus diagnostics.
+- The client injects the MCP response into `additionalContext`, making matched `SKILL.md` content available for that prompt. If the hook is missing, skrills will not run—reinstall or create the hook manually pointing to `skrills serve`/autoload.
 
 ## Why This Project?
 
@@ -82,19 +87,29 @@ flowchart LR
 ```
 
 ## Core features
-- **Prompt + embedding filtering:** tokenizes prompt terms and applies a trigram-similarity default (`--embed-threshold`, env `SKRILLS_EMBED_THRESHOLD`) to catch typos while avoiding over-inclusion.
-- **Manifest-first payloads:** `[skills] ...` summary plus JSON manifest and full content; toggle legacy concat with `SKRILLS_MANIFEST_FIRST=false`.
-- **Diagnostics & observability:** included/skipped/truncated lists; duplicate resolution by priority; `render-preview` reports matched skills, byte size, and token estimate before injection.
-- **Pinning:** manual pins plus heuristic auto-pin from recent history.
-- **Runtime overrides via MCP:** `runtime-status`, `set-runtime-options`; persisted to `~/.codex/skills-runtime.json`.
-- **Claude mirror support:** optional sync from `~/.claude/skills` into `~/.codex/skills-mirror`.
+- **Prompt + embedding filtering:** 
+  * Converts prompt terms to tokens and applies a trigram-similarity algorithm (`--embed-threshold`, env `SKRILLS_EMBED_THRESHOLD`) to catch typos while preventing inclusion of non-relevant data
+- **Manifest-first payloads:** 
+  * `[skills] ...` summary with additional JSON manifest and full content
+  * Toggle the legacy concat capability with `SKRILLS_MANIFEST_FIRST=false`
+- **Diagnostics & observability:** 
+  * Provides access to included/skipped/truncated lists of skills
+  * Duplicate skills automatically resolved by priority
+  * `render-preview` reports matched skills, byte size, and token estimate before injection into the prompt
+- **Pinning:** 
+  * Manually pin the skill to additional prompts plus heuristic auto-pin from recent history
+- **Runtime overrides via MCP:** 
+  * `runtime-status`, `set-runtime-options`
+  * Persisted to `~/.codex/skills-runtime.json`.
+- **Claude mirror support:** 
+  * Optional sync from `~/.claude/skills` into `~/.codex/skills-mirror`.
 
 ## MCP tools
 - `list-skills` — enumerate discovered skills with source and hash.
-- `autoload-snippet` — prompt-filtered manifest + content (honors pins, byte budgets).
+- `autoload-snippet` — prompt-filtered manifest + content (adheres to existing pinned skills and token budgets).
 - `render-preview` — matched skill names, manifest bytes, estimated tokens, truncation flags (no content).
 - `runtime-status` / `set-runtime-options` — inspect/persist render overrides (`manifest_first`, `render_mode_log`, `manifest_minimal`).
-- `sync-from-claude`, `refresh-cache` — maintenance.
+- `sync-from-claude`, `refresh-cache` — maintenance tasks to improve user experience.
 
 ## Configuration
 - Env: `SKRILLS_MAX_BYTES`, `SKRILLS_MANIFEST_FIRST`, `SKRILLS_EMBED_THRESHOLD`, `SKRILLS_RENDER_MODE_LOG`, `SKRILLS_INCLUDE_CLAUDE`, `SKRILLS_CACHE_TTL_MS`.

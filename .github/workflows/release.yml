@@ -188,6 +188,7 @@ jobs:
             echo "::endgroup::"
           }
 
+          # Package in dependency order so we catch local build issues without requiring deps on crates.io.
           pkg skrills-state
           pkg skrills-discovery
           pkg skrills-server
