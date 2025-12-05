@@ -1,12 +1,44 @@
 default: true
 
-# Keep prose readable without forcing 80-col wrap.
-MD013:
-  line_length: 140
-  heading_line_length: 80
-  code_block_line_length: 200
-  tables: false
+# Disable line length checking for better documentation readability
+MD013: false
 
-# Allow inline HTML where needed for badges or layout.
+# Allow inline HTML where needed for documentation
 MD033:
-  allowed_elements: ["br", "img", "a"]
+  allowed_elements: ["br", "img", "a", "ul", "li", "ol", "p", "div", "span"]
+
+# Allow both asterisk and underscore emphasis
+MD049: false
+
+# Allow any ordered list prefix style (not just 1/2/3)
+MD029: false
+
+# Allow lists without blank lines around them (common in docs)
+MD032: false
+
+# Allow headings without blank lines (for denser documentation)
+MD022: false
+
+# Allow bare URLs
+MD034: false
+
+# Allow duplicate headings (some sections repeat in different contexts)
+MD024: false
+
+# Don't require blank lines around fenced code blocks
+MD031: false
+
+# Don't require single trailing newline
+MD047: false
+
+# Allow code fences without language specification
+MD040: false
+
+# Allow heading level skips (common in docs)
+MD001: false
+
+# Allow emphasis used as headings (for step-by-step guides)
+MD036: false
+
+# Allow trailing punctuation in headings
+MD026: false

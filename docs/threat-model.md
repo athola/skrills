@@ -51,11 +51,11 @@ flowchart TD
 
 ### Components
 
-1.  **MCP Server**: Handles skill discovery and rendering operations.
-2.  **Gateway**: Optional TLS proxy for secure remote access to the MCP server.
-3.  **Skill Discovery**: Scans the filesystem and loads skill definitions.
-4.  **Cache System**: In-memory cache for skill metadata, to improve retrieval performance.
-5.  **Configuration**: Manages settings through TOML/JSON files and environment variables.
+1. **MCP Server**: Handles skill discovery and rendering operations.
+2. **Gateway**: Optional TLS proxy for secure remote access to the MCP server.
+3. **Skill Discovery**: Scans the filesystem and loads skill definitions.
+4. **Cache System**: In-memory cache for skill metadata, to improve retrieval performance.
+5. **Configuration**: Manages settings through TOML/JSON files and environment variables.
 
 ---
 
@@ -73,90 +73,90 @@ flowchart TD
 | **Cache Data** | Cached data of skill metadata and embeddings, used for performance optimization. | Medium | Medium | Low |
 
 ### Data Classification
--   **Critical**: This classification includes highly sensitive assets such as TLS private keys, API keys, and signing keys, which would have a severe impact if compromised.
--   **High**: Assets in this category, like user prompts, configuration files, and skill content, carry a significant risk if compromised.
--   **Medium**: This level applies to assets such as cached embeddings and skill metadata, which, if exposed, would have a moderate impact.
--   **Low**: Assets like operational logs, performance metrics, and temporary files fall into this category and would have minimal impact if compromised.
+- **Critical**: This classification includes highly sensitive assets such as TLS private keys, API keys, and signing keys, which would have a severe impact if compromised.
+- **High**: Assets in this category, like user prompts, configuration files, and skill content, carry a significant risk if compromised.
+- **Medium**: This level applies to assets such as cached embeddings and skill metadata, which, if exposed, would have a moderate impact.
+- **Low**: Assets like operational logs, performance metrics, and temporary files fall into this category and would have minimal impact if compromised.
 
 ---
 
 ## Threat Actors
 
 ### Internal Threats
-1.  **Malicious Plugin Author**: A malicious plugin author can create or modify `SKILL.md` files. Motivations typically involve code injection, data exfiltration, or other forms of subversion. Capability: Medium to High.
-2.  **Compromised User Account**: A compromised user account grants an attacker full filesystem access. Motivations can range from data theft to privilege escalation. Capability: High.
+1. **Malicious Plugin Author**: A malicious plugin author can create or modify `SKILL.md` files. Motivations typically involve code injection, data exfiltration, or other forms of subversion. Capability: Medium to High.
+2. **Compromised User Account**: A compromised user account grants an attacker full filesystem access. Motivations can range from data theft to privilege escalation. Capability: High.
 
 ### External Threats
-1.  **Network Attacker (Gateway Mode)**: In gateway mode, a network attacker can intercept network traffic. Motivations typically include data theft or Man-in-the-Middle (MitM) attacks. Capability: Medium to High.
-2.  **Malicious Client**: A malicious client, with access to the MCP protocol, might attempt resource exhaustion or unauthorized data extraction. Capability: Low to Medium.
-3.  **Supply Chain Attack**: A supply chain attack involves compromised dependencies. Motivations can include backdoor installation or data theft. Capability: High.
+1. **Network Attacker (Gateway Mode)**: In gateway mode, a network attacker can intercept network traffic. Motivations typically include data theft or Man-in-the-Middle (MitM) attacks. Capability: Medium to High.
+2. **Malicious Client**: A malicious client, with access to the MCP protocol, might attempt resource exhaustion or unauthorized data extraction. Capability: Low to Medium.
+3. **Supply Chain Attack**: A supply chain attack involves compromised dependencies. Motivations can include backdoor installation or data theft. Capability: High.
 
 ---
 
 ## Attack Vectors & Threats
 
 ### 1. Skill Injection Attacks
--   **Threat**: Malicious skill files are used to inject harmful prompts or code into the system.
--   **Scenarios**: A common scenario involves an attacker placing a malicious `SKILL.md` file (containing prompt injection payloads) within a designated skill directory such as [`~/.codex/skills/`](~/.codex/skills/). When a user loads this skill, the client (e.g., Claude) may execute the injected instructions.
--   **Impact**: High: This can lead to unauthorized command execution, data exfiltration, or a broader system compromise.
-    -   **Mitigations**: Skill content is treated as untrusted input. The system does not execute skill content server-side. Client-side validation is crucial. Future enhancements include recommending skill signing and verification, and implementing skill allowlisting.
--   **Residual Risk**: Medium.
+- **Threat**: Malicious skill files are used to inject harmful prompts or code into the system.
+- **Scenarios**: A common scenario involves an attacker placing a malicious `SKILL.md` file (containing prompt injection payloads) within a designated skill directory such as [`~/.codex/skills/`](~/.codex/skills/). When a user loads this skill, the client (e.g., Claude) may execute the injected instructions.
+- **Impact**: High: This can lead to unauthorized command execution, data exfiltration, or a broader system compromise.
+- **Mitigations**: Skill content is treated as untrusted input. The system does not execute skill content server-side. Client-side validation is crucial. Future enhancements include recommending skill signing and verification, and implementing skill allowlisting.
+- **Residual Risk**: Medium.
 
 ### 2. Path Traversal Attacks
--   **Threat**: An attacker attempts to access files or directories outside the authorized skill directories.
--   **Scenarios**: Scenarios include a malicious skill defining a path like `../../etc/passwd`, a symlink attack, or an MCP client requesting a resource using a path traversal sequence.
--   **Impact**: Medium: Potential consequences include information disclosure, unauthorized access to configuration files, and possible credential theft.
-    -   **Mitigations**: Mitigations include robust path canonicalization within the `resolve_skill()` function, strict validation of all file paths, preventing arbitrary file access, and restricting skill root directories to only known and trusted locations.
--   **Residual Risk**: Low.
+- **Threat**: An attacker attempts to access files or directories outside the authorized skill directories.
+- **Scenarios**: Scenarios include a malicious skill defining a path like `../../etc/passwd`, a symlink attack, or an MCP client requesting a resource using a path traversal sequence.
+- **Impact**: Medium: Potential consequences include information disclosure, unauthorized access to configuration files, and possible credential theft.
+- **Mitigations**: Mitigations include robust path canonicalization within the `resolve_skill()` function, strict validation of all file paths, preventing arbitrary file access, and restricting skill root directories to only known and trusted locations.
+- **Residual Risk**: Low.
 
 ### 3. Denial of Service (DoS)
--   **Threat**: Resource exhaustion initiated through malicious or excessive requests.
--   **Scenarios**: Potential scenarios include request flooding in gateway mode, uploads of excessively large skill files, memory exhaustion via cache poisoning, or CPU exhaustion triggered by intensive embedding generation.
--   **Impact**: Medium: This can lead to service unavailability, severe performance degradation, and excessive resource consumption.
-    -   **Mitigations**: Mitigations include enforcing strict file size limits, using cache Time-To-Live (TTL) to prevent unbounded cache growth, implementing rate limiting (planned), enforcing request timeouts, and establishing concurrent request limits.
--   **Residual Risk**: Medium.
+- **Threat**: Resource exhaustion initiated through malicious or excessive requests.
+- **Scenarios**: Potential scenarios include request flooding in gateway mode, uploads of excessively large skill files, memory exhaustion via cache poisoning, or CPU exhaustion triggered by intensive embedding generation.
+- **Impact**: Medium: This can lead to service unavailability, severe performance degradation, and excessive resource consumption.
+- **Mitigations**: Mitigations include enforcing strict file size limits, using cache Time-To-Live (TTL) to prevent unbounded cache growth, implementing rate limiting (planned), enforcing request timeouts, and establishing concurrent request limits.
+- **Residual Risk**: Medium.
 
 ### 4. Authentication Bypass (Gateway)
--   **Threat**: Unauthorized access to protected gateway endpoints.
--   **Scenarios**: Scenarios include the theft of API keys, the use of weakly generated API keys, the absence of authentication mechanisms on critical endpoints, or the compromise of mTLS certificates.
--   **Impact**: High: Consequences include unauthorized skill access, data exfiltration, and service manipulation.
-    -   **Mitigations**: Mitigations include robust support for mTLS authentication and API key authentication, ensuring no default credentials are used, requiring strong key generation practices, implementing key rotation (planned), and deploying audit logging for authentication failures (planned).
--   **Residual Risk**: Medium.
+- **Threat**: Unauthorized access to protected gateway endpoints.
+- **Scenarios**: Scenarios include the theft of API keys, the use of weakly generated API keys, the absence of authentication mechanisms on critical endpoints, or the compromise of mTLS certificates.
+- **Impact**: High: Consequences include unauthorized skill access, data exfiltration, and service manipulation.
+- **Mitigations**: Mitigations include robust support for mTLS authentication and API key authentication, ensuring no default credentials are used, requiring strong key generation practices, implementing key rotation (planned), and deploying audit logging for authentication failures (planned).
+- **Residual Risk**: Medium.
 
 ### 5. Man-in-the-Middle (MitM)
--   **Threat**: Interception and manipulation of network traffic in gateway mode.
--   **Scenarios**: Potential scenarios involve TLS downgrade attacks, bypassing certificate validation, compromised Certificate Authority (CA) certificates, or DNS spoofing.
--   **Impact**: High: This can lead to credential theft, interception of sensitive prompts, and unauthorized data modification.
-    -   **Mitigations**: Mitigations include strictly enforcing TLS 1.3, using only strong cipher suites, rigorous certificate validation, employing mTLS for mutual authentication, and considering certificate pinning for critical deployments.
--   **Residual Risk**: Low.
+- **Threat**: Interception and manipulation of network traffic in gateway mode.
+- **Scenarios**: Potential scenarios involve TLS downgrade attacks, bypassing certificate validation, compromised Certificate Authority (CA) certificates, or DNS spoofing.
+- **Impact**: High: This can lead to credential theft, interception of sensitive prompts, and unauthorized data modification.
+- **Mitigations**: Mitigations include strictly enforcing TLS 1.3, using only strong cipher suites, rigorous certificate validation, employing mTLS for mutual authentication, and considering certificate pinning for critical deployments.
+- **Residual Risk**: Low.
 
 ### 6. Information Disclosure
--   **Threat**: The unintentional leakage of sensitive data through logs or error messages.
--   **Scenarios**: Scenarios include API keys being logged in plaintext, user prompts appearing in debug logs, the exposure of internal filesystem paths, or stack traces revealing sensitive data.
--   **Impact**: Medium: Consequences may include credential compromise, privacy violations, and an expanded attack surface.
-    -   **Mitigations**: Mitigations include structured logging, careful configuration of log levels, scrubbing credentials from logs (planned), redacting prompts in telemetry (planned), and sanitizing error messages (planned).
--   **Residual Risk**: Medium.
+- **Threat**: The unintentional leakage of sensitive data through logs or error messages.
+- **Scenarios**: Scenarios include API keys being logged in plaintext, user prompts appearing in debug logs, the exposure of internal filesystem paths, or stack traces revealing sensitive data.
+- **Impact**: Medium: Consequences may include credential compromise, privacy violations, and an expanded attack surface.
+- **Mitigations**: Mitigations include structured logging, careful configuration of log levels, scrubbing credentials from logs (planned), redacting prompts in telemetry (planned), and sanitizing error messages (planned).
+- **Residual Risk**: Medium.
 
 ### 7. Dependency Vulnerabilities
--   **Threat**: Exploitation of vulnerabilities present in third-party crates or libraries.
--   **Scenarios**: Scenarios include known Common Vulnerabilities and Exposures (CVEs) in direct or transitive dependencies, supply chain compromises, or vulnerabilities within indirectly linked dependencies.
--   **Impact**: Varies: The impact can range from low to critical, potentially leading to Remote Code Execution (RCE), data theft, or complete service compromise.
-    -   **Mitigations**: Mitigations include regular and timely dependency updates, integrating `cargo audit` into the CI/CD pipeline, maintaining a minimal dependency footprint, establishing a rigorous dependency review process, implementing automated vulnerability scanning (planned), and generating a Software Bill of Materials (SBOM) (planned).
--   **Residual Risk**: Low.
+- **Threat**: Exploitation of vulnerabilities present in third-party crates or libraries.
+- **Scenarios**: Scenarios include known Common Vulnerabilities and Exposures (CVEs) in direct or transitive dependencies, supply chain compromises, or vulnerabilities within indirectly linked dependencies.
+- **Impact**: Varies: The impact can range from low to critical, potentially leading to Remote Code Execution (RCE), data theft, or complete service compromise.
+- **Mitigations**: Mitigations include regular and timely dependency updates, integrating `cargo audit` into the CI/CD pipeline, maintaining a minimal dependency footprint, establishing a rigorous dependency review process, implementing automated vulnerability scanning (planned), and generating a Software Bill of Materials (SBOM) (planned).
+- **Residual Risk**: Low.
 
 ### 8. Cache Poisoning
--   **Threat**: The injection of malicious or corrupted data into the system's cache.
--   **Scenarios**: Scenarios include undetected modifications to skill files, hash collision attacks, or cache corruption due to race conditions.
--   **Impact**: Medium: Potential impact involves skill content manipulation, Denial of Service (DoS) through cache invalidation, or incorrect skill rendering.
-    -   **Mitigations**: Mitigations include hash-based cache validation, checks against file modification times, Time-To-Live (TTL)-based expiration, atomic cache operations, and implementing cache integrity verification (planned).
--   **Residual Risk**: Low.
+- **Threat**: The injection of malicious or corrupted data into the system's cache.
+- **Scenarios**: Scenarios include undetected modifications to skill files, hash collision attacks, or cache corruption due to race conditions.
+- **Impact**: Medium: Potential impact involves skill content manipulation, Denial of Service (DoS) through cache invalidation, or incorrect skill rendering.
+- **Mitigations**: Mitigations include hash-based cache validation, checks against file modification times, Time-To-Live (TTL)-based expiration, atomic cache operations, and implementing cache integrity verification (planned).
+- **Residual Risk**: Low.
 
 ### 9. Configuration Tampering
--   **Threat**: Unauthorized modification of system configuration settings.
--   **Scenarios**: Scenarios include direct modification of configuration files, injection of malicious environment variables, or exploitation of runtime override mechanisms.
--   **Impact**: High: This can lead to privilege escalation, bypass of security controls, and critical service misconfiguration.
-    -   **Mitigations**: Mitigations include restrictive file permissions, robust configuration validation, establishing secure default settings, and planning for configuration signing/checksums and an immutable configuration mode.
--   **Residual Risk**: Medium.
+- **Threat**: Unauthorized modification of system configuration settings.
+- **Scenarios**: Scenarios include direct modification of configuration files, injection of malicious environment variables, or exploitation of runtime override mechanisms.
+- **Impact**: High: This can lead to privilege escalation, bypass of security controls, and critical service misconfiguration.
+- **Mitigations**: Mitigations include restrictive file permissions, robust configuration validation, establishing secure default settings, and planning for configuration signing/checksums and an immutable configuration mode.
+- **Residual Risk**: Medium.
 
 ---
 
@@ -165,119 +165,119 @@ flowchart TD
 ### Implemented Controls
 
 #### Authentication & Authorization
--   **mTLS Client Authentication (Gateway)**: The gateway uses X.509 certificate verification, including validation against trusted CA certificates and requiring clients to present valid certificates for authentication.
--   **API Key Authentication (Gateway)**: Authentication is done via bearer token validation, supporting multiple API keys for client identification and access control.
--   **No Authentication Required (Local Stdio Mode)**: By design, local standard I/O (stdio) mode deployments do not require explicit authentication, relying on inherent process isolation and filesystem permissions.
+- **mTLS Client Authentication (Gateway)**: The gateway uses X.509 certificate verification, including validation against trusted CA certificates and requiring clients to present valid certificates for authentication.
+- **API Key Authentication (Gateway)**: Authentication is done via bearer token validation, supporting multiple API keys for client identification and access control.
+- **No Authentication Required (Local Stdio Mode)**: By design, local standard I/O (stdio) mode deployments do not require explicit authentication, relying on inherent process isolation and filesystem permissions.
 
 #### Network Security
--   **TLS 1.3 Enforcement**: Strict enforcement of TLS 1.3 protocols, ensuring the use of modern cryptographic standards.
--   **Strong Cipher Suites**: Uses robust cipher suites, such as AES-256-GCM and ChaCha20-Poly1305, to maintain strong encryption.
--   **Certificate Validation**: Implements comprehensive certificate validation, including chain-of-trust and expiration checks.
--   **Configurable Bind Addresses**: Allows for flexible configuration of network bind addresses for enhanced security and deployment options.
+- **TLS 1.3 Enforcement**: Strict enforcement of TLS 1.3 protocols, ensuring the use of modern cryptographic standards.
+- **Strong Cipher Suites**: Uses robust cipher suites, such as AES-256-GCM and ChaCha20-Poly1305, to maintain strong encryption.
+- **Certificate Validation**: Implements comprehensive certificate validation, including chain-of-trust and expiration checks.
+- **Configurable Bind Addresses**: Allows for flexible configuration of network bind addresses for enhanced security and deployment options.
 
 #### Input Validation
--   **Path Canonicalization and Validation**: Prevents path traversal vulnerabilities through strict canonicalization and validation of all incoming paths.
--   **File Size Limits**: Enforces configurable file size limits to prevent resource exhaustion attacks.
--   **JSON Schema Validation for MCP Messages**: Validates all Machine-Readable Context Protocol (MCP) messages against predefined JSON schemas.
--   **Skill Metadata Validation**: Ensures the integrity and correctness of skill metadata through rigorous validation processes.
+- **Path Canonicalization and Validation**: Prevents path traversal vulnerabilities through strict canonicalization and validation of all incoming paths.
+- **File Size Limits**: Enforces configurable file size limits to prevent resource exhaustion attacks.
+- **JSON Schema Validation for MCP Messages**: Validates all Machine-Readable Context Protocol (MCP) messages against predefined JSON schemas.
+- **Skill Metadata Validation**: Ensures the integrity and correctness of skill metadata through rigorous validation processes.
 
 #### Data Protection
--   **No Persistent User Prompt Storage**: User prompts are processed ephemerally and are never persistently stored, preserving user privacy.
--   **Ephemeral Cache with TTL**: Uses an ephemeral, time-to-live (TTL) based cache to manage transient data efficiently.
--   **Secure File Permissions**: Recommendations for secure file permissions are provided to protect sensitive data at rest.
+- **No Persistent User Prompt Storage**: User prompts are processed ephemerally and are never persistently stored, preserving user privacy.
+- **Ephemeral Cache with TTL**: Uses an ephemeral, time-to-live (TTL) based cache to manage transient data efficiently.
+- **Secure File Permissions**: Recommendations for secure file permissions are provided to protect sensitive data at rest.
 
 #### Logging & Monitoring
--   **Structured Logging**: Implements structured logging using the `tracing` crate for improved observability and analysis.
--   **Configurable Log Levels**: Allows for dynamic adjustment of log verbosity to manage data volume and focus on critical events.
--   **Error Tracking**: Incorporates mechanisms for effective error tracking and reporting.
+- **Structured Logging**: Implements structured logging using the `tracing` crate for improved observability and analysis.
+- **Configurable Log Levels**: Allows for dynamic adjustment of log verbosity to manage data volume and focus on critical events.
+- **Error Tracking**: Incorporates mechanisms for effective error tracking and reporting.
 
 ---
 
 ### Recommended Controls (TODO)
 
 #### Rate Limiting
--   Per-client request rate limits to ensure fair usage.
--   Global concurrent connection limits to protect overall service capacity.
--   Throttling of embedding generation for resource optimization.
--   Configurable burst allowances for legitimate traffic spikes.
+- Per-client request rate limits to ensure fair usage.
+- Global concurrent connection limits to protect overall service capacity.
+- Throttling of embedding generation for resource optimization.
+- Configurable burst allowances for legitimate traffic spikes.
 
 **See**: [Rate Limiting Configuration](RATE-LIMITING.md)
 
 #### Audit Logging
--   Detailed logging of authentication failures.
--   Recording of authorization decisions.
--   Tracking of all configuration changes.
--   Auditing of skill access and usage.
+- Detailed logging of authentication failures.
+- Recording of authorization decisions.
+- Tracking of all configuration changes.
+- Auditing of skill access and usage.
 
 **See**: [Audit Logging](AUDIT-LOGGING.md)
 
 #### Secrets Management
--   Robust key rotation mechanisms.
--   Integration with Hardware Security Modules (HSMs) for key protection.
--   Encrypted storage for sensitive configuration data.
--   Documentation detailing secrets management procedures.
+- Robust key rotation mechanisms.
+- Integration with Hardware Security Modules (HSMs) for key protection.
+- Encrypted storage for sensitive configuration data.
+- Documentation detailing secrets management procedures.
 
 **See**: [`docs/SECRETS-MANAGEMENT.md`](docs/secrets-management.md)
 
 #### Additional Hardening
--   Implementation of skill signing and verification for content integrity.
--   Application of Content Security Policy (CSP) for the gateway to mitigate XSS attacks.
--   Enforcement of security headers for web traffic.
--   Integration of automated security testing into the development pipeline.
+- Implementation of skill signing and verification for content integrity.
+- Application of Content Security Policy (CSP) for the gateway to mitigate XSS attacks.
+- Enforcement of security headers for web traffic.
+- Integration of automated security testing into the development pipeline.
 
 ---
 
 ## Trust Boundaries
 
 ### Boundary 1: User ↔ Skrills Server (stdio)
--   **Trust Level**: High (operating on the same machine).
--   The user has direct control over filesystem access.
--   Skill content is treated as user-provided input.
--   There is no network exposure in this mode.
--   The integrity of this boundary depends on the security of the user account.
--   **Controls**: Implemented controls include rigorous file permission checks, strict path validation, and the absence of remote access capabilities.
+- **Trust Level**: High (operating on the same machine).
+- The user has direct control over filesystem access.
+- Skill content is treated as user-provided input.
+- There is no network exposure in this mode.
+- The integrity of this boundary depends on the security of the user account.
+- **Controls**: Implemented controls include rigorous file permission checks, strict path validation, and the absence of remote access capabilities.
 
 ### Boundary 2: Client ↔ Gateway (Network)
--   **Trust Level**: Low (operating over an untrusted network).
--   Network traffic is susceptible to interception.
--   Verification of client identity is essential.
--   Requires the use of API keys or client certificates for authentication.
--   All data in transit must be encrypted.
--   **Controls**: Implemented controls include mutual TLS (mTLS) authentication, TLS 1.3 encryption, robust certificate validation, and API key verification.
+- **Trust Level**: Low (operating over an untrusted network).
+- Network traffic is susceptible to interception.
+- Verification of client identity is essential.
+- Requires the use of API keys or client certificates for authentication.
+- All data in transit must be encrypted.
+- **Controls**: Implemented controls include mutual TLS (mTLS) authentication, TLS 1.3 encryption, robust certificate validation, and API key verification.
 
 ### Boundary 3: Skrills ↔ Skill Files
--   **Trust Level**: Medium (due to user-controlled content).
--   Skill files may contain malicious prompts.
--   Requires filesystem access to load skill definitions.
--   Skill content is explicitly not executed server-side.
--   Metadata is cached, and content is passed through.
--   **Controls**: Implemented controls include strict path validation, file size limits, prevention of skill content execution, and hash-based integrity checks.
+- **Trust Level**: Medium (due to user-controlled content).
+- Skill files may contain malicious prompts.
+- Requires filesystem access to load skill definitions.
+- Skill content is explicitly not executed server-side.
+- Metadata is cached, and content is passed through.
+- **Controls**: Implemented controls include strict path validation, file size limits, prevention of skill content execution, and hash-based integrity checks.
 
 ---
 
 ## Deployment Models & Risk Profiles
 
 ### Local stdio Mode (Default)
--   **Risk Profile**: Low to Medium. This mode has no network exposure and is typically for a single user. Filesystem security is critical.
--   **Threats**: Key threats include malicious skill injection, configuration tampering, and local privilege escalation.
--   **Controls**: Mitigations involve strict file permissions (e.g., `chmod 600`), regular audits of skill directories, and robust user account security practices.
+- **Risk Profile**: Low to Medium. This mode has no network exposure and is typically for a single user. Filesystem security is critical.
+- **Threats**: Key threats include malicious skill injection, configuration tampering, and local privilege escalation.
+- **Controls**: Mitigations involve strict file permissions (e.g., `chmod 600`), regular audits of skill directories, and robust user account security practices.
 
 ### Gateway Mode (Remote Access)
--   **Risk Profile**: Medium to High. This mode is exposed to the network and supports multiple clients, requiring robust authentication.
--   **Threats**: Threats include authentication bypass, Man-in-the-Middle (MitM) attacks, Denial-of-Service (DoS) or resource exhaustion, and information disclosure.
--   **Controls**: Production controls include mTLS, active rate limiting, audit logging, network segmentation, and configured firewall rules.
+- **Risk Profile**: Medium to High. This mode is exposed to the network and supports multiple clients, requiring robust authentication.
+- **Threats**: Threats include authentication bypass, Man-in-the-Middle (MitM) attacks, Denial-of-Service (DoS) or resource exhaustion, and information disclosure.
+- **Controls**: Production controls include mTLS, active rate limiting, audit logging, network segmentation, and configured firewall rules.
 
 ---
 
 ## Compliance Considerations
 
 ### GDPR (User Prompts as Personal Data)
--   User prompts may contain personal information. To address this, the system does not persistently store prompts, processing them ephemerally. Cache Time-To-Live (TTL) mechanisms further limit data retention. For gateway deployments, it is recommended to implement a clear privacy policy.
+- User prompts may contain personal information. To address this, the system does not persistently store prompts, processing them ephemerally. Cache Time-To-Live (TTL) mechanisms further limit data retention. For gateway deployments, it is recommended to implement a clear privacy policy.
 
 ### Security Frameworks
--   **OWASP Top 10**: We address key risks from the OWASP Top 10, such as Injection, Broken Authentication, and Sensitive Data Exposure.
--   **CWE Top 25**: We consider the CWE Top 25, focusing on preventing issues like Path Traversal, Missing Authentication, and Resource Exhaustion.
--   **NIST CSF**: Our security practices align with the NIST Cybersecurity Framework, encompassing its core functions: Identify, Protect, Detect, Respond, and Recover.
+- **OWASP Top 10**: We address key risks from the OWASP Top 10, such as Injection, Broken Authentication, and Sensitive Data Exposure.
+- **CWE Top 25**: We consider the CWE Top 25, focusing on preventing issues like Path Traversal, Missing Authentication, and Resource Exhaustion.
+- **NIST CSF**: Our security practices align with the NIST Cybersecurity Framework, encompassing its core functions: Identify, Protect, Detect, Respond, and Recover.
 
 **See**: [Compliance in `AUDIT-LOGGING.md`](AUDIT-LOGGING.md#compliance)
 
@@ -286,38 +286,38 @@ flowchart TD
 ## Incident Response
 
 ### Security Event Classifications
-1.  **Critical**: Events such as authentication bypass or remote code execution that demand immediate attention.
-2.  **High**: Events involving data exfiltration or credential theft.
-3.  **Medium**: Events like Denial-of-Service (DoS) attacks or information disclosure.
-4.  **Low**: Less severe events such as configuration errors or logging issues.
+1. **Critical**: Events such as authentication bypass or remote code execution that demand immediate attention.
+2. **High**: Events involving data exfiltration or credential theft.
+3. **Medium**: Events like Denial-of-Service (DoS) attacks or information disclosure.
+4. **Low**: Less severe events such as configuration errors or logging issues.
 
 ### Response Procedures
-1.  **Detection**: Monitor logs for authentication failures and unusual traffic patterns.
-2.  **Containment**: Take immediate measures such as disabling the gateway and rotating compromised credentials.
-3.  **Investigation**: Conduct a thorough review of audit logs and verify skill integrity.
-4.  **Recovery**: Restore the system from a known-good state and apply necessary patches for identified vulnerabilities.
-5.  **Lessons Learned**: Update the threat model based on the incident, and implement improved security controls.
+1. **Detection**: Monitor logs for authentication failures and unusual traffic patterns.
+2. **Containment**: Take immediate measures such as disabling the gateway and rotating compromised credentials.
+3. **Investigation**: Conduct a thorough review of audit logs and verify skill integrity.
+4. **Recovery**: Restore the system from a known-good state and apply necessary patches for identified vulnerabilities.
+5. **Lessons Learned**: Update the threat model based on the incident, and implement improved security controls.
 
 ---
 
 ## Security Testing
 
 ### Recommended Testing
--   **Unit Tests**: Focus on input validation and path sanitization routines.
--   **Integration Tests**: Verify mTLS handshakes and API key verification processes.
--   **Fuzz Testing**: Use fuzzing for MCP message parsing and skill file parsing to uncover unexpected behaviors or vulnerabilities.
--   **Penetration Testing**: Conduct comprehensive penetration tests targeting gateway endpoints and potential authentication bypass vulnerabilities.
--   **Dependency Scanning**: Use tools like `cargo audit` for automated CVE checks against project dependencies.
+- **Unit Tests**: Focus on input validation and path sanitization routines.
+- **Integration Tests**: Verify mTLS handshakes and API key verification processes.
+- **Fuzz Testing**: Use fuzzing for MCP message parsing and skill file parsing to uncover unexpected behaviors or vulnerabilities.
+- **Penetration Testing**: Conduct comprehensive penetration tests targeting gateway endpoints and potential authentication bypass vulnerabilities.
+- **Dependency Scanning**: Use tools like `cargo audit` for automated CVE checks against project dependencies.
 
 ---
 
 ## Future Enhancements
 
 ### Roadmap
-1.  **Skill Signing (Q1 2026)**: Implement cryptographic signatures for skills, establish publisher verification processes, and develop a robust trust framework.
-2.  **Rate Limiting (Q4 2025)**: Introduce a token bucket algorithm for rate limiting, implement per-client limits, and provide flexible configuration options.
-3.  **Audit Logging (Q4 2025)**: Develop structured audit events, implement tamper-evident logs, and enable seamless SIEM integration.
-4.  **Secrets Management (Q1 2026)**: Automate key rotation, integrate with Hardware Security Modules (HSM), and provide HashiCorp Vault support.
+1. **Skill Signing (Q1 2026)**: Implement cryptographic signatures for skills, establish publisher verification processes, and develop a robust trust framework.
+2. **Rate Limiting (Q4 2025)**: Introduce a token bucket algorithm for rate limiting, implement per-client limits, and provide flexible configuration options.
+3. **Audit Logging (Q4 2025)**: Develop structured audit events, implement tamper-evident logs, and enable seamless SIEM integration.
+4. **Secrets Management (Q1 2026)**: Automate key rotation, integrate with Hardware Security Modules (HSM), and provide HashiCorp Vault support.
 
 ---
 
@@ -335,10 +335,10 @@ flowchart TD
 ## Document Maintenance
 
 Review and update this threat model:
--   **Quarterly**: A regular review is conducted quarterly.
--   **On Architecture Changes**: Updated on significant architectural changes, such as new features or protocol modifications.
--   **After Security Incidents**: Updated to incorporate lessons learned from security incidents.
--   **On Vulnerability Disclosure**: Revised following the disclosure of new vulnerabilities or attack vectors.
+- **Quarterly**: A regular review is conducted quarterly.
+- **On Architecture Changes**: Updated on significant architectural changes, such as new features or protocol modifications.
+- **After Security Incidents**: Updated to incorporate lessons learned from security incidents.
+- **On Vulnerability Disclosure**: Revised following the disclosure of new vulnerabilities or attack vectors.
 
 **Next Review**: 2026-02-28
 

@@ -5,10 +5,11 @@
 Skills are found by searching through a prioritized sequence of directories. If multiple skills share the same name, the skill found in the directory with the highest priority is used.
 
 The default discovery priority follows this order:
-1.  `~/.codex/skills`
-2.  `~/.codex/skills-mirror` (a mirror of Claude skills)
-3.  `~/.claude/skills`
-4.  `~/.agent/skills`
+
+1. `~/.codex/skills`
+2. `~/.codex/skills-mirror` (a mirror of Claude skills)
+3. `~/.claude/skills`
+4. `~/.agent/skills`
 
 You can customize the default discovery priority, along with `expose_agents` and `cache_ttl_ms` settings, by creating a [`~/.codex/skills-manifest.json`](~/.codex/skills-manifest.json) file. This manifest supports a structured object format:
 
@@ -26,10 +27,10 @@ Alternatively, a legacy shorthand format is also supported, with only the priori
 
 Upon the submission of a user prompt, `skrills` filters skills to select only the most relevant ones.
 
-1.  **Hook Timing**: Autoloading is triggered via the `UserPromptSubmit` hook, which is natively supported by Claude Code.
-2.  **Intent Parsing**: `skrills` analyzes the submitted prompt to understand the user's intent.
-3.  **Cached Query**: The system then queries a pre-indexed, cached skill index to identify matching skills.
-4.  **Context Injection**: Only the skills identified as relevant are injected into the context window provided to the LLM.
+1. **Hook Timing**: Autoloading is triggered via the `UserPromptSubmit` hook, which is natively supported by Claude Code.
+2. **Intent Parsing**: `skrills` analyzes the submitted prompt to understand the user's intent.
+3. **Cached Query**: The system then queries a pre-indexed, cached skill index to identify matching skills.
+4. **Context Injection**: Only the skills identified as relevant are injected into the context window provided to the LLM.
 
 This optimized process avoids the need to load all available skills or perform disk reads for every prompt, significantly improving performance.
 
@@ -63,12 +64,12 @@ These values are merged with the stored pinned set located at [`~/.codex/skills-
 
 `skrills` uses a two-tiered caching strategy to improve performance:
 
--   **Discovery Cache**: This cache stores discovered skills and is configured with a Time-To-Live (TTL) using either `SKRILLS_CACHE_TTL_MS` or the `cache_ttl_ms` parameter in the manifest. It can be invalidated automatically by a file watcher (enabled by the `--watch` flag) or explicitly through the `refresh-cache` command.
--   **Content Cache**: This cache stores the actual skill content, uniquely identified by its file path and content hash. It automatically refreshes when file changes are detected or a hash mismatch occurs.
+- **Discovery Cache**: This cache stores discovered skills and is configured with a Time-To-Live (TTL) using either `SKRILLS_CACHE_TTL_MS` or the `cache_ttl_ms` parameter in the manifest. It can be invalidated automatically by a file watcher (enabled by the `--watch` flag) or explicitly through the `refresh-cache` command.
+- **Content Cache**: This cache stores the actual skill content, uniquely identified by its file path and content hash. It automatically refreshes when file changes are detected or a hash mismatch occurs.
 
 ## Comparison with Other Loaders
 
 `skrills`'s autoloading mechanism is different from other skill loaders in several key ways:
 
--   **Dynamic Loading**: Unlike methods that preload all skills, `skrills` uses a prompt hook to parse user intent and dynamically load only the skills relevant to the current context.
--   **Local Caching**: Skills are cached locally, which significantly reduces network requests or repeated tool calls for `SKRILL.md` files on each interaction, which improves overall performance.
+- **Dynamic Loading**: Unlike methods that preload all skills, `skrills` uses a prompt hook to parse user intent and dynamically load only the skills relevant to the current context.
+- **Local Caching**: Skills are cached locally, which significantly reduces network requests or repeated tool calls for `SKRILL.md` files on each interaction, which improves overall performance.

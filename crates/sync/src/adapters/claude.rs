@@ -80,7 +80,7 @@ impl AgentAdapter for ClaudeAdapter {
             let entry = entry?;
             let path = entry.path();
 
-            if path.extension().map_or(false, |e| e == "md") {
+            if path.extension().is_some_and(|e| e == "md") {
                 let name = path
                     .file_stem()
                     .and_then(|s| s.to_str())
@@ -226,10 +226,7 @@ impl AgentAdapter for ClaudeAdapter {
             if !server.enabled {
                 server_config.insert("disabled".into(), serde_json::json!(true));
             }
-            mcp_obj.insert(
-                name.clone(),
-                serde_json::Value::Object(server_config),
-            );
+            mcp_obj.insert(name.clone(), serde_json::Value::Object(server_config));
             report.written += 1;
         }
 
@@ -444,9 +441,6 @@ mod tests {
 
         let content = fs::read_to_string(&settings_path).unwrap();
         let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(
-            settings["model"].as_str(),
-            Some("claude-3-sonnet-20240229")
-        );
+        assert_eq!(settings["model"].as_str(), Some("claude-3-sonnet-20240229"));
     }
 }

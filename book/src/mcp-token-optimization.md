@@ -83,14 +83,14 @@ cat ~/.codex/skills-mirror/plugins/cache/superpowers/skills/brainstorming/SKILL.
 
 The `skrills` system discovers 72 unique skills, categorized as follows:
 
--   **Core Development Workflows**: Includes skills for brainstorming, systematic debugging, test-driven development, and verification processes.
--   **Code Review & Quality**: Features specialized skills for code review, such as `test-review`, `bug-review`, and `rust-review`.
--   **Documentation & Git**: Covers skills related to documentation updates, README file management, versioning, crafting commit messages, and preparing Pull Requests.
--   **Architecture Patterns**: Encompasses 14 distinct architectural paradigms, including functional-core, hexagonal, and microservices.
--   **Language Ecosystems**: Offers Python-focused skills covering areas like testing, asynchronous programming patterns, packaging, and performance optimization.
--   **Infrastructure & Cloud**: Includes skills for multi-cloud architecture, Terraform, hybrid networking, and performance tuning.
--   **Testing Philosophy**: Addresses advanced testing concepts, such as identifying testing anti-patterns and implementing defense-in-depth strategies.
--   **Meta Skills**: Provides skills specifically designed for working with other skills, such as writing new skills or testing skills with subagents.
+- **Core Development Workflows**: Includes skills for brainstorming, systematic debugging, test-driven development, and verification processes.
+- **Code Review & Quality**: Features specialized skills for code review, such as `test-review`, `bug-review`, and `rust-review`.
+- **Documentation & Git**: Covers skills related to documentation updates, README file management, versioning, crafting commit messages, and preparing Pull Requests.
+- **Architecture Patterns**: Encompasses 14 distinct architectural paradigms, including functional-core, hexagonal, and microservices.
+- **Language Ecosystems**: Offers Python-focused skills covering areas like testing, asynchronous programming patterns, packaging, and performance optimization.
+- **Infrastructure & Cloud**: Includes skills for multi-cloud architecture, Terraform, hybrid networking, and performance tuning.
+- **Testing Philosophy**: Addresses advanced testing concepts, such as identifying testing anti-patterns and implementing defense-in-depth strategies.
+- **Meta Skills**: Provides skills specifically designed for working with other skills, such as writing new skills or testing skills with subagents.
 
 To get the complete list, run the `jq` command above.
 
@@ -110,9 +110,9 @@ The `skrills` MCP server exposes seven tools:
 
 ## Best Practices
 
--   **Cache It**: For automation needing full skill metadata, run `list-skills` once, save the output locally, and reuse it. Invalidate the cache with `refresh-cache` when skill definitions change.
--   **Read Directly**: Since skills are Markdown files, you can read known skills directly from [`~/.codex/skills-mirror/`](~/.codex/skills-mirror/) to bypass the MCP layer for speed and token efficiency.
--   **Monitor Autoload**: Use the `history` command to see which skills are triggered in production. This helps debug unexpected autoloads or fine-tune prompt keywords.
+- **Cache It**: For automation needing full skill metadata, run `list-skills` once, save the output locally, and reuse it. Invalidate the cache with `refresh-cache` when skill definitions change.
+- **Read Directly**: Since skills are Markdown files, you can read known skills directly from [`~/.codex/skills-mirror/`](~/.codex/skills-mirror/) to bypass the MCP layer for speed and token efficiency.
+- **Monitor Autoload**: Use the `history` command to see which skills are triggered in production. This helps debug unexpected autoloads or fine-tune prompt keywords.
 
 ## See Also
 

@@ -145,11 +145,11 @@ npx agg demo-claude-hooks.cast demo-claude-hooks.gif \
 
 ## Key Differentiators (Hook-Based)
 
-1.  **Automatic Injection**: Skills are automatically loaded and injected without requiring explicit MCP tool calls.
-2.  **Zero-Touch Workflow**: As you type prompts, relevant skills are automatically injected into the context.
-3.  **Context-Aware**: The integration hook intercepts and analyzes the complete user prompt before it's submitted.
-4.  **Claude-Native**: This integration is native, directly using Claude Code's hook system.
-5.  **Session-Persistent**: The integration hook remains active for the entire Claude Code session.
+1. **Automatic Injection**: Skills are automatically loaded and injected without requiring explicit MCP tool calls.
+2. **Zero-Touch Workflow**: As you type prompts, relevant skills are automatically injected into the context.
+3. **Context-Aware**: The integration hook intercepts and analyzes the complete user prompt before it's submitted.
+4. **Claude-Native**: This integration is native, directly using Claude Code's hook system.
+5. **Session-Persistent**: The integration hook remains active for the entire Claude Code session.
 
 ## Example Output Flow
 

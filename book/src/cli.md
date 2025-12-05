@@ -7,8 +7,8 @@ Starts the Machine-Readable Context Protocol (MCP) server, operating over standa
 ```bash
 skrills serve [--skill-dir DIR] [--cache-ttl-ms N] [--watch]
 ```
--   `--watch`: Activates live filesystem invalidation (requires the `watch` compilation flag).
--   `--cache-ttl-ms`: Sets the Time-To-Live (TTL) for the discovery cache. This setting can also be managed via an environment variable or within the manifest file.
+- `--watch`: Activates live filesystem invalidation (requires the `watch` compilation flag).
+- `--cache-ttl-ms`: Sets the Time-To-Live (TTL) for the discovery cache. This setting can also be managed via an environment variable or within the manifest file.
 
 ## `emit-autoload`
 Generates skill content, filtered based on the provided prompt, manual pins, auto-pins, and an enforced byte limit.
@@ -69,12 +69,12 @@ skrills tui
 
 ## MCP Tools (Client-Facing)
 The `skrills` server exposes these client-facing tools via the MCP protocol:
--   `list-skills`: Lists all discovered skills, providing their source and hash metadata.
--   `autoload-snippet`: Generates skill content filtered by the user's prompt (with a manifest-first approach by default).
--   `runtime-status`: Displays the effective `manifest_first` and `render_mode_log` values, with their respective override sources.
--   `set-runtime-options`: Updates runtime overrides, which are persistently stored in [`~/.codex/skills-runtime.json`](~/.codex/skills-runtime.json).
--   `render-preview`: Offers a preview of matched skill names, the manifest's byte size, and an estimated token count, without returning the full skill content. This tool is useful for inspecting or checking payloads before injecting `additionalContext`.
--   `refresh-cache`, `sync-from-claude`: These commands are for cache maintenance and synchronization of Claude skills.
+- `list-skills`: Lists all discovered skills, providing their source and hash metadata.
+- `autoload-snippet`: Generates skill content filtered by the user's prompt (with a manifest-first approach by default).
+- `runtime-status`: Displays the effective `manifest_first` and `render_mode_log` values, with their respective override sources.
+- `set-runtime-options`: Updates runtime overrides, which are persistently stored in [`~/.codex/skills-runtime.json`](~/.codex/skills-runtime.json).
+- `render-preview`: Offers a preview of matched skill names, the manifest's byte size, and an estimated token count, without returning the full skill content. This tool is useful for inspecting or checking payloads before injecting `additionalContext`.
+- `refresh-cache`, `sync-from-claude`: These commands are for cache maintenance and synchronization of Claude skills.
 
 Example of `render-preview` tool usage:
 ```

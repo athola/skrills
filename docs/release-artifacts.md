@@ -7,8 +7,8 @@ This document specifies the naming conventions and internal structure for `skril
 Release archives must follow this naming pattern:
 `skrills-<target>.<extension>`
 
--   `<target>` is a supported target triple (e.g., `x86_64-unknown-linux-gnu`), indicating the specific platform.
--   `<extension>` will be `.tar.gz` for Unix-like operating systems and `.zip` for Windows environments.
+- `<target>` is a supported target triple (e.g., `x86_64-unknown-linux-gnu`), indicating the specific platform.
+- `<extension>` will be `.tar.gz` for Unix-like operating systems and `.zip` for Windows environments.
 
 ### Supported Targets
 - `x88_64-unknown-linux-gnu`

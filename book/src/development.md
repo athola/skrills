@@ -4,9 +4,9 @@ This guide provides development information for contributors.
 
 ## Toolchain
 
--   **Rust**: Ensure Rust 1.78+ is installed, preferably with `rustup`.
--   **Formatting and Linting**: Use `cargo fmt` for formatting and `clippy` for linting to maintain code quality.
--   **Documentation**: This project uses `mdbook` for documentation. Install it with `cargo install mdbook --locked`.
+- **Rust**: Ensure Rust 1.78+ is installed, preferably with `rustup`.
+- **Formatting and Linting**: Use `cargo fmt` for formatting and `clippy` for linting to maintain code quality.
+- **Documentation**: This project uses `mdbook` for documentation. Install it with `cargo install mdbook --locked`.
 
 ## Make Targets
 
@@ -62,5 +62,5 @@ The `skrills-server` crate is currently in its pre-1.0 development phase. Refer 
 
 ### Coverage
 
--   **Local Coverage**: For local analysis, generate an HTML report with `cargo llvm-cov --workspace --html`, or an LCOV report for CI export with `cargo llvm-cov --workspace --lcov --output-path lcov.info`.
--   **CI Coverage**: The [`coverage.yml`](.github/workflows/coverage.yml) workflow within our CI/CD pipeline runs the same coverage command and uploads the results to Codecov.
+- **Local Coverage**: For local analysis, generate an HTML report with `cargo llvm-cov --workspace --html`, or an LCOV report for CI export with `cargo llvm-cov --workspace --lcov --output-path lcov.info`.
+- **CI Coverage**: The [`coverage.yml`](.github/workflows/coverage.yml) workflow within our CI/CD pipeline runs the same coverage command and uploads the results to Codecov.

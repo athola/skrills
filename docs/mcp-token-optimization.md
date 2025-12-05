@@ -52,14 +52,14 @@ To see which skills have been automatically loaded in response to recent prompts
 ### Best Practices
 
 ### Interactive Sessions
--   For interactive exploration in your terminal, use CLI commands.
--   Use the `render-preview` tool to estimate the size of autoloaded content.
--   Reserve the `list-skills` tool for when you need full skill metadata.
+- For interactive exploration in your terminal, use CLI commands.
+- Use the `render-preview` tool to estimate the size of autoloaded content.
+- Reserve the `list-skills` tool for when you need full skill metadata.
 
 ### Automation
--   To minimize repetitive token usage, cache the output of `list-skills` locally.
--   Use the `refresh-cache` MCP tool to invalidate the local cache when skills are updated.
--   Query the local cache instead of making repeated calls to `list-skills`.
+- To minimize repetitive token usage, cache the output of `list-skills` locally.
+- Use the `refresh-cache` MCP tool to invalidate the local cache when skills are updated.
+- Query the local cache instead of making repeated calls to `list-skills`.
 
 ## Efficient Skill Discovery Workflow
 

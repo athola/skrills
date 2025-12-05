@@ -10,9 +10,9 @@ When downloading a release manually, you should select the archive that matches 
 This error indicates that the MCP server registration in your Codex configuration is missing the `type = "stdio"` field. To fix this, we recommend reinstalling with the latest installer (`install.sh` or `install.ps1`), which will handle the configuration for you.
 
 If you prefer to fix it manually, you will need to:
-1.  Add `type: "stdio"` to the `skrills` entry in `~/.codex/mcp_servers.json`.
-2.  Add `type = "stdio"` under `[mcp_servers."skrills"]` in `~/.codex/config.toml`.
-3.  Restart Codex.
+1. Add `type: "stdio"` to the `skrills` entry in `~/.codex/mcp_servers.json`.
+2. Add `type = "stdio"` under `[mcp_servers."skrills"]` in `~/.codex/config.toml`.
+3. Restart Codex.
 
 You can run `skrills doctor` to verify that both files are correctly configured.
 

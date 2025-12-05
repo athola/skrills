@@ -789,6 +789,29 @@ impl ServerHandler for SkillService {
         pins_schema.insert("additionalProperties".into(), json!(false));
         let pins_schema = std::sync::Arc::new(pins_schema);
 
+        // Schema for sync tools
+        let mut sync_schema = JsonMap::new();
+        sync_schema.insert("type".into(), json!("object"));
+        sync_schema.insert(
+            "properties".into(),
+            json!({
+                "from": {
+                    "type": "string",
+                    "description": "Source agent: 'claude' or 'codex'"
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Preview changes without writing"
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "Skip confirmation prompts"
+                }
+            }),
+        );
+        sync_schema.insert("additionalProperties".into(), json!(false));
+        let sync_schema = std::sync::Arc::new(sync_schema);
+
         let tools = vec![
             Tool {
                 name: "list-skills".into(),
@@ -885,6 +908,79 @@ impl ServerHandler for SkillService {
                     "Remove skills from the pinned set (or clear all with all=true).".into(),
                 ),
                 input_schema: pins_schema,
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
+            // Cross-agent sync tools
+            Tool {
+                name: "sync-skills".into(),
+                title: Some("Sync skills between agents".into()),
+                description: Some(
+                    "Sync SKILL.md files between Claude and Codex. Use --from to specify source.".into(),
+                ),
+                input_schema: sync_schema.clone(),
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
+            Tool {
+                name: "sync-commands".into(),
+                title: Some("Sync slash commands between agents".into()),
+                description: Some(
+                    "Sync slash command definitions between Claude and Codex.".into(),
+                ),
+                input_schema: sync_schema.clone(),
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
+            Tool {
+                name: "sync-mcp-servers".into(),
+                title: Some("Sync MCP server configurations".into()),
+                description: Some(
+                    "Sync MCP server configurations between Claude and Codex.".into(),
+                ),
+                input_schema: sync_schema.clone(),
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
+            Tool {
+                name: "sync-preferences".into(),
+                title: Some("Sync preferences between agents".into()),
+                description: Some(
+                    "Sync compatible settings/preferences between Claude and Codex.".into(),
+                ),
+                input_schema: sync_schema.clone(),
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
+            Tool {
+                name: "sync-all".into(),
+                title: Some("Sync all configurations".into()),
+                description: Some(
+                    "Sync skills, commands, MCP servers, and preferences in one operation.".into(),
+                ),
+                input_schema: sync_schema.clone(),
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
+            Tool {
+                name: "sync-status".into(),
+                title: Some("Preview sync changes".into()),
+                description: Some(
+                    "Show what would be synced without making changes (dry run).".into(),
+                ),
+                input_schema: sync_schema,
                 output_schema: None,
                 annotations: Some(ToolAnnotations::default()),
                 icons: None,
@@ -1202,6 +1298,296 @@ impl ServerHandler for SkillService {
                             }
                         })),
                         is_error: Some(false),
+                        meta: None,
+                    })
+                }
+                // Cross-agent sync tools
+                "sync-skills" => {
+                    // Skills use existing sync mechanism (sync_from_claude)
+                    let from = request.arguments.as_ref()
+                        .and_then(|obj| obj.get("from"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("claude");
+                    let dry_run = request.arguments.as_ref()
+                        .and_then(|obj| obj.get("dry_run"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+
+                    if from == "claude" {
+                        let home = home_dir()?;
+                        let claude_root = home.join(".claude");
+                        let mirror_root = home.join(".codex/skills-mirror");
+
+                        if dry_run {
+                            let count = walkdir::WalkDir::new(&claude_root)
+                                .min_depth(1)
+                                .max_depth(6)
+                                .into_iter()
+                                .filter_map(|e| e.ok())
+                                .filter(crate::discovery::is_skill_file)
+                                .count();
+
+                            Ok(CallToolResult {
+                                content: vec![Content::text(format!(
+                                    "Would sync {} skills from Claude to Codex", count
+                                ))],
+                                is_error: Some(false),
+                                structured_content: Some(json!({
+                                    "dry_run": true,
+                                    "skill_count": count
+                                })),
+                                meta: None,
+                            })
+                        } else {
+                            let report = sync_from_claude(&claude_root, &mirror_root)?;
+                            Ok(CallToolResult {
+                                content: vec![Content::text(format!(
+                                    "Synced {} skills ({} unchanged)",
+                                    report.copied, report.skipped
+                                ))],
+                                is_error: Some(false),
+                                structured_content: Some(json!({
+                                    "copied": report.copied,
+                                    "skipped": report.skipped,
+                                    "copied_names": report.copied_names
+                                })),
+                                meta: None,
+                            })
+                        }
+                    } else {
+                        Ok(CallToolResult {
+                            content: vec![Content::text(
+                                "Codex → Claude skill sync not yet implemented".to_string()
+                            )],
+                            is_error: Some(true),
+                            structured_content: None,
+                            meta: None,
+                        })
+                    }
+                }
+                "sync-commands" => {
+                    use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
+
+                    let from = request.arguments.as_ref()
+                        .and_then(|obj| obj.get("from"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("claude");
+                    let dry_run = request.arguments.as_ref()
+                        .and_then(|obj| obj.get("dry_run"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+
+                    let params = SyncParams {
+                        from: Some(from.to_string()),
+                        dry_run,
+                        sync_commands: true,
+                        sync_mcp_servers: false,
+                        sync_preferences: false,
+                        sync_skills: false,
+                        ..Default::default()
+                    };
+
+                    let report = if from == "claude" {
+                        let source = ClaudeAdapter::new()?;
+                        let target = CodexAdapter::new()?;
+                        SyncOrchestrator::new(source, target).sync(&params)?
+                    } else {
+                        let source = CodexAdapter::new()?;
+                        let target = ClaudeAdapter::new()?;
+                        SyncOrchestrator::new(source, target).sync(&params)?
+                    };
+
+                    Ok(CallToolResult {
+                        content: vec![Content::text(report.summary.clone())],
+                        is_error: Some(false),
+                        structured_content: Some(json!({
+                            "report": report,
+                            "dry_run": dry_run
+                        })),
+                        meta: None,
+                    })
+                }
+                "sync-mcp-servers" => {
+                    use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
+
+                    let from = request.arguments.as_ref()
+                        .and_then(|obj| obj.get("from"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("claude");
+                    let dry_run = request.arguments.as_ref()
+                        .and_then(|obj| obj.get("dry_run"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+
+                    let params = SyncParams {
+                        from: Some(from.to_string()),
+                        dry_run,
+                        sync_commands: false,
+                        sync_mcp_servers: true,
+                        sync_preferences: false,
+                        sync_skills: false,
+                        ..Default::default()
+                    };
+
+                    let report = if from == "claude" {
+                        let source = ClaudeAdapter::new()?;
+                        let target = CodexAdapter::new()?;
+                        SyncOrchestrator::new(source, target).sync(&params)?
+                    } else {
+                        let source = CodexAdapter::new()?;
+                        let target = ClaudeAdapter::new()?;
+                        SyncOrchestrator::new(source, target).sync(&params)?
+                    };
+
+                    Ok(CallToolResult {
+                        content: vec![Content::text(report.summary.clone())],
+                        is_error: Some(false),
+                        structured_content: Some(json!({
+                            "report": report,
+                            "dry_run": dry_run
+                        })),
+                        meta: None,
+                    })
+                }
+                "sync-preferences" => {
+                    use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
+
+                    let from = request.arguments.as_ref()
+                        .and_then(|obj| obj.get("from"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("claude");
+                    let dry_run = request.arguments.as_ref()
+                        .and_then(|obj| obj.get("dry_run"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+
+                    let params = SyncParams {
+                        from: Some(from.to_string()),
+                        dry_run,
+                        sync_commands: false,
+                        sync_mcp_servers: false,
+                        sync_preferences: true,
+                        sync_skills: false,
+                        ..Default::default()
+                    };
+
+                    let report = if from == "claude" {
+                        let source = ClaudeAdapter::new()?;
+                        let target = CodexAdapter::new()?;
+                        SyncOrchestrator::new(source, target).sync(&params)?
+                    } else {
+                        let source = CodexAdapter::new()?;
+                        let target = ClaudeAdapter::new()?;
+                        SyncOrchestrator::new(source, target).sync(&params)?
+                    };
+
+                    Ok(CallToolResult {
+                        content: vec![Content::text(report.summary.clone())],
+                        is_error: Some(false),
+                        structured_content: Some(json!({
+                            "report": report,
+                            "dry_run": dry_run
+                        })),
+                        meta: None,
+                    })
+                }
+                "sync-all" => {
+                    use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
+
+                    let from = request.arguments.as_ref()
+                        .and_then(|obj| obj.get("from"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("claude");
+                    let dry_run = request.arguments.as_ref()
+                        .and_then(|obj| obj.get("dry_run"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+
+                    // Sync skills first (using existing mechanism)
+                    let skill_report = if from == "claude" && !dry_run {
+                        let home = home_dir()?;
+                        let claude_root = home.join(".claude");
+                        let mirror_root = home.join(".codex/skills-mirror");
+                        sync_from_claude(&claude_root, &mirror_root)?
+                    } else {
+                        crate::sync::SyncReport::default()
+                    };
+
+                    let params = SyncParams {
+                        from: Some(from.to_string()),
+                        dry_run,
+                        sync_commands: true,
+                        sync_mcp_servers: true,
+                        sync_preferences: true,
+                        sync_skills: false, // Handled separately above
+                        ..Default::default()
+                    };
+
+                    let report = if from == "claude" {
+                        let source = ClaudeAdapter::new()?;
+                        let target = CodexAdapter::new()?;
+                        SyncOrchestrator::new(source, target).sync(&params)?
+                    } else {
+                        let source = CodexAdapter::new()?;
+                        let target = ClaudeAdapter::new()?;
+                        SyncOrchestrator::new(source, target).sync(&params)?
+                    };
+
+                    Ok(CallToolResult {
+                        content: vec![Content::text(format!(
+                            "{}\nSkills: {} copied, {} skipped",
+                            report.summary, skill_report.copied, skill_report.skipped
+                        ))],
+                        is_error: Some(false),
+                        structured_content: Some(json!({
+                            "report": report,
+                            "skill_report": {
+                                "copied": skill_report.copied,
+                                "skipped": skill_report.skipped
+                            },
+                            "dry_run": dry_run
+                        })),
+                        meta: None,
+                    })
+                }
+                "sync-status" => {
+                    use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
+
+                    let from = request.arguments.as_ref()
+                        .and_then(|obj| obj.get("from"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("claude");
+
+                    let params = SyncParams {
+                        from: Some(from.to_string()),
+                        dry_run: true, // Always dry run for status
+                        sync_commands: true,
+                        sync_mcp_servers: true,
+                        sync_preferences: true,
+                        sync_skills: true,
+                        ..Default::default()
+                    };
+
+                    let report = if from == "claude" {
+                        let source = ClaudeAdapter::new()?;
+                        let target = CodexAdapter::new()?;
+                        SyncOrchestrator::new(source, target).sync(&params)?
+                    } else {
+                        let source = CodexAdapter::new()?;
+                        let target = ClaudeAdapter::new()?;
+                        SyncOrchestrator::new(source, target).sync(&params)?
+                    };
+
+                    Ok(CallToolResult {
+                        content: vec![Content::text(format!(
+                            "Sync Preview ({})\n{}",
+                            from, report.summary
+                        ))],
+                        is_error: Some(false),
+                        structured_content: Some(json!({
+                            "preview": true,
+                            "report": report
+                        })),
                         meta: None,
                     })
                 }
@@ -1539,6 +1925,189 @@ pub fn run() -> Result<()> {
             diagnose,
         ),
         Commands::Sync => handle_sync_command(),
+        Commands::SyncCommands { from, dry_run } => {
+            use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
+
+            let params = SyncParams {
+                from: Some(from.clone()),
+                dry_run,
+                sync_commands: true,
+                sync_mcp_servers: false,
+                sync_preferences: false,
+                sync_skills: false,
+                ..Default::default()
+            };
+
+            let report = if from == "claude" {
+                let source = ClaudeAdapter::new()?;
+                let target = CodexAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            } else {
+                let source = CodexAdapter::new()?;
+                let target = ClaudeAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            };
+
+            println!("{}", report.summary);
+            if dry_run {
+                println!("(dry run - no changes made)");
+            }
+            Ok(())
+        }
+        Commands::SyncMcpServers { from, dry_run } => {
+            use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
+
+            let params = SyncParams {
+                from: Some(from.clone()),
+                dry_run,
+                sync_commands: false,
+                sync_mcp_servers: true,
+                sync_preferences: false,
+                sync_skills: false,
+                ..Default::default()
+            };
+
+            let report = if from == "claude" {
+                let source = ClaudeAdapter::new()?;
+                let target = CodexAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            } else {
+                let source = CodexAdapter::new()?;
+                let target = ClaudeAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            };
+
+            println!("{}", report.summary);
+            if dry_run {
+                println!("(dry run - no changes made)");
+            }
+            Ok(())
+        }
+        Commands::SyncPreferences { from, dry_run } => {
+            use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
+
+            let params = SyncParams {
+                from: Some(from.clone()),
+                dry_run,
+                sync_commands: false,
+                sync_mcp_servers: false,
+                sync_preferences: true,
+                sync_skills: false,
+                ..Default::default()
+            };
+
+            let report = if from == "claude" {
+                let source = ClaudeAdapter::new()?;
+                let target = CodexAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            } else {
+                let source = CodexAdapter::new()?;
+                let target = ClaudeAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            };
+
+            println!("{}", report.summary);
+            if dry_run {
+                println!("(dry run - no changes made)");
+            }
+            Ok(())
+        }
+        Commands::SyncAll { from, dry_run } => {
+            use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
+
+            // First sync skills using existing mechanism
+            if from == "claude" && !dry_run {
+                let home = home_dir()?;
+                let claude_root = home.join(".claude");
+                let mirror_root = home.join(".codex/skills-mirror");
+                let skill_report = sync_from_claude(&claude_root, &mirror_root)?;
+                println!(
+                    "Skills: {} synced, {} unchanged",
+                    skill_report.copied, skill_report.skipped
+                );
+            }
+
+            // Then sync commands, MCP servers, and preferences
+            let params = SyncParams {
+                from: Some(from.clone()),
+                dry_run,
+                sync_commands: true,
+                sync_mcp_servers: true,
+                sync_preferences: true,
+                sync_skills: false, // Handled above
+                ..Default::default()
+            };
+
+            let report = if from == "claude" {
+                let source = ClaudeAdapter::new()?;
+                let target = CodexAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            } else {
+                let source = CodexAdapter::new()?;
+                let target = ClaudeAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            };
+
+            println!("{}", report.summary);
+            if dry_run {
+                println!("(dry run - no changes made)");
+            }
+            Ok(())
+        }
+        Commands::SyncStatus { from } => {
+            use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
+
+            let params = SyncParams {
+                from: Some(from.clone()),
+                dry_run: true,
+                sync_commands: true,
+                sync_mcp_servers: true,
+                sync_preferences: true,
+                sync_skills: false,
+                ..Default::default()
+            };
+
+            let report = if from == "claude" {
+                let source = ClaudeAdapter::new()?;
+                let target = CodexAdapter::new()?;
+                let orch = SyncOrchestrator::new(source, target);
+                println!(
+                    "Sync direction: {} → {}",
+                    orch.source_name(),
+                    orch.target_name()
+                );
+                orch.sync(&params)?
+            } else {
+                let source = CodexAdapter::new()?;
+                let target = ClaudeAdapter::new()?;
+                let orch = SyncOrchestrator::new(source, target);
+                println!(
+                    "Sync direction: {} → {}",
+                    orch.source_name(),
+                    orch.target_name()
+                );
+                orch.sync(&params)?
+            };
+
+            println!("\nPending changes:");
+            println!("  Commands: {} would sync", report.commands.written);
+            println!("  MCP Servers: {} would sync", report.mcp_servers.written);
+            println!("  Preferences: {} would sync", report.preferences.written);
+
+            // Count skills
+            let home = home_dir()?;
+            let claude_root = home.join(".claude");
+            let skill_count = walkdir::WalkDir::new(&claude_root)
+                .min_depth(1)
+                .max_depth(6)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .filter(crate::discovery::is_skill_file)
+                .count();
+            println!("  Skills: {} found in source", skill_count);
+
+            Ok(())
+        }
         Commands::Doctor => doctor_report(),
         Commands::Tui { skill_dirs } => tui_flow(&merge_extra_dirs(&skill_dirs)),
         Commands::Setup {

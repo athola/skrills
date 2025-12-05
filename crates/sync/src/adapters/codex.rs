@@ -81,7 +81,7 @@ impl AgentAdapter for CodexAdapter {
             let entry = entry?;
             let path = entry.path();
 
-            if path.extension().map_or(false, |e| e == "md") {
+            if path.extension().is_some_and(|e| e == "md") {
                 let name = path
                     .file_stem()
                     .and_then(|s| s.to_str())

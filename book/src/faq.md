@@ -31,8 +31,8 @@ Yes. Using the `skrills sync` command, you can mirror Claude skills to Codex pat
 
 ### Can the autoload rendering behavior be modified at runtime?
 Yes. The autoload rendering behavior can be adjusted at runtime with MCP tools:
--   `runtime-status` lets you inspect the effective `manifest_first` and `render_mode_log` settings.
--   `set-runtime-options` takes JSON parameters (e.g., `{ "manifest_first": false, "render_mode_log": true }`) to update these settings.
+- `runtime-status` lets you inspect the effective `manifest_first` and `render_mode_log` settings.
+- `set-runtime-options` takes JSON parameters (e.g., `{ "manifest_first": false, "render_mode_log": true }`) to update these settings.
 These overrides are stored in [`~/.codex/skills-runtime.json`](~/.codex/skills-runtime.json) and take precedence over both environment variables and manifest defaults.
 
 ### Does the MCP server expose all content from disk?

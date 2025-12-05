@@ -12,9 +12,9 @@ This table compares `skrills` against alternative approaches for managing and de
 | Tutorials/how-to guides | Instructional content for authoring skills. | Not applicable | Article/docs | Educational. | Lacks integrated tooling, relying solely on manual steps. |
 
 ## Areas for Improvement
--   Provide richer health diagnostics from the MCP server (latency, discovery stats).
--   Add optional signed artifacts and stronger version pinning for synced skills.
--   Improve default configurations and path detection on Windows.
+- Provide richer health diagnostics from the MCP server (latency, discovery stats).
+- Add optional signed artifacts and stronger version pinning for synced skills.
+- Improve default configurations and path detection on Windows.
 
 ## Summary
 

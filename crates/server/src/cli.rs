@@ -97,6 +97,48 @@ pub enum Commands {
     },
     /// Copies skills from `~/.claude` into `~/.codex/skills-mirror`.
     Sync,
+    /// Syncs slash commands between Claude Code and Codex.
+    SyncCommands {
+        /// Source agent: "claude" or "codex".
+        #[arg(long, default_value = "claude")]
+        from: String,
+        /// Preview changes without writing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Syncs MCP server configurations between Claude Code and Codex.
+    SyncMcpServers {
+        /// Source agent: "claude" or "codex".
+        #[arg(long, default_value = "claude")]
+        from: String,
+        /// Preview changes without writing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Syncs preferences between Claude Code and Codex.
+    SyncPreferences {
+        /// Source agent: "claude" or "codex".
+        #[arg(long, default_value = "claude")]
+        from: String,
+        /// Preview changes without writing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Syncs all configurations (commands, MCP servers, preferences, skills).
+    SyncAll {
+        /// Source agent: "claude" or "codex".
+        #[arg(long, default_value = "claude")]
+        from: String,
+        /// Preview changes without writing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Shows sync status and configuration differences.
+    SyncStatus {
+        /// Source agent: "claude" or "codex".
+        #[arg(long, default_value = "claude")]
+        from: String,
+    },
     /// Diagnoses Codex MCP configuration for this server.
     Doctor,
     /// Interactive TUI for sync and pin management.

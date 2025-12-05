@@ -1161,6 +1161,7 @@ dependencies = [
  "shellexpand",
  "skrills-discovery",
  "skrills-state",
+ "skrills_sync",
  "tempfile",
  "tokio",
  "toml",

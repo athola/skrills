@@ -19,16 +19,16 @@ powershell -ExecutionPolicy Bypass -NoLogo -NoProfile -Command "Remove-Item alia
 ```
 
 You can customize the installation using environment variables or flags:
--   `SKRILLS_GH_REPO`: Overrides the default GitHub repository (`athola/skrills`).
--   `SKRILLS_VERSION`: Installs a specific version (use the tag without the leading `v` prefix).
--   `SKRILLS_BIN_DIR`: Sets the installation directory (defaulting to `~/.codex/bin`).
--   `SKRILLS_TARGET`: Sets the Rust target triple (e.g., `x86_64-unknown-linux-gnu`) for platform-specific builds.
--   `SKRILLS_CLIENT`: Forces the installer to configure for a client: `codex` or `claude`. If not set, the installer attempts auto-detection based on the presence of `~/.claude` or `~/.codex` directories.
--   `SKRILLS_BASE_DIR`: Overrides the client configuration root directory.
--   `--install-path <PATH>`: Sets the installation directory for the binaries.
--   `--client <codex|claude>`: Forces the installer to target a client type: `codex` or `claude`.
--   `--base-dir <PATH>`: Overrides the root directory for client configuration files.
--   `--local`: Builds `skrills` from a local source checkout instead of downloading release artifacts.
+- `SKRILLS_GH_REPO`: Overrides the default GitHub repository (`athola/skrills`).
+- `SKRILLS_VERSION`: Installs a specific version (use the tag without the leading `v` prefix).
+- `SKRILLS_BIN_DIR`: Sets the installation directory (defaulting to `~/.codex/bin`).
+- `SKRILLS_TARGET`: Sets the Rust target triple (e.g., `x86_64-unknown-linux-gnu`) for platform-specific builds.
+- `SKRILLS_CLIENT`: Forces the installer to configure for a client: `codex` or `claude`. If not set, the installer attempts auto-detection based on the presence of `~/.claude` or `~/.codex` directories.
+- `SKRILLS_BASE_DIR`: Overrides the client configuration root directory.
+- `--install-path <PATH>`: Sets the installation directory for the binaries.
+- `--client <codex|claude>`: Forces the installer to target a client type: `codex` or `claude`.
+- `--base-dir <PATH>`: Overrides the root directory for client configuration files.
+- `--local`: Builds `skrills` from a local source checkout instead of downloading release artifacts.
 
 ## Common Scenarios
 
@@ -61,10 +61,10 @@ The installer configures client-specific hooks (where applicable) and registers 
 ./scripts/install-skrills.sh [--universal] [--universal-only]
 ```
 
--   **Hooks**: For Claude, the installer creates the [`~/.claude/hooks/prompt.on_user_prompt_submit`](~/.claude/hooks/prompt.on_user_prompt_submit) file. For Codex, hooks are not currently implemented.
--   **MCP Registration**: During the registration process, the installer updates both [`~/.codex/mcp_servers.json`](~/.codex/mcp_servers.json) and [`~/.codex/config.toml`](~/.codex/config.toml).
--   **Legacy Cleanup**: Removes obsolete `codex-mcp-skills` binaries and their associated configuration entries.
--   **Universal Skill Mirroring**: If enabled, this mirrors skills to the `~/.agent/skills` directory, making them accessible across various agent environments.
+- **Hooks**: For Claude, the installer creates the [`~/.claude/hooks/prompt.on_user_prompt_submit`](~/.claude/hooks/prompt.on_user_prompt_submit) file. For Codex, hooks are not currently implemented.
+- **MCP Registration**: During the registration process, the installer updates both [`~/.codex/mcp_servers.json`](~/.codex/mcp_servers.json) and [`~/.codex/config.toml`](~/.codex/config.toml).
+- **Legacy Cleanup**: Removes obsolete `codex-mcp-skills` binaries and their associated configuration entries.
+- **Universal Skill Mirroring**: If enabled, this mirrors skills to the `~/.agent/skills` directory, making them accessible across various agent environments.
 
 ## Make Targets
 

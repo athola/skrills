@@ -38,9 +38,9 @@ This section describes planned improvements to the rate limiting system.
 ## Motivation
 
 Rate limiting is crucial for `skrills` gateway stability. It prevents:
--   **Resource Exhaustion**: Abusive or buggy clients from over-consuming CPU, memory, or upstream service quotas.
--   **Unfair Resource Allocation**: Unfair resource sharing in multi-tenant gateway environments.
--   **Cost Overruns**: Unexpected costs from excessive usage of expensive operations (e.g., embedding generation).
+- **Resource Exhaustion**: Abusive or buggy clients from over-consuming CPU, memory, or upstream service quotas.
+- **Unfair Resource Allocation**: Unfair resource sharing in multi-tenant gateway environments.
+- **Cost Overruns**: Unexpected costs from excessive usage of expensive operations (e.g., embedding generation).
 
 ## Recommended Design (Token Bucket)
 
@@ -68,12 +68,12 @@ refill_rate = 10
 
 ## Operational Hooks
 
--   Issue HTTP 429 "Too Many Requests" responses, with `Retry-After` and `X-RateLimit-*` headers.
--   Integrate counters for rate limit hits, exposing metrics in Prometheus for alerting.
--   Record actor IDs (e.g., API key prefix or IP address), current bucket state, and operation names in audit events for detailed tracking.
+- Issue HTTP 429 "Too Many Requests" responses, with `Retry-After` and `X-RateLimit-*` headers.
+- Integrate counters for rate limit hits, exposing metrics in Prometheus for alerting.
+- Record actor IDs (e.g., API key prefix or IP address), current bucket state, and operation names in audit events for detailed tracking.
 
 ## Testing and Rollout
 
--   Deploy with conservative per-client limits. Closely monitor p95 latency and HTTP 429 response rates.
--   Test boundary cases, including empty token buckets, burst traffic at window edges, and mixed-cost operations.
--   Conduct a staged rollout, protected by a feature flag. Ensure dashboards are implemented and operational before enforcing rate limits.
+- Deploy with conservative per-client limits. Closely monitor p95 latency and HTTP 429 response rates.
+- Test boundary cases, including empty token buckets, burst traffic at window edges, and mixed-cost operations.
+- Conduct a staged rollout, protected by a feature flag. Ensure dashboards are implemented and operational before enforcing rate limits.
