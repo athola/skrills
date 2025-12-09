@@ -286,15 +286,16 @@ jobs:
       - name: Generate integration test coverage
         run: |
           # Run integration tests with coverage
-          cargo llvm-cov --lib --workspace --lcov --tests -- \
+          cargo llvm-cov --lib --workspace --lcov --tests \
             -p skrills-server \
             -p skrills-subagents \
             -p skrills_sync \
+            -- \
             subagents_end_to_end \
             runtime_tools \
             subagent_service_integration \
             sync_integration \
-            -- --nocapture
+            --nocapture
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
