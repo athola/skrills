@@ -1,5 +1,7 @@
 /target
-.cargo-tmp
+**/*/target/
+.cargo-tmp/
+.home-tmp/
 docs/plans/
 .cargo/
 .cargo-home/
@@ -8,3 +10,4 @@ book/book
 *.txt
 .venv_image/
 writing-clearly-and-concisely/
+.cargo-temp/

@@ -1,0 +1,31 @@
+[package]
+name = "skrills-subagents"
+version = "0.3.0"
+edition = "2021"
+description = "Subagent MCP tools for the skrills server with pluggable backends."
+license = "MIT"
+authors = ["Skrills Maintainers"]
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+rmcp.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+time.workspace = true
+reqwest.workspace = true
+thiserror.workspace = true
+tempfile.workspace = true
+
+skrills-state = { path = "../state", version = "0.3.0" }
+
+[dev-dependencies]
+httpmock = "0.8"
+futures = "0.3"
+regex = "1.0"
+
+[features]
+default = []

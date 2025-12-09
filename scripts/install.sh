@@ -183,7 +183,9 @@ BUILD_FROM_SOURCE()
   export CARGO_HOME="$tmpdir/cargo-home"
   export CARGO_TARGET_DIR="$tmpdir/target"
   # Install into a temp root to avoid polluting user cargo/bin, then copy.
-  cargo install --git "https://github.com/${repo}.git" $tag_arg --bin "skrills" --root "$tmpdir/cargo-root" --locked --force
+  # Be explicit about features so subagents ship on by default even if the
+  # workspace default changes in the future.
+  cargo install --git "https://github.com/${repo}.git" $tag_arg --bin "skrills" --features "subagents" --root "$tmpdir/cargo-root" --locked --force
   built_bin="$tmpdir/cargo-root/bin/skrills"
   [ -x "$built_bin" ] || fail "cargo install did not produce skrills"
   mkdir -p "$bin_dir"
@@ -415,3 +417,17 @@ if [ "$bin_dir" != "$cargo_bin_dir" ] && [ -d "$cargo_bin_dir" ]; then
 fi
 
 install_hook_and_mcp
+
+# Optionally mirror Claude assets into Codex on install.
+if [ "${SKRILLS_NO_MIRROR:-0}" != 1 ]; then
+  if [ "${SKRILLS_CLIENT}" = "codex" ]; then
+    if [ -d "$HOME/.claude" ]; then
+      echo "Mirroring Claude skills/agents/commands into Codex..."
+      if ! "$bin_dir/$bin_name" mirror >/dev/null 2>&1; then
+        echo "Warning: skrills mirror failed; you can rerun manually with 'skrills mirror' once ~/.claude is available." >&2
+      fi
+    else
+      echo "Skip mirror: ~/.claude not found. Run 'skrills mirror' after Claude is set up." >&2
+    fi
+  fi
+fi

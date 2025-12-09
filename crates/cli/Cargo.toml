@@ -11,6 +11,11 @@ readme = "README.md"
 keywords = ["mcp", "cli", "skills", "agents", "codex"]
 categories = ["command-line-utilities", "development-tools"]
 
+[features]
+# Ship CLI with subagent support enabled by default.
+default = ["subagents"]
+subagents = ["skrills-server/subagents"]
+
 [dependencies]
 skrills-server = { path = "../server", version = "0.3.0" }
 anyhow.workspace = true

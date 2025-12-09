@@ -1,10 +1,12 @@
 # Changelog
 
 ## Unreleased
-- Enhanced `sync-from-claude` tool to list names of synced skills in both text and structured output.
-- Cleaned up unused dependencies after gateway removal: `hex`, `reqwest`, `url` from server crate; `base64`, `tracing` from discovery crate; `toml`, `tracing` from state crate.
-- Fixed `runtime_overrides_cached_memoizes` test to use `SKRILLS_RUNTIME_OVERRIDES` environment variable for reliable cross-platform testing.
-- Server crate refactored into focused modules: `autoload`, `cli`, `discovery`, `doctor`, `emit`, `signals`, `sync`, `trace`, `tui`.
+- **NEW: Subagents Module**: Added comprehensive subagent functionality with MCP server support. Run subagents via `list_subagents`, `run_subagent`, and `get_run_status` tools.
+- **NEW: Backend Support**: Implemented dual backend support for both Claude-style and Codex-style subagent execution with configurable adapters.
+- **NEW: Sync Infrastructure**: Introduced cross-agent sync orchestration with `SyncOrchestrator`, `ClaudeAdapter`, and `CodexAdapter` for multi-agent coordination.
+- **Documentation**: Added comprehensive AGENTS.md (1500+ lines) with subagent usage examples, configuration options, and best practices.
+- **Enhanced CLI**: Added sync commands (`skrills sync import`, `skrills sync export`, `skrills sync report`) for cross-agent skill synchronization.
+- **Testing**: Added end-to-end integration tests for subagents functionality ensuring reliable operation across different backends.
 
 ## 0.3.1 - 2025-12-03
 - **BREAKING**: Removed the gateway crate and related functionality. The gateway approach has been replaced with a simpler MCP server integration for Codex.

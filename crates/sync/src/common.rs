@@ -12,8 +12,9 @@ use std::time::SystemTime;
 pub struct Command {
     /// Command name without leading slash (e.g., "commit-msg")
     pub name: String,
-    /// Markdown content of the command
-    pub content: String,
+    /// Raw Markdown content (bytes) of the command. Stored as bytes so we
+    /// don't choke on non-UTF-8 files (common in multilingual skills).
+    pub content: Vec<u8>,
     /// Original file path (for reference)
     pub source_path: PathBuf,
     /// Last modification time
@@ -59,6 +60,7 @@ pub struct CommonConfig {
     pub commands: Vec<Command>,
     pub mcp_servers: HashMap<String, McpServer>,
     pub preferences: Preferences,
+    pub skills: Vec<Command>,
 }
 
 /// Metadata about a sync operation.

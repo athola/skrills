@@ -5,7 +5,7 @@ MD013: false
 
 # Allow inline HTML where needed for documentation
 MD033:
-  allowed_elements: ["br", "img", "a", "ul", "li", "ol", "p", "div", "span"]
+  allowed_elements: ["br", "img", "a", "ul", "li", "ol", "p", "div", "span", "skill"]
 
 # Allow both asterisk and underscore emphasis
 MD049: false

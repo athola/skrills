@@ -6,14 +6,15 @@
 //! - Managing skill visibility.
 
 use anyhow::{anyhow, Result};
-use dialoguer::{theme::ColorfulTheme, Confirm, MultiSelect};
+use inquire::{Confirm, MultiSelect};
 use skrills_state::{home_dir, load_pinned, save_pinned};
 use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use crate::discovery::collect_skills;
-use crate::sync::sync_from_claude;
+use crate::sync::{mirror_source_root, sync_from_claude};
+use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
 
 /// Runs an interactive TUI for sync and pin management.
 ///
@@ -24,18 +25,55 @@ pub(crate) fn tui_flow(extra_dirs: &[PathBuf]) -> Result<()> {
     if !std::io::stdout().is_terminal() {
         return Err(anyhow!("TUI requires a TTY"));
     }
-    let theme = ColorfulTheme::default();
-
-    if Confirm::with_theme(&theme)
-        .with_prompt("Run claude → codex mirror sync first?")
-        .default(false)
-        .interact()?
+    if Confirm::new("Run claude → codex mirror sync first? (skills, agents, commands, prefs)")
+        .with_default(false)
+        .prompt()?
     {
+        let skip_existing_commands =
+            Confirm::new("Keep existing prompts under ~/.codex/prompts (skip overwrites)?")
+                .with_default(true)
+                .prompt()?;
+
         let home = home_dir()?;
-        let report = sync_from_claude(&home.join(".claude"), &home.join(".codex/skills-mirror"))?;
+        let mirror_root = home.join(".codex/skills-mirror");
+        let report = sync_from_claude(&mirror_source_root(&home), &mirror_root)?;
+
+        // Mirror commands/prefs/MCP
+        let source = ClaudeAdapter::new()?;
+        let target = CodexAdapter::new()?;
+        let orch = SyncOrchestrator::new(source, target);
+        let params = SyncParams {
+            sync_skills: false,
+            sync_commands: true,
+            skip_existing_commands,
+            sync_mcp_servers: true,
+            sync_preferences: true,
+            ..Default::default()
+        };
+        let sync_report = orch.sync(&params)?;
+
         println!(
-            "Mirror sync complete (copied: {}, skipped: {})",
-            report.copied, report.skipped
+            "Mirror sync complete:\n  Skills: copied {}, skipped {}\n  Commands: written {}, skipped {}{}\n  Prefs: {}  MCP: {}",
+            report.copied,
+            report.skipped,
+            sync_report.commands.written,
+            sync_report.commands.skipped.len(),
+            if skip_existing_commands && !sync_report.commands.skipped.is_empty() {
+                format!(
+                    " (kept existing: {})",
+                    sync_report
+                        .commands
+                        .skipped
+                        .iter()
+                        .map(|r| r.description())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            } else {
+                String::new()
+            },
+            sync_report.preferences.written,
+            sync_report.mcp_servers.written,
         );
     }
 
@@ -47,8 +85,8 @@ pub(crate) fn tui_flow(extra_dirs: &[PathBuf]) -> Result<()> {
 
     let pinned = load_pinned().unwrap_or_default();
     let mut items = Vec::new();
-    let mut defaults = Vec::new();
-    for s in skills.iter() {
+    let mut default_indices = Vec::new();
+    for (idx, s) in skills.iter().enumerate() {
         let display = format!(
             "[{} | {}] {}",
             s.source.label(),
@@ -56,18 +94,31 @@ pub(crate) fn tui_flow(extra_dirs: &[PathBuf]) -> Result<()> {
             s.name
         );
         items.push(display);
-        defaults.push(pinned.contains(&s.name));
+        if pinned.contains(&s.name) {
+            default_indices.push(idx);
+        }
     }
 
-    let selected = MultiSelect::with_theme(&theme)
-        .with_prompt("Select skills to pin (space to toggle, enter to save)")
-        .items(&items)
-        .defaults(&defaults)
-        .interact()?;
+    let selected = MultiSelect::new(
+        "Select skills to pin (space to toggle, enter to save)",
+        items.clone(),
+    )
+    .with_default(&default_indices)
+    .prompt()?;
 
     let mut new_pins = HashSet::new();
-    for idx in selected {
-        new_pins.insert(skills[idx].name.clone());
+    for item in &selected {
+        if let Some(skill) = skills.iter().find(|s| {
+            let display = format!(
+                "[{} | {}] {}",
+                s.source.label(),
+                s.source.location(),
+                s.name
+            );
+            &display == item
+        }) {
+            new_pins.insert(skill.name.clone());
+        }
     }
     save_pinned(&new_pins)?;
     println!("Pinned {} skills.", new_pins.len());

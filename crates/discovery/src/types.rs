@@ -6,6 +6,8 @@ use std::path::PathBuf;
 pub enum SkillSource {
     Codex,
     Claude,
+    Marketplace,
+    Cache,
     Mirror,
     Agent,
     Extra(u32),
@@ -17,6 +19,8 @@ impl SkillSource {
         match self {
             SkillSource::Codex => "codex".into(),
             SkillSource::Claude => "claude".into(),
+            SkillSource::Marketplace => "marketplace".into(),
+            SkillSource::Cache => "cache".into(),
             SkillSource::Mirror => "mirror".into(),
             SkillSource::Agent => "agent".into(),
             SkillSource::Extra(n) => format!("extra{n}"),
@@ -30,7 +34,11 @@ impl SkillSource {
     /// - `project`: extra/user-specified directories.
     pub fn location(&self) -> &'static str {
         match self {
-            SkillSource::Codex | SkillSource::Claude | SkillSource::Mirror => "global",
+            SkillSource::Codex
+            | SkillSource::Claude
+            | SkillSource::Marketplace
+            | SkillSource::Cache
+            | SkillSource::Mirror => "global",
             SkillSource::Agent => "universal",
             SkillSource::Extra(_) => "project",
         }
@@ -42,6 +50,8 @@ pub fn parse_source_key(key: &str) -> Option<SkillSource> {
     match key.to_ascii_lowercase().as_str() {
         "codex" => Some(SkillSource::Codex),
         "claude" => Some(SkillSource::Claude),
+        "marketplace" => Some(SkillSource::Marketplace),
+        "cache" => Some(SkillSource::Cache),
         "mirror" => Some(SkillSource::Mirror),
         "agent" => Some(SkillSource::Agent),
         _ => None,
@@ -58,8 +68,18 @@ pub struct SkillRoot {
 /// Metadata for a discovered skill.
 ///
 /// Includes its name, file path, source of discovery, root directory, and content hash.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SkillMeta {
+    pub name: String,
+    pub path: PathBuf,
+    pub source: SkillSource,
+    pub root: PathBuf,
+    pub hash: String,
+}
+
+/// Metadata for a discovered agent definition.
+#[derive(Debug, Serialize, Clone)]
+pub struct AgentMeta {
     pub name: String,
     pub path: PathBuf,
     pub source: SkillSource,

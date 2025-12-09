@@ -229,7 +229,7 @@ flowchart TD
 
 ## Trust Boundaries
 
-### Boundary 1: User ↔ Skrills Server (stdio)
+### Boundary 1: User to Skrills Server (stdio)
 - **Trust Level**: High (operating on the same machine).
 - The user has direct control over filesystem access.
 - Skill content is treated as user-provided input.
@@ -237,7 +237,7 @@ flowchart TD
 - The integrity of this boundary depends on the security of the user account.
 - **Controls**: Implemented controls include rigorous file permission checks, strict path validation, and the absence of remote access capabilities.
 
-### Boundary 2: Client ↔ Gateway (Network)
+### Boundary 2: Client to Gateway (Network)
 - **Trust Level**: Low (operating over an untrusted network).
 - Network traffic is susceptible to interception.
 - Verification of client identity is essential.
@@ -245,7 +245,7 @@ flowchart TD
 - All data in transit must be encrypted.
 - **Controls**: Implemented controls include mutual TLS (mTLS) authentication, TLS 1.3 encryption, robust certificate validation, and API key verification.
 
-### Boundary 3: Skrills ↔ Skill Files
+### Boundary 3: Skrills to Skill Files
 - **Trust Level**: Medium (due to user-controlled content).
 - Skill files may contain malicious prompts.
 - Requires filesystem access to load skill definitions.

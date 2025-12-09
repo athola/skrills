@@ -30,8 +30,12 @@ impl CodexAdapter {
         Self { root }
     }
 
-    fn commands_dir(&self) -> PathBuf {
-        self.root.join("commands")
+    fn prompts_dir(&self) -> PathBuf {
+        self.root.join("prompts")
+    }
+
+    fn skills_dir(&self) -> PathBuf {
+        self.root.join("skills")
     }
 
     fn settings_path(&self) -> PathBuf {
@@ -39,9 +43,9 @@ impl CodexAdapter {
         self.root.join("config.json")
     }
 
-    fn hash_content(content: &str) -> String {
+    fn hash_content(content: &[u8]) -> String {
         let mut hasher = Sha256::new();
-        hasher.update(content.as_bytes());
+        hasher.update(content);
         format!("{:x}", hasher.finalize())
     }
 }
@@ -71,13 +75,13 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn read_commands(&self) -> Result<Vec<Command>> {
-        let dir = self.commands_dir();
-        if !dir.exists() {
+        let active_dir = self.prompts_dir();
+        if !active_dir.exists() {
             return Ok(Vec::new());
         }
 
         let mut commands = Vec::new();
-        for entry in WalkDir::new(&dir).min_depth(1).max_depth(2) {
+        for entry in WalkDir::new(&active_dir).min_depth(1).max_depth(2) {
             let entry = entry?;
             let path = entry.path();
 
@@ -88,7 +92,7 @@ impl AgentAdapter for CodexAdapter {
                     .unwrap_or("unknown")
                     .to_string();
 
-                let content = fs::read_to_string(path)?;
+                let content = fs::read(path)?;
                 let metadata = fs::metadata(path)?;
                 let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
                 let hash = Self::hash_content(&content);
@@ -175,8 +179,43 @@ impl AgentAdapter for CodexAdapter {
         })
     }
 
+    fn read_skills(&self) -> Result<Vec<Command>> {
+        let skills_dir = self.skills_dir();
+        if !skills_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut skills = Vec::new();
+        for entry in WalkDir::new(&skills_dir).min_depth(1).max_depth(2) {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.extension().is_some_and(|e| e == "md") {
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                let content = fs::read(path)?;
+                let metadata = fs::metadata(path)?;
+                let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                let hash = Self::hash_content(&content);
+
+                skills.push(Command {
+                    name,
+                    content,
+                    source_path: path.to_path_buf(),
+                    modified,
+                    hash,
+                });
+            }
+        }
+        Ok(skills)
+    }
+
     fn write_commands(&self, commands: &[Command]) -> Result<WriteReport> {
-        let dir = self.commands_dir();
+        let dir = self.prompts_dir();
         fs::create_dir_all(&dir)?;
 
         let mut report = WriteReport::default();
@@ -185,7 +224,7 @@ impl AgentAdapter for CodexAdapter {
             let path = dir.join(format!("{}.md", cmd.name));
 
             if path.exists() {
-                let existing = fs::read_to_string(&path)?;
+                let existing = fs::read(&path)?;
                 if Self::hash_content(&existing) == cmd.hash {
                     report.skipped.push(SkipReason::Unchanged {
                         item: cmd.name.clone(),
@@ -264,6 +303,32 @@ impl AgentAdapter for CodexAdapter {
 
         Ok(report)
     }
+
+    fn write_skills(&self, skills: &[Command]) -> Result<WriteReport> {
+        let dir = self.skills_dir();
+        fs::create_dir_all(&dir)?;
+
+        let mut report = WriteReport::default();
+
+        for skill in skills {
+            let path = dir.join(format!("{}.md", skill.name));
+
+            if path.exists() {
+                let existing = fs::read(&path)?;
+                if Self::hash_content(&existing) == skill.hash {
+                    report.skipped.push(SkipReason::Unchanged {
+                        item: skill.name.clone(),
+                    });
+                    continue;
+                }
+            }
+
+            fs::write(&path, &skill.content)?;
+            report.written += 1;
+        }
+
+        Ok(report)
+    }
 }
 
 #[cfg(test)]
@@ -289,7 +354,7 @@ mod tests {
     #[test]
     fn read_commands_finds_md_files() {
         let tmp = tempdir().unwrap();
-        let cmd_dir = tmp.path().join("commands");
+        let cmd_dir = tmp.path().join("prompts");
         fs::create_dir_all(&cmd_dir).unwrap();
         fs::write(cmd_dir.join("test.md"), "# Test Command").unwrap();
 
@@ -298,7 +363,7 @@ mod tests {
 
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].name, "test");
-        assert_eq!(commands[0].content, "# Test Command");
+        assert_eq!(commands[0].content, b"# Test Command".to_vec());
     }
 
     #[test]
@@ -308,7 +373,7 @@ mod tests {
 
         let commands = vec![Command {
             name: "hello".to_string(),
-            content: "# Hello World".to_string(),
+            content: b"# Hello World".to_vec(),
             source_path: PathBuf::from("/tmp/hello.md"),
             modified: SystemTime::now(),
             hash: "abc123".to_string(),
@@ -317,8 +382,8 @@ mod tests {
         let report = adapter.write_commands(&commands).unwrap();
         assert_eq!(report.written, 1);
 
-        let written = fs::read_to_string(tmp.path().join("commands/hello.md")).unwrap();
-        assert_eq!(written, "# Hello World");
+        let written = fs::read(tmp.path().join("prompts/hello.md")).unwrap();
+        assert_eq!(written, b"# Hello World");
     }
 
     #[test]
@@ -328,7 +393,7 @@ mod tests {
 
         let commands = vec![Command {
             name: "test-cmd".to_string(),
-            content: "# Test".to_string(),
+            content: b"# Test".to_vec(),
             source_path: PathBuf::from("/tmp/test.md"),
             modified: SystemTime::now(),
             hash: "hash123".to_string(),
@@ -339,7 +404,7 @@ mod tests {
 
         assert_eq!(read_back.len(), 1);
         assert_eq!(read_back[0].name, "test-cmd");
-        assert_eq!(read_back[0].content, "# Test");
+        assert_eq!(read_back[0].content, b"# Test".to_vec());
     }
 
     #[test]

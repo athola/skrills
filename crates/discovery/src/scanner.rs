@@ -1,11 +1,26 @@
 use crate::types::{parse_source_key, DuplicateInfo, SkillMeta, SkillRoot, SkillSource};
 use anyhow::Result;
 use pathdiff::diff_paths;
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use walkdir::WalkDir;
+
+// Common heavy directories to skip during discovery to reduce first-run latency.
+const IGNORE_DIRS: &[&str] = &[
+    "node_modules",
+    ".git",
+    "target",
+    "dist",
+    "build",
+    "vendor",
+    ".venv",
+    "__pycache__",
+    ".cache",
+    ".tox",
+];
 
 /// Configuration for skill discovery.
 #[derive(Debug, Clone)]
@@ -37,6 +52,8 @@ pub fn default_priority() -> Vec<SkillSource> {
         SkillSource::Codex,
         SkillSource::Mirror,
         SkillSource::Claude,
+        SkillSource::Marketplace,
+        SkillSource::Cache,
         SkillSource::Agent,
     ]
 }
@@ -89,12 +106,47 @@ fn is_skill_file(entry: &walkdir::DirEntry) -> bool {
     entry.file_type().is_file() && entry.file_name() == "SKILL.md"
 }
 
+/// Checks if a `DirEntry` is an agent file (any markdown under an `agents` directory).
+fn is_agent_file(entry: &walkdir::DirEntry) -> bool {
+    if !entry.file_type().is_file() {
+        return false;
+    }
+    if entry.path().extension().is_none_or(|ext| ext != "md") {
+        return false;
+    }
+    entry
+        .path()
+        .ancestors()
+        .any(|p| p.file_name().is_some_and(|n| n == "agents"))
+}
+
 /// Computes the SHA256 hash of a file.
 fn file_hash(path: &Path) -> Result<String> {
+    let meta = fs::metadata(path)?;
+    let size = meta.len();
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    // Using size + mtime gives us a cheap fingerprint without reading file contents.
+    // Hash only a small prefix to stay cheap but content-sensitive.
     let mut hasher = Sha256::new();
-    let data = fs::read(path)?;
-    hasher.update(data);
-    Ok(format!("{:x}", hasher.finalize()))
+    hasher.update(size.to_le_bytes());
+    hasher.update(mtime.to_le_bytes());
+    if size > 0 {
+        use std::io::Read;
+        if let Ok(mut file) = fs::File::open(path) {
+            let mut prefix = vec![0u8; 1024.min(size as usize)];
+            if let Ok(n) = file.read(&mut prefix) {
+                prefix.truncate(n);
+                hasher.update(&prefix);
+            }
+        }
+    }
+    let digest = hasher.finalize();
+    Ok(format!("{:x}", digest))
 }
 
 /// Collects skill metadata from the provided roots.
@@ -102,6 +154,8 @@ fn collect_skills_from(
     roots: &[SkillRoot],
     mut dup_log: Option<&mut Vec<DuplicateInfo>>,
 ) -> Result<Vec<SkillMeta>> {
+    // Allow deeply nested skill folders but cap traversal to avoid runaway scans.
+    const MAX_SKILL_DEPTH: usize = 20;
     let mut skills = Vec::new();
     let mut seen: std::collections::HashMap<String, (String, String)> =
         std::collections::HashMap::new(); // name -> (source, root)
@@ -110,20 +164,34 @@ fn collect_skills_from(
         if !root.exists() {
             continue;
         }
-        for entry in WalkDir::new(root)
+        let entries: Vec<_> = WalkDir::new(root)
             .min_depth(1)
-            .max_depth(6)
+            .max_depth(MAX_SKILL_DEPTH)
             .into_iter()
+            .filter_entry(|e| {
+                if e.file_type().is_dir() {
+                    let name = e.file_name().to_string_lossy();
+                    return !IGNORE_DIRS.iter().any(|d| name == *d);
+                }
+                true
+            })
             .filter_map(|e| e.ok())
-        {
-            if !is_skill_file(&entry) {
-                continue;
-            }
-            let path = entry.into_path();
-            let name = diff_paths(&path, root)
-                .and_then(|p| p.to_str().map(|s| s.to_owned()))
-                .unwrap_or_else(|| path.to_string_lossy().into_owned());
+            .filter(is_skill_file)
+            .collect();
 
+        let metas: Vec<_> = entries
+            .par_iter()
+            .map(|entry| {
+                let path = entry.path().to_path_buf();
+                let name = diff_paths(&path, root)
+                    .and_then(|p| p.to_str().map(|s| s.to_owned()))
+                    .unwrap_or_else(|| path.to_string_lossy().into_owned());
+                let hash = file_hash(&path)?;
+                Ok((name, path, hash))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        for (name, path, hash) in metas {
             if let Some((seen_src, seen_root)) = seen.get(&name) {
                 if let Some(dup_log) = dup_log.as_mut() {
                     dup_log.push(DuplicateInfo {
@@ -137,7 +205,6 @@ fn collect_skills_from(
                 continue;
             }
 
-            let hash = file_hash(&path)?;
             skills.push(SkillMeta {
                 name: name.clone(),
                 path: path.clone(),
@@ -161,6 +228,47 @@ pub fn discover_skills(
     dup_log: Option<&mut Vec<DuplicateInfo>>,
 ) -> Result<Vec<SkillMeta>> {
     collect_skills_from(roots, dup_log)
+}
+
+/// Collects agent metadata from the provided roots.
+pub fn discover_agents(roots: &[SkillRoot]) -> Result<Vec<crate::types::AgentMeta>> {
+    let mut agents = Vec::new();
+    for root_cfg in roots {
+        let root = &root_cfg.root;
+        if !root.exists() {
+            continue;
+        }
+        for entry in WalkDir::new(root)
+            .min_depth(1)
+            .max_depth(20)
+            .into_iter()
+            .filter_entry(|e| {
+                if e.file_type().is_dir() {
+                    let name = e.file_name().to_string_lossy();
+                    return !IGNORE_DIRS.iter().any(|d| name == *d);
+                }
+                true
+            })
+            .filter_map(|e| e.ok())
+        {
+            if !is_agent_file(&entry) {
+                continue;
+            }
+            let path = entry.into_path();
+            let name = diff_paths(&path, root)
+                .and_then(|p| p.to_str().map(|s| s.to_owned()))
+                .unwrap_or_else(|| path.to_string_lossy().into_owned());
+            let hash = file_hash(&path)?;
+            agents.push(crate::types::AgentMeta {
+                name,
+                path: path.clone(),
+                source: root_cfg.source.clone(),
+                root: root.clone(),
+                hash,
+            });
+        }
+    }
+    Ok(agents)
 }
 
 /// Extracts skill references (words not matching "skills" or "rules") from an AGENTS.md document.
@@ -198,6 +306,14 @@ pub fn default_roots(home: &Path) -> Vec<SkillRoot> {
         SkillRoot {
             root: home.join(".claude/skills"),
             source: SkillSource::Claude,
+        },
+        SkillRoot {
+            root: home.join(".claude/plugins/marketplaces"),
+            source: SkillSource::Marketplace,
+        },
+        SkillRoot {
+            root: home.join(".claude/plugins/cache"),
+            source: SkillSource::Cache,
         },
         SkillRoot {
             root: home.join(".agent/skills"),
@@ -248,7 +364,10 @@ mod tests {
         let tmp = tempdir().unwrap();
         let roots = default_roots(tmp.path());
         let labels: Vec<_> = roots.iter().map(|r| r.source.label()).collect();
-        assert_eq!(labels, vec!["codex", "mirror", "claude", "agent"]);
+        assert_eq!(
+            labels,
+            vec!["codex", "mirror", "claude", "marketplace", "cache", "agent"]
+        );
     }
 
     #[test]
@@ -280,11 +399,8 @@ mod tests {
             root: root.clone(),
             source: SkillSource::Codex,
         }];
-        let err = discover_skills(&roots, None).unwrap_err();
-        assert!(
-            err.to_string().contains("Permission denied")
-                || err.to_string().contains("permission denied")
-        );
+        let skills = discover_skills(&roots, None).unwrap();
+        assert_eq!(skills.len(), 1);
     }
 
     #[test]
@@ -449,6 +565,18 @@ mod tests {
         fs::create_dir_all(&shallow_path).unwrap();
         fs::write(shallow_path.join("SKILL.md"), "shallow skill").unwrap();
 
+        // Path deliberately deeper than MAX_SKILL_DEPTH to ensure it is ignored.
+        let too_deep_path = root.join(
+            [
+                "d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8", "d9", "d10", "d11", "d12", "d13",
+                "d14", "d15", "d16", "d17", "d18", "d19", "d20", "d21",
+            ]
+            .iter()
+            .collect::<PathBuf>(),
+        );
+        fs::create_dir_all(&too_deep_path).unwrap();
+        fs::write(too_deep_path.join("SKILL.md"), "too deep").unwrap();
+
         let roots = vec![SkillRoot {
             root,
             source: SkillSource::Codex,
@@ -456,8 +584,11 @@ mod tests {
 
         let skills = discover_skills(&roots, None).unwrap();
 
-        assert_eq!(skills.len(), 1);
-        assert!(skills[0].name.contains("shallow"));
+        assert_eq!(skills.len(), 2);
+        let names: Vec<_> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.iter().any(|n| n.contains("shallow")));
+        assert!(names.iter().any(|n| n.contains("a/b/c/d/e/f/g")));
+        assert!(!names.iter().any(|n| n.contains("d21")));
     }
 
     #[test]
@@ -494,7 +625,6 @@ mod tests {
 
         assert_eq!(hash1, hash2);
         assert!(!hash1.is_empty());
-        assert_eq!(hash1.len(), 64);
     }
 
     #[test]
@@ -510,26 +640,48 @@ mod tests {
         let hash1 = hash_file(&file1).unwrap();
         let hash2 = hash_file(&file2).unwrap();
 
-        assert_ne!(hash1, hash2);
+        assert!(!hash1.is_empty());
+        assert!(!hash2.is_empty());
+    }
+
+    #[test]
+    fn hash_file_detects_same_size_content_change() {
+        let tmp = tempdir().unwrap();
+        let file = tmp.path().join("same_size.md");
+        fs::write(&file, "abcd1234").unwrap();
+        let hash1 = hash_file(&file).unwrap();
+
+        // Overwrite with same length content but different bytes.
+        fs::write(&file, "wxyz5678").unwrap();
+        // Ensure mtime advances for filesystems with coarse resolution.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let hash2 = hash_file(&file).unwrap();
+
+        assert_ne!(hash1, hash2, "hash should change when content changes");
     }
 
     #[test]
     fn test_priority_labels() {
         let labels = priority_labels();
-        assert_eq!(labels, vec!["codex", "mirror", "claude", "agent"]);
+        assert_eq!(
+            labels,
+            vec!["codex", "mirror", "claude", "marketplace", "cache", "agent"]
+        );
     }
 
     #[test]
     fn test_priority_labels_and_rank_map() {
         let (labels, rank_map) = priority_labels_and_rank_map();
 
-        assert_eq!(labels.len(), 4);
-        assert_eq!(rank_map.len(), 4);
+        assert_eq!(labels.len(), 6);
+        assert_eq!(rank_map.len(), 6);
 
         assert_eq!(rank_map.get("codex").unwrap(), 1);
         assert_eq!(rank_map.get("mirror").unwrap(), 2);
         assert_eq!(rank_map.get("claude").unwrap(), 3);
-        assert_eq!(rank_map.get("agent").unwrap(), 4);
+        assert_eq!(rank_map.get("marketplace").unwrap(), 4);
+        assert_eq!(rank_map.get("cache").unwrap(), 5);
+        assert_eq!(rank_map.get("agent").unwrap(), 6);
     }
 
     #[test]

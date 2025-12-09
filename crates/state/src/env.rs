@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const DEFAULT_CACHE_TTL_MS: u64 = 60_000; // 1 minute
+const DEFAULT_CACHE_TTL_MS: u64 = 43_200_000; // 12 hours
 
 /// Returns extra skill directories specified via `SKRILLS_SKILL_DIR` environment variable.
 pub fn extra_dirs_from_env() -> Vec<PathBuf> {
@@ -29,7 +29,7 @@ pub fn env_include_claude() -> bool {
 pub fn env_manifest_first() -> bool {
     std::env::var("SKRILLS_MANIFEST_FIRST")
         .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
 
 /// Checks if `SKRILLS_RENDER_MODE_LOG` environment variable is set to true.

@@ -34,6 +34,7 @@ else
   # Default to .codex for auto-detection or explicit codex
   BASE_DIR="$HOME/.codex"
 fi
+mkdir -p "$BASE_DIR"
 
 detect_client_from_base() {
   local base_hint="$1"
@@ -177,6 +178,22 @@ PY
   fi
 }
 
+install_subagents_config() {
+  local config_path="$BASE_DIR/subagents.toml"
+  local example="$REPO_ROOT/docs/config/subagents.example.toml"
+  if [ -f "$config_path" ]; then
+    echo "Subagents config already present at $config_path"
+    return
+  fi
+  if [ -f "$example" ]; then
+    mkdir -p "$(dirname "$config_path")"
+    cp "$example" "$config_path"
+    echo "Installed default subagents config to $config_path (default_backend=codex)"
+  else
+    echo "Warning: default subagents config example missing at $example" >&2
+  fi
+}
+
 sync_universal() {
   local AGENT_SKILLS="${AGENT_SKILLS_DIR:-$HOME/.agent/skills}"
   local SKRILLS_DIR="${SKRILLS_DIR:-$BASE_DIR/skills}"
@@ -238,6 +255,18 @@ sync_universal() {
   echo "Universal sync complete."
 }
 
+warm_cache_snapshot() {
+  if [ ! -x "$BIN_PATH" ]; then
+    return
+  fi
+  echo "Priming skrills skill cache (first scan)..."
+  if "$BIN_PATH" list >/dev/null 2>&1; then
+    echo "Cache primed; subsequent startups will reuse the snapshot."
+  else
+    echo "Warning: cache warmup failed (continuing without primed cache)." >&2
+  fi
+}
+
 if [ "$UNIVERSAL_ONLY" -eq 1 ]; then
   sync_universal
   exit 0
@@ -245,6 +274,7 @@ fi
 
 clean_legacy_codex_mcp_skills
 clean_invalid_claude_model
+install_subagents_config
 
 if [ -n "$HOOK_DIR" ]; then
   mkdir -p "$HOOK_DIR"
@@ -375,7 +405,36 @@ if [ "$CLIENT" = "codex" ]; then
   # Register skrills MCP server in config.toml
   if [ -f "$CONFIG_TOML" ]; then
     if grep -q '\[mcp_servers.skrills\]' "$CONFIG_TOML" 2>/dev/null; then
-      echo "skrills MCP server already registered in $CONFIG_TOML"
+      # Ensure required type field exists; older installs may be missing it.
+      if ! awk '
+        /^\[mcp_servers\.skrills\]/{inside=1}
+        inside && /^\[/ && !/^\[mcp_servers\.skrills\]/{inside=0}
+        inside && /^[[:space:]]*type[[:space:]]*=/{found=1}
+        END{exit(found?0:1)}
+      ' "$CONFIG_TOML"; then
+        tmp=$(mktemp)
+        awk '
+          BEGIN{inside=0;added=0}
+          /^\[mcp_servers\.skrills\]/{inside=1}
+          inside && /^\[/ && !/^\[mcp_servers\.skrills\]/{inside=0}
+          {
+            if(inside && /^[[:space:]]*type[[:space:]]*=/){added=1}
+            print
+            if(inside && /^[[:space:]]*command[[:space:]]*=/ && added==0){
+              print "type = \"stdio\""
+              added=1
+            }
+          }
+          END{
+            if(inside && added==0){
+              print "type = \"stdio\""
+            }
+          }
+        ' "$CONFIG_TOML" > "$tmp" && mv "$tmp" "$CONFIG_TOML"
+        echo "Patched missing type=\"stdio\" for skrills in $CONFIG_TOML"
+      else
+        echo "skrills MCP server already registered in $CONFIG_TOML"
+      fi
     else
       # Add skrills MCP server entry
       tmp=$(mktemp)
@@ -384,6 +443,7 @@ if [ "$CLIENT" = "codex" ]; then
 # Skrills MCP server for skill management
 [mcp_servers.skrills]
 command = "$BIN_PATH"
+type = "stdio"
 args = ["serve"]
 
 MCP_ENTRY
@@ -399,6 +459,7 @@ MCP_ENTRY
 # Skrills MCP server for skill management
 [mcp_servers.skrills]
 command = "$BIN_PATH"
+type = "stdio"
 args = ["serve"]
 CONFIG
     echo "Created $CONFIG_TOML with skrills MCP server"
@@ -469,6 +530,7 @@ AGENTS_MD
 fi
 
 if [ "$CLIENT" = "codex" ]; then
+  warm_cache_snapshot
   echo ""
   echo "Install complete for Codex (MCP-first)."
   echo ""
@@ -477,6 +539,7 @@ if [ "$CLIENT" = "codex" ]; then
   echo ""
   echo "Skills will be auto-loaded via MCP when Codex starts."
 else
+  warm_cache_snapshot
   echo "Install complete for Claude Code."
   echo ""
   echo "The skrills MCP server has been registered and hook installed."

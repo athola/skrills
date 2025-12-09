@@ -245,7 +245,11 @@ where
         .unwrap_or(DEFAULT_EMBED_PREVIEW_BYTES);
 
     for meta in skills {
-        if !opts.include_claude && meta.source == SkillSource::Claude {
+        if !opts.include_claude
+            && (meta.source == SkillSource::Claude
+                || meta.source == SkillSource::Marketplace
+                || meta.source == SkillSource::Cache)
+        {
             if let Some(diag) = opts.diagnostics.as_deref_mut() {
                 diag.skipped
                     .push((meta.name.clone(), "claude skills disabled".to_string()));

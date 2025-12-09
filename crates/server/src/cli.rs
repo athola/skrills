@@ -36,6 +36,27 @@ pub enum Commands {
     List,
     /// Lists pinned skills.
     ListPinned,
+    /// Mirrors Claude assets (skills, agents, commands, MCP prefs) into Codex defaults and refreshes AGENTS.md.
+    Mirror {
+        /// Perform dry run (no file writes for commands/prefs; skills still hashed but not copied).
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+        /// Do not overwrite existing prompts under ~/.codex/prompts (only add new ones).
+        #[arg(long, default_value_t = false)]
+        skip_existing_commands: bool,
+    },
+    /// Launches a discovered agent by name using the stored run template.
+    Agent {
+        /// Agent name or unique substring to launch.
+        #[arg(required = true)]
+        agent: String,
+        /// Additional agent directories (repeatable).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+        /// Only print the resolved command without executing it.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+    },
     /// Pins one or more skills by name (substring match allowed if unique).
     Pin {
         /// Skill names or unique substrings to pin.
@@ -105,6 +126,9 @@ pub enum Commands {
         /// Preview changes without writing.
         #[arg(long)]
         dry_run: bool,
+        /// Do not overwrite existing commands on target side.
+        #[arg(long, default_value_t = false)]
+        skip_existing_commands: bool,
     },
     /// Syncs MCP server configurations between Claude Code and Codex.
     SyncMcpServers {
@@ -132,6 +156,9 @@ pub enum Commands {
         /// Preview changes without writing.
         #[arg(long)]
         dry_run: bool,
+        /// Do not overwrite existing commands on target side.
+        #[arg(long, default_value_t = false)]
+        skip_existing_commands: bool,
     },
     /// Shows sync status and configuration differences.
     SyncStatus {

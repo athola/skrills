@@ -1,0 +1,12 @@
+# Example subagents configuration for skrills
+# Copy to ~/.codex/subagents.toml or set SKRILLS_SUBAGENTS_DEFAULT_BACKEND env var.
+
+# default backend to use when client doesn't request one: "codex" or "claude"
+default_backend = "codex"
+
+# Optional model overrides
+# codex_model = "gpt-5-codex"
+# claude_model = "claude-code"
+
+# Timeout seconds for runs
+# timeout_secs = 300

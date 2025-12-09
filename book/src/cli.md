@@ -55,17 +55,88 @@ Generates and writes the `<available_skills>` XML block into [`AGENTS.md`](AGENT
 skrills sync-agents [--path AGENTS.md]
 ```
 
+## `mirror`
+Mirrors Claude assets (skills, agents, commands, and MCP prefs) into the Codex defaults and refreshes `AGENTS.md`.
+```bash
+skrills mirror [--dry-run] [--skip-existing-commands]
+```
+- `--dry-run` hashes sources and reports intended writes without changing files.
+- `--skip-existing-commands` preserves any prompts already present under `~/.codex/prompts`.
+
 ## `sync`
 Mirrors skills from the `~/.claude/skills` directory to the `~/.codex/skills-mirror` directory.
 ```bash
-skrills sync
+skrills sync [--skip-existing-commands]
+```
+Honors `SKRILLS_MIRROR_SOURCE` to change the source root (e.g., when Claude content lives elsewhere) and will avoid overwriting existing commands when `--skip-existing-commands` is set.
+
+## `sync-commands`
+Syncs slash commands between Claude Code and Codex.
+```bash
+skrills sync-commands [--from claude|codex] [--dry-run] [--skip-existing-commands]
+```
+- `--from`: Source side (default `claude`).
+- `--dry-run`: Preview changes.
+- `--skip-existing-commands`: Do not overwrite commands already present on the target.
+- Commands are copied byte-for-byte so non-UTF-8 command files are mirrored without re-encoding.
+
+## `sync-mcp-servers`
+Syncs MCP server configurations between Claude Code and Codex.
+```bash
+skrills sync-mcp-servers [--from claude|codex] [--dry-run]
+```
+
+## `sync-preferences`
+Syncs user preferences between Claude Code and Codex.
+```bash
+skrills sync-preferences [--from claude|codex] [--dry-run]
+```
+
+## `sync-all`
+Runs skills mirror plus command, MCP server, and preference syncs in one pass.
+```bash
+skrills sync-all [--from claude|codex] [--dry-run] [--skip-existing-commands]
+```
+- `--skip-existing-commands`: Mirror skills and metadata but keep any commands already present on the target side.
+
+## `sync-status`
+Shows sync status and configuration deltas.
+```bash
+skrills sync-status [--from claude|codex]
+```
+
+## `agent`
+Launches a discovered agent by name using the stored run template.
+```bash
+skrills agent <name> [--skill-dir DIR]... [--dry-run]
+```
+Use `--dry-run` to print the resolved command without executing it.
+When no backend is specified in an agent spec, skrills checks `~/.codex/subagents.toml` for a `default_backend`; if absent it falls back to `SKRILLS_SUBAGENTS_DEFAULT_BACKEND` and defaults to `codex`.
+Command sync is byte-for-byte, so non-UTF-8 command files remain intact.
+
+## `doctor`
+Diagnoses Codex MCP configuration for this server.
+```bash
+skrills doctor
 ```
 
 ## `tui`
 Launches an interactive Terminal User Interface (TUI) for pinning skills and optionally managing their mirroring.
 ```bash
-skrills tui
+skrills tui [--skill-dir DIR]...
 ```
+
+## `setup`
+Configures skrills for Claude Code or Codex (hooks, MCP entries, directories).
+```bash
+skrills setup [--client CLIENT] [--bin-dir DIR] [--reinstall] [--uninstall] [--add] [-y|--yes] [--universal] [--mirror-source DIR]
+```
+- `--client`: Target (`claude`, `codex`, or `both`).
+- `--bin-dir`: Override install location.
+- `--reinstall` / `--uninstall` / `--add`: Control lifecycle.
+- `--yes`: Non-interactive mode.
+- `--universal`: Also mirror skills to `~/.agent/skills`.
+- `--mirror-source`: Override source directory for mirroring (default `~/.claude`).
 
 ## MCP Tools (Client-Facing)
 The `skrills` server exposes these client-facing tools via the MCP protocol:

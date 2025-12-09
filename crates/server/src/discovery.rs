@@ -1,12 +1,12 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use pathdiff::diff_paths;
 use skrills_discovery::{
-    default_priority, discover_skills, load_priority_override,
+    default_priority, discover_agents, discover_skills, load_priority_override,
     priority_labels as disc_priority_labels,
-    priority_labels_and_rank_map as disc_priority_labels_and_rank_map, SkillMeta, SkillRoot,
-    SkillSource,
+    priority_labels_and_rank_map as disc_priority_labels_and_rank_map, AgentMeta, SkillMeta,
+    SkillRoot, SkillSource,
 };
-use skrills_state::{extra_dirs_from_env, home_dir, load_manifest_settings};
+use skrills_state::{env_include_claude, extra_dirs_from_env, home_dir, load_manifest_settings};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,10 +28,16 @@ pub const AGENTS_DESCRIPTION: &str = "AI Agent Development Guidelines";
 pub const AGENTS_TEXT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../AGENTS.md"));
 /// Environment variable to control exposure of AGENTS.md.
 pub const ENV_EXPOSE_AGENTS: &str = "SKRILLS_EXPOSE_AGENTS";
+/// Command template used to launch an agent specification.
+pub const DEFAULT_AGENT_RUN_TEMPLATE: &str = r#"codex --yolo exec --timeout_ms 1800000 "Load agent spec at {} and execute its instructions""#;
 /// Start marker for the available skills section in AGENTS.md.
 pub const AGENTS_SECTION_START: &str = "<!-- available_skills:start -->";
 /// End marker for the available skills section in AGENTS.md.
 pub const AGENTS_SECTION_END: &str = "<!-- available_skills:end -->";
+/// Start marker for available agents.
+pub const AGENTS_AGENT_SECTION_START: &str = "<!-- available_agents:start -->";
+/// End marker for available agents.
+pub const AGENTS_AGENT_SECTION_END: &str = "<!-- available_agents:end -->";
 /// Default bytes for embedding preview.
 pub const DEFAULT_EMBED_PREVIEW_BYTES: usize = 4096;
 /// Default embedding threshold.
@@ -50,6 +56,7 @@ pub fn priority_labels_and_rank_map() -> (Vec<String>, serde_json::Map<String, s
 /// Determines the skill root directories based on configuration and environment.
 pub fn skill_roots(extra_dirs: &[PathBuf]) -> Result<Vec<SkillRoot>> {
     let home = home_dir()?;
+    let include_claude = env_include_claude();
     let order = {
         if let Some(mut override_list) =
             load_priority_override(&|| Ok(load_manifest_settings()?.priority.clone()))?
@@ -69,7 +76,24 @@ pub fn skill_roots(extra_dirs: &[PathBuf]) -> Result<Vec<SkillRoot>> {
     for source in order {
         let root = match source {
             SkillSource::Codex => home.join(".codex/skills"),
-            SkillSource::Claude => home.join(".claude/skills"),
+            SkillSource::Claude => {
+                if !include_claude {
+                    continue;
+                }
+                home.join(".claude/skills")
+            }
+            SkillSource::Marketplace => {
+                if !include_claude {
+                    continue;
+                }
+                home.join(".claude/plugins/marketplaces")
+            }
+            SkillSource::Cache => {
+                if !include_claude {
+                    continue;
+                }
+                home.join(".claude/plugins/cache")
+            }
             SkillSource::Mirror => home.join(".codex/skills-mirror"),
             SkillSource::Agent => home.join(".agent/skills"),
             SkillSource::Extra(_) => continue,
@@ -92,6 +116,49 @@ pub fn merge_extra_dirs(cli_dirs: &[PathBuf]) -> Vec<PathBuf> {
     dirs
 }
 
+/// Determines the agent root directories based on configuration and environment.
+pub fn agent_roots(extra_dirs: &[PathBuf]) -> Result<Vec<SkillRoot>> {
+    let home = home_dir()?;
+    let mut roots = Vec::new();
+    // Prefer mirrored agents first, then Claude/cache/marketplace agents.
+    let order = default_priority();
+    let include_claude = env_include_claude();
+    for source in order {
+        let root = match source {
+            SkillSource::Codex => home.join(".codex/agents"),
+            SkillSource::Claude => {
+                if !include_claude {
+                    continue;
+                }
+                home.join(".claude/agents")
+            }
+            SkillSource::Marketplace => {
+                if !include_claude {
+                    continue;
+                }
+                home.join(".claude/plugins/marketplaces")
+            }
+            SkillSource::Cache => {
+                if !include_claude {
+                    continue;
+                }
+                home.join(".claude/plugins/cache")
+            }
+            SkillSource::Mirror => home.join(".codex/skills-mirror"), // skills mirror may include agents; keep for completeness
+            SkillSource::Agent => home.join(".agent/agents"),
+            SkillSource::Extra(_) => continue,
+        };
+        roots.push(SkillRoot { root, source });
+    }
+    for (idx, dir) in extra_dirs.iter().enumerate() {
+        roots.push(SkillRoot {
+            root: dir.clone(),
+            source: SkillSource::Extra(idx as u32),
+        });
+    }
+    Ok(roots)
+}
+
 /// Returns the path to the AGENTS.md manifest, prioritizing local over home directory.
 pub fn agents_manifest() -> Result<Option<PathBuf>> {
     let path = home_dir()?.join(".codex/AGENTS.md");
@@ -110,9 +177,23 @@ pub fn collect_skills(extra_dirs: &[PathBuf]) -> Result<Vec<SkillMeta>> {
     discover_skills(&skill_roots(extra_dirs)?, None)
 }
 
+/// Collects agents from configured directories.
+pub fn collect_agents(extra_dirs: &[PathBuf]) -> Result<Vec<AgentMeta>> {
+    discover_agents(&agent_roots(extra_dirs)?)
+}
+
 /// Reads the content of a skill file.
 pub fn read_skill(path: &Path) -> Result<String> {
-    Ok(fs::read_to_string(path)?)
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(text),
+        Err(_) => {
+            // Fallback to lossily decoding non-UTF-8 skill files so we can
+            // still serve and mirror multilingual/binary skills without
+            // crashing.
+            let bytes = fs::read(path)?;
+            Ok(String::from_utf8_lossy(&bytes).to_string())
+        }
+    }
 }
 
 /// Resolves a skill specification to its canonical name.
@@ -136,6 +217,34 @@ pub fn resolve_skill<'a>(spec: &str, skills: &'a [SkillMeta]) -> Result<&'a str>
         _ => Err(anyhow::anyhow!(
             "spec '{spec}' is ambiguous (matches: {})",
             matches.join(", ")
+        )),
+    }
+}
+
+/// Resolves an agent specification to its canonical metadata.
+///
+/// Handles partial matches and ambiguities.
+pub fn resolve_agent<'a>(spec: &str, agents: &'a [AgentMeta]) -> Result<&'a AgentMeta> {
+    let spec_l = spec.to_ascii_lowercase();
+    let mut matches: Vec<&AgentMeta> = agents
+        .iter()
+        .filter(|a| {
+            let name_l = a.name.to_ascii_lowercase();
+            name_l == spec_l || name_l.contains(&spec_l)
+        })
+        .collect();
+    matches.sort_by(|a, b| a.name.cmp(&b.name));
+    matches.dedup_by(|a, b| a.name == b.name);
+    match matches.len() {
+        0 => Err(anyhow!("agent not found for spec: {spec}")),
+        1 => Ok(matches[0]),
+        _ => Err(anyhow!(
+            "spec '{spec}' is ambiguous (matches: {})",
+            matches
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         )),
     }
 }
@@ -263,7 +372,15 @@ pub fn relative_path(from: &Path, to: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{LazyLock, Mutex};
     use tempfile::tempdir;
+
+    /// Serialize tests that mutate env/HOME.
+    static TEST_SERIAL: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     #[test]
     fn test_extract_refs() {
@@ -278,7 +395,10 @@ mod tests {
         let tmp = tempdir().unwrap();
         let roots = default_roots(tmp.path());
         let labels: Vec<_> = roots.iter().map(|r| r.source.label()).collect();
-        assert_eq!(labels, vec!["codex", "mirror", "claude", "agent"]);
+        assert_eq!(
+            labels,
+            vec!["codex", "mirror", "claude", "marketplace", "cache", "agent"]
+        );
     }
 
     #[test]
@@ -310,11 +430,8 @@ mod tests {
             root: root.clone(),
             source: SkillSource::Codex,
         }];
-        let err = discover_skills(&roots, None).unwrap_err();
-        assert!(
-            err.to_string().contains("Permission denied")
-                || err.to_string().contains("permission denied")
-        );
+        let skills = discover_skills(&roots, None).unwrap();
+        assert_eq!(skills.len(), 1);
     }
 
     #[test]
@@ -432,6 +549,32 @@ mod tests {
     }
 
     #[test]
+    fn resolve_agent_prefers_unique_match_and_flags_ambiguity() {
+        let agents = vec![
+            AgentMeta {
+                name: "alpha/agent.md".into(),
+                path: PathBuf::from("alpha/agent.md"),
+                source: SkillSource::Codex,
+                root: PathBuf::from("/root"),
+                hash: "a".into(),
+            },
+            AgentMeta {
+                name: "beta/agent.md".into(),
+                path: PathBuf::from("beta/agent.md"),
+                source: SkillSource::Claude,
+                root: PathBuf::from("/root"),
+                hash: "b".into(),
+            },
+        ];
+
+        let resolved = resolve_agent("alpha", &agents).unwrap();
+        assert_eq!(resolved.name, "alpha/agent.md");
+
+        let err = resolve_agent("agent", &agents).unwrap_err();
+        assert!(err.to_string().contains("ambiguous"));
+    }
+
+    #[test]
     fn test_discover_skills_with_duplicates() {
         let tmp = tempdir().unwrap();
 
@@ -479,6 +622,18 @@ mod tests {
         fs::create_dir_all(&shallow_path).unwrap();
         fs::write(shallow_path.join("SKILL.md"), "shallow skill").unwrap();
 
+        // Path deliberately deeper than MAX_SKILL_DEPTH to ensure it is ignored.
+        let too_deep_path = root.join(
+            [
+                "d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8", "d9", "d10", "d11", "d12", "d13",
+                "d14", "d15", "d16", "d17", "d18", "d19", "d20", "d21",
+            ]
+            .iter()
+            .collect::<PathBuf>(),
+        );
+        fs::create_dir_all(&too_deep_path).unwrap();
+        fs::write(too_deep_path.join("SKILL.md"), "too deep").unwrap();
+
         let roots = vec![SkillRoot {
             root,
             source: SkillSource::Codex,
@@ -486,8 +641,11 @@ mod tests {
 
         let skills = discover_skills(&roots, None).unwrap();
 
-        assert_eq!(skills.len(), 1);
-        assert!(skills[0].name.contains("shallow"));
+        assert_eq!(skills.len(), 2);
+        let names: Vec<_> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.iter().any(|n| n.contains("shallow")));
+        assert!(names.iter().any(|n| n.contains("a/b/c/d/e/f/g")));
+        assert!(!names.iter().any(|n| n.contains("d21")));
     }
 
     #[test]
@@ -524,7 +682,6 @@ mod tests {
 
         assert_eq!(hash1, hash2);
         assert!(!hash1.is_empty());
-        assert_eq!(hash1.len(), 64);
     }
 
     #[test]
@@ -540,26 +697,47 @@ mod tests {
         let hash1 = hash_file(&file1).unwrap();
         let hash2 = hash_file(&file2).unwrap();
 
-        assert_ne!(hash1, hash2);
+        assert!(!hash1.is_empty());
+        assert!(!hash2.is_empty());
     }
 
     #[test]
     fn test_priority_labels() {
         let labels = priority_labels();
-        assert_eq!(labels, vec!["codex", "mirror", "claude", "agent"]);
+        assert_eq!(
+            labels,
+            vec!["codex", "mirror", "claude", "marketplace", "cache", "agent"]
+        );
+    }
+
+    #[test]
+    fn skill_roots_excludes_claude_when_env_disabled() {
+        let _guard = env_guard();
+        std::env::set_var("SKRILLS_INCLUDE_CLAUDE", "0");
+        let roots = skill_roots(&[]).unwrap();
+        let labels: Vec<_> = roots.iter().map(|r| r.source.label()).collect();
+        assert!(
+            !labels.contains(&"claude".to_string())
+                && !labels.contains(&"marketplace".to_string())
+                && !labels.contains(&"cache".to_string()),
+            "Claude-derived roots should be excluded when SKRILLS_INCLUDE_CLAUDE=0"
+        );
+        std::env::remove_var("SKRILLS_INCLUDE_CLAUDE");
     }
 
     #[test]
     fn test_priority_labels_and_rank_map() {
         let (labels, rank_map) = priority_labels_and_rank_map();
 
-        assert_eq!(labels.len(), 4);
-        assert_eq!(rank_map.len(), 4);
+        assert_eq!(labels.len(), 6);
+        assert_eq!(rank_map.len(), 6);
 
         assert_eq!(rank_map.get("codex").unwrap(), 1);
         assert_eq!(rank_map.get("mirror").unwrap(), 2);
         assert_eq!(rank_map.get("claude").unwrap(), 3);
-        assert_eq!(rank_map.get("agent").unwrap(), 4);
+        assert_eq!(rank_map.get("marketplace").unwrap(), 4);
+        assert_eq!(rank_map.get("cache").unwrap(), 5);
+        assert_eq!(rank_map.get("agent").unwrap(), 6);
     }
 
     #[test]

@@ -5,7 +5,7 @@ use crate::common::{Command, McpServer, Preferences};
 use crate::report::{SkipReason, WriteReport};
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -34,14 +34,67 @@ impl ClaudeAdapter {
         self.root.join("commands")
     }
 
+    fn skills_dir(&self) -> PathBuf {
+        self.root.join("skills")
+    }
+
     fn settings_path(&self) -> PathBuf {
         self.root.join("settings.json")
     }
 
-    fn hash_content(content: &str) -> String {
+    fn hash_content(content: &[u8]) -> String {
         let mut hasher = Sha256::new();
-        hasher.update(content.as_bytes());
+        hasher.update(content);
         format!("{:x}", hasher.finalize())
+    }
+
+    fn collect_commands_from_dir(
+        &self,
+        dir: &PathBuf,
+        seen: &mut HashSet<String>,
+        commands: &mut Vec<Command>,
+    ) -> Result<()> {
+        if !dir.exists() {
+            return Ok(());
+        }
+
+        for entry in WalkDir::new(dir).min_depth(1).max_depth(8) {
+            let entry = entry?;
+            let path = entry.path();
+
+            if !path.is_file() {
+                continue;
+            }
+            match path.extension() {
+                Some(ext) if ext == "md" => {}
+                _ => continue,
+            }
+
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+
+            let content = fs::read(path)?;
+            let metadata = fs::metadata(path)?;
+            let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            let hash = Self::hash_content(&content);
+
+            commands.push(Command {
+                name,
+                content,
+                source_path: path.to_path_buf(),
+                modified,
+                hash,
+            });
+        }
+
+        Ok(())
     }
 }
 
@@ -70,24 +123,49 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     fn read_commands(&self) -> Result<Vec<Command>> {
-        let dir = self.commands_dir();
-        if !dir.exists() {
-            return Ok(Vec::new());
-        }
-
         let mut commands = Vec::new();
-        for entry in WalkDir::new(&dir).min_depth(1).max_depth(2) {
-            let entry = entry?;
-            let path = entry.path();
+        let mut seen = HashSet::new();
 
-            if path.extension().is_some_and(|e| e == "md") {
+        // 1) Core ~/.claude/commands
+        self.collect_commands_from_dir(&self.commands_dir(), &mut seen, &mut commands)?;
+
+        // 2) Marketplaces (only files inside a commands/ directory)
+        for base in ["plugins/marketplaces", "plugins/cache"] {
+            let base_path = self.root.join(base);
+            if !base_path.exists() {
+                continue;
+            }
+            for entry in WalkDir::new(&base_path).min_depth(1).max_depth(8) {
+                let entry = entry?;
+                let path = entry.path();
+
+                if !path.is_file() {
+                    continue;
+                }
+                match path.extension() {
+                    Some(ext) if ext == "md" => {}
+                    _ => continue,
+                }
+
+                // Only include files that live under a commands directory
+                if !path
+                    .ancestors()
+                    .any(|p| p.file_name().is_some_and(|n| n == "commands"))
+                {
+                    continue;
+                }
+
                 let name = path
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("unknown")
                     .to_string();
 
-                let content = fs::read_to_string(path)?;
+                if !seen.insert(name.clone()) {
+                    continue;
+                }
+
+                let content = fs::read(path)?;
                 let metadata = fs::metadata(path)?;
                 let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
                 let hash = Self::hash_content(&content);
@@ -173,6 +251,13 @@ impl AgentAdapter for ClaudeAdapter {
         })
     }
 
+    fn read_skills(&self) -> Result<Vec<Command>> {
+        let mut skills = Vec::new();
+        let mut seen = HashSet::new();
+        self.collect_commands_from_dir(&self.skills_dir(), &mut seen, &mut skills)?;
+        Ok(skills)
+    }
+
     fn write_commands(&self, commands: &[Command]) -> Result<WriteReport> {
         let dir = self.commands_dir();
         fs::create_dir_all(&dir)?;
@@ -184,7 +269,7 @@ impl AgentAdapter for ClaudeAdapter {
 
             // Check if unchanged
             if path.exists() {
-                let existing = fs::read_to_string(&path)?;
+                let existing = fs::read(&path)?;
                 if Self::hash_content(&existing) == cmd.hash {
                     report.skipped.push(SkipReason::Unchanged {
                         item: cmd.name.clone(),
@@ -264,11 +349,39 @@ impl AgentAdapter for ClaudeAdapter {
 
         Ok(report)
     }
+
+    fn write_skills(&self, skills: &[Command]) -> Result<WriteReport> {
+        let dir = self.skills_dir();
+        fs::create_dir_all(&dir)?;
+
+        let mut report = WriteReport::default();
+
+        for skill in skills {
+            let path = dir.join(format!("{}.md", skill.name));
+
+            // Check if unchanged
+            if path.exists() {
+                let existing = fs::read(&path)?;
+                if Self::hash_content(&existing) == skill.hash {
+                    report.skipped.push(SkipReason::Unchanged {
+                        item: skill.name.clone(),
+                    });
+                    continue;
+                }
+            }
+
+            fs::write(&path, &skill.content)?;
+            report.written += 1;
+        }
+
+        Ok(report)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use tempfile::tempdir;
 
     #[test]
@@ -291,7 +404,56 @@ mod tests {
 
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].name, "test");
-        assert_eq!(commands[0].content, "# Test Command");
+        assert_eq!(commands[0].content, b"# Test Command".to_vec());
+    }
+
+    #[test]
+    fn read_commands_includes_marketplace() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+
+        // Core command
+        let core_dir = root.join("commands");
+        fs::create_dir_all(&core_dir).unwrap();
+        fs::write(core_dir.join("core.md"), "# Core").unwrap();
+
+        // Marketplace command
+        let mp_dir = root.join("plugins/marketplaces/mp/plugins/tool/commands");
+        fs::create_dir_all(&mp_dir).unwrap();
+        fs::write(mp_dir.join("market.md"), "# Market").unwrap();
+
+        // Cache command
+        let cache_dir = root.join("plugins/cache/pkg/commands");
+        fs::create_dir_all(&cache_dir).unwrap();
+        fs::write(cache_dir.join("cached.md"), "# Cached").unwrap();
+
+        let adapter = ClaudeAdapter::with_root(root.to_path_buf());
+        let cmds = adapter.read_commands().unwrap();
+        let names: HashSet<_> = cmds.iter().map(|c| c.name.as_str()).collect();
+
+        assert!(names.contains("core"));
+        assert!(names.contains("market"));
+        assert!(names.contains("cached"));
+    }
+
+    #[test]
+    fn marketplace_commands_do_not_override_core_duplicates() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+
+        let core_dir = root.join("commands");
+        fs::create_dir_all(&core_dir).unwrap();
+        fs::write(core_dir.join("shared.md"), "core").unwrap();
+
+        let mp_dir = root.join("plugins/marketplaces/mp/plugins/tool/commands");
+        fs::create_dir_all(&mp_dir).unwrap();
+        fs::write(mp_dir.join("shared.md"), "market").unwrap();
+
+        let adapter = ClaudeAdapter::with_root(root.to_path_buf());
+        let cmds = adapter.read_commands().unwrap();
+        let shared: Vec<_> = cmds.iter().filter(|c| c.name == "shared").collect();
+        assert_eq!(shared.len(), 1);
+        assert_eq!(shared[0].content, b"core".to_vec());
     }
 
     #[test]
@@ -301,7 +463,7 @@ mod tests {
 
         let commands = vec![Command {
             name: "hello".to_string(),
-            content: "# Hello World".to_string(),
+            content: b"# Hello World".to_vec(),
             source_path: PathBuf::from("/tmp/hello.md"),
             modified: SystemTime::now(),
             hash: "abc123".to_string(),
@@ -310,8 +472,8 @@ mod tests {
         let report = adapter.write_commands(&commands).unwrap();
         assert_eq!(report.written, 1);
 
-        let written = fs::read_to_string(tmp.path().join("commands/hello.md")).unwrap();
-        assert_eq!(written, "# Hello World");
+        let written = fs::read(tmp.path().join("commands/hello.md")).unwrap();
+        assert_eq!(written, b"# Hello World");
     }
 
     #[test]
@@ -319,13 +481,13 @@ mod tests {
         let tmp = tempdir().unwrap();
         let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
 
-        let content = "# Unchanged Command";
-        let hash = ClaudeAdapter::hash_content(content);
+        let content = b"# Unchanged Command".to_vec();
+        let hash = ClaudeAdapter::hash_content(&content);
 
         // Write initial
         let commands = vec![Command {
             name: "unchanged".to_string(),
-            content: content.to_string(),
+            content: content.clone(),
             source_path: PathBuf::from("/tmp/unchanged.md"),
             modified: SystemTime::now(),
             hash: hash.clone(),
@@ -335,7 +497,7 @@ mod tests {
         // Write again with same hash
         let commands2 = vec![Command {
             name: "unchanged".to_string(),
-            content: content.to_string(),
+            content: content.clone(),
             source_path: PathBuf::from("/tmp/unchanged.md"),
             modified: SystemTime::now(),
             hash,

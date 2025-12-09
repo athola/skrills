@@ -28,6 +28,8 @@ pub enum SkipReason {
     Unchanged { item: String },
     /// Parse error in source file
     ParseError { item: String, error: String },
+    /// Would overwrite an existing item on the target side
+    WouldOverwrite { item: String },
 }
 
 #[allow(dead_code)]
@@ -60,6 +62,9 @@ impl SkipReason {
             Self::ParseError { item, error } => {
                 format!("Failed to parse {}: {}", item, error)
             }
+            Self::WouldOverwrite { item } => {
+                format!("{} already exists on target (would overwrite)", item)
+            }
         }
     }
 
@@ -72,6 +77,7 @@ impl SkipReason {
             Self::ExcludedByConfig { .. } => Some("Intentional exclusion, no action needed"),
             Self::Unchanged { .. } => None,
             Self::ParseError { .. } => Some("Fix the source file syntax"),
+            Self::WouldOverwrite { .. } => Some("Use --skip-existing-commands to keep target copy"),
         }
     }
 }

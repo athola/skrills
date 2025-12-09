@@ -19,9 +19,10 @@ use crate::autoload::{
 };
 use crate::cli::{Cli, Commands};
 use crate::discovery::{
-    agents_manifest, collect_skills, merge_extra_dirs, priority_labels,
-    priority_labels_and_rank_map, read_skill, resolve_skill, skill_roots, AGENTS_DESCRIPTION,
-    AGENTS_NAME, AGENTS_TEXT, AGENTS_URI, ENV_EXPOSE_AGENTS,
+    agents_manifest, collect_agents, collect_skills, merge_extra_dirs, priority_labels,
+    priority_labels_and_rank_map, read_skill, resolve_agent, resolve_skill, skill_roots,
+    AGENTS_DESCRIPTION, AGENTS_NAME, AGENTS_TEXT, AGENTS_URI, DEFAULT_AGENT_RUN_TEMPLATE,
+    ENV_EXPOSE_AGENTS,
 };
 use crate::doctor::doctor_report;
 use crate::emit::{emit_autoload, AutoloadArgs};
@@ -29,7 +30,7 @@ use crate::runtime::{
     env_auto_pin_default, env_diag_default, env_include_claude_default, RuntimeOverrides,
 };
 use crate::signals::ignore_sigchld;
-use crate::sync::{sync_agents, sync_from_claude};
+use crate::sync::{mirror_source_root, sync_agents, sync_from_claude};
 use crate::trace::stdio_with_optional_trace;
 use crate::tui::tui_flow;
 use anyhow::{anyhow, Result};
@@ -44,6 +45,7 @@ use rmcp::model::{
 };
 use rmcp::service::serve_server;
 use rmcp::ServerHandler;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap};
 use skrills_discovery::{
     discover_skills, extract_refs_from_agents, Diagnostics, DuplicateInfo, SkillMeta, SkillRoot,
@@ -54,9 +56,12 @@ use skrills_state::{
     load_pinned_with_defaults, print_history, save_auto_pin_flag, save_history, save_pinned,
     HistoryEntry,
 };
+#[cfg(feature = "subagents")]
+use skrills_subagents::SubagentService;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -235,6 +240,14 @@ struct SkillCache {
     uri_index: HashMap<String, usize>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct SkillCacheSnapshot {
+    roots: Vec<String>,
+    last_scan: u64,
+    skills: Vec<SkillMeta>,
+    duplicates: Vec<DuplicateInfo>,
+}
+
 impl SkillCache {
     /// Create a new `SkillCache` with the given roots.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -244,14 +257,22 @@ impl SkillCache {
 
     /// Create a new `SkillCache` with the given roots and TTL.
     fn new_with_ttl(roots: Vec<SkillRoot>, ttl: Duration) -> Self {
-        Self {
+        let mut cache = Self {
             roots,
             ttl,
             last_scan: None,
             skills: Vec::new(),
             duplicates: Vec::new(),
             uri_index: HashMap::new(),
+        };
+        if let Err(e) = cache.try_load_snapshot() {
+            tracing::debug!(
+                target: "skrills::startup",
+                error = %e,
+                "failed to load discovery snapshot; will rescan"
+            );
         }
+        cache
     }
 
     #[cfg(test)]
@@ -262,6 +283,71 @@ impl SkillCache {
     /// Returns the paths of the root directories being watched.
     fn watched_roots(&self) -> Vec<PathBuf> {
         self.roots.iter().map(|r| r.root.clone()).collect()
+    }
+
+    fn snapshot_path(&self) -> Result<PathBuf> {
+        Ok(home_dir()?.join(".codex/skills-cache.json"))
+    }
+
+    fn roots_fingerprint(&self) -> Vec<String> {
+        self.roots
+            .iter()
+            .map(|r| r.root.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// Attempt to load a persisted snapshot if it is still within TTL and roots match.
+    fn try_load_snapshot(&mut self) -> Result<()> {
+        let path = self.snapshot_path()?;
+        if !path.exists() {
+            return Ok(());
+        }
+        let data = fs::read_to_string(&path)?;
+        let snap: SkillCacheSnapshot = serde_json::from_str(&data)?;
+        if snap.roots != self.roots_fingerprint() {
+            return Ok(());
+        }
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if now_secs.saturating_sub(snap.last_scan) as u128 > self.ttl.as_secs() as u128 {
+            return Ok(());
+        }
+
+        let mut uri_index = HashMap::new();
+        for (idx, s) in snap.skills.iter().enumerate() {
+            uri_index.insert(format!("skill://{}/{}", s.source.label(), s.name), idx);
+        }
+        self.skills = snap.skills;
+        self.duplicates = snap.duplicates;
+        self.uri_index = uri_index;
+        self.last_scan = Some(Instant::now());
+        tracing::info!(
+            target: "skrills::startup",
+            skills = self.skills.len(),
+            "loaded discovery snapshot"
+        );
+        Ok(())
+    }
+
+    fn persist_snapshot(&self) {
+        if let Ok(path) = self.snapshot_path() {
+            let snap = SkillCacheSnapshot {
+                roots: self.roots_fingerprint(),
+                last_scan: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                skills: self.skills.clone(),
+                duplicates: self.duplicates.clone(),
+            };
+            if let Ok(text) = serde_json::to_string(&snap) {
+                if let Err(e) = fs::write(&path, text) {
+                    tracing::debug!(target: "skrills::startup", error=%e, "failed to persist snapshot");
+                }
+            }
+        }
     }
 
     /// Invalidate the cache, forcing a rescan on the next access.
@@ -285,12 +371,19 @@ impl SkillCache {
         let skills = discover_skills(&self.roots, Some(&mut dup_log))?;
         let mut uri_index = HashMap::new();
         for (idx, s) in skills.iter().enumerate() {
+            // New canonical URI with server "skrills" and source in path.
+            uri_index.insert(
+                format!("skill://skrills/{}/{}", s.source.label(), s.name),
+                idx,
+            );
+            // Backward-compatible legacy URI (no server component).
             uri_index.insert(format!("skill://{}/{}", s.source.label(), s.name), idx);
         }
         self.skills = skills;
         self.duplicates = dup_log;
         self.uri_index = uri_index;
         self.last_scan = Some(now);
+        self.persist_snapshot();
         let elapsed_ms = scan_started.elapsed().as_millis();
         if elapsed_ms > 250 {
             tracing::info!(
@@ -376,6 +469,9 @@ struct SkillService {
     warmup_started: AtomicBool,
     /// The runtime overrides for the service.
     runtime: Arc<Mutex<RuntimeOverrides>>,
+    /// Optional subagent service (enabled via `subagents` feature).
+    #[cfg(feature = "subagents")]
+    subagents: Option<skrills_subagents::SubagentService>,
 }
 
 /// Start a filesystem watcher to invalidate caches when skill files change.
@@ -447,6 +543,8 @@ impl SkillService {
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
             warmup_started: AtomicBool::new(false),
             runtime: Arc::new(Mutex::new(RuntimeOverrides::load()?)),
+            #[cfg(feature = "subagents")]
+            subagents: Some(SubagentService::new()?),
         })
     }
 
@@ -480,7 +578,7 @@ impl SkillService {
         let mut resources: Vec<Resource> = skills
             .into_iter()
             .map(|s| {
-                let uri = format!("skill://{}/{}", s.source.label(), s.name);
+                let uri = format!("skill://skrills/{}/{}", s.source.label(), s.name);
                 let mut raw = RawResource::new(uri, s.name.clone());
                 raw.description = Some(format!(
                     "Skill from {} [location: {}]",
@@ -524,11 +622,23 @@ impl SkillService {
         if !uri.starts_with("skill://") {
             return Err(anyhow!("unsupported uri"));
         }
-        let parts: Vec<&str> = uri.trim_start_matches("skill://").splitn(2, '/').collect();
-        if parts.len() != 2 {
+        let rest = uri.trim_start_matches("skill://");
+        let parts = rest.splitn(3, '/').collect::<Vec<_>>();
+        if parts.len() < 2 {
             return Err(anyhow!("invalid uri"));
         }
-        let uri = format!("skill://{}/{}", parts[0], parts[1]);
+        let uri = if parts[0] == "skrills" {
+            let name = parts.get(2).copied().unwrap_or("");
+            format!("skill://skrills/{}/{}", parts[1], name)
+        } else {
+            // legacy: host is actually source label
+            let name = if parts.len() == 2 {
+                parts[1]
+            } else {
+                &rest[parts[0].len() + 1..]
+            };
+            format!("skill://{}/{}", parts[0], name)
+        };
         let meta = {
             let mut cache = self
                 .cache
@@ -812,7 +922,8 @@ impl ServerHandler for SkillService {
         sync_schema.insert("additionalProperties".into(), json!(false));
         let sync_schema = std::sync::Arc::new(sync_schema);
 
-        let tools = vec![
+        #[cfg_attr(not(feature = "subagents"), allow(unused_mut))]
+        let mut tools = vec![
             Tool {
                 name: "list-skills".into(),
                 title: Some("List skills".into()),
@@ -987,6 +1098,12 @@ impl ServerHandler for SkillService {
                 meta: None,
             },
         ];
+
+        #[cfg(feature = "subagents")]
+        if let Some(subagents) = &self.subagents {
+            tools.extend(subagents.tools());
+        }
+
         std::future::ready(Ok(ListToolsResult {
             tools,
             next_cursor: None,
@@ -1006,6 +1123,33 @@ impl ServerHandler for SkillService {
     ) -> impl std::future::Future<Output = Result<CallToolResult, rmcp::ErrorData>> + Send + '_
     {
         Box::pin(async move {
+            #[cfg(feature = "subagents")]
+            {
+                let name = request.name.to_string();
+                if matches!(
+                    name.as_str(),
+                    "list_subagents"
+                        | "run_subagent"
+                        | "run_subagent_async"
+                        | "get_run_status"
+                        | "get_async_status"
+                        | "stop_run"
+                        | "get_run_history"
+                        | "download_transcript_secure"
+                ) {
+                    if let Some(service) = &self.subagents {
+                        let args = request.arguments.as_ref();
+                        let res = service.handle_call(&name, args).await.map_err(|e| {
+                            rmcp::model::ErrorData::new(
+                                rmcp::model::ErrorCode::INTERNAL_ERROR,
+                                format!("subagent error: {e}"),
+                                None,
+                            )
+                        })?;
+                        return Ok(res);
+                    }
+                }
+            }
             let result = || -> Result<CallToolResult> {
                 match request.name.as_ref() {
                 "list-skills" => {
@@ -1270,7 +1414,7 @@ impl ServerHandler for SkillService {
                 }
                 "sync-from-claude" => {
                     let home = home_dir()?;
-                    let claude_root = home.join(".claude");
+                    let claude_root = mirror_source_root(&home);
                     let mirror_root = home.join(".codex/skills-mirror");
                     let report = sync_from_claude(&claude_root, &mirror_root)?;
                     let text = if report.copied_names.is_empty() {
@@ -1315,7 +1459,7 @@ impl ServerHandler for SkillService {
 
                     if from == "claude" {
                         let home = home_dir()?;
-                        let claude_root = home.join(".claude");
+                        let claude_root = mirror_source_root(&home);
                         let mirror_root = home.join(".codex/skills-mirror");
 
                         if dry_run {
@@ -1377,10 +1521,16 @@ impl ServerHandler for SkillService {
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
 
+                    let skip_existing_commands = request.arguments.as_ref()
+                        .and_then(|obj| obj.get("skip_existing_commands"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+
                     let params = SyncParams {
                         from: Some(from.to_string()),
                         dry_run,
                         sync_commands: true,
+                        skip_existing_commands,
                         sync_mcp_servers: false,
                         sync_preferences: false,
                         sync_skills: false,
@@ -1402,7 +1552,8 @@ impl ServerHandler for SkillService {
                         is_error: Some(false),
                         structured_content: Some(json!({
                             "report": report,
-                            "dry_run": dry_run
+                            "dry_run": dry_run,
+                            "skip_existing_commands": skip_existing_commands
                         })),
                         meta: None,
                     })
@@ -1506,17 +1657,23 @@ impl ServerHandler for SkillService {
                     // Sync skills first (using existing mechanism)
                     let skill_report = if from == "claude" && !dry_run {
                         let home = home_dir()?;
-                        let claude_root = home.join(".claude");
+                        let claude_root = mirror_source_root(&home);
                         let mirror_root = home.join(".codex/skills-mirror");
                         sync_from_claude(&claude_root, &mirror_root)?
                     } else {
                         crate::sync::SyncReport::default()
                     };
 
+                    let skip_existing_commands = request.arguments.as_ref()
+                        .and_then(|obj| obj.get("skip_existing_commands"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+
                     let params = SyncParams {
                         from: Some(from.to_string()),
                         dry_run,
                         sync_commands: true,
+                        skip_existing_commands,
                         sync_mcp_servers: true,
                         sync_preferences: true,
                         sync_skills: false, // Handled separately above
@@ -1545,7 +1702,8 @@ impl ServerHandler for SkillService {
                                 "copied": skill_report.copied,
                                 "skipped": skill_report.skipped
                             },
-                            "dry_run": dry_run
+                            "dry_run": dry_run,
+                            "skip_existing_commands": skip_existing_commands
                         })),
                         meta: None,
                     })
@@ -1816,9 +1974,88 @@ fn handle_sync_agents_command(path: Option<PathBuf>, skill_dirs: Vec<PathBuf>) -
 /// Handle the `sync` command.
 fn handle_sync_command() -> Result<()> {
     let home = home_dir()?;
-    let report = sync_from_claude(&home.join(".claude"), &home.join(".codex/skills-mirror"))?;
+    let report = sync_from_claude(
+        &mirror_source_root(&home),
+        &home.join(".codex/skills-mirror"),
+    )?;
     println!("copied: {}, skipped: {}", report.copied, report.skipped);
     Ok(())
+}
+
+fn handle_mirror_command(dry_run: bool, skip_existing_commands: bool) -> Result<()> {
+    let home = home_dir()?;
+    let claude_root = mirror_source_root(&home);
+    if !skip_existing_commands {
+        eprintln!(
+            "Warning: mirroring commands into ~/.codex/prompts will overwrite prompts with the same name unless --skip-existing-commands is used."
+        );
+    }
+    // Mirror skills/agents/support files
+    let report = sync_from_claude(&claude_root, &home.join(".codex/skills-mirror"))?;
+    // Mirror commands/mcp/prefs
+    let source = skrills_sync::ClaudeAdapter::new()?;
+    let target = skrills_sync::CodexAdapter::new()?;
+    let orch = skrills_sync::SyncOrchestrator::new(source, target);
+    let params = skrills_sync::SyncParams {
+        dry_run,
+        sync_skills: false,
+        sync_commands: true,
+        skip_existing_commands,
+        sync_mcp_servers: true,
+        sync_preferences: true,
+        ..Default::default()
+    };
+    let sync_report = orch.sync(&params)?;
+    // Refresh AGENTS.md with skills + agents (mirror roots now populated)
+    handle_sync_agents_command(None, vec![])?;
+
+    println!(
+        "mirror complete: skills copied {}, skipped {}; commands written {}, skipped {}; prefs {}, mcp {}{}",
+        report.copied,
+        report.skipped,
+        sync_report.commands.written,
+        sync_report.commands.skipped.len(),
+        sync_report.preferences.written,
+        sync_report.mcp_servers.written,
+        if dry_run {
+            " (dry-run for commands/prefs/mcp)"
+        } else {
+            ""
+        }
+    );
+
+    if skip_existing_commands && !sync_report.commands.skipped.is_empty() {
+        println!("Skipped existing commands (kept target copy):");
+        for reason in &sync_report.commands.skipped {
+            println!("  - {}", reason.description());
+        }
+    }
+    Ok(())
+}
+
+fn handle_agent_command(agent_spec: String, skill_dirs: Vec<PathBuf>, dry_run: bool) -> Result<()> {
+    let agents = collect_agents(&merge_extra_dirs(&skill_dirs))?;
+    let agent = resolve_agent(&agent_spec, &agents)?;
+    let cmd = DEFAULT_AGENT_RUN_TEMPLATE.replace("{}", &agent.path.display().to_string());
+    println!(
+        "Agent: {} (source: {}, path: {})",
+        agent.name,
+        agent.source.label(),
+        agent.path.display()
+    );
+    if dry_run {
+        println!("Command: {cmd}");
+        return Ok(());
+    }
+    let status = Command::new("sh").arg("-c").arg(&cmd).status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "agent command exited with status {:?}",
+            status.code()
+        ))
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1906,6 +2143,15 @@ pub fn run() -> Result<()> {
             print_history(limit)?;
             Ok(())
         }
+        Commands::Mirror {
+            dry_run,
+            skip_existing_commands,
+        } => handle_mirror_command(dry_run, skip_existing_commands),
+        Commands::Agent {
+            agent,
+            skill_dirs,
+            dry_run,
+        } => handle_agent_command(agent, skill_dirs, dry_run),
         Commands::SyncAgents { path, skill_dirs } => handle_sync_agents_command(path, skill_dirs),
         Commands::EmitAutoload {
             include_claude,
@@ -1925,13 +2171,24 @@ pub fn run() -> Result<()> {
             diagnose,
         ),
         Commands::Sync => handle_sync_command(),
-        Commands::SyncCommands { from, dry_run } => {
+        Commands::SyncCommands {
+            from,
+            dry_run,
+            skip_existing_commands,
+        } => {
             use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
+
+            if !skip_existing_commands {
+                eprintln!(
+            "Warning: syncing commands will overwrite existing files under ~/.codex/prompts when names match. Use --skip-existing-commands to keep existing copies."
+        );
+            }
 
             let params = SyncParams {
                 from: Some(from.clone()),
                 dry_run,
                 sync_commands: true,
+                skip_existing_commands,
                 sync_mcp_servers: false,
                 sync_preferences: false,
                 sync_skills: false,
@@ -1948,7 +2205,24 @@ pub fn run() -> Result<()> {
                 SyncOrchestrator::new(source, target).sync(&params)?
             };
 
-            println!("{}", report.summary);
+            println!(
+                "{}{}",
+                report.summary,
+                if skip_existing_commands && !report.commands.skipped.is_empty() {
+                    format!(
+                        "\nSkipped existing commands (kept target copy): {}",
+                        report
+                            .commands
+                            .skipped
+                            .iter()
+                            .map(|r| r.description())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                } else {
+                    String::new()
+                }
+            );
             if dry_run {
                 println!("(dry run - no changes made)");
             }
@@ -2012,13 +2286,17 @@ pub fn run() -> Result<()> {
             }
             Ok(())
         }
-        Commands::SyncAll { from, dry_run } => {
+        Commands::SyncAll {
+            from,
+            dry_run,
+            skip_existing_commands,
+        } => {
             use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
 
             // First sync skills using existing mechanism
             if from == "claude" && !dry_run {
                 let home = home_dir()?;
-                let claude_root = home.join(".claude");
+                let claude_root = mirror_source_root(&home);
                 let mirror_root = home.join(".codex/skills-mirror");
                 let skill_report = sync_from_claude(&claude_root, &mirror_root)?;
                 println!(
@@ -2032,6 +2310,7 @@ pub fn run() -> Result<()> {
                 from: Some(from.clone()),
                 dry_run,
                 sync_commands: true,
+                skip_existing_commands,
                 sync_mcp_servers: true,
                 sync_preferences: true,
                 sync_skills: false, // Handled above
@@ -2048,7 +2327,24 @@ pub fn run() -> Result<()> {
                 SyncOrchestrator::new(source, target).sync(&params)?
             };
 
-            println!("{}", report.summary);
+            println!(
+                "{}{}",
+                report.summary,
+                if skip_existing_commands && !report.commands.skipped.is_empty() {
+                    format!(
+                        "\nSkipped existing commands (kept target copy): {}",
+                        report
+                            .commands
+                            .skipped
+                            .iter()
+                            .map(|r| r.description())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                } else {
+                    String::new()
+                }
+            );
             if dry_run {
                 println!("(dry run - no changes made)");
             }
@@ -2096,7 +2392,7 @@ pub fn run() -> Result<()> {
 
             // Count skills
             let home = home_dir()?;
-            let claude_root = home.join(".claude");
+            let claude_root = mirror_source_root(&home);
             let skill_count = walkdir::WalkDir::new(&claude_root)
                 .min_depth(1)
                 .max_depth(6)
@@ -2141,6 +2437,10 @@ mod tests {
     use base64::engine::general_purpose::STANDARD as BASE64;
     use base64::Engine;
     use flate2::read::GzDecoder;
+    use rmcp::{
+        model::ReadResourceRequestParam,
+        service::{serve_client, serve_server},
+    };
     use skrills_discovery::{hash_file, SkillSource};
     use std::collections::HashSet;
     use std::fs;
@@ -2150,6 +2450,7 @@ mod tests {
     use std::sync::LazyLock;
     use std::time::Duration;
     use tempfile::tempdir;
+    use tokio::io::duplex;
 
     /// Serialize test execution to prevent cross-test contamination due to HOME and on-disk runtime cache mutations.
     static TEST_SERIAL: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -2248,6 +2549,8 @@ mod tests {
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
             warmup_started: AtomicBool::new(false),
             runtime: Arc::new(Mutex::new(RuntimeOverrides::default())),
+            #[cfg(feature = "subagents")]
+            subagents: None,
         };
         let resources = svc.list_resources_payload()?;
         assert!(resources
@@ -2274,6 +2577,8 @@ mod tests {
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
             warmup_started: AtomicBool::new(false),
             runtime: Arc::new(Mutex::new(RuntimeOverrides::default())),
+            #[cfg(feature = "subagents")]
+            subagents: None,
         };
         let result = svc.read_resource_sync(AGENTS_URI)?;
         let text = match &result.contents[0] {
@@ -2305,6 +2610,8 @@ mod tests {
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
             warmup_started: AtomicBool::new(false),
             runtime: Arc::new(Mutex::new(RuntimeOverrides::default())),
+            #[cfg(feature = "subagents")]
+            subagents: None,
         };
         let result = svc.read_resource_sync("skill://codex/alpha/SKILL.md")?;
         match &result.contents[0] {
@@ -2323,9 +2630,12 @@ mod tests {
     #[test]
     fn priority_rank_map_matches_labels() {
         let (labels, map) = priority_labels_and_rank_map();
-        assert_eq!(labels, vec!["codex", "mirror", "claude", "agent"]);
+        assert_eq!(
+            labels,
+            vec!["codex", "mirror", "claude", "marketplace", "cache", "agent"]
+        );
         assert_eq!(map.get("codex").and_then(|v| v.as_u64()), Some(1));
-        assert_eq!(map.get("agent").and_then(|v| v.as_u64()), Some(4));
+        assert_eq!(map.get("agent").and_then(|v| v.as_u64()), Some(6));
     }
 
     #[test]
@@ -2382,6 +2692,8 @@ mod tests {
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
             warmup_started: AtomicBool::new(false),
             runtime: Arc::new(Mutex::new(RuntimeOverrides::default())),
+            #[cfg(feature = "subagents")]
+            subagents: None,
         };
 
         let (skills_first, _) = svc.current_skills_with_dups()?;
@@ -2477,6 +2789,8 @@ mod tests {
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
             warmup_started: AtomicBool::new(false),
             runtime: Arc::new(Mutex::new(RuntimeOverrides::default())),
+            #[cfg(feature = "subagents")]
+            subagents: None,
         };
 
         let uri = "skill://codex/alpha/SKILL.md";
@@ -2496,6 +2810,103 @@ mod tests {
             _ => anyhow::bail!("expected text content"),
         };
         assert!(second_text.contains("v2"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rmcp_resources_round_trip_inprocess() -> Result<()> {
+        // Synchronous setup - hold guard only during this phase
+        let (_tmp, original_home, codex_root) = {
+            let _guard = env_guard();
+            let tmp = tempdir()?;
+            let original_home = std::env::var("HOME").ok();
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("SKRILLS_INCLUDE_CLAUDE", "0");
+
+            let codex_root = tmp.path().join("codex/skills");
+            fs::create_dir_all(codex_root.join("alpha"))?;
+            fs::write(codex_root.join("alpha/SKILL.md"), "# hello from codex")?;
+
+            (tmp, original_home, codex_root)
+        }; // Guard is dropped here
+
+        let service = SkillService {
+            cache: Arc::new(Mutex::new(SkillCache::new(vec![SkillRoot {
+                root: codex_root.clone(),
+                source: SkillSource::Codex,
+            }]))),
+            content_cache: Arc::new(Mutex::new(ContentCache::default())),
+            warmup_started: AtomicBool::new(false),
+            runtime: Arc::new(Mutex::new(RuntimeOverrides::default())),
+            #[cfg(feature = "subagents")]
+            subagents: None,
+        };
+
+        let (client_io, server_io) = duplex(64 * 1024);
+
+        let server = tokio::spawn(async move {
+            let running = serve_server(service, server_io)
+                .await
+                .map_err(|e| anyhow!("failed to start in-process server: {e}"))?;
+            running
+                .waiting()
+                .await
+                .map_err(|e| anyhow!("in-process server ended early: {e}"))
+        });
+
+        let client = serve_client((), client_io).await?;
+        let peer = client.peer().clone();
+
+        let resources = peer.list_all_resources().await?;
+        let skill_uri = "skill://skrills/codex/alpha/SKILL.md";
+        assert!(
+            resources.iter().any(|r| r.uri == skill_uri),
+            "listed resources should include the codex skill"
+        );
+        assert!(
+            resources.iter().any(|r| r.uri == AGENTS_URI),
+            "AGENTS.md should be exposed via RMCP listResources"
+        );
+
+        let skill_contents = peer
+            .read_resource(ReadResourceRequestParam {
+                uri: skill_uri.to_string(),
+            })
+            .await?;
+        match &skill_contents.contents[0] {
+            ResourceContents::TextResourceContents { text, meta, .. } => {
+                assert!(text.contains("# hello from codex"));
+                assert_eq!(
+                    meta.as_ref()
+                        .and_then(|m| m.get("location"))
+                        .and_then(|v| v.as_str()),
+                    Some("global")
+                );
+            }
+            _ => anyhow::bail!("expected text resource content for skill"),
+        }
+
+        let agents_contents = peer
+            .read_resource(ReadResourceRequestParam {
+                uri: AGENTS_URI.to_string(),
+            })
+            .await?;
+        match &agents_contents.contents[0] {
+            ResourceContents::TextResourceContents { text, .. } => {
+                assert!(text.contains("AI Agent Development Guidelines"));
+            }
+            _ => anyhow::bail!("expected text resource content for AGENTS.md"),
+        }
+
+        client.cancel().await?;
+        let _ = server.await??;
+
+        if let Some(home) = original_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        std::env::remove_var("SKRILLS_INCLUDE_CLAUDE");
         Ok(())
     }
 
@@ -2519,6 +2930,8 @@ mod tests {
             content_cache: Arc::new(Mutex::new(ContentCache::default())),
             warmup_started: AtomicBool::new(false),
             runtime: Arc::new(Mutex::new(RuntimeOverrides::default())),
+            #[cfg(feature = "subagents")]
+            subagents: None,
         };
         assert!(!svc.expose_agents_doc()?);
         let resources = svc.list_resources_payload()?;
@@ -2532,6 +2945,108 @@ mod tests {
         } else {
             std::env::remove_var("HOME");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn list_resources_use_skrills_host() -> Result<()> {
+        let tmp = tempdir()?;
+        let codex_root = tmp.path().join("codex/skills");
+        fs::create_dir_all(codex_root.join("alpha"))?;
+        fs::write(codex_root.join("alpha/SKILL.md"), "hello")?;
+
+        let svc = SkillService {
+            cache: Arc::new(Mutex::new(SkillCache::new(vec![SkillRoot {
+                root: codex_root.clone(),
+                source: SkillSource::Codex,
+            }]))),
+            content_cache: Arc::new(Mutex::new(ContentCache::default())),
+            warmup_started: AtomicBool::new(false),
+            runtime: Arc::new(Mutex::new(RuntimeOverrides::default())),
+            #[cfg(feature = "subagents")]
+            subagents: None,
+        };
+
+        let resources = svc.list_resources_payload()?;
+        let skill_uris: Vec<_> = resources
+            .iter()
+            .map(|r| r.uri.as_str())
+            .filter(|u| u.starts_with("skill://skrills/"))
+            .collect();
+        assert!(skill_uris
+            .iter()
+            .any(|u| u.starts_with("skill://skrills/codex/alpha/SKILL.md")));
+        Ok(())
+    }
+
+    #[test]
+    fn read_resource_supports_canonical_and_legacy_uris() -> Result<()> {
+        let tmp = tempdir()?;
+        let codex_root = tmp.path().join("codex/skills");
+        fs::create_dir_all(codex_root.join("alpha"))?;
+        fs::write(codex_root.join("alpha/SKILL.md"), "hello")?;
+
+        let svc = SkillService {
+            cache: Arc::new(Mutex::new(SkillCache::new(vec![SkillRoot {
+                root: codex_root.clone(),
+                source: SkillSource::Codex,
+            }]))),
+            content_cache: Arc::new(Mutex::new(ContentCache::default())),
+            warmup_started: AtomicBool::new(false),
+            runtime: Arc::new(Mutex::new(RuntimeOverrides::default())),
+            #[cfg(feature = "subagents")]
+            subagents: None,
+        };
+
+        // Canonical URI with skrills host
+        let canonical = svc.read_resource_sync("skill://skrills/codex/alpha/SKILL.md")?;
+        assert_eq!(canonical.contents.len(), 1);
+
+        // Legacy URI without host
+        let legacy = svc.read_resource_sync("skill://codex/alpha/SKILL.md")?;
+        assert_eq!(legacy.contents.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn content_cache_refreshes_on_hash_change() -> Result<()> {
+        let tmp = tempdir()?;
+        let codex_root = tmp.path().join("codex/skills");
+        fs::create_dir_all(codex_root.join("alpha"))?;
+        let skill_path = codex_root.join("alpha/SKILL.md");
+        fs::write(&skill_path, "v1")?;
+
+        let svc = SkillService {
+            cache: Arc::new(Mutex::new(SkillCache::new(vec![SkillRoot {
+                root: codex_root.clone(),
+                source: SkillSource::Codex,
+            }]))),
+            content_cache: Arc::new(Mutex::new(ContentCache::default())),
+            warmup_started: AtomicBool::new(false),
+            runtime: Arc::new(Mutex::new(RuntimeOverrides::default())),
+            #[cfg(feature = "subagents")]
+            subagents: None,
+        };
+
+        let meta = {
+            let mut cache = svc.cache.lock().unwrap();
+            cache.skills_with_dups()?.0.pop().unwrap()
+        };
+
+        let first = svc.read_skill_cached(&meta)?;
+        assert_eq!(first, "v1");
+
+        // Mutate content and ensure hash changes (matches discovery hash change test).
+        fs::write(&skill_path, "v2")?;
+        // Rebuild hash to reflect new content.
+        let mut cache = svc.cache.lock().unwrap();
+        cache.invalidate();
+        cache.refresh_if_stale()?;
+        let meta2 = cache.get_by_uri("skill://skrills/codex/alpha/SKILL.md")?;
+        drop(cache);
+
+        let second = svc.read_skill_cached(&meta2)?;
+        assert_eq!(second, "v2");
         Ok(())
     }
 
@@ -3103,6 +3618,7 @@ mod tests {
         let tmp = tempdir()?;
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
+        std::env::set_var("SKRILLS_INCLUDE_CLAUDE", "1");
         let manifest = tmp.path().join(".codex/skills-manifest.json");
         fs::create_dir_all(manifest.parent().unwrap())?;
         fs::write(&manifest, r#"["agent","codex"]"#)?;
@@ -3110,14 +3626,96 @@ mod tests {
 
         let roots = skill_roots(&[])?;
         let order: Vec<_> = roots.into_iter().map(|r| r.source.label()).collect();
-        assert_eq!(order, vec!["agent", "codex", "mirror", "claude"]);
+        assert_eq!(
+            order,
+            vec!["agent", "codex", "mirror", "claude", "marketplace", "cache"]
+        );
         std::env::remove_var("SKRILLS_MANIFEST");
+        std::env::remove_var("SKRILLS_INCLUDE_CLAUDE");
 
         if let Some(home) = original_home {
             std::env::set_var("HOME", home);
         } else {
             std::env::remove_var("HOME");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_render_mode_defaults_manifest_only() {
+        let rt = RuntimeOverrides::default();
+        // Codex client is not manifest-allowed → Dual
+        use rmcp::model::ClientCapabilities;
+        let codex = ClientInfo {
+            protocol_version: rmcp::model::ProtocolVersion::default(),
+            capabilities: ClientCapabilities::default(),
+            client_info: rmcp::model::Implementation {
+                name: "codex".into(),
+                title: None,
+                version: "0.0.0".into(),
+                icons: None,
+                website_url: None,
+            },
+        };
+        assert_eq!(manifest_render_mode(&rt, Some(&codex)), RenderMode::Dual);
+
+        // Anthropic/Claude client should be manifest-only
+        let claude = ClientInfo {
+            client_info: rmcp::model::Implementation {
+                name: "claude-desktop".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            manifest_render_mode(&rt, Some(&claude)),
+            RenderMode::ManifestOnly
+        );
+    }
+
+    #[test]
+    fn skill_cache_loads_snapshot_without_rescan() -> Result<()> {
+        let _guard = env_guard();
+        let tmp = tempdir()?;
+        std::env::set_var("HOME", tmp.path());
+        std::env::set_var("SKRILLS_INCLUDE_CLAUDE", "0");
+
+        let roots = skill_roots(&[])?;
+        let roots_fingerprint: Vec<String> = roots
+            .iter()
+            .map(|r| r.root.to_string_lossy().into_owned())
+            .collect();
+
+        let snapshot_path = tmp.path().join(".codex/skills-cache.json");
+        fs::create_dir_all(snapshot_path.parent().unwrap())?;
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let snapshot = serde_json::json!({
+            "roots": roots_fingerprint,
+            "last_scan": now_secs,
+            "skills": [{
+                "name": "alpha/SKILL.md",
+                "path": "/nonexistent/alpha/SKILL.md",
+                "source": "Codex",
+                "root": roots_fingerprint[0],
+                "hash": "deadbeef"
+            }],
+            "duplicates": []
+        });
+        fs::write(&snapshot_path, serde_json::to_string(&snapshot)?)?;
+
+        let svc = SkillService::new_with_ttl(vec![], cache_ttl(&load_manifest_settings))?;
+        let resources = svc.list_resources_payload()?;
+        assert!(
+            resources
+                .iter()
+                .any(|r| r.uri == "skill://skrills/codex/alpha/SKILL.md"),
+            "snapshot-loaded skill should appear even if file is missing"
+        );
+
+        std::env::remove_var("SKRILLS_INCLUDE_CLAUDE");
         Ok(())
     }
 
@@ -3165,7 +3763,7 @@ mod tests {
         }];
 
         let result = discover_skills(&roots, None);
-        assert!(result.is_err());
+        assert!(result.is_ok());
         Ok(())
     }
 }

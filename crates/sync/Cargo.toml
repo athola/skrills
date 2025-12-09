@@ -14,3 +14,6 @@ thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+mockall = "0.12.1"
+tokio = { version = "1", features = ["full"] }
+

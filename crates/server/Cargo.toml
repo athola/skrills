@@ -27,7 +27,7 @@ clap.workspace = true
 pathdiff.workspace = true
 dirs.workspace = true
 libc.workspace = true
-dialoguer.workspace = true
+inquire.workspace = true
 sha2.workspace = true
 base64.workspace = true
 tempfile.workspace = true
@@ -36,15 +36,20 @@ toml.workspace = true
 semver.workspace = true
 flate2.workspace = true
 
+skrills-subagents = { path = "../subagents", version = "0.3.0", optional = true }
+
 skrills-discovery = { path = "../discovery", version = "0.3.0" }
 skrills-state = { path = "../state", version = "0.3.0" }
 skrills_sync = { path = "../sync" }
 shellexpand = "3"
 
 [features]
-default = ["watch"]
+# Enable subagents by default so MCP exposes subagent tools out of the box.
+default = ["watch", "subagents"]
 watch = ["notify"]
+subagents = ["skrills-subagents"]
 test-support = []
 
 [dev-dependencies]
 rmcp = { workspace = true, features = ["client", "transport-async-rw", "transport-child-process"] }
+httpmock = "0.8"

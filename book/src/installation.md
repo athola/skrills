@@ -5,7 +5,7 @@
 To install the binary from `crates.io`, run the following command:
 
 ```bash
-car go install skrills
+cargo install skrills
 ```
 
 ## One-Liners (Release Artifacts)
@@ -25,6 +25,7 @@ You can customize the installation using environment variables or flags:
 - `SKRILLS_TARGET`: Sets the Rust target triple (e.g., `x86_64-unknown-linux-gnu`) for platform-specific builds.
 - `SKRILLS_CLIENT`: Forces the installer to configure for a client: `codex` or `claude`. If not set, the installer attempts auto-detection based on the presence of `~/.claude` or `~/.codex` directories.
 - `SKRILLS_BASE_DIR`: Overrides the client configuration root directory.
+- `SKRILLS_NO_MIRROR`: When set to `1`, skips the post-install mirror step that copies Claude assets into Codex (Codex installs only).
 - `--install-path <PATH>`: Sets the installation directory for the binaries.
 - `--client <codex|claude>`: Forces the installer to target a client type: `codex` or `claude`.
 - `--base-dir <PATH>`: Overrides the root directory for client configuration files.
@@ -50,12 +51,12 @@ SKRILLS_CLIENT=claude SKRILLS_BASE_DIR=/tmp/claude-demo \
 To install from source (requires Rust toolchain), run:
 
 ```bash
-car go install --path crates/cli --force
+cargo install --path crates/cli --force
 ```
 
 ## Hook & MCP Registration
 
-The installer configures client-specific hooks (where applicable) and registers the MCP server. This process starts with:
+The installer configures client-specific hooks (where applicable) and registers the MCP server. On Codex installs it also mirrors Claude assets into Codex unless `SKRILLS_NO_MIRROR=1`. If `~/.claude` is missing, the installer skips mirroring and prints a reminder to run `skrills mirror` later once Claude assets exist. This process starts with:
 
 ```bash
 ./scripts/install-skrills.sh [--universal] [--universal-only]

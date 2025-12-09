@@ -27,7 +27,7 @@ Replace the final command in the example with the actual server you intend to wr
 `skrills` stands out with an MCP server implemented in Rust, which supports both Codex and Claude environments, and can sync skills between them. It also provides pre-built binaries and installers for easier deployment. In contrast, other projects often have static skill collections, CI-based documentation tools, or local synchronization utilities that lack an MCP layer. For a detailed comparative analysis, please refer to the [Project Comparison](./comparison.md) documentation.
 
 ### Is it possible to automatically synchronize skills between Claude and Codex?
-Yes. Using the `skrills sync` command, you can mirror Claude skills to Codex paths. Then, the autoload hook will make these synchronized skills available when you submit a prompt.
+Yes. Use `skrills mirror` (or `sync`, `sync-all`) to copy Claude skills/agents/commands into Codex paths. Add `--skip-existing-commands` to keep local command files; command sync is byte-for-byte, so non-UTF-8 commands are preserved. The installer runs a mirror automatically on Codex unless you set `SKRILLS_NO_MIRROR=1` or `~/.claude` is absent, in which case it prints a reminder to run `skrills mirror` later. The autoload hook then makes the mirrored skills available on submit.
 
 ### Can the autoload rendering behavior be modified at runtime?
 Yes. The autoload rendering behavior can be adjusted at runtime with MCP tools:

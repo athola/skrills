@@ -4,7 +4,7 @@
 //! for Claude Code and Codex clients, and supports a universal `~/.agent/skills` directory.
 
 use anyhow::{anyhow, Context, Result};
-use dialoguer::{Confirm, Input, Select};
+use inquire::{Confirm, Select, Text};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -133,10 +133,9 @@ pub fn prompt_first_run_setup() -> Result<bool> {
     println!("\nSkrills is not configured on this system.");
     println!("Setup creates hooks, registers MCP servers, and configures directories.\n");
 
-    Confirm::new()
-        .with_prompt("Would you like to run setup now?")
-        .default(true)
-        .interact()
+    Confirm::new("Would you like to run setup now?")
+        .with_default(true)
+        .prompt()
         .context("Failed to get user confirmation")
 }
 
@@ -172,10 +171,9 @@ pub fn interactive_setup(
 
     // Prompt for universal sync if not specified
     let universal = if !yes && !universal {
-        Confirm::new()
-            .with_prompt("Sync skills to universal ~/.agent/skills directory?")
-            .default(false)
-            .interact()?
+        Confirm::new("Sync skills to universal ~/.agent/skills directory?")
+            .with_default(false)
+            .prompt()?
     } else {
         universal
     };
@@ -233,29 +231,23 @@ fn prompt_clients(add_mode: bool) -> Result<Vec<Client>> {
             }]);
         }
 
-        let selection = Select::new()
-            .with_prompt("Which client would you like to add?")
-            .items(&options)
-            .default(0)
-            .interact()?;
+        let selection =
+            Select::new("Which client would you like to add?", options.clone()).prompt()?;
 
-        Ok(vec![if options[selection] == "Claude Code" {
+        Ok(vec![if selection == "Claude Code" {
             Client::Claude
         } else {
             Client::Codex
         }])
     } else {
         let options = vec!["Claude Code", "Codex", "Both"];
-        let selection = Select::new()
-            .with_prompt("Which client would you like to set up?")
-            .items(&options)
-            .default(0)
-            .interact()?;
+        let selection =
+            Select::new("Which client would you like to set up?", options.clone()).prompt()?;
 
         match selection {
-            0 => Ok(vec![Client::Claude]),
-            1 => Ok(vec![Client::Codex]),
-            2 => Ok(vec![Client::Claude, Client::Codex]),
+            "Claude Code" => Ok(vec![Client::Claude]),
+            "Codex" => Ok(vec![Client::Codex]),
+            "Both" => Ok(vec![Client::Claude, Client::Codex]),
             _ => unreachable!(),
         }
     }
@@ -266,15 +258,14 @@ fn prompt_bin_dir(clients: &[Client]) -> Result<PathBuf> {
     let default = clients[0].default_bin_dir()?;
     let default_str = default.display().to_string();
 
-    let input: String = Input::new()
-        .with_prompt("Binary installation directory")
-        .default(default_str.clone())
-        .interact_text()?;
+    let input = Text::new("Binary installation directory")
+        .with_default(&default_str)
+        .prompt()?;
 
     if input.trim().is_empty() {
         Ok(default)
     } else {
-        Ok(PathBuf::from(shellexpand::tilde(&input).to_string()))
+        Ok(PathBuf::from(shellexpand::tilde(&input).into_owned()))
     }
 }
 
@@ -290,10 +281,12 @@ pub fn run_setup(config: SetupConfig) -> Result<()> {
     for client in &config.clients {
         if !config.reinstall && !config.add && is_setup(*client)? {
             if !config.yes {
-                let proceed = Confirm::new()
-                    .with_prompt(format!("{} is already set up. Reinstall?", client.as_str()))
-                    .default(false)
-                    .interact()?;
+                let proceed = Confirm::new(&format!(
+                    "{} is already set up. Reinstall?",
+                    client.as_str()
+                ))
+                .with_default(false)
+                .prompt()?;
 
                 if !proceed {
                     println!("Skipping {} setup", client.as_str());
@@ -794,10 +787,9 @@ fn run_uninstall(config: &SetupConfig) -> Result<()> {
 
     for client in clients_to_uninstall {
         if !config.yes {
-            let proceed = Confirm::new()
-                .with_prompt(format!("Uninstall {} configuration?", client.as_str()))
-                .default(false)
-                .interact()?;
+            let proceed = Confirm::new(&format!("Uninstall {} configuration?", client.as_str()))
+                .with_default(false)
+                .prompt()?;
 
             if !proceed {
                 println!("Skipping {} uninstall", client.as_str());

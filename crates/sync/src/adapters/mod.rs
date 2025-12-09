@@ -2,7 +2,7 @@
 
 mod claude;
 mod codex;
-mod traits;
+pub mod traits;
 
 pub use claude::ClaudeAdapter;
 pub use codex::CodexAdapter;

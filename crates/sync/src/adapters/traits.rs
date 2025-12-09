@@ -15,7 +15,11 @@ pub struct FieldSupport {
     pub skills: bool,
 }
 
+#[cfg(test)]
+use mockall::automock;
+
 /// Adapter for reading and writing configuration for a specific agent.
+#[cfg_attr(test, automock)]
 pub trait AgentAdapter: Send + Sync {
     /// Agent identifier (e.g., "claude", "codex")
     fn name(&self) -> &str;
@@ -37,12 +41,16 @@ pub trait AgentAdapter: Send + Sync {
     /// Read preferences from native format
     fn read_preferences(&self) -> Result<Preferences>;
 
+    /// Read skills from native format
+    fn read_skills(&self) -> Result<Vec<Command>>;
+
     /// Read complete configuration
     fn read_all(&self) -> Result<CommonConfig> {
         Ok(CommonConfig {
             commands: self.read_commands()?,
             mcp_servers: self.read_mcp_servers()?,
             preferences: self.read_preferences()?,
+            skills: self.read_skills()?,
         })
     }
 
@@ -56,4 +64,7 @@ pub trait AgentAdapter: Send + Sync {
 
     /// Write preferences to native format
     fn write_preferences(&self, prefs: &Preferences) -> Result<WriteReport>;
+
+    /// Write skills to native format
+    fn write_skills(&self, skills: &[Command]) -> Result<WriteReport>;
 }
