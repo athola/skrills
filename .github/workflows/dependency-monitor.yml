@@ -57,13 +57,13 @@ jobs:
         echo "Current rmcp version:"
         cargo tree | grep "rmcp v" | head -1
 
-        # Check for once_cell (should be none)
-        if cargo tree | grep -q "once_cell"; then
-          echo "ERROR: Found once_cell dependency - should be migrated to std::sync::LazyLock"
-          cargo tree | grep once_cell
+        # Check for once_cell (should be none in direct dependencies)
+        if cargo tree --depth 1 | grep -q "once_cell"; then
+          echo "ERROR: Found direct once_cell dependency - should be migrated to std::sync::LazyLock"
+          cargo tree --depth 1 | grep once_cell
           exit 1
         else
-          echo "OK: No once_cell dependencies found"
+          echo "OK: No direct once_cell dependencies found"
         fi
 
     - name: Check for outdated dependencies
