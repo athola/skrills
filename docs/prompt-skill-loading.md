@@ -24,6 +24,9 @@ know it really happens. Here are the two paths.
   similarity. The user prompt is the CLI argument/STDIN text passed to
   `skrills emit-autoload` (or `SKRILLS_PROMPT`). The threshold comes from the
   CLI flag or `SKRILLS_EMBED_THRESHOLD`.
+- Invalidation: when the cache is cleared or empty, the server reloads the
+  snapshot first; if a subsequent scan yields no skills it keeps the snapshot so
+  snapshot-only skills stay available.
 - Render: manifest (minimal or full) plus content (Dual mode for Codex), bounded
   by `max_bytes` (`SKRILLS_MAX_BYTES` or flag) with manifest-only/gzip fallback.
 

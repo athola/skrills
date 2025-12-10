@@ -13,7 +13,9 @@ the path from filesystem roots to what each client receives.
   `SKRILLS_INCLUDE_CLAUDE`, `SKRILLS_INCLUDE_MARKETPLACE`, and a manifest
   override file (`SKRILLS_MANIFEST` or `~/.codex/skills-manifest.json`).
 - A snapshot cache (`~/.codex/skills-cache.json`, override with
-  `SKRILLS_CACHE_PATH`) plus TTL prevents full rescans.
+  `SKRILLS_CACHE_PATH`) plus TTL prevents full rescans. On invalidation or first
+  access, the server reloads the snapshot before scanning; if the scan finds no
+  skills, it keeps the snapshot so snapshot-only skills remain available.
 
 ### 2. Pins, history, preload terms
 

@@ -395,12 +395,9 @@ impl SkillCache {
             return Ok(());
         }
 
-        type SnapshotBackup =
-            (Vec<SkillMeta>, Vec<DuplicateInfo>, HashMap<String, usize>, Option<Instant>);
-        // If we've been invalidated (or never loaded) attempt a cheap snapshot reload,
-        // but keep scanning; if the scan finds nothing, fall back to the snapshot so
-        // snapshot-only skills remain available.
-        let mut snapshot_backup: Option<SnapshotBackup> = None;
+        // If we've been invalidated (or never loaded) attempt a cheap snapshot reload.
+        // When a snapshot exists, serve it immediately to avoid dropping cached skills
+        // if the filesystem scan comes back empty (e.g. transiently missing paths).
         if self.last_scan.is_none() && self.skills.is_empty() {
             if let Err(e) = self.try_load_snapshot() {
                 tracing::debug!(
@@ -409,12 +406,14 @@ impl SkillCache {
                     "failed to reload discovery snapshot after invalidation"
                 );
             } else if !self.skills.is_empty() {
-                snapshot_backup = Some((
-                    self.skills.clone(),
-                    self.duplicates.clone(),
-                    self.uri_index.clone(),
-                    self.last_scan,
-                ));
+                // Serve the snapshot immediately; schedule a rescan on the next access by
+                // backdating `last_scan` so it appears stale after this return.
+                let backdate = self
+                    .ttl
+                    .checked_add(Duration::from_millis(1))
+                    .unwrap_or(self.ttl);
+                self.last_scan = Some(now.checked_sub(backdate).unwrap_or(now));
+                return Ok(());
             }
         }
 
@@ -435,15 +434,6 @@ impl SkillCache {
         self.duplicates = dup_log;
         self.uri_index = uri_index;
         self.last_scan = Some(now);
-        if self.skills.is_empty() {
-            if let Some((skills, dups, index, last)) = snapshot_backup {
-                self.skills = skills;
-                self.duplicates = dups;
-                self.uri_index = index;
-                self.last_scan = last;
-                return Ok(());
-            }
-        }
         self.persist_snapshot();
         let elapsed_ms = scan_started.elapsed().as_millis();
         if elapsed_ms > 250 {

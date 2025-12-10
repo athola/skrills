@@ -56,6 +56,36 @@ skrills serve --features subagents
 # Then from MCP client: list_subagents, run_subagent, get_run_status
 ```
 
+## Autoload flow
+
+```mermaid
+flowchart LR
+    U[User prompt]
+    subgraph Client
+      CX[Codex CLI / IDE]
+      CL[Claude Code]
+    end
+    S[skrills MCP server]
+    D[discover_skills<br/>cache snapshot + TTL]
+    F[filter pins/history/preload<br/>+ prompt similarity]
+    R[render bundle<br/>(manifest+content or manifest-only/gzip)]
+    P[Append bundle to model prompt]
+
+    U --> CX
+    U --> CL
+    CX -->|MCP tool: autoload-snippet(prompt)| S
+    CL -->|MCP: listResources + readResource| S
+    S --> D --> F --> R --> P
+```
+
+- Snapshot cache (`~/.codex/skills-cache.json` or `SKRILLS_CACHE_PATH`) is
+  reloaded on invalidation/first access before scanning; if a scan returns no
+  skills we keep the snapshot so snapshot-only skills remain available.
+- Rendering respects byte budgets: manifest-first with gzip fallback when
+  needed.
+- See `book/src/prompt-loading.md` and `docs/prompt-skill-loading.md` for the
+  full path and tuning flags.
+
 ## CLI guide (selected)
 - `skrills mirror | sync | sync-all [--skip-existing-commands]` — mirror skills/agents/commands/prefs without overwriting existing commands.
 - `skrills sync-commands [--from claude|codex] [--dry-run] [--skip-existing-commands]` — byte-for-byte command sync.
