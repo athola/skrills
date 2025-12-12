@@ -12,9 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
 use crate::discovery::{
-    collect_agents, collect_skills, is_skill_file, priority_labels, relative_path,
-    AGENTS_AGENT_SECTION_END, AGENTS_AGENT_SECTION_START, AGENTS_SECTION_END, AGENTS_SECTION_START,
-    AGENTS_TEXT, DEFAULT_AGENT_RUN_TEMPLATE,
+    collect_agents, collect_skills, is_skill_file, relative_path, AGENTS_AGENT_SECTION_END,
+    AGENTS_AGENT_SECTION_START, AGENTS_SECTION_END, AGENTS_SECTION_START, AGENTS_TEXT,
 };
 
 /// Reports the outcome of a synchronization operation.
@@ -160,37 +159,44 @@ pub(crate) fn sync_from_claude(
     Ok(report)
 }
 
-/// Renders skills as an XML manifest with priority rankings.
+/// Renders a lightweight skills reference for AGENTS.md.
 ///
-/// Generates an `<available_skills>` XML section including metadata about each skill:
-/// source, location, path, and priority rank.
-pub(crate) fn render_available_skills_xml(skills: &[SkillMeta]) -> String {
+/// Instead of embedding a massive XML list (which can exceed 60K tokens),
+/// this generates a compact reference pointing users to CLI commands for
+/// dynamic skill discovery. Skills are discovered at runtime via `skrills list`.
+pub(crate) fn render_skills_reference(skills: &[SkillMeta]) -> String {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let mut out = String::from("<available_skills");
-    out.push_str(&format!(" generated_at_utc=\"{}\"", ts));
-    out.push_str(&format!(" priority=\"{}\"", priority_labels().join(",")));
-    out.push_str(">\n");
-    let priority_order = priority_labels();
-    for s in skills {
-        let rank = priority_order
-            .iter()
-            .position(|p| p == &s.source.label())
-            .map(|i| i + 1)
-            .unwrap_or(priority_order.len() + 1);
-        out.push_str(&format!(
-            "  <skill name=\"{}\" source=\"{}\" location=\"{}\" path=\"{}\" priority_rank=\"{}\" />\n",
-            s.name,
-            s.source.label(),
-            s.source.location(),
-            s.path.display(),
-            rank
-        ));
+    format!(
+        r#"<!-- Skills discovered dynamically. Last sync: {} UTC. Total: {} skills. -->
+<!-- Use CLI commands for current skill inventory:
+     skrills list              - List all discovered skills
+     skrills list-pinned       - List pinned skills
+     skrills doctor            - View discovery diagnostics
+-->"#,
+        ts,
+        skills.len()
+    )
+}
+
+/// Renders a lightweight agents reference for AGENTS.md.
+///
+/// Instead of embedding a massive list of agent paths and run commands,
+/// this generates a compact reference pointing users to CLI commands.
+pub(crate) fn render_agents_reference(agents: &[AgentMeta]) -> String {
+    if agents.is_empty() {
+        return String::new();
     }
-    out.push_str("</available_skills>");
-    out
+    format!(
+        r#"<!-- Agents discovered dynamically. Total: {} agents. -->
+<!-- Use CLI commands for current agent inventory:
+     skrills sync-agents       - Sync agents from external sources
+     skrills doctor            - View agent discovery diagnostics
+-->"#,
+        agents.len()
+    )
 }
 
 /// Writes or updates the AGENTS.md file with current skills.
@@ -203,42 +209,37 @@ pub(crate) fn sync_agents(path: &Path, extra_dirs: &[PathBuf]) -> Result<()> {
     sync_agents_with_assets(path, &skills, &agents)
 }
 
-/// Updates AGENTS.md with a specific set of skills.
+/// Updates AGENTS.md with lightweight skill/agent references.
 ///
-/// Inserts a new `<available_skills>` section or replaces an existing one.
+/// Instead of embedding massive XML lists (which can exceed 60K tokens),
+/// this writes compact CLI references. Skills and agents are discovered
+/// dynamically at runtime via `skrills list` and `skrills doctor`.
+///
 /// Creates the file with the default AGENTS.md template if it does not exist.
 pub(crate) fn sync_agents_with_assets(
     path: &Path,
     skills: &[SkillMeta],
     agents: &[AgentMeta],
 ) -> Result<()> {
-    let xml = render_available_skills_xml(skills);
+    // Generate lightweight references instead of massive inline lists
+    let skills_ref = render_skills_reference(skills);
     let section = format!(
-        "{start}\n{xml}\n{end}\n",
+        "{start}\n{ref_text}\n{end}\n",
         start = AGENTS_SECTION_START,
-        xml = xml,
+        ref_text = skills_ref,
         end = AGENTS_SECTION_END
     );
 
-    let agents_section = if agents.is_empty() {
+    let agents_ref = render_agents_reference(agents);
+    let agents_section = if agents_ref.is_empty() {
         String::new()
     } else {
-        let mut out = String::from(AGENTS_AGENT_SECTION_START);
-        out.push('\n');
-        for a in agents {
-            let cmd_template =
-                DEFAULT_AGENT_RUN_TEMPLATE.replace("{}", &a.path.display().to_string());
-            out.push_str(&format!(
-                "- {} (source: {}, path: {})\n  run: {}\n",
-                a.name,
-                a.source.label(),
-                a.path.display(),
-                cmd_template
-            ));
-        }
-        out.push_str(AGENTS_AGENT_SECTION_END);
-        out.push('\n');
-        out
+        format!(
+            "{start}\n{ref_text}\n{end}\n",
+            start = AGENTS_AGENT_SECTION_START,
+            ref_text = agents_ref,
+            end = AGENTS_AGENT_SECTION_END
+        )
     };
 
     let content = if path.exists() {
@@ -282,7 +283,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn render_available_skills_xml_contains_location() {
+    fn render_skills_reference_contains_count() {
         let tmp = tempdir().unwrap();
         let path = tmp.path().join("codex/skills");
         fs::create_dir_all(&path).unwrap();
@@ -296,13 +297,14 @@ mod tests {
             root: path.clone(),
             hash: hash_file(&skill_path).unwrap(),
         }];
-        let xml = render_available_skills_xml(&skills);
-        assert!(xml.contains("location=\"global\""));
-        assert!(xml.contains("alpha/SKILL.md"));
+        let reference = render_skills_reference(&skills);
+        assert!(reference.contains("Total: 1 skills"));
+        assert!(reference.contains("skrills list"));
+        assert!(reference.contains("skrills doctor"));
     }
 
     #[test]
-    fn sync_agents_inserts_section() -> Result<()> {
+    fn sync_agents_inserts_lightweight_section() -> Result<()> {
         let tmp = tempdir()?;
         let agents = tmp.path().join("AGENTS.md");
         fs::write(&agents, "# Title")?;
@@ -316,17 +318,18 @@ mod tests {
         sync_agents_with_assets(&agents, &skills, &[])?;
         let text = fs::read_to_string(&agents)?;
         assert!(text.contains(AGENTS_SECTION_START));
-        assert!(text.contains("available_skills"));
-        assert!(text.contains("location=\"global\""));
+        assert!(text.contains("Total: 1 skills"));
+        assert!(text.contains("skrills list"));
         assert!(text.contains(AGENTS_SECTION_END));
         assert!(text.contains("# Title"));
+        // Should NOT contain the old XML format
+        assert!(!text.contains("<skill name="));
         Ok(())
     }
 
     #[test]
-    fn sync_agents_sets_priority_rank_in_xml() -> Result<()> {
+    fn render_skills_reference_includes_cli_commands() -> Result<()> {
         let tmp = tempdir()?;
-        let _agents = tmp.path().join("AGENTS.md");
         let skills = vec![SkillMeta {
             name: "alpha/SKILL.md".into(),
             path: tmp.path().join("alpha/SKILL.md"),
@@ -334,13 +337,15 @@ mod tests {
             root: tmp.path().join("codex/skills"),
             hash: "abc".into(),
         }];
-        let xml = render_available_skills_xml(&skills);
-        assert!(xml.contains("priority_rank=\"1\""));
+        let reference = render_skills_reference(&skills);
+        assert!(reference.contains("skrills list"));
+        assert!(reference.contains("skrills list-pinned"));
+        assert!(reference.contains("skrills doctor"));
         Ok(())
     }
 
     #[test]
-    fn sync_agents_appends_agents_section() -> Result<()> {
+    fn sync_agents_appends_lightweight_agents_section() -> Result<()> {
         let tmp = tempdir()?;
         let agents_path = tmp.path().join("AGENTS.md");
         fs::write(&agents_path, "# Header")?;
@@ -355,9 +360,10 @@ mod tests {
         sync_agents_with_assets(&agents_path, &skills, &agents)?;
         let text = fs::read_to_string(&agents_path)?;
         assert!(text.contains(AGENTS_AGENT_SECTION_START));
-        assert!(text.contains("helper.md"));
-        assert!(text.contains("cache"));
-        assert!(text.contains("codex --yolo exec --timeout_ms 1800000"));
+        assert!(text.contains("Total: 1 agents"));
+        assert!(text.contains("skrills sync-agents"));
+        // Should NOT contain the old verbose agent listing format
+        assert!(!text.contains("codex --yolo exec"));
         Ok(())
     }
 

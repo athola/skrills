@@ -129,7 +129,7 @@ flowchart LR
 
 ## Development
 ```bash
-make format && make lint && make test --quiet && make build
+make fmt lint test --quiet
 ```
 - Rust toolchain ≥ 1.75 recommended.
 - End-to-end MCP tests live under `crates/server/tests/`; sample agents in `crates/subagents/`.
@@ -144,3 +144,7 @@ make format && make lint && make test --quiet && make build
 
 ## License
 [MIT](LICENSE)
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=athola/skrills&type=date&legend=top-left)](https://www.star-history.com/#athola/skrills&type=date&legend=top-left)

@@ -10,7 +10,6 @@
 - [State Management and Persistence](persistence.md)
 - [Security Considerations](security.md)
 - [Observability and Audit Logging](observability.md)
-- [Rate Limiting Configuration](rate-limits.md)
 - [Performance Baseline and Tuning](performance.md)
 - [Testing and Coverage](testing.md)
 - [Playbooks and Demo Scripts](playbooks.md)

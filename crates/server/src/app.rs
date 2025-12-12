@@ -2436,7 +2436,8 @@ pub fn run() -> Result<()> {
                 );
             }
 
-            // Then sync commands, MCP servers, and preferences
+            // Then sync commands, MCP servers, preferences, and skills (Codex source)
+            let sync_skills = from != "claude";
             let params = SyncParams {
                 from: Some(from.clone()),
                 dry_run,
@@ -2444,7 +2445,7 @@ pub fn run() -> Result<()> {
                 skip_existing_commands,
                 sync_mcp_servers: true,
                 sync_preferences: true,
-                sync_skills: false, // Handled above
+                sync_skills, // Claude source handled above; enable for Codex→Claude
                 include_marketplace,
                 ..Default::default()
             };
@@ -2485,13 +2486,14 @@ pub fn run() -> Result<()> {
         Commands::SyncStatus { from } => {
             use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
 
+            let sync_skills = from != "claude";
             let params = SyncParams {
                 from: Some(from.clone()),
                 dry_run: true,
                 sync_commands: true,
                 sync_mcp_servers: true,
                 sync_preferences: true,
-                sync_skills: false,
+                sync_skills,
                 ..Default::default()
             };
 
@@ -2524,8 +2526,12 @@ pub fn run() -> Result<()> {
 
             // Count skills
             let home = home_dir()?;
-            let claude_root = mirror_source_root(&home);
-            let skill_count = walkdir::WalkDir::new(&claude_root)
+            let source_root = if from == "claude" {
+                mirror_source_root(&home)
+            } else {
+                home.join(".codex/skills")
+            };
+            let skill_count = walkdir::WalkDir::new(&source_root)
                 .min_depth(1)
                 .max_depth(6)
                 .into_iter()
@@ -2574,6 +2580,7 @@ mod tests {
         service::{serve_client, serve_server},
     };
     use skrills_discovery::{hash_file, SkillSource};
+    use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
     use std::collections::HashSet;
     use std::fs;
     use std::io::Read;
@@ -3929,6 +3936,36 @@ mod tests {
         } else {
             std::env::remove_var("HOME");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn sync_all_from_codex_syncs_skills_to_claude() -> Result<()> {
+        let tmp = tempdir()?;
+
+        let codex_skills = tmp.path().join(".codex/skills");
+        fs::create_dir_all(&codex_skills)?;
+        fs::write(codex_skills.join("hello.md"), "# Hello")?;
+
+        let claude_skills = tmp.path().join(".claude/skills");
+        assert!(!claude_skills.join("hello.md").exists());
+
+        let params = SyncParams {
+            from: Some("codex".to_string()),
+            sync_skills: true,
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            ..Default::default()
+        };
+
+        // Use with_root() for isolated testing (dirs::home_dir() may not respect HOME env)
+        let source = CodexAdapter::with_root(tmp.path().join(".codex"));
+        let target = ClaudeAdapter::with_root(tmp.path().join(".claude"));
+        let orch = SyncOrchestrator::new(source, target);
+        orch.sync(&params)?;
+
+        assert!(claude_skills.join("hello.md").exists());
         Ok(())
     }
 
