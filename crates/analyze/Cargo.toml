@@ -1,0 +1,15 @@
+[package]
+name = "skrills-analyze"
+version = "0.3.0"
+edition.workspace = true
+description = "Skill analysis: token counting, dependencies, and optimization"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = "1"
+anyhow = { workspace = true }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

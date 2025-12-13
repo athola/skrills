@@ -18,6 +18,7 @@ use crate::autoload::{
     RenderMode,
 };
 use crate::cli::{Cli, Commands};
+use crate::commands::handle_serve_command;
 use crate::discovery::{
     agents_manifest, collect_agents, collect_skills, merge_extra_dirs, priority_labels,
     priority_labels_and_rank_map, read_skill, resolve_agent, resolve_skill, skill_roots,
@@ -31,7 +32,6 @@ use crate::runtime::{
 };
 use crate::signals::ignore_sigchld;
 use crate::sync::{mirror_source_root, sync_agents, sync_from_claude};
-use crate::trace::stdio_with_optional_trace;
 use crate::tui::tui_flow;
 use anyhow::{anyhow, Result};
 use clap::Parser;
@@ -43,7 +43,6 @@ use rmcp::model::{
     ReadResourceRequestParam, ReadResourceResult, Resource, ResourceContents, ServerCapabilities,
     Tool, ToolAnnotations,
 };
-use rmcp::service::serve_server;
 use rmcp::ServerHandler;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap};
@@ -67,7 +66,6 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::runtime::Runtime;
 
 /// Establishes the manifest render mode based on runtime overrides and client information.
 ///
@@ -528,7 +526,7 @@ impl ContentCache {
 ///
 /// This service discovers, caches, and facilitates interaction with skills.
 /// It employs in-memory caches for skill metadata and content to optimize performance.
-struct SkillService {
+pub(crate) struct SkillService {
     /// The cache for skill metadata.
     cache: Arc<Mutex<SkillCache>>,
     /// The cache for skill content.
@@ -544,7 +542,7 @@ struct SkillService {
 
 /// Start a filesystem watcher to invalidate caches when skill files change.
 #[cfg(feature = "watch")]
-fn start_fs_watcher(service: &SkillService) -> Result<RecommendedWatcher> {
+pub(crate) fn start_fs_watcher(service: &SkillService) -> Result<RecommendedWatcher> {
     let cache = service.cache.clone();
     let content_cache = service.content_cache.clone();
     let roots = {
@@ -581,7 +579,7 @@ fn start_fs_watcher(service: &SkillService) -> Result<RecommendedWatcher> {
 ///
 /// It returns an error if called.
 #[cfg(not(feature = "watch"))]
-fn start_fs_watcher(_service: &SkillService) -> Result<()> {
+pub(crate) fn start_fs_watcher(_service: &SkillService) -> Result<()> {
     Err(anyhow!(
         "watch feature is disabled; rebuild with --features watch"
     ))
@@ -595,7 +593,7 @@ impl SkillService {
     }
 
     /// Create a new `SkillService` with a custom cache TTL.
-    fn new_with_ttl(extra_dirs: Vec<PathBuf>, ttl: Duration) -> Result<Self> {
+    pub(crate) fn new_with_ttl(extra_dirs: Vec<PathBuf>, ttl: Duration) -> Result<Self> {
         let build_started = Instant::now();
         let roots = skill_roots(&extra_dirs)?;
         let elapsed_ms = build_started.elapsed().as_millis();
@@ -1186,6 +1184,71 @@ impl ServerHandler for SkillService {
                     "Show what would be synced without making changes (dry run).".into(),
                 ),
                 input_schema: sync_schema,
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
+            // Analytics tools
+            Tool {
+                name: "validate-skills".into(),
+                title: Some("Validate skills for CLI compatibility".into()),
+                description: Some(
+                    "Validate skills for Claude Code and/or Codex CLI compatibility. Returns validation errors and warnings.".into(),
+                ),
+                input_schema: std::sync::Arc::new({
+                    let mut schema = JsonMap::new();
+                    schema.insert("type".into(), json!("object"));
+                    schema.insert(
+                        "properties".into(),
+                        json!({
+                            "target": {
+                                "type": "string",
+                                "enum": ["claude", "codex", "both"],
+                                "default": "both",
+                                "description": "Validation target"
+                            },
+                            "errors_only": {
+                                "type": "boolean",
+                                "default": false,
+                                "description": "Only return skills with errors"
+                            }
+                        }),
+                    );
+                    schema.insert("additionalProperties".into(), json!(false));
+                    schema
+                }),
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
+            Tool {
+                name: "analyze-skills".into(),
+                title: Some("Analyze skills for token usage and optimization".into()),
+                description: Some(
+                    "Analyze skills for token usage, dependencies, and optimization suggestions. Returns detailed analysis with quality scores.".into(),
+                ),
+                input_schema: std::sync::Arc::new({
+                    let mut schema = JsonMap::new();
+                    schema.insert("type".into(), json!("object"));
+                    schema.insert(
+                        "properties".into(),
+                        json!({
+                            "min_tokens": {
+                                "type": "integer",
+                                "description": "Only include skills with at least this many tokens"
+                            },
+                            "include_suggestions": {
+                                "type": "boolean",
+                                "default": true,
+                                "description": "Include optimization suggestions"
+                            }
+                        }),
+                    );
+                    schema.insert("additionalProperties".into(), json!(false));
+                    schema
+                }),
                 output_schema: None,
                 annotations: Some(ToolAnnotations::default()),
                 icons: None,
@@ -1948,6 +2011,147 @@ impl ServerHandler for SkillService {
                         meta: None,
                     })
                 }
+                "validate-skills" => {
+                    use skrills_validate::{validate_skill, ValidationTarget as VT};
+
+                    let args = request.arguments.clone().unwrap_or_default();
+                    let target_str = args
+                        .get("target")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("both");
+                    let errors_only = args
+                        .get("errors_only")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+
+                    let validation_target = match target_str {
+                        "claude" => VT::Claude,
+                        "codex" => VT::Codex,
+                        _ => VT::Both,
+                    };
+
+                    let (skills, _) = self.current_skills_with_dups()?;
+                    let mut results = Vec::new();
+
+                    for meta in &skills {
+                        let content = match fs::read_to_string(&meta.path) {
+                            Ok(c) => c,
+                            Err(_) => continue,
+                        };
+                        let result = validate_skill(&meta.path, &content, validation_target);
+                        if !errors_only || result.has_errors() {
+                            results.push(json!({
+                                "name": meta.name,
+                                "path": meta.path.display().to_string(),
+                                "claude_valid": result.claude_valid,
+                                "codex_valid": result.codex_valid,
+                                "errors": result.error_count(),
+                                "warnings": result.warning_count(),
+                                "issues": result.issues.iter().map(|i| json!({
+                                    "severity": format!("{:?}", i.severity),
+                                    "message": i.message,
+                                    "line": i.line,
+                                    "suggestion": i.suggestion
+                                })).collect::<Vec<_>>()
+                            }));
+                        }
+                    }
+
+                    let text = format!(
+                        "Validated {} skills: {} Claude-valid, {} Codex-valid",
+                        results.len(),
+                        results.iter().filter(|r| r.get("claude_valid").and_then(|v| v.as_bool()).unwrap_or(false)).count(),
+                        results.iter().filter(|r| r.get("codex_valid").and_then(|v| v.as_bool()).unwrap_or(false)).count()
+                    );
+
+                    Ok(CallToolResult {
+                        content: vec![Content::text(text)],
+                        structured_content: Some(json!({
+                            "total": results.len(),
+                            "target": target_str,
+                            "results": results
+                        })),
+                        is_error: Some(false),
+                        meta: None,
+                    })
+                }
+                "analyze-skills" => {
+                    use skrills_analyze::analyze_skill;
+
+                    let args = request.arguments.clone().unwrap_or_default();
+                    let min_tokens = args
+                        .get("min_tokens")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as usize);
+                    let include_suggestions = args
+                        .get("include_suggestions")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true);
+
+                    let (skills, _) = self.current_skills_with_dups()?;
+                    let mut analyses = Vec::new();
+
+                    for meta in &skills {
+                        let content = match fs::read_to_string(&meta.path) {
+                            Ok(c) => c,
+                            Err(_) => continue,
+                        };
+                        let analysis = analyze_skill(&meta.path, &content);
+
+                        if let Some(min) = min_tokens {
+                            if analysis.tokens.total < min {
+                                continue;
+                            }
+                        }
+
+                        let mut result = json!({
+                            "name": analysis.name,
+                            "tokens": {
+                                "total": analysis.tokens.total,
+                                "frontmatter": analysis.tokens.frontmatter,
+                                "prose": analysis.tokens.prose,
+                                "code": analysis.tokens.code
+                            },
+                            "category": analysis.category.label(),
+                            "quality_score": format!("{:.0}%", analysis.quality_score * 100.0),
+                            "dependencies": {
+                                "directories": analysis.dependencies.directories,
+                                "external_urls": analysis.dependencies.external_urls().len(),
+                                "missing": analysis.dependencies.missing.len()
+                            }
+                        });
+
+                        if include_suggestions && !analysis.suggestions.is_empty() {
+                            result.as_object_mut().unwrap().insert(
+                                "suggestions".to_string(),
+                                json!(analysis.suggestions.iter().map(|s| json!({
+                                    "priority": format!("{:?}", s.priority),
+                                    "type": format!("{:?}", s.opt_type),
+                                    "message": s.message,
+                                    "action": s.action
+                                })).collect::<Vec<_>>())
+                            );
+                        }
+
+                        analyses.push(result);
+                    }
+
+                    let text = format!(
+                        "Analyzed {} skills: {} total tokens",
+                        analyses.len(),
+                        analyses.iter().filter_map(|a| a.get("tokens").and_then(|t| t.get("total")).and_then(|v| v.as_u64())).sum::<u64>()
+                    );
+
+                    Ok(CallToolResult {
+                        content: vec![Content::text(text)],
+                        structured_content: Some(json!({
+                            "total": analyses.len(),
+                            "analyses": analyses
+                        })),
+                        is_error: Some(false),
+                        meta: None,
+                    })
+                }
                 other => Err(anyhow!("unknown tool {other}")),
             }
         }()
@@ -1980,44 +2184,6 @@ impl ServerHandler for SkillService {
 fn list_skills(extra_dirs: &[PathBuf]) -> Result<()> {
     let skills = collect_skills(extra_dirs)?;
     println!("{}", serde_json::to_string_pretty(&skills)?);
-    Ok(())
-}
-
-/// Handle the `serve` command.
-fn handle_serve_command(
-    skill_dirs: Vec<PathBuf>,
-    cache_ttl_ms: Option<u64>,
-    trace_wire: bool,
-    #[cfg(feature = "watch")] watch: bool,
-) -> Result<()> {
-    let ttl = cache_ttl_ms
-        .map(Duration::from_millis)
-        .unwrap_or_else(|| cache_ttl(&load_manifest_settings));
-    let service = SkillService::new_with_ttl(merge_extra_dirs(&skill_dirs), ttl)?;
-
-    #[cfg(feature = "watch")]
-    let _watcher = if watch {
-        Some(start_fs_watcher(&service)?)
-    } else {
-        None
-    };
-
-    let transport = stdio_with_optional_trace(trace_wire);
-    let rt = Runtime::new()?;
-    let running = rt.block_on(async {
-        serve_server(service, transport)
-            .await
-            .map_err(|e| anyhow!("failed to start server: {e}"))
-    })?;
-    rt.block_on(async {
-        running
-            .waiting()
-            .await
-            .map_err(|e| anyhow!("server task ended: {e}"))
-    })?;
-
-    #[cfg(feature = "watch")]
-    drop(_watcher);
     Ok(())
 }
 
@@ -2204,6 +2370,176 @@ fn handle_setup_command(
         mirror_source,
     )?;
     crate::setup::run_setup(config)
+}
+
+/// Handle the `validate` command.
+fn handle_validate_command(
+    skill_dirs: Vec<PathBuf>,
+    target: crate::cli::ValidationTarget,
+    autofix: bool,
+    backup: bool,
+    format: String,
+    errors_only: bool,
+) -> Result<()> {
+    use skrills_validate::{
+        validate_skill, AutofixOptions, ValidationSummary, ValidationTarget as VT,
+    };
+
+    let validation_target = match target {
+        crate::cli::ValidationTarget::Claude => VT::Claude,
+        crate::cli::ValidationTarget::Codex => VT::Codex,
+        crate::cli::ValidationTarget::Both => VT::Both,
+    };
+
+    // Collect skills from specified or default directories
+    let extra_dirs = merge_extra_dirs(&skill_dirs);
+    let skills = collect_skills(&extra_dirs)?;
+
+    if skills.is_empty() {
+        println!("No skills found to validate.");
+        return Ok(());
+    }
+
+    let mut results = Vec::new();
+    let mut fixed_count = 0;
+
+    for meta in skills.iter() {
+        let content = match fs::read_to_string(&meta.path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let mut result = validate_skill(&meta.path, &content, validation_target);
+
+        // Auto-fix if requested and there are errors
+        if autofix && !result.codex_valid && validation_target != VT::Claude {
+            use skrills_validate::autofix_frontmatter;
+            let opts = AutofixOptions {
+                create_backup: backup,
+                write_changes: true,
+                suggested_name: Some(meta.name.clone()),
+                suggested_description: None,
+            };
+            if let Ok(fix_result) = autofix_frontmatter(&meta.path, &content, &opts) {
+                if fix_result.modified {
+                    fixed_count += 1;
+                    // Re-validate after fix
+                    let new_content = fs::read_to_string(&meta.path)?;
+                    result = validate_skill(&meta.path, &new_content, validation_target);
+                }
+            }
+        }
+
+        // Filter if errors_only
+        if !errors_only || result.has_errors() {
+            results.push(result);
+        }
+    }
+
+    // Output results
+    if format == "json" {
+        println!("{}", serde_json::to_string_pretty(&results)?);
+    } else {
+        let summary = ValidationSummary::from_results(&results);
+        println!(
+            "Validated {} skills: {} Claude-valid, {} Codex-valid, {} both-valid",
+            summary.total, summary.claude_valid, summary.codex_valid, summary.both_valid
+        );
+        if fixed_count > 0 {
+            println!("Auto-fixed {} skills", fixed_count);
+        }
+        if summary.error_count > 0 {
+            println!("\nErrors ({}):", summary.error_count);
+            for result in &results {
+                for issue in &result.issues {
+                    if issue.severity == skrills_validate::Severity::Error {
+                        println!(
+                            "  {} ({}): {}",
+                            result.name,
+                            result.path.display(),
+                            issue.message
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle the `analyze` command.
+fn handle_analyze_command(
+    skill_dirs: Vec<PathBuf>,
+    format: String,
+    min_tokens: Option<usize>,
+    suggestions: bool,
+) -> Result<()> {
+    use skrills_analyze::{analyze_skill, AnalysisSummary, Priority};
+
+    // Collect skills from specified or default directories
+    let extra_dirs = merge_extra_dirs(&skill_dirs);
+    let skills = collect_skills(&extra_dirs)?;
+
+    if skills.is_empty() {
+        println!("No skills found to analyze.");
+        return Ok(());
+    }
+
+    let mut analyses = Vec::new();
+
+    for meta in skills.iter() {
+        let content = match fs::read_to_string(&meta.path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let analysis = analyze_skill(&meta.path, &content);
+
+        // Filter by min_tokens if specified
+        if let Some(min) = min_tokens {
+            if analysis.tokens.total < min {
+                continue;
+            }
+        }
+
+        analyses.push(analysis);
+    }
+
+    // Output results
+    if format == "json" {
+        println!("{}", serde_json::to_string_pretty(&analyses)?);
+    } else {
+        let summary = AnalysisSummary::from_analyses(&analyses);
+        println!(
+            "Analyzed {} skills: {} total tokens",
+            summary.total_skills, summary.total_tokens
+        );
+        println!(
+            "Size distribution: {} small, {} medium, {} large, {} very-large",
+            summary.by_category.small,
+            summary.by_category.medium,
+            summary.by_category.large,
+            summary.by_category.very_large
+        );
+        println!("Average quality score: {:.0}%", summary.avg_quality * 100.0);
+
+        if suggestions && summary.high_priority_count > 0 {
+            println!(
+                "\nHigh-priority suggestions ({}):",
+                summary.high_priority_count
+            );
+            for analysis in &analyses {
+                for suggestion in &analysis.suggestions {
+                    if suggestion.priority == Priority::High {
+                        println!("  {} - {}", analysis.name, suggestion.message);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// The main entry point for the `skrills` application.
@@ -2422,6 +2758,8 @@ pub fn run() -> Result<()> {
             dry_run,
             skip_existing_commands,
             include_marketplace,
+            validate: _validate,
+            autofix: _autofix,
         } => {
             use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
 
@@ -2565,6 +2903,20 @@ pub fn run() -> Result<()> {
             universal,
             mirror_source,
         ),
+        Commands::Validate {
+            skill_dirs,
+            target,
+            autofix,
+            backup,
+            format,
+            errors_only,
+        } => handle_validate_command(skill_dirs, target, autofix, backup, format, errors_only),
+        Commands::Analyze {
+            skill_dirs,
+            format,
+            min_tokens,
+            suggestions,
+        } => handle_analyze_command(skill_dirs, format, min_tokens, suggestions),
     }
 }
 

@@ -12,6 +12,7 @@
 
 mod app;
 mod autoload;
+mod commands;
 mod doctor;
 mod emit;
 mod setup;

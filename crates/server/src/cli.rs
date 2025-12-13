@@ -1,11 +1,23 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
+
+/// Validation target for skills.
+#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+pub enum ValidationTarget {
+    /// Validate for Claude Code (permissive).
+    Claude,
+    /// Validate for Codex CLI (strict).
+    Codex,
+    /// Validate for both targets.
+    #[default]
+    Both,
+}
 
 /// Command-line interface for the `skrills` application.
 #[derive(Debug, Parser)]
 #[command(
     name = "skrills",
-    about = "MCP server for exposing local SKILL.md files to Codex"
+    about = "Skills support engine for Claude Code and Codex CLI"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -172,6 +184,12 @@ pub enum Commands {
         /// Include marketplace content (uninstalled plugins).
         #[arg(long, env = "SKRILLS_INCLUDE_MARKETPLACE", default_value_t = false)]
         include_marketplace: bool,
+        /// Validate skills before syncing.
+        #[arg(long)]
+        validate: bool,
+        /// Automatically fix validation issues (add frontmatter).
+        #[arg(long)]
+        autofix: bool,
     },
     /// Shows sync status and configuration differences.
     SyncStatus {
@@ -181,6 +199,42 @@ pub enum Commands {
     },
     /// Diagnoses Codex MCP configuration for this server.
     Doctor,
+    /// Validates skills for Claude Code and/or Codex CLI compatibility.
+    Validate {
+        /// Skills directory to validate (default: all discovered skills).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+        /// Validation target: claude, codex, or both.
+        #[arg(long, value_enum, default_value = "both")]
+        target: ValidationTarget,
+        /// Automatically fix validation issues (add frontmatter).
+        #[arg(long)]
+        autofix: bool,
+        /// Create backup files before autofix.
+        #[arg(long)]
+        backup: bool,
+        /// Output format: text or json.
+        #[arg(long, default_value = "text")]
+        format: String,
+        /// Only show skills with errors.
+        #[arg(long)]
+        errors_only: bool,
+    },
+    /// Analyzes skills for token usage, dependencies, and optimization suggestions.
+    Analyze {
+        /// Skills directory to analyze (default: all discovered skills).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+        /// Output format: text or json.
+        #[arg(long, default_value = "text")]
+        format: String,
+        /// Only show skills exceeding this token count.
+        #[arg(long)]
+        min_tokens: Option<usize>,
+        /// Include optimization suggestions.
+        #[arg(long, default_value_t = true)]
+        suggestions: bool,
+    },
     /// Interactive TUI for sync and pin management.
     Tui {
         /// Additional skill directories (repeatable).

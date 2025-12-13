@@ -1,0 +1,16 @@
+[package]
+name = "skrills-validate"
+version = "0.3.0"
+edition.workspace = true
+description = "Skill validation for Claude Code and Codex CLI"
+
+[dependencies]
+serde = { workspace = true }
+serde_yaml = "0.9"
+regex = "1"
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

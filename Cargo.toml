@@ -6,6 +6,8 @@ members = [
     "crates/cli",
     "crates/sync",
     "crates/subagents",
+    "crates/validate",
+    "crates/analyze",
 ]
 resolver = "2"
 
@@ -17,6 +19,8 @@ edition = "2021"
 rmcp = { version = "0.10", features = ["server", "transport-io"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
+regex = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 walkdir = "2"
 anyhow = "1"
