@@ -10,13 +10,13 @@ This document outlines key security considerations, features, and best practices
 
 ### Core Security Documents
 
-1. **[Threat Model](THREAT-MODEL.md)**
+1. **[Threat Model](threat-model.md)**
 - Detailed threat analysis.
 - Attack vectors and mitigations.
 - Deployment security considerations.
 - Risk assessment framework.
 
-2. **[Secrets Management](SECRETS-MANAGEMENT.md)**
+2. **Secrets Management** (TODO: create docs/secrets-management.md)
 - Guidelines for API key generation and rotation.
 - Best practices for TLS certificate management.
 - Recommendations for secure secrets storage.
@@ -32,12 +32,12 @@ This document outlines key security considerations, features, and best practices
 - `pastey` is a transitive replacement for `paste` (via `rmcp` v0.10.0+), replacing the unmaintained `paste` crate.
 - Prompt updates to `rmcp` upon security advisories; direct `pastey` pins or `rmcp` forks should be avoided unless absolutely necessary due to lack of maintenance.
 
-5. **[Rate Limiting](RATE-LIMITING.md)**
+5. **Rate Limiting** (TODO: create docs/rate-limiting.md)
 - Outlines planned rate limiting capabilities.
 - Details configuration options and the implementation roadmap.
 - Describes strategies for Denial-of-Service (DoS) protection.
 
-6. **[Audit Logging](AUDIT-LOGGING.md)**
+6. **Audit Logging** (TODO: create docs/audit-logging.md)
 - Requirements for security event logging.
 - Guidelines for mTLS authentication audit trails.
 - Guidance for SIEM integration and compliance considerations.
@@ -138,7 +138,7 @@ EOF
 
 **Status**: Design phase is complete, with implementation scheduled.
 
-**See**: [RATE-LIMITING.md](RATE-LIMITING.md)
+**See**: Rate Limiting (TODO: create docs/rate-limiting.md)
 
 ---
 
@@ -149,7 +149,7 @@ EOF
 
 **Status**: Partially implemented; basic logging through `tracing` is currently operational.
 
-**See**: [AUDIT-LOGGING.md](AUDIT-LOGGING.md)
+**See**: Audit Logging (TODO: create docs/audit-logging.md)
 
 ---
 
@@ -219,7 +219,7 @@ Communication between components occurs via standard I/O (stdio) or network, int
 - **CCPA**: Follows CCPA's privacy by design principles.
 - **SOC 2**: Meets SOC 2 requirements with robust audit logging and access controls.
 
-**See**: [Compliance in `AUDIT-LOGGING.md`](AUDIT-LOGGING.md#compliance)
+**See**: Compliance section in Audit Logging (TODO: create docs/audit-logging.md#compliance)
 
 ---
 

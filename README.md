@@ -1,5 +1,9 @@
 # Skrills
 
+<p align="center">
+  <img src="assets/icon.png" alt="Skrills Icon" width="128" height="128">
+</p>
+
 [![Crates.io](https://img.shields.io/crates/v/skrills.svg)](https://crates.io/crates/skrills)
 [![Docs](https://img.shields.io/github/actions/workflow/status/athola/skrills/book-pages.yml?branch=master&label=docs)](https://athola.github.io/skrills/)
 [![CI](https://img.shields.io/github/actions/workflow/status/athola/skrills/ci.yml?branch=master&label=ci)](https://github.com/athola/skrills/actions/workflows/ci.yml)
@@ -58,10 +62,15 @@ skrills render-preview --prompt "List debugging skills for MCP servers"
 skrills agent codex-dev
 ```
 
-### Run subagents (requires --features subagents)
+### Run subagents (enabled by default)
 ```bash
-skrills serve --features subagents
+skrills serve
 # Then from MCP client: list_subagents, run_subagent, get_run_status
+```
+
+To disable subagents, use:
+```bash
+skrills serve --no-default-features --features watch
 ```
 
 ## Autoload flow
@@ -129,7 +138,7 @@ flowchart LR
 
 ## Development
 ```bash
-make format && make lint && make test --quiet && make build
+make fmt lint test --quiet && make build
 ```
 - Rust toolchain ≥ 1.75 recommended.
 - End-to-end MCP tests live under `crates/server/tests/`; sample agents in `crates/subagents/`.

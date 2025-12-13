@@ -173,7 +173,7 @@ flowchart TD
 - Throttling of embedding generation for resource optimization.
 - Configurable burst allowances for legitimate traffic spikes.
 
-**See**: [Rate Limiting Configuration](RATE-LIMITING.md)
+**See**: Rate Limiting Configuration (TODO: create docs/rate-limiting.md)
 
 #### Audit Logging
 - Detailed logging of authentication failures.
@@ -181,7 +181,7 @@ flowchart TD
 - Tracking of all configuration changes.
 - Auditing of skill access and usage.
 
-**See**: [Audit Logging](AUDIT-LOGGING.md)
+**See**: Audit Logging (TODO: create docs/audit-logging.md)
 
 #### Secrets Management
 - Robust key rotation mechanisms.
@@ -189,7 +189,7 @@ flowchart TD
 - Encrypted storage for sensitive configuration data.
 - Documentation detailing secrets management procedures.
 
-**See**: [`docs/SECRETS-MANAGEMENT.md`](docs/secrets-management.md)
+**See**: Secrets Management (TODO: create docs/secrets-management.md)
 
 #### Additional Hardening
 - Implementation of skill signing and verification for content integrity.
