@@ -43,11 +43,6 @@ pub enum Commands {
         #[arg(long, default_value_t = false)]
         watch: bool,
     },
-    /// Lists discovered skills (debug).
-    #[command(alias = "list-skills")]
-    List,
-    /// Lists pinned skills.
-    ListPinned,
     /// Mirrors Claude assets (skills, agents, commands, MCP prefs) into Codex defaults and refreshes AGENTS.md.
     Mirror {
         /// Perform dry run (no file writes for commands/prefs; skills still hashed but not copied).
@@ -72,32 +67,6 @@ pub enum Commands {
         #[arg(long, default_value_t = false)]
         dry_run: bool,
     },
-    /// Pins one or more skills by name (substring match allowed if unique).
-    Pin {
-        /// Skill names or unique substrings to pin.
-        #[arg(required = true)]
-        skills: Vec<String>,
-    },
-    /// Unpin specific skills or everything with `--all`.
-    Unpin {
-        /// Skill names or unique substrings to unpin (ignored when `--all` is set).
-        skills: Vec<String>,
-        /// Removes every pinned skill.
-        #[arg(long)]
-        all: bool,
-    },
-    /// Enables or disables heuristic auto-pinning.
-    AutoPin {
-        /// Sets to `true` to enable, `false` to disable.
-        #[arg(long)]
-        enable: bool,
-    },
-    /// Shows recent autoload match history.
-    History {
-        /// Limits number of entries shown (most recent first).
-        #[arg(long, default_value_t = 10)]
-        limit: usize,
-    },
     /// Generates `<available_skills>` section in AGENTS.md for non-MCP agents.
     SyncAgents {
         /// Optional path to AGENTS.md (default: `./AGENTS.md`).
@@ -106,30 +75,6 @@ pub enum Commands {
         /// Additional skill directories (repeatable).
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
-    },
-    /// Emits hook JSON for autoload.
-    EmitAutoload {
-        /// Includes `~/.claude` skills in autoload output.
-        #[arg(long, default_value_t = crate::runtime::env_include_claude_default())]
-        include_claude: bool,
-        /// Maximum bytes of `additionalContext` payload.
-        #[arg(long)]
-        max_bytes: Option<usize>,
-        /// Prompt text to filter relevant skills (optional; uses env `SKRILLS_PROMPT` if not provided).
-        #[arg(long)]
-        prompt: Option<String>,
-        /// Embedding similarity threshold (0-1) for fuzzy prompt matching.
-        #[arg(long)]
-        embed_threshold: Option<f32>,
-        /// Enables heuristic auto-pinning based on recent prompt matches.
-        #[arg(long, default_value_t = crate::runtime::env_auto_pin_default())]
-        auto_pin: bool,
-        /// Additional skill directories (repeatable).
-        #[arg(long = "skill-dir", value_name = "DIR")]
-        skill_dirs: Vec<PathBuf>,
-        /// Emits diagnostics (included skills + skips).
-        #[arg(long, default_value_t = crate::runtime::env_diag_default())]
-        diagnose: bool,
     },
     /// Copies skills from `~/.claude` into `~/.codex/skills-mirror`.
     Sync {

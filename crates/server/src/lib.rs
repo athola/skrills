@@ -4,17 +4,13 @@
 //! modules for maintainability:
 //!
 //! - `app`: Core application entry point and MCP server.
-//! - `autoload`: Handles skill autoloading and rendering.
 //! - `doctor`: Provides configuration diagnostics.
-//! - `emit`: Manages hook emission for shell integration.
 //! - `sync`: Manages skill synchronization.
 //! - `tui`: Implements the interactive terminal UI.
 
 mod app;
-mod autoload;
 mod commands;
 mod doctor;
-mod emit;
 mod setup;
 mod sync;
 mod tui;
