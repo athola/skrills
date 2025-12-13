@@ -19,3 +19,6 @@ subagents = ["skrills-server/subagents"]
 [dependencies]
 skrills-server = { path = "../server", version = "0.3.0" }
 anyhow.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

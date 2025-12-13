@@ -50,11 +50,14 @@ pub fn env_render_mode_log() -> bool {
         .unwrap_or(false)
 }
 
-/// Checks if `SKRILLS_MANIFEST_MINIMAL` environment variable is set to true.
+/// Returns the `SKRILLS_MANIFEST_MINIMAL` setting (default: true).
+///
+/// When true, autoload returns skill descriptions only instead of full content.
+/// Set to "0" or "false" to load full skill content by default.
 pub fn env_manifest_minimal() -> bool {
     std::env::var("SKRILLS_MANIFEST_MINIMAL")
-        .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+        .map(|s| s != "0" && !s.eq_ignore_ascii_case("false"))
+        .unwrap_or(true)
 }
 
 /// Returns the maximum bytes for autoload content from `SKRILLS_MAX_BYTES` environment variable.

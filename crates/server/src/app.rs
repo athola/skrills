@@ -2216,11 +2216,13 @@ pub fn run() -> Result<()> {
     let cli = Cli::parse();
 
     // Check for first-run (only for user-facing commands, not for `serve` which is called by MCP)
+    // Also skip for batch/non-interactive commands like sync-all
     let command_ref = cli.command.as_ref();
     let is_serve = matches!(command_ref, Some(Commands::Serve { .. }) | None);
     let is_setup = matches!(command_ref, Some(Commands::Setup { .. }));
+    let is_batch = matches!(command_ref, Some(Commands::SyncAll { .. }));
 
-    if !is_serve && !is_setup {
+    if !is_serve && !is_setup && !is_batch {
         if let Ok(true) = crate::setup::is_first_run() {
             if let Ok(true) = crate::setup::prompt_first_run_setup() {
                 // Run interactive setup
@@ -3892,6 +3894,9 @@ mod tests {
         let snapshot_path = tmp.path().join(".codex/skills-cache.json");
         std::env::set_var("SKRILLS_CACHE_PATH", &snapshot_path);
         std::env::set_var("SKRILLS_INCLUDE_CLAUDE", "0");
+        // Ensure no manifest overrides affect roots order
+        std::env::remove_var("SKRILLS_MANIFEST");
+        std::env::remove_var("SKRILLS_INCLUDE_MARKETPLACE");
 
         let roots = skill_roots(&[])?;
         let roots_fingerprint: Vec<String> = roots
