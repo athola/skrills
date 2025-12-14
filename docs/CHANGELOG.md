@@ -1,7 +1,19 @@
 # Changelog
 
+## 0.3.1 - 2025-12-13
+- **NEW: Validation Crate** (`skrills-validate`): Validate skills for Claude Code (permissive) and Codex CLI (strict frontmatter requirements). Includes auto-fix capability to add missing frontmatter.
+- **NEW: Analysis Crate** (`skrills-analyze`): Token counting, dependency analysis, and optimization suggestions for skills.
+- **NEW: Validation Integration**: Sync operations now optionally validate skills with `--validate` and `--autofix` flags.
+- **Enhanced CLI**: Added `skrills validate` and `skrills analyze` commands for skill quality assurance.
+- **MCP Tools**: Added `validate-skills` and `analyze-skills` tools to the MCP server.
+- **Comprehensive Tests**: Added 53 tests for bidirectional skill sync covering validation, autofix, edge cases, and negative testing.
+- **Architecture Pivot**: Removed redundant skill-serving functionality now that Claude Code and Codex CLI have native skill support. Skrills now focuses on validation, analysis, and sync.
+- **REMOVED**: `autoload.rs`, `emit.rs`, and related autoload/emit functionality.
+- **REMOVED**: CLI commands: `list`, `list-pinned`, `pin`, `unpin`, `auto-pin`, `history`, `emit-autoload`, `render-preview`.
+- **REMOVED**: MCP tools: `list-skills`, `autoload-snippet`, `render-preview`, `runtime-status`, `set-runtime-options`, `pin-skills`, `unpin-skills`, `refresh-cache`.
+
 ## 0.3.0 - 2025-12-12
-- **NEW: Subagents Module**: Added comprehensive subagent functionality with MCP server support. Run subagents via `list_subagents`, `run_subagent`, and `get_run_status` tools.
+- **NEW: Subagents Module**: Added comprehensive subagent functionality with MCP server support. Run subagents via `list-subagents`, `run-subagent`, and `get-run-status` tools.
 - **NEW: Backend Support**: Implemented dual backend support for both Claude-style and Codex-style subagent execution with configurable adapters.
 - **NEW: Sync Infrastructure**: Introduced cross-agent sync orchestration with `SyncOrchestrator`, `ClaudeAdapter`, and `CodexAdapter` for multi-agent coordination.
 - **Documentation**: Added comprehensive AGENTS.md (1500+ lines) with subagent usage examples, configuration options, and best practices.

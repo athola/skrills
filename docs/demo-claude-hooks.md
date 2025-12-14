@@ -1,12 +1,11 @@
-# Claude Code Demo Script: Hook-Based Integration
+# Claude Code Demo Script: Skill Validation and Sync
 
-This script outlines a demonstration of the hook-based `skrills` integration for Claude Code. This integration uses semantic trigram matching to automatically inject relevant skills into your prompts, via the `prompt.on_user_prompt_submit` hook.
+This script demonstrates the `skrills` integration for Claude Code, focusing on skill validation, analysis, and synchronization.
 
 ## Prerequisites
 
 - Install Claude Code CLI.
-- Ensure your Claude Code environment is clean, meaning the `~/.claude/` directory should be in a default state.
-- Clone this repository locally.
+- Clone the skrills repository locally.
 
 ## Terminal Preparation
 
@@ -14,15 +13,12 @@ This script outlines a demonstration of the hook-based `skrills` integration for
 # Navigate to the skrills repository
 cd /path/to/skrills
 
-# Install skrills with Claude hook integration
+# Install skrills with Claude integration
 ./scripts/install.sh --client claude
 
 # Verify installation
-ls -la ~/.claude/hooks/
-ls -la ~/.claude/mcp_servers.json
+skrills doctor
 ```
-
-Confirm that the output lists the `prompt.on_user_prompt_submit` hook file and indicates the successful registration of the `skrills` MCP server.
 
 ## Demo Script
 
@@ -33,102 +29,92 @@ cd /path/to/skrills
 claude
 ```
 
-### 1. Verify Hook Integration
+### 1. Verify Installation
 
-**Prompt:** "What hooks are currently active in this Claude Code session?"
+**Prompt:** "Verify that skrills is properly installed and configured."
 
-**Expected behavior:** Claude should confirm that the `skrills` hook is active within the session.
+**Expected behavior:** Run `skrills doctor` to confirm MCP server registration.
 
-### 2. List Available Skills
+### 2. Validate Skills
 
-**Prompt:** "List all available skills from the skrills MCP server."
-
-**Expected behavior:** Claude should use the `list-skills` tool, displaying all `SKILL.md` files from `~/.codex/skills/`.
-
-### 3. Demonstrate Semantic Matching
-
-**Prompt:** "I need help with test-driven development for a new feature."
+**Prompt:** "Validate all my skills for Codex CLI compatibility."
 
 **Expected behavior:**
-- The hook intercepts the prompt and identifies keywords like "test-driven" and "development".
-- The system should automatically inject the `test-driven-development.md` skill.
-- Claude should then provide TDD guidance, based on the injected skill.
+- Claude uses `skrills validate --target codex`
+- Shows validation results for each skill
+- Highlights any missing frontmatter issues
 
-**Follow-up Prompt:** "Show me what skills were autoloaded for my previous prompt."
+### 3. Auto-Fix Validation Issues
 
-**Expected behavior:** Claude should use the `autoload-snippet` tool to detail which skills were matched and injected into the prompt.
-
-### 4. Test Keyword-Based Loading
-
-**Prompt:** "Help me debug a flaky integration test."
+**Prompt:** "Fix any skills that aren't compatible with Codex CLI."
 
 **Expected behavior:**
-- The system detects keywords: "debug", "flaky", "test".
-- It automatically injects skills such as `systematic-debugging.md` and `condition-based-waiting.md`.
-- Claude should offer a debugging workflow tailored to addressing race conditions.
+- Claude uses `skrills validate --target codex --autofix --backup`
+- Creates backups of modified files
+- Adds missing frontmatter automatically
 
-### 5. Verify Context-Aware Skills
+### 4. Analyze Token Usage
 
-**Prompt:** "I want to brainstorm different approaches for a caching layer."
+**Prompt:** "Which of my skills use the most tokens?"
 
 **Expected behavior:**
-- The system identifies keywords: "brainstorm", "approaches".
-- It injects the `brainstorming.md` skill.
-- Claude should then engage in the brainstorming skill's Socratic method, guiding the discussion.
+- Claude uses `skrills analyze --min-tokens 1000`
+- Lists skills sorted by token count
+- Identifies optimization candidates
 
-### 6. Show MCP Server Status
+### 5. Get Optimization Suggestions
 
-**Prompt:** "What's the status of the skrills MCP server?"
+**Prompt:** "Give me suggestions for optimizing my large skills."
 
-**Expected behavior:** Claude should display the MCP server's status via the `runtime-status` tool, detailing the skills directory, the number of loaded skills, current cache status, and relevant configuration settings.
+**Expected behavior:**
+- Claude uses `skrills analyze --suggestions`
+- Provides actionable recommendations
+- Identifies skills that could be split or simplified
 
-### 7. Demonstrate Skill Manifest
+### 6. Preview Sync Changes
 
-**Prompt:** "Show me the manifest of available skills with their trigger keywords."
+**Prompt:** "What would change if I synced my Claude skills to Codex?"
 
-**Expected behavior:** Claude should use MCP tools to show the skill metadata, which includes skill names, descriptions, and their associated trigger keywords.
+**Expected behavior:**
+- Claude uses `skrills sync-status --from claude`
+- Shows files that would be added/updated
+- Lists configuration differences
 
-### 8. Test Skill Pinning
+### 7. Sync Skills
 
-**Prompt:** "How do I pin the code review skill so it's always included?"
+**Prompt:** "Sync all my Claude configurations to Codex."
 
-**Expected behavior:** Claude should explain the process of pinning skills using `set-runtime-options`.
+**Expected behavior:**
+- Claude uses `skrills sync-all --from claude --skip-existing-commands`
+- Copies skills to mirror directory
+- Syncs commands, MCP servers, and preferences
+- Preserves existing local commands
 
-### 9. Refresh Skills Cache
+### 8. Launch TUI
 
-**Prompt:** "I just added a new skill file. Refresh the skills cache."
+**Prompt:** "Open the interactive sync manager."
 
-**Expected behavior:** Claude should demonstrate the `refresh-cache` tool, which reloads skill metadata without requiring a server restart.
-
-### 10. Show Token Efficiency
-
-**Prompt:** "How does semantic matching reduce token usage?"
-
-**Expected behavior:** Claude should explain how `skrills` reduces token usage by injecting only the most relevant skills, filtering them based on trigram similarity scores, and provide a comparative example of token consumption (all available skills versus only the matched skills).
-
-### 11. Claude-Specific Skill Sync
-
-**Prompt:** "Show me how to sync Claude Code skills into the skrills directory."
-
-**Expected behavior:** Claude should demonstrate the `sync-from-claude` tool. This tool mirrors skills from `~/.claude/skills` to `~/.codex/skills-mirror`, allowing other clients to use them.
+**Expected behavior:**
+- Claude runs `skrills tui`
+- Shows interactive terminal UI
+- Allows browsing and selecting sync operations
 
 ## Verification Checklist
 
-- [ ] Hook is active: `cat ~/.claude/hooks/prompt.on_user_prompt_submit`
-- [ ] MCP server is registered: `grep skrills ~/.claude/mcp_servers.json`
-- [ ] Skills auto-inject on relevant prompts.
-- [ ] MCP tools are accessible (`list-skills`, `runtime-status`).
-- [ ] Semantic matching works as expected.
-- [ ] Cache refresh works without a restart.
+- [ ] Doctor reports healthy configuration: `skrills doctor`
+- [ ] Validation runs successfully: `skrills validate --target both`
+- [ ] Analysis provides useful insights: `skrills analyze --suggestions`
+- [ ] Sync preview works: `skrills sync-status --from claude`
+- [ ] Full sync completes: `skrills sync-all --from claude`
 
 ## Recording a GIF
 
 ```bash
 # Record the session
-asciinema rec demo-claude-hooks.cast
+asciinema rec demo-skrills.cast
 
 # Convert to GIF
-npx agg demo-claude-hooks.cast demo-claude-hooks.gif \
+npx agg demo-skrills.cast demo-skrills.gif \
   --theme dracula \
   --font 'JetBrainsMono Nerd Font' \
   --speed 1.1 \
@@ -138,31 +124,35 @@ npx agg demo-claude-hooks.cast demo-claude-hooks.gif \
 
 ## Demo Flow Tips
 
-- To ensure adequate vertical spacing, press Enter twice after each Claude response.
-- For concise responses, append `(brief)` to your prompts.
-- When requesting skill lists, specify `show the first 5 only` to keep the output short.
-- Conclude the demonstration by asking: `Show token usage for this session.`
+- Press Enter twice after each Claude response for visual spacing
+- Append `(brief)` to prompts for concise responses
+- For JSON output, ask Claude to use `--format json`
 
-## Key Differentiators (Hook-Based)
+## Key Capabilities
 
-1. **Automatic Injection**: Skills are automatically loaded and injected without requiring explicit MCP tool calls.
-2. **Zero-Touch Workflow**: As you type prompts, relevant skills are automatically injected into the context.
-3. **Context-Aware**: The integration hook intercepts and analyzes the complete user prompt before it's submitted.
-4. **Claude-Native**: This integration is native, directly using Claude Code's hook system.
-5. **Session-Persistent**: The integration hook remains active for the entire Claude Code session.
+1. **Validation**: Ensures skills work across both Claude Code and Codex CLI
+2. **Auto-Fix**: Automatically adds missing frontmatter for Codex compatibility
+3. **Analysis**: Identifies token usage and optimization opportunities
+4. **Bidirectional Sync**: Keeps configurations in sync between CLIs
+5. **Dry-Run Support**: Preview changes before committing them
 
 ## Example Output Flow
 
 ```
-You: I need help with test-driven development
+You: Validate my skills for Codex
 
-[The integration hook intercepts your prompt, identifies a semantic match for "test-driven" and "development", and then automatically injects the `test-driven-development.md` skill into the context.]
+[Claude runs skrills validate --target codex]
 
-Claude: I can help you with test-driven development...
-[Provides TDD-specific guidance]
+Claude: I found 3 skills with issues:
+- my-skill.md: Missing 'name' in frontmatter
+- another-skill.md: Missing 'description' in frontmatter
+- large-skill.md: Description exceeds 500 characters
 
-You: What skills were loaded?
+Would you like me to auto-fix these issues?
 
-Claude: For your previous prompt, I automatically loaded:
-- test-driven-development.md (match score: 0.89)
+You: Yes, fix them
+
+[Claude runs skrills validate --target codex --autofix --backup]
+
+Claude: Fixed all 3 issues. Backups created with .bak extension.
 ```

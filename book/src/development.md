@@ -25,13 +25,6 @@ make test
 make build
 make build-min
 
-# Running common commands
-make serve-help
-make emit-autoload
-
-# End-to-end demo
-make demo-all
-
 # Documentation
 make docs         # Builds the rustdoc API documentation
 make book         # Compiles and automatically opens the mdBook
@@ -39,7 +32,6 @@ make book-serve   # Serves the mdBook with live-reloading capabilities, typicall
 
 # Cleaning up
 make clean
-make clean-demo
 ```
 
 ## Demo Sandbox

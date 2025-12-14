@@ -6,9 +6,9 @@ cargo run -p skrills-server --features subagents -- serve
 ```
 
 2. From a MCP client, call:
-- `list_subagents` to see available templates.
-- `run_subagent` with `{ "prompt": "list files" , "backend": "codex" }`.
-- `get_run_status` with the returned `run_id`.
+- `list-subagents` to see available templates.
+- `run-subagent` with `{ "prompt": "list files" , "backend": "codex" }`.
+- `get-run-status` with the returned `run_id`.
 
 3. Optional: set `SKRILLS_SUBAGENTS_DEFAULT_BACKEND=claude` to default to Claude-style adapter.
 

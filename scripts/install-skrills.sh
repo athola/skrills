@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Install skrills hook + MCP server registration for Codex or Claude.
+# Install skrills MCP server registration for Codex or Claude.
+# Skrills provides sync, validate, and analyze tools for skill management.
 # Flags:
 #   --universal        Also sync skills into ~/.agent/skills for cross-agent reuse.
-#   --universal-only   Only perform the universal sync (no hook/server install).
+#   --universal-only   Only perform the universal sync (no server install).
 # Environment:
 #   SKRILLS_MIRROR_SOURCE  Source directory for mirroring skills (default: ~/.claude).
 #                          Automatically skipped if same as install location.
@@ -81,12 +82,6 @@ if [ "$CLIENT" = "auto" ]; then
   fi
 fi
 
-HOOK_DIR=""
-HOOK_PATH=""
-if [ "$CLIENT" = "claude" ]; then
-  HOOK_DIR="$BASE_DIR/hooks"
-  HOOK_PATH="$HOOK_DIR/prompt.on_user_prompt_submit"
-fi
 MCP_PATH="$BASE_DIR/.mcp.json"
 CONFIG_TOML="$BASE_DIR/config.toml"
 REPO_ROOT="$(cd "${0%/*}/.." && pwd)"
@@ -107,7 +102,7 @@ clean_invalid_claude_model() {
   fi
 }
 
-clean_legacy_codex_mcp_skills() {
+clean_legacy_artifacts() {
   local removed=0
   local legacy_bins=(
     "$HOME/.codex/bin/codex-mcp-skills"
@@ -168,13 +163,32 @@ PY
       echo "Removed all MCP server entries from $CONFIG_TOML (now in .mcp.json)" || rm -f "$tmp"
   fi
 
-  # Clean legacy hook files that used the old name.
-  if [ -d "$HOOK_DIR" ]; then
-    find "$HOOK_DIR" -maxdepth 1 -type f -name '*codex-mcp-skills*' -exec rm -f {} \; 2>/dev/null
+  # Clean legacy hook files (emit-autoload hooks no longer needed)
+  local hook_dir="$BASE_DIR/hooks"
+  if [ -d "$hook_dir" ]; then
+    find "$hook_dir" -maxdepth 1 -type f -name '*codex-mcp-skills*' -exec rm -f {} \; 2>/dev/null
+    # Remove legacy skrills emit-autoload hook if it exists
+    local legacy_hook="$hook_dir/prompt.on_user_prompt_submit"
+    if [ -f "$legacy_hook" ] && grep -q "emit-autoload" "$legacy_hook" 2>/dev/null; then
+      rm -f "$legacy_hook" && echo "Removed legacy emit-autoload hook" && removed=1
+    fi
+  fi
+
+  # Remove legacy autoload instructions from AGENTS.md
+  local agents_md="$BASE_DIR/AGENTS.md"
+  if [ -f "$agents_md" ] && grep -q '<!-- skrills-integration-start -->' "$agents_md" 2>/dev/null; then
+    tmp=$(mktemp)
+    awk '
+      /<!-- skrills-integration-start -->/{ skip=1; next }
+      /<!-- skrills-integration-end -->/{ skip=0; next }
+      !skip { print }
+    ' "$agents_md" > "$tmp" && mv "$tmp" "$agents_md"
+    echo "Removed legacy autoload instructions from AGENTS.md"
+    removed=1
   fi
 
   if [ "$removed" -eq 1 ]; then
-    echo "Legacy codex-mcp-skills artifacts cleaned."
+    echo "Legacy artifacts cleaned."
   fi
 }
 
@@ -260,7 +274,7 @@ warm_cache_snapshot() {
     return
   fi
   echo "Priming skrills skill cache (first scan)..."
-  if "$BIN_PATH" list >/dev/null 2>&1; then
+  if "$BIN_PATH" validate --errors-only >/dev/null 2>&1; then
     echo "Cache primed; subsequent startups will reuse the snapshot."
   else
     echo "Warning: cache warmup failed (continuing without primed cache)." >&2
@@ -272,71 +286,9 @@ if [ "$UNIVERSAL_ONLY" -eq 1 ]; then
   exit 0
 fi
 
-clean_legacy_codex_mcp_skills
+clean_legacy_artifacts
 clean_invalid_claude_model
 install_subagents_config
-
-if [ -n "$HOOK_DIR" ]; then
-  mkdir -p "$HOOK_DIR"
-fi
-
-write_hook() {
-  local tmp
-  tmp=$(mktemp)
-  cat > "$tmp" <<'HOOK' || { echo "Warning: unable to write hook (permission denied?). Skipping hook install." >&2; rm -f "$tmp"; return; }
-#!/usr/bin/env bash
-# Inject SKILL.md content into Claude Code on prompt submit via skrills
-set -euo pipefail
-
-BIN="${SKRILLS_BIN:-$HOME/.cargo/bin/skrills}"
-REPO="${SKRILLS_REPO:-$HOME/skrills}"
-CMD_ARGS=(emit-autoload)
-
-# Optionally capture prompt text from stdin (Claude Code passes event payload on prompt submit).
-PROMPT_INPUT=""
-if [ ! -t 0 ]; then
-  if IFS= read -r -t 0.05 first_line; then
-    rest=$(cat)
-    PROMPT_INPUT="${first_line}${rest}"
-  fi
-fi
-
-if [ -n "${SKRILLS_PROMPT:-}" ]; then
-  PROMPT_INPUT="$SKRILLS_PROMPT"
-fi
-
-if [ -n "$PROMPT_INPUT" ]; then
-  CMD_ARGS+=(--prompt "$PROMPT_INPUT")
-fi
-
-run_cmd() {
-  if [ -x "$BIN" ]; then
-    "$BIN" "${CMD_ARGS[@]}"
-  elif [ -d "$REPO" ]; then
-    (cd "$REPO" && cargo run --quiet -- "${CMD_ARGS[@]}")
-  else
-    echo "{}" && exit 0
-  fi
-}
-
-OUTPUT=$(run_cmd || true)
-if [ -n "${OUTPUT:-}" ]; then
-  echo "$OUTPUT"
-fi
-HOOK
-  if mv "$tmp" "$HOOK_PATH"; then
-    chmod +x "$HOOK_PATH"
-    echo "Hook written to $HOOK_PATH"
-  else
-    echo "Warning: unable to move hook into place at $HOOK_PATH" >&2
-    rm -f "$tmp"
-  fi
-}
-if [ "$CLIENT" = "claude" ]; then
-  write_hook
-else
-  echo "Codex install: skipping hook install (using MCP instead)."
-fi
 
 # Configure MCP server for Claude Code using claude mcp add command
 if [ "$CLIENT" = "claude" ]; then
@@ -440,7 +392,7 @@ if [ "$CLIENT" = "codex" ]; then
       tmp=$(mktemp)
       # Prepend to existing config.toml (skrills entry first)
       cat > "$tmp" <<MCP_ENTRY
-# Skrills MCP server for skill management
+# Skrills MCP server for skill sync, validation, and analysis
 [mcp_servers.skrills]
 command = "$BIN_PATH"
 type = "stdio"
@@ -456,7 +408,7 @@ MCP_ENTRY
     # Create new config.toml with skrills MCP server
     mkdir -p "$(dirname "$CONFIG_TOML")"
     cat > "$CONFIG_TOML" <<CONFIG
-# Skrills MCP server for skill management
+# Skrills MCP server for skill sync, validation, and analysis
 [mcp_servers.skrills]
 command = "$BIN_PATH"
 type = "stdio"
@@ -464,86 +416,22 @@ args = ["serve"]
 CONFIG
     echo "Created $CONFIG_TOML with skrills MCP server"
   fi
-
-  # Install AGENTS.md with skill-loading instructions
-  agents_md="$BASE_DIR/AGENTS.md"
-  skrills_marker='<!-- skrills-integration-start -->'
-  if [ -f "$agents_md" ] && grep -q "$skrills_marker" "$agents_md" 2>/dev/null; then
-    echo "AGENTS.md already contains skrills integration"
-  else
-    tmp=$(mktemp)
-    # Add skrills integration to AGENTS.md
-    cat >> "$tmp" <<AGENTS_MD
-
-<!-- skrills-integration-start -->
-# Skrills Autoload Protocol
-
-## MANDATORY: Skill Loading Protocol
-
-Before responding to ANY user request, you MUST first call the `autoload-snippet` MCP tool to load relevant skills to complete the task.
-
-### Required Workflow
-
-1. **User sends a message**
-2. **Immediately call `autoload-snippet`** with the user's message as the `prompt` parameter
-3. **Read the returned skill content** - these are specialized instructions and patterns
-4. **Use the loaded skills** to inform your response to the user
-
-### Example Tool Call
-
-\`\`\`json
-{
-  "name": "autoload-snippet",
-  "arguments": {
-    "prompt": "<paste the user's full message here>"
-  }
-}
-\`\`\`
-
-### Why This Matters
-
-- Skills contain domain-specific best practices, patterns, and instructions
-- They are dynamically matched to your current task
-- Skipping skill loading means missing critical context required to perform your task correctly.
-- The skill content is working instructions, not just reference material
-
-### When to Load Skills
-
-- At the START of every new user message
-- When the user's task changes significantly within a conversation
-- After any context reset
-
-DO NOT skip this step. The skill content is essential for providing high-quality, contextually-appropriate responses.
-<!-- skrills-integration-end -->
-AGENTS_MD
-
-    # If AGENTS.md exists, append to it; otherwise create it
-    if [ -f "$agents_md" ]; then
-      cat "$agents_md" >> "$tmp"
-      mv "$tmp" "$agents_md"
-      echo "Updated AGENTS.md with skrills integration"
-    else
-      mv "$tmp" "$agents_md"
-      echo "Created AGENTS.md with skrills integration"
-    fi
-  fi
 fi
 
 if [ "$CLIENT" = "codex" ]; then
   warm_cache_snapshot
   echo ""
-  echo "Install complete for Codex (MCP-first)."
+  echo "Install complete for Codex."
   echo ""
   echo "The skrills MCP server has been registered in ~/.codex/config.toml"
-  echo "and AGENTS.md has been updated with skill-loading instructions."
-  echo ""
-  echo "Skills will be auto-loaded via MCP when Codex starts."
+  echo "Available tools: sync-skills, sync-commands, sync-all, validate-skills, analyze-skills"
 else
   warm_cache_snapshot
+  echo ""
   echo "Install complete for Claude Code."
   echo ""
-  echo "The skrills MCP server has been registered and hook installed."
-  echo "Skills will be auto-loaded on each prompt."
+  echo "The skrills MCP server has been registered."
+  echo "Available tools: sync-skills, sync-commands, sync-all, validate-skills, analyze-skills"
 fi
 
 if [ "$UNIVERSAL" -eq 1 ]; then

@@ -11,22 +11,23 @@
 [![Audit](https://img.shields.io/github/actions/workflow/status/athola/skrills/audit.yml?branch=master&label=audit)](https://github.com/athola/skrills/actions/workflows/audit.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Local MCP server that mirrors and auto-discovers skills, agents, commands, and preferences across Codex and Claude. Makes transferring your Claude Code experience over to Codex as seamless as possible. Designed for byte-safe mirroring, prompt-aware autoload, and transparent diagnostics.
+Skills support engine for Claude Code and Codex CLI. Validates, analyzes, and syncs skills bidirectionally between both CLIs.
 
 ## Why skrills
-- Discovers skills across Codex, Claude, cache, mirrors, and agent roots with priority-based matching and TTL controls.
-- Prompt-aware autoload using MCP server with pins, history, and byte budgets (manifest-first rendering).
+- **Validate skills** for Claude Code (permissive) and Codex CLI (strict frontmatter requirements) with auto-fix capability.
+- **Analyze skills** for token usage, dependencies, and optimization opportunities.
+- **Sync bidirectionally** between Claude Code and Codex CLI: skills, commands, MCP servers, and preferences.
 - Byte-for-byte command sync with `--skip-existing-commands` to avoid overwriting local commands; non-UTF-8 commands are preserved.
-- Full mirror + sync CLI/TUI (`mirror`, `sync`, `sync-all`, `tui`) and agent launcher (`skrills agent <name>`) so you can easily sync your skills from Claude and vice-versa.
-- Rich diagnostics: `render-preview`, `emit-autoload`, `runtime-status`, and TUI insights.
+- Full mirror + sync CLI/TUI (`mirror`, `sync`, `sync-all`, `tui`) and agent launcher (`skrills agent <name>`).
 
 ## Architecture (workspace crates)
-- `crates/server`: MCP server runtime.
-- `crates/discovery`: skill discovery, ranking, and autoload.
-- `crates/sync`: mirroring between Claude/Codex (skills, commands, prefs, MCP servers).
-- `crates/cli`: CLI entrypoints and TUI.
-- `crates/state`: persistent store for pins, history, manifests, and mirrors.
-- `crates/subagents`: shared subagent runtime and backends for Codex/Claude delegation (reused by CLI/TUI).
+- `crates/server`: MCP server runtime and CLI.
+- `crates/validate`: skill validation for Claude Code and Codex CLI compatibility.
+- `crates/analyze`: token counting, dependency analysis, and optimization suggestions.
+- `crates/sync`: bidirectional sync between Claude/Codex (skills, commands, prefs, MCP servers).
+- `crates/discovery`: skill discovery and ranking.
+- `crates/state`: persistent store for manifests and mirrors.
+- `crates/subagents`: shared subagent runtime and backends for Codex/Claude delegation.
 
 ## Installation
 - macOS / Linux:
@@ -42,19 +43,25 @@ Local MCP server that mirrors and auto-discovers skills, agents, commands, and p
 - From source: `cargo install --path crates/cli --force`
 
 ## Quickstart
-### Start MCP server over stdio
+### Validate skills for Codex compatibility
+```bash
+skrills validate --target codex
+skrills validate --target codex --autofix  # Auto-add missing frontmatter
+```
+
+### Analyze skill token usage
+```bash
+skrills analyze --min-tokens 1000 --suggestions
+```
+
+### Sync all configurations from Claude to Codex
+```bash
+skrills sync-all --from claude --skip-existing-commands
+```
+
+### Start MCP server
 ```bash
 skrills serve
-```
-
-### Mirror Claude assets into Codex (respects SKRILLS_MIRROR_SOURCE)
-```bash
-skrills sync-all --skip-existing-commands
-```
-
-### Preview autoload for a prompt
-```bash
-skrills render-preview --prompt "List debugging skills for MCP servers"
 ```
 
 ### Launch a mirrored agent spec
@@ -62,78 +69,56 @@ skrills render-preview --prompt "List debugging skills for MCP servers"
 skrills agent codex-dev
 ```
 
-### Run subagents (enabled by default)
-```bash
-skrills serve
-# Then from MCP client: list_subagents, run_subagent, get_run_status
-```
+## Validation
 
-To disable subagents, use:
-```bash
-skrills serve --no-default-features --features watch
-```
+Skrills validates skills against two targets:
 
-## Autoload flow
+- **Claude Code**: Permissive. Accepts any markdown with optional frontmatter.
+- **Codex CLI**: Strict. Requires YAML frontmatter with `name` (max 100 chars) and `description` (max 500 chars).
 
-```mermaid
-flowchart LR
-    U[User prompt]
-    subgraph Client
-      CX[Codex CLI / IDE]
-      CL[Claude Code]
-    end
-    S[skrills MCP server]
-    D["discover_skills<br/>cache snapshot + TTL"]
-    F["filter pins/history/preload<br/>+ prompt similarity"]
-    R["render bundle<br/>(manifest+content or manifest-only/gzip)"]
-    P["Append bundle to model prompt"]
+The `--autofix` flag adds missing frontmatter by deriving values from file path and content.
 
-    U --> CX
-    U --> CL
-    CX -->|"MCP tool: autoload-snippet(prompt)"| S
-    CL -->|"MCP: listResources + readResource"| S
-    S --> D --> F --> R --> P
-```
+## MCP Tools
 
-- Snapshot cache (`~/.codex/skills-cache.json` or `SKRILLS_CACHE_PATH`) is
-  reloaded on invalidation/first access before scanning; if a scan returns no
-  skills we keep the snapshot so snapshot-only skills remain available.
-- Rendering respects byte budgets: manifest-first with gzip fallback when
-  needed.
-- See `book/src/prompt-loading.md` and `docs/prompt-skill-loading.md` for the
-  full path and tuning flags.
+When running as an MCP server (`skrills serve`), the following tools are available:
+
+- `validate-skills` - Validate skills for CLI compatibility
+- `analyze-skills` - Analyze token usage and dependencies
+- `sync-skills` - Sync skills between Claude and Codex
+- `sync-commands` - Sync slash commands
+- `sync-mcp-servers` - Sync MCP configurations
+- `sync-preferences` - Sync preferences
+- `sync-all` - Sync everything
+- `sync-status` - Preview sync changes (dry run)
 
 ## CLI guide (selected)
-- `skrills mirror | sync | sync-all [--skip-existing-commands]` — mirror skills/agents/commands/prefs without overwriting existing commands.
+- `skrills validate [--target claude|codex|both] [--autofix]` — validate skills for CLI compatibility.
+- `skrills analyze [--min-tokens N] [--suggestions]` — analyze token usage and dependencies.
+- `skrills sync-all [--from claude|codex] [--skip-existing-commands]` — sync all configurations.
 - `skrills sync-commands [--from claude|codex] [--dry-run] [--skip-existing-commands]` — byte-for-byte command sync.
-- `skrills sync import | export | report` — cross-agent skill synchronization with Claude/Codex adapters.
-- `skrills render-preview` — show autoloaded skills for a prompt (no injection).
-- `skrills list` — list discovered skills with source priority.
-- `skrills pin | unpin` — manage pinned skills.
-- `skrills tui` — interactive pinning, mirroring, diagnostics.
-- `skrills emit-autoload` — emit the hook payload used by IDEs.
+- `skrills mirror` — mirror skills/agents/commands/prefs from Claude to Codex.
+- `skrills tui` — interactive sync and diagnostics.
 - `skrills doctor` — verify Codex MCP wiring.
+- `skrills agent <name>` — launch a mirrored agent spec.
 
 ## Configuration
 - `SKRILLS_MIRROR_SOURCE` — mirror source root (default `~/.claude`).
-- `SKRILLS_PINNED` — comma-separated skills pinned at startup.
 - `SKRILLS_CACHE_TTL_MS` — discovery cache TTL.
 - `SKRILLS_CLIENT` — force installer target (`codex` or `claude`).
 - `SKRILLS_NO_MIRROR=1` — skip post-install mirror on Codex.
-- Subagents ship **on by default**: binaries are built with the `subagents` feature and `scripts/install.sh` drops a default `subagents.toml` into your client root on first install.
-- `SKRILLS_SUBAGENTS_DEFAULT_BACKEND` — default backend (`codex` or `claude`) when launching subagents without an explicit backend.
-- `~/.codex/subagents.toml` — optional override file for subagent defaults (see `docs/config/subagents.example.toml`).
-- Manifest overrides: `~/.codex/skrills.manifest.json` (or client root). See `docs/runtime-options.md`.
+- Subagents ship **on by default**: binaries are built with the `subagents` feature.
+- `SKRILLS_SUBAGENTS_DEFAULT_BACKEND` — default backend (`codex` or `claude`) when launching subagents.
+- `~/.codex/subagents.toml` — optional override file for subagent defaults.
 
 ## Documentation
 - mdBook (primary): https://athola.github.io/skrills/
   - `book/src/cli.md` — CLI reference.
-  - `book/src/autoload.md` — autoload + truncation rules.
   - `book/src/persistence.md` — state, pins, cache, mirrors (byte-safe command sync).
   - `book/src/overview.md` — discovery priority and architecture.
   - `book/src/mcp-token-optimization.md` — token-saving patterns.
 - Additional docs in `docs/`:
-  - `docs/FAQ.md`, `docs/runtime-options.md`, `docs/security.md`, `docs/threat-model.md`, `docs/semver-policy.md`, `docs/CHANGELOG.md`, `docs/process-guidelines.md`, `docs/dependencies.md`, `docs/release-artifacts.md`, `docs/config/`.
+  - `docs/architecture.md`, `docs/adr/` — architecture decisions and crate structure.
+  - `docs/FAQ.md`, `docs/security.md`, `docs/threat-model.md`, `docs/semver-policy.md`, `docs/CHANGELOG.md`, `docs/process-guidelines.md`, `docs/dependencies.md`, `docs/release-artifacts.md`, `docs/config/`.
 - Examples and demos: `examples/`, `crates/subagents/`, and TUI walkthroughs.
 
 ## Development

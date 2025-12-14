@@ -292,7 +292,7 @@ Agents can be registered via:
 For detailed configuration options, see `docs/runtime-options.md` and `book/src/cli.md`.
 
 <!-- available_skills:start -->
-<!-- Skills discovered dynamically. Last sync: 1765582023 UTC. Total: 242 skills. -->
+<!-- Skills discovered dynamically. Last sync: 1765684709 UTC. Total: 242 skills. -->
 <!-- Use CLI commands for current skill inventory:
      skrills list              - List all discovered skills
      skrills list-pinned       - List pinned skills

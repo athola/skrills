@@ -150,7 +150,7 @@ jobs:
       - name: Run server integration tests
         run: |
           echo "Running server integration tests..."
-          cargo test -p skrills-server --test subagents_end_to_end --test runtime_tools -- --nocapture
+          cargo test -p skrills-server --test subagents_end_to_end -- --nocapture
           echo "Server integration tests completed!"
 
   subagents-integration-tests:
@@ -292,7 +292,6 @@ jobs:
             -p skrills_sync \
             -- \
             subagents_end_to_end \
-            runtime_tools \
             subagent_service_integration \
             sync_integration \
             --nocapture

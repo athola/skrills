@@ -342,6 +342,17 @@ pub fn hash_file(path: &Path) -> Result<String> {
 /// Determines the effective skill source priority order.
 ///
 /// Uses `override_order` if provided; otherwise, uses `default_priority`.
+///
+/// ```
+/// use skrills_discovery::{priority_with_override, SkillSource};
+///
+/// let override_order = vec![SkillSource::Mirror, SkillSource::Codex];
+/// let prioritized = priority_with_override(Some(override_order.clone()));
+/// assert_eq!(prioritized, override_order);
+///
+/// let fallback = priority_with_override(None);
+/// assert!(fallback.starts_with(&[SkillSource::Codex, SkillSource::Mirror]));
+/// ```
 pub fn priority_with_override(override_order: Option<Vec<SkillSource>>) -> Vec<SkillSource> {
     override_order.unwrap_or_else(default_priority)
 }

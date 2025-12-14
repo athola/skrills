@@ -1,38 +1,67 @@
-# Skrills Autoload Protocol
+# Skrills Integration Guide for Codex Agents
 
-## MANDATORY: Skill Loading Protocol
+## Overview
 
-Before responding to ANY user request, you MUST first call the `autoload-snippet` MCP tool to load relevant skills to complete the task.
+Skrills is a skills support engine that validates, analyzes, and syncs skills between Claude Code and Codex CLI. This template describes how to integrate skrills into Codex agent workflows.
 
-### Required Workflow
+## Available MCP Tools
 
-1. **User sends a message**
-2. **Immediately call `autoload-snippet`** with the user's message as the `prompt` parameter
-3. **Read the returned skill content** - these are specialized instructions and patterns
-4. **Use the loaded skills** to inform your response to the user
+When skrills is registered as an MCP server, the following tools are available:
 
-### Example Tool Call
+### Validation Tools
 
-```json
-{
-  "name": "autoload-snippet",
-  "arguments": {
-    "prompt": "<paste the user's full message here>"
+- **`validate-skills`**: Validate skills for Claude Code and/or Codex CLI compatibility
+  ```json
+  {
+    "name": "validate-skills",
+    "arguments": {
+      "target": "codex",
+      "autofix": true
+    }
   }
-}
-```
+  ```
 
-### Why This Matters
+- **`analyze-skills`**: Analyze skills for token usage and optimization opportunities
+  ```json
+  {
+    "name": "analyze-skills",
+    "arguments": {
+      "min_tokens": 1000,
+      "suggestions": true
+    }
+  }
+  ```
 
-- Skills contain domain-specific best practices, patterns, and instructions
-- They are dynamically matched to your current task
-- Skipping skill loading means missing critical context required to perform your task correctly
-- The skill content is working instructions, not just reference material
+### Sync Tools
 
-### When to Load Skills
+- **`sync-from-claude`**: Copy Claude skills into Codex mirror
+- **`sync-skills`**: Sync skills between agents
+- **`sync-commands`**: Sync slash commands
+- **`sync-mcp-servers`**: Sync MCP server configurations
+- **`sync-preferences`**: Sync preferences
+- **`sync-all`**: Sync all configurations
+- **`sync-status`**: Preview sync changes (dry run)
 
-- At the START of every new user message
-- When the user's task changes significantly within a conversation
-- After any context reset
+## Recommended Workflows
 
-DO NOT skip this step. The skill content is essential for providing high-quality, contextually-appropriate responses.
+### Skill Quality Assurance
+
+When the user asks about skill compatibility or quality:
+
+1. Run `validate-skills` with `target: "both"` to check cross-CLI compatibility
+2. If issues found, suggest using `autofix: true`
+3. Run `analyze-skills` to identify optimization opportunities
+
+### Configuration Sync
+
+When the user wants to sync configurations:
+
+1. Run `sync-status` to preview changes
+2. Explain what will be synced
+3. Run `sync-all` with appropriate options
+
+### Best Practices
+
+- Always preview with `sync-status` before running `sync-all`
+- Use `skip_existing_commands: true` to preserve local customizations
+- Run `validate-skills` after syncing to verify compatibility

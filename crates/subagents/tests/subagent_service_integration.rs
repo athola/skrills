@@ -445,7 +445,7 @@ mod subagent_service_tests {
 
         let result = ctx
             .service
-            .handle_call("run_subagent", Some(args.as_object().unwrap()))
+            .handle_call("run-subagent", Some(args.as_object().unwrap()))
             .await
             .unwrap();
         assert!(!result.content.is_empty());
