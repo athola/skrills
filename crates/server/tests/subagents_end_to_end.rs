@@ -234,6 +234,20 @@ async fn given_server_with_multiple_backends_when_switching_default_then_routes_
     let target_dir = std::env::var("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| workspace_root.join("target"));
+    let cargo_home = std::env::var("CARGO_HOME").unwrap_or_else(|_| {
+        workspace_root
+            .join(".cargo-home")
+            .to_string_lossy()
+            .into_owned()
+    });
+
+    let status = Command::new("cargo")
+        .args(["build", "-p", "skrills", "--features", "subagents"])
+        .env("CARGO_HOME", &cargo_home)
+        .status()
+        .await?;
+    assert!(status.success(), "cargo build failed to produce skrills");
+
     let binary_path = target_dir.join("debug").join(if cfg!(windows) {
         "skrills.exe"
     } else {
