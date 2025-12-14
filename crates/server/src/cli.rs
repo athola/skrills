@@ -214,3 +214,100 @@ pub enum Commands {
         mirror_source: Option<PathBuf>,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(v) = &self.previous {
+                std::env::set_var(self.key, v);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn set_env_var(key: &'static str, value: Option<&str>) -> EnvVarGuard {
+        let previous = std::env::var(key).ok();
+        if let Some(v) = value {
+            std::env::set_var(key, v);
+        } else {
+            std::env::remove_var(key);
+        }
+        EnvVarGuard { key, previous }
+    }
+
+    #[test]
+    fn parse_defaults_to_serve_when_no_subcommand() {
+        let cli = Cli::try_parse_from(["skrills"]).expect("default parse should succeed");
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn parse_serve_arguments() {
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "serve",
+            "--skill-dir",
+            "/tmp/skills",
+            "--cache-ttl-ms",
+            "1500",
+            "--trace-wire",
+        ])
+        .expect("serve args should parse");
+
+        match cli.command {
+            Some(Commands::Serve {
+                skill_dirs,
+                cache_ttl_ms,
+                trace_wire,
+                #[cfg(feature = "watch")]
+                watch,
+            }) => {
+                assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/skills")]);
+                assert_eq!(cache_ttl_ms, Some(1500));
+                assert!(trace_wire);
+                #[cfg(feature = "watch")]
+                assert!(!watch);
+            }
+            _ => panic!("expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn sync_uses_env_include_marketplace_default() {
+        let _guard = env_guard();
+        let _env = set_env_var("SKRILLS_INCLUDE_MARKETPLACE", Some("true"));
+
+        let cli = Cli::try_parse_from(["skrills", "sync"]).expect("sync should parse with env");
+
+        match cli.command {
+            Some(Commands::Sync {
+                include_marketplace,
+            }) => assert!(include_marketplace),
+            _ => panic!("expected Sync command"),
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn validate_rejects_invalid_target() {
+        let _guard = env_guard();
+        let _ = Cli::try_parse_from(["skrills", "validate", "--target", "invalid"]).unwrap();
+    }
+}

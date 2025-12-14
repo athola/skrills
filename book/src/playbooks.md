@@ -1,16 +1,102 @@
 # Playbooks and Demo Scripts
 
-These scripted walkthroughs are for team training and validating new builds. They are from the demo scripts in [`docs/`](docs/) and the design spikes in [`docs/plans/`](docs/plans/).
+These scripted walkthroughs are for team training and validating new builds.
 
-## Claude Code (Hook Path)
+## Validation Workflow
 
-- **Installation**: Install `skrills` with Claude hook support: `./scripts/install.sh --client claude`.
-- **Verification**: Confirm the `prompt.on_user_prompt_submit` hook and `skrills` MCP server are registered.
-- **Demo Flow**: Start the demo by asking Claude to list active hooks, then list skills with `list-skills`. Then, use prompts to trigger autoloading (e.g., requests for TDD guidance or debugging flaky tests). Finish by displaying the `autoload-snippet` output to show the dynamically matched skills.
+Validate skills for cross-CLI compatibility:
 
-## Design Spikes for Future Consideration
+```bash
+# 1. Install skrills
+./scripts/install.sh --client both
 
-- **[Skill Autoload via MCP](docs/plans/2025-11-22-skill-autoload-mcp.md) (2025-11-22)**: Focuses on unified autoload, syncing from `~/.claude`, enforcing `max-bytes` limits, and hook-friendly JSON output.
-- **[Modular Workspaces](docs/plans/2025-11-25-modular-workspaces.md) (2025-11-25)**: Splits crates by responsibility for a thin CLI and reusable core logic.
+# 2. Validate all skills
+skrills validate --target both
 
-These design spikes provide foundational insights into the current architecture. Review them thoroughly before changing autoloading behavior.
+# 3. Fix Codex compatibility issues
+skrills validate --target codex --autofix --backup
+
+# 4. Verify fixes
+skrills validate --target both --errors-only
+```
+
+## Sync Workflow
+
+Sync configurations from Claude to Codex:
+
+```bash
+# 1. Preview changes
+skrills sync-status --from claude
+
+# 2. Sync everything
+skrills sync-all --from claude --skip-existing-commands
+
+# 3. Validate synced skills
+skrills validate --target codex
+```
+
+## Analysis Workflow
+
+Identify skills that need optimization:
+
+```bash
+# 1. Find large skills
+skrills analyze --min-tokens 1000
+
+# 2. Get optimization suggestions
+skrills analyze --min-tokens 2000 --suggestions
+
+# 3. Export for review
+skrills analyze --format json > skills-analysis.json
+```
+
+## Claude Code Integration
+
+```bash
+# Install with Claude hook support
+./scripts/install.sh --client claude
+
+# Verify installation
+skrills doctor
+
+# Sync skills from Claude to Codex
+skrills sync-all --from claude
+```
+
+## Codex Integration
+
+```bash
+# Install with Codex MCP support
+./scripts/install.sh --client codex
+
+# Verify MCP configuration
+skrills doctor
+
+# Validate skills for Codex
+skrills validate --target codex
+```
+
+## TUI Workflow
+
+Interactive sync and management:
+
+```bash
+# Launch TUI
+skrills tui
+
+# Navigate with arrow keys
+# Select items with Space
+# Confirm with Enter
+```
+
+## CI/CD Integration
+
+Add to your CI pipeline:
+
+```bash
+# Fail on validation errors
+skrills validate --target both --errors-only --format json
+
+# Check for large skills
+skrills analyze --min-tokens 3000 --format json
+```

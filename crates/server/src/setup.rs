@@ -66,6 +66,10 @@ pub struct SetupConfig {
 }
 
 /// Checks if skrills is already set up for a given client.
+///
+/// Setup is detected by checking for MCP server registration:
+/// - Claude: .mcp.json containing "skrills" entry
+/// - Codex: config.toml containing [mcp_servers.skrills]
 pub fn is_setup(client: Client) -> Result<bool> {
     let base_dir = client.base_dir()?;
 
@@ -80,31 +84,10 @@ pub fn is_setup(client: Client) -> Result<bool> {
                     }
                 }
             }
-
-            // Check for hook
-            let hook_path = base_dir.join("hooks/prompt.on_user_prompt_submit");
-            if hook_path.exists() {
-                if let Ok(content) = fs::read_to_string(&hook_path) {
-                    if content.contains("skrills") {
-                        return Ok(true);
-                    }
-                }
-            }
-
             Ok(false)
         }
         Client::Codex => {
-            // Check for AGENTS.md with skrills integration
-            let agents_path = base_dir.join("AGENTS.md");
-            if agents_path.exists() {
-                if let Ok(content) = fs::read_to_string(&agents_path) {
-                    if content.contains("<!-- skrills-integration-start -->") {
-                        return Ok(true);
-                    }
-                }
-            }
-
-            // Also check for MCP server registration in config.toml
+            // Check for MCP server registration in config.toml
             let config_path = base_dir.join("config.toml");
             if config_path.exists() {
                 if let Ok(content) = fs::read_to_string(&config_path) {
@@ -113,7 +96,6 @@ pub fn is_setup(client: Client) -> Result<bool> {
                     }
                 }
             }
-
             Ok(false)
         }
     }
@@ -330,7 +312,6 @@ fn setup_claude(bin_dir: &Path, current_exe: &Path) -> Result<()> {
     // Create directories
     fs::create_dir_all(bin_dir)
         .context(format!("Failed to create directory: {}", bin_dir.display()))?;
-    fs::create_dir_all(base_dir.join("hooks")).context("Failed to create hooks directory")?;
 
     // Copy/link binary to bin_dir
     let target_bin = bin_dir.join("skrills");
@@ -352,65 +333,9 @@ fn setup_claude(bin_dir: &Path, current_exe: &Path) -> Result<()> {
     // Also copy to ~/.cargo/bin for consistency
     copy_to_cargo_bin(&target_bin)?;
 
-    // Create hook
-    create_claude_hook(&base_dir, &target_bin)?;
-
     // Register MCP server
     register_claude_mcp(&base_dir, &target_bin)?;
 
-    Ok(())
-}
-
-/// Creates Claude Code prompt hook.
-fn create_claude_hook(base_dir: &Path, bin_path: &Path) -> Result<()> {
-    let hook_path = base_dir.join("hooks/prompt.on_user_prompt_submit");
-
-    let hook_content = format!(
-        r#"#!/usr/bin/env bash
-# Inject SKILL.md content into Claude Code on prompt submit via skrills
-set -euo pipefail
-
-BIN="{bin}"
-CMD_ARGS=(emit-autoload)
-
-# Optionally capture prompt text from stdin
-PROMPT_INPUT=""
-if [ ! -t 0 ]; then
-  if IFS= read -r -t 0.05 first_line; then
-    rest=$(cat)
-    PROMPT_INPUT="${{first_line}}${{rest}}"
-  fi
-fi
-
-if [ -n "${{SKRILLS_PROMPT:-}}" ]; then
-  PROMPT_INPUT="$SKRILLS_PROMPT"
-fi
-
-if [ -n "$PROMPT_INPUT" ]; then
-  CMD_ARGS+=(--prompt "$PROMPT_INPUT")
-fi
-
-if [ -x "$BIN" ]; then
-  "$BIN" "${{CMD_ARGS[@]}}"
-else
-  echo "{{}}" && exit 0
-fi
-"#,
-        bin = bin_path.display()
-    );
-
-    fs::write(&hook_path, hook_content)
-        .context(format!("Failed to write hook to {}", hook_path.display()))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&hook_path)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&hook_path, perms)?;
-    }
-
-    println!("  Created hook at {}", hook_path.display());
     Ok(())
 }
 
@@ -498,9 +423,6 @@ fn setup_codex(bin_dir: &Path, current_exe: &Path) -> Result<()> {
     // Also copy to ~/.cargo/bin for consistency
     copy_to_cargo_bin(&target_bin)?;
 
-    // Install AGENTS.md with skill-loading instructions
-    install_codex_agents_md(&base_dir)?;
-
     // Register MCP server in config.toml
     register_codex_mcp(&base_dir, &target_bin)?;
 
@@ -580,97 +502,6 @@ fn copy_to_cargo_bin(source_bin: &Path) -> Result<()> {
             // Silently skip if copy fails (e.g., file in use)
         }
     }
-    Ok(())
-}
-
-/// Marker to detect if AGENTS.md already has `skrills` content.
-const SKRILLS_AGENTS_MARKER: &str = "<!-- skrills-integration-start -->";
-
-/// Template content for AGENTS.md skill-loading instructions
-const SKRILLS_AGENTS_TEMPLATE: &str = r#"
-<!-- skrills-integration-start -->
-# Skrills Autoload Protocol
-
-## MANDATORY: Skill Loading Protocol
-
-Before responding to ANY user request, you MUST first call the `autoload-snippet` MCP tool to load relevant skills to complete the task.
-
-### Required Workflow
-
-1. **User sends a message**
-2. **Immediately call `autoload-snippet`** with the user's message as the `prompt` parameter
-3. **Read the returned skill content** - these are specialized instructions and patterns
-4. **Use the loaded skills** to inform your response to the user
-
-### Example Tool Call
-
-```json
-{
-  "name": "autoload-snippet",
-  "arguments": {
-    "prompt": "<paste the user's full message here>"
-  }
-}
-```
-
-### Why This Matters
-
-- Skills contain domain-specific best practices, patterns, and instructions
-- They are dynamically matched to your current task
-- Skipping skill loading means missing critical context required to perform your task correctly.
-- The skill content is working instructions, not just reference material
-
-### When to Load Skills
-
-- At the START of every new user message
-- When the user's task changes significantly within a conversation
-- After any context reset
-
-DO NOT skip this step. The skill content is essential for providing high-quality, contextually-appropriate responses.
-<!-- skrills-integration-end -->
-"#;
-
-/// Installs or appends AGENTS.md with skill-loading instructions for Codex.
-fn install_codex_agents_md(base_dir: &Path) -> Result<()> {
-    let agents_path = base_dir.join("AGENTS.md");
-
-    // Read existing content if file exists
-    let existing_content = if agents_path.exists() {
-        fs::read_to_string(&agents_path).unwrap_or_default()
-    } else {
-        String::new()
-    };
-
-    // Check if skrills content is already present
-    if existing_content.contains(SKRILLS_AGENTS_MARKER) {
-        println!("  AGENTS.md already contains skrills integration");
-        return Ok(());
-    }
-
-    // Append the skrills content
-    let new_content = if existing_content.is_empty() {
-        SKRILLS_AGENTS_TEMPLATE.trim_start().to_string()
-    } else {
-        // Ensure there's a blank line before appending
-        let separator = if existing_content.ends_with('\n') {
-            "\n"
-        } else {
-            "\n\n"
-        };
-        format!(
-            "{}{}{}",
-            existing_content,
-            separator,
-            SKRILLS_AGENTS_TEMPLATE.trim()
-        )
-    };
-
-    fs::write(&agents_path, new_content).context(format!(
-        "Failed to write AGENTS.md to {}",
-        agents_path.display()
-    ))?;
-
-    println!("  Updated AGENTS.md at {}", agents_path.display());
     Ok(())
 }
 
@@ -948,13 +779,14 @@ fn print_next_steps(config: &SetupConfig) -> Result<()> {
             Client::Claude => {
                 println!("\n  Claude Code:");
                 println!("    - Restart Claude Code to load the MCP server");
-                println!("    - Skills will be auto-loaded on each prompt");
+                println!("    - Use 'skrills sync' to sync skills to Codex");
+                println!("    - Use 'skrills validate' to check skill structure");
             }
             Client::Codex => {
                 println!("\n  Codex:");
                 println!("    - MCP server registered in ~/.codex/config.toml");
-                println!("    - AGENTS.md installed with skill-loading instructions");
-                println!("    - Skills will be auto-loaded via MCP when Codex starts");
+                println!("    - Use 'skrills sync' to sync skills from Claude");
+                println!("    - Use 'skrills validate' to check skill structure");
             }
         }
     }

@@ -108,7 +108,7 @@ impl SubagentService {
 
         let mut tools = vec![
             Tool {
-                name: "list_subagents".into(),
+                name: "list-subagents".into(),
                 title: Some("List subagent templates".into()),
                 description: Some("List available subagent templates and capabilities".into()),
                 input_schema: Arc::new(JsonObject::default()),
@@ -118,7 +118,7 @@ impl SubagentService {
                 meta: None,
             },
             Tool {
-                name: "run_subagent".into(),
+                name: "run-subagent".into(),
                 title: Some("Run a subagent".into()),
                 description: Some("Run a subagent with optional backend/template selection".into()),
                 input_schema: run_schema.clone(),
@@ -128,7 +128,7 @@ impl SubagentService {
                 meta: None,
             },
             Tool {
-                name: "get_run_status".into(),
+                name: "get-run-status".into(),
                 title: Some("Get subagent run status".into()),
                 description: Some("Fetch status for a run".into()),
                 input_schema: run_id_schema.clone(),
@@ -138,7 +138,7 @@ impl SubagentService {
                 meta: None,
             },
             Tool {
-                name: "stop_run".into(),
+                name: "stop-run".into(),
                 title: Some("Stop a running subagent".into()),
                 description: Some("Attempt to cancel a running subagent".into()),
                 input_schema: run_id_schema.clone(),
@@ -148,7 +148,7 @@ impl SubagentService {
                 meta: None,
             },
             Tool {
-                name: "get_run_history".into(),
+                name: "get-run-history".into(),
                 title: Some("Recent runs".into()),
                 description: Some("Return recent subagent runs".into()),
                 input_schema: history_schema.clone(),
@@ -161,7 +161,7 @@ impl SubagentService {
 
         // Codex-only extended tools
         tools.push(Tool {
-            name: "run_subagent_async".into(),
+            name: "run-subagent-async".into(),
             title: Some("Run subagent asynchronously".into()),
             description: Some("Start background run (Codex-capable backends).".into()),
             input_schema: run_schema,
@@ -171,7 +171,7 @@ impl SubagentService {
             meta: None,
         });
         tools.push(Tool {
-            name: "get_async_status".into(),
+            name: "get-async-status".into(),
             title: Some("Status for async run".into()),
             description: Some("Fetch status for async runs".into()),
             input_schema: run_id_schema,
@@ -181,7 +181,7 @@ impl SubagentService {
             meta: None,
         });
         tools.push(Tool {
-            name: "download_transcript_secure".into(),
+            name: "download-transcript-secure".into(),
             title: Some("Download secure transcript".into()),
             description: Some("Fetch encrypted reasoning transcript (Codex only)".into()),
             input_schema: Arc::new(JsonObject::default()),
@@ -199,13 +199,17 @@ impl SubagentService {
         args: Option<&JsonMap<String, Value>>,
     ) -> Result<CallToolResult> {
         match name {
-            "list_subagents" => self.handle_list_subagents().await,
-            "run_subagent" => self.handle_run(false, args).await,
-            "run_subagent_async" => self.handle_run(true, args).await,
-            "get_run_status" | "get_async_status" => self.handle_status(args).await,
-            "stop_run" => self.handle_stop(args).await,
-            "get_run_history" => self.handle_history(args).await,
-            "download_transcript_secure" => self.handle_transcript().await,
+            "list-subagents" | "list_subagents" => self.handle_list_subagents().await,
+            "run-subagent" | "run_subagent" => self.handle_run(false, args).await,
+            "run-subagent-async" | "run_subagent_async" => self.handle_run(true, args).await,
+            "get-run-status" | "get_async_status" | "get_run_status" | "get-async-status" => {
+                self.handle_status(args).await
+            }
+            "stop-run" | "stop_run" => self.handle_stop(args).await,
+            "get-run-history" | "get_run_history" => self.handle_history(args).await,
+            "download-transcript-secure" | "download_transcript_secure" => {
+                self.handle_transcript().await
+            }
             other => Err(anyhow!("unknown tool: {other}")),
         }
     }
@@ -349,9 +353,9 @@ mod tests {
             SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
         let tools = service.tools();
         let names: Vec<_> = tools.iter().map(|t| t.name.as_ref()).collect();
-        assert!(names.contains(&"run_subagent"));
-        assert!(names.contains(&"run_subagent_async"));
-        assert!(names.contains(&"download_transcript_secure"));
+        assert!(names.contains(&"run-subagent"));
+        assert!(names.contains(&"run-subagent-async"));
+        assert!(names.contains(&"download-transcript-secure"));
     }
 
     #[tokio::test]
@@ -371,5 +375,19 @@ mod tests {
             .unwrap();
         let status = service.store.get_status(run_id).await.unwrap().unwrap();
         assert_eq!(status.state, RunState::Running);
+    }
+
+    #[tokio::test]
+    async fn snake_case_aliases_are_supported() {
+        let service =
+            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        let args = json!({"prompt": "hello", "backend": "codex"})
+            .as_object()
+            .cloned();
+        let result = service
+            .handle_call("run_subagent", args.as_ref())
+            .await
+            .unwrap();
+        assert!(result.structured_content.is_some());
     }
 }

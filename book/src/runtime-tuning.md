@@ -1,23 +1,75 @@
-# Runtime Configuration and Tuning
+# Runtime Configuration
 
-Runtime overrides, saved in `~/.codex/skills-runtime.json`, allow on-the-fly adjustments to autoload rendering parameters through MCP tools, without service restarts. These adjustments are useful for debugging manifest parsing or controlling payload sizes.
+This chapter covers the configuration options available for tuning skrills behavior.
 
-## Tools
+## Environment Variables
 
-- **`runtime-status`**: This tool displays current overrides and relevant environment settings.
-- **`set-runtime-options`**: This tool saves `manifest_first` and `render_mode_log` settings directly to the runtime configuration file.
-- **`render-preview`**: Executes a dry-run of the autoload rendering process, providing size estimates before actual context injection.
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SKRILLS_MIRROR_SOURCE` | Mirror source root directory | `~/.claude` |
+| `SKRILLS_CACHE_TTL_MS` | Discovery cache TTL in milliseconds | `60000` |
+| `SKRILLS_CACHE_PATH` | Override skills cache file path | `~/.codex/skills-cache.json` |
+| `SKRILLS_CLIENT` | Force installer target (`codex` or `claude`) | Auto-detected |
+| `SKRILLS_NO_MIRROR` | Skip post-install mirror on Codex (`1` to enable) | Disabled |
+| `SKRILLS_SUBAGENTS_DEFAULT_BACKEND` | Default subagent backend (`codex` or `claude`) | `codex` |
 
-**CLI Reminders**:
-- **Check Version**: To check the installed version, run `skrills --version`.
-- **Discover Commands**: To explore commands and their usage, run `skrills --help`.
+## Configuration Files
 
-## Precedence
+### Skills Manifest
 
-Runtime overrides have the highest precedence and override environment variables such as `SKRILLS_MANIFEST_FIRST` and `SKRILLS_RENDER_MODE_LOG`. These environment variables, in turn, override any default settings in the manifest file. This hierarchy allows safe experimentation and dynamic adjustments without directly modifying skill files.
+The `~/.codex/skills-manifest.json` file controls skill discovery:
+
+```json
+{
+  "priority": ["codex", "mirror", "claude", "agent"],
+  "expose_agents": true,
+  "cache_ttl_ms": 60000
+}
+```
+
+Fields:
+- `priority`: Order of skill directory precedence
+- `expose_agents`: Whether to expose agent definitions
+- `cache_ttl_ms`: Cache time-to-live in milliseconds
+
+### Subagents Configuration
+
+The `~/.codex/subagents.toml` file configures subagent defaults:
+
+```toml
+default_backend = "codex"
+```
+
+## CLI Hints
+
+- **Check version**: `skrills --version`
+- **List commands**: `skrills --help`
+- **Diagnose setup**: `skrills doctor`
 
 ## Practical Recipes
 
-- **Force Manifest-First**: To prioritize manifest-based skill loading, especially when client behavior is verbose, use `set-runtime-options '{"manifest_first": true}'`.
-- **Enable Render Logging**: To debug truncation issues, enable render logging with `set-runtime-options '{"render_mode_log": true}'` and monitor logs for warnings related to payload size.
-- **Gate Payloads**: Run `render-preview` with `max_bytes` and `embed_threshold` configured. This allows the system to block or warn if truncation flags are in the preview.
+### Speed Up Discovery
+
+Increase cache TTL for stable skill sets:
+
+```bash
+export SKRILLS_CACHE_TTL_MS=300000  # 5 minutes
+```
+
+### Use Custom Mirror Source
+
+Point to a different Claude installation:
+
+```bash
+export SKRILLS_MIRROR_SOURCE=/path/to/custom/claude
+skrills sync-all
+```
+
+### Isolate Test Environments
+
+Use separate cache files for parallel testing:
+
+```bash
+export SKRILLS_CACHE_PATH=/tmp/test-skills-cache.json
+skrills validate --target codex
+```

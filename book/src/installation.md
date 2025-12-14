@@ -73,9 +73,8 @@ For convenience during development, the `Makefile` provides several common targe
 
 ```bash
 make build         # Release build
-make serve-help    # Help for 'serve'
-make emit-autoload # Emit autoload snippet
-make demo-all      # Full CLI demo
+make test          # Run tests
+make lint          # Run linting
 make book          # Build mdBook
 make book-serve    # Live mdBook on localhost:3000
 ```

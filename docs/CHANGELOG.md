@@ -13,7 +13,7 @@
 - **REMOVED**: MCP tools: `list-skills`, `autoload-snippet`, `render-preview`, `runtime-status`, `set-runtime-options`, `pin-skills`, `unpin-skills`, `refresh-cache`.
 
 ## 0.3.0 - 2025-12-12
-- **NEW: Subagents Module**: Added comprehensive subagent functionality with MCP server support. Run subagents via `list_subagents`, `run_subagent`, and `get_run_status` tools.
+- **NEW: Subagents Module**: Added comprehensive subagent functionality with MCP server support. Run subagents via `list-subagents`, `run-subagent`, and `get-run-status` tools.
 - **NEW: Backend Support**: Implemented dual backend support for both Claude-style and Codex-style subagent execution with configurable adapters.
 - **NEW: Sync Infrastructure**: Introduced cross-agent sync orchestration with `SyncOrchestrator`, `ClaudeAdapter`, and `CodexAdapter` for multi-agent coordination.
 - **Documentation**: Added comprehensive AGENTS.md (1500+ lines) with subagent usage examples, configuration options, and best practices.

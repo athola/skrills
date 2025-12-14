@@ -5,11 +5,11 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use skrills_state::home_dir;
 use std::fmt;
-use std::sync::Mutex;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -138,13 +138,13 @@ impl RunStore for MemRunStore {
             created_at: now,
             updated_at: now,
         };
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.lock();
         guard.insert(id, record);
         Ok(id)
     }
 
     async fn update_status(&self, run_id: RunId, status: RunStatus) -> Result<()> {
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.lock();
         let record = guard
             .get_mut(&run_id)
             .ok_or(SubagentError::NotFound(run_id))?;
@@ -154,7 +154,7 @@ impl RunStore for MemRunStore {
     }
 
     async fn append_event(&self, run_id: RunId, event: RunEvent) -> Result<()> {
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.lock();
         let record = guard
             .get_mut(&run_id)
             .ok_or(SubagentError::NotFound(run_id))?;
@@ -164,17 +164,17 @@ impl RunStore for MemRunStore {
     }
 
     async fn get_run(&self, run_id: RunId) -> Result<Option<RunRecord>> {
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.lock();
         Ok(guard.get(&run_id).cloned())
     }
 
     async fn get_status(&self, run_id: RunId) -> Result<Option<RunStatus>> {
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.lock();
         Ok(guard.get(&run_id).map(|r| r.status.clone()))
     }
 
     async fn history(&self, limit: usize) -> Result<Vec<RunRecord>> {
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.lock();
         let mut runs: Vec<_> = guard.values().cloned().collect();
         runs.sort_by_key(|r| r.created_at);
         runs.reverse();
@@ -183,7 +183,7 @@ impl RunStore for MemRunStore {
     }
 
     async fn stop(&self, run_id: RunId) -> Result<bool> {
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.lock();
         let record = guard
             .get_mut(&run_id)
             .ok_or(SubagentError::NotFound(run_id))?;
@@ -220,7 +220,7 @@ impl StateRunStore {
     }
 
     fn load_from_disk(&mut self) -> Result<()> {
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.lock();
         guard.clear();
         if self.path.exists() {
             let text = fs::read_to_string(&self.path)?;
@@ -233,7 +233,7 @@ impl StateRunStore {
     }
 
     fn persist(&self) -> Result<()> {
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.lock();
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -268,7 +268,7 @@ impl RunStore for StateRunStore {
             updated_at: now,
         };
         {
-            let mut guard = self.inner.lock().unwrap();
+            let mut guard = self.inner.lock();
             guard.insert(id, record);
         }
         self.persist()?;
@@ -277,7 +277,7 @@ impl RunStore for StateRunStore {
 
     async fn update_status(&self, run_id: RunId, status: RunStatus) -> Result<()> {
         {
-            let mut guard = self.inner.lock().unwrap();
+            let mut guard = self.inner.lock();
             let record = guard
                 .get_mut(&run_id)
                 .ok_or(SubagentError::NotFound(run_id))?;
@@ -290,7 +290,7 @@ impl RunStore for StateRunStore {
 
     async fn append_event(&self, run_id: RunId, event: RunEvent) -> Result<()> {
         {
-            let mut guard = self.inner.lock().unwrap();
+            let mut guard = self.inner.lock();
             let record = guard
                 .get_mut(&run_id)
                 .ok_or(SubagentError::NotFound(run_id))?;
@@ -302,17 +302,17 @@ impl RunStore for StateRunStore {
     }
 
     async fn get_run(&self, run_id: RunId) -> Result<Option<RunRecord>> {
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.lock();
         Ok(guard.get(&run_id).cloned())
     }
 
     async fn get_status(&self, run_id: RunId) -> Result<Option<RunStatus>> {
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.lock();
         Ok(guard.get(&run_id).map(|r| r.status.clone()))
     }
 
     async fn history(&self, limit: usize) -> Result<Vec<RunRecord>> {
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.lock();
         let mut runs: Vec<_> = guard.values().cloned().collect();
         runs.sort_by_key(|r| r.created_at);
         runs.reverse();
@@ -322,7 +322,7 @@ impl RunStore for StateRunStore {
 
     async fn stop(&self, run_id: RunId) -> Result<bool> {
         {
-            let mut guard = self.inner.lock().unwrap();
+            let mut guard = self.inner.lock();
             let record = guard
                 .get_mut(&run_id)
                 .ok_or(SubagentError::NotFound(run_id))?;

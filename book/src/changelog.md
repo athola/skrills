@@ -1,90 +1,50 @@
 # Changelog Highlights
 
-## 0.3.0 (2025-12-02)
-- **Architecture**: Implemented a gateway middleware server, with HTTP proxy capabilities.
-- **New Crates**: Introduced a `gateway` crate, with features such as TLS support, rate limiting, and comprehensive metrics collection.
-- **Security**: Enhanced security by adding a threat model, implementing security headers, and integrating mutual TLS (mTLS) authentication.
-- **Performance**: Optimized performance of caching mechanisms, embedding generation, and efficient MCP token usage.
-- **Testing**: Expanded test coverage with new integration tests, error recovery tests, and transport layer validation.
-- **Documentation**: Updated the book with new sections on gateway functionality, security, performance, and monitoring.
-- **CLI**: Extended CLI capabilities with a new gateway command, improved diagnostics, and introduced new runtime status tools.
-- **Security Fix**: Addressed a security vulnerability by updating `rmcp` from version 0.9.1 to 0.10.0, which replaces the unmaintained `paste` (1.0.15) dependency with the actively maintained `pastey` (0.2.0).
+## 0.3.1 (2025-12-13)
+
+- **NEW: Validation Crate** (`skrills-validate`): Validate skills for Claude Code (permissive) and Codex CLI (strict frontmatter requirements). Includes auto-fix capability to add missing frontmatter.
+- **NEW: Analysis Crate** (`skrills-analyze`): Token counting, dependency analysis, and optimization suggestions for skills.
+- **NEW: CLI Commands**: Added `skrills validate` and `skrills analyze` commands for skill quality assurance.
+- **NEW: MCP Tools**: Added `validate-skills` and `analyze-skills` tools to the MCP server.
+- **Architecture Pivot**: Removed redundant skill-serving functionality now that Claude Code and Codex CLI have native skill support. Skrills now focuses on validation, analysis, and sync.
+- **Comprehensive Tests**: Added 53 tests for bidirectional skill sync.
+- **REMOVED**: Autoload functionality (`autoload.rs`, `emit.rs`).
+- **REMOVED**: CLI commands: `list`, `list-pinned`, `pin`, `unpin`, `auto-pin`, `history`, `emit-autoload`, `render-preview`.
+- **REMOVED**: MCP tools: `list-skills`, `autoload-snippet`, `render-preview`, `runtime-status`, `set-runtime-options`, `pin-skills`, `unpin-skills`, `refresh-cache`.
+
+## 0.3.0 (2025-12-12)
+
+- **NEW: Subagents Module**: Comprehensive subagent functionality with MCP server support via `list-subagents`, `run-subagent`, and `get-run-status` tools.
+- **NEW: Backend Support**: Dual backend support for both Claude-style and Codex-style subagent execution.
+- **NEW: Sync Infrastructure**: Cross-agent sync orchestration with `SyncOrchestrator` and adapters for Claude/Codex.
+- **Documentation**: Added comprehensive AGENTS.md with subagent usage examples.
+- **BREAKING**: Removed the gateway crate and related functionality. Replaced with simpler MCP server integration.
+- **Security Fix**: Updated `rmcp` from 0.9.1 to 0.10.0, replacing unmaintained `paste` with `pastey`.
+
+## 0.2.2 (2025-12-04)
+
+- **Focus on Claude Code**: Simplified integration to focus on Claude Code hook-based skill injection.
+- **Installer Improvements**: Added `--client claude` flag and `SKRILLS_CLIENT` environment variable.
+- Aligned workspace crates to version 0.3.0.
 
 ## 0.2.1 (2025-11-26)
-- **Publishing**: Implemented a new Cargo publishing workflow that includes dependency validation and dry-run checks.
-- **Release**: Enhanced the release workflow with automated publishing of crates to crates.io.
-- **Testing**: Improved test isolation within the server module to prevent cross-test contamination.
-- **Documentation**: Updated project documentation with improved formatting.
-- **Build**: Added dependency order validation before packaging, to ensure reliable publishing.
-- **Workflows**: Corrected Python syntax errors in the release workflow and improved code formatting.
-- **Visuals**: Updated the project icon and README documentation.
+
+- **Publishing**: Cargo publishing workflow with dependency validation and dry-run checks.
+- **Release**: Automated crate publishing to crates.io.
+- **Testing**: Improved test isolation in server module.
+- **Documentation**: Updated formatting and clarity.
 
 ## 0.2.0 (2025-11-26)
-- **Refactoring**: Reorganized the project from a monolithic structure to a more modular architecture.
-- **Renaming**: Renamed the project from "codex-mcp-skills" to "skrills" across all documentation and source code.
-- **Modular Architecture**: Implemented a new workspace structure, with `discovery`, `state`, and `server` crates.
-- **CI/CD**: Added a code coverage workflow and implemented checks for public API changes.
-- **Documentation**: Updated all documentation with improved formatting and added Mermaid diagrams.
-- **Legacy Cleanup**: Removed obsolete binaries and artifacts to improve maintainability.
 
-## 0.1.14
-- Introduced `doctor` diagnostics, `--trace-wire` logging, and enhanced schema enforcement (specifically for `type = "object"`).
-- Installers now enforce `type = "stdio"` within Codex configurations and provide support for `--local` builds.
+- **Refactoring**: Reorganized from monolithic to modular architecture.
+- **Renaming**: Project renamed from "codex-mcp-skills" to "skrills".
+- **Modular Architecture**: New workspace with `discovery`, `state`, and `server` crates.
+- **CI/CD**: Added code coverage workflow and public API change checks.
+- **Documentation**: Added Mermaid diagrams for architecture visualization.
 
-## 0.1.13
-- The installer now filters archives more rigorously and utilizes source builds as a secondary option.
-- CI jobs are now configured to execute based on relevant path changes.
+## 0.1.x Releases
 
-## 0.1.12
-- Improved the release asset lookup mechanism within installers for enhanced reliability.
-
-## 0.1.11
-- The release workflow now skips asset uploads if a release with the same tag already exists, preventing duplication.
-
-## 0.1.10
-- The GitHub release is now created prior to uploading assets, effectively preventing race conditions.
-
-## 0.1.9
-- Fixed release upload include patterns to ensure the correct attachment of platform-specific archives.
-
-## 0.1.8
-- The manifest flag is now respected when suppressing agent documentation.
-- Cached the audit workflow and corrected release include paths.
-
-## 0.1.7
-- Introduced release dry-run builds and implemented cache reuse within the CI pipeline.
-
-## 0.1.6
-- Switched to supported archive options in the release workflow to improve cross-platform packaging compatibility.
-
-## 0.1.5
-- Activated the ZIP flag in the Windows upload step to ensure the generation of valid artifacts.
-
-## 0.1.4
-- Fixed CI upload inputs specifically for Rust binaries and stabilized environment-driven tests.
-
-## 0.1.3
-- The installer now builds from source within a temporary Cargo home environment if a release asset is unavailable.
-- Asset selection prioritizes `jq`, utilizing `awk` as a secondary option; `pipefail` remains optional.
-- Release assets now employ the action `{{ target }}` placeholder to ensure correct platform-specific tarball generation.
-
-## 0.1.2
-- Added a project icon (located at `assets/icon.png`) and linked it within the README documentation.
-- Installer documentation now utilizes branch-agnostic `/HEAD/` URLs. Updates were also made to the README, book, and FAQ sections.
-- The Makefile `book` target now builds and automatically opens the mdBook documentation.
-- Added new comparison and FAQ chapters to the book, and integrated an extended FAQ section into `docs/`.
-- Release workflow assets now correctly interpolate the target, and the audit workflow directly executes `cargo audit`.
-
-## 0.1.1
-- The single-command installer now configures Codex hook and MCP registration by default, with an opt-out option available via `SKRILLS_NO_HOOK`.
-- Integrated mdBook documentation with GitHub Pages deployment. The Makefile now includes new targets for book and documentation builds, as well as CLI demos.
-- The CI workflow executes `fmt`, `clippy`, tests, and `mdbook`. Release assets are named `skrills-<target>.tar.gz`.
-- Documentation has been expanded to cover child-process safety, the cache TTL manifest option, and installer default configurations.
-
-## 0.1.0
-- Initiated a workspace split, separating `crates/core` (comprising the MCP server and library) and `crates/cli` (the binary).
-- Structured `_meta` fields across various tools to include priority ranks and duplicate information handling.
-- `AGENTS.md` synchronization now incorporates per-skill priority ranks and an overall priority list.
-- Refreshed the README documentation to include updated installation and usage instructions, universal synchronization details, TUI information, and examples of structured outputs.
-
-For complete details, please refer to the [full changelog in the repository](docs/CHANGELOG.md).
+See [full changelog](https://github.com/athola/skrills/blob/master/docs/CHANGELOG.md) for details on earlier releases including:
+- 0.1.14: Doctor diagnostics, `--trace-wire` logging
+- 0.1.13: Installer archive filtering improvements
+- 0.1.12-0.1.0: Initial releases with installer, mdBook, and CI/CD setup

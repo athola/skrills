@@ -1,6 +1,6 @@
 [package]
 name = "skrills-subagents"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 description = "Subagent MCP tools for the skrills server with pluggable backends."
 license = "MIT"
@@ -19,11 +19,12 @@ time.workspace = true
 reqwest.workspace = true
 thiserror.workspace = true
 tempfile.workspace = true
+parking_lot.workspace = true
 
 skrills-state = { path = "../state", version = "0.3.0" }
 
 [dev-dependencies]
-httpmock = "0.8"
+wiremock = "0.6"
 futures = "0.3"
 regex = "1.0"
 

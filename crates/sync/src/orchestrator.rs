@@ -17,6 +17,14 @@ pub enum SyncDirection {
 }
 
 /// Parameters for a sync operation.
+///
+/// ```
+/// use skrills_sync::SyncParams;
+///
+/// let params = SyncParams { dry_run: true, ..Default::default() };
+/// assert!(params.dry_run);
+/// assert!(params.sync_skills);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncParams {
     /// Source agent name: "claude", "codex", or "auto"
@@ -197,6 +205,14 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
 }
 
 /// Determines sync direction from string input.
+///
+/// ```
+/// use skrills_sync::{parse_direction, SyncDirection};
+///
+/// assert_eq!(parse_direction("claude").unwrap(), SyncDirection::ClaudeToCodex);
+/// assert_eq!(parse_direction("codex").unwrap(), SyncDirection::CodexToClaude);
+/// assert!(parse_direction("invalid").is_err());
+/// ```
 pub fn parse_direction(from: &str) -> Result<SyncDirection> {
     match from.to_lowercase().as_str() {
         "claude" => Ok(SyncDirection::ClaudeToCodex),

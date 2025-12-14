@@ -1,19 +1,39 @@
 # Common developer and demo tasks for skrills
 # Set CARGO_HOME to a writable path to avoid sandbox/root perms issues.
+SHELL := /bin/bash
+.DEFAULT_GOAL := help
+
 CARGO ?= cargo
 CARGO_HOME ?= .cargo
 HOME_DIR ?= $(CURDIR)/.home-tmp
 BIN ?= skrills
 BIN_PATH ?= target/release/$(BIN)
 MDBOOK ?= mdbook
+CARGO_CMD = CARGO_HOME=$(CARGO_HOME) $(CARGO)
 
-.PHONY: help fmt lint check test test-unit test-integration test-setup build build-min serve-help emit-autoload \
+define open_file
+	@if [ -f "$(1)" ]; then \
+	  if command -v xdg-open >/dev/null 2>&1; then xdg-open "$(1)" >/dev/null 2>&1 || true; \
+	  elif command -v open >/dev/null 2>&1; then open "$(1)" >/dev/null 2>&1 || true; \
+	  elif command -v start >/dev/null 2>&1; then start "$(1)" >/dev/null 2>&1 || true; \
+	  else echo "Open $(1)"; fi; \
+	else echo "Not found: $(1)"; fi
+endef
+
+define ensure_mdbook
+	@if ! command -v $(MDBOOK) >/dev/null 2>&1; then \
+	  echo "mdbook not found; installing to $(CARGO_HOME)/bin"; \
+	  $(CARGO_CMD) install mdbook --locked >/dev/null; \
+	fi
+endef
+
+.PHONY: help fmt lint check test test-unit test-integration test-setup build build-min serve-help \
 	githooks \
-	demo-fixtures demo-list demo-list-pinned demo-pin demo-unpin demo-autopin \
-	demo-history demo-sync-agents demo-sync demo-emit-autoload demo-doctor demo-all \
+	demo-fixtures demo-doctor demo-all \
 	demo-setup-claude demo-setup-codex demo-setup-both demo-setup-uninstall \
 	demo-setup-reinstall demo-setup-universal demo-setup-first-run demo-setup-all \
 	docs book book-serve clean clean-demo ci lint-md precommit
+.NOTPARALLEL: demo-all demo-setup-all
 
 help:
 	@echo "Targets:"
@@ -27,7 +47,6 @@ help:
 	@echo "  build                   release build with features"
 	@echo "  build-min               release build without default features"
 	@echo "  serve-help              binary --help smoke check"
-	@echo "  emit-autoload           sample emit-autoload run"
 	@echo "  githooks                point git core.hooksPath at repo githooks/"
 	@echo "  demo-all                run all CLI demos"
 	@echo "  demo-doctor             demo doctor diagnostics"
@@ -46,74 +65,53 @@ help:
 	@echo "  ci                      fmt + lint + test"
 
 fmt:
-	CARGO_HOME=$(CARGO_HOME) $(CARGO) fmt --all
+	$(CARGO_CMD) fmt --all
 
 lint:
-	CARGO_HOME=$(CARGO_HOME) $(CARGO) clippy --workspace --all-targets -- -D warnings
+	$(CARGO_CMD) clippy --workspace --all-targets -- -D warnings
 
 lint-md:
 	./scripts/lint-markdown.sh
 
 check:
-	CARGO_HOME=$(CARGO_HOME) $(CARGO) check --workspace --all-targets
+	$(CARGO_CMD) check --workspace --all-targets
 
 test:
-	CARGO_HOME=$(CARGO_HOME) $(CARGO) test --workspace --all-features
+	$(CARGO_CMD) test --workspace --all-features
 
 test-unit:
-	CARGO_HOME=$(CARGO_HOME) $(CARGO) test --workspace --lib --all-features
+	$(CARGO_CMD) test --workspace --lib --all-features
 
 test-integration:
-	CARGO_HOME=$(CARGO_HOME) $(CARGO) test --workspace --test '*' --all-features
+	$(CARGO_CMD) test --workspace --test '*' --all-features
 
 test-setup:
-	CARGO_HOME=$(CARGO_HOME) $(CARGO) test --package skrills-server --lib setup --all-features
+	$(CARGO_CMD) test --package skrills-server --lib setup --all-features
 
 build:
-	CARGO_HOME=$(CARGO_HOME) $(CARGO) build --workspace --all-features --release
+	$(CARGO_CMD) build --workspace --all-features --release
 
 build-min:
-	CARGO_HOME=$(CARGO_HOME) $(CARGO) build --workspace --no-default-features --release
+	$(CARGO_CMD) build --workspace --no-default-features --release
 
 serve-help:
-	CARGO_HOME=$(CARGO_HOME) $(CARGO) run --quiet --bin $(BIN) -- --help >/dev/null
-
-emit-autoload:
-	CARGO_HOME=$(CARGO_HOME) $(CARGO) run --quiet --bin $(BIN) -- emit-autoload --prompt "sample" --diagnose --max-bytes 512 >/dev/null
+	$(CARGO_CMD) run --quiet --bin $(BIN) -- --help >/dev/null
 
 githooks:
 	./scripts/install-git-hooks.sh
 
 docs:
-	CARGO_HOME=$(CARGO_HOME) RUSTDOCFLAGS="-D warnings" $(CARGO) doc --workspace --all-features --no-deps
-	@doc_index="$(CURDIR)/target/doc/skrills/index.html"; \
-	if [ -f "$$doc_index" ]; then \
-	  if command -v xdg-open >/dev/null 2>&1; then xdg-open "$$doc_index" >/dev/null 2>&1 || true; \
-	  elif command -v open >/dev/null 2>&1; then open "$$doc_index" >/dev/null 2>&1 || true; \
-	  elif command -v start >/dev/null 2>&1; then start "$$doc_index" >/dev/null 2>&1 || true; \
-	  else echo "Docs at $$doc_index"; fi; \
-	else echo "Docs built, index not found at $$doc_index"; fi
+	RUSTDOCFLAGS="-D warnings" $(CARGO_CMD) doc --workspace --all-features --no-deps
+	$(call open_file,$(CURDIR)/target/doc/skrills/index.html)
 
 book:
-	@if ! command -v $(MDBOOK) >/dev/null 2>&1; then \
-	  echo "mdbook not found; installing to $(CARGO_HOME)/bin"; \
-	  CARGO_HOME=$(CARGO_HOME) $(CARGO) install mdbook --locked >/dev/null; \
-	fi
-	CARGO_HOME=$(CARGO_HOME) $(MDBOOK) build book
-	@book_index="$(CURDIR)/book/book/index.html"; \
-	if [ -f "$$book_index" ]; then \
-	  if command -v xdg-open >/dev/null 2>&1; then xdg-open "$$book_index" >/dev/null 2>&1 || true; \
-	  elif command -v open >/dev/null 2>&1; then open "$$book_index" >/dev/null 2>&1 || true; \
-	  elif command -v start >/dev/null 2>&1; then start "$$book_index" >/dev/null 2>&1 || true; \
-	  else echo "Book at $$book_index"; fi; \
-	else echo "Book built, index not found at $$book_index"; fi
+	$(call ensure_mdbook)
+	$(CARGO_CMD) $(MDBOOK) build book
+	$(call open_file,$(CURDIR)/book/book/index.html)
 
 book-serve:
-	@if ! command -v $(MDBOOK) >/dev/null 2>&1; then \
-	  echo "mdbook not found; installing to $(CARGO_HOME)/bin"; \
-	  CARGO_HOME=$(CARGO_HOME) $(CARGO) install mdbook --locked >/dev/null; \
-	fi
-	CARGO_HOME=$(CARGO_HOME) $(MDBOOK) serve book --open --hostname 127.0.0.1 --port 3000
+	$(call ensure_mdbook)
+	$(CARGO_CMD) $(MDBOOK) serve book --open --hostname 127.0.0.1 --port 3000
 
 # --- Demo helpers ---------------------------------------------------------
 
@@ -124,39 +122,12 @@ demo-fixtures:
 	@echo "# Agents" > $(HOME_DIR)/.codex/AGENTS.md
 	@echo "Prepared demo HOME at $(HOME_DIR)"
 
-demo-list: demo-fixtures build
-	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH) list >/dev/null
-
-demo-list-pinned: demo-fixtures build
-	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH) list-pinned >/dev/null
-
-demo-pin: demo-fixtures build
-	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH) pin demo/SKILL.md >/dev/null
-
-demo-unpin: demo-fixtures build
-	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH) unpin demo/SKILL.md >/dev/null
-
-demo-autopin: demo-fixtures build
-	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH) auto-pin --enable >/dev/null
-
-demo-history: demo-fixtures build
-	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH) history --limit 5 >/dev/null
-
-demo-sync-agents: demo-fixtures build
-	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH) sync-agents --path $(HOME_DIR)/.codex/AGENTS.md >/dev/null
-
-demo-sync: demo-fixtures build
-	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH) sync >/dev/null || true
-
-demo-emit-autoload: demo-fixtures build
-	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH) emit-autoload --prompt demo --diagnose --max-bytes 2048 >/dev/null
-
 demo-doctor: demo-fixtures build
 	@echo "==> Demo: Doctor diagnostics"
 	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH) doctor
 	@echo "==> Doctor demo complete"
 
-demo-all: demo-fixtures build demo-list demo-pin demo-list-pinned demo-unpin demo-list-pinned demo-autopin demo-history demo-sync-agents demo-sync demo-emit-autoload demo-doctor
+demo-all: demo-fixtures build demo-doctor
 
 # --- Setup flow demos -----------------------------------------------------
 
@@ -165,7 +136,6 @@ demo-setup-claude: demo-fixtures build
 	@rm -rf $(HOME_DIR)/.claude
 	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH) setup --client claude --bin-dir $(HOME_DIR)/.claude/bin --yes
 	@echo "==> Verifying Claude setup..."
-	@test -f $(HOME_DIR)/.claude/hooks/prompt.on_user_prompt_submit || (echo "ERROR: Hook not created" && exit 1)
 	@test -f $(HOME_DIR)/.claude/.mcp.json || (echo "ERROR: MCP config not created" && exit 1)
 	@test -x $(HOME_DIR)/.claude/bin/skrills || (echo "ERROR: Binary not installed" && exit 1)
 	@echo "==> Claude setup verified successfully"
@@ -183,7 +153,6 @@ demo-setup-both: demo-fixtures build
 	@rm -rf $(HOME_DIR)/.claude $(HOME_DIR)/.codex
 	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH) setup --client both --bin-dir $(HOME_DIR)/.claude/bin --yes
 	@echo "==> Verifying both clients setup..."
-	@test -f $(HOME_DIR)/.claude/hooks/prompt.on_user_prompt_submit || (echo "ERROR: Claude hook not created" && exit 1)
 	@test -f $(HOME_DIR)/.claude/.mcp.json || (echo "ERROR: Claude MCP config not created" && exit 1)
 	@test -x $(HOME_DIR)/.claude/bin/skrills || (echo "ERROR: Binary not installed" && exit 1)
 	@echo "==> Both clients setup verified successfully"
@@ -192,14 +161,13 @@ demo-setup-uninstall: demo-setup-claude
 	@echo "==> Demo: Uninstall Claude setup"
 	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH) setup --uninstall --client claude --yes
 	@echo "==> Verifying uninstall..."
-	@test ! -f $(HOME_DIR)/.claude/hooks/prompt.on_user_prompt_submit || (echo "ERROR: Hook still exists" && exit 1)
 	@echo "==> Uninstall verified successfully"
 
 demo-setup-reinstall: demo-setup-claude
 	@echo "==> Demo: Reinstall Claude setup"
 	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH) setup --client claude --bin-dir $(HOME_DIR)/.claude/bin --reinstall --yes
 	@echo "==> Verifying reinstall..."
-	@test -f $(HOME_DIR)/.claude/hooks/prompt.on_user_prompt_submit || (echo "ERROR: Hook not recreated" && exit 1)
+	@test -f $(HOME_DIR)/.claude/.mcp.json || (echo "ERROR: MCP config not created" && exit 1)
 	@echo "==> Reinstall verified successfully"
 
 demo-setup-universal: demo-fixtures build

@@ -1,13 +1,78 @@
 # Project Overview
 
-`skrills` is an MCP server that gives AI agents access to local `SKILL.md` definitions. Its capabilities include mirroring external skill repositories, dynamically filtering skills based on prompt relevance, and integrating these skills into Claude Code through custom hooks. It also keeps `AGENTS.md` current, launches mirrored agent specs via `skrills agent`, synchronizes commands/preferences between Codex and Claude, and provides a subagents runtime for multi-agent coordination.
+`skrills` is a skills support engine for Claude Code and Codex CLI. It validates skills for compatibility, analyzes token usage, and synchronizes configurations bidirectionally between both CLIs.
 
-## Capabilities
+## Core Capabilities
 
-- **MCP Server**: Operates over standard I/O (stdio), providing endpoints for managing skills and tools.
-- **Skill Discovery**: Locates skills across multiple predefined directories (including Codex, Claude mirror, Claude, and Agent skill locations). It resolves potential conflicts by de-duplicating entries based on a clearly defined priority system.
-- **Autoloading**: Dynamically filters skills based on their relevance to the current prompt, supports manual pinning, and automatically prioritizes frequently used skills. This feature includes detailed diagnostics and content truncation to ensure that skills fit within predefined byte budgets.
-- **Subagents Runtime**: Provides MCP tools (`list_subagents`, `run_subagent`, `get_run_status`) for executing subagents with configurable backends (Claude-style or Codex-style). Supports async execution and secure transcript handling.
-- **Cross-Agent Sync**: Introduces sync orchestration with `SyncOrchestrator` and adapters for Claude/Codex, enabling cross-agent skill synchronization via `skrills sync import/export/report`.
-- **Synchronization Utilities**: Mirrors Claude assets (skills, agents, commands, preferences) into Codex via `mirror`, `sync`, and `sync-all`; exports skill listings to [`AGENTS.md`](AGENTS.md); provides a TUI for interactive pinning and mirroring. Command sync is byte-for-byte and respects `--skip-existing-commands` to avoid overwriting local files.
-- **Installation**: Has automated installers compatible with `curl` (for macOS/Linux) and PowerShell (for Windows). These installers configure Claude Code with hooks for automatic skill injection. Alternatively, `skrills` can be built directly from source using `cargo`. The [`Makefile`](Makefile) includes targets for various demonstration purposes.
+- **Validation**: Validates skills against Claude Code (permissive) and Codex CLI (strict) requirements. Includes auto-fix capability to add missing frontmatter.
+- **Analysis**: Analyzes skills for token usage, dependencies, and optimization opportunities.
+- **Bidirectional Sync**: Synchronizes skills, slash commands, MCP server configurations, and preferences between Claude Code and Codex CLI.
+- **MCP Server**: Operates over standard I/O (stdio), providing tools for validation, analysis, and sync operations.
+- **Subagents Runtime**: Provides MCP tools for executing subagents with configurable backends (Claude-style or Codex-style).
+
+## Architecture
+
+Skrills is organized as a Rust workspace with specialized crates:
+
+- `crates/server`: MCP server runtime and CLI.
+- `crates/validate`: Skill validation for Claude Code and Codex CLI compatibility.
+- `crates/analyze`: Token counting, dependency analysis, and optimization suggestions.
+- `crates/sync`: Bidirectional sync between Claude/Codex (skills, commands, prefs, MCP servers).
+- `crates/discovery`: Skill discovery and ranking across multiple directories.
+- `crates/state`: Persistent store for manifests and mirrors.
+- `crates/subagents`: Shared subagent runtime and backends for Codex/Claude delegation.
+
+## Skill Discovery
+
+Skills are discovered by searching through a prioritized sequence of directories:
+
+1. `~/.codex/skills`
+2. `~/.codex/skills-mirror` (a mirror of Claude skills)
+3. `~/.claude/skills`
+4. `~/.agent/skills`
+
+You can customize discovery priority using a `~/.codex/skills-manifest.json` file:
+
+```json
+{ "priority": ["codex","mirror","claude","agent"], "cache_ttl_ms": 60000 }
+```
+
+## Typical Workflows
+
+### Validate Skills for Codex Compatibility
+
+```bash
+skrills validate --target codex
+skrills validate --target codex --autofix  # Auto-add missing frontmatter
+```
+
+### Analyze Skill Token Usage
+
+```bash
+skrills analyze --min-tokens 1000 --suggestions
+```
+
+### Sync All Configurations from Claude to Codex
+
+```bash
+skrills sync-all --from claude --skip-existing-commands
+```
+
+### Start MCP Server
+
+```bash
+skrills serve
+```
+
+### Launch a Mirrored Agent
+
+```bash
+skrills agent codex-dev
+```
+
+## Installation
+
+- **macOS / Linux**: `curl -LsSf https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh | sh`
+- **Windows PowerShell**: See installation guide for PowerShell command.
+- **crates.io**: `cargo install skrills`
+- **From source**: `cargo install --path crates/cli --force`

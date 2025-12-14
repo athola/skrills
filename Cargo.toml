@@ -17,6 +17,7 @@ edition = "2021"
 [workspace.dependencies]
 # rmcp updated to 0.10.0 which uses pastey instead of paste (maintained)
 rmcp = { version = "0.10", features = ["server", "transport-io"] }
+pastey = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
@@ -43,3 +44,4 @@ uuid = { version = "1", features = ["v4", "serde"] }
 time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "gzip", "rustls-tls"] }
 rayon = "1.10"
+parking_lot = "0.12"

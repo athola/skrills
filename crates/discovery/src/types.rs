@@ -46,6 +46,13 @@ impl SkillSource {
 }
 
 /// Parses a string key into a `SkillSource` variant.
+///
+/// ```
+/// use skrills_discovery::{parse_source_key, SkillSource};
+///
+/// assert_eq!(parse_source_key("mirror"), Some(SkillSource::Mirror));
+/// assert_eq!(parse_source_key("unknown"), None);
+/// ```
 pub fn parse_source_key(key: &str) -> Option<SkillSource> {
     match key.to_ascii_lowercase().as_str() {
         "codex" => Some(SkillSource::Codex),

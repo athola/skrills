@@ -113,12 +113,12 @@ When running as an MCP server (`skrills serve`), the following tools are availab
 ## Documentation
 - mdBook (primary): https://athola.github.io/skrills/
   - `book/src/cli.md` — CLI reference.
-  - `book/src/autoload.md` — autoload + truncation rules.
   - `book/src/persistence.md` — state, pins, cache, mirrors (byte-safe command sync).
   - `book/src/overview.md` — discovery priority and architecture.
   - `book/src/mcp-token-optimization.md` — token-saving patterns.
 - Additional docs in `docs/`:
-  - `docs/FAQ.md`, `docs/runtime-options.md`, `docs/security.md`, `docs/threat-model.md`, `docs/semver-policy.md`, `docs/CHANGELOG.md`, `docs/process-guidelines.md`, `docs/dependencies.md`, `docs/release-artifacts.md`, `docs/config/`.
+  - `docs/architecture.md`, `docs/adr/` — architecture decisions and crate structure.
+  - `docs/FAQ.md`, `docs/security.md`, `docs/threat-model.md`, `docs/semver-policy.md`, `docs/CHANGELOG.md`, `docs/process-guidelines.md`, `docs/dependencies.md`, `docs/release-artifacts.md`, `docs/config/`.
 - Examples and demos: `examples/`, `crates/subagents/`, and TUI walkthroughs.
 
 ## Development

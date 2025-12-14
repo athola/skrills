@@ -1,11 +1,12 @@
 # Testing and Coverage
 
-Integration tests, located under `crates/server/tests/`, cover the MCP server functionality, skill discovery, autoloading, and sync operations.
+Integration tests, located under `crates/server/tests/`, cover the MCP server functionality, skill discovery, validation, analysis, and sync operations.
 
 ## Covered Areas
 
-- **MCP Server Flow**: Tests cover skill loading, context building, caching, and request handling.
-- **Runtime Tools**: Tests verify runtime options, pinning, and configuration management.
+- **MCP Server Flow**: Tests cover skill loading, request handling, and response formatting.
+- **Validation**: Tests verify skill validation for Claude Code and Codex CLI compatibility.
+- **Analysis**: Tests cover token counting and dependency analysis.
 - **Sync Operations**: Tests validate cross-agent sync functionality between Claude and Codex.
 - **Subagent Integration**: Tests cover subagent service integration and backend communication.
 
@@ -18,5 +19,5 @@ The [integration-tests.yml](.github/workflows/integration-tests.yml) workflow in
 ## Adding New Coverage
 
 - Prioritize reusing existing test helpers for consistency.
-- Include test cases for negative scenarios (e.g., timeouts, malformed skills) as well as happy paths.
+- Include test cases for negative scenarios (e.g., invalid frontmatter, missing fields) as well as happy paths.
 - Use `tempfile::tempdir()` for filesystem isolation in tests.

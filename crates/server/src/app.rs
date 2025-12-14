@@ -14,21 +14,23 @@
 //! On Unix-like systems, a `SIGCHLD` handler prevents zombie processes.
 
 use crate::cli::{Cli, Commands};
-use crate::commands::handle_serve_command;
+use crate::commands::{
+    handle_agent_command, handle_analyze_command, handle_mirror_command, handle_serve_command,
+    handle_setup_command, handle_sync_agents_command, handle_sync_command, handle_validate_command,
+};
 use crate::discovery::{
-    collect_agents, collect_skills, merge_extra_dirs, priority_labels,
-    priority_labels_and_rank_map, read_skill, resolve_agent, skill_roots, AGENTS_DESCRIPTION,
-    AGENTS_NAME, AGENTS_TEXT, AGENTS_URI, DEFAULT_AGENT_RUN_TEMPLATE, ENV_EXPOSE_AGENTS,
+    merge_extra_dirs, priority_labels, priority_labels_and_rank_map, read_skill, skill_roots,
+    AGENTS_DESCRIPTION, AGENTS_NAME, AGENTS_TEXT, AGENTS_URI, ENV_EXPOSE_AGENTS,
 };
 use crate::doctor::doctor_report;
-use crate::runtime::RuntimeOverrides;
 use crate::signals::ignore_sigchld;
-use crate::sync::{mirror_source_root, sync_agents, sync_from_claude};
+use crate::sync::{mirror_source_root, sync_from_claude};
 use crate::tui::tui_flow;
 use anyhow::{anyhow, Result};
 use clap::Parser;
 #[cfg(feature = "watch")]
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
+use parking_lot::Mutex;
 use rmcp::model::{
     CallToolRequestParam, CallToolResult, Content, InitializeResult, ListResourcesResult,
     ListToolsResult, Meta, PaginatedRequestParam, RawResource, ReadResourceRequestParam,
@@ -36,7 +38,7 @@ use rmcp::model::{
 };
 use rmcp::ServerHandler;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map as JsonMap};
+use serde_json::{json, Map as JsonMap, Value};
 use skrills_discovery::{discover_skills, DuplicateInfo, SkillMeta, SkillRoot};
 use skrills_state::{cache_ttl, home_dir, load_manifest_settings};
 #[cfg(feature = "subagents")]
@@ -44,10 +46,9 @@ use skrills_subagents::SubagentService;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
+    Arc,
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -322,9 +323,6 @@ pub(crate) struct SkillService {
     cache: Arc<Mutex<SkillCache>>,
     /// A flag indicating if the cache warmup has started.
     warmup_started: AtomicBool,
-    /// The runtime overrides for the service.
-    #[allow(dead_code)]
-    runtime: Arc<Mutex<RuntimeOverrides>>,
     /// Optional subagent service (enabled via `subagents` feature).
     #[cfg(feature = "subagents")]
     subagents: Option<skrills_subagents::SubagentService>,
@@ -335,18 +333,14 @@ pub(crate) struct SkillService {
 pub(crate) fn start_fs_watcher(service: &SkillService) -> Result<RecommendedWatcher> {
     let cache = service.cache.clone();
     let roots = {
-        let guard = cache
-            .lock()
-            .map_err(|e| anyhow!("skill cache poisoned: {e}"))?;
+        let guard = cache.lock();
         guard.watched_roots()
     };
 
     let mut watcher = RecommendedWatcher::new(
         move |event: notify::Result<notify::Event>| {
             if event.is_ok() {
-                if let Ok(mut cache) = cache.lock() {
-                    cache.invalidate();
-                }
+                cache.lock().invalidate();
             }
         },
         NotifyConfig::default(),
@@ -393,7 +387,6 @@ impl SkillService {
         Ok(Self {
             cache: Arc::new(Mutex::new(SkillCache::new_with_ttl(roots, ttl))),
             warmup_started: AtomicBool::new(false),
-            runtime: Arc::new(Mutex::new(RuntimeOverrides::load()?)),
             #[cfg(feature = "subagents")]
             subagents: Some(SubagentService::new()?),
         })
@@ -418,7 +411,6 @@ impl SkillService {
         Ok(Self {
             cache: Arc::new(Mutex::new(SkillCache::new_with_ttl(roots, ttl))),
             warmup_started: AtomicBool::new(false),
-            runtime: Arc::new(Mutex::new(RuntimeOverrides::load()?)),
             #[cfg(feature = "subagents")]
             subagents: Some(SubagentService::new()?),
         })
@@ -429,9 +421,7 @@ impl SkillService {
     /// The next cache access will trigger a rescan.
     #[allow(dead_code)]
     fn invalidate_cache(&self) -> Result<()> {
-        if let Ok(mut cache) = self.cache.lock() {
-            cache.invalidate();
-        }
+        self.cache.lock().invalidate();
         Ok(())
     }
 
@@ -439,11 +429,120 @@ impl SkillService {
     ///
     /// Duplicates are resolved by priority, retaining the winning skill.
     fn current_skills_with_dups(&self) -> Result<(Vec<SkillMeta>, Vec<DuplicateInfo>)> {
-        let mut cache = self
-            .cache
-            .lock()
-            .map_err(|e| anyhow!("skill cache poisoned: {e}"))?;
+        let mut cache = self.cache.lock();
         cache.skills_with_dups()
+    }
+
+    fn validate_skills_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
+        use skrills_validate::{
+            autofix_frontmatter, validate_skill, AutofixOptions, ValidationTarget as VT,
+        };
+
+        let target_str = args
+            .get("target")
+            .and_then(|v| v.as_str())
+            .unwrap_or("both");
+        let errors_only = args
+            .get("errors_only")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let autofix = args
+            .get("autofix")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let validation_target = match target_str {
+            "claude" => VT::Claude,
+            "codex" => VT::Codex,
+            _ => VT::Both,
+        };
+
+        let (skills, _) = self.current_skills_with_dups()?;
+        let mut results = Vec::new();
+        let mut autofixed = 0usize;
+
+        for meta in &skills {
+            let content = match fs::read_to_string(&meta.path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let mut result = validate_skill(&meta.path, &content, validation_target);
+            let mut autofixed_skill = false;
+
+            if autofix && !result.codex_valid && validation_target != VT::Claude {
+                let opts = AutofixOptions {
+                    create_backup: false,
+                    write_changes: true,
+                    suggested_name: Some(meta.name.clone()),
+                    suggested_description: None,
+                };
+                if let Ok(fix_result) = autofix_frontmatter(&meta.path, &content, &opts) {
+                    if fix_result.modified {
+                        autofixed += 1;
+                        autofixed_skill = true;
+                        let new_content = fs::read_to_string(&meta.path).unwrap_or(content);
+                        result = validate_skill(&meta.path, &new_content, validation_target);
+                    }
+                }
+            }
+
+            if !errors_only || result.has_errors() {
+                results.push(json!({
+                    "name": meta.name,
+                    "path": meta.path.display().to_string(),
+                    "claude_valid": result.claude_valid,
+                    "codex_valid": result.codex_valid,
+                    "errors": result.error_count(),
+                    "warnings": result.warning_count(),
+                    "autofixed": autofixed_skill,
+                    "issues": result.issues.iter().map(|i| json!({
+                        "severity": format!("{:?}", i.severity),
+                        "message": i.message,
+                        "line": i.line,
+                        "suggestion": i.suggestion
+                    })).collect::<Vec<_>>()
+                }));
+            }
+        }
+
+        let text = {
+            let base = format!(
+                "Validated {} skills: {} Claude-valid, {} Codex-valid",
+                results.len(),
+                results
+                    .iter()
+                    .filter(|r| r
+                        .get("claude_valid")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false))
+                    .count(),
+                results
+                    .iter()
+                    .filter(|r| r
+                        .get("codex_valid")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false))
+                    .count()
+            );
+            if autofixed > 0 {
+                format!("{base}\nAuto-fixed {autofixed} skills")
+            } else {
+                base
+            }
+        };
+
+        Ok(CallToolResult {
+            content: vec![Content::text(text)],
+            structured_content: Some(json!({
+                "total": results.len(),
+                "target": target_str,
+                "autofix": autofix,
+                "autofixed": autofixed,
+                "results": results
+            })),
+            is_error: Some(false),
+            meta: None,
+        })
     }
 
     /// Generate the MCP `listResources` payload.
@@ -514,10 +613,7 @@ impl SkillService {
             format!("skill://{}/{}", parts[0], name)
         };
         let meta = {
-            let mut cache = self
-                .cache
-                .lock()
-                .map_err(|e| anyhow!("skill cache poisoned: {e}"))?;
+            let mut cache = self.cache.lock();
             cache.get_by_uri(&uri)?
         };
         let text = self.read_skill_cached(&meta)?;
@@ -534,16 +630,6 @@ impl SkillService {
     /// Read the content of a skill directly from disk.
     fn read_skill_cached(&self, meta: &SkillMeta) -> Result<String> {
         read_skill(&meta.path)
-    }
-
-    /// Returns the current runtime overrides.
-    #[allow(dead_code)]
-    fn runtime_overrides(&self) -> RuntimeOverrides {
-        self.runtime
-            .lock()
-            .ok()
-            .map(|g| g.clone())
-            .unwrap_or_default()
     }
 
     /// Checks if the `AGENTS.md` document should be exposed as a resource.
@@ -583,10 +669,7 @@ impl SkillService {
         let cache = self.cache.clone();
         std::thread::spawn(move || {
             let started = Instant::now();
-            let result = cache
-                .lock()
-                .map_err(|e| anyhow!("skill cache poisoned: {e}"))
-                .and_then(|mut cache| cache.refresh_if_stale());
+            let result = cache.lock().refresh_if_stale();
 
             match result {
                 Ok(()) => tracing::info!(
@@ -664,8 +747,8 @@ impl ServerHandler for SkillService {
     /// Lists the tools provided by this service.
     ///
     /// It defines several tools for interacting with skills, including
-    /// enumerating available skills, generating autoload snippets, synchronizing
-    /// skills from external sources (e.g., Claude), and refreshing internal caches.
+    /// validating skills for CLI compatibility, analyzing token usage,
+    /// and synchronizing configurations between Claude Code and Codex CLI.
     fn list_tools(
         &self,
         _request: Option<PaginatedRequestParam>,
@@ -804,16 +887,21 @@ impl ServerHandler for SkillService {
                     schema.insert(
                         "properties".into(),
                         json!({
-                            "target": {
-                                "type": "string",
-                                "enum": ["claude", "codex", "both"],
-                                "default": "both",
-                                "description": "Validation target"
-                            },
-                            "errors_only": {
-                                "type": "boolean",
-                                "default": false,
-                                "description": "Only return skills with errors"
+                             "target": {
+                                 "type": "string",
+                                 "enum": ["claude", "codex", "both"],
+                                 "default": "both",
+                                 "description": "Validation target"
+                             },
+                             "autofix": {
+                                 "type": "boolean",
+                                 "default": false,
+                                 "description": "Automatically fix validation issues when possible"
+                             },
+                             "errors_only": {
+                                 "type": "boolean",
+                                 "default": false,
+                                 "description": "Only return skills with errors"
                             }
                         }),
                     );
@@ -872,9 +960,8 @@ impl ServerHandler for SkillService {
     /// Executes a specific tool identified by `request.name`.
     ///
     /// It dispatches to internal functions based on the tool name,
-    /// such as listing skills, generating autoload snippets, synchronizing
-    /// from Claude, or refreshing caches. It returns the result of the tool
-    /// execution.
+    /// such as validating skills, analyzing token usage, or synchronizing
+    /// configurations between Claude Code and Codex CLI.
     fn call_tool(
         &self,
         request: CallToolRequestParam,
@@ -887,7 +974,15 @@ impl ServerHandler for SkillService {
                 let name = request.name.to_string();
                 if matches!(
                     name.as_str(),
-                    "list_subagents"
+                    "list-subagents"
+                        | "run-subagent"
+                        | "run-subagent-async"
+                        | "get-run-status"
+                        | "get-async-status"
+                        | "stop-run"
+                        | "get-run-history"
+                        | "download-transcript-secure"
+                        | "list_subagents"
                         | "run_subagent"
                         | "run_subagent_async"
                         | "get_run_status"
@@ -1319,80 +1414,8 @@ impl ServerHandler for SkillService {
                         })
                     }
                     "validate-skills" => {
-                        use skrills_validate::{validate_skill, ValidationTarget as VT};
-
                         let args = request.arguments.clone().unwrap_or_default();
-                        let target_str = args
-                            .get("target")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("both");
-                        let errors_only = args
-                            .get("errors_only")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-
-                        let validation_target = match target_str {
-                            "claude" => VT::Claude,
-                            "codex" => VT::Codex,
-                            _ => VT::Both,
-                        };
-
-                        let (skills, _) = self.current_skills_with_dups()?;
-                        let mut results = Vec::new();
-
-                        for meta in &skills {
-                            let content = match fs::read_to_string(&meta.path) {
-                                Ok(c) => c,
-                                Err(_) => continue,
-                            };
-                            let result = validate_skill(&meta.path, &content, validation_target);
-                            if !errors_only || result.has_errors() {
-                                results.push(json!({
-                                    "name": meta.name,
-                                    "path": meta.path.display().to_string(),
-                                    "claude_valid": result.claude_valid,
-                                    "codex_valid": result.codex_valid,
-                                    "errors": result.error_count(),
-                                    "warnings": result.warning_count(),
-                                    "issues": result.issues.iter().map(|i| json!({
-                                        "severity": format!("{:?}", i.severity),
-                                        "message": i.message,
-                                        "line": i.line,
-                                        "suggestion": i.suggestion
-                                    })).collect::<Vec<_>>()
-                                }));
-                            }
-                        }
-
-                        let text = format!(
-                            "Validated {} skills: {} Claude-valid, {} Codex-valid",
-                            results.len(),
-                            results
-                                .iter()
-                                .filter(|r| r
-                                    .get("claude_valid")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(false))
-                                .count(),
-                            results
-                                .iter()
-                                .filter(|r| r
-                                    .get("codex_valid")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(false))
-                                .count()
-                        );
-
-                        Ok(CallToolResult {
-                            content: vec![Content::text(text)],
-                            structured_content: Some(json!({
-                                "total": results.len(),
-                                "target": target_str,
-                                "results": results
-                            })),
-                            is_error: Some(false),
-                            meta: None,
-                        })
+                        self.validate_skills_tool(args)
                     }
                     "analyze-skills" => {
                         use skrills_analyze::analyze_skill;
@@ -1507,305 +1530,6 @@ impl ServerHandler for SkillService {
             ..Default::default()
         }
     }
-}
-
-/// Handle the `sync-agents` command.
-fn handle_sync_agents_command(path: Option<PathBuf>, skill_dirs: Vec<PathBuf>) -> Result<()> {
-    let path = path.unwrap_or_else(|| PathBuf::from("AGENTS.md"));
-    sync_agents(&path, &merge_extra_dirs(&skill_dirs))?;
-    println!("Updated {}", path.display());
-    Ok(())
-}
-
-/// Handle the `sync` command.
-fn handle_sync_command(include_marketplace: bool) -> Result<()> {
-    let home = home_dir()?;
-    let report = sync_from_claude(
-        &mirror_source_root(&home),
-        &home.join(".codex/skills-mirror"),
-        include_marketplace,
-    )?;
-    println!("copied: {}, skipped: {}", report.copied, report.skipped);
-    Ok(())
-}
-
-fn handle_mirror_command(
-    dry_run: bool,
-    skip_existing_commands: bool,
-    include_marketplace: bool,
-) -> Result<()> {
-    let home = home_dir()?;
-    let claude_root = mirror_source_root(&home);
-    if !skip_existing_commands {
-        eprintln!(
-            "Warning: mirroring commands into ~/.codex/prompts will overwrite prompts with the same name unless --skip-existing-commands is used."
-        );
-    }
-    // Mirror skills/agents/support files
-    let report = sync_from_claude(
-        &claude_root,
-        &home.join(".codex/skills-mirror"),
-        include_marketplace,
-    )?;
-    // Mirror commands/mcp/prefs
-    let source = skrills_sync::ClaudeAdapter::new()?;
-    let target = skrills_sync::CodexAdapter::new()?;
-    let orch = skrills_sync::SyncOrchestrator::new(source, target);
-    let params = skrills_sync::SyncParams {
-        dry_run,
-        sync_skills: false,
-        sync_commands: true,
-        skip_existing_commands,
-        sync_mcp_servers: true,
-        sync_preferences: true,
-        include_marketplace,
-        ..Default::default()
-    };
-    let sync_report = orch.sync(&params)?;
-    // Refresh AGENTS.md with skills + agents (mirror roots now populated)
-    handle_sync_agents_command(None, vec![])?;
-
-    println!(
-        "mirror complete: skills copied {}, skipped {}; commands written {}, skipped {}; prefs {}, mcp {}{}",
-        report.copied,
-        report.skipped,
-        sync_report.commands.written,
-        sync_report.commands.skipped.len(),
-        sync_report.preferences.written,
-        sync_report.mcp_servers.written,
-        if dry_run {
-            " (dry-run for commands/prefs/mcp)"
-        } else {
-            ""
-        }
-    );
-
-    if skip_existing_commands && !sync_report.commands.skipped.is_empty() {
-        println!("Skipped existing commands (kept target copy):");
-        for reason in &sync_report.commands.skipped {
-            println!("  - {}", reason.description());
-        }
-    }
-    Ok(())
-}
-
-fn handle_agent_command(agent_spec: String, skill_dirs: Vec<PathBuf>, dry_run: bool) -> Result<()> {
-    let agents = collect_agents(&merge_extra_dirs(&skill_dirs))?;
-    let agent = resolve_agent(&agent_spec, &agents)?;
-    let cmd = DEFAULT_AGENT_RUN_TEMPLATE.replace("{}", &agent.path.display().to_string());
-    println!(
-        "Agent: {} (source: {}, path: {})",
-        agent.name,
-        agent.source.label(),
-        agent.path.display()
-    );
-    if dry_run {
-        println!("Command: {cmd}");
-        return Ok(());
-    }
-    let status = Command::new("sh").arg("-c").arg(&cmd).status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(anyhow!(
-            "agent command exited with status {:?}",
-            status.code()
-        ))
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn handle_setup_command(
-    client: Option<String>,
-    bin_dir: Option<PathBuf>,
-    reinstall: bool,
-    uninstall: bool,
-    add: bool,
-    yes: bool,
-    universal: bool,
-    mirror_source: Option<PathBuf>,
-) -> Result<()> {
-    let config = crate::setup::interactive_setup(
-        client,
-        bin_dir,
-        reinstall,
-        uninstall,
-        add,
-        yes,
-        universal,
-        mirror_source,
-    )?;
-    crate::setup::run_setup(config)
-}
-
-/// Handle the `validate` command.
-fn handle_validate_command(
-    skill_dirs: Vec<PathBuf>,
-    target: crate::cli::ValidationTarget,
-    autofix: bool,
-    backup: bool,
-    format: String,
-    errors_only: bool,
-) -> Result<()> {
-    use skrills_validate::{
-        validate_skill, AutofixOptions, ValidationSummary, ValidationTarget as VT,
-    };
-
-    let validation_target = match target {
-        crate::cli::ValidationTarget::Claude => VT::Claude,
-        crate::cli::ValidationTarget::Codex => VT::Codex,
-        crate::cli::ValidationTarget::Both => VT::Both,
-    };
-
-    // Collect skills from specified or default directories
-    let extra_dirs = merge_extra_dirs(&skill_dirs);
-    let skills = collect_skills(&extra_dirs)?;
-
-    if skills.is_empty() {
-        println!("No skills found to validate.");
-        return Ok(());
-    }
-
-    let mut results = Vec::new();
-    let mut fixed_count = 0;
-
-    for meta in skills.iter() {
-        let content = match fs::read_to_string(&meta.path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        let mut result = validate_skill(&meta.path, &content, validation_target);
-
-        // Auto-fix if requested and there are errors
-        if autofix && !result.codex_valid && validation_target != VT::Claude {
-            use skrills_validate::autofix_frontmatter;
-            let opts = AutofixOptions {
-                create_backup: backup,
-                write_changes: true,
-                suggested_name: Some(meta.name.clone()),
-                suggested_description: None,
-            };
-            if let Ok(fix_result) = autofix_frontmatter(&meta.path, &content, &opts) {
-                if fix_result.modified {
-                    fixed_count += 1;
-                    // Re-validate after fix
-                    let new_content = fs::read_to_string(&meta.path)?;
-                    result = validate_skill(&meta.path, &new_content, validation_target);
-                }
-            }
-        }
-
-        // Filter if errors_only
-        if !errors_only || result.has_errors() {
-            results.push(result);
-        }
-    }
-
-    // Output results
-    if format == "json" {
-        println!("{}", serde_json::to_string_pretty(&results)?);
-    } else {
-        let summary = ValidationSummary::from_results(&results);
-        println!(
-            "Validated {} skills: {} Claude-valid, {} Codex-valid, {} both-valid",
-            summary.total, summary.claude_valid, summary.codex_valid, summary.both_valid
-        );
-        if fixed_count > 0 {
-            println!("Auto-fixed {} skills", fixed_count);
-        }
-        if summary.error_count > 0 {
-            println!("\nErrors ({}):", summary.error_count);
-            for result in &results {
-                for issue in &result.issues {
-                    if issue.severity == skrills_validate::Severity::Error {
-                        println!(
-                            "  {} ({}): {}",
-                            result.name,
-                            result.path.display(),
-                            issue.message
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Handle the `analyze` command.
-fn handle_analyze_command(
-    skill_dirs: Vec<PathBuf>,
-    format: String,
-    min_tokens: Option<usize>,
-    suggestions: bool,
-) -> Result<()> {
-    use skrills_analyze::{analyze_skill, AnalysisSummary, Priority};
-
-    // Collect skills from specified or default directories
-    let extra_dirs = merge_extra_dirs(&skill_dirs);
-    let skills = collect_skills(&extra_dirs)?;
-
-    if skills.is_empty() {
-        println!("No skills found to analyze.");
-        return Ok(());
-    }
-
-    let mut analyses = Vec::new();
-
-    for meta in skills.iter() {
-        let content = match fs::read_to_string(&meta.path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        let analysis = analyze_skill(&meta.path, &content);
-
-        // Filter by min_tokens if specified
-        if let Some(min) = min_tokens {
-            if analysis.tokens.total < min {
-                continue;
-            }
-        }
-
-        analyses.push(analysis);
-    }
-
-    // Output results
-    if format == "json" {
-        println!("{}", serde_json::to_string_pretty(&analyses)?);
-    } else {
-        let summary = AnalysisSummary::from_analyses(&analyses);
-        println!(
-            "Analyzed {} skills: {} total tokens",
-            summary.total_skills, summary.total_tokens
-        );
-        println!(
-            "Size distribution: {} small, {} medium, {} large, {} very-large",
-            summary.by_category.small,
-            summary.by_category.medium,
-            summary.by_category.large,
-            summary.by_category.very_large
-        );
-        println!("Average quality score: {:.0}%", summary.avg_quality * 100.0);
-
-        if suggestions && summary.high_priority_count > 0 {
-            println!(
-                "\nHigh-priority suggestions ({}):",
-                summary.high_priority_count
-            );
-            for analysis in &analyses {
-                for suggestion in &analysis.suggestions {
-                    if suggestion.priority == Priority::High {
-                        println!("  {} - {}", analysis.name, suggestion.message);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(())
 }
 
 /// The main entry point for the `skrills` application.
@@ -2157,5 +1881,52 @@ pub fn run() -> Result<()> {
             min_tokens,
             suggestions,
         } => handle_analyze_command(skill_dirs, format, min_tokens, suggestions),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::time::Duration;
+    use tempfile::tempdir;
+
+    #[test]
+    fn validate_skills_tool_autofix_adds_frontmatter() {
+        let temp = tempdir().unwrap();
+        let skill_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let skill_path = skill_dir.join("SKILL.md");
+        std::fs::write(&skill_path, "A skill without frontmatter").unwrap();
+
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", temp.path());
+
+        let service =
+            SkillService::new_with_ttl(vec![skill_dir.clone()], Duration::from_secs(1)).unwrap();
+        let result = service
+            .validate_skills_tool(
+                json!({"target": "codex", "autofix": true})
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+            )
+            .unwrap();
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+
+        let content = std::fs::read_to_string(&skill_path).unwrap();
+        assert!(
+            content.starts_with("---"),
+            "autofix should add frontmatter to skill files"
+        );
+        let structured = result.structured_content.unwrap();
+        assert_eq!(
+            structured.get("autofixed").and_then(|v| v.as_u64()),
+            Some(1)
+        );
     }
 }
