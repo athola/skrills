@@ -736,12 +736,16 @@ impl SkillService {
         if !uri.starts_with("skill://") {
             return Err(anyhow!("unsupported uri"));
         }
-        let rest = uri.trim_start_matches("skill://");
+
+        // Parse query parameters
+        let (base_uri, resolve_deps) = parse_uri_with_query(uri);
+
+        let rest = base_uri.trim_start_matches("skill://");
         let parts = rest.splitn(3, '/').collect::<Vec<_>>();
         if parts.len() < 2 {
             return Err(anyhow!("invalid uri"));
         }
-        let uri = if parts[0] == "skrills" {
+        let canonical_uri = if parts[0] == "skrills" {
             let name = parts.get(2).copied().unwrap_or("");
             format!("skill://skrills/{}/{}", parts[1], name)
         } else {
@@ -755,17 +759,40 @@ impl SkillService {
         };
         let meta = {
             let mut cache = self.cache.lock();
-            cache.get_by_uri(&uri)?
+            cache.get_by_uri(&canonical_uri)?
         };
         let text = self.read_skill_cached(&meta)?;
-        Ok(ReadResourceResult {
-            contents: vec![text_with_location(
-                text,
-                &uri,
-                Some(&meta.source.label()),
-                meta.source.location(),
-            )],
-        })
+
+        let mut contents = vec![text_with_location_and_role(
+            text,
+            &canonical_uri,
+            Some(&meta.source.label()),
+            meta.source.location(),
+            "requested",
+        )];
+
+        // If resolve=true, include all transitive dependencies
+        if resolve_deps {
+            let dep_uris = self.resolve_dependencies(&canonical_uri)?;
+            for dep_uri in dep_uris {
+                if let Ok(dep_meta) = {
+                    let mut cache = self.cache.lock();
+                    cache.get_by_uri(&dep_uri)
+                } {
+                    if let Ok(dep_text) = self.read_skill_cached(&dep_meta) {
+                        contents.push(text_with_location_and_role(
+                            dep_text,
+                            &dep_uri,
+                            Some(&dep_meta.source.label()),
+                            dep_meta.source.location(),
+                            "dependency",
+                        ));
+                    }
+                }
+            }
+        }
+
+        Ok(ReadResourceResult { contents })
     }
 
     /// Read the content of a skill directly from disk.
@@ -828,6 +855,19 @@ impl SkillService {
     }
 }
 
+/// Parse URI and extract query parameters.
+/// Returns (base_uri, resolve_dependencies).
+fn parse_uri_with_query(uri: &str) -> (&str, bool) {
+    if let Some((base, query)) = uri.split_once('?') {
+        let resolve = query.split('&').any(|param| {
+            param == "resolve=true" || param == "resolve"
+        });
+        (base, resolve)
+    } else {
+        (uri, false)
+    }
+}
+
 /// Inserts location and an optional priority rank into `readResource` responses.
 fn text_with_location(
     text: impl Into<String>,
@@ -837,6 +877,35 @@ fn text_with_location(
 ) -> ResourceContents {
     let mut meta = Meta::new();
     meta.insert("location".into(), json!(location));
+    if let Some(label) = source_label {
+        if let Some(rank) = priority_labels()
+            .iter()
+            .position(|p| p == label)
+            .map(|i| i + 1)
+        {
+            meta.insert("priority_rank".into(), json!(rank));
+        }
+    }
+    ResourceContents::TextResourceContents {
+        uri: uri.into(),
+        mime_type: Some("text".into()),
+        text: text.into(),
+        meta: Some(meta),
+    }
+}
+
+/// Inserts location, priority rank, and role into `readResource` responses.
+/// Role can be "requested" for the main resource or "dependency" for transitive dependencies.
+fn text_with_location_and_role(
+    text: impl Into<String>,
+    uri: &str,
+    source_label: Option<&str>,
+    location: &str,
+    role: &str,
+) -> ResourceContents {
+    let mut meta = Meta::new();
+    meta.insert("location".into(), json!(location));
+    meta.insert("role".into(), json!(role));
     if let Some(label) = source_label {
         if let Some(rank) = priority_labels()
             .iter()
@@ -2199,5 +2268,289 @@ Base skill with no dependencies.
         assert!(trans_deps.contains(&"skill://skrills/extra0/skill-a/SKILL.md".to_string()));
         assert!(trans_deps.contains(&"skill://skrills/extra0/skill-b/SKILL.md".to_string()));
         assert!(trans_deps.contains(&"skill://skrills/extra0/skill-c/SKILL.md".to_string()));
+    }
+
+    #[test]
+    fn test_read_resource_without_resolve() {
+        use skrills_discovery::SkillRoot;
+
+        let temp = tempdir().unwrap();
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+
+        // Create skill A (depends on B)
+        let skill_a_dir = skills_dir.join("skill-a");
+        fs::create_dir_all(&skill_a_dir).unwrap();
+        fs::write(
+            skill_a_dir.join("SKILL.md"),
+            r#"---
+name: skill-a
+description: Skill A depends on B
+---
+# Skill A
+See [skill-b](../skill-b/SKILL.md) for details.
+"#,
+        )
+        .unwrap();
+
+        // Create skill B (no dependencies)
+        let skill_b_dir = skills_dir.join("skill-b");
+        fs::create_dir_all(&skill_b_dir).unwrap();
+        fs::write(
+            skill_b_dir.join("SKILL.md"),
+            r#"---
+name: skill-b
+description: Skill B
+---
+# Skill B
+Base skill.
+"#,
+        )
+        .unwrap();
+
+        let roots = vec![SkillRoot {
+            root: skills_dir.clone(),
+            source: skrills_discovery::SkillSource::Extra(0),
+        }];
+
+        let service =
+            SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
+
+        // Test reading without resolve param
+        let skill_a_uri = "skill://skrills/extra0/skill-a/SKILL.md";
+        let result = service.read_resource_sync(skill_a_uri).unwrap();
+
+        // Should return only the requested skill
+        assert_eq!(result.contents.len(), 1);
+        let content = &result.contents[0];
+        if let ResourceContents::TextResourceContents { uri, text, meta, .. } = content {
+            assert_eq!(uri, skill_a_uri);
+            assert!(text.contains("Skill A"));
+            assert!(text.contains("depends on B"));
+            // Check metadata indicates this is the requested resource
+            let meta = meta.as_ref().unwrap();
+            assert_eq!(meta.get("role").and_then(|v| v.as_str()), Some("requested"));
+        } else {
+            panic!("Expected TextResourceContents");
+        }
+    }
+
+    #[test]
+    fn test_read_resource_with_resolve_true() {
+        use skrills_discovery::SkillRoot;
+
+        let temp = tempdir().unwrap();
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+
+        // Create skill A (depends on B and C)
+        let skill_a_dir = skills_dir.join("skill-a");
+        fs::create_dir_all(&skill_a_dir).unwrap();
+        fs::write(
+            skill_a_dir.join("SKILL.md"),
+            r#"---
+name: skill-a
+description: Skill A depends on B and C
+---
+# Skill A
+See [skill-b](../skill-b/SKILL.md) and [skill-c](../skill-c/SKILL.md).
+"#,
+        )
+        .unwrap();
+
+        // Create skill B (depends on D)
+        let skill_b_dir = skills_dir.join("skill-b");
+        fs::create_dir_all(&skill_b_dir).unwrap();
+        fs::write(
+            skill_b_dir.join("SKILL.md"),
+            r#"---
+name: skill-b
+description: Skill B depends on D
+---
+# Skill B
+Uses [skill-d](../skill-d/SKILL.md).
+"#,
+        )
+        .unwrap();
+
+        // Create skill C (depends on D)
+        let skill_c_dir = skills_dir.join("skill-c");
+        fs::create_dir_all(&skill_c_dir).unwrap();
+        fs::write(
+            skill_c_dir.join("SKILL.md"),
+            r#"---
+name: skill-c
+description: Skill C depends on D
+---
+# Skill C
+Also uses [skill-d](../skill-d/SKILL.md).
+"#,
+        )
+        .unwrap();
+
+        // Create skill D (no dependencies)
+        let skill_d_dir = skills_dir.join("skill-d");
+        fs::create_dir_all(&skill_d_dir).unwrap();
+        fs::write(
+            skill_d_dir.join("SKILL.md"),
+            r#"---
+name: skill-d
+description: Skill D
+---
+# Skill D
+Base skill.
+"#,
+        )
+        .unwrap();
+
+        let roots = vec![SkillRoot {
+            root: skills_dir.clone(),
+            source: skrills_discovery::SkillSource::Extra(0),
+        }];
+
+        let service =
+            SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
+
+        // Test reading with resolve=true
+        let skill_a_uri = "skill://skrills/extra0/skill-a/SKILL.md?resolve=true";
+        let result = service.read_resource_sync(skill_a_uri).unwrap();
+
+        // Should return requested skill + all transitive dependencies (B, C, D)
+        assert_eq!(result.contents.len(), 4);
+
+        // First item should be the requested skill
+        let first = &result.contents[0];
+        if let ResourceContents::TextResourceContents { uri, text, meta, .. } = first {
+            assert_eq!(uri, "skill://skrills/extra0/skill-a/SKILL.md");
+            assert!(text.contains("Skill A"));
+            let meta = meta.as_ref().unwrap();
+            assert_eq!(meta.get("role").and_then(|v| v.as_str()), Some("requested"));
+        } else {
+            panic!("Expected TextResourceContents");
+        }
+
+        // Check that dependencies are included
+        let uris: Vec<String> = result
+            .contents
+            .iter()
+            .filter_map(|c| match c {
+                ResourceContents::TextResourceContents { uri, .. } => Some(uri.clone()),
+                _ => None,
+            })
+            .collect();
+
+        assert!(uris.contains(&"skill://skrills/extra0/skill-b/SKILL.md".to_string()));
+        assert!(uris.contains(&"skill://skrills/extra0/skill-c/SKILL.md".to_string()));
+        assert!(uris.contains(&"skill://skrills/extra0/skill-d/SKILL.md".to_string()));
+
+        // Check that dependencies have correct role metadata
+        for content in &result.contents[1..] {
+            if let ResourceContents::TextResourceContents { meta, .. } = content {
+                let meta = meta.as_ref().unwrap();
+                assert_eq!(
+                    meta.get("role").and_then(|v| v.as_str()),
+                    Some("dependency")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_read_resource_with_resolve_false() {
+        use skrills_discovery::SkillRoot;
+
+        let temp = tempdir().unwrap();
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+
+        // Create skill A (depends on B)
+        let skill_a_dir = skills_dir.join("skill-a");
+        fs::create_dir_all(&skill_a_dir).unwrap();
+        fs::write(
+            skill_a_dir.join("SKILL.md"),
+            r#"---
+name: skill-a
+description: Skill A depends on B
+---
+# Skill A
+See [skill-b](../skill-b/SKILL.md).
+"#,
+        )
+        .unwrap();
+
+        // Create skill B
+        let skill_b_dir = skills_dir.join("skill-b");
+        fs::create_dir_all(&skill_b_dir).unwrap();
+        fs::write(
+            skill_b_dir.join("SKILL.md"),
+            r#"---
+name: skill-b
+description: Skill B
+---
+# Skill B
+"#,
+        )
+        .unwrap();
+
+        let roots = vec![SkillRoot {
+            root: skills_dir.clone(),
+            source: skrills_discovery::SkillSource::Extra(0),
+        }];
+
+        let service =
+            SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
+
+        // Test reading with resolve=false (explicit)
+        let skill_a_uri = "skill://skrills/extra0/skill-a/SKILL.md?resolve=false";
+        let result = service.read_resource_sync(skill_a_uri).unwrap();
+
+        // Should return only the requested skill (same as no param)
+        assert_eq!(result.contents.len(), 1);
+        let content = &result.contents[0];
+        if let ResourceContents::TextResourceContents { uri, text, meta, .. } = content {
+            assert_eq!(uri, "skill://skrills/extra0/skill-a/SKILL.md");
+            assert!(text.contains("Skill A"));
+            let meta = meta.as_ref().unwrap();
+            assert_eq!(meta.get("role").and_then(|v| v.as_str()), Some("requested"));
+        } else {
+            panic!("Expected TextResourceContents");
+        }
+    }
+
+    #[test]
+    fn test_parse_uri_with_query() {
+        // Test basic URI without query
+        let (base, resolve) = parse_uri_with_query("skill://skrills/extra0/skill-a/SKILL.md");
+        assert_eq!(base, "skill://skrills/extra0/skill-a/SKILL.md");
+        assert!(!resolve);
+
+        // Test with resolve=true
+        let (base, resolve) =
+            parse_uri_with_query("skill://skrills/extra0/skill-a/SKILL.md?resolve=true");
+        assert_eq!(base, "skill://skrills/extra0/skill-a/SKILL.md");
+        assert!(resolve);
+
+        // Test with resolve=false
+        let (base, resolve) =
+            parse_uri_with_query("skill://skrills/extra0/skill-a/SKILL.md?resolve=false");
+        assert_eq!(base, "skill://skrills/extra0/skill-a/SKILL.md");
+        assert!(!resolve);
+
+        // Test with resolve shorthand
+        let (base, resolve) = parse_uri_with_query("skill://skrills/extra0/skill-a/SKILL.md?resolve");
+        assert_eq!(base, "skill://skrills/extra0/skill-a/SKILL.md");
+        assert!(resolve);
+
+        // Test with multiple params
+        let (base, resolve) =
+            parse_uri_with_query("skill://skrills/extra0/skill-a/SKILL.md?foo=bar&resolve=true");
+        assert_eq!(base, "skill://skrills/extra0/skill-a/SKILL.md");
+        assert!(resolve);
+
+        // Test with multiple params, resolve first
+        let (base, resolve) =
+            parse_uri_with_query("skill://skrills/extra0/skill-a/SKILL.md?resolve=true&foo=bar");
+        assert_eq!(base, "skill://skrills/extra0/skill-a/SKILL.md");
+        assert!(resolve);
     }
 }
