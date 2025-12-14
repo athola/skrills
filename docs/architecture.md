@@ -19,30 +19,20 @@ graph TD
 
 ## Crate Dependency Graph
 
-```
-                          ┌──────────┐
-                          │   cli    │
-                          └────┬─────┘
-                               │
-                          ┌────▼─────┐
-                          │  server  │ (MCP runtime, commands)
-                          └────┬─────┘
-                   ┌───────────┼───────────┬───────────┐
-                   │           │           │           │
-              ┌────▼────┐ ┌────▼────┐ ┌────▼────┐ ┌────▼────┐
-              │  sync   │ │validate │ │ analyze │ │subagents│
-              └────┬────┘ └─────────┘ └─────────┘ └────┬────┘
-                   │                                    │
-              ┌────▼────┐                          ┌────▼────┐
-              │validate │                          │  state  │
-              └─────────┘                          └─────────┘
+```mermaid
+graph TD
+    cli[cli] --> server[server<br/>MCP runtime, commands]
+    server --> sync[sync]
+    server --> validate[validate]
+    server --> analyze[analyze]
+    server --> subagents[subagents]
+    sync --> validate2[validate]
+    subagents --> state[state]
 
-              ┌──────────────────────────────────────────────┐
-              │  discovery (standalone, no internal deps)    │
-              └──────────────────────────────────────────────┘
-              ┌──────────────────────────────────────────────┐
-              │     state (standalone, no internal deps)     │
-              └──────────────────────────────────────────────┘
+    subgraph leaf["Leaf Crates (no internal deps)"]
+        discovery[discovery]
+        state2[state]
+    end
 ```
 
 ## Crate Responsibilities

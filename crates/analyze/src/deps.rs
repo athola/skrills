@@ -9,6 +9,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use walkdir::WalkDir;
 
 /// Types of dependencies a skill can have.
@@ -119,20 +120,17 @@ pub fn analyze_dependencies(skill_path: &Path, content: &str) -> DependencyAnaly
     analysis
 }
 
+static URL_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"https?://[^\s\)\]>]+").unwrap());
+static LINK_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[([^\]]*)\]\(([^)]+)\)").unwrap());
+static IMAGE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"!\[([^\]]*)\]\(([^)]+)\)").unwrap());
+
 fn extract_content_dependencies(
     analysis: &mut DependencyAnalysis,
     _skill_dir: &Path,
     content: &str,
 ) {
-    // URL regex
-    let url_regex = Regex::new(r"https?://[^\s\)\]>]+").unwrap();
-
-    // Markdown link regex: [text](path)
-    let link_regex = Regex::new(r"\[([^\]]*)\]\(([^)]+)\)").unwrap();
-
-    // Markdown image regex: ![alt](path)
-    let img_regex = Regex::new(r"!\[([^\]]*)\]\(([^)]+)\)").unwrap();
-
     let mut seen_urls: HashSet<String> = HashSet::new();
     let mut seen_paths: HashSet<String> = HashSet::new();
 
@@ -140,7 +138,7 @@ fn extract_content_dependencies(
         let line_number = line_num + 1;
 
         // Find external URLs
-        for url_match in url_regex.find_iter(line) {
+        for url_match in URL_REGEX.find_iter(line) {
             let url = url_match
                 .as_str()
                 .trim_end_matches(&['.', ',', ')', ']'][..]);
@@ -156,7 +154,7 @@ fn extract_content_dependencies(
         }
 
         // Find markdown links (excluding URLs)
-        for cap in link_regex.captures_iter(line) {
+        for cap in LINK_REGEX.captures_iter(line) {
             let path = &cap[2];
             if !path.starts_with("http://")
                 && !path.starts_with("https://")
@@ -174,7 +172,7 @@ fn extract_content_dependencies(
         }
 
         // Find markdown images (excluding URLs)
-        for cap in img_regex.captures_iter(line) {
+        for cap in IMAGE_REGEX.captures_iter(line) {
             let path = &cap[2];
             if !path.starts_with("http://")
                 && !path.starts_with("https://")

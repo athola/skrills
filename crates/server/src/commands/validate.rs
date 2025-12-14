@@ -32,11 +32,16 @@ pub(crate) fn handle_validate_command(
 
     let mut results = Vec::new();
     let mut fixed_count = 0;
+    let mut skipped_files: Vec<(std::path::PathBuf, String)> = Vec::new();
+    let mut autofix_failures: Vec<(std::path::PathBuf, String)> = Vec::new();
 
     for meta in skills.iter() {
         let content = match std::fs::read_to_string(&meta.path) {
             Ok(c) => c,
-            Err(_) => continue,
+            Err(e) => {
+                skipped_files.push((meta.path.clone(), e.to_string()));
+                continue;
+            }
         };
 
         let mut result = validate_skill(&meta.path, &content, validation_target);
@@ -49,11 +54,16 @@ pub(crate) fn handle_validate_command(
                 suggested_name: Some(meta.name.clone()),
                 suggested_description: None,
             };
-            if let Ok(fix_result) = autofix_frontmatter(&meta.path, &content, &opts) {
-                if fix_result.modified {
-                    fixed_count += 1;
-                    let new_content = std::fs::read_to_string(&meta.path)?;
-                    result = validate_skill(&meta.path, &new_content, validation_target);
+            match autofix_frontmatter(&meta.path, &content, &opts) {
+                Ok(fix_result) => {
+                    if fix_result.modified {
+                        fixed_count += 1;
+                        let new_content = std::fs::read_to_string(&meta.path)?;
+                        result = validate_skill(&meta.path, &new_content, validation_target);
+                    }
+                }
+                Err(e) => {
+                    autofix_failures.push((meta.path.clone(), e.to_string()));
                 }
             }
         }
@@ -74,16 +84,46 @@ pub(crate) fn handle_validate_command(
         if fixed_count > 0 {
             println!("Auto-fixed {} skills", fixed_count);
         }
+        if !autofix_failures.is_empty() {
+            eprintln!(
+                "\nWarning: {} skill(s) failed to auto-fix:",
+                autofix_failures.len()
+            );
+            for (path, error) in &autofix_failures {
+                eprintln!("  {}: {}", path.display(), error);
+            }
+        }
+        if !skipped_files.is_empty() {
+            eprintln!(
+                "\nWarning: {} skill(s) could not be read:",
+                skipped_files.len()
+            );
+            for (path, error) in &skipped_files {
+                eprintln!("  {}: {}", path.display(), error);
+            }
+        }
         if summary.error_count > 0 {
             println!("\nErrors ({}):", summary.error_count);
             for result in &results {
                 for issue in &result.issues {
                     if issue.severity == skrills_validate::Severity::Error {
+                        let location = match issue.line {
+                            Some(line) => format!("{}:{}", result.path.display(), line),
+                            None => result.path.display().to_string(),
+                        };
+                        let target = match issue.target {
+                            VT::Claude => "Claude",
+                            VT::Codex => "Codex",
+                            VT::Both => "Claude & Codex",
+                        };
+                        let suggestion = issue
+                            .suggestion
+                            .as_ref()
+                            .map(|s| format!(" Suggestion: {}", s))
+                            .unwrap_or_default();
                         println!(
-                            "  {} ({}): {}",
-                            result.name,
-                            result.path.display(),
-                            issue.message
+                            "  {} ({}): {} [target: {}]{}",
+                            result.name, location, issue.message, target, suggestion
                         );
                     }
                 }

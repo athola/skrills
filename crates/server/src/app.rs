@@ -12,6 +12,7 @@
 //! To build without this feature, use `--no-default-features`.
 //!
 //! On Unix-like systems, a `SIGCHLD` handler prevents zombie processes.
+//! Keep this file under ~2500 LOC; split it into modules before crossing the limit.
 
 use crate::cli::{Cli, Commands};
 use crate::commands::{
