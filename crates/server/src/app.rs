@@ -40,13 +40,14 @@ use rmcp::model::{
 use rmcp::ServerHandler;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value};
+use skrills_analyze::DependencyGraph;
 use skrills_discovery::{discover_skills, DuplicateInfo, SkillMeta, SkillRoot};
 use skrills_state::{cache_ttl, home_dir, load_manifest_settings};
 #[cfg(feature = "subagents")]
 use skrills_subagents::SubagentService;
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -66,6 +67,8 @@ struct SkillCache {
     uri_index: HashMap<String, usize>,
     /// Snapshot path is resolved once to avoid cross-test/env races
     snapshot_path: Option<PathBuf>,
+    /// Dependency graph for skill relationships
+    dep_graph: DependencyGraph,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -94,6 +97,7 @@ impl SkillCache {
             duplicates: Vec::new(),
             uri_index: HashMap::new(),
             snapshot_path,
+            dep_graph: DependencyGraph::new(),
         };
         if let Err(e) = cache.try_load_snapshot() {
             tracing::debug!(
@@ -138,6 +142,61 @@ impl SkillCache {
             .iter()
             .map(|r| r.root.to_string_lossy().into_owned())
             .collect()
+    }
+
+    /// Build the dependency graph for a set of skills.
+    fn build_dependency_graph(&self, skills: &[SkillMeta]) -> DependencyGraph {
+        let mut dep_graph = DependencyGraph::new();
+        for skill in skills {
+            let skill_uri = format!("skill://skrills/{}/{}", skill.source.label(), skill.name);
+            dep_graph.add_skill(&skill_uri);
+
+            // Analyze dependencies
+            if let Ok(content) = fs::read_to_string(&skill.path) {
+                let analysis = skrills_analyze::analyze_dependencies(&skill.path, &content);
+
+                tracing::debug!(
+                    target: "skrills::deps",
+                    skill = %skill.name,
+                    total_deps = analysis.dependencies.len(),
+                    "analyzing dependencies"
+                );
+
+                // Extract skill dependencies and convert to URIs
+                for dep in &analysis.dependencies {
+                    tracing::debug!(
+                        target: "skrills::deps",
+                        skill = %skill.name,
+                        dep_type = ?dep.dep_type,
+                        dep_target = %dep.target,
+                        "found dependency"
+                    );
+
+                    if dep.dep_type == skrills_analyze::DependencyType::Skill {
+                        // Try to resolve the dependency path to a skill URI
+                        if let Some(dep_uri) =
+                            self.resolve_dependency_to_uri(&skill.path, &dep.target, skills)
+                        {
+                            tracing::debug!(
+                                target: "skrills::deps",
+                                skill = %skill.name,
+                                dependency = %dep_uri,
+                                "added dependency"
+                            );
+                            dep_graph.add_dependency(&skill_uri, &dep_uri);
+                        } else {
+                            tracing::debug!(
+                                target: "skrills::deps",
+                                skill = %skill.name,
+                                dep_path = %dep.target,
+                                "failed to resolve dependency"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        dep_graph
     }
 
     /// Attempt to load a persisted snapshot if it is still within TTL and roots match.
@@ -188,9 +247,13 @@ impl SkillCache {
             // Backward-compatible legacy URI (no server component).
             uri_index.insert(format!("skill://{}/{}", s.source.label(), s.name), idx);
         }
-        self.skills = snap.skills;
+        self.skills = snap.skills.clone();
         self.duplicates = snap.duplicates;
         self.uri_index = uri_index;
+
+        // Build dependency graph for loaded skills
+        self.dep_graph = self.build_dependency_graph(&snap.skills);
+
         self.last_scan = Some(Instant::now());
         tracing::info!(
             target: "skrills::startup",
@@ -225,6 +288,7 @@ impl SkillCache {
         self.skills.clear();
         self.duplicates.clear();
         self.uri_index.clear();
+        self.dep_graph = DependencyGraph::new();
     }
 
     /// Refresh the cache if the TTL has expired or the cache is empty.
@@ -273,9 +337,14 @@ impl SkillCache {
             // Backward-compatible legacy URI (no server component).
             uri_index.insert(format!("skill://{}/{}", s.source.label(), s.name), idx);
         }
+
+        // Build dependency graph
+        let dep_graph = self.build_dependency_graph(&skills);
+
         self.skills = skills;
         self.duplicates = dup_log;
         self.uri_index = uri_index;
+        self.dep_graph = dep_graph;
         self.last_scan = Some(now);
         self.persist_snapshot();
         let elapsed_ms = scan_started.elapsed().as_millis();
@@ -312,6 +381,56 @@ impl SkillCache {
             return Ok(self.skills[idx].clone());
         }
         Err(anyhow!("skill not found"))
+    }
+
+    /// Resolve a dependency path to a skill URI.
+    ///
+    /// Takes a relative path from a skill file and tries to find the corresponding skill.
+    fn resolve_dependency_to_uri(
+        &self,
+        skill_path: &Path,
+        dep_path: &str,
+        skills: &[SkillMeta],
+    ) -> Option<String> {
+        // Get the directory containing the skill
+        let skill_dir = skill_path.parent()?;
+
+        // Resolve the dependency path relative to the skill directory
+        let resolved_path = skill_dir.join(dep_path);
+        let canonical_path = resolved_path.canonicalize().ok()?;
+
+        // Find the skill that matches this path
+        for skill in skills {
+            if let Ok(skill_canonical) = skill.path.canonicalize() {
+                if skill_canonical == canonical_path {
+                    return Some(format!(
+                        "skill://skrills/{}/{}",
+                        skill.source.label(),
+                        skill.name
+                    ));
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Get transitive dependencies for a skill URI.
+    fn resolve_dependencies(&mut self, uri: &str) -> Result<Vec<String>> {
+        self.refresh_if_stale()?;
+        Ok(self.dep_graph.resolve(uri))
+    }
+
+    /// Get skills that depend on the given skill URI.
+    fn get_dependents(&mut self, uri: &str) -> Result<Vec<String>> {
+        self.refresh_if_stale()?;
+        Ok(self.dep_graph.dependents(uri))
+    }
+
+    /// Get all skills that transitively depend on the given skill URI.
+    fn get_transitive_dependents(&mut self, uri: &str) -> Result<Vec<String>> {
+        self.refresh_if_stale()?;
+        Ok(self.dep_graph.transitive_dependents(uri))
     }
 }
 
@@ -432,6 +551,27 @@ impl SkillService {
     fn current_skills_with_dups(&self) -> Result<(Vec<SkillMeta>, Vec<DuplicateInfo>)> {
         let mut cache = self.cache.lock();
         cache.skills_with_dups()
+    }
+
+    /// Resolve transitive dependencies for a skill URI.
+    #[allow(dead_code)] // Will be used in future phases
+    pub(crate) fn resolve_dependencies(&self, uri: &str) -> Result<Vec<String>> {
+        let mut cache = self.cache.lock();
+        cache.resolve_dependencies(uri)
+    }
+
+    /// Get skills that directly depend on the given skill URI.
+    #[allow(dead_code)] // Will be used in future phases
+    pub(crate) fn get_dependents(&self, uri: &str) -> Result<Vec<String>> {
+        let mut cache = self.cache.lock();
+        cache.get_dependents(uri)
+    }
+
+    /// Get all skills that transitively depend on the given skill URI.
+    #[allow(dead_code)] // Will be used in future phases
+    pub(crate) fn get_transitive_dependents(&self, uri: &str) -> Result<Vec<String>> {
+        let mut cache = self.cache.lock();
+        cache.get_transitive_dependents(uri)
     }
 
     fn validate_skills_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
@@ -1929,5 +2069,135 @@ mod tests {
             structured.get("autofixed").and_then(|v| v.as_u64()),
             Some(1)
         );
+    }
+
+    #[test]
+    fn test_dependency_graph_integration() {
+        use skrills_discovery::SkillRoot;
+
+        // Initialize tracing for test
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter("skrills::deps=debug")
+            .try_init();
+
+        let temp = tempdir().unwrap();
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+
+        // Create skill A (depends on B and C)
+        let skill_a_dir = skills_dir.join("skill-a");
+        fs::create_dir_all(&skill_a_dir).unwrap();
+        fs::write(
+            skill_a_dir.join("SKILL.md"),
+            r#"---
+name: skill-a
+description: Skill A depends on B and C
+---
+# Skill A
+See [skill-b](../skill-b/SKILL.md) and [skill-c](../skill-c/SKILL.md) for details.
+"#,
+        )
+        .unwrap();
+
+        // Create skill B (depends on D)
+        let skill_b_dir = skills_dir.join("skill-b");
+        fs::create_dir_all(&skill_b_dir).unwrap();
+        fs::write(
+            skill_b_dir.join("SKILL.md"),
+            r#"---
+name: skill-b
+description: Skill B depends on D
+---
+# Skill B
+Uses [skill-d](../skill-d/SKILL.md).
+"#,
+        )
+        .unwrap();
+
+        // Create skill C (depends on D)
+        let skill_c_dir = skills_dir.join("skill-c");
+        fs::create_dir_all(&skill_c_dir).unwrap();
+        fs::write(
+            skill_c_dir.join("SKILL.md"),
+            r#"---
+name: skill-c
+description: Skill C depends on D
+---
+# Skill C
+Also uses [skill-d](../skill-d/SKILL.md).
+"#,
+        )
+        .unwrap();
+
+        // Create skill D (no dependencies)
+        let skill_d_dir = skills_dir.join("skill-d");
+        fs::create_dir_all(&skill_d_dir).unwrap();
+        fs::write(
+            skill_d_dir.join("SKILL.md"),
+            r#"---
+name: skill-d
+description: Skill D has no dependencies
+---
+# Skill D
+Base skill with no dependencies.
+"#,
+        )
+        .unwrap();
+
+        let roots = vec![SkillRoot {
+            root: skills_dir.clone(),
+            source: skrills_discovery::SkillSource::Extra(0),
+        }];
+
+        let service =
+            SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
+
+        // Force refresh to build the graph
+        service.invalidate_cache().unwrap();
+        let skills = service.current_skills_with_dups().unwrap().0;
+
+        // Verify skills were discovered
+        assert_eq!(skills.len(), 4);
+
+        // Test dependency resolution
+        let skill_a_uri = "skill://skrills/extra0/skill-a/SKILL.md";
+        let deps = service.resolve_dependencies(skill_a_uri).unwrap();
+
+        // Debug output
+        eprintln!("skill-a dependencies: {:?}", deps);
+        eprintln!(
+            "Skills discovered: {:?}",
+            skills.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+
+        // skill-a should have transitive dependencies: skill-b, skill-c, skill-d
+        assert!(
+            deps.contains(&"skill://skrills/extra0/skill-b/SKILL.md".to_string()),
+            "Expected skill-b in deps"
+        );
+        assert!(
+            deps.contains(&"skill://skrills/extra0/skill-c/SKILL.md".to_string()),
+            "Expected skill-c in deps"
+        );
+        assert!(
+            deps.contains(&"skill://skrills/extra0/skill-d/SKILL.md".to_string()),
+            "Expected skill-d in deps"
+        );
+
+        // Test reverse dependencies
+        let skill_d_uri = "skill://skrills/extra0/skill-d/SKILL.md";
+        let dependents = service.get_dependents(skill_d_uri).unwrap();
+
+        // skill-d should be used by skill-b and skill-c
+        assert!(dependents.contains(&"skill://skrills/extra0/skill-b/SKILL.md".to_string()));
+        assert!(dependents.contains(&"skill://skrills/extra0/skill-c/SKILL.md".to_string()));
+
+        // Test transitive dependents
+        let trans_deps = service.get_transitive_dependents(skill_d_uri).unwrap();
+
+        // skill-d should transitively affect skill-a, skill-b, skill-c
+        assert!(trans_deps.contains(&"skill://skrills/extra0/skill-a/SKILL.md".to_string()));
+        assert!(trans_deps.contains(&"skill://skrills/extra0/skill-b/SKILL.md".to_string()));
+        assert!(trans_deps.contains(&"skill://skrills/extra0/skill-c/SKILL.md".to_string()));
     }
 }

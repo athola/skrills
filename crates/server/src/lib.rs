@@ -8,7 +8,8 @@
 //! - `sync`: Manages skill synchronization.
 //! - `tui`: Implements the interactive terminal UI.
 
-mod app;
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) mod app;
 mod commands;
 mod doctor;
 mod setup;
