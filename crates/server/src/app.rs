@@ -554,21 +554,18 @@ impl SkillService {
     }
 
     /// Resolve transitive dependencies for a skill URI.
-    #[allow(dead_code)] // Will be used in future phases
     pub(crate) fn resolve_dependencies(&self, uri: &str) -> Result<Vec<String>> {
         let mut cache = self.cache.lock();
         cache.resolve_dependencies(uri)
     }
 
     /// Get skills that directly depend on the given skill URI.
-    #[allow(dead_code)] // Will be used in future phases
     pub(crate) fn get_dependents(&self, uri: &str) -> Result<Vec<String>> {
         let mut cache = self.cache.lock();
         cache.get_dependents(uri)
     }
 
     /// Get all skills that transitively depend on the given skill URI.
-    #[allow(dead_code)] // Will be used in future phases
     pub(crate) fn get_transitive_dependents(&self, uri: &str) -> Result<Vec<String>> {
         let mut cache = self.cache.lock();
         cache.get_transitive_dependents(uri)
@@ -859,9 +856,9 @@ impl SkillService {
 /// Returns (base_uri, resolve_dependencies).
 fn parse_uri_with_query(uri: &str) -> (&str, bool) {
     if let Some((base, query)) = uri.split_once('?') {
-        let resolve = query.split('&').any(|param| {
-            param == "resolve=true" || param == "resolve"
-        });
+        let resolve = query
+            .split('&')
+            .any(|param| param == "resolve=true" || param == "resolve");
         (base, resolve)
     } else {
         (uri, false)
@@ -1147,6 +1144,43 @@ impl ServerHandler for SkillService {
                         }),
                     );
                     schema.insert("additionalProperties".into(), json!(false));
+                    schema
+                }),
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
+            Tool {
+                name: "resolve-dependencies".into(),
+                title: Some("Resolve skill dependencies".into()),
+                description: Some(
+                    "Get transitive dependencies or dependents for a skill.".into(),
+                ),
+                input_schema: std::sync::Arc::new({
+                    let mut schema = JsonMap::new();
+                    schema.insert("type".into(), json!("object"));
+                    schema.insert(
+                        "properties".into(),
+                        json!({
+                            "uri": {
+                                "type": "string",
+                                "description": "Skill URI (e.g., skill://skrills/user/my-skill)"
+                            },
+                            "direction": {
+                                "type": "string",
+                                "enum": ["dependencies", "dependents"],
+                                "default": "dependencies",
+                                "description": "Direction to traverse: dependencies (what this skill needs) or dependents (what uses this skill)"
+                            },
+                            "transitive": {
+                                "type": "boolean",
+                                "default": true,
+                                "description": "Include transitive relationships"
+                            }
+                        }),
+                    );
+                    schema.insert("required".into(), json!(["uri"]));
                     schema
                 }),
                 output_schema: None,
@@ -1714,6 +1748,81 @@ impl ServerHandler for SkillService {
                             meta: None,
                         })
                     }
+                    "resolve-dependencies" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+
+                        // Extract URI
+                        let uri = args
+                            .get("uri")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| anyhow!("uri parameter is required"))?;
+
+                        // Extract direction (default: dependencies)
+                        let direction = args
+                            .get("direction")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("dependencies");
+
+                        // Extract transitive flag (default: true)
+                        let transitive = args
+                            .get("transitive")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(true);
+
+                        // Validate direction
+                        if direction != "dependencies" && direction != "dependents" {
+                            return Err(anyhow!(
+                                "direction must be 'dependencies' or 'dependents'"
+                            ));
+                        }
+
+                        // Resolve based on direction and transitive flag
+                        let results = match (direction, transitive) {
+                            ("dependencies", true) => self.resolve_dependencies(uri)?,
+                            ("dependencies", false) => {
+                                // For non-transitive dependencies, get direct deps only
+                                let mut cache = self.cache.lock();
+                                cache.refresh_if_stale()?;
+                                let deps = cache.dep_graph.dependencies(uri);
+                                let mut result: Vec<String> = deps.into_iter().collect();
+                                result.sort();
+                                result
+                            }
+                            ("dependents", true) => self.get_transitive_dependents(uri)?,
+                            ("dependents", false) => self.get_dependents(uri)?,
+                            _ => unreachable!(),
+                        };
+
+                        let text = format!(
+                            "Found {} {} for {}",
+                            results.len(),
+                            if direction == "dependencies" {
+                                if transitive {
+                                    "transitive dependencies"
+                                } else {
+                                    "direct dependencies"
+                                }
+                            } else if transitive {
+                                "transitive dependents"
+                            } else {
+                                "direct dependents"
+                            },
+                            uri
+                        );
+
+                        Ok(CallToolResult {
+                            content: vec![Content::text(text)],
+                            structured_content: Some(json!({
+                                "uri": uri,
+                                "direction": direction,
+                                "transitive": transitive,
+                                "results": results,
+                                "count": results.len()
+                            })),
+                            is_error: Some(false),
+                            meta: None,
+                        })
+                    }
                     other => Err(anyhow!("unknown tool {other}")),
                 }
             }()
@@ -2271,6 +2380,109 @@ Base skill with no dependencies.
     }
 
     #[test]
+    fn test_resolve_dependencies_tool() {
+        use skrills_discovery::SkillRoot;
+
+        // Initialize tracing for test
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter("skrills::deps=debug")
+            .try_init();
+
+        let temp = tempdir().unwrap();
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+
+        // Create skill A (depends on B)
+        let skill_a_dir = skills_dir.join("skill-a");
+        fs::create_dir_all(&skill_a_dir).unwrap();
+        fs::write(
+            skill_a_dir.join("SKILL.md"),
+            r#"---
+name: skill-a
+description: Skill A depends on B
+---
+# Skill A
+See [skill-b](../skill-b/SKILL.md) for details.
+"#,
+        )
+        .unwrap();
+
+        // Create skill B (depends on C)
+        let skill_b_dir = skills_dir.join("skill-b");
+        fs::create_dir_all(&skill_b_dir).unwrap();
+        fs::write(
+            skill_b_dir.join("SKILL.md"),
+            r#"---
+name: skill-b
+description: Skill B depends on C
+---
+# Skill B
+Uses [skill-c](../skill-c/SKILL.md).
+"#,
+        )
+        .unwrap();
+
+        // Create skill C (no dependencies)
+        let skill_c_dir = skills_dir.join("skill-c");
+        fs::create_dir_all(&skill_c_dir).unwrap();
+        fs::write(
+            skill_c_dir.join("SKILL.md"),
+            r#"---
+name: skill-c
+description: Skill C has no dependencies
+---
+# Skill C
+Base skill.
+"#,
+        )
+        .unwrap();
+
+        let roots = vec![SkillRoot {
+            root: skills_dir.clone(),
+            source: skrills_discovery::SkillSource::Extra(0),
+        }];
+
+        let service =
+            SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
+
+        // Force refresh to build the graph
+        service.invalidate_cache().unwrap();
+
+        // Test 1: Transitive dependencies for A (should get B and C)
+        let deps = service
+            .resolve_dependencies("skill://skrills/extra0/skill-a/SKILL.md")
+            .unwrap();
+        assert_eq!(deps.len(), 2);
+        assert!(deps.contains(&"skill://skrills/extra0/skill-b/SKILL.md".to_string()));
+        assert!(deps.contains(&"skill://skrills/extra0/skill-c/SKILL.md".to_string()));
+
+        // Test 2: Direct dependencies for A (should only get B)
+        let mut cache = service.cache.lock();
+        cache.refresh_if_stale().unwrap();
+        let direct_deps = cache
+            .dep_graph
+            .dependencies("skill://skrills/extra0/skill-a/SKILL.md");
+        assert_eq!(direct_deps.len(), 1);
+        assert!(direct_deps.contains("skill://skrills/extra0/skill-b/SKILL.md"));
+        drop(cache);
+
+        // Test 3: Direct dependents of C (should only get B)
+        let dependents = service
+            .get_dependents("skill://skrills/extra0/skill-c/SKILL.md")
+            .unwrap();
+        assert_eq!(dependents.len(), 1);
+        assert!(dependents.contains(&"skill://skrills/extra0/skill-b/SKILL.md".to_string()));
+
+        // Test 4: Transitive dependents of C (should get A and B)
+        let trans_dependents = service
+            .get_transitive_dependents("skill://skrills/extra0/skill-c/SKILL.md")
+            .unwrap();
+        assert_eq!(trans_dependents.len(), 2);
+        assert!(trans_dependents.contains(&"skill://skrills/extra0/skill-a/SKILL.md".to_string()));
+        assert!(trans_dependents.contains(&"skill://skrills/extra0/skill-b/SKILL.md".to_string()));
+    }
+
+    #[test]
     fn test_read_resource_without_resolve() {
         use skrills_discovery::SkillRoot;
 
@@ -2323,7 +2535,10 @@ Base skill.
         // Should return only the requested skill
         assert_eq!(result.contents.len(), 1);
         let content = &result.contents[0];
-        if let ResourceContents::TextResourceContents { uri, text, meta, .. } = content {
+        if let ResourceContents::TextResourceContents {
+            uri, text, meta, ..
+        } = content
+        {
             assert_eq!(uri, skill_a_uri);
             assert!(text.contains("Skill A"));
             assert!(text.contains("depends on B"));
@@ -2420,7 +2635,10 @@ Base skill.
 
         // First item should be the requested skill
         let first = &result.contents[0];
-        if let ResourceContents::TextResourceContents { uri, text, meta, .. } = first {
+        if let ResourceContents::TextResourceContents {
+            uri, text, meta, ..
+        } = first
+        {
             assert_eq!(uri, "skill://skrills/extra0/skill-a/SKILL.md");
             assert!(text.contains("Skill A"));
             let meta = meta.as_ref().unwrap();
@@ -2507,7 +2725,10 @@ description: Skill B
         // Should return only the requested skill (same as no param)
         assert_eq!(result.contents.len(), 1);
         let content = &result.contents[0];
-        if let ResourceContents::TextResourceContents { uri, text, meta, .. } = content {
+        if let ResourceContents::TextResourceContents {
+            uri, text, meta, ..
+        } = content
+        {
             assert_eq!(uri, "skill://skrills/extra0/skill-a/SKILL.md");
             assert!(text.contains("Skill A"));
             let meta = meta.as_ref().unwrap();
@@ -2537,7 +2758,8 @@ description: Skill B
         assert!(!resolve);
 
         // Test with resolve shorthand
-        let (base, resolve) = parse_uri_with_query("skill://skrills/extra0/skill-a/SKILL.md?resolve");
+        let (base, resolve) =
+            parse_uri_with_query("skill://skrills/extra0/skill-a/SKILL.md?resolve");
         assert_eq!(base, "skill://skrills/extra0/skill-a/SKILL.md");
         assert!(resolve);
 
