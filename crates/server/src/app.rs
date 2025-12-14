@@ -588,6 +588,10 @@ impl SkillService {
             .get("autofix")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let check_dependencies = args
+            .get("check_dependencies")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let validation_target = match target_str {
             "claude" => VT::Claude,
@@ -596,11 +600,19 @@ impl SkillService {
         };
 
         let (skills, _) = self.current_skills_with_dups()?;
+
+        // Build a set of all valid skill URIs for dependency checking
+        let valid_skill_uris: std::collections::HashSet<String> = skills
+            .iter()
+            .map(|s| format!("skill://skrills/{}/{}", s.source.label(), s.name))
+            .collect();
+
         let mut results = Vec::new();
         let mut autofixed = 0usize;
+        let mut total_dep_issues = 0usize;
 
         for meta in &skills {
-            let content = match fs::read_to_string(&meta.path) {
+            let mut content = match fs::read_to_string(&meta.path) {
                 Ok(c) => c,
                 Err(_) => continue,
             };
@@ -618,14 +630,58 @@ impl SkillService {
                     if fix_result.modified {
                         autofixed += 1;
                         autofixed_skill = true;
-                        let new_content = fs::read_to_string(&meta.path).unwrap_or(content);
-                        result = validate_skill(&meta.path, &new_content, validation_target);
+                        content = fs::read_to_string(&meta.path).unwrap_or(content);
+                        result = validate_skill(&meta.path, &content, validation_target);
                     }
                 }
             }
 
-            if !errors_only || result.has_errors() {
-                results.push(json!({
+            // Check dependencies if requested
+            let mut dependency_issues = Vec::new();
+            let mut dependency_count = 0usize;
+            let mut missing_count = 0usize;
+
+            if check_dependencies {
+                let dep_analysis = skrills_analyze::analyze_dependencies(&meta.path, &content);
+                dependency_count = dep_analysis.dependencies.len();
+
+                // Check for missing local dependencies
+                for missing_dep in &dep_analysis.missing {
+                    let issue_type = match missing_dep.dep_type {
+                        skrills_analyze::DependencyType::Module => "missing_module",
+                        skrills_analyze::DependencyType::Reference => "missing_reference",
+                        skrills_analyze::DependencyType::Script => "missing_script",
+                        skrills_analyze::DependencyType::Asset => "missing_asset",
+                        _ => "missing_file",
+                    };
+                    dependency_issues.push(json!({
+                        "type": issue_type,
+                        "target": missing_dep.target,
+                        "line": missing_dep.line
+                    }));
+                    missing_count += 1;
+                }
+
+                // Check for unresolved skill dependencies
+                let skill_uri = format!("skill://skrills/{}/{}", meta.source.label(), meta.name);
+                if let Ok(deps) = self.resolve_dependencies(&skill_uri) {
+                    for dep_uri in deps {
+                        // Check if the dependency exists in our valid skills set
+                        if !valid_skill_uris.contains(&dep_uri) {
+                            dependency_issues.push(json!({
+                                "type": "unresolved_skill",
+                                "target": dep_uri
+                            }));
+                            missing_count += 1;
+                        }
+                    }
+                }
+
+                total_dep_issues += dependency_issues.len();
+            }
+
+            if !errors_only || result.has_errors() || !dependency_issues.is_empty() {
+                let mut skill_json = json!({
                     "name": meta.name,
                     "path": meta.path.display().to_string(),
                     "claude_valid": result.claude_valid,
@@ -639,12 +695,29 @@ impl SkillService {
                         "line": i.line,
                         "suggestion": i.suggestion
                     })).collect::<Vec<_>>()
-                }));
+                });
+
+                if check_dependencies {
+                    skill_json
+                        .as_object_mut()
+                        .unwrap()
+                        .insert("dependency_issues".to_string(), json!(dependency_issues));
+                    skill_json
+                        .as_object_mut()
+                        .unwrap()
+                        .insert("dependency_count".to_string(), json!(dependency_count));
+                    skill_json
+                        .as_object_mut()
+                        .unwrap()
+                        .insert("missing_count".to_string(), json!(missing_count));
+                }
+
+                results.push(skill_json);
             }
         }
 
         let text = {
-            let base = format!(
+            let mut base = format!(
                 "Validated {} skills: {} Claude-valid, {} Codex-valid",
                 results.len(),
                 results
@@ -663,21 +736,36 @@ impl SkillService {
                     .count()
             );
             if autofixed > 0 {
-                format!("{base}\nAuto-fixed {autofixed} skills")
-            } else {
-                base
+                base = format!("{base}\nAuto-fixed {autofixed} skills");
             }
+            if check_dependencies && total_dep_issues > 0 {
+                base = format!("{base}\nFound {total_dep_issues} dependency issues");
+            }
+            base
         };
+
+        let mut structured = json!({
+            "total": results.len(),
+            "target": target_str,
+            "autofix": autofix,
+            "autofixed": autofixed,
+            "results": results
+        });
+
+        if check_dependencies {
+            structured
+                .as_object_mut()
+                .unwrap()
+                .insert("check_dependencies".to_string(), json!(true));
+            structured.as_object_mut().unwrap().insert(
+                "total_dependency_issues".to_string(),
+                json!(total_dep_issues),
+            );
+        }
 
         Ok(CallToolResult {
             content: vec![Content::text(text)],
-            structured_content: Some(json!({
-                "total": results.len(),
-                "target": target_str,
-                "autofix": autofix,
-                "autofixed": autofixed,
-                "results": results
-            })),
+            structured_content: Some(structured),
             is_error: Some(false),
             meta: None,
         })
@@ -1109,6 +1197,11 @@ impl ServerHandler for SkillService {
                                  "type": "boolean",
                                  "default": false,
                                  "description": "Only return skills with errors"
+                             },
+                             "check_dependencies": {
+                                 "type": "boolean",
+                                 "default": false,
+                                 "description": "Validate that skill dependencies exist and are resolvable"
                             }
                         }),
                     );
@@ -2774,5 +2867,125 @@ description: Skill B
             parse_uri_with_query("skill://skrills/extra0/skill-a/SKILL.md?resolve=true&foo=bar");
         assert_eq!(base, "skill://skrills/extra0/skill-a/SKILL.md");
         assert!(resolve);
+    }
+
+    #[test]
+    fn validate_skills_tool_dependency_validation() {
+        let temp = tempdir().unwrap();
+        let skill_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        // Create a skill with missing local dependencies
+        let skill_path = skill_dir.join("SKILL.md");
+        std::fs::write(
+            &skill_path,
+            r#"---
+name: test-skill
+description: A test skill with dependencies
+---
+# Test Skill
+
+This skill references:
+- [Missing module](modules/helper.md)
+- [Missing reference](references/guide.md)
+- [Existing file](../other.md)
+"#,
+        )
+        .unwrap();
+
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", temp.path());
+
+        let service =
+            SkillService::new_with_ttl(vec![skill_dir.clone()], Duration::from_secs(1)).unwrap();
+
+        // Validate without dependency checking
+        let result_no_deps = service
+            .validate_skills_tool(
+                json!({"target": "both", "check_dependencies": false})
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+            )
+            .unwrap();
+
+        let structured_no_deps = result_no_deps.structured_content.unwrap();
+        let results_no_deps = structured_no_deps
+            .get("results")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(results_no_deps.len(), 1);
+        assert!(results_no_deps[0].get("dependency_issues").is_none());
+
+        // Validate with dependency checking
+        let result_with_deps = service
+            .validate_skills_tool(
+                json!({"target": "both", "check_dependencies": true})
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+            )
+            .unwrap();
+
+        let structured_with_deps = result_with_deps.structured_content.unwrap();
+        let results_with_deps = structured_with_deps
+            .get("results")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(results_with_deps.len(), 1);
+
+        let skill_result = &results_with_deps[0];
+        let dep_issues = skill_result
+            .get("dependency_issues")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        let missing_count = skill_result.get("missing_count").unwrap().as_u64().unwrap();
+
+        // Should find missing modules and references
+        assert!(
+            missing_count >= 2,
+            "Expected at least 2 missing dependencies, found {}",
+            missing_count
+        );
+
+        // Check that dependency issues have the right structure
+        let has_missing_module = dep_issues
+            .iter()
+            .any(|i| i.get("type").unwrap().as_str().unwrap() == "missing_module");
+        let has_missing_reference = dep_issues
+            .iter()
+            .any(|i| i.get("type").unwrap().as_str().unwrap() == "missing_reference");
+
+        assert!(
+            has_missing_module,
+            "Expected to find missing_module issue type"
+        );
+        assert!(
+            has_missing_reference,
+            "Expected to find missing_reference issue type"
+        );
+
+        // Verify the summary includes dependency issues
+        assert_eq!(
+            structured_with_deps.get("check_dependencies").unwrap(),
+            &json!(true)
+        );
+        let total_dep_issues = structured_with_deps
+            .get("total_dependency_issues")
+            .unwrap()
+            .as_u64()
+            .unwrap();
+        assert!(
+            total_dep_issues >= 2,
+            "Expected at least 2 total dependency issues"
+        );
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
     }
 }
