@@ -26,10 +26,12 @@
 //! ```
 
 pub mod deps;
+pub mod graph;
 pub mod optimize;
 pub mod tokens;
 
 pub use deps::{analyze_dependencies, Dependency, DependencyAnalysis, DependencyType};
+pub use graph::DependencyGraph;
 pub use optimize::{quality_score, suggest_optimizations, OptimizationType, Priority, Suggestion};
 pub use tokens::{count_tokens, estimate_tokens, TokenBreakdown, TokenCategory};
 
