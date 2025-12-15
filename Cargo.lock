@@ -2009,6 +2009,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "skrills-discovery",
  "skrills-validate",
  "tempfile",
  "thiserror",

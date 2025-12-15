@@ -38,6 +38,8 @@ pub use resolve::{
     DependencyGraph, DependencyResolver, GraphBuilder, InMemoryRegistry, ResolutionResult,
     ResolveError, ResolveOptions, ResolvedDependency, SkillInfo, SkillRegistry,
 };
+// Re-export SkillSource for users of the resolve API
+pub use skrills_discovery::SkillSource;
 pub use tokens::{count_tokens, estimate_tokens, TokenBreakdown, TokenCategory};
 
 use serde::{Deserialize, Serialize};

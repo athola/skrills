@@ -15,11 +15,12 @@
 //!
 //! ```rust
 //! use skrills_analyze::resolve::{DependencyGraph, GraphBuilder, SkillInfo};
+//! use skrills_discovery::SkillSource;
 //! use skrills_validate::frontmatter::{DeclaredDependency, SkillFrontmatter};
 //!
 //! let base = SkillInfo {
 //!     name: "base".into(),
-//!     source: "test".into(),
+//!     source: SkillSource::Extra(0),
 //!     uri: "skill://base".into(),
 //!     version: None,
 //!     frontmatter: Some(SkillFrontmatter {
@@ -30,7 +31,7 @@
 //!
 //! let child = SkillInfo {
 //!     name: "child".into(),
-//!     source: "test".into(),
+//!     source: SkillSource::Extra(0),
 //!     uri: "skill://child".into(),
 //!     version: None,
 //!     frontmatter: Some(SkillFrontmatter {
@@ -52,6 +53,7 @@
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use skrills_discovery::SkillSource;
 use skrills_validate::frontmatter::SkillFrontmatter;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -151,8 +153,8 @@ pub struct ResolvedDependency {
     pub uri: String,
     /// Skill name.
     pub name: String,
-    /// Source label.
-    pub source: String,
+    /// Source of this skill.
+    pub source: SkillSource,
     /// Skill version, if known.
     pub version: Option<String>,
     /// Whether this was an optional dependency.
@@ -178,12 +180,12 @@ pub struct ResolutionResult {
 // ============================================================================
 
 /// Information about a skill in the registry.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SkillInfo {
     /// Skill name.
     pub name: String,
-    /// Source label (e.g., "codex", "claude").
-    pub source: String,
+    /// Source of this skill.
+    pub source: SkillSource,
     /// URI for loading this skill.
     pub uri: String,
     /// Parsed version, if available.
@@ -543,7 +545,7 @@ impl GraphBuilder {
                 }
             }
             // Also index by source:name
-            let scoped_key = format!("{}:{}", skill.source, skill.name);
+            let scoped_key = format!("{}:{}", skill.source.label(), skill.name);
             match name_index.entry(scoped_key.clone()) {
                 Entry::Occupied(_) => {
                     build_warnings.push(format!(
@@ -796,7 +798,7 @@ impl InMemoryRegistry {
     pub fn add(&mut self, info: SkillInfo) {
         self.skills.insert(info.name.clone(), info.clone());
         self.skills
-            .insert(format!("{}:{}", info.source, info.name), info);
+            .insert(format!("{}:{}", info.source.label(), info.name), info);
     }
 }
 
@@ -830,7 +832,7 @@ mod tests {
     fn make_skill(name: &str, deps: Vec<DeclaredDependency>) -> SkillInfo {
         SkillInfo {
             name: name.to_string(),
-            source: "test".to_string(),
+            source: SkillSource::Extra(0),
             uri: format!("skill://test/{}", name),
             version: Some(semver::Version::new(1, 0, 0)),
             frontmatter: Some(SkillFrontmatter {
@@ -848,7 +850,7 @@ mod tests {
     ) -> SkillInfo {
         SkillInfo {
             name: name.to_string(),
-            source: "test".to_string(),
+            source: SkillSource::Extra(0),
             uri: format!("skill://test/{}", name),
             version: Some(semver::Version::new(version.0, version.1, version.2)),
             frontmatter: Some(SkillFrontmatter {
@@ -1113,11 +1115,11 @@ mod tests {
     #[test]
     fn test_graph_source_pinning() {
         let mut codex_skill = make_skill("shared", vec![]);
-        codex_skill.source = "codex".to_string();
+        codex_skill.source = SkillSource::Codex;
         codex_skill.uri = "skill://codex/shared".to_string();
 
         let mut claude_skill = make_versioned_skill("shared", (2, 0, 0), vec![]);
-        claude_skill.source = "claude".to_string();
+        claude_skill.source = SkillSource::Claude;
         claude_skill.uri = "skill://claude/shared".to_string();
 
         let graph = DependencyGraph::builder()
@@ -1132,7 +1134,7 @@ mod tests {
 
         let result = graph.resolve("parent").unwrap();
         let shared = result.resolved.iter().find(|r| r.name == "shared").unwrap();
-        assert_eq!(shared.source, "codex");
+        assert_eq!(shared.source, SkillSource::Codex);
     }
 
     #[test]
@@ -1287,8 +1289,8 @@ mod tests {
         assert!(found.is_some());
         assert_eq!(found.unwrap().name, "my-skill");
 
-        // When looking up by source:name
-        let found_qualified = graph.get("test:my-skill");
+        // When looking up by source:name (Extra(0).label() = "extra0")
+        let found_qualified = graph.get("extra0:my-skill");
         assert!(found_qualified.is_some());
 
         // When looking up non-existent

@@ -13,6 +13,7 @@ walkdir = { workspace = true }
 thiserror = { workspace = true }
 semver = { workspace = true }
 skrills-validate = { path = "../validate" }
+skrills-discovery = { path = "../discovery" }
 parking_lot = { workspace = true }
 
 [dev-dependencies]
