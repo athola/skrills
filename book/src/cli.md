@@ -1,10 +1,10 @@
 # CLI Usage Reference
 
-This section is a reference for the command-line interface (CLI) usage of `skrills`, listing the subcommands and their functions.
+Reference for `skrills` CLI subcommands and usage.
 
 ## `serve`
 
-Starts the MCP server, operating over standard I/O (stdio).
+Starts the MCP server over stdio.
 
 ```bash
 skrills serve [--skill-dir DIR] [--cache-ttl-ms N] [--watch]
@@ -143,7 +143,7 @@ skrills agent <name> [--skill-dir DIR]... [--dry-run]
 
 Use `--dry-run` to print the resolved command without executing it.
 
-When no backend is specified in an agent spec, skrills checks `~/.codex/subagents.toml` for a `default_backend`; if absent it falls back to `SKRILLS_SUBAGENTS_DEFAULT_BACKEND` and defaults to `codex`.
+When no backend is specified in an agent spec, skrills checks `~/.codex/subagents.toml` for a `default_backend`; if absent it uses `SKRILLS_SUBAGENTS_DEFAULT_BACKEND`, defaulting to `codex`.
 
 ## `doctor`
 
@@ -179,7 +179,7 @@ Options:
 
 ## MCP Tools (Client-Facing)
 
-The `skrills` server exposes these tools via the MCP protocol:
+`skrills` exposes these tools via the MCP protocol:
 
 | Tool | Description |
 |------|-------------|
