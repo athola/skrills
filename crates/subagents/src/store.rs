@@ -220,7 +220,10 @@ impl StateRunStore {
     }
 
     fn load_from_disk(&mut self) -> Result<()> {
-        let mut guard = self.inner.blocking_lock();
+        let mut guard = self
+            .inner
+            .try_lock()
+            .map_err(|_| anyhow::anyhow!("failed to acquire run store lock during init"))?;
         guard.clear();
         if self.path.exists() {
             let text = fs::read_to_string(&self.path)?;
@@ -232,13 +235,16 @@ impl StateRunStore {
         Ok(())
     }
 
-    fn persist(&self) -> Result<()> {
-        let guard = self.inner.blocking_lock();
+    async fn persist(&self) -> Result<()> {
+        let runs: Vec<RunRecord> = {
+            let guard = self.inner.lock().await;
+            let mut runs: Vec<_> = guard.values().cloned().collect();
+            runs.sort_by_key(|r| r.created_at);
+            runs
+        };
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let mut runs: Vec<_> = guard.values().cloned().collect();
-        runs.sort_by_key(|r| r.created_at);
         let data = serde_json::to_string_pretty(&runs)?;
         fs::write(&self.path, data)?;
         Ok(())
@@ -271,7 +277,7 @@ impl RunStore for StateRunStore {
             let mut guard = self.inner.lock().await;
             guard.insert(id, record);
         }
-        self.persist()?;
+        self.persist().await?;
         Ok(id)
     }
 
@@ -284,7 +290,7 @@ impl RunStore for StateRunStore {
             record.status = status.clone();
             record.updated_at = status.updated_at;
         }
-        self.persist()?;
+        self.persist().await?;
         Ok(())
     }
 
@@ -297,7 +303,7 @@ impl RunStore for StateRunStore {
             record.updated_at = event.ts;
             record.events.push(event);
         }
-        self.persist()?;
+        self.persist().await?;
         Ok(())
     }
 
@@ -339,7 +345,7 @@ impl RunStore for StateRunStore {
                 }
             }
         }
-        self.persist()?;
+        self.persist().await?;
         Ok(true)
     }
 }
@@ -422,7 +428,7 @@ mod store_tests {
     }
 
     #[tokio::test]
-    async fn mem_store_create_and_status() {
+    async fn given_mem_store_when_create_run_then_status_is_pending() {
         let store = MemRunStore::new();
         let run_id = store.create_run(sample_request()).await.unwrap();
         let status = store.status(run_id).await.unwrap().unwrap();
@@ -430,7 +436,7 @@ mod store_tests {
     }
 
     #[tokio::test]
-    async fn mem_store_updates_status_and_events() {
+    async fn given_mem_store_when_updating_status_and_appending_event_then_persists_in_memory() {
         let store = MemRunStore::new();
         let run_id = store.create_run(sample_request()).await.unwrap();
         let new_status = RunStatus {
@@ -458,7 +464,7 @@ mod store_tests {
     }
 
     #[tokio::test]
-    async fn mem_store_stop_marks_canceled() {
+    async fn given_mem_store_when_stop_then_marks_canceled() {
         let store = MemRunStore::new();
         let run_id = store.create_run(sample_request()).await.unwrap();
         let stopped = store.stop(run_id).await.unwrap();
@@ -468,7 +474,7 @@ mod store_tests {
     }
 
     #[tokio::test]
-    async fn state_store_persists_runs() {
+    async fn given_state_store_when_reopened_then_status_and_history_persist_to_disk() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("runs.json");
         let store = StateRunStore::new(path.clone()).unwrap();

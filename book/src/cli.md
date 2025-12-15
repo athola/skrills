@@ -192,6 +192,10 @@ The `skrills` server exposes these tools via the MCP protocol:
 | `sync-status` | Preview sync changes (dry run) |
 | `validate-skills` | Validate skills for CLI compatibility |
 | `analyze-skills` | Analyze token usage and dependencies |
+| `skill-loading-status` | Report skill roots, trace/probe install status, and marker coverage |
+| `enable-skill-trace` | Install trace/probe skills and optionally instrument SKILL.md files with markers |
+| `disable-skill-trace` | Remove trace/probe skill directories (does not remove markers) |
+| `skill-loading-selftest` | Return a one-shot probe line and expected response to confirm skills are loading |
 
 When the `subagents` feature is enabled, these additional tools are available:
 
@@ -200,3 +204,16 @@ When the `subagents` feature is enabled, these additional tools are available:
 | `list-subagents` | List available subagent specifications |
 | `run-subagent` | Execute a subagent with configurable backend |
 | `get-run-status` | Check status of a running subagent |
+
+## Skill loading validation
+
+Use the trace/probe tools when you need a deterministic signal that skills are loading in the current Claude Code or Codex session.
+
+Workflow:
+
+1. Call `enable-skill-trace` (use `dry_run: true` to preview). This installs two debug skills and can instrument skill files by appending `<!-- skrills-skill-id: ... -->` markers (with optional backups).
+2. Restart the session if the client does not hot-reload skills.
+3. Call `skill-loading-selftest` and send the returned `probe_line`. Expect `SKRILLS_PROBE_OK:<token>`.
+4. With tracing enabled and markers present, each assistant response should end with `SKRILLS_SKILLS_LOADED: [...]` and `SKRILLS_SKILLS_USED: [...]`.
+
+Use `skill-loading-status` to confirm which roots were scanned and whether markers are present. Use `disable-skill-trace` to remove the debug skills when finished.

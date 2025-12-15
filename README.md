@@ -90,6 +90,10 @@ When running as an MCP server (`skrills serve`), the following tools are availab
 - `sync-preferences` - Sync preferences
 - `sync-all` - Sync everything
 - `sync-status` - Preview sync changes (dry run)
+- `skill-loading-status` - Report skill roots, trace/probe install status, and marker coverage
+- `enable-skill-trace` - Install trace/probe skills and optionally instrument SKILL.md files with markers
+- `disable-skill-trace` - Remove trace/probe skill directories (does not remove markers)
+- `skill-loading-selftest` - Return a one-shot probe line and expected response to confirm skills are loading
 
 ## CLI guide (selected)
 - `skrills validate [--target claude|codex|both] [--autofix]` — validate skills for CLI compatibility.
@@ -127,6 +131,35 @@ make fmt lint test --quiet
 ```
 - Rust toolchain ≥ 1.75 recommended.
 - End-to-end MCP tests live under `crates/server/tests/`; sample agents in `crates/subagents/`.
+
+## Skill loading validation (Claude Code and Codex)
+
+Neither Claude Code nor Codex CLI guarantees a built-in, user-visible report of which `SKILL.md` files were injected into the current prompt. Skrills provides an opt-in, deterministic workflow for validation:
+
+This workflow is for debugging. The trace/probe skills add prompt overhead; remove them when finished.
+
+1. Call `enable-skill-trace` (use `dry_run: true` to preview). This installs two debug skills and can instrument skill files by appending `<!-- skrills-skill-id: ... -->` markers (with optional backups).
+2. Restart the Claude/Codex session if the client does not hot-reload skills.
+3. Call `skill-loading-selftest` and send the returned `probe_line`. Expect `SKRILLS_PROBE_OK:<token>`.
+4. With tracing enabled and markers present, each assistant response should end with:
+   - `SKRILLS_SKILLS_LOADED: [...]`
+   - `SKRILLS_SKILLS_USED: [...]`
+
+Use `skill-loading-status` to check which roots were scanned and whether markers are present. Use `disable-skill-trace` to remove the debug skills when finished (it does not remove markers).
+
+Example MCP inputs (tool arguments):
+
+`enable-skill-trace`:
+```json
+{ "target": "codex", "instrument": true, "backup": true, "dry_run": false }
+```
+
+`skill-loading-selftest`:
+```json
+{ "target": "codex" }
+```
+
+For a longer walkthrough, see `book/src/cli.md`.
 
 ## Status & roadmap
 - Actively developed; changelogs in `docs/CHANGELOG.md` and `book/src/changelog.md`.

@@ -1,0 +1,143 @@
+# Skill Dependency Resolution
+
+Skills can declare dependencies on other skills via YAML frontmatter. The resolution engine handles circular dependency detection, semver version constraints, source pinning, and optional dependencies.
+
+## Frontmatter Schema
+
+```yaml
+---
+name: my-skill
+description: Does something useful
+version: 1.2.0  # Skill's own version
+depends:
+  - base-skill                           # Simple: any version, any source
+  - name: utility-skill                  # Structured: explicit name
+    version: "^2.0"                      # Semver constraint
+    source: codex                        # Source pinning
+    optional: true                       # Optional dependency
+  - codex:auth-helpers@^1.0              # Compact: source:name@version
+---
+```
+
+### Dependency Formats
+
+| Format | Example | Use Case |
+|--------|---------|----------|
+| Simple | `base-skill` | Any version, any source |
+| Compact | `codex:auth@^1.0` | Pinned source and version |
+| Structured | `{ name, version, source, optional }` | Full control |
+
+## Resolution Algorithm
+
+The resolver performs a depth-first traversal with cycle detection:
+
+1. **Cycle detection**: Track in-progress nodes; error if revisited
+2. **Version matching**: Validate semver constraints against skill versions
+3. **Optional handling**: Skip missing optionals with warning (or error if `strict_optional`)
+4. **Topological order**: Return dependencies before dependents
+
+```
+resolve(skill, registry, options) -> Result<ResolutionResult>:
+    visited = Set()
+    in_stack = Set()  # For cycle detection
+    resolved = []
+    warnings = []
+
+    fn visit(skill_name, depth, required_by):
+        if skill_name in in_stack:
+            return Err(CircularDependency)
+        if skill_name in visited:
+            return Ok(())  # Already resolved
+        if depth > options.max_depth:
+            return Err(MaxDepthExceeded)
+
+        in_stack.add(skill_name)
+        skill = registry.lookup(skill_name)
+
+        if skill is None:
+            if is_optional:
+                warnings.push("Skipped optional: {skill_name}")
+                return Ok(())
+            return Err(NotFound)
+
+        # Check version constraint
+        if version_req and skill.version:
+            if !version_req.matches(skill.version):
+                return Err(VersionMismatch)
+
+        # Recursively resolve dependencies
+        for dep in skill.depends:
+            visit(dep.name, depth + 1, skill_name)?
+
+        in_stack.remove(skill_name)
+        visited.add(skill_name)
+        resolved.push(skill)  # Post-order = deps before dependents
+
+    visit(skill, 0, "root")
+    return ResolutionResult { resolved, warnings, success: true }
+```
+
+## MCP Tool: `resolve-dependencies`
+
+```json
+{
+  "name": "resolve-dependencies",
+  "description": "Resolve skill dependencies and return load order",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "skill": { "type": "string", "description": "Skill name or URI" },
+      "strict_optional": { "type": "boolean", "default": false },
+      "include_content": { "type": "boolean", "default": false }
+    },
+    "required": ["skill"]
+  }
+}
+```
+
+**Response format:**
+```json
+{
+  "success": true,
+  "resolved": [
+    { "uri": "skill://skrills/codex/base-skill", "name": "base-skill", "depth": 2 },
+    { "uri": "skill://skrills/codex/utility", "name": "utility", "depth": 1 },
+    { "uri": "skill://skrills/codex/my-skill", "name": "my-skill", "depth": 0 }
+  ],
+  "warnings": ["Skipped optional dependency: optional-helper"],
+  "content": "..." // Only if include_content=true (concatenated)
+}
+```
+
+## Validation
+
+The `validate-skills` tool reports dependency issues:
+
+| Issue | Severity | Description |
+|-------|----------|-------------|
+| `DependencyNotFound` | Error | Referenced skill doesn't exist |
+| `CircularDependency` | Error | Cycle detected in dependency graph |
+| `InvalidVersionConstraint` | Error | Malformed semver string |
+| `VersionMismatch` | Error | Constraint not satisfied |
+| `InvalidDependencyFormat` | Error | Can't parse dependency string |
+
+Enable with `--check-deps` flag.
+
+## Backward Compatibility
+
+- Skills without `depends` field work unchanged
+- Resolution is opt-in (via tool or `?resolve=true` query param)
+- No changes to existing URIs or resource format
+
+## Implementation
+
+- Schema: `crates/validate/src/frontmatter.rs`
+- Resolver: `crates/analyze/src/resolve.rs`
+- MCP integration: `crates/server/src/app.rs`
+
+## Future Work
+
+- Transitive version conflict resolution (pick highest compatible)
+- Dependency lockfiles
+- Remote skill registry integration
+- Dependency visualization tool
