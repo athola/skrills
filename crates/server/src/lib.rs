@@ -12,6 +12,7 @@ mod app;
 mod commands;
 mod doctor;
 mod setup;
+mod skill_trace;
 mod sync;
 mod tui;
 

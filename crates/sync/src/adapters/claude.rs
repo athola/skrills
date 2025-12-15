@@ -3,7 +3,8 @@
 use super::traits::{AgentAdapter, FieldSupport};
 use crate::common::{Command, McpServer, Preferences};
 use crate::report::{SkipReason, WriteReport};
-use anyhow::{Context, Result};
+use crate::Result;
+use anyhow::Context;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;

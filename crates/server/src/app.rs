@@ -25,6 +25,7 @@ use crate::discovery::{
 };
 use crate::doctor::doctor_report;
 use crate::signals::ignore_sigchld;
+use crate::skill_trace::{self, ClientTarget as TraceTarget, TraceInstallOptions};
 use crate::sync::{mirror_source_root, sync_from_claude};
 use crate::tui::tui_flow;
 use anyhow::{anyhow, Result};
@@ -33,9 +34,9 @@ use clap::Parser;
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::Mutex;
 use rmcp::model::{
-    CallToolRequestParam, CallToolResult, Content, InitializeResult, ListResourcesResult,
-    ListToolsResult, Meta, PaginatedRequestParam, RawResource, ReadResourceRequestParam,
-    ReadResourceResult, Resource, ResourceContents, ServerCapabilities, Tool, ToolAnnotations,
+    CallToolRequestParam, CallToolResult, Content, ListResourcesResult, ListToolsResult, Meta,
+    PaginatedRequestParam, RawResource, ReadResourceRequestParam, ReadResourceResult, Resource,
+    ResourceContents, Tool, ToolAnnotations,
 };
 use rmcp::ServerHandler;
 use serde::{Deserialize, Serialize};
@@ -47,10 +48,7 @@ use skrills_subagents::SubagentService;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// An in-memory cache for discovered skills.
@@ -306,7 +304,7 @@ impl SkillCache {
     }
 
     /// Retrieve a skill by its URI.
-    fn get_by_uri(&mut self, uri: &str) -> Result<SkillMeta> {
+    fn skill_by_uri(&mut self, uri: &str) -> Result<SkillMeta> {
         self.refresh_if_stale()?;
         if let Some(idx) = self.uri_index.get(uri).copied() {
             return Ok(self.skills[idx].clone());
@@ -322,8 +320,6 @@ impl SkillCache {
 pub(crate) struct SkillService {
     /// The cache for skill metadata.
     cache: Arc<Mutex<SkillCache>>,
-    /// A flag indicating if the cache warmup has started.
-    warmup_started: AtomicBool,
     /// Optional subagent service (enabled via `subagents` feature).
     #[cfg(feature = "subagents")]
     subagents: Option<skrills_subagents::SubagentService>,
@@ -387,7 +383,6 @@ impl SkillService {
         );
         Ok(Self {
             cache: Arc::new(Mutex::new(SkillCache::new_with_ttl(roots, ttl))),
-            warmup_started: AtomicBool::new(false),
             #[cfg(feature = "subagents")]
             subagents: Some(SubagentService::new()?),
         })
@@ -411,7 +406,6 @@ impl SkillService {
         );
         Ok(Self {
             cache: Arc::new(Mutex::new(SkillCache::new_with_ttl(roots, ttl))),
-            warmup_started: AtomicBool::new(false),
             #[cfg(feature = "subagents")]
             subagents: Some(SubagentService::new()?),
         })
@@ -615,7 +609,7 @@ impl SkillService {
         };
         let meta = {
             let mut cache = self.cache.lock();
-            cache.get_by_uri(&uri)?
+            cache.skill_by_uri(&uri)?
         };
         let text = self.read_skill_cached(&meta)?;
         Ok(ReadResourceResult {
@@ -658,33 +652,159 @@ impl SkillService {
         Ok(true)
     }
 
-    /// Spawns a background thread to warm up the cache.
-    ///
-    /// This occurs after the `initialize` handshake to ensure a fast initial response.
-    /// The warmup is a best-effort process and logs its duration.
-    fn spawn_warmup_if_needed(&self) {
-        if self.warmup_started.swap(true, Ordering::SeqCst) {
-            return;
+    fn parse_trace_target(args: &JsonMap<String, Value>) -> TraceTarget {
+        match args
+            .get("target")
+            .and_then(|v| v.as_str())
+            .unwrap_or("both")
+        {
+            "claude" => TraceTarget::Claude,
+            "codex" => TraceTarget::Codex,
+            _ => TraceTarget::Both,
         }
+    }
 
-        let cache = self.cache.clone();
-        std::thread::spawn(move || {
-            let started = Instant::now();
-            let result = cache.lock().refresh_if_stale();
+    fn skill_loading_status_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
+        let target = Self::parse_trace_target(&args);
+        let opts = TraceInstallOptions {
+            include_cache: args
+                .get("include_cache")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            include_marketplace: args
+                .get("include_marketplace")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            include_mirror: args
+                .get("include_mirror")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            include_agent: args
+                .get("include_agent")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            ..Default::default()
+        };
 
-            match result {
-                Ok(()) => tracing::info!(
-                    target: "skrills::warmup",
-                    elapsed_ms = started.elapsed().as_millis(),
-                    "background cache warm-up finished"
-                ),
-                Err(e) => tracing::warn!(
-                    target: "skrills::warmup",
-                    error = %e,
-                    "background cache warm-up failed"
-                ),
-            }
-        });
+        let home = home_dir()?;
+        let status = skill_trace::status(&home, target, &opts)?;
+
+        Ok(CallToolResult {
+            content: vec![Content::text(format!(
+                "Skill loading status: found {} skill files; markers in {} files",
+                status.skill_files_found, status.instrumented_markers_found
+            ))],
+            structured_content: Some(serde_json::to_value(status)?),
+            is_error: Some(false),
+            meta: None,
+        })
+    }
+
+    fn enable_skill_trace_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
+        let target = Self::parse_trace_target(&args);
+        let opts = TraceInstallOptions {
+            instrument: args
+                .get("instrument")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            backup: args.get("backup").and_then(|v| v.as_bool()).unwrap_or(true),
+            dry_run: args
+                .get("dry_run")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            include_cache: args
+                .get("include_cache")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            include_marketplace: args
+                .get("include_marketplace")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            include_mirror: args
+                .get("include_mirror")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            include_agent: args
+                .get("include_agent")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+        };
+
+        let home = home_dir()?;
+        let report = skill_trace::enable_trace(&home, target, opts)?;
+
+        Ok(CallToolResult {
+            content: vec![Content::text(format!(
+                "Enabled skill trace{}: installed trace={}, probe={}, instrumented={} (skipped={})",
+                if report.warnings.iter().any(|w| w.contains("failed to read")) {
+                    " (with warnings)"
+                } else {
+                    ""
+                },
+                report.installed_trace_skill,
+                report.installed_probe_skill,
+                report.instrumented_files,
+                report.skipped_files
+            ))],
+            structured_content: Some(serde_json::to_value(report)?),
+            is_error: Some(false),
+            meta: None,
+        })
+    }
+
+    fn disable_skill_trace_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
+        let target = Self::parse_trace_target(&args);
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let home = home_dir()?;
+        let removed = skill_trace::disable_trace(&home, target, dry_run)?;
+
+        Ok(CallToolResult {
+            content: vec![Content::text(format!(
+                "{} trace/probe skill directories",
+                if dry_run { "Would remove" } else { "Removed" }
+            ))],
+            structured_content: Some(json!({ "dry_run": dry_run, "removed": removed })),
+            is_error: Some(false),
+            meta: None,
+        })
+    }
+
+    fn skill_loading_selftest_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
+        let target = Self::parse_trace_target(&args);
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let home = home_dir()?;
+        let installed = skill_trace::ensure_probe(&home, target, dry_run)?;
+        let token = {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            format!("{:x}", now)
+        };
+
+        Ok(CallToolResult {
+            content: vec![Content::text(
+                "Skill selftest prepared. Send the probe line shown in structured_content.",
+            )],
+            structured_content: Some(json!({
+                "target": target,
+                "probe_skill_installed": installed,
+                "probe_line": format!("SKRILLS_PROBE:{token}"),
+                "expected_response": format!("SKRILLS_PROBE_OK:{token}"),
+                "notes": [
+                    "If the probe skill was just installed, you may need to restart the Claude/Codex session for skills to reload.",
+                    "If you also enabled skill tracing, every assistant response will end with a SKRILLS_SKILLS_LOADED footer."
+                ]
+            })),
+            is_error: Some(false),
+            meta: None,
+        })
     }
 }
 
@@ -935,6 +1055,111 @@ impl ServerHandler for SkillService {
                                 "default": true,
                                 "description": "Include optimization suggestions"
                             }
+                        }),
+                    );
+                    schema.insert("additionalProperties".into(), json!(false));
+                    schema
+                }),
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
+            Tool {
+                name: "skill-loading-status".into(),
+                title: Some("Skill loading status (filesystem + instrumentation)".into()),
+                description: Some(
+                    "Checks skill roots on disk and reports whether trace/probe skills are installed and whether skill files are instrumented with skrills markers.".into(),
+                ),
+                input_schema: std::sync::Arc::new({
+                    let mut schema = JsonMap::new();
+                    schema.insert("type".into(), json!("object"));
+                    schema.insert(
+                        "properties".into(),
+                        json!({
+                            "target": { "type": "string", "description": "Target client: claude, codex, or both", "default": "both" },
+                            "include_mirror": { "type": "boolean", "default": true, "description": "Include ~/.codex/skills-mirror when target includes codex" },
+                            "include_agent": { "type": "boolean", "default": true, "description": "Include ~/.agent/skills" },
+                            "include_cache": { "type": "boolean", "default": false, "description": "Include ~/.claude/plugins/cache when target includes claude" },
+                            "include_marketplace": { "type": "boolean", "default": false, "description": "Include ~/.claude/plugins/marketplaces when target includes claude" }
+                        }),
+                    );
+                    schema.insert("additionalProperties".into(), json!(false));
+                    schema
+                }),
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
+            Tool {
+                name: "enable-skill-trace".into(),
+                title: Some("Enable deterministic skill tracing".into()),
+                description: Some(
+                    "Installs skrills trace/probe skills and (optionally) instruments SKILL.md files with markers so the trace skill can report which skills were loaded.".into(),
+                ),
+                input_schema: std::sync::Arc::new({
+                    let mut schema = JsonMap::new();
+                    schema.insert("type".into(), json!("object"));
+                    schema.insert(
+                        "properties".into(),
+                        json!({
+                            "target": { "type": "string", "description": "Target client: claude, codex, or both", "default": "both" },
+                            "instrument": { "type": "boolean", "default": true, "description": "Append skrills markers to SKILL.md files under selected roots" },
+                            "backup": { "type": "boolean", "default": true, "description": "Create .md.bak backups before modifying SKILL.md files" },
+                            "dry_run": { "type": "boolean", "default": false, "description": "Preview without writing files" },
+                            "include_mirror": { "type": "boolean", "default": true, "description": "Include ~/.codex/skills-mirror when instrumenting codex" },
+                            "include_agent": { "type": "boolean", "default": true, "description": "Include ~/.agent/skills when instrumenting" },
+                            "include_cache": { "type": "boolean", "default": false, "description": "Include ~/.claude/plugins/cache when instrumenting claude" },
+                            "include_marketplace": { "type": "boolean", "default": false, "description": "Include ~/.claude/plugins/marketplaces when instrumenting claude" }
+                        }),
+                    );
+                    schema.insert("additionalProperties".into(), json!(false));
+                    schema
+                }),
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
+            Tool {
+                name: "disable-skill-trace".into(),
+                title: Some("Disable skill tracing".into()),
+                description: Some(
+                    "Removes the skrills trace/probe skill directories from primary Claude/Codex skill roots (does not remove instrumentation markers).".into(),
+                ),
+                input_schema: std::sync::Arc::new({
+                    let mut schema = JsonMap::new();
+                    schema.insert("type".into(), json!("object"));
+                    schema.insert(
+                        "properties".into(),
+                        json!({
+                            "target": { "type": "string", "description": "Target client: claude, codex, or both", "default": "both" },
+                            "dry_run": { "type": "boolean", "default": false, "description": "Preview without deleting directories" }
+                        }),
+                    );
+                    schema.insert("additionalProperties".into(), json!(false));
+                    schema
+                }),
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
+            Tool {
+                name: "skill-loading-selftest".into(),
+                title: Some("Skill loading selftest (probe)".into()),
+                description: Some(
+                    "Ensures the probe skill exists and returns a one-shot probe line + expected response to confirm skills are loading in the current session.".into(),
+                ),
+                input_schema: std::sync::Arc::new({
+                    let mut schema = JsonMap::new();
+                    schema.insert("type".into(), json!("object"));
+                    schema.insert(
+                        "properties".into(),
+                        json!({
+                            "target": { "type": "string", "description": "Target client: claude, codex, or both", "default": "both" },
+                            "dry_run": { "type": "boolean", "default": false, "description": "Preview without writing probe skill" }
                         }),
                     );
                     schema.insert("additionalProperties".into(), json!(false));
@@ -1505,31 +1730,28 @@ impl ServerHandler for SkillService {
                             meta: None,
                         })
                     }
+                    "skill-loading-status" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.skill_loading_status_tool(args)
+                    }
+                    "enable-skill-trace" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.enable_skill_trace_tool(args)
+                    }
+                    "disable-skill-trace" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.disable_skill_trace_tool(args)
+                    }
+                    "skill-loading-selftest" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.skill_loading_selftest_tool(args)
+                    }
                     other => Err(anyhow!("unknown tool {other}")),
                 }
             }()
             .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None));
             result
         })
-    }
-
-    /// Returns initialization information for the RMCP server.
-    ///
-    /// This includes server capabilities and a brief instruction message,
-    /// clarifying that this service acts as a bridge for `SKILL.md` files.
-    fn get_info(&self) -> InitializeResult {
-        // Start background warm-up only after the handshake path is hit to
-        // keep the initialize response fast.
-        self.spawn_warmup_if_needed();
-        InitializeResult {
-            capabilities: ServerCapabilities {
-                resources: Some(Default::default()),
-                tools: Some(Default::default()),
-                ..Default::default()
-            },
-            instructions: Some("Codex SKILL.md bridge".into()),
-            ..Default::default()
-        }
     }
 }
 

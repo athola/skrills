@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 /// Severity level for validation issues.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum Severity {
     /// Critical issue that prevents skill from working.
     Error,
@@ -41,6 +42,7 @@ pub struct ValidationIssue {
 }
 
 impl ValidationIssue {
+    /// Create an error-level issue.
     pub fn error(target: ValidationTarget, message: impl Into<String>) -> Self {
         Self {
             severity: Severity::Error,
@@ -51,6 +53,7 @@ impl ValidationIssue {
         }
     }
 
+    /// Create a warning-level issue.
     pub fn warning(target: ValidationTarget, message: impl Into<String>) -> Self {
         Self {
             severity: Severity::Warning,
@@ -61,6 +64,7 @@ impl ValidationIssue {
         }
     }
 
+    /// Create an info-level issue.
     pub fn info(target: ValidationTarget, message: impl Into<String>) -> Self {
         Self {
             severity: Severity::Info,
@@ -71,11 +75,13 @@ impl ValidationIssue {
         }
     }
 
+    /// Add a line number to the issue.
     pub fn with_line(mut self, line: usize) -> Self {
         self.line = Some(line);
         self
     }
 
+    /// Add a suggested fix to the issue.
     pub fn with_suggestion(mut self, suggestion: impl Into<String>) -> Self {
         self.suggestion = Some(suggestion.into());
         self
@@ -98,6 +104,7 @@ pub struct ValidationResult {
 }
 
 impl ValidationResult {
+    /// Create a new validation result with no issues.
     pub fn new(path: PathBuf, name: String) -> Self {
         Self {
             path,
@@ -108,6 +115,7 @@ impl ValidationResult {
         }
     }
 
+    /// Add an issue to the result, updating validity flags if it's an error.
     pub fn add_issue(&mut self, issue: ValidationIssue) {
         if issue.severity == Severity::Error {
             match issue.target {
@@ -122,10 +130,12 @@ impl ValidationResult {
         self.issues.push(issue);
     }
 
+    /// Returns true if there are any error-level issues.
     pub fn has_errors(&self) -> bool {
         self.issues.iter().any(|i| i.severity == Severity::Error)
     }
 
+    /// Returns the number of error-level issues.
     pub fn error_count(&self) -> usize {
         self.issues
             .iter()
@@ -133,6 +143,7 @@ impl ValidationResult {
             .count()
     }
 
+    /// Returns the number of warning-level issues.
     pub fn warning_count(&self) -> usize {
         self.issues
             .iter()

@@ -2,7 +2,7 @@
 
 use crate::common::{Command, CommonConfig, McpServer, Preferences};
 use crate::report::WriteReport;
-use anyhow::Result;
+use crate::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
 

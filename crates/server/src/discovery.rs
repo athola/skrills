@@ -100,6 +100,7 @@ pub fn skill_roots(extra_dirs: &[PathBuf]) -> Result<Vec<SkillRoot>> {
             SkillSource::Mirror => home.join(".codex/skills-mirror"),
             SkillSource::Agent => home.join(".agent/skills"),
             SkillSource::Extra(_) => continue,
+            _ => continue, // Handle future variants
         };
         roots.push(SkillRoot { root, source });
     }
@@ -150,6 +151,7 @@ pub fn agent_roots(extra_dirs: &[PathBuf]) -> Result<Vec<SkillRoot>> {
             SkillSource::Mirror => home.join(".codex/skills-mirror"), // skills mirror may include agents; keep for completeness
             SkillSource::Agent => home.join(".agent/agents"),
             SkillSource::Extra(_) => continue,
+            _ => continue, // Handle future variants
         };
         roots.push(SkillRoot { root, source });
     }

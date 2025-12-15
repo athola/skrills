@@ -2004,10 +2004,14 @@ name = "skrills-analyze"
 version = "0.3.1"
 dependencies = [
  "anyhow",
+ "parking_lot",
  "regex",
+ "semver",
  "serde",
  "serde_json",
+ "skrills-validate",
  "tempfile",
+ "thiserror",
  "walkdir",
 ]
 
@@ -2101,6 +2105,7 @@ version = "0.3.1"
 dependencies = [
  "anyhow",
  "regex",
+ "semver",
  "serde",
  "serde_yaml",
  "tempfile",

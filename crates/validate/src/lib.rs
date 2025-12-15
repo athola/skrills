@@ -22,6 +22,9 @@
 //! println!("Codex valid: {}", result.codex_valid);
 //! ```
 
+#![deny(unsafe_code)]
+#![warn(missing_docs)]
+
 pub mod autofix;
 pub mod claude;
 pub mod codex;
@@ -106,15 +109,22 @@ pub fn is_codex_compatible(content: &str) -> bool {
 /// Summary of validation results.
 #[derive(Debug, Default)]
 pub struct ValidationSummary {
+    /// Total number of skills validated.
     pub total: usize,
+    /// Number of skills valid for Claude Code.
     pub claude_valid: usize,
+    /// Number of skills valid for Codex CLI.
     pub codex_valid: usize,
+    /// Number of skills valid for both.
     pub both_valid: usize,
+    /// Total number of error-level issues.
     pub error_count: usize,
+    /// Total number of warning-level issues.
     pub warning_count: usize,
 }
 
 impl ValidationSummary {
+    /// Create a summary from validation results.
     pub fn from_results(results: &[ValidationResult]) -> Self {
         let mut summary = ValidationSummary {
             total: results.len(),

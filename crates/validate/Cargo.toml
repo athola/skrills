@@ -11,6 +11,7 @@ regex = "1"
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 walkdir = { workspace = true }
+semver = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

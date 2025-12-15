@@ -1,5 +1,5 @@
 use crate::types::{parse_source_key, DuplicateInfo, SkillMeta, SkillRoot, SkillSource};
-use anyhow::Result;
+use crate::Result;
 use pathdiff::diff_paths;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
@@ -25,7 +25,9 @@ const IGNORE_DIRS: &[&str] = &[
 /// Configuration for skill discovery.
 #[derive(Debug, Clone)]
 pub struct DiscoveryConfig {
+    /// Root directories to scan for skills.
     pub roots: Vec<SkillRoot>,
+    /// Cache time-to-live duration.
     pub cache_ttl_ms: Duration,
     /// Ordered list of skill sources to override default priority.
     pub priority_override: Option<Vec<SkillSource>>,

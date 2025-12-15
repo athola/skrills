@@ -13,6 +13,10 @@ pub(crate) fn handle_agent_command(
     let agents = collect_agents(&merge_extra_dirs(&skill_dirs))?;
     let agent = resolve_agent(&agent_spec, &agents)?;
     let cmd = DEFAULT_AGENT_RUN_TEMPLATE.replace("{}", &agent.path.display().to_string());
+    let prompt = format!(
+        "Load agent spec at {} and execute its instructions",
+        agent.path.display()
+    );
     println!(
         "Agent: {} (source: {}, path: {})",
         agent.name,
@@ -23,7 +27,10 @@ pub(crate) fn handle_agent_command(
         println!("Command: {cmd}");
         return Ok(());
     }
-    let status = Command::new("sh").arg("-c").arg(&cmd).status()?;
+    let status = Command::new("codex")
+        .args(["--yolo", "exec", "--timeout_ms", "1800000"])
+        .arg(prompt)
+        .status()?;
     if status.success() {
         Ok(())
     } else {

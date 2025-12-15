@@ -14,6 +14,7 @@ use walkdir::WalkDir;
 
 /// Types of dependencies a skill can have.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum DependencyType {
     /// Reference to a local module file.
     Module,
