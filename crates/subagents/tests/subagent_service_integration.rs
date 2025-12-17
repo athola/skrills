@@ -81,7 +81,7 @@ mod subagent_service_tests {
         let run_id: RunId = ctx.store.create_run(request).await.unwrap();
 
         // Verify run was created
-        let run_record = ctx.store.get_run(run_id).await.unwrap().unwrap();
+        let run_record = ctx.store.run(run_id).await.unwrap().unwrap();
         assert_eq!(run_record.id, run_id);
         assert_eq!(run_record.status.state, RunState::Pending);
         assert_eq!(run_record.request.backend, BackendKind::Codex);
@@ -114,7 +114,7 @@ mod subagent_service_tests {
         let run_id: RunId = ctx.store.create_run(request).await.unwrap();
 
         // Verify initial state
-        let run_record = ctx.store.get_run(run_id).await.unwrap().unwrap();
+        let run_record = ctx.store.run(run_id).await.unwrap().unwrap();
         assert_eq!(run_record.status.state, RunState::Pending);
 
         // Update status to Running
@@ -126,7 +126,7 @@ mod subagent_service_tests {
         ctx.store.update_status(run_id, new_status).await.unwrap();
 
         // Verify state changed
-        let run = ctx.store.get_run(run_id).await.unwrap().unwrap();
+        let run = ctx.store.run(run_id).await.unwrap().unwrap();
         assert_eq!(run.status.state, RunState::Running);
 
         // Update status to Succeeded
@@ -141,7 +141,7 @@ mod subagent_service_tests {
             .unwrap();
 
         // Verify final state
-        let run = ctx.store.get_run(run_id).await.unwrap().unwrap();
+        let run = ctx.store.run(run_id).await.unwrap().unwrap();
         assert_eq!(run.status.state, RunState::Succeeded);
     }
 
@@ -179,7 +179,7 @@ mod subagent_service_tests {
             .unwrap();
 
         // Verify failure state
-        let run = ctx.store.get_run(run_id).await.unwrap().unwrap();
+        let run = ctx.store.run(run_id).await.unwrap().unwrap();
         assert_eq!(run.status.state, RunState::Failed);
         assert_eq!(
             run.status.message.as_deref(),
@@ -210,7 +210,7 @@ mod subagent_service_tests {
         let run_id: RunId = ctx.store.create_run(request).await.unwrap();
 
         // Verify it starts in Pending state
-        let run = ctx.store.get_run(run_id).await.unwrap().unwrap();
+        let run = ctx.store.run(run_id).await.unwrap().unwrap();
         assert_eq!(run.status.state, RunState::Pending);
 
         // Test stopping the run
@@ -218,7 +218,7 @@ mod subagent_service_tests {
         assert!(stopped, "Run should be stoppable");
 
         // Verify it's now in Canceled state
-        let run = ctx.store.get_run(run_id).await.unwrap().unwrap();
+        let run = ctx.store.run(run_id).await.unwrap().unwrap();
         assert_eq!(run.status.state, RunState::Canceled);
     }
 
@@ -311,7 +311,7 @@ mod subagent_service_tests {
         };
 
         let codex_run_id: RunId = ctx.store.create_run(codex_request).await.unwrap();
-        let codex_run: RunRecord = ctx.store.get_run(codex_run_id).await.unwrap().unwrap();
+        let codex_run: RunRecord = ctx.store.run(codex_run_id).await.unwrap().unwrap();
         assert_eq!(codex_run.request.backend, BackendKind::Codex);
 
         // Test Claude backend
@@ -325,7 +325,7 @@ mod subagent_service_tests {
         };
 
         let claude_run_id: RunId = ctx.store.create_run(claude_request).await.unwrap();
-        let claude_run: RunRecord = ctx.store.get_run(claude_run_id).await.unwrap().unwrap();
+        let claude_run: RunRecord = ctx.store.run(claude_run_id).await.unwrap().unwrap();
         assert_eq!(claude_run.request.backend, BackendKind::Claude);
     }
 
@@ -348,7 +348,7 @@ mod subagent_service_tests {
         };
 
         let run_id: RunId = ctx.store.create_run(request).await.unwrap();
-        let run: RunRecord = ctx.store.get_run(run_id).await.unwrap().unwrap();
+        let run: RunRecord = ctx.store.run(run_id).await.unwrap().unwrap();
 
         assert_eq!(run.request.template_id.as_deref(), Some("test-template"));
     }
@@ -380,7 +380,7 @@ mod subagent_service_tests {
         };
 
         let run_id: RunId = ctx.store.create_run(request).await.unwrap();
-        let run: RunRecord = ctx.store.get_run(run_id).await.unwrap().unwrap();
+        let run: RunRecord = ctx.store.run(run_id).await.unwrap().unwrap();
 
         assert_eq!(run.request.output_schema, Some(output_schema));
     }
@@ -422,7 +422,7 @@ mod subagent_service_tests {
         ctx.store.append_event(run_id, event2).await.unwrap();
 
         // Verify events are stored
-        let run = ctx.store.get_run(run_id).await.unwrap().unwrap();
+        let run = ctx.store.run(run_id).await.unwrap().unwrap();
         assert_eq!(run.events.len(), 2);
         assert_eq!(run.events[0].kind, "started");
         assert_eq!(run.events[1].kind, "progress");
@@ -456,7 +456,7 @@ mod subagent_service_tests {
                 let run_id = RunId(Uuid::parse_str(run_id_str).unwrap());
 
                 // Verify the run exists in the store
-                let run = ctx.store.get_run(run_id).await.unwrap();
+                let run = ctx.store.run(run_id).await.unwrap();
                 assert!(run.is_some(), "Run should exist in store");
             }
         }

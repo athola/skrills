@@ -26,12 +26,14 @@ graph TD
     server --> validate[validate]
     server --> analyze[analyze]
     server --> subagents[subagents]
-    sync --> validate2[validate]
+    sync --> validate
+    analyze --> validate
     subagents --> state[state]
 
     subgraph leaf["Leaf Crates (no internal deps)"]
         discovery[discovery]
-        state2[state]
+        state
+        validate
     end
 ```
 
@@ -50,7 +52,8 @@ graph TD
 
 ## Design Principles
 
-- **Leaf crates**: `validate`, `analyze`, `discovery`, `state` have no internal dependencies.
+- **Leaf crates**: `validate`, `discovery`, `state` have no internal dependencies.
+- **Near-leaf crates**: `analyze` depends only on `validate` for frontmatter types.
 - **Trait-based abstraction**: `AgentAdapter` enables pluggable source/target adapters.
 - **Feature flags**: `subagents` and `watch` are optional features for smaller binaries.
 - **Composition over inheritance**: Generic `SyncOrchestrator<S, T>` uses compile-time dispatch.
@@ -60,6 +63,9 @@ graph TD
 - Formalize additional ADRs as architecture evolves.
 - Split `app.rs` into smaller modules if it grows beyond 2500 LOC.
 - Extract command handlers to `commands/` submodules as functionality expands.
+- Phase 5: add a `resolve-dependencies` MCP tool in a separate PR.
+- Consider extracting `SkillFrontmatter` / `DeclaredDependency` into a `skrills-types` crate if more crates need them.
+- Phase 6: add an `--check-deps` flag to the `validate` CLI.
 
 ## Related Documents
 

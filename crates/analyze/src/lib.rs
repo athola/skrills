@@ -25,12 +25,21 @@
 //! println!("Quality: {:.0}%", analysis.quality_score * 100.0);
 //! ```
 
+#![deny(unsafe_code)]
+
 pub mod deps;
 pub mod optimize;
+pub mod resolve;
 pub mod tokens;
 
 pub use deps::{analyze_dependencies, Dependency, DependencyAnalysis, DependencyType};
 pub use optimize::{quality_score, suggest_optimizations, OptimizationType, Priority, Suggestion};
+pub use resolve::{
+    DependencyGraph, DependencyResolver, GraphBuilder, InMemoryRegistry, ResolutionResult,
+    ResolveError, ResolveOptions, ResolvedDependency, SkillInfo, SkillRegistry,
+};
+// Re-export SkillSource for users of the resolve API
+pub use skrills_discovery::SkillSource;
 pub use tokens::{count_tokens, estimate_tokens, TokenBreakdown, TokenCategory};
 
 use serde::{Deserialize, Serialize};

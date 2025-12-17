@@ -3,7 +3,8 @@
 use super::traits::{AgentAdapter, FieldSupport};
 use crate::common::{Command, McpServer, Preferences};
 use crate::report::{SkipReason, WriteReport};
-use anyhow::{Context, Result};
+use crate::Result;
+use anyhow::Context;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
@@ -38,9 +39,119 @@ impl CodexAdapter {
         self.root.join("skills")
     }
 
+    fn is_hidden_component(name: &str) -> bool {
+        name.starts_with('.')
+    }
+
+    fn is_hidden_path(path: &std::path::Path) -> bool {
+        path.components().any(|c| match c {
+            std::path::Component::Normal(s) => Self::is_hidden_component(&s.to_string_lossy()),
+            _ => false,
+        })
+    }
+
     fn settings_path(&self) -> PathBuf {
         // Codex uses config.json, not settings.json
         self.root.join("config.json")
+    }
+
+    fn config_toml_path(&self) -> PathBuf {
+        self.root.join("config.toml")
+    }
+
+    /// Ensures Codex's experimental skills feature flag is enabled in `config.toml`.
+    ///
+    /// Codex loads skills only when `[features] skills = true` is set.
+    fn ensure_skills_feature_flag_enabled(&self) -> Result<bool> {
+        let path = self.config_toml_path();
+        let content = if path.exists() {
+            fs::read_to_string(&path)?
+        } else {
+            String::new()
+        };
+
+        fn strip_comment(s: &str) -> &str {
+            s.split_once('#').map(|(a, _)| a).unwrap_or(s)
+        }
+
+        fn is_header_line(line: &str) -> bool {
+            let trimmed = strip_comment(line).trim();
+            trimmed.starts_with('[') && trimmed.ends_with(']') && !trimmed.starts_with("[[")
+        }
+
+        fn header_name(line: &str) -> &str {
+            let trimmed = strip_comment(line).trim();
+            &trimmed[1..trimmed.len().saturating_sub(1)]
+        }
+
+        let mut out: Vec<String> = Vec::new();
+        let mut in_features = false;
+        let mut found_features = false;
+        let mut skills_set = false;
+        let mut changed = false;
+
+        for line in content.lines() {
+            if is_header_line(line) {
+                if in_features && !skills_set {
+                    out.push("skills = true".to_string());
+                    skills_set = true;
+                    changed = true;
+                }
+
+                let name = header_name(line);
+                in_features = name == "features";
+                if in_features {
+                    found_features = true;
+                }
+
+                out.push(line.to_string());
+                continue;
+            }
+
+            if in_features {
+                let trimmed = strip_comment(line).trim_start();
+                if trimmed.starts_with("skills") && trimmed.contains('=') {
+                    // Overwrite the value unconditionally to avoid false/invalid values.
+                    if strip_comment(trimmed)
+                        .split_once('=')
+                        .map(|(_, v)| v.trim())
+                        != Some("true")
+                    {
+                        out.push("skills = true".to_string());
+                        changed = true;
+                    } else {
+                        out.push(line.to_string());
+                    }
+                    skills_set = true;
+                    continue;
+                }
+            }
+
+            out.push(line.to_string());
+        }
+
+        if in_features && !skills_set {
+            out.push("skills = true".to_string());
+            changed = true;
+        }
+
+        if !found_features {
+            if !out.is_empty() && !out.last().unwrap().trim().is_empty() {
+                out.push(String::new());
+            }
+            out.push("[features]".to_string());
+            out.push("skills = true".to_string());
+            changed = true;
+        }
+
+        if changed {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&path, out.join("\n") + "\n")?;
+        }
+
+        Ok(changed)
     }
 
     fn hash_content(content: &[u8]) -> String {
@@ -186,30 +297,61 @@ impl AgentAdapter for CodexAdapter {
         }
 
         let mut skills = Vec::new();
-        for entry in WalkDir::new(&skills_dir).min_depth(1).max_depth(2) {
+        for entry in WalkDir::new(&skills_dir)
+            .min_depth(1)
+            .max_depth(20)
+            .follow_links(false)
+        {
             let entry = entry?;
+            if entry.file_type().is_symlink() {
+                continue;
+            }
             let path = entry.path();
+            if Self::is_hidden_path(path.strip_prefix(&skills_dir).unwrap_or(path)) {
+                continue;
+            }
+            if !entry.file_type().is_file() {
+                continue;
+            }
 
-            if path.extension().is_some_and(|e| e == "md") {
-                let name = path
-                    .file_stem()
+            // Codex skills are discovered via ~/.codex/skills/**/SKILL.md.
+            // Keep legacy support for flat *.md in ~/.codex/skills for backwards compatibility,
+            // but prefer the SKILL.md convention when present.
+            let is_skill_md = path.file_name().is_some_and(|n| n == "SKILL.md");
+            let is_legacy_md = path.extension().is_some_and(|e| e == "md") && !is_skill_md;
+            if !is_skill_md && !is_legacy_md {
+                continue;
+            }
+
+            let name = if is_skill_md {
+                // Use the parent directory path relative to skills_dir as the skill identifier.
+                // Example: ~/.codex/skills/pdf-processing/SKILL.md -> "pdf-processing"
+                // Example: ~/.codex/skills/nested/foo/SKILL.md -> "nested/foo"
+                path.parent()
+                    .and_then(|p| p.strip_prefix(&skills_dir).ok())
+                    .and_then(|p| p.to_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("unknown")
+                    .to_string()
+            } else {
+                path.file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("unknown")
-                    .to_string();
+                    .to_string()
+            };
 
-                let content = fs::read(path)?;
-                let metadata = fs::metadata(path)?;
-                let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                let hash = Self::hash_content(&content);
+            let content = fs::read(path)?;
+            let metadata = fs::metadata(path)?;
+            let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            let hash = Self::hash_content(&content);
 
-                skills.push(Command {
-                    name,
-                    content,
-                    source_path: path.to_path_buf(),
-                    modified,
-                    hash,
-                });
-            }
+            skills.push(Command {
+                name,
+                content,
+                source_path: path.to_path_buf(),
+                modified,
+                hash,
+            });
         }
         Ok(skills)
     }
@@ -311,7 +453,30 @@ impl AgentAdapter for CodexAdapter {
         let mut report = WriteReport::default();
 
         for skill in skills {
-            let path = dir.join(format!("{}.md", skill.name));
+            // Codex discovers only SKILL.md files under ~/.codex/skills/**/.
+            // Write each skill into ~/.codex/skills/<skill-name>/SKILL.md by default.
+            let skill_rel_dir = if skill.name.eq_ignore_ascii_case("skill")
+                || skill.name.eq_ignore_ascii_case("skill.md")
+                || skill
+                    .name
+                    .eq_ignore_ascii_case("skill.md".trim_end_matches(".md"))
+                || skill.name.eq_ignore_ascii_case("SKILL")
+            {
+                skill
+                    .source_path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&skill.name)
+                    .to_string()
+            } else {
+                skill.name.clone()
+            };
+
+            let path = dir.join(&skill_rel_dir).join("SKILL.md");
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
 
             if path.exists() {
                 let existing = fs::read(&path)?;
@@ -326,6 +491,8 @@ impl AgentAdapter for CodexAdapter {
             fs::write(&path, &skill.content)?;
             report.written += 1;
         }
+
+        let _ = self.ensure_skills_feature_flag_enabled()?;
 
         Ok(report)
     }
@@ -478,5 +645,60 @@ mod tests {
         let prefs = adapter.read_preferences().unwrap();
 
         assert_eq!(prefs.model.as_deref(), Some("gpt-4o"));
+    }
+
+    #[test]
+    fn write_skills_writes_skill_md_in_directory() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        let skill = Command {
+            name: "alpha".to_string(),
+            content: b"---\nname: alpha\ndescription: test\n---\n# Alpha\n".to_vec(),
+            source_path: PathBuf::from("/tmp/alpha.md"),
+            modified: SystemTime::now(),
+            hash: "hash".to_string(),
+        };
+
+        let report = adapter.write_skills(&[skill]).unwrap();
+        assert_eq!(report.written, 1);
+        assert!(tmp.path().join("skills/alpha/SKILL.md").exists());
+    }
+
+    #[test]
+    fn write_skills_enables_codex_skills_feature_flag_in_config_toml() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        let skill = Command {
+            name: "alpha".to_string(),
+            content: b"---\nname: alpha\ndescription: test\n---\n# Alpha\n".to_vec(),
+            source_path: PathBuf::from("/tmp/alpha.md"),
+            modified: SystemTime::now(),
+            hash: "hash".to_string(),
+        };
+
+        adapter.write_skills(&[skill]).unwrap();
+
+        let cfg = fs::read_to_string(tmp.path().join("config.toml")).unwrap();
+        assert!(cfg.contains("[features]"));
+        assert!(cfg.contains("skills = true"));
+    }
+
+    #[test]
+    fn read_skills_uses_parent_directory_name_for_skill_md() {
+        let tmp = tempdir().unwrap();
+        let skills_dir = tmp.path().join("skills/nested/foo");
+        fs::create_dir_all(&skills_dir).unwrap();
+        fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: foo\ndescription: test\n---\n",
+        )
+        .unwrap();
+
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let skills = adapter.read_skills().unwrap();
+        let names: std::collections::HashSet<_> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains("nested/foo"));
     }
 }

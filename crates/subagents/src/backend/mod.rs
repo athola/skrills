@@ -23,11 +23,7 @@ pub trait BackendAdapter: Send + Sync {
     fn capabilities(&self) -> AdapterCapabilities;
     async fn list_templates(&self) -> Result<Vec<SubagentTemplate>>;
     async fn run(&self, request: RunRequest, store: Arc<dyn RunStore>) -> Result<RunId>;
-    async fn get_status(
-        &self,
-        run_id: RunId,
-        store: Arc<dyn RunStore>,
-    ) -> Result<Option<RunStatus>>;
+    async fn status(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<Option<RunStatus>>;
     async fn stop(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<bool>;
     async fn history(&self, limit: usize, store: Arc<dyn RunStore>) -> Result<Vec<RunStatus>>;
 }
@@ -64,7 +60,7 @@ mod tests {
             .await
             .unwrap();
         let status = adapter
-            .get_status(run_id, store.clone())
+            .status(run_id, store.clone())
             .await
             .unwrap()
             .unwrap();
@@ -96,7 +92,7 @@ mod tests {
             .await
             .unwrap();
         let status = adapter
-            .get_status(run_id, store.clone())
+            .status(run_id, store.clone())
             .await
             .unwrap()
             .unwrap();
@@ -104,7 +100,7 @@ mod tests {
         let stopped = adapter.stop(run_id, store.clone()).await.unwrap();
         assert!(stopped);
         let status = adapter
-            .get_status(run_id, store.clone())
+            .status(run_id, store.clone())
             .await
             .unwrap()
             .unwrap();

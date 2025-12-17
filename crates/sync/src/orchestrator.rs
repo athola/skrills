@@ -2,7 +2,8 @@
 
 use crate::adapters::AgentAdapter;
 use crate::report::{SkipReason, SyncReport, WriteReport};
-use anyhow::{bail, Result};
+use crate::Result;
+use anyhow::bail;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 

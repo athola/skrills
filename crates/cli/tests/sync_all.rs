@@ -10,8 +10,8 @@ use anyhow::{Context, Result};
 use scopeguard::guard;
 
 #[test]
-fn sync_all_copies_skills_from_codex_to_claude() -> Result<()> {
-    // Store original HOME to restore later
+fn given_codex_skill_when_sync_all_from_codex_then_skill_is_copied_into_claude() -> Result<()> {
+    // GIVEN a Codex skill exists under ~/.codex/skills
     let original_home = env::var("HOME").ok();
 
     // Isolate filesystem side effects - tempdir will auto-clean on drop
@@ -29,9 +29,14 @@ fn sync_all_copies_skills_from_codex_to_claude() -> Result<()> {
     // Seed a Codex skill
     let codex_skills = tmp.path().join(".codex/skills");
     fs::create_dir_all(&codex_skills)?;
-    fs::write(codex_skills.join("cli-test.md"), "# CLI Test")?;
+    let skill_dir = codex_skills.join("cli-test");
+    fs::create_dir_all(&skill_dir)?;
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: cli-test\ndescription: CLI test skill\n---\n# CLI Test\n",
+    )?;
 
-    // Use pre-built binary instead of cargo run (avoids 60+ second recompile)
+    // WHEN the user runs `skrills sync-all --from codex`
     let bin_path = env!("CARGO_BIN_EXE_skrills");
     let output = Command::new(bin_path)
         // HOME already set in environment
@@ -60,10 +65,17 @@ fn sync_all_copies_skills_from_codex_to_claude() -> Result<()> {
         stderr
     );
 
-    let claude_skill = tmp.path().join(".claude/skills/cli-test.md");
+    // THEN the skill is copied into ~/.claude/skills
+    let claude_skill = tmp.path().join(".claude/skills/cli-test/SKILL.md");
     assert!(
         claude_skill.exists(),
         "Claude skills directory should receive synced skill"
+    );
+
+    // AND legacy ~/.codex/skills-mirror is not created as a side effect
+    assert!(
+        !tmp.path().join(".codex/skills-mirror").exists(),
+        "sync-all should not create ~/.codex/skills-mirror"
     );
 
     Ok(())

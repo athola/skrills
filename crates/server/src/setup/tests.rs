@@ -5,14 +5,10 @@
 use super::*;
 use std::env;
 use std::fs;
-use std::sync::Mutex;
 use tempfile::TempDir;
 
-/// Test serialization guard to avoid environment variable conflicts between tests.
-static TEST_SERIAL: Mutex<()> = Mutex::new(());
-
 fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-    TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    crate::test_support::env_guard()
 }
 
 /// Test fixture helper for creating temporary home directories

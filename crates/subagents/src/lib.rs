@@ -4,6 +4,8 @@
 //! (e.g., Codex Responses and Claude Code). It is wired into `skrills-server`
 //! behind the `subagents` feature flag.
 
+#![deny(unsafe_code)]
+
 pub mod backend;
 pub mod service;
 pub mod store;

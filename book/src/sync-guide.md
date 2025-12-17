@@ -20,7 +20,14 @@ skrills sync-all --from codex
 
 Skills are copied between skill directories:
 - **Claude**: `~/.claude/skills/`
-- **Codex**: `~/.codex/skills-mirror/`
+- **Codex**: `~/.codex/skills/` (discovery root; skills must be `**/SKILL.md`)
+
+Codex skills are disabled by default; enable them in `~/.codex/config.toml`:
+
+```toml
+[features]
+skills = true
+```
 
 ```bash
 skrills sync                # Skills only
@@ -102,7 +109,7 @@ When running as an MCP server, these sync tools are available:
 
 | Tool | Description |
 |------|-------------|
-| `sync-from-claude` | Copy Claude skills to Codex mirror |
+| `sync-from-claude` | Copy Claude skills to Codex (`~/.codex/skills`) |
 | `sync-skills` | Sync skills with direction option |
 | `sync-commands` | Sync slash commands |
 | `sync-mcp-servers` | Sync MCP configurations |

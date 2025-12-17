@@ -25,7 +25,8 @@ use crate::discovery::{
 };
 use crate::doctor::doctor_report;
 use crate::signals::ignore_sigchld;
-use crate::sync::{mirror_source_root, sync_from_claude};
+use crate::skill_trace::{self, ClientTarget as TraceTarget, TraceInstallOptions};
+use crate::sync::mirror_source_root;
 use crate::tui::tui_flow;
 use anyhow::{anyhow, Result};
 use clap::Parser;
@@ -33,9 +34,9 @@ use clap::Parser;
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::Mutex;
 use rmcp::model::{
-    CallToolRequestParam, CallToolResult, Content, InitializeResult, ListResourcesResult,
-    ListToolsResult, Meta, PaginatedRequestParam, RawResource, ReadResourceRequestParam,
-    ReadResourceResult, Resource, ResourceContents, ServerCapabilities, Tool, ToolAnnotations,
+    CallToolRequestParam, CallToolResult, Content, ListResourcesResult, ListToolsResult, Meta,
+    PaginatedRequestParam, RawResource, ReadResourceRequestParam, ReadResourceResult, Resource,
+    ResourceContents, Tool, ToolAnnotations,
 };
 use rmcp::ServerHandler;
 use serde::{Deserialize, Serialize};
@@ -47,10 +48,7 @@ use skrills_subagents::SubagentService;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// An in-memory cache for discovered skills.
@@ -306,7 +304,7 @@ impl SkillCache {
     }
 
     /// Retrieve a skill by its URI.
-    fn get_by_uri(&mut self, uri: &str) -> Result<SkillMeta> {
+    fn skill_by_uri(&mut self, uri: &str) -> Result<SkillMeta> {
         self.refresh_if_stale()?;
         if let Some(idx) = self.uri_index.get(uri).copied() {
             return Ok(self.skills[idx].clone());
@@ -322,8 +320,6 @@ impl SkillCache {
 pub(crate) struct SkillService {
     /// The cache for skill metadata.
     cache: Arc<Mutex<SkillCache>>,
-    /// A flag indicating if the cache warmup has started.
-    warmup_started: AtomicBool,
     /// Optional subagent service (enabled via `subagents` feature).
     #[cfg(feature = "subagents")]
     subagents: Option<skrills_subagents::SubagentService>,
@@ -387,7 +383,6 @@ impl SkillService {
         );
         Ok(Self {
             cache: Arc::new(Mutex::new(SkillCache::new_with_ttl(roots, ttl))),
-            warmup_started: AtomicBool::new(false),
             #[cfg(feature = "subagents")]
             subagents: Some(SubagentService::new()?),
         })
@@ -411,7 +406,6 @@ impl SkillService {
         );
         Ok(Self {
             cache: Arc::new(Mutex::new(SkillCache::new_with_ttl(roots, ttl))),
-            warmup_started: AtomicBool::new(false),
             #[cfg(feature = "subagents")]
             subagents: Some(SubagentService::new()?),
         })
@@ -597,25 +591,25 @@ impl SkillService {
             return Err(anyhow!("unsupported uri"));
         }
         let rest = uri.trim_start_matches("skill://");
-        let parts = rest.splitn(3, '/').collect::<Vec<_>>();
-        if parts.len() < 2 {
-            return Err(anyhow!("invalid uri"));
-        }
-        let uri = if parts[0] == "skrills" {
-            let name = parts.get(2).copied().unwrap_or("");
-            format!("skill://skrills/{}/{}", parts[1], name)
+        let mut parts = rest.splitn(3, '/');
+        let host = parts.next().unwrap_or("");
+        let first = parts.next().ok_or_else(|| anyhow!("invalid uri"))?;
+        let remainder = parts.next();
+        let uri = if host == "skrills" {
+            let name = remainder.unwrap_or("");
+            format!("skill://skrills/{}/{}", first, name)
         } else {
             // legacy: host is actually source label
-            let name = if parts.len() == 2 {
-                parts[1]
+            let name = if remainder.is_none() {
+                first
             } else {
-                &rest[parts[0].len() + 1..]
+                &rest[host.len() + 1..]
             };
-            format!("skill://{}/{}", parts[0], name)
+            format!("skill://{}/{}", host, name)
         };
         let meta = {
             let mut cache = self.cache.lock();
-            cache.get_by_uri(&uri)?
+            cache.skill_by_uri(&uri)?
         };
         let text = self.read_skill_cached(&meta)?;
         Ok(ReadResourceResult {
@@ -658,33 +652,247 @@ impl SkillService {
         Ok(true)
     }
 
-    /// Spawns a background thread to warm up the cache.
-    ///
-    /// This occurs after the `initialize` handshake to ensure a fast initial response.
-    /// The warmup is a best-effort process and logs its duration.
-    fn spawn_warmup_if_needed(&self) {
-        if self.warmup_started.swap(true, Ordering::SeqCst) {
-            return;
-        }
+    fn sync_all_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
+        use skrills_sync::{
+            parse_direction, ClaudeAdapter, CodexAdapter, SyncDirection, SyncOrchestrator,
+            SyncParams,
+        };
 
-        let cache = self.cache.clone();
-        std::thread::spawn(move || {
-            let started = Instant::now();
-            let result = cache.lock().refresh_if_stale();
+        let from = args
+            .get("from")
+            .and_then(|v| v.as_str())
+            .unwrap_or("claude");
+        let direction = parse_direction(from)?;
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let include_marketplace = args
+            .get("include_marketplace")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
-            match result {
-                Ok(()) => tracing::info!(
-                    target: "skrills::warmup",
-                    elapsed_ms = started.elapsed().as_millis(),
-                    "background cache warm-up finished"
-                ),
-                Err(e) => tracing::warn!(
-                    target: "skrills::warmup",
-                    error = %e,
-                    "background cache warm-up failed"
-                ),
+        // Sync skills first (Codex discovery root).
+        let skill_report = match direction {
+            SyncDirection::ClaudeToCodex if !dry_run => {
+                let home = home_dir()?;
+                let claude_root = mirror_source_root(&home);
+                let codex_skills_root = home.join(".codex/skills");
+                let report = crate::sync::sync_skills_only_from_claude(
+                    &claude_root,
+                    &codex_skills_root,
+                    include_marketplace,
+                )?;
+                let _ = crate::setup::ensure_codex_skills_feature_enabled(
+                    &home.join(".codex/config.toml"),
+                );
+                report
             }
-        });
+            _ => crate::sync::SyncReport::default(),
+        };
+
+        let skip_existing_commands = args
+            .get("skip_existing_commands")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let params = SyncParams {
+            from: Some(from.to_string()),
+            dry_run,
+            sync_commands: true,
+            skip_existing_commands,
+            sync_mcp_servers: true,
+            sync_preferences: true,
+            sync_skills: false, // Skills are handled above for Claude→Codex.
+            include_marketplace,
+            ..Default::default()
+        };
+
+        let report = match direction {
+            SyncDirection::ClaudeToCodex => {
+                let source = ClaudeAdapter::new()?;
+                let target = CodexAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            }
+            SyncDirection::CodexToClaude => {
+                let source = CodexAdapter::new()?;
+                let target = ClaudeAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            }
+        };
+
+        Ok(CallToolResult {
+            content: vec![Content::text(format!(
+                "{}\nSkills: {} copied, {} skipped",
+                report.summary, skill_report.copied, skill_report.skipped
+            ))],
+            is_error: Some(false),
+            structured_content: Some(json!({
+                "report": report,
+                "skill_report": {
+                    "copied": skill_report.copied,
+                    "skipped": skill_report.skipped
+                },
+                "dry_run": dry_run,
+                "skip_existing_commands": skip_existing_commands
+            })),
+            meta: None,
+        })
+    }
+
+    fn parse_trace_target(args: &JsonMap<String, Value>) -> TraceTarget {
+        match args
+            .get("target")
+            .and_then(|v| v.as_str())
+            .unwrap_or("both")
+        {
+            "claude" => TraceTarget::Claude,
+            "codex" => TraceTarget::Codex,
+            _ => TraceTarget::Both,
+        }
+    }
+
+    fn skill_loading_status_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
+        let target = Self::parse_trace_target(&args);
+        let opts = TraceInstallOptions {
+            include_cache: args
+                .get("include_cache")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            include_marketplace: args
+                .get("include_marketplace")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            include_mirror: args
+                .get("include_mirror")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            include_agent: args
+                .get("include_agent")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            ..Default::default()
+        };
+
+        let home = home_dir()?;
+        let status = skill_trace::status(&home, target, &opts)?;
+
+        Ok(CallToolResult {
+            content: vec![Content::text(format!(
+                "Skill loading status: found {} skill files; markers in {} files",
+                status.skill_files_found, status.instrumented_markers_found
+            ))],
+            structured_content: Some(serde_json::to_value(status)?),
+            is_error: Some(false),
+            meta: None,
+        })
+    }
+
+    fn enable_skill_trace_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
+        let target = Self::parse_trace_target(&args);
+        let opts = TraceInstallOptions {
+            instrument: args
+                .get("instrument")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            backup: args.get("backup").and_then(|v| v.as_bool()).unwrap_or(true),
+            dry_run: args
+                .get("dry_run")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            include_cache: args
+                .get("include_cache")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            include_marketplace: args
+                .get("include_marketplace")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            include_mirror: args
+                .get("include_mirror")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            include_agent: args
+                .get("include_agent")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+        };
+
+        let home = home_dir()?;
+        let report = skill_trace::enable_trace(&home, target, opts)?;
+
+        Ok(CallToolResult {
+            content: vec![Content::text(format!(
+                "Enabled skill trace{}: installed trace={}, probe={}, instrumented={} (skipped={})",
+                if report.warnings.iter().any(|w| w.contains("failed to read")) {
+                    " (with warnings)"
+                } else {
+                    ""
+                },
+                report.installed_trace_skill,
+                report.installed_probe_skill,
+                report.instrumented_files,
+                report.skipped_files
+            ))],
+            structured_content: Some(serde_json::to_value(report)?),
+            is_error: Some(false),
+            meta: None,
+        })
+    }
+
+    fn disable_skill_trace_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
+        let target = Self::parse_trace_target(&args);
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let home = home_dir()?;
+        let removed = skill_trace::disable_trace(&home, target, dry_run)?;
+
+        Ok(CallToolResult {
+            content: vec![Content::text(format!(
+                "{} trace/probe skill directories",
+                if dry_run { "Would remove" } else { "Removed" }
+            ))],
+            structured_content: Some(json!({ "dry_run": dry_run, "removed": removed })),
+            is_error: Some(false),
+            meta: None,
+        })
+    }
+
+    fn skill_loading_selftest_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
+        let target = Self::parse_trace_target(&args);
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let home = home_dir()?;
+        let installed = skill_trace::ensure_probe(&home, target, dry_run)?;
+        let token = {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            format!("{:x}", now)
+        };
+
+        Ok(CallToolResult {
+            content: vec![Content::text(
+                "Skill selftest prepared. Send the probe line shown in structured_content.",
+            )],
+            structured_content: Some(json!({
+                "target": target,
+                "probe_skill_installed": installed,
+                "probe_line": format!("SKRILLS_PROBE:{token}"),
+                "expected_response": format!("SKRILLS_PROBE_OK:{token}"),
+                "notes": [
+                    "If the probe skill was just installed, you may need to restart the Claude/Codex session for skills to reload.",
+                    "If you also enabled skill tracing, every assistant response will end with a SKRILLS_SKILLS_LOADED footer."
+                ]
+            })),
+            is_error: Some(false),
+            meta: None,
+        })
     }
 }
 
@@ -794,7 +1002,7 @@ impl ServerHandler for SkillService {
                 name: "sync-from-claude".into(),
                 title: Some("Copy ~/.claude skills into ~/.codex".into()),
                 description: Some(
-                    "Mirror SKILL.md files from ~/.claude into ~/.codex/skills-mirror".into(),
+                    "Copy SKILL.md files from ~/.claude into ~/.codex/skills (Codex discovery root)".into(),
                 ),
                 input_schema: schema_empty.clone(),
                 output_schema: None,
@@ -945,6 +1153,111 @@ impl ServerHandler for SkillService {
                 icons: None,
                 meta: None,
             },
+            Tool {
+                name: "skill-loading-status".into(),
+                title: Some("Skill loading status (filesystem + instrumentation)".into()),
+                description: Some(
+                    "Checks skill roots on disk and reports whether trace/probe skills are installed and whether skill files are instrumented with skrills markers.".into(),
+                ),
+                input_schema: std::sync::Arc::new({
+                    let mut schema = JsonMap::new();
+                    schema.insert("type".into(), json!("object"));
+                    schema.insert(
+                        "properties".into(),
+                        json!({
+                            "target": { "type": "string", "description": "Target client: claude, codex, or both", "default": "both" },
+                            "include_mirror": { "type": "boolean", "default": true, "description": "Include ~/.codex/skills-mirror when target includes codex" },
+                            "include_agent": { "type": "boolean", "default": true, "description": "Include ~/.agent/skills" },
+                            "include_cache": { "type": "boolean", "default": false, "description": "Include ~/.claude/plugins/cache when target includes claude" },
+                            "include_marketplace": { "type": "boolean", "default": false, "description": "Include ~/.claude/plugins/marketplaces when target includes claude" }
+                        }),
+                    );
+                    schema.insert("additionalProperties".into(), json!(false));
+                    schema
+                }),
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
+            Tool {
+                name: "enable-skill-trace".into(),
+                title: Some("Enable deterministic skill tracing".into()),
+                description: Some(
+                    "Installs skrills trace/probe skills and (optionally) instruments SKILL.md files with markers so the trace skill can report which skills were loaded.".into(),
+                ),
+                input_schema: std::sync::Arc::new({
+                    let mut schema = JsonMap::new();
+                    schema.insert("type".into(), json!("object"));
+                    schema.insert(
+                        "properties".into(),
+                        json!({
+                            "target": { "type": "string", "description": "Target client: claude, codex, or both", "default": "both" },
+                            "instrument": { "type": "boolean", "default": true, "description": "Append skrills markers to SKILL.md files under selected roots" },
+                            "backup": { "type": "boolean", "default": true, "description": "Create .md.bak backups before modifying SKILL.md files" },
+                            "dry_run": { "type": "boolean", "default": false, "description": "Preview without writing files" },
+                            "include_mirror": { "type": "boolean", "default": true, "description": "Include ~/.codex/skills-mirror when instrumenting codex" },
+                            "include_agent": { "type": "boolean", "default": true, "description": "Include ~/.agent/skills when instrumenting" },
+                            "include_cache": { "type": "boolean", "default": false, "description": "Include ~/.claude/plugins/cache when instrumenting claude" },
+                            "include_marketplace": { "type": "boolean", "default": false, "description": "Include ~/.claude/plugins/marketplaces when instrumenting claude" }
+                        }),
+                    );
+                    schema.insert("additionalProperties".into(), json!(false));
+                    schema
+                }),
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
+            Tool {
+                name: "disable-skill-trace".into(),
+                title: Some("Disable skill tracing".into()),
+                description: Some(
+                    "Removes the skrills trace/probe skill directories from primary Claude/Codex skill roots (does not remove instrumentation markers).".into(),
+                ),
+                input_schema: std::sync::Arc::new({
+                    let mut schema = JsonMap::new();
+                    schema.insert("type".into(), json!("object"));
+                    schema.insert(
+                        "properties".into(),
+                        json!({
+                            "target": { "type": "string", "description": "Target client: claude, codex, or both", "default": "both" },
+                            "dry_run": { "type": "boolean", "default": false, "description": "Preview without deleting directories" }
+                        }),
+                    );
+                    schema.insert("additionalProperties".into(), json!(false));
+                    schema
+                }),
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
+            Tool {
+                name: "skill-loading-selftest".into(),
+                title: Some("Skill loading selftest (probe)".into()),
+                description: Some(
+                    "Ensures the probe skill exists and returns a one-shot probe line + expected response to confirm skills are loading in the current session.".into(),
+                ),
+                input_schema: std::sync::Arc::new({
+                    let mut schema = JsonMap::new();
+                    schema.insert("type".into(), json!("object"));
+                    schema.insert(
+                        "properties".into(),
+                        json!({
+                            "target": { "type": "string", "description": "Target client: claude, codex, or both", "default": "both" },
+                            "dry_run": { "type": "boolean", "default": false, "description": "Preview without writing probe skill" }
+                        }),
+                    );
+                    schema.insert("additionalProperties".into(), json!(false));
+                    schema
+                }),
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
         ];
 
         #[cfg(feature = "subagents")]
@@ -1016,9 +1329,15 @@ impl ServerHandler for SkillService {
                             .unwrap_or(false);
                         let home = home_dir()?;
                         let claude_root = mirror_source_root(&home);
-                        let mirror_root = home.join(".codex/skills-mirror");
-                        let report =
-                            sync_from_claude(&claude_root, &mirror_root, include_marketplace)?;
+                        let codex_skills_root = home.join(".codex/skills");
+                        let report = crate::sync::sync_skills_only_from_claude(
+                            &claude_root,
+                            &codex_skills_root,
+                            include_marketplace,
+                        )?;
+                        let _ = crate::setup::ensure_codex_skills_feature_enabled(
+                            &home.join(".codex/config.toml"),
+                        );
                         let text = if report.copied_names.is_empty() {
                             format!("copied: {}, skipped: {}", report.copied, report.skipped)
                         } else {
@@ -1049,7 +1368,6 @@ impl ServerHandler for SkillService {
                     }
                     // Cross-agent sync tools
                     "sync-skills" => {
-                        // Skills use existing sync mechanism (sync_from_claude)
                         let from = request
                             .arguments
                             .as_ref()
@@ -1072,7 +1390,7 @@ impl ServerHandler for SkillService {
                         if from == "claude" {
                             let home = home_dir()?;
                             let claude_root = mirror_source_root(&home);
-                            let mirror_root = home.join(".codex/skills-mirror");
+                            let codex_skills_root = home.join(".codex/skills");
 
                             if dry_run {
                                 let count = walkdir::WalkDir::new(&claude_root)
@@ -1096,11 +1414,14 @@ impl ServerHandler for SkillService {
                                     meta: None,
                                 })
                             } else {
-                                let report = sync_from_claude(
+                                let report = crate::sync::sync_skills_only_from_claude(
                                     &claude_root,
-                                    &mirror_root,
+                                    &codex_skills_root,
                                     include_marketplace,
                                 )?;
+                                let _ = crate::setup::ensure_codex_skills_feature_enabled(
+                                    &home.join(".codex/config.toml"),
+                                );
                                 Ok(CallToolResult {
                                     content: vec![Content::text(format!(
                                         "Synced {} skills ({} unchanged)",
@@ -1116,12 +1437,35 @@ impl ServerHandler for SkillService {
                                 })
                             }
                         } else {
+                            use skrills_sync::{
+                                ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams,
+                            };
+
+                            let params = SyncParams {
+                                from: Some(from.to_string()),
+                                dry_run,
+                                sync_commands: false,
+                                sync_mcp_servers: false,
+                                sync_preferences: false,
+                                sync_skills: true,
+                                include_marketplace,
+                                ..Default::default()
+                            };
+                            let source = CodexAdapter::new()?;
+                            let target = ClaudeAdapter::new()?;
+                            let orch = SyncOrchestrator::new(source, target);
+                            let report = orch.sync(&params)?;
+
                             Ok(CallToolResult {
-                                content: vec![Content::text(
-                                    "Codex → Claude skill sync not yet implemented".to_string(),
-                                )],
-                                is_error: Some(true),
-                                structured_content: None,
+                                content: vec![Content::text(report.summary.clone())],
+                                is_error: Some(!report.success),
+                                structured_content: Some(json!({
+                                    "summary": report.summary,
+                                    "skills": {
+                                        "written": report.skills.written,
+                                        "skipped": report.skills.skipped.len(),
+                                    }
+                                })),
                                 meta: None,
                             })
                         }
@@ -1288,86 +1632,8 @@ impl ServerHandler for SkillService {
                         })
                     }
                     "sync-all" => {
-                        use skrills_sync::{
-                            ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams,
-                        };
-
-                        let from = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("from"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("claude");
-                        let dry_run = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("dry_run"))
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-
-                        let include_marketplace = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("include_marketplace"))
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-
-                        // Sync skills first (using existing mechanism)
-                        let skill_report = if from == "claude" && !dry_run {
-                            let home = home_dir()?;
-                            let claude_root = mirror_source_root(&home);
-                            let mirror_root = home.join(".codex/skills-mirror");
-                            sync_from_claude(&claude_root, &mirror_root, include_marketplace)?
-                        } else {
-                            crate::sync::SyncReport::default()
-                        };
-
-                        let skip_existing_commands = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("skip_existing_commands"))
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-
-                        let params = SyncParams {
-                            from: Some(from.to_string()),
-                            dry_run,
-                            sync_commands: true,
-                            skip_existing_commands,
-                            sync_mcp_servers: true,
-                            sync_preferences: true,
-                            sync_skills: false, // Handled above
-                            include_marketplace,
-                            ..Default::default()
-                        };
-
-                        let report = if from == "claude" {
-                            let source = ClaudeAdapter::new()?;
-                            let target = CodexAdapter::new()?;
-                            SyncOrchestrator::new(source, target).sync(&params)?
-                        } else {
-                            let source = CodexAdapter::new()?;
-                            let target = ClaudeAdapter::new()?;
-                            SyncOrchestrator::new(source, target).sync(&params)?
-                        };
-
-                        Ok(CallToolResult {
-                            content: vec![Content::text(format!(
-                                "{}\nSkills: {} copied, {} skipped",
-                                report.summary, skill_report.copied, skill_report.skipped
-                            ))],
-                            is_error: Some(false),
-                            structured_content: Some(json!({
-                                "report": report,
-                                "skill_report": {
-                                    "copied": skill_report.copied,
-                                    "skipped": skill_report.skipped
-                                },
-                                "dry_run": dry_run,
-                                "skip_existing_commands": skip_existing_commands
-                            })),
-                            meta: None,
-                        })
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.sync_all_tool(args)
                     }
                     "sync-status" => {
                         use skrills_sync::{
@@ -1505,31 +1771,28 @@ impl ServerHandler for SkillService {
                             meta: None,
                         })
                     }
+                    "skill-loading-status" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.skill_loading_status_tool(args)
+                    }
+                    "enable-skill-trace" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.enable_skill_trace_tool(args)
+                    }
+                    "disable-skill-trace" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.disable_skill_trace_tool(args)
+                    }
+                    "skill-loading-selftest" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.skill_loading_selftest_tool(args)
+                    }
                     other => Err(anyhow!("unknown tool {other}")),
                 }
             }()
             .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None));
             result
         })
-    }
-
-    /// Returns initialization information for the RMCP server.
-    ///
-    /// This includes server capabilities and a brief instruction message,
-    /// clarifying that this service acts as a bridge for `SKILL.md` files.
-    fn get_info(&self) -> InitializeResult {
-        // Start background warm-up only after the handshake path is hit to
-        // keep the initialize response fast.
-        self.spawn_warmup_if_needed();
-        InitializeResult {
-            capabilities: ServerCapabilities {
-                resources: Some(Default::default()),
-                tools: Some(Default::default()),
-                ..Default::default()
-            },
-            instructions: Some("Codex SKILL.md bridge".into()),
-            ..Default::default()
-        }
     }
 }
 
@@ -1732,9 +1995,15 @@ pub fn run() -> Result<()> {
             if from == "claude" && !dry_run {
                 let home = home_dir()?;
                 let claude_root = mirror_source_root(&home);
-                let mirror_root = home.join(".codex/skills-mirror");
-                let skill_report =
-                    sync_from_claude(&claude_root, &mirror_root, include_marketplace)?;
+                let codex_skills_root = home.join(".codex/skills");
+                let skill_report = crate::sync::sync_skills_only_from_claude(
+                    &claude_root,
+                    &codex_skills_root,
+                    include_marketplace,
+                )?;
+                let _ = crate::setup::ensure_codex_skills_feature_enabled(
+                    &home.join(".codex/config.toml"),
+                );
                 println!(
                     "Skills: {} synced, {} unchanged",
                     skill_report.copied, skill_report.skipped
@@ -1894,6 +2163,7 @@ mod tests {
 
     #[test]
     fn validate_skills_tool_autofix_adds_frontmatter() {
+        let _guard = crate::test_support::env_guard();
         let temp = tempdir().unwrap();
         let skill_dir = temp.path().join("skills");
         std::fs::create_dir_all(&skill_dir).unwrap();
@@ -1928,6 +2198,54 @@ mod tests {
         assert_eq!(
             structured.get("autofixed").and_then(|v| v.as_u64()),
             Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_all_tool_syncs_skills_into_codex_skills_root() {
+        let _guard = crate::test_support::env_guard();
+        let temp = tempdir().unwrap();
+        let claude_skill = temp.path().join(".claude/skills/example-skill/SKILL.md");
+        std::fs::create_dir_all(claude_skill.parent().unwrap()).unwrap();
+        std::fs::write(&claude_skill, "example skill").unwrap();
+
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", temp.path());
+
+        let service = SkillService::new_with_ttl(vec![], Duration::from_secs(1)).unwrap();
+        let _ = service
+            .sync_all_tool(
+                json!({
+                    "from": "claude",
+                    "dry_run": false,
+                    "skip_existing_commands": true
+                })
+                .as_object()
+                .cloned()
+                .unwrap(),
+            )
+            .unwrap();
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+
+        // `sync_skills_only_from_claude` preserves paths relative to ~/.claude.
+        let expected = temp
+            .path()
+            .join(".codex/skills/skills/example-skill/SKILL.md");
+        assert!(
+            expected.exists(),
+            "expected skill copied into ~/.codex/skills"
+        );
+
+        let unexpected = temp
+            .path()
+            .join(".codex/skills-mirror/skills/example-skill/SKILL.md");
+        assert!(
+            !unexpected.exists(),
+            "sync-all should not write skills into ~/.codex/skills-mirror"
         );
     }
 }
