@@ -44,6 +44,8 @@ Maintainer notes regarding artifact layout can be found in [`docs/release-artifa
 
 ## Recent Releases
 
+- **0.3.2 (2025-12-15)**: Added dependency resolution system, enhanced analysis capabilities, and performance optimizations.
+- **0.3.1 (2025-12-13)**: Added validation and analysis crates with comprehensive skill quality assurance.
 - **0.3.0 (2025-12-04)**: Refactored for Claude Code hook-based integration. Improved MCP server stability, skill discovery, and documentation.
 - **0.2.1 (2025-11-28)**: Added crates.io publishing automation with dependency validation.
 - **0.2.0 (2025-11-26)**: Implemented `crates.io` publishing automation (with token validation and dry-runs), introduced deterministic embedding test overrides, and updated installation documentation.

@@ -11,10 +11,15 @@ use crate::backend::{claude::ClaudeAdapter, codex::CodexAdapter};
 use crate::store::{default_store_path, BackendKind, RunId, RunRequest, RunStore, StateRunStore};
 
 fn backend_from_str(raw: &str) -> BackendKind {
-    match raw.to_ascii_lowercase().as_str() {
-        "codex" | "gpt" | "openai" => BackendKind::Codex,
-        "claude" | "anthropic" => BackendKind::Claude,
-        other => BackendKind::Other(other.to_string()),
+    if raw.eq_ignore_ascii_case("codex")
+        || raw.eq_ignore_ascii_case("gpt")
+        || raw.eq_ignore_ascii_case("openai")
+    {
+        BackendKind::Codex
+    } else if raw.eq_ignore_ascii_case("claude") || raw.eq_ignore_ascii_case("anthropic") {
+        BackendKind::Claude
+    } else {
+        BackendKind::Other(raw.to_string())
     }
 }
 

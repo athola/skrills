@@ -201,18 +201,38 @@ pub fn read_skill(path: &Path) -> Result<String> {
     }
 }
 
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let haystack = haystack.as_bytes();
+    let needle = needle.as_bytes();
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    for i in 0..=(haystack.len() - needle.len()) {
+        let mut ok = true;
+        for j in 0..needle.len() {
+            if !haystack[i + j].eq_ignore_ascii_case(&needle[j]) {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
+            return true;
+        }
+    }
+    false
+}
+
 /// Resolves a skill specification to its canonical name.
 ///
 /// Handles partial matches and ambiguities.
 pub fn resolve_skill<'a>(spec: &str, skills: &'a [SkillMeta]) -> Result<&'a str> {
-    let spec_l = spec.to_ascii_lowercase();
     let mut matches: Vec<&str> = skills
         .iter()
         .map(|s| s.name.as_str())
-        .filter(|name| {
-            let nl = name.to_ascii_lowercase();
-            nl == spec_l || nl.contains(&spec_l)
-        })
+        .filter(|name| name.eq_ignore_ascii_case(spec) || contains_ignore_ascii_case(name, spec))
         .collect();
     matches.sort_unstable();
     matches.dedup();
@@ -230,13 +250,9 @@ pub fn resolve_skill<'a>(spec: &str, skills: &'a [SkillMeta]) -> Result<&'a str>
 ///
 /// Handles partial matches and ambiguities.
 pub fn resolve_agent<'a>(spec: &str, agents: &'a [AgentMeta]) -> Result<&'a AgentMeta> {
-    let spec_l = spec.to_ascii_lowercase();
     let mut matches: Vec<&AgentMeta> = agents
         .iter()
-        .filter(|a| {
-            let name_l = a.name.to_ascii_lowercase();
-            name_l == spec_l || name_l.contains(&spec_l)
-        })
+        .filter(|a| a.name.eq_ignore_ascii_case(spec) || contains_ignore_ascii_case(&a.name, spec))
         .collect();
     matches.sort_by(|a, b| a.name.cmp(&b.name));
     matches.dedup_by(|a, b| a.name == b.name);
@@ -270,17 +286,81 @@ pub fn tokenize_prompt(prompt: &str) -> HashSet<String> {
 
 /// Counts trigram occurrences in a given text.
 pub fn trigram_counts(text: &str) -> HashMap<String, usize> {
+    trigram_counts_keyed(text)
+        .into_iter()
+        .map(|(k, v)| (trigram_key_to_string(k), v))
+        .collect()
+}
+
+type TrigramKey = u64;
+
+fn trigram_key(a: char, b: char, c: char) -> TrigramKey {
+    ((a as TrigramKey) << 42) | ((b as TrigramKey) << 21) | (c as TrigramKey)
+}
+
+fn trigram_key_to_string(key: TrigramKey) -> String {
+    let a = ((key >> 42) & 0x1F_FFFF) as u32;
+    let b = ((key >> 21) & 0x1F_FFFF) as u32;
+    let c = (key & 0x1F_FFFF) as u32;
+    let a = char::from_u32(a).unwrap_or('\u{FFFD}');
+    let b = char::from_u32(b).unwrap_or('\u{FFFD}');
+    let c = char::from_u32(c).unwrap_or('\u{FFFD}');
+
+    let mut s = String::with_capacity(12);
+    s.push(a);
+    s.push(b);
+    s.push(c);
+    s
+}
+
+fn trigram_counts_keyed(text: &str) -> HashMap<TrigramKey, usize> {
+    let mut it = text.chars().map(|c| c.to_ascii_lowercase());
+    let mut a = match it.next() {
+        Some(c) => c,
+        None => return HashMap::new(),
+    };
+    let mut b = match it.next() {
+        Some(c) => c,
+        None => return HashMap::new(),
+    };
+    let mut c = match it.next() {
+        Some(c) => c,
+        None => return HashMap::new(),
+    };
+
     let mut counts = HashMap::new();
-    let normalized = text.to_ascii_lowercase();
-    let chars: Vec<char> = normalized.chars().collect();
-    if chars.len() < 3 {
-        return counts;
-    }
-    for window in chars.windows(3) {
-        let gram: String = window.iter().collect();
-        *counts.entry(gram).or_insert(0) += 1;
+    loop {
+        *counts.entry(trigram_key(a, b, c)).or_insert(0) += 1;
+        a = b;
+        b = c;
+        c = match it.next() {
+            Some(next) => next,
+            None => break,
+        };
     }
     counts
+}
+
+fn cosine_similarity_keyed(a: &HashMap<TrigramKey, usize>, b: &HashMap<TrigramKey, usize>) -> f32 {
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let mut dot = 0f32;
+    let mut norm_a = 0f32;
+    let mut norm_b = 0f32;
+    for (gram, &count) in a.iter() {
+        norm_a += (count as f32).powi(2);
+        if let Some(&b_count) = b.get(gram) {
+            dot += (count as f32) * (b_count as f32);
+        }
+    }
+    for &count in b.values() {
+        norm_b += (count as f32).powi(2);
+    }
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+    dot / (norm_a.sqrt() * norm_b.sqrt())
 }
 
 /// Calculates the cosine similarity between two trigram count vectors.
@@ -308,9 +388,9 @@ pub fn cosine_similarity(a: &HashMap<String, usize>, b: &HashMap<String, usize>)
 
 /// Calculates the trigram similarity between a prompt and text.
 pub fn trigram_similarity(prompt: &str, text: &str) -> f32 {
-    let prompt_vec = trigram_counts(prompt);
-    let text_vec = trigram_counts(text);
-    cosine_similarity(&prompt_vec, &text_vec)
+    let prompt_vec = trigram_counts_keyed(prompt);
+    let text_vec = trigram_counts_keyed(text);
+    cosine_similarity_keyed(&prompt_vec, &text_vec)
 }
 
 /// Provides a static override for embedding similarity in tests.
@@ -772,5 +852,60 @@ mod tests {
 
         let skills = discover_skills(&roots, None).unwrap();
         assert_eq!(skills.len(), 0);
+    }
+
+    #[test]
+    fn resolve_skill_is_case_insensitive_and_supports_substring_match() {
+        let skills = vec![
+            SkillMeta {
+                name: "FooBar".to_string(),
+                path: PathBuf::from("/tmp/SKILL.md"),
+                source: SkillSource::Codex,
+                root: PathBuf::from("/tmp"),
+                hash: "x".to_string(),
+            },
+            SkillMeta {
+                name: "Baz".to_string(),
+                path: PathBuf::from("/tmp/SKILL.md"),
+                source: SkillSource::Codex,
+                root: PathBuf::from("/tmp"),
+                hash: "y".to_string(),
+            },
+        ];
+
+        assert_eq!(resolve_skill("foobar", &skills).unwrap(), "FooBar");
+        assert_eq!(resolve_skill("BAR", &skills).unwrap(), "FooBar");
+    }
+
+    #[test]
+    fn resolve_agent_is_case_insensitive_and_supports_substring_match() {
+        let agents = vec![
+            AgentMeta {
+                name: "AlphaBeta".to_string(),
+                path: PathBuf::from("/tmp/agent.md"),
+                source: SkillSource::Codex,
+                root: PathBuf::from("/tmp"),
+                hash: "x".to_string(),
+            },
+            AgentMeta {
+                name: "Gamma".to_string(),
+                path: PathBuf::from("/tmp/agent.md"),
+                source: SkillSource::Codex,
+                root: PathBuf::from("/tmp"),
+                hash: "y".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            resolve_agent("alphabeta", &agents).unwrap().name,
+            "AlphaBeta"
+        );
+        assert_eq!(resolve_agent("BETA", &agents).unwrap().name, "AlphaBeta");
+    }
+
+    #[test]
+    fn trigram_similarity_is_ascii_case_insensitive() {
+        assert_eq!(trigram_similarity("AbC", "abc"), 1.0);
+        assert_eq!(trigram_similarity("abc", "abd"), 0.0);
     }
 }

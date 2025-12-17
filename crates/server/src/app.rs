@@ -26,7 +26,7 @@ use crate::discovery::{
 use crate::doctor::doctor_report;
 use crate::signals::ignore_sigchld;
 use crate::skill_trace::{self, ClientTarget as TraceTarget, TraceInstallOptions};
-use crate::sync::{mirror_source_root, sync_from_claude};
+use crate::sync::mirror_source_root;
 use crate::tui::tui_flow;
 use anyhow::{anyhow, Result};
 use clap::Parser;
@@ -591,21 +591,21 @@ impl SkillService {
             return Err(anyhow!("unsupported uri"));
         }
         let rest = uri.trim_start_matches("skill://");
-        let parts = rest.splitn(3, '/').collect::<Vec<_>>();
-        if parts.len() < 2 {
-            return Err(anyhow!("invalid uri"));
-        }
-        let uri = if parts[0] == "skrills" {
-            let name = parts.get(2).copied().unwrap_or("");
-            format!("skill://skrills/{}/{}", parts[1], name)
+        let mut parts = rest.splitn(3, '/');
+        let host = parts.next().unwrap_or("");
+        let first = parts.next().ok_or_else(|| anyhow!("invalid uri"))?;
+        let remainder = parts.next();
+        let uri = if host == "skrills" {
+            let name = remainder.unwrap_or("");
+            format!("skill://skrills/{}/{}", first, name)
         } else {
             // legacy: host is actually source label
-            let name = if parts.len() == 2 {
-                parts[1]
+            let name = if remainder.is_none() {
+                first
             } else {
-                &rest[parts[0].len() + 1..]
+                &rest[host.len() + 1..]
             };
-            format!("skill://{}/{}", parts[0], name)
+            format!("skill://{}/{}", host, name)
         };
         let meta = {
             let mut cache = self.cache.lock();
@@ -650,6 +650,85 @@ impl SkillService {
         }
 
         Ok(true)
+    }
+
+    fn sync_all_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
+        use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
+
+        let from = args
+            .get("from")
+            .and_then(|v| v.as_str())
+            .unwrap_or("claude");
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let include_marketplace = args
+            .get("include_marketplace")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        // Sync skills first (Codex discovery root).
+        let skill_report = if from == "claude" && !dry_run {
+            let home = home_dir()?;
+            let claude_root = mirror_source_root(&home);
+            let codex_skills_root = home.join(".codex/skills");
+            let report = crate::sync::sync_skills_only_from_claude(
+                &claude_root,
+                &codex_skills_root,
+                include_marketplace,
+            )?;
+            let _ =
+                crate::setup::ensure_codex_skills_feature_enabled(&home.join(".codex/config.toml"));
+            report
+        } else {
+            crate::sync::SyncReport::default()
+        };
+
+        let skip_existing_commands = args
+            .get("skip_existing_commands")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let params = SyncParams {
+            from: Some(from.to_string()),
+            dry_run,
+            sync_commands: true,
+            skip_existing_commands,
+            sync_mcp_servers: true,
+            sync_preferences: true,
+            sync_skills: false, // Skills are handled above for Claude→Codex.
+            include_marketplace,
+            ..Default::default()
+        };
+
+        let report = if from == "claude" {
+            let source = ClaudeAdapter::new()?;
+            let target = CodexAdapter::new()?;
+            SyncOrchestrator::new(source, target).sync(&params)?
+        } else {
+            let source = CodexAdapter::new()?;
+            let target = ClaudeAdapter::new()?;
+            SyncOrchestrator::new(source, target).sync(&params)?
+        };
+
+        Ok(CallToolResult {
+            content: vec![Content::text(format!(
+                "{}\nSkills: {} copied, {} skipped",
+                report.summary, skill_report.copied, skill_report.skipped
+            ))],
+            is_error: Some(false),
+            structured_content: Some(json!({
+                "report": report,
+                "skill_report": {
+                    "copied": skill_report.copied,
+                    "skipped": skill_report.skipped
+                },
+                "dry_run": dry_run,
+                "skip_existing_commands": skip_existing_commands
+            })),
+            meta: None,
+        })
     }
 
     fn parse_trace_target(args: &JsonMap<String, Value>) -> TraceTarget {
@@ -914,7 +993,7 @@ impl ServerHandler for SkillService {
                 name: "sync-from-claude".into(),
                 title: Some("Copy ~/.claude skills into ~/.codex".into()),
                 description: Some(
-                    "Mirror SKILL.md files from ~/.claude into ~/.codex/skills-mirror".into(),
+                    "Copy SKILL.md files from ~/.claude into ~/.codex/skills (Codex discovery root)".into(),
                 ),
                 input_schema: schema_empty.clone(),
                 output_schema: None,
@@ -1241,9 +1320,15 @@ impl ServerHandler for SkillService {
                             .unwrap_or(false);
                         let home = home_dir()?;
                         let claude_root = mirror_source_root(&home);
-                        let mirror_root = home.join(".codex/skills-mirror");
-                        let report =
-                            sync_from_claude(&claude_root, &mirror_root, include_marketplace)?;
+                        let codex_skills_root = home.join(".codex/skills");
+                        let report = crate::sync::sync_skills_only_from_claude(
+                            &claude_root,
+                            &codex_skills_root,
+                            include_marketplace,
+                        )?;
+                        let _ = crate::setup::ensure_codex_skills_feature_enabled(
+                            &home.join(".codex/config.toml"),
+                        );
                         let text = if report.copied_names.is_empty() {
                             format!("copied: {}, skipped: {}", report.copied, report.skipped)
                         } else {
@@ -1274,7 +1359,6 @@ impl ServerHandler for SkillService {
                     }
                     // Cross-agent sync tools
                     "sync-skills" => {
-                        // Skills use existing sync mechanism (sync_from_claude)
                         let from = request
                             .arguments
                             .as_ref()
@@ -1297,7 +1381,7 @@ impl ServerHandler for SkillService {
                         if from == "claude" {
                             let home = home_dir()?;
                             let claude_root = mirror_source_root(&home);
-                            let mirror_root = home.join(".codex/skills-mirror");
+                            let codex_skills_root = home.join(".codex/skills");
 
                             if dry_run {
                                 let count = walkdir::WalkDir::new(&claude_root)
@@ -1321,11 +1405,14 @@ impl ServerHandler for SkillService {
                                     meta: None,
                                 })
                             } else {
-                                let report = sync_from_claude(
+                                let report = crate::sync::sync_skills_only_from_claude(
                                     &claude_root,
-                                    &mirror_root,
+                                    &codex_skills_root,
                                     include_marketplace,
                                 )?;
+                                let _ = crate::setup::ensure_codex_skills_feature_enabled(
+                                    &home.join(".codex/config.toml"),
+                                );
                                 Ok(CallToolResult {
                                     content: vec![Content::text(format!(
                                         "Synced {} skills ({} unchanged)",
@@ -1341,12 +1428,35 @@ impl ServerHandler for SkillService {
                                 })
                             }
                         } else {
+                            use skrills_sync::{
+                                ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams,
+                            };
+
+                            let params = SyncParams {
+                                from: Some(from.to_string()),
+                                dry_run,
+                                sync_commands: false,
+                                sync_mcp_servers: false,
+                                sync_preferences: false,
+                                sync_skills: true,
+                                include_marketplace,
+                                ..Default::default()
+                            };
+                            let source = CodexAdapter::new()?;
+                            let target = ClaudeAdapter::new()?;
+                            let orch = SyncOrchestrator::new(source, target);
+                            let report = orch.sync(&params)?;
+
                             Ok(CallToolResult {
-                                content: vec![Content::text(
-                                    "Codex → Claude skill sync not yet implemented".to_string(),
-                                )],
-                                is_error: Some(true),
-                                structured_content: None,
+                                content: vec![Content::text(report.summary.clone())],
+                                is_error: Some(!report.success),
+                                structured_content: Some(json!({
+                                    "summary": report.summary,
+                                    "skills": {
+                                        "written": report.skills.written,
+                                        "skipped": report.skills.skipped.len(),
+                                    }
+                                })),
                                 meta: None,
                             })
                         }
@@ -1513,86 +1623,8 @@ impl ServerHandler for SkillService {
                         })
                     }
                     "sync-all" => {
-                        use skrills_sync::{
-                            ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams,
-                        };
-
-                        let from = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("from"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("claude");
-                        let dry_run = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("dry_run"))
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-
-                        let include_marketplace = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("include_marketplace"))
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-
-                        // Sync skills first (using existing mechanism)
-                        let skill_report = if from == "claude" && !dry_run {
-                            let home = home_dir()?;
-                            let claude_root = mirror_source_root(&home);
-                            let mirror_root = home.join(".codex/skills-mirror");
-                            sync_from_claude(&claude_root, &mirror_root, include_marketplace)?
-                        } else {
-                            crate::sync::SyncReport::default()
-                        };
-
-                        let skip_existing_commands = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("skip_existing_commands"))
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-
-                        let params = SyncParams {
-                            from: Some(from.to_string()),
-                            dry_run,
-                            sync_commands: true,
-                            skip_existing_commands,
-                            sync_mcp_servers: true,
-                            sync_preferences: true,
-                            sync_skills: false, // Handled above
-                            include_marketplace,
-                            ..Default::default()
-                        };
-
-                        let report = if from == "claude" {
-                            let source = ClaudeAdapter::new()?;
-                            let target = CodexAdapter::new()?;
-                            SyncOrchestrator::new(source, target).sync(&params)?
-                        } else {
-                            let source = CodexAdapter::new()?;
-                            let target = ClaudeAdapter::new()?;
-                            SyncOrchestrator::new(source, target).sync(&params)?
-                        };
-
-                        Ok(CallToolResult {
-                            content: vec![Content::text(format!(
-                                "{}\nSkills: {} copied, {} skipped",
-                                report.summary, skill_report.copied, skill_report.skipped
-                            ))],
-                            is_error: Some(false),
-                            structured_content: Some(json!({
-                                "report": report,
-                                "skill_report": {
-                                    "copied": skill_report.copied,
-                                    "skipped": skill_report.skipped
-                                },
-                                "dry_run": dry_run,
-                                "skip_existing_commands": skip_existing_commands
-                            })),
-                            meta: None,
-                        })
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.sync_all_tool(args)
                     }
                     "sync-status" => {
                         use skrills_sync::{
@@ -1954,9 +1986,15 @@ pub fn run() -> Result<()> {
             if from == "claude" && !dry_run {
                 let home = home_dir()?;
                 let claude_root = mirror_source_root(&home);
-                let mirror_root = home.join(".codex/skills-mirror");
-                let skill_report =
-                    sync_from_claude(&claude_root, &mirror_root, include_marketplace)?;
+                let codex_skills_root = home.join(".codex/skills");
+                let skill_report = crate::sync::sync_skills_only_from_claude(
+                    &claude_root,
+                    &codex_skills_root,
+                    include_marketplace,
+                )?;
+                let _ = crate::setup::ensure_codex_skills_feature_enabled(
+                    &home.join(".codex/config.toml"),
+                );
                 println!(
                     "Skills: {} synced, {} unchanged",
                     skill_report.copied, skill_report.skipped
@@ -2116,6 +2154,7 @@ mod tests {
 
     #[test]
     fn validate_skills_tool_autofix_adds_frontmatter() {
+        let _guard = crate::test_support::env_guard();
         let temp = tempdir().unwrap();
         let skill_dir = temp.path().join("skills");
         std::fs::create_dir_all(&skill_dir).unwrap();
@@ -2150,6 +2189,54 @@ mod tests {
         assert_eq!(
             structured.get("autofixed").and_then(|v| v.as_u64()),
             Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_all_tool_syncs_skills_into_codex_skills_root() {
+        let _guard = crate::test_support::env_guard();
+        let temp = tempdir().unwrap();
+        let claude_skill = temp.path().join(".claude/skills/example-skill/SKILL.md");
+        std::fs::create_dir_all(claude_skill.parent().unwrap()).unwrap();
+        std::fs::write(&claude_skill, "example skill").unwrap();
+
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", temp.path());
+
+        let service = SkillService::new_with_ttl(vec![], Duration::from_secs(1)).unwrap();
+        let _ = service
+            .sync_all_tool(
+                json!({
+                    "from": "claude",
+                    "dry_run": false,
+                    "skip_existing_commands": true
+                })
+                .as_object()
+                .cloned()
+                .unwrap(),
+            )
+            .unwrap();
+
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+
+        // `sync_skills_only_from_claude` preserves paths relative to ~/.claude.
+        let expected = temp
+            .path()
+            .join(".codex/skills/skills/example-skill/SKILL.md");
+        assert!(
+            expected.exists(),
+            "expected skill copied into ~/.codex/skills"
+        );
+
+        let unexpected = temp
+            .path()
+            .join(".codex/skills-mirror/skills/example-skill/SKILL.md");
+        assert!(
+            !unexpected.exists(),
+            "sync-all should not write skills into ~/.codex/skills-mirror"
         );
     }
 }

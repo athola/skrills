@@ -443,6 +443,8 @@ fn register_codex_mcp(base_dir: &Path, skrills_bin: &Path) -> Result<()> {
     // Check if skrills MCP is already registered
     if content.contains("[mcp_servers.skrills]") {
         println!("  MCP server already registered in config.toml");
+        // Still ensure Codex skills feature flag is enabled.
+        ensure_codex_skills_feature_enabled(&config_path)?;
         return Ok(());
     }
 
@@ -453,6 +455,7 @@ fn register_codex_mcp(base_dir: &Path, skrills_bin: &Path) -> Result<()> {
 # Skrills MCP server for skill management
 [mcp_servers.skrills]
 command = "{bin_path}"
+type = "stdio"
 args = ["serve"]
 "#
     );
@@ -467,6 +470,93 @@ args = ["serve"]
     fs::write(&config_path, content)?;
     println!("  Registered MCP server in {}", config_path.display());
 
+    ensure_codex_skills_feature_enabled(&config_path)?;
+
+    Ok(())
+}
+
+/// Ensures the experimental Codex skills feature flag is enabled in `config.toml`.
+///
+/// Codex loads skills only when `[features] skills = true` is set.
+pub(crate) fn ensure_codex_skills_feature_enabled(config_path: &Path) -> Result<()> {
+    let content = if config_path.exists() {
+        fs::read_to_string(config_path)?
+    } else {
+        String::new()
+    };
+
+    fn is_header(line: &str) -> bool {
+        let trimmed = line.trim();
+        trimmed.starts_with('[') && trimmed.ends_with(']') && !trimmed.starts_with("[[")
+    }
+
+    let input_lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+    let mut out: Vec<String> = Vec::with_capacity(input_lines.len() + 4);
+
+    let mut found_features = false;
+    let mut ensured = false;
+
+    let mut i = 0usize;
+    while i < input_lines.len() {
+        let line = &input_lines[i];
+        if line.trim() == "[features]" {
+            found_features = true;
+            out.push(line.clone());
+            i += 1;
+
+            let mut saw_skills = false;
+            while i < input_lines.len() && !is_header(&input_lines[i]) {
+                let cur = &input_lines[i];
+                let trimmed = cur.trim_start();
+                if trimmed.starts_with("skills") && trimmed.contains('=') {
+                    saw_skills = true;
+                    let existing = trimmed
+                        .split_once('=')
+                        .map(|(_, v)| v)
+                        .unwrap_or("")
+                        .split('#')
+                        .next()
+                        .unwrap_or("")
+                        .trim();
+                    if existing == "true" {
+                        out.push(cur.clone());
+                    } else {
+                        out.push("skills = true".to_string());
+                        ensured = true;
+                    }
+                } else {
+                    out.push(cur.clone());
+                }
+                i += 1;
+            }
+
+            if !saw_skills {
+                out.push("skills = true".to_string());
+                ensured = true;
+            }
+            continue;
+        }
+
+        out.push(line.clone());
+        i += 1;
+    }
+
+    if !found_features {
+        if !out.is_empty() && !out.last().unwrap().trim().is_empty() {
+            out.push(String::new());
+        }
+        out.push("[features]".to_string());
+        out.push("skills = true".to_string());
+        ensured = true;
+    }
+
+    if ensured {
+        fs::write(config_path, out.join("\n") + "\n")?;
+        println!(
+            "  Enabled Codex experimental skills feature in {}",
+            config_path.display()
+        );
+    }
     Ok(())
 }
 

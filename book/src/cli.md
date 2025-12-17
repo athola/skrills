@@ -59,10 +59,10 @@ skrills analyze --format json                # Machine-readable output
 
 ## `sync`
 
-Copies skills from `~/.claude` into `~/.codex/skills-mirror`.
+Copies skills from `~/.claude` into `~/.codex/skills` (Codex discovery root).
 
 ```bash
-skrills sync [--skip-existing-commands]
+skrills sync
 ```
 
 Honors `SKRILLS_MIRROR_SOURCE` to change the source root.
@@ -121,6 +121,14 @@ Generates and writes the `<available_skills>` XML block into `AGENTS.md`, includ
 ```bash
 skrills sync-agents [--path AGENTS.md]
 ```
+
+### Skill naming caveat
+
+Skills are named from the `name:` field in `SKILL.md` frontmatter. Treat these names as opaque strings: they
+may include punctuation such as `:` for namespacing (for example, `pensive:shared`).
+
+If you’re diffing “skills listed in a session header” vs what exists on disk, don’t parse by splitting on
+`:`. Prefer extracting the `(file: …/SKILL.md)` path, or read the `SKILL.md` frontmatter directly.
 
 ## `mirror`
 

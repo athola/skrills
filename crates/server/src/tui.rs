@@ -9,7 +9,7 @@ use skrills_state::home_dir;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
-use crate::sync::{mirror_source_root, sync_from_claude};
+use crate::sync::{mirror_source_root, sync_agents_only_from_claude, sync_skills_only_from_claude};
 use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
 
 /// Runs an interactive TUI for sync management.
@@ -21,7 +21,7 @@ pub(crate) fn tui_flow(_extra_dirs: &[PathBuf]) -> Result<()> {
         return Err(anyhow!("TUI requires a TTY"));
     }
 
-    if !Confirm::new("Run claude → codex mirror sync? (skills, agents, commands, prefs)")
+    if !Confirm::new("Run claude → codex sync? (skills, agents, commands, prefs)")
         .with_default(true)
         .prompt()?
     {
@@ -39,12 +39,17 @@ pub(crate) fn tui_flow(_extra_dirs: &[PathBuf]) -> Result<()> {
         .prompt()?;
 
     let home = home_dir()?;
-    let mirror_root = home.join(".codex/skills-mirror");
-    let report = sync_from_claude(
+    let agent_report = sync_agents_only_from_claude(
         &mirror_source_root(&home),
-        &mirror_root,
+        &home.join(".codex/agents"),
         include_marketplace,
     )?;
+    let codex_report = sync_skills_only_from_claude(
+        &mirror_source_root(&home),
+        &home.join(".codex/skills"),
+        include_marketplace,
+    )?;
+    let _ = crate::setup::ensure_codex_skills_feature_enabled(&home.join(".codex/config.toml"));
 
     // Mirror commands/prefs/MCP
     let source = ClaudeAdapter::new()?;
@@ -62,9 +67,11 @@ pub(crate) fn tui_flow(_extra_dirs: &[PathBuf]) -> Result<()> {
     let sync_report = orch.sync(&params)?;
 
     println!(
-        "Mirror sync complete:\n  Skills: copied {}, skipped {}\n  Commands: written {}, skipped {}{}\n  Prefs: {}  MCP: {}",
-        report.copied,
-        report.skipped,
+        "Sync complete:\n  Agents: copied {}, skipped {}\n  Skills (codex): copied {}, skipped {}\n  Commands: written {}, skipped {}{}\n  Prefs: {}  MCP: {}",
+        agent_report.copied,
+        agent_report.skipped,
+        codex_report.copied,
+        codex_report.skipped,
         sync_report.commands.written,
         sync_report.commands.skipped.len(),
         if skip_existing_commands && !sync_report.commands.skipped.is_empty() {

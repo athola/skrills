@@ -81,17 +81,29 @@ pub fn validate_all(
 ) -> Result<Vec<ValidationResult>, std::io::Error> {
     let mut results = Vec::new();
 
+    let is_hidden_rel_path = |path: &Path| {
+        path.components().any(|c| match c {
+            std::path::Component::Normal(s) => s.to_string_lossy().starts_with('.'),
+            _ => false,
+        })
+    };
+
     for entry in WalkDir::new(dir)
-        .follow_links(true)
+        // Match Codex discovery behavior: skip symlinks.
+        .follow_links(false)
         .into_iter()
         .filter_map(|e| e.ok())
     {
         let path = entry.path();
+        let rel = path.strip_prefix(dir).unwrap_or(path);
+        if is_hidden_rel_path(rel) {
+            continue;
+        }
 
-        // Only process SKILL.md files
+        // Only process SKILL.md files (Codex requires the filename to be exactly SKILL.md).
         if path.is_file() {
             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if filename.eq_ignore_ascii_case("SKILL.md") || filename.ends_with(".skill.md") {
+            if filename == "SKILL.md" {
                 let content = std::fs::read_to_string(path)?;
                 results.push(validate_skill(path, &content, target));
             }

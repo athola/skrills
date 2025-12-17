@@ -88,6 +88,9 @@ pub struct SkillLoadingStatus {
     pub trace_skill_installed: bool,
     pub probe_skill_installed: bool,
     pub instrumented_markers_found: usize,
+    /// Warnings encountered during status check (e.g., permission errors).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 fn trace_skill_content() -> String {
@@ -268,7 +271,7 @@ fn instrument_root(
         return Ok(());
     }
     const MAX_DEPTH: usize = 20;
-    for entry in WalkDir::new(root)
+    for entry_result in WalkDir::new(root)
         .min_depth(1)
         .max_depth(MAX_DEPTH)
         .into_iter()
@@ -279,8 +282,18 @@ fn instrument_root(
             }
             true
         })
-        .filter_map(|e| e.ok())
     {
+        let entry = match entry_result {
+            Ok(e) => e,
+            Err(e) => {
+                report.warnings.push(format!(
+                    "failed to access entry in {}: {}",
+                    root.display(),
+                    e
+                ));
+                continue;
+            }
+        };
         let path = entry.path();
         if !entry.file_type().is_file() || !is_skill_file(path) {
             continue;
@@ -614,13 +627,14 @@ pub fn status(
 
     let mut skill_files_found = 0usize;
     let mut markers_found = 0usize;
+    let mut warnings = Vec::new();
 
     const MAX_DEPTH: usize = 20;
     for (_label, root) in roots {
         if !root.exists() {
             continue;
         }
-        for entry in WalkDir::new(&root)
+        for entry_result in WalkDir::new(&root)
             .min_depth(1)
             .max_depth(MAX_DEPTH)
             .into_iter()
@@ -631,8 +645,18 @@ pub fn status(
                 }
                 true
             })
-            .filter_map(|e| e.ok())
         {
+            let entry = match entry_result {
+                Ok(e) => e,
+                Err(e) => {
+                    warnings.push(format!(
+                        "failed to access entry in {}: {}",
+                        root.display(),
+                        e
+                    ));
+                    continue;
+                }
+            };
             let path = entry.path();
             if !entry.file_type().is_file() || !is_skill_file(path) {
                 continue;
@@ -653,6 +677,7 @@ pub fn status(
         trace_skill_installed: trace_installed,
         probe_skill_installed: probe_installed,
         instrumented_markers_found: markers_found,
+        warnings,
     })
 }
 

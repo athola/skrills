@@ -171,8 +171,14 @@ fn collect_skills_from(
             .max_depth(MAX_SKILL_DEPTH)
             .into_iter()
             .filter_entry(|e| {
+                if e.file_type().is_symlink() {
+                    return false;
+                }
+                let name = e.file_name().to_string_lossy();
+                if name.starts_with('.') {
+                    return false;
+                }
                 if e.file_type().is_dir() {
-                    let name = e.file_name().to_string_lossy();
                     return !IGNORE_DIRS.iter().any(|d| name == *d);
                 }
                 true
@@ -245,8 +251,14 @@ pub fn discover_agents(roots: &[SkillRoot]) -> Result<Vec<crate::types::AgentMet
             .max_depth(20)
             .into_iter()
             .filter_entry(|e| {
+                if e.file_type().is_symlink() {
+                    return false;
+                }
+                let name = e.file_name().to_string_lossy();
+                if name.starts_with('.') {
+                    return false;
+                }
                 if e.file_type().is_dir() {
-                    let name = e.file_name().to_string_lossy();
                     return !IGNORE_DIRS.iter().any(|d| name == *d);
                 }
                 true

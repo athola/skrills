@@ -10,7 +10,9 @@ Claude Code accepts any markdown file as a skill. Frontmatter is optional and ca
 
 ### Codex CLI (Strict)
 
-Codex CLI requires YAML frontmatter with specific fields:
+Codex CLI discovers skills only from files named exactly `SKILL.md` under `~/.codex/skills/**/` (recursive, symlinks and hidden entries are skipped).
+
+Codex CLI also requires YAML frontmatter with specific fields:
 - `name`: Required, max 100 characters
 - `description`: Required, max 500 characters
 

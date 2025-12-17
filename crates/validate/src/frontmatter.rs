@@ -265,11 +265,15 @@ pub fn generate_frontmatter(name: &str, description: &str) -> String {
 
     let desc_escaped = if description.contains('\n') || description.len() > 80 {
         // Use YAML literal block scalar for multi-line or long descriptions
-        let indented = description
-            .lines()
-            .map(|line| format!("  {line}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let line_count = description.lines().count();
+        let mut indented = String::with_capacity(description.len() + (2 * line_count) + line_count);
+        for (idx, line) in description.lines().enumerate() {
+            if idx > 0 {
+                indented.push('\n');
+            }
+            indented.push_str("  ");
+            indented.push_str(line);
+        }
         format!("|\n{indented}")
     } else if description.contains(':') || description.contains('#') {
         format!("\"{}\"", description.replace('"', "\\\""))

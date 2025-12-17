@@ -259,11 +259,11 @@ Prior to committing changes, ensure the following:
 Skills and agents are discovered dynamically at runtime. To view available resources:
 
 ```bash
-# List all discovered skills
-skrills list
+# Inspect the last skill scan (paths + hashes)
+jq -r '.skills[].path' ~/.codex/skills-cache.json
 
-# List pinned skills
-skrills list-pinned
+# Or enumerate from disk
+find ~/.codex/skills -name SKILL.md -type f
 
 # Sync agents from external sources
 skrills sync-agents --path <agent-manifest>
@@ -281,6 +281,14 @@ Skills are automatically discovered from these locations (in priority order):
 3. **Claude skills**: `~/.claude/skills/` (when `--include-claude` is enabled)
 4. **Marketplace cache**: `~/.codex/plugins/cache/`
 
+#### Skill Naming Caveat
+
+Skill names come from the `name:` field in `SKILL.md` frontmatter and should be treated as opaque strings.
+They may include punctuation such as `:` for namespacing (for example, `pensive:shared`).
+
+When parsing a rendered “skills list” (session headers, logs, etc.), do **not** split on `:` to extract the
+name or description. Prefer extracting the `(file: …/SKILL.md)` path or reading the frontmatter directly.
+
 ### Agent Registration
 
 Agents can be registered via:
@@ -292,16 +300,17 @@ Agents can be registered via:
 For detailed configuration options, see `docs/runtime-options.md` and `book/src/cli.md`.
 
 <!-- available_skills:start -->
-<!-- Skills discovered dynamically. Last sync: 1765684709 UTC. Total: 242 skills. -->
+<!-- Skills discovered dynamically. Last sync: 1765958141 UTC. Total: 120 skills. -->
 <!-- Use CLI commands for current skill inventory:
-     skrills list              - List all discovered skills
-     skrills list-pinned       - List pinned skills
+     jq -r '.skills[].path' ~/.codex/skills-cache.json
+     find ~/.codex/skills -name SKILL.md -type f
+     skrills analyze           - Analyze skills (tokens/deps) to spot issues
      skrills doctor            - View discovery diagnostics
 -->
 <!-- available_skills:end -->
 
 <!-- available_agents:start -->
-<!-- Agents discovered dynamically. Total: 394 agents. -->
+<!-- Agents discovered dynamically. Total: 291 agents. -->
 <!-- Use CLI commands for current agent inventory:
      skrills sync-agents       - Sync agents from external sources
      skrills doctor            - View agent discovery diagnostics

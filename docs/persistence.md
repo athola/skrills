@@ -4,9 +4,20 @@ This document details `skrills`'s persistence mechanisms: what data is persisted
 
 ## What Gets Persisted
 
-### Skill Mirrors
+### Codex Skills (Discovery Root)
 
-Skill mirrors are stored in `~/.codex/skills-mirror/`. This directory contains copies of skills synced from `~/.claude/` when you run `skrills sync` or `skrills sync-all`. This keeps Codex and Claude skill sources in sync without modifying the original files.
+Codex discovers skills from `~/.codex/skills/**/SKILL.md` (recursive). When you run `skrills sync` or `skrills mirror`, skrills copies `SKILL.md` skills (and their adjacent supporting files) into `~/.codex/skills/` so Codex can load them.
+
+Codex skills are behind an experimental feature flag in `~/.codex/config.toml`:
+
+```toml
+[features]
+skills = true
+```
+
+### Skill Mirrors (Optional)
+
+`~/.codex/skills-mirror/` is a legacy/optional directory used by older versions of `skrills` to keep a full, byte-for-byte mirror of Claude assets. Current `skrills` releases sync skills into `~/.codex/skills/` and agents into `~/.codex/agents/` without creating `~/.codex/skills-mirror/` by default.
 
 ### Discovery Cache
 
@@ -63,6 +74,12 @@ skrills doctor  # Verifies Codex MCP configuration
 
 ## Resetting State
 
+### Clear Codex Skills
+
+```bash
+rm -rf ~/.codex/skills/
+```
+
 ### Clear Skill Mirrors
 
 ```bash
@@ -80,6 +97,7 @@ rm ~/.codex/skills-cache.json
 Remove all skrills state files:
 
 ```bash
+rm -rf ~/.codex/skills/
 rm -rf ~/.codex/skills-mirror/
 rm ~/.codex/skills-cache.json
 rm ~/.codex/skills-manifest.json

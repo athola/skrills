@@ -62,14 +62,20 @@ impl SkillSource {
 /// assert_eq!(parse_source_key("unknown"), None);
 /// ```
 pub fn parse_source_key(key: &str) -> Option<SkillSource> {
-    match key.to_ascii_lowercase().as_str() {
-        "codex" => Some(SkillSource::Codex),
-        "claude" => Some(SkillSource::Claude),
-        "marketplace" => Some(SkillSource::Marketplace),
-        "cache" => Some(SkillSource::Cache),
-        "mirror" => Some(SkillSource::Mirror),
-        "agent" => Some(SkillSource::Agent),
-        _ => None,
+    if key.eq_ignore_ascii_case("codex") {
+        Some(SkillSource::Codex)
+    } else if key.eq_ignore_ascii_case("claude") {
+        Some(SkillSource::Claude)
+    } else if key.eq_ignore_ascii_case("marketplace") {
+        Some(SkillSource::Marketplace)
+    } else if key.eq_ignore_ascii_case("cache") {
+        Some(SkillSource::Cache)
+    } else if key.eq_ignore_ascii_case("mirror") {
+        Some(SkillSource::Mirror)
+    } else if key.eq_ignore_ascii_case("agent") {
+        Some(SkillSource::Agent)
+    } else {
+        None
     }
 }
 

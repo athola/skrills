@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2 - 2025-12-15
+- **NEW: Dependency Resolution System**: Added comprehensive skill dependency analysis and resolution in `skrills-analyze` crate.
+- **Enhanced Analysis**: Improved token counting accuracy and added dependency graph visualization capabilities.
+- **Performance Optimizations**: Optimized skill discovery and caching mechanisms for faster load times.
+- **Documentation Updates**: Added detailed dependency resolution documentation and ADR for design decisions.
+- **Testing Improvements**: Enhanced test coverage for dependency resolution edge cases.
+
 ## 0.3.1 - 2025-12-13
 - **NEW: Validation Crate** (`skrills-validate`): Validate skills for Claude Code (permissive) and Codex CLI (strict frontmatter requirements). Includes auto-fix capability to add missing frontmatter.
 - **NEW: Analysis Crate** (`skrills-analyze`): Token counting, dependency analysis, and optimization suggestions for skills.

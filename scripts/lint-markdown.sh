@@ -6,6 +6,13 @@ if ! command -v npx >/dev/null 2>&1; then
   exit 1
 fi
 
+# Avoid failures when the user's default npm cache (~/.npm) has bad permissions
+# (common when npm was previously run with sudo). Use a repo-local cache instead.
+CACHE_DIR="${NPM_CONFIG_CACHE:-$PWD/.npm-cache}"
+mkdir -p "$CACHE_DIR"
+export NPM_CONFIG_CACHE="$CACHE_DIR"
+export npm_config_cache="$CACHE_DIR"
+
 CMD=(npx --yes markdownlint-cli2@0.15.0)
 PATTERNS=(
   "**/*.md"
