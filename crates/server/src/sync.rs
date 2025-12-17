@@ -365,7 +365,7 @@ pub(crate) fn sync_from_claude(
     let mut mirrored_dirs: HashSet<PathBuf> = HashSet::new();
     for entry in WalkDir::new(claude_root)
         .min_depth(1)
-        .max_depth(8)
+        .max_depth(20)
         .follow_links(false)
         .into_iter()
         .filter_entry(|e| {
@@ -600,7 +600,7 @@ pub(crate) fn sync_agents_only_from_claude(
 
     for entry in WalkDir::new(claude_root)
         .min_depth(1)
-        .max_depth(8)
+        .max_depth(20)
         .follow_links(false)
         .into_iter()
         .filter_entry(|e| {

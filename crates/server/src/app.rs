@@ -653,12 +653,16 @@ impl SkillService {
     }
 
     fn sync_all_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
-        use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
+        use skrills_sync::{
+            parse_direction, ClaudeAdapter, CodexAdapter, SyncDirection, SyncOrchestrator,
+            SyncParams,
+        };
 
         let from = args
             .get("from")
             .and_then(|v| v.as_str())
             .unwrap_or("claude");
+        let direction = parse_direction(from)?;
         let dry_run = args
             .get("dry_run")
             .and_then(|v| v.as_bool())
@@ -669,20 +673,22 @@ impl SkillService {
             .unwrap_or(false);
 
         // Sync skills first (Codex discovery root).
-        let skill_report = if from == "claude" && !dry_run {
-            let home = home_dir()?;
-            let claude_root = mirror_source_root(&home);
-            let codex_skills_root = home.join(".codex/skills");
-            let report = crate::sync::sync_skills_only_from_claude(
-                &claude_root,
-                &codex_skills_root,
-                include_marketplace,
-            )?;
-            let _ =
-                crate::setup::ensure_codex_skills_feature_enabled(&home.join(".codex/config.toml"));
-            report
-        } else {
-            crate::sync::SyncReport::default()
+        let skill_report = match direction {
+            SyncDirection::ClaudeToCodex if !dry_run => {
+                let home = home_dir()?;
+                let claude_root = mirror_source_root(&home);
+                let codex_skills_root = home.join(".codex/skills");
+                let report = crate::sync::sync_skills_only_from_claude(
+                    &claude_root,
+                    &codex_skills_root,
+                    include_marketplace,
+                )?;
+                let _ = crate::setup::ensure_codex_skills_feature_enabled(
+                    &home.join(".codex/config.toml"),
+                );
+                report
+            }
+            _ => crate::sync::SyncReport::default(),
         };
 
         let skip_existing_commands = args
@@ -702,14 +708,17 @@ impl SkillService {
             ..Default::default()
         };
 
-        let report = if from == "claude" {
-            let source = ClaudeAdapter::new()?;
-            let target = CodexAdapter::new()?;
-            SyncOrchestrator::new(source, target).sync(&params)?
-        } else {
-            let source = CodexAdapter::new()?;
-            let target = ClaudeAdapter::new()?;
-            SyncOrchestrator::new(source, target).sync(&params)?
+        let report = match direction {
+            SyncDirection::ClaudeToCodex => {
+                let source = ClaudeAdapter::new()?;
+                let target = CodexAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            }
+            SyncDirection::CodexToClaude => {
+                let source = CodexAdapter::new()?;
+                let target = ClaudeAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            }
         };
 
         Ok(CallToolResult {

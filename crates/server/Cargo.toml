@@ -38,10 +38,10 @@ semver.workspace = true
 flate2.workspace = true
 parking_lot.workspace = true
 
-skrills-subagents = { path = "../subagents", version = "0.3.1", optional = true }
+skrills-subagents = { path = "../subagents", version = "0.3.2", optional = true }
 
-skrills-discovery = { path = "../discovery", version = "0.3.1" }
-skrills-state = { path = "../state", version = "0.3.1" }
+skrills-discovery = { path = "../discovery", version = "0.3.2" }
+skrills-state = { path = "../state", version = "0.3.2" }
 skrills_sync = { path = "../sync" }
 skrills-validate = { path = "../validate" }
 skrills-analyze = { path = "../analyze" }
