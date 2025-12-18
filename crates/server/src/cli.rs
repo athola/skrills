@@ -231,12 +231,9 @@ pub enum Commands {
 mod tests {
     use super::*;
     use clap::Parser;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+        crate::test_support::env_guard()
     }
 
     struct EnvVarGuard {

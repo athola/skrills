@@ -457,14 +457,10 @@ pub fn relative_path(from: &Path, to: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{LazyLock, Mutex};
     use tempfile::tempdir;
 
-    /// Serialize tests that mutate env/HOME.
-    static TEST_SERIAL: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
     fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+        crate::test_support::env_guard()
     }
 
     #[test]
