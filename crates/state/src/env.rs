@@ -1,4 +1,4 @@
-use anyhow::Result;
+use crate::Result;
 use serde::Deserialize;
 use std::fs;
 use std::path::PathBuf;
@@ -66,10 +66,13 @@ pub fn runtime_overrides_path() -> Option<PathBuf> {
 /// Manifest settings parsed from `skills-manifest.json`.
 #[derive(Debug, Default, Clone, Deserialize)]
 pub struct ManifestSettings {
+    /// Priority order for skill sources.
     #[serde(default)]
     pub priority: Option<Vec<String>>,
+    /// Whether to expose agent definitions.
     #[serde(default)]
     pub expose_agents: Option<bool>,
+    /// Cache time-to-live in milliseconds.
     #[serde(default)]
     pub cache_ttl_ms: Option<u64>,
 }

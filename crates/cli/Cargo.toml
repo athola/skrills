@@ -17,7 +17,7 @@ default = ["subagents"]
 subagents = ["skrills-server/subagents"]
 
 [dependencies]
-skrills-server = { path = "../server", version = "0.3.0" }
+skrills-server = { path = "../server", version = "0.3.1" }
 anyhow.workspace = true
 
 [dev-dependencies]

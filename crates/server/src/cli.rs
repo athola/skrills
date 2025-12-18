@@ -76,7 +76,7 @@ pub enum Commands {
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
     },
-    /// Copies skills from `~/.claude` into `~/.codex/skills-mirror`.
+    /// Copies skills from `~/.claude` into `~/.codex/skills` (Codex discovery root).
     Sync {
         /// Include marketplace content (uninstalled plugins).
         #[arg(long, env = "SKRILLS_INCLUDE_MARKETPLACE", default_value_t = false)]

@@ -133,3 +133,60 @@ args = ["serve"]
     $updated | Set-Content -Encoding UTF8 $configToml
     Write-Output "Ensured type = \"stdio\" in $configToml"
 }
+
+# Codex skills are behind the experimental feature flag in config.toml.
+function Ensure-CodexSkillsFeatureEnabled([string]$path) {
+    $content = if (Test-Path $path) { Get-Content $path -Raw } else { "" }
+    $lines = $content -split "`n"
+
+    $out = New-Object System.Collections.Generic.List[string]
+    $inFeatures = $false
+    $foundFeatures = $false
+    $skillsSet = $false
+
+    foreach ($rawLine in $lines) {
+        $line = $rawLine.TrimEnd("`r")
+        $noComment = ($line -split '#', 2)[0].Trim()
+
+        $isHeader = ($noComment.StartsWith("[") -and $noComment.EndsWith("]") -and -not $noComment.StartsWith("[["))
+        if ($isHeader) {
+            if ($inFeatures -and -not $skillsSet) {
+                $out.Add("skills = true") | Out-Null
+                $skillsSet = $true
+            }
+            $inFeatures = ($noComment -eq "[features]")
+            if ($inFeatures) { $foundFeatures = $true }
+            $out.Add($line) | Out-Null
+            continue
+        }
+
+        if ($inFeatures -and $noComment -match '^skills\s*=') {
+            $out.Add("skills = true") | Out-Null
+            $skillsSet = $true
+            continue
+        }
+
+        $out.Add($line) | Out-Null
+    }
+
+    if ($inFeatures -and -not $skillsSet) {
+        $out.Add("skills = true") | Out-Null
+        $skillsSet = $true
+    }
+
+    if (-not $foundFeatures) {
+        if ($out.Count -gt 0 -and $out[$out.Count - 1].Trim() -ne "") {
+            $out.Add("") | Out-Null
+        }
+        $out.Add("[features]") | Out-Null
+        $out.Add("skills = true") | Out-Null
+    }
+
+    $newContent = ($out.ToArray() -join "`n").TrimEnd() + "`n"
+    if ($newContent -ne $content) {
+        $newContent | Set-Content -Encoding UTF8 $path
+        Write-Output "Enabled Codex experimental skills feature in $path"
+    }
+}
+
+Ensure-CodexSkillsFeatureEnabled $configToml

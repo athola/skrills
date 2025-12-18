@@ -314,12 +314,8 @@ impl BackendAdapter for CodexAdapter {
         Ok(run_id)
     }
 
-    async fn get_status(
-        &self,
-        run_id: RunId,
-        store: Arc<dyn RunStore>,
-    ) -> Result<Option<RunStatus>> {
-        store.get_status(run_id).await
+    async fn status(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<Option<RunStatus>> {
+        store.status(run_id).await
     }
 
     async fn stop(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<bool> {

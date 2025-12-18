@@ -11,3 +11,4 @@ book/book
 .venv_image/
 writing-clearly-and-concisely/
 .cargo-temp/
+.npm-cache/

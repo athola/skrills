@@ -18,7 +18,7 @@ impl TestFixture {
         })
     }
 
-    fn get_temp_path(&self) -> &std::path::Path {
+    fn temp_path(&self) -> &std::path::Path {
         self.temp_dir.path()
     }
 }
@@ -222,7 +222,7 @@ mod filesystem_operations_tests {
         AND the directory should be cleaned up automatically
         */
         let fixture = TestFixture::new().unwrap();
-        let temp_path = fixture.get_temp_path();
+        let temp_path = fixture.temp_path();
 
         // Directory should exist
         assert!(temp_path.exists(), "Temp directory should exist");
@@ -267,7 +267,7 @@ mod filesystem_operations_tests {
         THEN it should have appropriate default permissions
         */
         let fixture = TestFixture::new().unwrap();
-        let temp_path = fixture.get_temp_path();
+        let temp_path = fixture.temp_path();
 
         let test_file = temp_path.join("permissions_test.txt");
         fs::write(&test_file, "Testing permissions").unwrap();

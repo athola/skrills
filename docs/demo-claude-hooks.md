@@ -86,7 +86,7 @@ claude
 
 **Expected behavior:**
 - Claude uses `skrills sync-all --from claude --skip-existing-commands`
-- Copies skills to mirror directory
+- Copies skills into `~/.codex/skills/` (Codex discovery root)
 - Syncs commands, MCP servers, and preferences
 - Preserves existing local commands
 

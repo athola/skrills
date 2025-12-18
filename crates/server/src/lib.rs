@@ -13,7 +13,10 @@ pub(crate) mod app;
 mod commands;
 mod doctor;
 mod setup;
+mod skill_trace;
 mod sync;
+#[cfg(test)]
+mod test_support;
 mod tui;
 
 /// Command-line interface for the server.

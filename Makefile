@@ -1,4 +1,5 @@
 # Common developer and demo tasks for skrills
+# Note: Use Git Bash on Windows; recipes assume a POSIX shell.
 # Set CARGO_HOME to a writable path to avoid sandbox/root perms issues.
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
@@ -10,6 +11,13 @@ BIN ?= skrills
 BIN_PATH ?= target/release/$(BIN)
 MDBOOK ?= mdbook
 CARGO_CMD = CARGO_HOME=$(CARGO_HOME) $(CARGO)
+DEMO_RUN = HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH)
+
+CARGO_GUARD_TARGETS := fmt lint check test test-unit test-integration test-setup \
+	build build-min serve-help install coverage docs book book-serve clean \
+	ci precommit dogfood demo-doctor demo-setup-claude demo-setup-codex \
+	demo-setup-both demo-setup-uninstall demo-setup-reinstall \
+	demo-setup-universal demo-setup-first-run demo-setup-all demo-all
 
 define open_file
 	@if [ -f "$(1)" ]; then \
@@ -27,47 +35,55 @@ define ensure_mdbook
 	fi
 endef
 
-.PHONY: help fmt lint check test test-unit test-integration test-setup build build-min serve-help \
-	githooks status install test-coverage security deps-update \
-	demo-fixtures demo-doctor demo-all \
-	demo-setup-claude demo-setup-codex demo-setup-both demo-setup-uninstall \
-	demo-setup-reinstall demo-setup-universal demo-setup-first-run demo-setup-all \
-	docs book book-serve clean clean-demo ci lint-md precommit
+# Phony targets: core developer flow
+.PHONY: help fmt lint lint-md check test test-unit test-integration test-setup \
+	build build-min serve-help install status coverage test-coverage dogfood ci precommit \
+	clean clean-demo githooks require-cargo security deps-update
+# Phony targets: docs
+.PHONY: docs book book-serve
+# Phony targets: demos
+.PHONY: demo-fixtures demo-doctor demo-all demo-setup-claude demo-setup-codex \
+	demo-setup-both demo-setup-uninstall demo-setup-reinstall \
+	demo-setup-universal demo-setup-first-run demo-setup-all
 .NOTPARALLEL: demo-all demo-setup-all
 
+$(CARGO_GUARD_TARGETS): require-cargo
+
 help:
-	@echo "Targets:"
-	@echo "  fmt                     format workspace"
-	@echo "  lint                    clippy with -D warnings"
-	@echo "  check                   cargo check all targets"
-	@echo "  test                    cargo test --all-features"
-	@echo "  test-unit               run unit tests only"
-	@echo "  test-integration        run integration tests only"
-	@echo "  test-setup              run setup module tests"
-	@echo "  test-coverage           run tests with coverage report"
-	@echo "  build                   release build with features"
-	@echo "  build-min               release build without default features"
-	@echo "  serve-help              binary --help smoke check"
-	@echo "  status                  show project status"
-	@echo "  install                 install binary to ~/.cargo/bin"
-	@echo "  githooks                point git core.hooksPath at repo githooks/"
-	@echo "  demo-all                run all CLI demos"
-	@echo "  demo-doctor             demo doctor diagnostics"
-	@echo "  demo-setup-all          run all setup flow demos"
-	@echo "  demo-setup-claude       demo setup for Claude Code"
-	@echo "  demo-setup-codex        demo setup for Codex"
-	@echo "  demo-setup-both         demo setup for both clients"
-	@echo "  demo-setup-uninstall    demo uninstall flow"
-	@echo "  demo-setup-reinstall    demo reinstall flow"
-	@echo "  demo-setup-universal    demo universal sync"
-	@echo "  demo-setup-first-run    demo first-run detection"
-	@echo "  book                    build mdBook then open in default browser"
-	@echo "  book-serve              live-reload mdBook on localhost:3000"
-	@echo "  clean                   cargo clean"
-	@echo "  clean-demo              remove demo HOME sandbox"
-	@echo "  security                run cargo audit"
-	@echo "  deps-update             update dependencies"
-	@echo "  ci                      fmt + lint + test"
+	@printf "Usage: make <target>\n\n"
+	@printf "Core\n"
+	@printf "  %-23s %s\n" "fmt" "format workspace"
+	@printf "  %-23s %s\n" "lint" "clippy with -D warnings"
+	@printf "  %-23s %s\n" "lint-md" "lint markdown files"
+	@printf "  %-23s %s\n" "check" "cargo check all targets"
+	@printf "  %-23s %s\n" "test | test-unit | test-integration" "run tests"
+	@printf "  %-23s %s\n" "test-setup" "run setup module tests"
+	@printf "  %-23s %s\n" "test-coverage" "run tests with coverage report"
+	@printf "  %-23s %s\n" "build | build-min" "release builds"
+	@printf "  %-23s %s\n" "install" "install skrills to ~/.cargo/bin"
+	@printf "  %-23s %s\n" "serve-help" "binary --help smoke check"
+	@printf "  %-23s %s\n" "status" "show project status and environment"
+	@printf "  %-23s %s\n" "coverage" "generate test coverage report"
+	@printf "  %-23s %s\n" "dogfood" "run skrills on its own codebase"
+	@printf "  %-23s %s\n" "ci | precommit" "run common pipelines"
+	@printf "  %-23s %s\n" "clean | clean-demo" "clean builds or demo HOME"
+	@printf "  %-23s %s\n" "require-cargo" "guard: ensure cargo is available"
+	@printf "  %-23s %s\n" "security" "run cargo audit"
+	@printf "  %-23s %s\n" "deps-update" "update dependencies"
+	@printf "\nDocs\n"
+	@printf "  %-23s %s\n" "docs" "build rustdoc and open"
+	@printf "  %-23s %s\n" "book | book-serve" "build or serve mdBook"
+	@printf "\nDemos\n"
+	@printf "  %-23s %s\n" "demo-all | demo-doctor" "run CLI demos"
+	@printf "  %-23s %s\n" "demo-setup-all" "run all setup flow demos"
+	@printf "  %-23s %s\n" "demo-setup-{claude,codex,both}" "client setup demos"
+	@printf "  %-23s %s\n" "demo-setup-{uninstall,reinstall}" "lifecycle demos"
+	@printf "  %-23s %s\n" "demo-setup-{universal,first-run}" "other setup demos"
+	@printf "  %-23s %s\n" "demo-fixtures" "prepare demo HOME sandbox"
+
+require-cargo:
+	@command -v $(CARGO) >/dev/null 2>&1 || { \
+		echo "cargo not found. Install Rust from https://rustup.rs/"; exit 1; }
 
 fmt:
 	$(CARGO_CMD) fmt --all
@@ -112,11 +128,13 @@ serve-help:
 	$(CARGO_CMD) run --quiet --bin $(BIN) -- --help >/dev/null
 
 status:
-	@echo "=== skrills Status ==="
+	@echo "=== Skrills Status ==="
 	@echo "Version: $$(grep '^version' crates/cli/Cargo.toml | head -1 | cut -d'"' -f2)"
-	@echo "Crates:  $$(ls -d crates/*/ 2>/dev/null | wc -l | tr -d ' ')"
-	@echo "Tests:   $$(find crates -name '*test*.rs' 2>/dev/null | wc -l | tr -d ' ') files"
-	@echo "Docs:    $$(test -d book/book && echo 'built' || echo 'not built')"
+	@echo "Rust: $$(rustc --version)"
+	@echo "Cargo: $$(cargo --version)"
+	@echo "Branch: $$(git rev-parse --abbrev-ref HEAD)"
+	@echo "Commit: $$(git rev-parse --short HEAD)"
+	@echo "Binary: $(BIN_PATH) $$(test -f $(BIN_PATH) && echo '(exists)' || echo '(not built)')"
 
 install: build
 	@mkdir -p $(HOME)/.cargo/bin
@@ -125,6 +143,15 @@ install: build
 
 githooks:
 	./scripts/install-git-hooks.sh
+
+coverage:
+	$(CARGO_CMD) tarpaulin --workspace --all-features --out Html
+	$(call open_file,$(CURDIR)/tarpaulin-report.html)
+
+dogfood: build demo-fixtures
+	@echo "==> Dogfooding: Running skrills on itself"
+	HOME=$(HOME_DIR) $(BIN_PATH) doctor
+	@echo "==> Dogfood complete"
 
 docs:
 	RUSTDOCFLAGS="-D warnings" $(CARGO_CMD) doc --workspace --all-features --no-deps
@@ -150,7 +177,7 @@ demo-fixtures:
 
 demo-doctor: demo-fixtures build
 	@echo "==> Demo: Doctor diagnostics"
-	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH) doctor
+	$(DEMO_RUN) doctor
 	@echo "==> Doctor demo complete"
 
 demo-all: demo-fixtures build demo-doctor
@@ -160,7 +187,7 @@ demo-all: demo-fixtures build demo-doctor
 demo-setup-claude: demo-fixtures build
 	@echo "==> Demo: Setup for Claude Code (non-interactive)"
 	@rm -rf $(HOME_DIR)/.claude
-	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH) setup --client claude --bin-dir $(HOME_DIR)/.claude/bin --yes
+	$(DEMO_RUN) setup --client claude --bin-dir $(HOME_DIR)/.claude/bin --yes
 	@echo "==> Verifying Claude setup..."
 	@test -f $(HOME_DIR)/.claude/.mcp.json || (echo "ERROR: MCP config not created" && exit 1)
 	@test -x $(HOME_DIR)/.claude/bin/skrills || (echo "ERROR: Binary not installed" && exit 1)
@@ -169,7 +196,7 @@ demo-setup-claude: demo-fixtures build
 demo-setup-codex: demo-fixtures build
 	@echo "==> Demo: Setup for Codex (non-interactive)"
 	@rm -rf $(HOME_DIR)/.codex
-	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH) setup --client codex --bin-dir $(HOME_DIR)/.codex/bin --yes
+	$(DEMO_RUN) setup --client codex --bin-dir $(HOME_DIR)/.codex/bin --yes
 	@echo "==> Verifying Codex setup..."
 	@test -x $(HOME_DIR)/.codex/bin/skrills || (echo "ERROR: Binary not installed" && exit 1)
 	@echo "==> Codex setup verified successfully (TLS certs optional)"
@@ -177,7 +204,7 @@ demo-setup-codex: demo-fixtures build
 demo-setup-both: demo-fixtures build
 	@echo "==> Demo: Setup for both Claude Code and Codex"
 	@rm -rf $(HOME_DIR)/.claude $(HOME_DIR)/.codex
-	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH) setup --client both --bin-dir $(HOME_DIR)/.claude/bin --yes
+	$(DEMO_RUN) setup --client both --bin-dir $(HOME_DIR)/.claude/bin --yes
 	@echo "==> Verifying both clients setup..."
 	@test -f $(HOME_DIR)/.claude/.mcp.json || (echo "ERROR: Claude MCP config not created" && exit 1)
 	@test -x $(HOME_DIR)/.claude/bin/skrills || (echo "ERROR: Binary not installed" && exit 1)
@@ -185,13 +212,13 @@ demo-setup-both: demo-fixtures build
 
 demo-setup-uninstall: demo-setup-claude
 	@echo "==> Demo: Uninstall Claude setup"
-	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH) setup --uninstall --client claude --yes
+	$(DEMO_RUN) setup --uninstall --client claude --yes
 	@echo "==> Verifying uninstall..."
 	@echo "==> Uninstall verified successfully"
 
 demo-setup-reinstall: demo-setup-claude
 	@echo "==> Demo: Reinstall Claude setup"
-	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH) setup --client claude --bin-dir $(HOME_DIR)/.claude/bin --reinstall --yes
+	$(DEMO_RUN) setup --client claude --bin-dir $(HOME_DIR)/.claude/bin --reinstall --yes
 	@echo "==> Verifying reinstall..."
 	@test -f $(HOME_DIR)/.claude/.mcp.json || (echo "ERROR: MCP config not created" && exit 1)
 	@echo "==> Reinstall verified successfully"
@@ -201,7 +228,7 @@ demo-setup-universal: demo-fixtures build
 	@rm -rf $(HOME_DIR)/.claude $(HOME_DIR)/.agent
 	@mkdir -p $(HOME_DIR)/.claude/skills
 	@echo "test skill" > $(HOME_DIR)/.claude/skills/test.md
-	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH) setup --client claude --bin-dir $(HOME_DIR)/.claude/bin --universal --yes
+	$(DEMO_RUN) setup --client claude --bin-dir $(HOME_DIR)/.claude/bin --universal --yes
 	@echo "==> Verifying universal sync..."
 	@test -d $(HOME_DIR)/.agent/skills || (echo "ERROR: Universal skills dir not created" && exit 1)
 	@echo "==> Universal sync verified successfully"
@@ -210,7 +237,7 @@ demo-setup-first-run: demo-fixtures build
 	@echo "==> Demo: First-run detection (simulated with doctor command)"
 	@rm -rf $(HOME_DIR)/.claude $(HOME_DIR)/.codex
 	@echo "==> Running doctor command on fresh install (should NOT prompt for setup as it's not served by first-run logic)"
-	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH) doctor 2>&1 || true
+	$(DEMO_RUN) doctor 2>&1 || true
 	@echo "==> First-run detection demo complete"
 
 demo-setup-all: demo-setup-claude demo-setup-codex demo-setup-both demo-setup-uninstall demo-setup-reinstall demo-setup-universal demo-setup-first-run

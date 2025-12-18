@@ -21,7 +21,7 @@ thiserror.workspace = true
 tempfile.workspace = true
 parking_lot.workspace = true
 
-skrills-state = { path = "../state", version = "0.3.0" }
+skrills-state = { path = "../state", version = "0.3.2" }
 
 [dev-dependencies]
 wiremock = "0.6"

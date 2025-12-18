@@ -10,18 +10,105 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
-use tokio::time::{sleep, Duration};
+use tokio::sync::Mutex;
+use tokio::time::{sleep, timeout, Duration, Instant};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+static TEST_LOCK: Mutex<()> = Mutex::const_new(());
+
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crate dir")
+        .parent()
+        .expect("workspace root")
+        .to_path_buf()
+}
+
+fn target_dir() -> PathBuf {
+    std::env::var("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| workspace_root().join("target"))
+}
+
+async fn ensure_skrills_binary() -> anyhow::Result<PathBuf> {
+    let binary_path = target_dir().join("debug").join(if cfg!(windows) {
+        "skrills.exe"
+    } else {
+        "skrills"
+    });
+    if binary_path.exists() {
+        return Ok(binary_path);
+    }
+
+    let root = workspace_root();
+    let cargo_home = std::env::var("CARGO_HOME")
+        .unwrap_or_else(|_| root.join(".cargo-home").to_string_lossy().into_owned());
+
+    let status = Command::new("cargo")
+        .args(["build", "-p", "skrills"])
+        .env("CARGO_HOME", cargo_home)
+        .status()
+        .await?;
+    assert!(status.success(), "cargo build failed to produce skrills");
+
+    Ok(binary_path)
+}
+
+async fn wait_for_run_succeeded(
+    peer: &rmcp::service::Peer<rmcp::RoleClient>,
+    run_id: &str,
+    deadline: Duration,
+) -> anyhow::Result<serde_json::Value> {
+    let started = Instant::now();
+    let mut last_state: Option<String> = None;
+    let mut last_payload: Option<serde_json::Value> = None;
+
+    loop {
+        let status = peer
+            .call_tool(CallToolRequestParam {
+                name: "get-run-status".into(),
+                arguments: Some(json!({ "run_id": run_id }).as_object().cloned().unwrap()),
+            })
+            .await?;
+        let content = status.structured_content.unwrap_or(serde_json::Value::Null);
+        last_payload.replace(content.clone());
+        last_state.replace(
+            content
+                .get("status")
+                .and_then(|s: &serde_json::Value| s.get("state"))
+                .and_then(|s: &serde_json::Value| s.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        );
+
+        if last_state.as_deref() == Some("Succeeded") {
+            return Ok(last_payload.unwrap_or(serde_json::Value::Null));
+        }
+
+        if started.elapsed() >= deadline {
+            anyhow::bail!(
+                "run did not succeed within {:?}; last_state={:?} last_payload={}",
+                deadline,
+                last_state.unwrap_or_default(),
+                last_payload.unwrap_or(serde_json::Value::Null)
+            );
+        }
+
+        sleep(Duration::from_millis(100)).await;
+    }
+}
 
 #[tokio::test]
 async fn given_skrills_server_with_subagents_when_executing_run_subagent_then_completes_successfully(
 ) -> anyhow::Result<()> {
+    let _guard = TEST_LOCK.lock().await;
+
     // GIVEN a running skrills server with subagent support
     // WHEN executing the run-subagent MCP tool
     // THEN it should route to the correct backend and complete successfully
     // Arrange
     let tmp = tempfile::tempdir()?;
-    std::env::set_var("HOME", tmp.path());
     std::fs::create_dir_all(tmp.path().join(".codex/skills"))?;
 
     // Mock Codex/Claude HTTP endpoints to verify adapters honor config.
@@ -43,53 +130,7 @@ async fn given_skrills_server_with_subagents_when_executing_run_subagent_then_co
         .mount(&server)
         .await;
 
-    std::env::set_var("SKRILLS_CODEX_API_KEY", "test-codex-key");
-    std::env::set_var("SKRILLS_CODEX_BASE_URL", format!("{}/v1/", server.uri()));
-    std::env::set_var("SKRILLS_CLAUDE_API_KEY", "test-claude-key");
-    std::env::set_var("SKRILLS_CLAUDE_BASE_URL", format!("{}/v1/", server.uri()));
-    std::env::set_var("SKRILLS_SUBAGENTS_DEFAULT_BACKEND", "codex");
-
-    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("crate dir")
-        .parent()
-        .expect("workspace root")
-        .to_path_buf();
-    let target_dir = std::env::var("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| workspace_root.join("target"));
-    let cargo_home = std::env::var("CARGO_HOME").unwrap_or_else(|_| {
-        workspace_root
-            .join(".cargo-home")
-            .to_string_lossy()
-            .into_owned()
-    });
-
-    let status = Command::new("cargo")
-        .args(["build", "-p", "skrills", "--features", "subagents"])
-        .env("CARGO_HOME", &cargo_home)
-        .status()
-        .await?;
-    assert!(status.success(), "cargo build failed to produce skrills");
-
-    let binary_path = target_dir.join("debug").join(if cfg!(windows) {
-        "skrills.exe"
-    } else {
-        "skrills"
-    });
-    let cargo_home = std::env::var("CARGO_HOME").unwrap_or_else(|_| {
-        workspace_root
-            .join(".cargo-home")
-            .to_string_lossy()
-            .into_owned()
-    });
-
-    let status = Command::new("cargo")
-        .args(["build", "-p", "skrills", "--features", "subagents"])
-        .env("CARGO_HOME", &cargo_home)
-        .status()
-        .await?;
-    assert!(status.success(), "cargo build failed to produce skrills");
+    let binary_path = ensure_skrills_binary().await?;
 
     // Act
     let mut command = Command::new(&binary_path);
@@ -106,15 +147,23 @@ async fn given_skrills_server_with_subagents_when_executing_run_subagent_then_co
         .spawn()?;
     let mut stderr = stderr;
 
-    let client = match serve_client((), transport).await {
-        Ok(c) => c,
-        Err(e) => {
+    let client = match timeout(Duration::from_secs(5), serve_client((), transport)).await {
+        Ok(Ok(c)) => c,
+        Ok(Err(e)) => {
             if let Some(mut err) = stderr.take() {
                 let mut buf = String::new();
                 let _: std::io::Result<usize> = err.read_to_string(&mut buf).await;
                 panic!("serve_client failed: {e:?}\nstderr:\n{buf}");
             }
             return Err(e.into());
+        }
+        Err(_) => {
+            if let Some(mut err) = stderr.take() {
+                let mut buf = String::new();
+                let _: std::io::Result<usize> = err.read_to_string(&mut buf).await;
+                panic!("serve_client timed out\nstderr:\n{buf}");
+            }
+            anyhow::bail!("serve_client timed out")
         }
     };
     let peer = client.peer().clone();
@@ -142,34 +191,13 @@ async fn given_skrills_server_with_subagents_when_executing_run_subagent_then_co
         .expect("run_id string")
         .to_string();
 
-    // Assert - Poll for completion
-    let mut last_state = String::new();
-    for _ in 0..10 {
-        let status = peer
-            .call_tool(CallToolRequestParam {
-                name: "get-run-status".into(),
-                arguments: Some(json!({ "run_id": run_id }).as_object().cloned().unwrap()),
-            })
-            .await?;
-        let content = status.structured_content.unwrap();
-        last_state = content
-            .get("status")
-            .and_then(|s: &serde_json::Value| s.get("state"))
-            .and_then(|s: &serde_json::Value| s.as_str())
-            .unwrap_or_default()
-            .to_string();
-        if last_state == "Succeeded" {
-            let events = content
-                .get("events")
-                .and_then(|e: &serde_json::Value| e.as_array())
-                .cloned()
-                .unwrap_or_default();
-            assert!(!events.is_empty(), "expected streaming events");
-            break;
-        }
-        sleep(Duration::from_millis(50)).await;
-    }
-    assert_eq!(last_state, "Succeeded", "Subagent execution should succeed");
+    let content = wait_for_run_succeeded(&peer, &run_id, Duration::from_secs(10)).await?;
+    let events = content
+        .get("events")
+        .and_then(|e: &serde_json::Value| e.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(!events.is_empty(), "expected streaming events");
 
     // Verify correct backend was called - wiremock automatically verifies when mounted
     // The test would fail if the endpoint wasn't called since the response would be missing
@@ -191,12 +219,13 @@ async fn given_skrills_server_with_subagents_when_executing_run_subagent_then_co
 #[tokio::test]
 async fn given_server_with_multiple_backends_when_switching_default_then_routes_correctly(
 ) -> anyhow::Result<()> {
+    let _guard = TEST_LOCK.lock().await;
+
     // GIVEN a skrills server with multiple backends configured
     // WHEN switching the default backend
     // THEN subsequent requests should route to the new default
     // Arrange
     let tmp = tempfile::tempdir()?;
-    std::env::set_var("HOME", tmp.path());
     std::fs::create_dir_all(tmp.path().join(".codex/skills"))?;
 
     let server = MockServer::start().await;
@@ -219,46 +248,10 @@ async fn given_server_with_multiple_backends_when_switching_default_then_routes_
         .await;
 
     // Configure both backends
-    std::env::set_var("SKRILLS_CODEX_API_KEY", "test-codex-key");
-    std::env::set_var("SKRILLS_CLAUDE_API_KEY", "test-claude-key");
-    std::env::set_var("SKRILLS_CODEX_BASE_URL", format!("{}/v1/", server.uri()));
-    std::env::set_var("SKRILLS_CLAUDE_BASE_URL", format!("{}/v1/", server.uri()));
-
-    // Build binary
-    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("crate dir")
-        .parent()
-        .expect("workspace root")
-        .to_path_buf();
-    let target_dir = std::env::var("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| workspace_root.join("target"));
-    let cargo_home = std::env::var("CARGO_HOME").unwrap_or_else(|_| {
-        workspace_root
-            .join(".cargo-home")
-            .to_string_lossy()
-            .into_owned()
-    });
-
-    let status = Command::new("cargo")
-        .args(["build", "-p", "skrills", "--features", "subagents"])
-        .env("CARGO_HOME", &cargo_home)
-        .status()
-        .await?;
-    assert!(status.success(), "cargo build failed to produce skrills");
-
-    let binary_path = target_dir.join("debug").join(if cfg!(windows) {
-        "skrills.exe"
-    } else {
-        "skrills"
-    });
+    let binary_path = ensure_skrills_binary().await?;
 
     // Act & Assert
     // Test with Codex as default
-    std::env::set_var("SKRILLS_SUBAGENTS_DEFAULT_BACKEND", "codex");
-
-    // Start server
     let mut command = Command::new(&binary_path);
     command.arg("serve");
     command.env("HOME", tmp.path());
@@ -270,7 +263,7 @@ async fn given_server_with_multiple_backends_when_switching_default_then_routes_
 
     let (transport, _stderr) = TokioChildProcess::builder(command).spawn()?;
 
-    let client = serve_client((), transport).await?;
+    let client = timeout(Duration::from_secs(5), serve_client((), transport)).await??;
     let peer = client.peer().clone();
 
     // Execute request without specifying backend (should use codex)
@@ -291,28 +284,7 @@ async fn given_server_with_multiple_backends_when_switching_default_then_routes_
         .expect("run_id string")
         .to_string();
 
-    // Poll for completion
-    let mut last_state = String::new();
-    for _ in 0..20 {
-        let status = peer
-            .call_tool(CallToolRequestParam {
-                name: "get-run-status".into(),
-                arguments: Some(json!({ "run_id": run_id }).as_object().cloned().unwrap()),
-            })
-            .await?;
-        let content = status.structured_content.unwrap();
-        last_state = content
-            .get("status")
-            .and_then(|s: &serde_json::Value| s.get("state"))
-            .and_then(|s: &serde_json::Value| s.as_str())
-            .unwrap_or_default()
-            .to_string();
-        if last_state == "Succeeded" {
-            break;
-        }
-        sleep(Duration::from_millis(100)).await;
-    }
-    assert_eq!(last_state, "Succeeded", "Subagent execution should succeed");
+    let _content = wait_for_run_succeeded(&peer, &run_id, Duration::from_secs(10)).await?;
 
     // Verify codex was called - wiremock automatically verifies when mounted
     // The test would fail if the endpoint wasn't called since the response would be missing

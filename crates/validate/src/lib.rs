@@ -22,6 +22,9 @@
 //! println!("Codex valid: {}", result.codex_valid);
 //! ```
 
+#![deny(unsafe_code)]
+#![warn(missing_docs)]
+
 pub mod autofix;
 pub mod claude;
 pub mod codex;
@@ -78,17 +81,29 @@ pub fn validate_all(
 ) -> Result<Vec<ValidationResult>, std::io::Error> {
     let mut results = Vec::new();
 
+    let is_hidden_rel_path = |path: &Path| {
+        path.components().any(|c| match c {
+            std::path::Component::Normal(s) => s.to_string_lossy().starts_with('.'),
+            _ => false,
+        })
+    };
+
     for entry in WalkDir::new(dir)
-        .follow_links(true)
+        // Match Codex discovery behavior: skip symlinks.
+        .follow_links(false)
         .into_iter()
         .filter_map(|e| e.ok())
     {
         let path = entry.path();
+        let rel = path.strip_prefix(dir).unwrap_or(path);
+        if is_hidden_rel_path(rel) {
+            continue;
+        }
 
-        // Only process SKILL.md files
+        // Only process SKILL.md files (Codex requires the filename to be exactly SKILL.md).
         if path.is_file() {
             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if filename.eq_ignore_ascii_case("SKILL.md") || filename.ends_with(".skill.md") {
+            if filename == "SKILL.md" {
                 let content = std::fs::read_to_string(path)?;
                 results.push(validate_skill(path, &content, target));
             }
@@ -106,15 +121,22 @@ pub fn is_codex_compatible(content: &str) -> bool {
 /// Summary of validation results.
 #[derive(Debug, Default)]
 pub struct ValidationSummary {
+    /// Total number of skills validated.
     pub total: usize,
+    /// Number of skills valid for Claude Code.
     pub claude_valid: usize,
+    /// Number of skills valid for Codex CLI.
     pub codex_valid: usize,
+    /// Number of skills valid for both.
     pub both_valid: usize,
+    /// Total number of error-level issues.
     pub error_count: usize,
+    /// Total number of warning-level issues.
     pub warning_count: usize,
 }
 
 impl ValidationSummary {
+    /// Create a summary from validation results.
     pub fn from_results(results: &[ValidationResult]) -> Self {
         let mut summary = ValidationSummary {
             total: results.len(),

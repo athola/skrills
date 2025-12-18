@@ -14,6 +14,7 @@ use walkdir::WalkDir;
 
 /// Types of dependencies a skill can have.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum DependencyType {
     /// Reference to a local module file.
     Module,
@@ -53,6 +54,8 @@ pub struct DependencyAnalysis {
     pub missing: Vec<Dependency>,
     /// Total size of local dependencies in bytes.
     pub total_dep_size: u64,
+    /// Warnings encountered during analysis (e.g., permission errors).
+    pub warnings: Vec<String>,
 }
 
 impl DependencyAnalysis {
@@ -86,10 +89,21 @@ pub fn analyze_dependencies(skill_path: &Path, content: &str) -> DependencyAnaly
             analysis.directories.push(subdir.to_string());
 
             // Calculate total size
-            for entry in WalkDir::new(&dir_path).into_iter().filter_map(|e| e.ok()) {
-                if entry.path().is_file() {
-                    if let Ok(meta) = entry.metadata() {
-                        analysis.total_dep_size += meta.len();
+            for entry in WalkDir::new(&dir_path).into_iter() {
+                match entry {
+                    Ok(entry) => {
+                        if entry.path().is_file() {
+                            if let Ok(meta) = entry.metadata() {
+                                analysis.total_dep_size += meta.len();
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        analysis.warnings.push(format!(
+                            "failed to access entry in {}: {}",
+                            dir_path.display(),
+                            e
+                        ));
                     }
                 }
             }
@@ -219,23 +233,43 @@ fn is_asset_extension(path: &str) -> bool {
     extensions.iter().any(|ext| path_lower.ends_with(ext))
 }
 
+/// Result of listing dependency files.
+#[derive(Debug, Clone, Default)]
+pub struct DependencyFileList {
+    /// Files found in dependency directories.
+    pub files: Vec<PathBuf>,
+    /// Warnings encountered (e.g., permission errors).
+    pub warnings: Vec<String>,
+}
+
 /// Get all files in a skill's dependency directories.
-pub fn list_dependency_files(skill_path: &Path) -> Vec<PathBuf> {
+pub fn list_dependency_files(skill_path: &Path) -> DependencyFileList {
     let skill_dir = skill_path.parent().unwrap_or(Path::new("."));
-    let mut files = Vec::new();
+    let mut result = DependencyFileList::default();
 
     for subdir in &["modules", "references", "scripts", "assets"] {
         let dir_path = skill_dir.join(subdir);
         if dir_path.exists() {
-            for entry in WalkDir::new(&dir_path).into_iter().filter_map(|e| e.ok()) {
-                if entry.path().is_file() {
-                    files.push(entry.path().to_path_buf());
+            for entry in WalkDir::new(&dir_path).into_iter() {
+                match entry {
+                    Ok(entry) => {
+                        if entry.path().is_file() {
+                            result.files.push(entry.path().to_path_buf());
+                        }
+                    }
+                    Err(e) => {
+                        result.warnings.push(format!(
+                            "failed to access entry in {}: {}",
+                            dir_path.display(),
+                            e
+                        ));
+                    }
                 }
             }
         }
     }
 
-    files
+    result
 }
 
 #[cfg(test)]

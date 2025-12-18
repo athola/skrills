@@ -1,5 +1,5 @@
 use crate::types::{parse_source_key, DuplicateInfo, SkillMeta, SkillRoot, SkillSource};
-use anyhow::Result;
+use crate::Result;
 use pathdiff::diff_paths;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
@@ -25,7 +25,9 @@ const IGNORE_DIRS: &[&str] = &[
 /// Configuration for skill discovery.
 #[derive(Debug, Clone)]
 pub struct DiscoveryConfig {
+    /// Root directories to scan for skills.
     pub roots: Vec<SkillRoot>,
+    /// Cache time-to-live duration.
     pub cache_ttl_ms: Duration,
     /// Ordered list of skill sources to override default priority.
     pub priority_override: Option<Vec<SkillSource>>,
@@ -169,8 +171,14 @@ fn collect_skills_from(
             .max_depth(MAX_SKILL_DEPTH)
             .into_iter()
             .filter_entry(|e| {
+                if e.file_type().is_symlink() {
+                    return false;
+                }
+                let name = e.file_name().to_string_lossy();
+                if name.starts_with('.') {
+                    return false;
+                }
                 if e.file_type().is_dir() {
-                    let name = e.file_name().to_string_lossy();
                     return !IGNORE_DIRS.iter().any(|d| name == *d);
                 }
                 true
@@ -243,8 +251,14 @@ pub fn discover_agents(roots: &[SkillRoot]) -> Result<Vec<crate::types::AgentMet
             .max_depth(20)
             .into_iter()
             .filter_entry(|e| {
+                if e.file_type().is_symlink() {
+                    return false;
+                }
+                let name = e.file_name().to_string_lossy();
+                if name.starts_with('.') {
+                    return false;
+                }
                 if e.file_type().is_dir() {
-                    let name = e.file_name().to_string_lossy();
                     return !IGNORE_DIRS.iter().any(|d| name == *d);
                 }
                 true

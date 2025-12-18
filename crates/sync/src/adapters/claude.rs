@@ -3,7 +3,8 @@
 use super::traits::{AgentAdapter, FieldSupport};
 use crate::common::{Command, McpServer, Preferences};
 use crate::report::{SkipReason, WriteReport};
-use anyhow::{Context, Result};
+use crate::Result;
+use anyhow::Context;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -40,6 +41,17 @@ impl ClaudeAdapter {
 
     fn settings_path(&self) -> PathBuf {
         self.root.join("settings.json")
+    }
+
+    fn is_hidden_component(name: &str) -> bool {
+        name.starts_with('.')
+    }
+
+    fn is_hidden_path(path: &std::path::Path) -> bool {
+        path.components().any(|c| match c {
+            std::path::Component::Normal(s) => Self::is_hidden_component(&s.to_string_lossy()),
+            _ => false,
+        })
     }
 
     fn hash_content(content: &[u8]) -> String {
@@ -257,9 +269,67 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     fn read_skills(&self) -> Result<Vec<Command>> {
+        let skills_dir = self.skills_dir();
+        if !skills_dir.exists() {
+            return Ok(Vec::new());
+        }
+
         let mut skills = Vec::new();
         let mut seen = HashSet::new();
-        self.collect_commands_from_dir(&self.skills_dir(), &mut seen, &mut skills)?;
+
+        for entry in WalkDir::new(&skills_dir)
+            .min_depth(1)
+            .max_depth(20)
+            .follow_links(false)
+        {
+            let entry = entry?;
+            if entry.file_type().is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            if Self::is_hidden_path(path.strip_prefix(&skills_dir).unwrap_or(path)) {
+                continue;
+            }
+            if !path.is_file() {
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "md") {
+                continue;
+            }
+
+            let is_skill_md = path.file_name().is_some_and(|n| n == "SKILL.md");
+            let name = if is_skill_md {
+                path.parent()
+                    .and_then(|p| p.strip_prefix(&skills_dir).ok())
+                    .and_then(|p| p.to_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("unknown")
+                    .to_string()
+            } else {
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string()
+            };
+
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+
+            let content = fs::read(path)?;
+            let metadata = fs::metadata(path)?;
+            let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            let hash = Self::hash_content(&content);
+
+            skills.push(Command {
+                name,
+                content,
+                source_path: path.to_path_buf(),
+                modified,
+                hash,
+            });
+        }
+
         Ok(skills)
     }
 
@@ -362,7 +432,26 @@ impl AgentAdapter for ClaudeAdapter {
         let mut report = WriteReport::default();
 
         for skill in skills {
-            let path = dir.join(format!("{}.md", skill.name));
+            // Claude is permissive, but writing Codex-style SKILL.md keeps skills portable.
+            let skill_rel_dir = if skill.name.eq_ignore_ascii_case("skill")
+                || skill.name.eq_ignore_ascii_case("skill.md")
+                || skill.name.eq_ignore_ascii_case("SKILL")
+            {
+                skill
+                    .source_path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&skill.name)
+                    .to_string()
+            } else {
+                skill.name.clone()
+            };
+
+            let path = dir.join(&skill_rel_dir).join("SKILL.md");
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
 
             // Check if unchanged
             if path.exists() {
@@ -618,5 +707,40 @@ mod tests {
         let content = fs::read_to_string(&settings_path).unwrap();
         let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(settings["model"].as_str(), Some("claude-3-sonnet-20240229"));
+    }
+
+    #[test]
+    fn write_skills_writes_skill_md_in_directory() {
+        let tmp = tempdir().unwrap();
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+
+        let skill = Command {
+            name: "alpha".to_string(),
+            content: b"---\nname: alpha\ndescription: test\n---\n# Alpha\n".to_vec(),
+            source_path: PathBuf::from("/tmp/alpha.md"),
+            modified: SystemTime::now(),
+            hash: "hash".to_string(),
+        };
+
+        let report = adapter.write_skills(&[skill]).unwrap();
+        assert_eq!(report.written, 1);
+        assert!(tmp.path().join("skills/alpha/SKILL.md").exists());
+    }
+
+    #[test]
+    fn read_skills_uses_parent_directory_name_for_skill_md() {
+        let tmp = tempdir().unwrap();
+        let skills_dir = tmp.path().join("skills/nested/foo");
+        fs::create_dir_all(&skills_dir).unwrap();
+        fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: foo\ndescription: test\n---\n",
+        )
+        .unwrap();
+
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let skills = adapter.read_skills().unwrap();
+        let names: HashSet<_> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains("nested/foo"));
     }
 }

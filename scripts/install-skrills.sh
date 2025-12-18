@@ -281,6 +281,64 @@ warm_cache_snapshot() {
   fi
 }
 
+enable_codex_skills_feature() {
+  # Codex skills are behind the experimental `skills` feature flag in ~/.codex/config.toml.
+  [ "$CLIENT" = "codex" ] || return 0
+
+  mkdir -p "$(dirname "$CONFIG_TOML")"
+  if [ ! -f "$CONFIG_TOML" ]; then
+    return 0
+  fi
+
+  python3 - <<'PY' "$CONFIG_TOML"
+import io, os, sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as f:
+    lines = f.read().splitlines(True)
+
+def is_header(line: str) -> bool:
+    s = line.strip()
+    return s.startswith("[") and s.endswith("]") and not s.startswith("[[")
+
+def header_name(line: str) -> str:
+    return line.strip()[1:-1]
+
+out = []
+in_features = False
+skills_set = False
+
+for i, line in enumerate(lines):
+    if is_header(line):
+        if in_features and not skills_set:
+            out.append("skills = true\n")
+            skills_set = True
+        in_features = (header_name(line) == "features")
+        out.append(line)
+        continue
+    if in_features:
+        stripped = line.strip()
+        if stripped.startswith("skills") and "=" in stripped:
+            out.append("skills = true\n")
+            skills_set = True
+            continue
+    out.append(line)
+
+if not skills_set:
+    if out and not out[-1].endswith("\n"):
+        out[-1] = out[-1] + "\n"
+    if out and not out[-1].endswith("\n\n"):
+        out.append("\n")
+    out.append("[features]\n")
+    out.append("skills = true\n")
+
+new = "".join(out)
+with open(path, "w", encoding="utf-8") as f:
+    f.write(new)
+PY
+  echo "Enabled Codex experimental skills feature in $CONFIG_TOML"
+}
+
 if [ "$UNIVERSAL_ONLY" -eq 1 ]; then
   sync_universal
   exit 0
@@ -416,6 +474,7 @@ args = ["serve"]
 CONFIG
     echo "Created $CONFIG_TOML with skrills MCP server"
   fi
+  enable_codex_skills_feature
 fi
 
 if [ "$CLIENT" = "codex" ]; then

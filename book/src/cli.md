@@ -1,10 +1,10 @@
 # CLI Usage Reference
 
-This section is a reference for the command-line interface (CLI) usage of `skrills`, listing the subcommands and their functions.
+Reference for `skrills` CLI subcommands and usage.
 
 ## `serve`
 
-Starts the MCP server, operating over standard I/O (stdio).
+Starts the MCP server over stdio.
 
 ```bash
 skrills serve [--skill-dir DIR] [--cache-ttl-ms N] [--watch]
@@ -85,10 +85,10 @@ Output includes:
 
 ## `sync`
 
-Copies skills from `~/.claude` into `~/.codex/skills-mirror`.
+Copies skills from `~/.claude` into `~/.codex/skills` (Codex discovery root).
 
 ```bash
-skrills sync [--skip-existing-commands]
+skrills sync
 ```
 
 Honors `SKRILLS_MIRROR_SOURCE` to change the source root.
@@ -148,6 +148,14 @@ Generates and writes the `<available_skills>` XML block into `AGENTS.md`, includ
 skrills sync-agents [--path AGENTS.md]
 ```
 
+### Skill naming caveat
+
+Skills are named from the `name:` field in `SKILL.md` frontmatter. Treat these names as opaque strings: they
+may include punctuation such as `:` for namespacing (for example, `pensive:shared`).
+
+If you’re diffing “skills listed in a session header” vs what exists on disk, don’t parse by splitting on
+`:`. Prefer extracting the `(file: …/SKILL.md)` path, or read the `SKILL.md` frontmatter directly.
+
 ## `mirror`
 
 Mirrors Claude assets (skills, agents, commands, and MCP prefs) into the Codex defaults and refreshes `AGENTS.md`.
@@ -169,7 +177,7 @@ skrills agent <name> [--skill-dir DIR]... [--dry-run]
 
 Use `--dry-run` to print the resolved command without executing it.
 
-When no backend is specified in an agent spec, skrills checks `~/.codex/subagents.toml` for a `default_backend`; if absent it falls back to `SKRILLS_SUBAGENTS_DEFAULT_BACKEND` and defaults to `codex`.
+When no backend is specified in an agent spec, skrills checks `~/.codex/subagents.toml` for a `default_backend`; if absent it uses `SKRILLS_SUBAGENTS_DEFAULT_BACKEND`, defaulting to `codex`.
 
 ## `doctor`
 
@@ -205,7 +213,7 @@ Options:
 
 ## MCP Tools (Client-Facing)
 
-The `skrills` server exposes these tools via the MCP protocol:
+`skrills` exposes these tools via the MCP protocol:
 
 | Tool | Description |
 |------|-------------|
@@ -219,6 +227,10 @@ The `skrills` server exposes these tools via the MCP protocol:
 | `validate-skills` | Validate skills for CLI compatibility |
 | `analyze-skills` | Analyze token usage and dependencies |
 | `skill-metrics` | Aggregate statistics (quality, tokens, dependencies) |
+| `skill-loading-status` | Report skill roots, trace/probe install status, and marker coverage |
+| `enable-skill-trace` | Install trace/probe skills and optionally instrument SKILL.md files with markers |
+| `disable-skill-trace` | Remove trace/probe skill directories (does not remove markers) |
+| `skill-loading-selftest` | Return a one-shot probe line and expected response to confirm skills are loading |
 
 When the `subagents` feature is enabled, these additional tools are available:
 
@@ -227,3 +239,16 @@ When the `subagents` feature is enabled, these additional tools are available:
 | `list-subagents` | List available subagent specifications |
 | `run-subagent` | Execute a subagent with configurable backend |
 | `get-run-status` | Check status of a running subagent |
+
+## Skill loading validation
+
+Use the trace/probe tools when you need a deterministic signal that skills are loading in the current Claude Code or Codex session.
+
+Workflow:
+
+1. Call `enable-skill-trace` (use `dry_run: true` to preview). This installs two debug skills and can instrument skill files by appending `<!-- skrills-skill-id: ... -->` markers (with optional backups).
+2. Restart the session if the client does not hot-reload skills.
+3. Call `skill-loading-selftest` and send the returned `probe_line`. Expect `SKRILLS_PROBE_OK:<token>`.
+4. With tracing enabled and markers present, each assistant response should end with `SKRILLS_SKILLS_LOADED: [...]` and `SKRILLS_SKILLS_USED: [...]`.
+
+Use `skill-loading-status` to confirm which roots were scanned and whether markers are present. Use `disable-skill-trace` to remove the debug skills when finished.

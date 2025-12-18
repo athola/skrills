@@ -34,7 +34,7 @@ When skrills is registered as an MCP server, the following tools are available:
 
 ### Sync Tools
 
-- **`sync-from-claude`**: Copy Claude skills into Codex mirror
+- **`sync-from-claude`**: Copy Claude skills into Codex discovery root (`~/.codex/skills/`)
 - **`sync-skills`**: Sync skills between agents
 - **`sync-commands`**: Sync slash commands
 - **`sync-mcp-servers`**: Sync MCP server configurations

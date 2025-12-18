@@ -97,6 +97,7 @@ pub struct WriteReport {
 /// Complete sync report across all artifact types.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[must_use]
 pub struct SyncReport {
     pub skills: WriteReport,
     pub commands: WriteReport,

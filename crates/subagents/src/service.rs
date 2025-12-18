@@ -11,10 +11,15 @@ use crate::backend::{claude::ClaudeAdapter, codex::CodexAdapter};
 use crate::store::{default_store_path, BackendKind, RunId, RunRequest, RunStore, StateRunStore};
 
 fn backend_from_str(raw: &str) -> BackendKind {
-    match raw.to_ascii_lowercase().as_str() {
-        "codex" | "gpt" | "openai" => BackendKind::Codex,
-        "claude" | "anthropic" => BackendKind::Claude,
-        other => BackendKind::Other(other.to_string()),
+    if raw.eq_ignore_ascii_case("codex")
+        || raw.eq_ignore_ascii_case("gpt")
+        || raw.eq_ignore_ascii_case("openai")
+    {
+        BackendKind::Codex
+    } else if raw.eq_ignore_ascii_case("claude") || raw.eq_ignore_ascii_case("anthropic") {
+        BackendKind::Claude
+    } else {
+        BackendKind::Other(raw.to_string())
     }
 }
 
@@ -267,13 +272,13 @@ impl SubagentService {
             tracing,
         };
         let run_id = adapter.run(request, self.store.clone()).await?;
-        let status = adapter.get_status(run_id, self.store.clone()).await?;
+        let status = adapter.status(run_id, self.store.clone()).await?;
         Ok(CallToolResult {
             content: vec![Content::text(format!("run_id={run_id}"))],
             structured_content: Some(json!({
                 "run_id": run_id,
                 "status": status,
-                "events": self.store.get_run(run_id).await?.map(|r| r.events).unwrap_or_default()
+                "events": self.store.run(run_id).await?.map(|r| r.events).unwrap_or_default()
             })),
             is_error: Some(false),
             meta: None,
@@ -286,13 +291,13 @@ impl SubagentService {
             .get("run_id")
             .ok_or_else(|| anyhow!("run_id is required"))?;
         let run_id = run_id_from_value(run_id_val)?;
-        let status = self.store.get_status(run_id).await?;
+        let status = self.store.status(run_id).await?;
         Ok(CallToolResult {
             content: vec![Content::text("status")],
             structured_content: Some(json!({
                 "run_id": run_id,
                 "status": status,
-                "events": self.store.get_run(run_id).await?.map(|r| r.events).unwrap_or_default()
+                "events": self.store.run(run_id).await?.map(|r| r.events).unwrap_or_default()
             })),
             is_error: Some(false),
             meta: None,
@@ -373,7 +378,7 @@ mod tests {
             .and_then(|v| v.as_str())
             .map(|s| RunId(uuid::Uuid::parse_str(s).unwrap()))
             .unwrap();
-        let status = service.store.get_status(run_id).await.unwrap().unwrap();
+        let status = service.store.status(run_id).await.unwrap().unwrap();
         assert_eq!(status.state, RunState::Running);
     }
 

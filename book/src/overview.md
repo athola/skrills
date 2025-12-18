@@ -27,7 +27,7 @@ Skrills is organized as a Rust workspace with specialized crates:
 Skills are discovered by searching through a prioritized sequence of directories:
 
 1. `~/.codex/skills`
-2. `~/.codex/skills-mirror` (a mirror of Claude skills)
+2. `~/.codex/skills-mirror` (optional/legacy mirror of Claude assets)
 3. `~/.claude/skills`
 4. `~/.agent/skills`
 

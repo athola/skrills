@@ -6,8 +6,27 @@
 //!
 //! Note: Legacy pin/history/autoload persistence was removed in 0.3.1
 //! as skill loading is now handled by Claude/Codex directly.
+//!
+//! # Examples
+//!
+//! ```
+//! use skrills_state::{cache_ttl, ManifestSettings};
+//!
+//! let ttl = cache_ttl(&|| Ok(ManifestSettings::default()));
+//! assert!(ttl.as_millis() > 0);
+//! ```
 
+#![deny(unsafe_code)]
+#![warn(missing_docs)]
+
+/// Error type for state operations.
+pub type Error = anyhow::Error;
+/// Result type for state operations.
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// Environment and configuration utilities.
 pub mod env;
+/// Persistence utilities (currently minimal after 0.3.1 simplification).
 pub mod persistence;
 
 pub use env::{

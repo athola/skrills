@@ -36,10 +36,9 @@ pub fn count_tokens(content: &str) -> TokenBreakdown {
     let mut code_chars = 0usize;
     let mut prose_chars = 0usize;
 
-    let lines: Vec<&str> = content.lines().collect();
     let mut frontmatter_started = false;
 
-    for line in lines {
+    for line in content.lines() {
         let line_len = line.len() + 1; // +1 for newline
 
         // Handle frontmatter delimiters
