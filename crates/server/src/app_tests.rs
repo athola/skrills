@@ -130,8 +130,7 @@ Base skill with no dependencies.
         source: skrills_discovery::SkillSource::Extra(0),
     }];
 
-    let service =
-        SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
+    let service = SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
 
     // Force refresh to build the graph
     service.invalidate_cache().unwrap();
@@ -245,8 +244,7 @@ Base skill.
         source: skrills_discovery::SkillSource::Extra(0),
     }];
 
-    let service =
-        SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
+    let service = SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
 
     // Force refresh to build the graph
     service.invalidate_cache().unwrap();
@@ -327,8 +325,7 @@ Base skill.
         source: skrills_discovery::SkillSource::Extra(0),
     }];
 
-    let service =
-        SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
+    let service = SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
 
     // Test reading without resolve param
     let skill_a_uri = "skill://skrills/extra0/skill-a/SKILL.md";
@@ -425,8 +422,7 @@ Base skill.
         source: skrills_discovery::SkillSource::Extra(0),
     }];
 
-    let service =
-        SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
+    let service = SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
 
     // Test reading with resolve=true
     let skill_a_uri = "skill://skrills/extra0/skill-a/SKILL.md?resolve=true";
@@ -517,8 +513,7 @@ description: Skill B
         source: skrills_discovery::SkillSource::Extra(0),
     }];
 
-    let service =
-        SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
+    let service = SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
 
     // Test reading with resolve=false (explicit)
     let skill_a_uri = "skill://skrills/extra0/skill-a/SKILL.md?resolve=false";
@@ -560,8 +555,7 @@ fn test_parse_uri_with_query() {
     assert!(!resolve);
 
     // Test with resolve shorthand
-    let (base, resolve) =
-        parse_uri_with_query("skill://skrills/extra0/skill-a/SKILL.md?resolve");
+    let (base, resolve) = parse_uri_with_query("skill://skrills/extra0/skill-a/SKILL.md?resolve");
     assert_eq!(base, "skill://skrills/extra0/skill-a/SKILL.md");
     assert!(resolve);
 

@@ -15,12 +15,12 @@ mod commands;
 mod doctor;
 mod handler;
 pub(crate) mod metrics_types;
-mod tool_schemas;
 mod setup;
 mod skill_trace;
 mod sync;
 #[cfg(test)]
 mod test_support;
+mod tool_schemas;
 mod tui;
 
 /// Command-line interface for the server.

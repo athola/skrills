@@ -109,7 +109,9 @@ pub(crate) fn sync_tools() -> Vec<Tool> {
         Tool {
             name: "sync-preferences".into(),
             title: Some("Sync preferences between agents".into()),
-            description: Some("Sync compatible settings/preferences between Claude and Codex.".into()),
+            description: Some(
+                "Sync compatible settings/preferences between Claude and Codex.".into(),
+            ),
             input_schema: sync_schema.clone(),
             output_schema: None,
             annotations: Some(ToolAnnotations::default()),
@@ -131,9 +133,7 @@ pub(crate) fn sync_tools() -> Vec<Tool> {
         Tool {
             name: "sync-status".into(),
             title: Some("Preview sync changes".into()),
-            description: Some(
-                "Show what would be synced without making changes (dry run).".into(),
-            ),
+            description: Some("Show what would be synced without making changes (dry run).".into()),
             input_schema: sync_schema,
             output_schema: None,
             annotations: Some(ToolAnnotations::default()),
