@@ -1370,5 +1370,4 @@ pub fn run() -> Result<()> {
 }
 
 #[cfg(test)]
-#[path = "app_tests.rs"]
 mod tests;
