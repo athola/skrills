@@ -16,8 +16,9 @@
 
 use crate::cli::{Cli, Commands};
 use crate::commands::{
-    handle_agent_command, handle_analyze_command, handle_mirror_command, handle_serve_command,
-    handle_setup_command, handle_sync_agents_command, handle_sync_command, handle_validate_command,
+    handle_agent_command, handle_analyze_command, handle_metrics_command, handle_mirror_command,
+    handle_serve_command, handle_setup_command, handle_sync_agents_command, handle_sync_command,
+    handle_validate_command,
 };
 use crate::discovery::{
     merge_extra_dirs, priority_labels, priority_labels_and_rank_map, read_skill, skill_roots,
@@ -77,6 +78,93 @@ struct SkillCacheSnapshot {
     last_scan: u64,
     skills: Vec<SkillMeta>,
     duplicates: Vec<DuplicateInfo>,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Skill Metrics (Issue #21)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Aggregate statistics about discovered skills.
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillMetrics {
+    /// Total number of discovered skills.
+    pub total_skills: usize,
+    /// Count of skills by source (claude, codex, marketplace, etc.).
+    pub by_source: HashMap<String, usize>,
+    /// Distribution of skills by quality score.
+    pub by_quality: QualityDistribution,
+    /// Dependency graph statistics.
+    pub dependency_stats: DependencyStats,
+    /// Token usage statistics.
+    pub token_stats: TokenStats,
+    /// Optional validation summary (requires extra computation).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation_summary: Option<MetricsValidationSummary>,
+}
+
+/// Distribution of skills by quality score buckets.
+#[derive(Debug, Clone, Serialize)]
+pub struct QualityDistribution {
+    /// Skills with quality >= 0.8.
+    pub high: usize,
+    /// Skills with quality >= 0.5 and < 0.8.
+    pub medium: usize,
+    /// Skills with quality < 0.5.
+    pub low: usize,
+}
+
+/// Statistics about skill dependencies.
+#[derive(Debug, Clone, Serialize)]
+pub struct DependencyStats {
+    /// Total dependency edges across all skills.
+    pub total_dependencies: usize,
+    /// Average dependencies per skill.
+    pub avg_per_skill: f64,
+    /// Skills with no dependencies and no dependents.
+    pub orphan_count: usize,
+    /// Skills with the most dependents (hub skills).
+    pub hub_skills: Vec<HubSkill>,
+}
+
+/// A hub skill with its dependent count.
+#[derive(Debug, Clone, Serialize)]
+pub struct HubSkill {
+    /// Skill URI.
+    pub uri: String,
+    /// Number of skills that depend on this one.
+    pub dependent_count: usize,
+}
+
+/// Token usage statistics.
+#[derive(Debug, Clone, Serialize)]
+pub struct TokenStats {
+    /// Total tokens across all skills.
+    pub total_tokens: usize,
+    /// Average tokens per skill.
+    pub avg_per_skill: usize,
+    /// The skill with the most tokens.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub largest_skill: Option<SkillTokenInfo>,
+}
+
+/// Token info for a single skill.
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillTokenInfo {
+    /// Skill URI.
+    pub uri: String,
+    /// Token count.
+    pub tokens: usize,
+}
+
+/// Validation summary for metrics.
+#[derive(Debug, Clone, Serialize)]
+pub struct MetricsValidationSummary {
+    /// Skills passing validation.
+    pub passing: usize,
+    /// Skills with errors.
+    pub with_errors: usize,
+    /// Skills with warnings only.
+    pub with_warnings: usize,
 }
 
 impl SkillCache {
@@ -569,6 +657,155 @@ impl SkillService {
     pub(crate) fn get_transitive_dependents(&self, uri: &str) -> Result<Vec<String>> {
         let mut cache = self.cache.lock();
         cache.get_transitive_dependents(uri)
+    }
+
+    /// Compute aggregate metrics for all discovered skills.
+    pub(crate) fn compute_metrics(&self, include_validation: bool) -> Result<SkillMetrics> {
+        use skrills_analyze::analyze_skill;
+        use skrills_validate::{validate_skill, ValidationTarget};
+
+        let (skills, _) = self.current_skills_with_dups()?;
+
+        let mut by_source: HashMap<String, usize> = HashMap::new();
+        let mut quality_high = 0usize;
+        let mut quality_medium = 0usize;
+        let mut quality_low = 0usize;
+        let mut total_tokens = 0usize;
+        let mut largest_skill: Option<SkillTokenInfo> = None;
+
+        // Validation counters (only computed if requested)
+        let mut passing = 0usize;
+        let mut with_errors = 0usize;
+        let mut with_warnings = 0usize;
+
+        for meta in &skills {
+            // Count by source
+            *by_source
+                .entry(meta.source.label().to_string())
+                .or_default() += 1;
+
+            // Read skill content
+            let content = match fs::read_to_string(&meta.path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            // Analyze for quality and tokens
+            let analysis = analyze_skill(&meta.path, &content);
+
+            // Quality buckets
+            if analysis.quality_score >= 0.8 {
+                quality_high += 1;
+            } else if analysis.quality_score >= 0.5 {
+                quality_medium += 1;
+            } else {
+                quality_low += 1;
+            }
+
+            // Token stats
+            total_tokens += analysis.tokens.total;
+            let skill_uri = format!("skill://skrills/{}/{}", meta.source.label(), meta.name);
+            if largest_skill.is_none()
+                || analysis.tokens.total > largest_skill.as_ref().unwrap().tokens
+            {
+                largest_skill = Some(SkillTokenInfo {
+                    uri: skill_uri,
+                    tokens: analysis.tokens.total,
+                });
+            }
+
+            // Optional validation
+            if include_validation {
+                let result = validate_skill(&meta.path, &content, ValidationTarget::Both);
+                if result.claude_valid && result.codex_valid {
+                    passing += 1;
+                } else if result.issues.is_empty() {
+                    with_warnings += 1;
+                } else {
+                    with_errors += 1;
+                }
+            }
+        }
+
+        // Compute dependency stats from the graph
+        let cache = self.cache.lock();
+        let dep_graph = &cache.dep_graph;
+        let all_skills: Vec<String> = dep_graph.skills();
+
+        let mut total_dependencies = 0usize;
+        let mut orphan_count = 0usize;
+        let mut hub_counts: Vec<(String, usize)> = Vec::new();
+
+        for skill_uri in &all_skills {
+            let deps = dep_graph.dependencies(skill_uri);
+            let dependents = dep_graph.dependents(skill_uri);
+
+            total_dependencies += deps.len();
+
+            if deps.is_empty() && dependents.is_empty() {
+                orphan_count += 1;
+            }
+
+            if !dependents.is_empty() {
+                hub_counts.push((skill_uri.to_string(), dependents.len()));
+            }
+        }
+
+        // Sort hubs by dependent count (descending) and take top 5
+        hub_counts.sort_by(|a, b| b.1.cmp(&a.1));
+        let hub_skills: Vec<HubSkill> = hub_counts
+            .into_iter()
+            .take(5)
+            .map(|(uri, count)| HubSkill {
+                uri,
+                dependent_count: count,
+            })
+            .collect();
+
+        let skill_count = skills.len();
+        let avg_deps = if skill_count > 0 {
+            total_dependencies as f64 / skill_count as f64
+        } else {
+            0.0
+        };
+
+        let avg_tokens = if skill_count > 0 {
+            total_tokens / skill_count
+        } else {
+            0
+        };
+
+        let validation_summary = if include_validation {
+            Some(MetricsValidationSummary {
+                passing,
+                with_errors,
+                with_warnings,
+            })
+        } else {
+            None
+        };
+
+        Ok(SkillMetrics {
+            total_skills: skill_count,
+            by_source,
+            by_quality: QualityDistribution {
+                high: quality_high,
+                medium: quality_medium,
+                low: quality_low,
+            },
+            dependency_stats: DependencyStats {
+                total_dependencies,
+                avg_per_skill: avg_deps,
+                orphan_count,
+                hub_skills,
+            },
+            token_stats: TokenStats {
+                total_tokens,
+                avg_per_skill: avg_tokens,
+                largest_skill,
+            },
+            validation_summary,
+        })
     }
 
     fn validate_skills_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
@@ -1281,6 +1518,33 @@ impl ServerHandler for SkillService {
                 icons: None,
                 meta: None,
             },
+            Tool {
+                name: "skill-metrics".into(),
+                title: Some("Get skill statistics and metrics".into()),
+                description: Some(
+                    "Returns aggregate statistics about discovered skills including counts, quality distribution, dependency patterns, and token usage.".into(),
+                ),
+                input_schema: std::sync::Arc::new({
+                    let mut schema = JsonMap::new();
+                    schema.insert("type".into(), json!("object"));
+                    schema.insert(
+                        "properties".into(),
+                        json!({
+                            "include_validation": {
+                                "type": "boolean",
+                                "default": false,
+                                "description": "Include validation summary (slower)"
+                            }
+                        }),
+                    );
+                    schema.insert("additionalProperties".into(), json!(false));
+                    schema
+                }),
+                output_schema: None,
+                annotations: Some(ToolAnnotations::default()),
+                icons: None,
+                meta: None,
+            },
         ];
 
         #[cfg(feature = "subagents")]
@@ -1916,6 +2180,29 @@ impl ServerHandler for SkillService {
                             meta: None,
                         })
                     }
+                    "skill-metrics" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+                        let include_validation = args
+                            .get("include_validation")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+
+                        let metrics = self.compute_metrics(include_validation)?;
+
+                        let summary = format!(
+                            "Metrics for {} skills: {} tokens total, {} high quality",
+                            metrics.total_skills,
+                            metrics.token_stats.total_tokens,
+                            metrics.by_quality.high
+                        );
+
+                        Ok(CallToolResult {
+                            content: vec![Content::text(summary)],
+                            structured_content: Some(serde_json::to_value(&metrics)?),
+                            is_error: Some(false),
+                            meta: None,
+                        })
+                    }
                     other => Err(anyhow!("unknown tool {other}")),
                 }
             }()
@@ -2293,6 +2580,11 @@ pub fn run() -> Result<()> {
             min_tokens,
             suggestions,
         } => handle_analyze_command(skill_dirs, format, min_tokens, suggestions),
+        Commands::Metrics {
+            skill_dirs,
+            format,
+            include_validation,
+        } => handle_metrics_command(skill_dirs, format, include_validation),
     }
 }
 

@@ -84,6 +84,7 @@ When running as an MCP server (`skrills serve`), the following tools are availab
 
 - `validate-skills` - Validate skills for CLI compatibility
 - `analyze-skills` - Analyze token usage and dependencies
+- `skill-metrics` - Aggregate statistics (quality, tokens, dependencies)
 - `sync-skills` - Sync skills between Claude and Codex
 - `sync-commands` - Sync slash commands
 - `sync-mcp-servers` - Sync MCP configurations
@@ -94,6 +95,7 @@ When running as an MCP server (`skrills serve`), the following tools are availab
 ## CLI guide (selected)
 - `skrills validate [--target claude|codex|both] [--autofix]` — validate skills for CLI compatibility.
 - `skrills analyze [--min-tokens N] [--suggestions]` — analyze token usage and dependencies.
+- `skrills metrics [--format text|json] [--include-validation]` — aggregate statistics and quality distribution.
 - `skrills sync-all [--from claude|codex] [--skip-existing-commands]` — sync all configurations.
 - `skrills sync-commands [--from claude|codex] [--dry-run] [--skip-existing-commands]` — byte-for-byte command sync.
 - `skrills mirror` — mirror skills/agents/commands/prefs from Claude to Codex.

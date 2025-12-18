@@ -1,6 +1,6 @@
 [package]
 name = "skrills_sync"
-version = "0.3.1"
+version = "0.3.3"
 edition.workspace = true
 
 [dependencies]

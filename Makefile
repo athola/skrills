@@ -28,7 +28,7 @@ define ensure_mdbook
 endef
 
 .PHONY: help fmt lint check test test-unit test-integration test-setup build build-min serve-help \
-	githooks \
+	githooks status install test-coverage security deps-update \
 	demo-fixtures demo-doctor demo-all \
 	demo-setup-claude demo-setup-codex demo-setup-both demo-setup-uninstall \
 	demo-setup-reinstall demo-setup-universal demo-setup-first-run demo-setup-all \
@@ -44,9 +44,12 @@ help:
 	@echo "  test-unit               run unit tests only"
 	@echo "  test-integration        run integration tests only"
 	@echo "  test-setup              run setup module tests"
+	@echo "  test-coverage           run tests with coverage report"
 	@echo "  build                   release build with features"
 	@echo "  build-min               release build without default features"
 	@echo "  serve-help              binary --help smoke check"
+	@echo "  status                  show project status"
+	@echo "  install                 install binary to ~/.cargo/bin"
 	@echo "  githooks                point git core.hooksPath at repo githooks/"
 	@echo "  demo-all                run all CLI demos"
 	@echo "  demo-doctor             demo doctor diagnostics"
@@ -62,6 +65,8 @@ help:
 	@echo "  book-serve              live-reload mdBook on localhost:3000"
 	@echo "  clean                   cargo clean"
 	@echo "  clean-demo              remove demo HOME sandbox"
+	@echo "  security                run cargo audit"
+	@echo "  deps-update             update dependencies"
 	@echo "  ci                      fmt + lint + test"
 
 fmt:
@@ -88,6 +93,15 @@ test-integration:
 test-setup:
 	$(CARGO_CMD) test --package skrills-server --lib setup --all-features
 
+test-coverage:
+	@if command -v cargo-llvm-cov >/dev/null 2>&1; then \
+		$(CARGO_CMD) llvm-cov --workspace --all-features --html; \
+		$(call open_file,$(CURDIR)/target/llvm-cov/html/index.html); \
+	else \
+		echo "cargo-llvm-cov not installed. Run: cargo install cargo-llvm-cov"; \
+		exit 1; \
+	fi
+
 build:
 	$(CARGO_CMD) build --workspace --all-features --release
 
@@ -96,6 +110,18 @@ build-min:
 
 serve-help:
 	$(CARGO_CMD) run --quiet --bin $(BIN) -- --help >/dev/null
+
+status:
+	@echo "=== skrills Status ==="
+	@echo "Version: $$(grep '^version' crates/cli/Cargo.toml | head -1 | cut -d'"' -f2)"
+	@echo "Crates:  $$(ls -d crates/*/ 2>/dev/null | wc -l | tr -d ' ')"
+	@echo "Tests:   $$(find crates -name '*test*.rs' 2>/dev/null | wc -l | tr -d ' ') files"
+	@echo "Docs:    $$(test -d book/book && echo 'built' || echo 'not built')"
+
+install: build
+	@mkdir -p $(HOME)/.cargo/bin
+	@cp $(BIN_PATH) $(HOME)/.cargo/bin/$(BIN)
+	@echo "Installed $(BIN) to ~/.cargo/bin/"
 
 githooks:
 	./scripts/install-git-hooks.sh
@@ -200,3 +226,15 @@ clean-demo:
 ci: fmt lint test
 
 precommit: fmt lint lint-md test
+
+security:
+	@if command -v cargo-audit >/dev/null 2>&1; then \
+		$(CARGO_CMD) audit; \
+	else \
+		echo "cargo-audit not installed. Run: cargo install cargo-audit"; \
+		exit 1; \
+	fi
+
+deps-update:
+	$(CARGO_CMD) update
+	@echo "Dependencies updated. Run 'make test' to verify."

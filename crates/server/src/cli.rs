@@ -180,6 +180,18 @@ pub enum Commands {
         #[arg(long, default_value_t = true)]
         suggestions: bool,
     },
+    /// Shows aggregate statistics about discovered skills.
+    Metrics {
+        /// Skills directory to include (default: all discovered skills).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+        /// Output format: text or json.
+        #[arg(long, default_value = "text")]
+        format: String,
+        /// Include validation summary (slower).
+        #[arg(long)]
+        include_validation: bool,
+    },
     /// Interactive TUI for sync and pin management.
     Tui {
         /// Additional skill directories (repeatable).

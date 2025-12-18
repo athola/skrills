@@ -57,6 +57,32 @@ skrills analyze --suggestions                # Get optimization tips
 skrills analyze --format json                # Machine-readable output
 ```
 
+## `metrics`
+
+Shows aggregate statistics about discovered skills including counts, quality distribution, dependency patterns, and token usage.
+
+```bash
+skrills metrics [OPTIONS]
+```
+
+Options:
+- `--skill-dir <DIR>`: Skills directory to include (default: all discovered skills)
+- `--format <FORMAT>`: Output format: `text` or `json` (default: `text`)
+- `--include-validation`: Include validation summary (slower)
+
+Examples:
+```bash
+skrills metrics                              # Human-readable summary
+skrills metrics --format json                # Machine-readable output
+skrills metrics --include-validation         # Include pass/fail counts
+```
+
+Output includes:
+- Total skill count by source (claude, codex, marketplace)
+- Quality distribution (high/medium/low based on quality scores)
+- Dependency statistics (total edges, orphan count, hub skills)
+- Token usage (total, average, largest skill)
+
 ## `sync`
 
 Copies skills from `~/.claude` into `~/.codex/skills-mirror`.
@@ -192,6 +218,7 @@ The `skrills` server exposes these tools via the MCP protocol:
 | `sync-status` | Preview sync changes (dry run) |
 | `validate-skills` | Validate skills for CLI compatibility |
 | `analyze-skills` | Analyze token usage and dependencies |
+| `skill-metrics` | Aggregate statistics (quality, tokens, dependencies) |
 
 When the `subagents` feature is enabled, these additional tools are available:
 

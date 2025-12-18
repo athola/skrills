@@ -1,5 +1,11 @@
 # Changelog Highlights
 
+## 0.3.3 (2025-12-18)
+
+- **NEW: Metrics Command**: Added `skrills metrics` CLI command and `skill-metrics` MCP tool for aggregate statistics including quality distribution, dependency graphs, and token usage.
+- **NEW: Makefile Targets**: Added `make status`, `make install`, `make test-coverage`, `make security`, and `make deps-update` for developer workflows.
+- **Dependency Graph**: Metrics include hub skill detection and orphan count from the dependency analysis.
+
 ## 0.3.1 (2025-12-13)
 
 - **NEW: Validation Crate** (`skrills-validate`): Validate skills for Claude Code (permissive) and Codex CLI (strict frontmatter requirements). Includes auto-fix capability to add missing frontmatter.

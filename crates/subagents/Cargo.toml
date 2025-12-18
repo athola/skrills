@@ -1,6 +1,6 @@
 [package]
 name = "skrills-subagents"
-version = "0.3.1"
+version = "0.3.3"
 edition = "2021"
 description = "Subagent MCP tools for the skrills server with pluggable backends."
 license = "MIT"
