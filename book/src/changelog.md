@@ -1,11 +1,20 @@
 # Changelog Highlights
 
-## 0.3.2 (2025-12-15)
+## 0.3.3 (2025-12-18)
 
-- **NEW: Dependency Resolution System**: Added comprehensive skill dependency analysis and resolution.
-- **Enhanced Analysis**: Improved token counting accuracy and added dependency graph visualization.
-- **Performance Optimizations**: Optimized skill discovery and caching mechanisms.
-- **Documentation Updates**: Added detailed dependency resolution documentation and ADR.
+- **NEW: Metrics Command**: Added `skrills metrics` CLI command and `skill-metrics` MCP tool for aggregate statistics including quality distribution, dependency graphs, and token usage.
+- **NEW: Makefile Targets**: Added `make status`, `make install`, `make test-coverage`, `make security`, and `make deps-update` for developer workflows.
+- **Dependency Graph**: Metrics include hub skill detection and orphan count from the dependency analysis.
+
+## 0.3.2 (2025-12-17)
+
+- **NEW: Dependency Resolution**: Skill dependency tracking via YAML frontmatter with semver constraints, circular dependency detection, and source pinning.
+- **NEW: Skill Loading Trace**: Diagnostic tools for debugging skill loading (`skill-loading-status`, `skill-loading-selftest`, trace enable/disable).
+- **Dependency Syntax**: Simple, structured, and compact syntax forms for declaring dependencies.
+- **Optional Dependencies**: Configurable behavior for optional dependencies.
+- **Extended Validation**: Dependency-related validation issues in the validate crate.
+- **BREAKING**: rmcp updated to 0.10 (removed deprecated `info()` method).
+- **BREAKING**: `SkillSource` enum now requires wildcard pattern matching.
 
 ## 0.3.1 (2025-12-13)
 

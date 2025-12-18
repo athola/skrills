@@ -37,8 +37,8 @@ endef
 
 # Phony targets: core developer flow
 .PHONY: help fmt lint lint-md check test test-unit test-integration test-setup \
-	build build-min serve-help install status coverage dogfood ci precommit \
-	clean clean-demo githooks require-cargo
+	build build-min serve-help install status coverage test-coverage dogfood ci precommit \
+	clean clean-demo githooks require-cargo security deps-update
 # Phony targets: docs
 .PHONY: docs book book-serve
 # Phony targets: demos
@@ -58,6 +58,7 @@ help:
 	@printf "  %-23s %s\n" "check" "cargo check all targets"
 	@printf "  %-23s %s\n" "test | test-unit | test-integration" "run tests"
 	@printf "  %-23s %s\n" "test-setup" "run setup module tests"
+	@printf "  %-23s %s\n" "test-coverage" "run tests with coverage report"
 	@printf "  %-23s %s\n" "build | build-min" "release builds"
 	@printf "  %-23s %s\n" "install" "install skrills to ~/.cargo/bin"
 	@printf "  %-23s %s\n" "serve-help" "binary --help smoke check"
@@ -67,6 +68,8 @@ help:
 	@printf "  %-23s %s\n" "ci | precommit" "run common pipelines"
 	@printf "  %-23s %s\n" "clean | clean-demo" "clean builds or demo HOME"
 	@printf "  %-23s %s\n" "require-cargo" "guard: ensure cargo is available"
+	@printf "  %-23s %s\n" "security" "run cargo audit"
+	@printf "  %-23s %s\n" "deps-update" "update dependencies"
 	@printf "\nDocs\n"
 	@printf "  %-23s %s\n" "docs" "build rustdoc and open"
 	@printf "  %-23s %s\n" "book | book-serve" "build or serve mdBook"
@@ -95,16 +98,25 @@ check:
 	$(CARGO_CMD) check --workspace --all-targets
 
 test:
-	$(CARGO_CMD) test --workspace --all-features
+	$(CARGO_CMD) test --workspace --all-features -- --test-threads=1
 
 test-unit:
-	$(CARGO_CMD) test --workspace --lib --all-features
+	$(CARGO_CMD) test --workspace --lib --all-features -- --test-threads=1
 
 test-integration:
 	$(CARGO_CMD) test --workspace --test '*' --all-features
 
 test-setup:
 	$(CARGO_CMD) test --package skrills-server --lib setup --all-features
+
+test-coverage:
+	@if command -v cargo-llvm-cov >/dev/null 2>&1; then \
+		$(CARGO_CMD) llvm-cov --workspace --all-features --html; \
+		$(call open_file,$(CURDIR)/target/llvm-cov/html/index.html); \
+	else \
+		echo "cargo-llvm-cov not installed. Run: cargo install cargo-llvm-cov"; \
+		exit 1; \
+	fi
 
 build:
 	$(CARGO_CMD) build --workspace --all-features --release
@@ -115,21 +127,22 @@ build-min:
 serve-help:
 	$(CARGO_CMD) run --quiet --bin $(BIN) -- --help >/dev/null
 
-githooks:
-	./scripts/install-git-hooks.sh
-
-install: build
-	@mkdir -p $(HOME)/.cargo/bin
-	cp $(BIN_PATH) $(HOME)/.cargo/bin/$(BIN)
-	@echo "Installed $(BIN) to $(HOME)/.cargo/bin"
-
 status:
 	@echo "=== Skrills Status ==="
+	@echo "Version: $$(grep '^version' crates/cli/Cargo.toml | head -1 | cut -d'"' -f2)"
 	@echo "Rust: $$(rustc --version)"
 	@echo "Cargo: $$(cargo --version)"
 	@echo "Branch: $$(git rev-parse --abbrev-ref HEAD)"
 	@echo "Commit: $$(git rev-parse --short HEAD)"
 	@echo "Binary: $(BIN_PATH) $$(test -f $(BIN_PATH) && echo '(exists)' || echo '(not built)')"
+
+install: build
+	@mkdir -p $(HOME)/.cargo/bin
+	@cp $(BIN_PATH) $(HOME)/.cargo/bin/$(BIN)
+	@echo "Installed $(BIN) to ~/.cargo/bin/"
+
+githooks:
+	./scripts/install-git-hooks.sh
 
 coverage:
 	$(CARGO_CMD) tarpaulin --workspace --all-features --out Html
@@ -240,3 +253,15 @@ clean-demo:
 ci: fmt lint test
 
 precommit: fmt lint lint-md test
+
+security:
+	@if command -v cargo-audit >/dev/null 2>&1; then \
+		$(CARGO_CMD) audit; \
+	else \
+		echo "cargo-audit not installed. Run: cargo install cargo-audit"; \
+		exit 1; \
+	fi
+
+deps-update:
+	$(CARGO_CMD) update
+	@echo "Dependencies updated. Run 'make test' to verify."

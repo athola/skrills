@@ -57,6 +57,32 @@ skrills analyze --suggestions                # Get optimization tips
 skrills analyze --format json                # Machine-readable output
 ```
 
+## `metrics`
+
+Shows aggregate statistics about discovered skills including counts, quality distribution, dependency patterns, and token usage.
+
+```bash
+skrills metrics [OPTIONS]
+```
+
+Options:
+- `--skill-dir <DIR>`: Skills directory to include (default: all discovered skills)
+- `--format <FORMAT>`: Output format: `text` or `json` (default: `text`)
+- `--include-validation`: Include validation summary (slower)
+
+Examples:
+```bash
+skrills metrics                              # Human-readable summary
+skrills metrics --format json                # Machine-readable output
+skrills metrics --include-validation         # Include pass/fail counts
+```
+
+Output includes:
+- Total skill count by source (claude, codex, marketplace)
+- Quality distribution (high/medium/low based on quality scores)
+- Dependency statistics (total edges, orphan count, hub skills)
+- Token usage (total, average, largest skill)
+
 ## `sync`
 
 Copies skills from `~/.claude` into `~/.codex/skills` (Codex discovery root).
@@ -200,6 +226,7 @@ Options:
 | `sync-status` | Preview sync changes (dry run) |
 | `validate-skills` | Validate skills for CLI compatibility |
 | `analyze-skills` | Analyze token usage and dependencies |
+| `skill-metrics` | Aggregate statistics (quality, tokens, dependencies) |
 | `skill-loading-status` | Report skill roots, trace/probe install status, and marker coverage |
 | `enable-skill-trace` | Install trace/probe skills and optionally instrument SKILL.md files with markers |
 | `disable-skill-trace` | Remove trace/probe skill directories (does not remove markers) |

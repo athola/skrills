@@ -8,14 +8,21 @@
 //! - `sync`: Manages skill synchronization.
 //! - `tui`: Implements the interactive terminal UI.
 
-mod app;
+#![deny(unsafe_code)]
+
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) mod app;
+pub(crate) mod cache;
 mod commands;
 mod doctor;
+mod handler;
+pub(crate) mod metrics_types;
 mod setup;
 mod skill_trace;
 mod sync;
 #[cfg(test)]
 mod test_support;
+mod tool_schemas;
 mod tui;
 
 /// Command-line interface for the server.

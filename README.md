@@ -59,6 +59,8 @@ skrills analyze --min-tokens 1000 --suggestions
 skrills sync-all --from claude --skip-existing-commands
 ```
 
+> **Example plugins**: [claude-night-market](https://github.com/athola/claude-night-market) provides a collection of Claude Code plugins (skills, agents, commands, hooks) that can be synced to Codex using skrills.
+
 ### Start MCP server
 ```bash
 skrills serve
@@ -84,6 +86,7 @@ When running as an MCP server (`skrills serve`), the following tools are availab
 
 - `validate-skills` - Validate skills for CLI compatibility
 - `analyze-skills` - Analyze token usage and dependencies
+- `skill-metrics` - Aggregate statistics (quality, tokens, dependencies)
 - `sync-skills` - Sync skills between Claude and Codex
 - `sync-commands` - Sync slash commands
 - `sync-mcp-servers` - Sync MCP configurations
@@ -98,6 +101,7 @@ When running as an MCP server (`skrills serve`), the following tools are availab
 ## CLI guide (selected)
 - `skrills validate [--target claude|codex|both] [--autofix]` — validate skills for CLI compatibility.
 - `skrills analyze [--min-tokens N] [--suggestions]` — analyze token usage and dependencies.
+- `skrills metrics [--format text|json] [--include-validation]` — aggregate statistics and quality distribution.
 - `skrills sync-all [--from claude|codex] [--skip-existing-commands]` — sync all configurations.
 - `skrills sync-commands [--from claude|codex] [--dry-run] [--skip-existing-commands]` — byte-for-byte command sync.
 - `skrills mirror` — mirror skills/agents/commands/prefs from Claude to Codex.

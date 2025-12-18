@@ -1,11 +1,23 @@
 # Changelog
 
-## 0.3.2 - 2025-12-15
-- **NEW: Dependency Resolution System**: Added comprehensive skill dependency analysis and resolution in `skrills-analyze` crate.
-- **Enhanced Analysis**: Improved token counting accuracy and added dependency graph visualization capabilities.
-- **Performance Optimizations**: Optimized skill discovery and caching mechanisms for faster load times.
-- **Documentation Updates**: Added detailed dependency resolution documentation and ADR for design decisions.
-- **Testing Improvements**: Enhanced test coverage for dependency resolution edge cases.
+## 0.3.3 - 2025-12-18
+- **NEW: Metrics Command**: Added `skrills metrics` CLI command and `skill-metrics` MCP tool for aggregate statistics including quality distribution, dependency graphs, and token usage.
+- **NEW: Dependency Graph**: Added `DependencyGraph` module for skill relationship tracking with transitive resolution and cycle detection.
+- **NEW: Resolve Dependencies Tool**: Added `resolve-dependencies` MCP tool for querying skill dependencies and dependents.
+- **NEW: Dependency Validation**: Added `check_dependencies` flag to `validate-skills` for verifying skill dependencies exist.
+- **NEW: Makefile Targets**: Added `make status`, `make install`, `make test-coverage`, `make security`, and `make deps-update` for developer workflows.
+
+## 0.3.2 - 2025-12-17
+- **NEW: Dependency Resolution System**: Comprehensive skill dependency tracking and resolution via YAML frontmatter.
+- **Dependency Syntax**: Support for simple, structured, and compact syntax forms in frontmatter.
+- **Resolution Engine**: Circular dependency detection, semver version constraints, and source pinning (e.g., `codex:base-skill`).
+- **Optional Dependencies**: Configurable behavior for optional dependencies.
+- **Extended Validation**: Dependency-related validation issues added to the validate crate.
+- **NEW: Skill Loading Trace**: Diagnostic tools (`skill-loading-status`, `enable-skill-trace`, `disable-skill-trace`, `skill-loading-selftest`) for debugging skill loading.
+- **Discovery & Sync Updates**: Updated discovery and sync modules for dependency support.
+- **Documentation**: Added ADR 0002 for dependency resolution architecture and comprehensive docs.
+- **BREAKING**: rmcp updated to 0.10; removed deprecated `info()` method from ServerHandler impl.
+- **BREAKING**: `SkillSource` enum requires wildcard pattern matching due to `#[non_exhaustive]`.
 
 ## 0.3.1 - 2025-12-13
 - **NEW: Validation Crate** (`skrills-validate`): Validate skills for Claude Code (permissive) and Codex CLI (strict frontmatter requirements). Includes auto-fix capability to add missing frontmatter.

@@ -11,6 +11,7 @@ use anyhow::Result;
 /// # Safety
 /// - Alter process-wide signal disposition; call only during single-threaded startup.
 /// - Discard child exit status; downstream waiters must not expect to reap children.
+#[allow(unsafe_code)]
 pub fn ignore_sigchld() -> Result<()> {
     use std::ptr;
     unsafe {
