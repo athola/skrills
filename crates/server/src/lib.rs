@@ -10,7 +10,10 @@
 
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) mod app;
+pub(crate) mod cache;
 mod commands;
+mod handler;
+pub(crate) mod metrics_types;
 mod doctor;
 mod setup;
 mod skill_trace;
