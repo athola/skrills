@@ -59,6 +59,8 @@ skrills analyze --min-tokens 1000 --suggestions
 skrills sync-all --from claude --skip-existing-commands
 ```
 
+> **Example plugins**: [claude-night-market](https://github.com/athola/claude-night-market) provides a collection of Claude Code plugins (skills, agents, commands, hooks) that can be synced to Codex using skrills.
+
 ### Start MCP server
 ```bash
 skrills serve
