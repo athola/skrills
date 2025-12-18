@@ -8,6 +8,8 @@
 //! - `sync`: Manages skill synchronization.
 //! - `tui`: Implements the interactive terminal UI.
 
+#![deny(unsafe_code)]
+
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) mod app;
 pub(crate) mod cache;

@@ -237,8 +237,9 @@ impl SkillService {
             // Token stats
             total_tokens += analysis.tokens.total;
             let skill_uri = format!("skill://skrills/{}/{}", meta.source.label(), meta.name);
-            if largest_skill.is_none()
-                || analysis.tokens.total > largest_skill.as_ref().unwrap().tokens
+            if largest_skill
+                .as_ref()
+                .is_none_or(|s| analysis.tokens.total > s.tokens)
             {
                 largest_skill = Some(SkillTokenInfo {
                     uri: skill_uri,
@@ -525,14 +526,13 @@ impl SkillService {
         });
 
         if check_dependencies {
-            structured
-                .as_object_mut()
-                .unwrap()
-                .insert("check_dependencies".to_string(), json!(true));
-            structured.as_object_mut().unwrap().insert(
-                "total_dependency_issues".to_string(),
-                json!(total_dep_issues),
-            );
+            if let Some(obj) = structured.as_object_mut() {
+                obj.insert("check_dependencies".to_string(), json!(true));
+                obj.insert(
+                    "total_dependency_issues".to_string(),
+                    json!(total_dep_issues),
+                );
+            }
         }
 
         Ok(CallToolResult {
