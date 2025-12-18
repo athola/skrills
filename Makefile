@@ -98,10 +98,10 @@ check:
 	$(CARGO_CMD) check --workspace --all-targets
 
 test:
-	$(CARGO_CMD) test --workspace --all-features
+	$(CARGO_CMD) test --workspace --all-features -- --test-threads=1
 
 test-unit:
-	$(CARGO_CMD) test --workspace --lib --all-features
+	$(CARGO_CMD) test --workspace --lib --all-features -- --test-threads=1
 
 test-integration:
 	$(CARGO_CMD) test --workspace --test '*' --all-features

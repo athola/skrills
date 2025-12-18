@@ -673,16 +673,19 @@ impl SkillService {
         let mut with_warnings = 0usize;
 
         for meta in &skills {
-            // Count by source
+            // Read skill content (before counting to ensure consistent totals)
+            let content = match fs::read_to_string(&meta.path) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(path = %meta.path.display(), error = %e, "Failed to read skill file");
+                    continue;
+                }
+            };
+
+            // Count by source (after successful read for consistent totals)
             *by_source
                 .entry(meta.source.label().to_string())
                 .or_default() += 1;
-
-            // Read skill content
-            let content = match fs::read_to_string(&meta.path) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
 
             // Analyze for quality and tokens
             let analysis = analyze_skill(&meta.path, &content);
@@ -713,10 +716,10 @@ impl SkillService {
                 let result = validate_skill(&meta.path, &content, ValidationTarget::Both);
                 if result.claude_valid && result.codex_valid {
                     passing += 1;
-                } else if result.issues.is_empty() {
-                    with_warnings += 1;
-                } else {
+                } else if result.has_errors() {
                     with_errors += 1;
+                } else {
+                    with_warnings += 1;
                 }
             }
         }

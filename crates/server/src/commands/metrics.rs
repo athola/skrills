@@ -45,16 +45,19 @@ pub(crate) fn handle_metrics_command(
     let mut dep_graph = DependencyGraph::new();
 
     for meta in &skills {
-        // Count by source
+        // Read skill content (before counting to ensure consistent totals)
+        let content = match std::fs::read_to_string(&meta.path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(path = %meta.path.display(), error = %e, "Failed to read skill file");
+                continue;
+            }
+        };
+
+        // Count by source (after successful read for consistent totals)
         *by_source
             .entry(meta.source.label().to_string())
             .or_default() += 1;
-
-        // Read skill content
-        let content = match std::fs::read_to_string(&meta.path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
 
         // Analyze for quality and tokens
         let analysis = analyze_skill(&meta.path, &content);
@@ -73,8 +76,7 @@ pub(crate) fn handle_metrics_command(
         let skill_uri = format!("skill://skrills/{}/{}", meta.source.label(), meta.name);
 
         // Track largest skill
-        if largest_skill.is_none()
-            || analysis.tokens.total > largest_skill.as_ref().unwrap().tokens
+        if largest_skill.is_none() || analysis.tokens.total > largest_skill.as_ref().unwrap().tokens
         {
             largest_skill = Some(SkillTokenInfo {
                 uri: skill_uri.clone(),
@@ -95,10 +97,10 @@ pub(crate) fn handle_metrics_command(
             let result = validate_skill(&meta.path, &content, ValidationTarget::Both);
             if result.claude_valid && result.codex_valid {
                 passing += 1;
-            } else if result.issues.is_empty() {
-                with_warnings += 1;
-            } else {
+            } else if result.has_errors() {
                 with_errors += 1;
+            } else {
+                with_warnings += 1;
             }
         }
     }
@@ -244,12 +246,7 @@ fn print_metrics_human(metrics: &SkillMetrics) {
             .hub_skills
             .iter()
             .take(3)
-            .map(|h| {
-                h.uri
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&h.uri)
-            })
+            .map(|h| h.uri.rsplit('/').next().unwrap_or(&h.uri))
             .collect();
         println!("  Top hubs       {}", hub_names.join(", "));
     }
@@ -333,7 +330,11 @@ A test skill.
         let tmp = tempdir().unwrap();
         let skill_dir = tmp.path().join("skills");
         fs::create_dir_all(&skill_dir).unwrap();
-        create_skill(&skill_dir, "test-skill", &minimal_skill_content("test-skill", "Test"));
+        create_skill(
+            &skill_dir,
+            "test-skill",
+            &minimal_skill_content("test-skill", "Test"),
+        );
 
         // WHEN we run handle_metrics_command with json format
         let result = handle_metrics_command(vec![skill_dir], "json".into(), false);
@@ -348,7 +349,11 @@ A test skill.
         let tmp = tempdir().unwrap();
         let skill_dir = tmp.path().join("skills");
         fs::create_dir_all(&skill_dir).unwrap();
-        create_skill(&skill_dir, "valid-skill", &minimal_skill_content("valid-skill", "Valid skill"));
+        create_skill(
+            &skill_dir,
+            "valid-skill",
+            &minimal_skill_content("valid-skill", "Valid skill"),
+        );
 
         // WHEN we run handle_metrics_command with validation enabled
         let result = handle_metrics_command(vec![skill_dir], "text".into(), true);
@@ -386,7 +391,11 @@ skill(high-quality)
         create_skill(&skill_dir, "high-quality", high_quality);
 
         // Medium quality skill
-        create_skill(&skill_dir, "medium-skill", &minimal_skill_content("medium-skill", "Medium"));
+        create_skill(
+            &skill_dir,
+            "medium-skill",
+            &minimal_skill_content("medium-skill", "Medium"),
+        );
 
         // Low quality skill (minimal content)
         let low_quality = "# Minimal\nShort.";
