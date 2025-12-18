@@ -12,9 +12,10 @@
 pub(crate) mod app;
 pub(crate) mod cache;
 mod commands;
+mod doctor;
 mod handler;
 pub(crate) mod metrics_types;
-mod doctor;
+mod tool_schemas;
 mod setup;
 mod skill_trace;
 mod sync;
