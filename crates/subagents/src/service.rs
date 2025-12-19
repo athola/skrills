@@ -91,7 +91,8 @@ impl SubagentService {
             "required": ["prompt"],
             "properties": {
                 "prompt": {"type": "string", "description": "User instruction"},
-                "backend": {"type": "string", "description": "codex|claude|other"},
+                "agent_id": {"type": "string", "description": "Agent name to run (from list-agents). When specified, routes to appropriate execution path based on agent capabilities."},
+                "backend": {"type": "string", "description": "codex|claude|other (ignored if agent_id is specified)"},
                 "template_id": {"type": "string"},
                 "output_schema": {"type": "object"},
                 "tracing": {"type": "boolean"},
@@ -317,10 +318,7 @@ impl SubagentService {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("prompt is required"))?
             .to_string();
-        let backend = args
-            .get("backend")
-            .and_then(|v| v.as_str())
-            .map(backend_from_str);
+        let agent_id = args.get("agent_id").and_then(|v| v.as_str());
         let template_id = args
             .get("template_id")
             .and_then(|v| v.as_str())
@@ -335,7 +333,18 @@ impl SubagentService {
             .and_then(|v| v.as_bool())
             .unwrap_or(async_mode);
 
-        let adapter = self.adapter_for(backend)?;
+        // Smart routing: if agent_id is specified, use agent-based routing
+        let adapter = if let Some(agent_name) = agent_id {
+            self.route_for_agent(agent_name)?
+        } else {
+            // Fallback: no agent_id, use backend from args or default
+            let backend = args
+                .get("backend")
+                .and_then(|v| v.as_str())
+                .map(backend_from_str);
+            self.adapter_for(backend)?
+        };
+
         let request = RunRequest {
             backend: adapter.backend(),
             prompt,
@@ -356,6 +365,60 @@ impl SubagentService {
             is_error: Some(false),
             meta: None,
         })
+    }
+
+    /// Route to appropriate adapter based on agent configuration.
+    ///
+    /// Returns:
+    /// - API adapter if agent doesn't require tools
+    /// - Error if agent requires CLI (tools present) - CLI execution not yet implemented
+    /// - Error if agent not found
+    fn route_for_agent(&self, agent_name: &str) -> Result<Arc<dyn BackendAdapter>> {
+        let agent = self
+            .registry
+            .get(agent_name)
+            .ok_or_else(|| anyhow!("agent not found: {}", agent_name))?;
+
+        // Check if agent requires CLI execution (has tools)
+        let requires_cli = agent.config.tools.as_ref().is_some_and(|t| !t.is_empty());
+
+        if requires_cli {
+            // CLI execution is not yet implemented (Task 5)
+            return Err(anyhow!(
+                "CLI execution not yet implemented for agent '{}' (requires tools: {:?})",
+                agent_name,
+                agent.config.tools
+            ));
+        }
+
+        // Agent doesn't require tools - use API adapter
+        // Determine which API backend to use based on agent's model
+        let backend = self.backend_for_model(agent.config.model.as_deref());
+        self.adapter_for(Some(backend))
+    }
+
+    /// Determine the backend kind based on the model name.
+    fn backend_for_model(&self, model: Option<&str>) -> BackendKind {
+        match model {
+            Some(m)
+                if m.contains("claude")
+                    || m.contains("sonnet")
+                    || m.contains("opus")
+                    || m.contains("haiku") =>
+            {
+                BackendKind::Claude
+            }
+            Some(m)
+                if m.contains("gpt")
+                    || m.contains("codex")
+                    || m.contains("o1")
+                    || m.contains("o3") =>
+            {
+                BackendKind::Codex
+            }
+            // Default to the service's default backend
+            _ => self.default_backend.clone(),
+        }
     }
 
     async fn handle_status(&self, args: Option<&JsonMap<String, Value>>) -> Result<CallToolResult> {
@@ -676,6 +739,258 @@ Content."#,
             .handle_call("run_subagent", args.as_ref())
             .await
             .unwrap();
+        assert!(result.structured_content.is_some());
+    }
+
+    // =============================================================
+    // Tests for smart routing (Task 4)
+    // =============================================================
+
+    #[tokio::test]
+    async fn run_subagent_tool_schema_includes_agent_id() {
+        let service =
+            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        let tools = service.tools();
+
+        // Check run-subagent
+        let run_tool = tools.iter().find(|t| t.name.as_ref() == "run-subagent");
+        assert!(run_tool.is_some(), "run-subagent tool should exist");
+
+        let schema = run_tool.unwrap().input_schema.as_ref();
+        let props = schema.get("properties").expect("should have properties");
+        assert!(
+            props.get("agent_id").is_some(),
+            "run-subagent should have agent_id property"
+        );
+
+        // Check run-subagent-async
+        let async_tool = tools
+            .iter()
+            .find(|t| t.name.as_ref() == "run-subagent-async");
+        assert!(async_tool.is_some(), "run-subagent-async tool should exist");
+
+        let async_schema = async_tool.unwrap().input_schema.as_ref();
+        let async_props = async_schema
+            .get("properties")
+            .expect("should have properties");
+        assert!(
+            async_props.get("agent_id").is_some(),
+            "run-subagent-async should have agent_id property"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_without_agent_id_uses_default_backend() {
+        let service =
+            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        let args = json!({"prompt": "hi"}).as_object().cloned();
+        let result = service.handle_run(false, args.as_ref()).await.unwrap();
+
+        // Should succeed using default backend (Codex)
+        assert!(result.structured_content.is_some());
+        let content = result.structured_content.unwrap();
+        assert!(content.get("run_id").is_some());
+    }
+
+    #[tokio::test]
+    async fn run_with_agent_id_no_tools_routes_to_api() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path();
+
+        // Create an agent without tools (API-capable)
+        create_agent_file(
+            &home.join(".codex"),
+            "api-agent.md",
+            r#"---
+name: api-agent
+description: An agent without tools
+model: gpt-4
+---
+
+You are an API agent."#,
+        );
+
+        let roots = vec![SkillRoot {
+            root: home.join(".codex/agents"),
+            source: SkillSource::Codex,
+        }];
+
+        let registry = Arc::new(AgentRegistry::discover_from_roots(&roots).unwrap());
+        let service = SubagentService::with_store_and_registry(
+            Arc::new(MemRunStore::new()),
+            BackendKind::Codex,
+            registry,
+        )
+        .unwrap();
+
+        let args = json!({"prompt": "hi", "agent_id": "api-agent"})
+            .as_object()
+            .cloned();
+        let result = service.handle_run(false, args.as_ref()).await.unwrap();
+
+        // Should succeed - routed to API adapter
+        assert!(result.structured_content.is_some());
+        let content = result.structured_content.unwrap();
+        assert!(content.get("run_id").is_some());
+    }
+
+    #[tokio::test]
+    async fn run_with_agent_id_with_tools_errors_cli_not_implemented() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path();
+
+        // Create an agent WITH tools (requires CLI)
+        create_agent_file(
+            &home.join(".codex"),
+            "cli-agent.md",
+            r#"---
+name: cli-agent
+description: An agent with tools
+tools: Read, Bash, Glob
+model: sonnet
+---
+
+You are a CLI agent."#,
+        );
+
+        let roots = vec![SkillRoot {
+            root: home.join(".codex/agents"),
+            source: SkillSource::Codex,
+        }];
+
+        let registry = Arc::new(AgentRegistry::discover_from_roots(&roots).unwrap());
+        let service = SubagentService::with_store_and_registry(
+            Arc::new(MemRunStore::new()),
+            BackendKind::Codex,
+            registry,
+        )
+        .unwrap();
+
+        let args = json!({"prompt": "hi", "agent_id": "cli-agent"})
+            .as_object()
+            .cloned();
+        let result = service.handle_run(false, args.as_ref()).await;
+
+        // Should error because CLI execution is not yet implemented
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("CLI execution not yet implemented"),
+            "error should mention CLI not implemented: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn run_with_nonexistent_agent_id_errors() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path();
+
+        let roots = vec![SkillRoot {
+            root: home.join(".codex/agents"),
+            source: SkillSource::Codex,
+        }];
+
+        let registry = Arc::new(AgentRegistry::discover_from_roots(&roots).unwrap());
+        let service = SubagentService::with_store_and_registry(
+            Arc::new(MemRunStore::new()),
+            BackendKind::Codex,
+            registry,
+        )
+        .unwrap();
+
+        let args = json!({"prompt": "hi", "agent_id": "nonexistent-agent"})
+            .as_object()
+            .cloned();
+        let result = service.handle_run(false, args.as_ref()).await;
+
+        // Should error because agent doesn't exist
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("agent not found"),
+            "error should mention agent not found: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn run_with_agent_id_ignores_backend_param() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path();
+
+        // Create an agent without tools
+        create_agent_file(
+            &home.join(".codex"),
+            "my-agent.md",
+            r#"---
+name: my-agent
+description: Test agent
+model: claude
+---
+
+Content."#,
+        );
+
+        let roots = vec![SkillRoot {
+            root: home.join(".codex/agents"),
+            source: SkillSource::Codex,
+        }];
+
+        let registry = Arc::new(AgentRegistry::discover_from_roots(&roots).unwrap());
+        let service = SubagentService::with_store_and_registry(
+            Arc::new(MemRunStore::new()),
+            BackendKind::Codex,
+            registry,
+        )
+        .unwrap();
+
+        // Even with explicit backend=codex, agent_id takes precedence
+        let args = json!({"prompt": "hi", "agent_id": "my-agent", "backend": "codex"})
+            .as_object()
+            .cloned();
+        let result = service.handle_run(false, args.as_ref()).await.unwrap();
+
+        // Should succeed - agent_id route takes priority
+        assert!(result.structured_content.is_some());
+    }
+
+    #[tokio::test]
+    async fn run_async_with_agent_id_routes_correctly() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path();
+
+        create_agent_file(
+            &home.join(".codex"),
+            "async-agent.md",
+            r#"---
+name: async-agent
+description: An async-capable agent
+---
+
+Content."#,
+        );
+
+        let roots = vec![SkillRoot {
+            root: home.join(".codex/agents"),
+            source: SkillSource::Codex,
+        }];
+
+        let registry = Arc::new(AgentRegistry::discover_from_roots(&roots).unwrap());
+        let service = SubagentService::with_store_and_registry(
+            Arc::new(MemRunStore::new()),
+            BackendKind::Codex,
+            registry,
+        )
+        .unwrap();
+
+        // Test run-subagent-async with agent_id
+        let args = json!({"prompt": "hi", "agent_id": "async-agent"})
+            .as_object()
+            .cloned();
+        let result = service.handle_run(true, args.as_ref()).await.unwrap();
+
         assert!(result.structured_content.is_some());
     }
 }
