@@ -2083,6 +2083,7 @@ version = "0.3.4"
 dependencies = [
  "anyhow",
  "async-trait",
+ "dirs",
  "futures",
  "parking_lot",
  "regex",
@@ -2090,6 +2091,7 @@ dependencies = [
  "rmcp",
  "serde",
  "serde_json",
+ "skrills-discovery",
  "skrills-state",
  "tempfile",
  "thiserror",

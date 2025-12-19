@@ -7,9 +7,11 @@
 #![deny(unsafe_code)]
 
 pub mod backend;
+pub mod registry;
 pub mod service;
 pub mod store;
 
+pub use registry::{AgentRegistry, CachedAgent};
 pub use service::SubagentService;
 pub use store::{
     BackendKind, RunEvent, RunId, RunRecord, RunRequest, RunState, RunStatus, RunStore,
