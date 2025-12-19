@@ -93,6 +93,7 @@ When running as an MCP server (`skrills serve`), the following tools are availab
 - `sync-preferences` - Sync preferences
 - `sync-all` - Sync everything
 - `sync-status` - Preview sync changes (dry run)
+- `recommend-skills` - Suggest related skills based on dependency relationships
 - `skill-loading-status` - Report skill roots, trace/probe install status, and marker coverage
 - `enable-skill-trace` - Install trace/probe skills and optionally instrument SKILL.md files with markers
 - `disable-skill-trace` - Remove trace/probe skill directories (does not remove markers)
@@ -102,6 +103,7 @@ When running as an MCP server (`skrills serve`), the following tools are availab
 - `skrills validate [--target claude|codex|both] [--autofix]` — validate skills for CLI compatibility.
 - `skrills analyze [--min-tokens N] [--suggestions]` — analyze token usage and dependencies.
 - `skrills metrics [--format text|json] [--include-validation]` — aggregate statistics and quality distribution.
+- `skrills recommend <uri> [--limit N] [--include-quality]` — suggest related skills based on dependencies.
 - `skrills sync-all [--from claude|codex] [--skip-existing-commands]` — sync all configurations.
 - `skrills sync-commands [--from claude|codex] [--dry-run] [--skip-existing-commands]` — byte-for-byte command sync.
 - `skrills mirror` — mirror skills/agents/commands/prefs from Claude to Codex.

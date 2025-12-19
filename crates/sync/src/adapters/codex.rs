@@ -161,11 +161,9 @@ impl CodexAdapter {
     }
 }
 
-impl Default for CodexAdapter {
-    fn default() -> Self {
-        Self::new().expect("Failed to create CodexAdapter")
-    }
-}
+// Note: We intentionally do not implement Default for CodexAdapter because
+// construction requires home directory resolution which can fail. Use
+// CodexAdapter::new() or CodexAdapter::with_root() instead.
 
 impl AgentAdapter for CodexAdapter {
     fn name(&self) -> &str {

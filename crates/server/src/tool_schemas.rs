@@ -266,6 +266,48 @@ pub(crate) fn dependency_tools() -> Vec<Tool> {
     }]
 }
 
+/// Returns recommendation tools.
+///
+/// Tools: recommend-skills
+pub(crate) fn recommend_tools() -> Vec<Tool> {
+    vec![Tool {
+        name: "recommend-skills".into(),
+        title: Some("Get skill recommendations".into()),
+        description: Some(
+            "Recommends related skills based on dependency relationships. Given a skill URI, suggests dependencies, dependents, and sibling skills (those sharing common dependencies).".into(),
+        ),
+        input_schema: Arc::new({
+            let mut schema = JsonMap::new();
+            schema.insert("type".into(), json!("object"));
+            schema.insert(
+                "properties".into(),
+                json!({
+                    "uri": {
+                        "type": "string",
+                        "description": "Skill URI to get recommendations for (e.g., skill://skrills/user/my-skill)"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 10,
+                        "description": "Maximum number of recommendations to return"
+                    },
+                    "include_quality": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Include quality scores in recommendations"
+                    }
+                }),
+            );
+            schema.insert("required".into(), json!(["uri"]));
+            schema
+        }),
+        output_schema: None,
+        annotations: Some(ToolAnnotations::default()),
+        icons: None,
+        meta: None,
+    }]
+}
+
 /// Returns metrics tools.
 ///
 /// Tools: skill-metrics
@@ -420,6 +462,7 @@ pub(crate) fn all_tools() -> Vec<Tool> {
     tools.extend(sync_tools());
     tools.extend(validation_tools());
     tools.extend(dependency_tools());
+    tools.extend(recommend_tools());
     tools.extend(metrics_tools());
     tools.extend(trace_tools());
     tools
@@ -432,8 +475,13 @@ mod tests {
     #[test]
     fn test_all_tools_returns_expected_count() {
         let tools = all_tools();
-        // 7 sync + 2 validation + 1 dependency + 1 metrics + 4 trace = 15 tools
-        assert_eq!(tools.len(), 15);
+        // 7 sync + 2 validation + 1 dependency + 1 recommend + 1 metrics + 4 trace = 16 tools
+        assert_eq!(tools.len(), 16);
+    }
+
+    #[test]
+    fn test_recommend_tools_count() {
+        assert_eq!(recommend_tools().len(), 1);
     }
 
     #[test]

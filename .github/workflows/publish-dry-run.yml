@@ -8,34 +8,56 @@ on:
       - "crates/**/Cargo.toml"
       - ".github/workflows/publish-dry-run.yml"
       - ".github/workflows/release.yml"
+      - "scripts/publish_crates.sh"
 
 jobs:
   publish-dry-run:
-    name: Dry-run cargo publish (dependency order)
+    name: Dry-run cargo publish (all crates)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Package/build crates (dry-run)
+      - name: Verify crate packaging (dry-run)
         run: |
           set -euo pipefail
 
-          run_pkg() {
+          # List files that would be included in the package
+          # This validates include/exclude patterns without requiring
+          # dependencies to exist on crates.io
+          list_pkg() {
             crate="$1"
-            echo "::group::package $crate"
-            cargo package -p "$crate"
+            echo "::group::cargo package --list -p $crate"
+            cargo package -p "$crate" --list --allow-dirty
             echo "::endgroup::"
           }
 
-          # Package leaf crates; build dependents to avoid registry lookup.
-          run_pkg skrills-state
-          run_pkg skrills-discovery
+          # Full package validation (only for crates already on crates.io)
+          full_pkg() {
+            crate="$1"
+            echo "::group::cargo package -p $crate"
+            cargo package -p "$crate" --allow-dirty
+            echo "::endgroup::"
+          }
 
-          echo "::group::check skrills-server"
-          cargo check -p skrills-server
+          # Verify file inclusion for all crates
+          echo "=== Verifying package file inclusion ==="
+          for crate in skrills-validate skrills-state skrills-discovery \
+                       skrills_sync skrills-subagents skrills-analyze \
+                       skrills-server skrills; do
+            list_pkg "$crate"
+          done
+
+          # Full package validation only for crates already on crates.io
+          # (their dependencies are resolvable)
+          echo "=== Full package validation for published crates ==="
+          full_pkg skrills-state
+          full_pkg skrills-discovery
+
+          # Verify all crates compile
+          echo "=== Verifying compilation ==="
+          echo "::group::cargo check --workspace"
+          cargo check --workspace
           echo "::endgroup::"
 
-          echo "::group::check skrills (cli)"
-          cargo check -p skrills
-          echo "::endgroup::"
+          echo "[OK] All crate packaging checks passed"

@@ -1,6 +1,6 @@
 [package]
 name = "skrills-subagents"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2021"
 description = "Subagent MCP tools for the skrills server with pluggable backends."
 license = "MIT"
@@ -21,7 +21,7 @@ thiserror.workspace = true
 tempfile.workspace = true
 parking_lot.workspace = true
 
-skrills-state = { path = "../state", version = "0.3.2" }
+skrills-state = { path = "../state", version = "0.3.4" }
 
 [dev-dependencies]
 wiremock = "0.6"

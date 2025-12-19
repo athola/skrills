@@ -574,6 +574,7 @@ fn test_parse_uri_with_query() {
 
 #[test]
 fn validate_skills_tool_dependency_validation() {
+    let _guard = crate::test_support::env_guard();
     let temp = tempdir().unwrap();
     let skill_dir = temp.path().join("skills");
     std::fs::create_dir_all(&skill_dir).unwrap();
@@ -690,6 +691,298 @@ This skill references:
         Some(val) => std::env::set_var("HOME", val),
         None => std::env::remove_var("HOME"),
     }
+}
+
+/// Tests for recommend_skills method - URI validation
+/// GIVEN a SkillService with valid skills
+/// WHEN recommend_skills is called with a non-existent URI
+/// THEN it should return an error indicating the skill was not found
+#[test]
+fn test_recommend_skills_uri_not_found_returns_error() {
+    use skrills_discovery::SkillRoot;
+
+    let temp = tempdir().unwrap();
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).unwrap();
+
+    // Create a valid skill
+    let skill_a_dir = skills_dir.join("skill-a");
+    fs::create_dir_all(&skill_a_dir).unwrap();
+    fs::write(
+        skill_a_dir.join("SKILL.md"),
+        r#"---
+name: skill-a
+description: Skill A
+---
+# Skill A
+"#,
+    )
+    .unwrap();
+
+    let roots = vec![SkillRoot {
+        root: skills_dir.clone(),
+        source: skrills_discovery::SkillSource::Extra(0),
+    }];
+
+    let service = SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
+    service.invalidate_cache().unwrap();
+
+    // Try to get recommendations for non-existent skill
+    let result = service.recommend_skills("skill://skrills/extra0/nonexistent/SKILL.md", 10, false);
+
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("Skill not found"),
+        "Expected 'Skill not found' error, got: {}",
+        err_msg
+    );
+}
+
+/// Tests for recommend_skills method - basic functionality
+/// GIVEN a SkillService with skills that have dependencies
+/// WHEN recommend_skills is called for a skill with dependencies
+/// THEN it should return recommendations including dependencies, dependents, and siblings
+#[test]
+fn test_recommend_skills_returns_dependencies_and_dependents() {
+    use skrills_discovery::SkillRoot;
+
+    let temp = tempdir().unwrap();
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).unwrap();
+
+    // Create skill A (depends on B)
+    let skill_a_dir = skills_dir.join("skill-a");
+    fs::create_dir_all(&skill_a_dir).unwrap();
+    fs::write(
+        skill_a_dir.join("SKILL.md"),
+        r#"---
+name: skill-a
+description: Skill A depends on B
+---
+# Skill A
+See [skill-b](../skill-b/SKILL.md).
+"#,
+    )
+    .unwrap();
+
+    // Create skill B (depends on C)
+    let skill_b_dir = skills_dir.join("skill-b");
+    fs::create_dir_all(&skill_b_dir).unwrap();
+    fs::write(
+        skill_b_dir.join("SKILL.md"),
+        r#"---
+name: skill-b
+description: Skill B depends on C
+---
+# Skill B
+Uses [skill-c](../skill-c/SKILL.md).
+"#,
+    )
+    .unwrap();
+
+    // Create skill C (no dependencies)
+    let skill_c_dir = skills_dir.join("skill-c");
+    fs::create_dir_all(&skill_c_dir).unwrap();
+    fs::write(
+        skill_c_dir.join("SKILL.md"),
+        r#"---
+name: skill-c
+description: Skill C
+---
+# Skill C
+"#,
+    )
+    .unwrap();
+
+    let roots = vec![SkillRoot {
+        root: skills_dir.clone(),
+        source: skrills_discovery::SkillSource::Extra(0),
+    }];
+
+    let service = SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
+    service.invalidate_cache().unwrap();
+
+    // Get recommendations for skill-b (has both dependency and dependent)
+    let result = service
+        .recommend_skills("skill://skrills/extra0/skill-b/SKILL.md", 10, false)
+        .unwrap();
+
+    assert_eq!(result.source_uri, "skill://skrills/extra0/skill-b/SKILL.md");
+
+    // Should have skill-c as dependency (base score 3.0)
+    let deps: Vec<_> = result
+        .recommendations
+        .iter()
+        .filter(|r| matches!(r.relationship, RecommendationRelationship::Dependency))
+        .collect();
+    assert!(!deps.is_empty(), "Expected at least one dependency");
+
+    // Should have skill-a as dependent (base score 2.0)
+    let dependents: Vec<_> = result
+        .recommendations
+        .iter()
+        .filter(|r| matches!(r.relationship, RecommendationRelationship::Dependent))
+        .collect();
+    assert!(!dependents.is_empty(), "Expected at least one dependent");
+}
+
+/// Tests for recommend_skills method - quality scoring
+/// GIVEN a SkillService with skills
+/// WHEN recommend_skills is called with include_quality=true
+/// THEN it should include quality scores in recommendations
+#[test]
+fn test_recommend_skills_includes_quality_scores_when_requested() {
+    use skrills_discovery::SkillRoot;
+
+    let temp = tempdir().unwrap();
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).unwrap();
+
+    // Create skill A (depends on B)
+    let skill_a_dir = skills_dir.join("skill-a");
+    fs::create_dir_all(&skill_a_dir).unwrap();
+    fs::write(
+        skill_a_dir.join("SKILL.md"),
+        r#"---
+name: skill-a
+description: A high-quality skill with proper documentation
+---
+# Skill A
+
+This is a well-documented skill that follows best practices.
+
+See [skill-b](../skill-b/SKILL.md) for more.
+"#,
+    )
+    .unwrap();
+
+    // Create skill B
+    let skill_b_dir = skills_dir.join("skill-b");
+    fs::create_dir_all(&skill_b_dir).unwrap();
+    fs::write(
+        skill_b_dir.join("SKILL.md"),
+        r#"---
+name: skill-b
+description: Another well-documented skill
+---
+# Skill B
+
+This skill is also well-documented.
+"#,
+    )
+    .unwrap();
+
+    let roots = vec![SkillRoot {
+        root: skills_dir.clone(),
+        source: skrills_discovery::SkillSource::Extra(0),
+    }];
+
+    let service = SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
+    service.invalidate_cache().unwrap();
+
+    // Get recommendations with quality scoring
+    let result = service
+        .recommend_skills("skill://skrills/extra0/skill-a/SKILL.md", 10, true)
+        .unwrap();
+
+    // Should have quality scores for dependencies
+    for rec in &result.recommendations {
+        if matches!(rec.relationship, RecommendationRelationship::Dependency) {
+            assert!(
+                rec.quality_score.is_some(),
+                "Expected quality_score for dependency, got None"
+            );
+            // Score should include quality bonus (base 3.0 + quality)
+            assert!(
+                rec.score > 3.0,
+                "Expected score > 3.0 with quality bonus, got {}",
+                rec.score
+            );
+        }
+    }
+}
+
+/// Tests for recommend_skills method - sibling detection
+/// GIVEN a SkillService with skills that share common dependencies
+/// WHEN recommend_skills is called for a skill
+/// THEN it should include sibling skills in recommendations
+#[test]
+fn test_recommend_skills_finds_siblings_with_shared_dependencies() {
+    use skrills_discovery::SkillRoot;
+
+    let temp = tempdir().unwrap();
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).unwrap();
+
+    // Create common dependency (skill-d)
+    let skill_d_dir = skills_dir.join("skill-d");
+    fs::create_dir_all(&skill_d_dir).unwrap();
+    fs::write(
+        skill_d_dir.join("SKILL.md"),
+        r#"---
+name: skill-d
+description: Common dependency
+---
+# Skill D
+"#,
+    )
+    .unwrap();
+
+    // Create skill A (depends on D)
+    let skill_a_dir = skills_dir.join("skill-a");
+    fs::create_dir_all(&skill_a_dir).unwrap();
+    fs::write(
+        skill_a_dir.join("SKILL.md"),
+        r#"---
+name: skill-a
+description: Skill A
+---
+# Skill A
+Uses [skill-d](../skill-d/SKILL.md).
+"#,
+    )
+    .unwrap();
+
+    // Create skill B (also depends on D - making it a sibling of A)
+    let skill_b_dir = skills_dir.join("skill-b");
+    fs::create_dir_all(&skill_b_dir).unwrap();
+    fs::write(
+        skill_b_dir.join("SKILL.md"),
+        r#"---
+name: skill-b
+description: Skill B
+---
+# Skill B
+Also uses [skill-d](../skill-d/SKILL.md).
+"#,
+    )
+    .unwrap();
+
+    let roots = vec![SkillRoot {
+        root: skills_dir.clone(),
+        source: skrills_discovery::SkillSource::Extra(0),
+    }];
+
+    let service = SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
+    service.invalidate_cache().unwrap();
+
+    // Get recommendations for skill-a
+    let result = service
+        .recommend_skills("skill://skrills/extra0/skill-a/SKILL.md", 10, false)
+        .unwrap();
+
+    // Should have skill-b as sibling (base score 1.0)
+    let siblings: Vec<_> = result
+        .recommendations
+        .iter()
+        .filter(|r| matches!(r.relationship, RecommendationRelationship::Sibling))
+        .collect();
+
+    assert!(
+        !siblings.is_empty(),
+        "Expected at least one sibling (skill-b shares dependency on skill-d)"
+    );
 }
 
 #[tokio::test]

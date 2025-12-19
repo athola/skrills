@@ -179,6 +179,32 @@ Use `--dry-run` to print the resolved command without executing it.
 
 When no backend is specified in an agent spec, skrills checks `~/.codex/subagents.toml` for a `default_backend`; if absent it uses `SKRILLS_SUBAGENTS_DEFAULT_BACKEND`, defaulting to `codex`.
 
+## `recommend`
+
+Recommends related skills based on dependency relationships. Useful for discovering skills that work together or share common patterns.
+
+```bash
+skrills recommend <URI> [OPTIONS]
+```
+
+Options:
+- `--skill-dir <DIR>`: Skills directory to include (default: all discovered skills)
+- `--format <FORMAT>`: Output format: `text` or `json` (default: `text`)
+- `--limit <N>`: Maximum number of recommendations (default: 10)
+- `--include-quality`: Include quality scores in recommendations (default: true)
+
+The command analyzes the dependency graph and returns three types of recommendations:
+- **Dependencies**: Skills the target skill directly uses (highest priority)
+- **Dependents**: Skills that use the target skill
+- **Siblings**: Skills sharing common dependencies with the target
+
+Examples:
+```bash
+skrills recommend skill://skrills/codex/my-skill        # Get recommendations
+skrills recommend skill://skrills/codex/my-skill --limit 5  # Limit results
+skrills recommend skill://skrills/codex/my-skill --format json  # JSON output
+```
+
 ## `doctor`
 
 Diagnoses Codex MCP configuration for this server.
@@ -227,6 +253,7 @@ Options:
 | `validate-skills` | Validate skills for CLI compatibility |
 | `analyze-skills` | Analyze token usage and dependencies |
 | `skill-metrics` | Aggregate statistics (quality, tokens, dependencies) |
+| `recommend-skills` | Suggest related skills based on dependency relationships |
 | `skill-loading-status` | Report skill roots, trace/probe install status, and marker coverage |
 | `enable-skill-trace` | Install trace/probe skills and optionally instrument SKILL.md files with markers |
 | `disable-skill-trace` | Remove trace/probe skill directories (does not remove markers) |

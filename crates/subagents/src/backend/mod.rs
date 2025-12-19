@@ -38,7 +38,7 @@ mod tests {
 
     #[tokio::test]
     async fn codex_capabilities_and_run_flow() {
-        let adapter = CodexAdapter::new("gpt-5-codex".into());
+        let adapter = CodexAdapter::new("gpt-5-codex".into()).unwrap();
         assert_eq!(adapter.backend(), BackendKind::Codex);
         let caps = adapter.capabilities();
         assert!(caps.supports_schema);
@@ -71,7 +71,7 @@ mod tests {
 
     #[tokio::test]
     async fn claude_capabilities_and_run_flow() {
-        let adapter = ClaudeAdapter::new("claude-code".into());
+        let adapter = ClaudeAdapter::new("claude-code".into()).unwrap();
         assert_eq!(adapter.backend(), BackendKind::Claude);
         let caps = adapter.capabilities();
         assert!(caps.supports_schema);

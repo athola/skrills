@@ -1,6 +1,7 @@
-//! Metrics types for skill statistics.
+//! Metrics and recommendation types for skill statistics.
 //!
-//! These types are used by both the CLI metrics command and the MCP skill-metrics tool.
+//! These types are used by both the CLI commands and MCP tools for
+//! skill-metrics and recommend-skills functionality.
 
 use serde::Serialize;
 use std::collections::HashMap;
@@ -86,4 +87,40 @@ pub struct MetricsValidationSummary {
     pub with_errors: usize,
     /// Skills with warnings only.
     pub with_warnings: usize,
+}
+
+/// Result of a skill recommendation request.
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillRecommendations {
+    /// The skill URI that recommendations are for.
+    pub source_uri: String,
+    /// Total number of recommendations found.
+    pub total_found: usize,
+    /// Recommended skills with relationship info.
+    pub recommendations: Vec<SkillRecommendation>,
+}
+
+/// A single skill recommendation with relationship metadata.
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillRecommendation {
+    /// Skill URI.
+    pub uri: String,
+    /// Relationship type to the source skill.
+    pub relationship: RecommendationRelationship,
+    /// Quality score (0.0 to 1.0) if available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality_score: Option<f64>,
+    /// Recommendation score (higher is more relevant).
+    pub score: f64,
+}
+
+/// How a recommended skill relates to the source skill.
+#[derive(Debug, Clone, Serialize)]
+pub enum RecommendationRelationship {
+    /// The source skill depends on this skill.
+    Dependency,
+    /// This skill depends on the source skill.
+    Dependent,
+    /// Shares common dependencies with the source skill.
+    Sibling,
 }

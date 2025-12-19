@@ -246,7 +246,11 @@ impl StateRunStore {
             fs::create_dir_all(parent)?;
         }
         let data = serde_json::to_string_pretty(&runs)?;
-        fs::write(&self.path, data)?;
+
+        // Atomic write: write to temp file then rename to avoid partial writes on crash.
+        let temp_path = self.path.with_extension("tmp");
+        fs::write(&temp_path, &data)?;
+        fs::rename(&temp_path, &self.path)?;
         Ok(())
     }
 }

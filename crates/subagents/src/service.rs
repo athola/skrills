@@ -52,11 +52,11 @@ impl SubagentService {
         let mut adapters: HashMap<BackendKind, Arc<dyn BackendAdapter>> = HashMap::new();
         adapters.insert(
             BackendKind::Codex,
-            Arc::new(CodexAdapter::new("gpt-5-codex".into())),
+            Arc::new(CodexAdapter::new("gpt-5-codex".into())?),
         );
         adapters.insert(
             BackendKind::Claude,
-            Arc::new(ClaudeAdapter::new("claude-code".into())),
+            Arc::new(ClaudeAdapter::new("claude-code".into())?),
         );
         Ok(Self {
             store,

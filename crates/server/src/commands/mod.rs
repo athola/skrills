@@ -3,6 +3,7 @@
 mod agent;
 mod analyze;
 mod metrics;
+mod recommend;
 mod serve;
 mod setup;
 mod sync;
@@ -11,6 +12,7 @@ mod validate;
 pub(crate) use agent::handle_agent_command;
 pub(crate) use analyze::handle_analyze_command;
 pub(crate) use metrics::handle_metrics_command;
+pub(crate) use recommend::handle_recommend_command;
 pub(crate) use serve::handle_serve_command;
 pub(crate) use setup::handle_setup_command;
 pub(crate) use sync::{handle_mirror_command, handle_sync_agents_command, handle_sync_command};

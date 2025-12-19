@@ -540,7 +540,10 @@ impl ServerHandler for SkillService {
                             });
 
                             if include_suggestions && !analysis.suggestions.is_empty() {
-                                result.as_object_mut().unwrap().insert(
+                                result
+                                    .as_object_mut()
+                                    .expect("analysis result JSON is an object constructed inline")
+                                    .insert(
                                     "suggestions".to_string(),
                                     json!(analysis
                                         .suggestions
@@ -670,6 +673,50 @@ impl ServerHandler for SkillService {
                         Ok(CallToolResult {
                             content: vec![Content::text(summary)],
                             structured_content: Some(serde_json::to_value(&metrics)?),
+                            is_error: Some(false),
+                            meta: None,
+                        })
+                    }
+                    "recommend-skills" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+
+                        let uri = args
+                            .get("uri")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| anyhow!("uri parameter is required"))?;
+
+                        let limit = args
+                            .get("limit")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as usize)
+                            .unwrap_or(10);
+
+                        let include_quality = args
+                            .get("include_quality")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(true);
+
+                        let recommendations =
+                            self.recommend_skills(uri, limit, include_quality)?;
+
+                        let summary = format!(
+                            "Found {} recommendations for {} ({} dependencies, {} dependents, {} siblings)",
+                            recommendations.recommendations.len(),
+                            uri,
+                            recommendations.recommendations.iter()
+                                .filter(|r| matches!(r.relationship, crate::app::RecommendationRelationship::Dependency))
+                                .count(),
+                            recommendations.recommendations.iter()
+                                .filter(|r| matches!(r.relationship, crate::app::RecommendationRelationship::Dependent))
+                                .count(),
+                            recommendations.recommendations.iter()
+                                .filter(|r| matches!(r.relationship, crate::app::RecommendationRelationship::Sibling))
+                                .count(),
+                        );
+
+                        Ok(CallToolResult {
+                            content: vec![Content::text(summary)],
+                            structured_content: Some(serde_json::to_value(&recommendations)?),
                             is_error: Some(false),
                             meta: None,
                         })
