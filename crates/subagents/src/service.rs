@@ -7,7 +7,7 @@ use rmcp::model::{CallToolResult, Content, Tool};
 use serde_json::{json, Map as JsonMap, Value};
 
 use crate::backend::BackendAdapter;
-use crate::backend::{claude::ClaudeAdapter, codex::CodexAdapter};
+use crate::backend::{claude::ClaudeAdapter, cli::CodexCliAdapter, codex::CodexAdapter};
 use crate::registry::AgentRegistry;
 use crate::store::{default_store_path, BackendKind, RunId, RunRequest, RunStore, StateRunStore};
 
@@ -35,6 +35,7 @@ fn run_id_from_value(val: &Value) -> Result<RunId> {
 pub struct SubagentService {
     store: Arc<dyn RunStore>,
     adapters: HashMap<BackendKind, Arc<dyn BackendAdapter>>,
+    cli_adapter: Arc<CodexCliAdapter>,
     default_backend: BackendKind,
     registry: Arc<AgentRegistry>,
 }
@@ -69,9 +70,14 @@ impl SubagentService {
             BackendKind::Claude,
             Arc::new(ClaudeAdapter::new("claude-code".into())?),
         );
+
+        // CLI adapter for agents that require tool execution
+        let cli_adapter = Arc::new(CodexCliAdapter::from_env());
+
         Ok(Self {
             store,
             adapters,
+            cli_adapter,
             default_backend,
             registry,
         })
@@ -370,8 +376,8 @@ impl SubagentService {
     /// Route to appropriate adapter based on agent configuration.
     ///
     /// Returns:
+    /// - CLI adapter if agent requires tools (spawns CLI subprocess)
     /// - API adapter if agent doesn't require tools
-    /// - Error if agent requires CLI (tools present) - CLI execution not yet implemented
     /// - Error if agent not found
     fn route_for_agent(&self, agent_name: &str) -> Result<Arc<dyn BackendAdapter>> {
         let agent = self
@@ -383,12 +389,13 @@ impl SubagentService {
         let requires_cli = agent.config.tools.as_ref().is_some_and(|t| !t.is_empty());
 
         if requires_cli {
-            // CLI execution is not yet implemented (Task 5)
-            return Err(anyhow!(
-                "CLI execution not yet implemented for agent '{}' (requires tools: {:?})",
+            // Use CLI adapter for agents that require tool execution
+            tracing::debug!(
+                "routing agent '{}' to CLI adapter (tools: {:?})",
                 agent_name,
                 agent.config.tools
-            ));
+            );
+            return Ok(self.cli_adapter.clone() as Arc<dyn BackendAdapter>);
         }
 
         // Agent doesn't require tools - use API adapter
@@ -835,7 +842,7 @@ You are an API agent."#,
     }
 
     #[tokio::test]
-    async fn run_with_agent_id_with_tools_errors_cli_not_implemented() {
+    async fn run_with_agent_id_with_tools_routes_to_cli() {
         let tmp = tempdir().unwrap();
         let home = tmp.path();
 
@@ -871,15 +878,11 @@ You are a CLI agent."#,
             .cloned();
         let result = service.handle_run(false, args.as_ref()).await;
 
-        // Should error because CLI execution is not yet implemented
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("CLI execution not yet implemented"),
-            "error should mention CLI not implemented: {}",
-            err
-        );
+        // Should succeed - routed to CLI adapter (though spawn may fail if codex isn't installed)
+        // The important thing is that routing works and returns a run_id
+        assert!(result.is_ok(), "should route to CLI adapter: {:?}", result);
+        let content = result.unwrap().structured_content.unwrap();
+        assert!(content.get("run_id").is_some(), "should have run_id");
     }
 
     #[tokio::test]
