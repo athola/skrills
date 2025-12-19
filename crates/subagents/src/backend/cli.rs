@@ -4,13 +4,15 @@
 //! to execute agent prompts with tool capabilities.
 
 use std::collections::HashMap;
+use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::json;
+use thiserror::Error;
 use time::OffsetDateTime;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
@@ -21,6 +23,34 @@ use crate::store::{
     BackendKind, RunEvent, RunId, RunRecord, RunRequest, RunState, RunStatus, RunStore,
     SubagentTemplate,
 };
+
+/// Errors that can occur during CLI subprocess execution.
+#[derive(Error, Debug)]
+pub enum CliError {
+    /// Failed to spawn the subprocess.
+    #[error("failed to spawn CLI process '{binary}': {source}")]
+    SpawnFailed {
+        binary: String,
+        #[source]
+        source: io::Error,
+    },
+
+    /// The process exited with a non-zero exit code.
+    ///
+    /// Note: Currently process failures are recorded via [`RunStore::update_status`]
+    /// rather than returned as errors. This variant is provided for API consumers
+    /// who may want to construct or match on this error type directly.
+    #[allow(dead_code)]
+    #[error("CLI process exited with code {exit_code:?}: {stderr}")]
+    ProcessFailed {
+        exit_code: Option<i32>,
+        stderr: String,
+    },
+
+    /// Failed to wait for the process to complete.
+    #[error("failed to wait for CLI process: {0}")]
+    WaitFailed(#[source] io::Error),
+}
 
 /// Default timeout for CLI subprocess execution (5 minutes).
 const DEFAULT_TIMEOUT_MS: u64 = 300_000;
@@ -208,7 +238,10 @@ impl CodexCliAdapter {
         cmd.stderr(std::process::Stdio::piped());
 
         // Spawn the process
-        let mut child = cmd.spawn().context("failed to spawn CLI process")?;
+        let mut child = cmd.spawn().map_err(|e| CliError::SpawnFailed {
+            binary: self.config.binary.clone(),
+            source: e,
+        })?;
 
         // Get stdout handle before storing the child
         let stdout = child.stdout.take();
@@ -257,11 +290,7 @@ impl CodexCliAdapter {
         let status = {
             let mut processes = self.processes.lock().await;
             if let Some(mut process) = processes.remove(&run_id) {
-                process
-                    .child
-                    .wait()
-                    .await
-                    .context("waiting for CLI process")?
+                process.child.wait().await.map_err(CliError::WaitFailed)?
             } else {
                 // Process was already removed (e.g., by stop())
                 return Ok(());
@@ -812,5 +841,86 @@ mod tests {
         let run = store.run(run_id).await.unwrap().unwrap();
         assert!(run.events.iter().any(|e| e.kind == "start"));
         assert!(run.events.iter().any(|e| e.kind == "completion"));
+    }
+
+    // CliError tests
+    mod cli_error_tests {
+        use super::*;
+
+        #[test]
+        fn test_spawn_failed_error_display() {
+            let err = CliError::SpawnFailed {
+                binary: "nonexistent".to_string(),
+                source: io::Error::new(io::ErrorKind::NotFound, "No such file or directory"),
+            };
+            let msg = err.to_string();
+            assert!(msg.contains("nonexistent"));
+            assert!(msg.contains("failed to spawn"));
+        }
+
+        #[test]
+        fn test_process_failed_error_display() {
+            let err = CliError::ProcessFailed {
+                exit_code: Some(1),
+                stderr: "command failed".to_string(),
+            };
+            let msg = err.to_string();
+            assert!(msg.contains("1"));
+            assert!(msg.contains("command failed"));
+        }
+
+        #[test]
+        fn test_process_failed_error_no_exit_code() {
+            let err = CliError::ProcessFailed {
+                exit_code: None,
+                stderr: "killed by signal".to_string(),
+            };
+            let msg = err.to_string();
+            assert!(msg.contains("None"));
+            assert!(msg.contains("killed by signal"));
+        }
+
+        #[test]
+        fn test_wait_failed_error_display() {
+            let err = CliError::WaitFailed(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "wait interrupted",
+            ));
+            let msg = err.to_string();
+            assert!(msg.contains("failed to wait"));
+        }
+
+        #[test]
+        fn test_cli_error_is_std_error() {
+            // Verify CliError implements std::error::Error
+            fn assert_error<E: std::error::Error>() {}
+            assert_error::<CliError>();
+        }
+
+        #[test]
+        fn test_cli_error_source_chain() {
+            use std::error::Error;
+
+            let io_err = io::Error::new(io::ErrorKind::NotFound, "file not found");
+            let err = CliError::SpawnFailed {
+                binary: "test".to_string(),
+                source: io_err,
+            };
+
+            // The error should have a source
+            assert!(err.source().is_some());
+        }
+
+        #[test]
+        fn test_cli_error_converts_to_anyhow() {
+            let err = CliError::SpawnFailed {
+                binary: "test".to_string(),
+                source: io::Error::new(io::ErrorKind::NotFound, "not found"),
+            };
+
+            // Should be convertible to anyhow::Error
+            let anyhow_err: anyhow::Error = err.into();
+            assert!(anyhow_err.to_string().contains("test"));
+        }
     }
 }
