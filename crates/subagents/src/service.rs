@@ -115,6 +115,34 @@ impl SubagentService {
             "type": "object",
             "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 50}},
         })));
+        let events_schema: Arc<JsonObject> = Arc::new(object(json!({
+            "type": "object",
+            "required": ["run_id"],
+            "properties": {
+                "run_id": {"type": "string", "description": "The run ID to get events for"},
+                "since_index": {"type": "integer", "minimum": 0, "description": "Return events after this index (0-based)"}
+            }
+        })));
+        let events_output_schema: Arc<JsonObject> = Arc::new(object(json!({
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "events": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "index": {"type": "integer"},
+                            "ts": {"type": "string"},
+                            "kind": {"type": "string"},
+                            "data": {}
+                        }
+                    }
+                },
+                "total_count": {"type": "integer"},
+                "has_more": {"type": "boolean"}
+            }
+        })));
 
         let run_output_schema: Arc<JsonObject> = Arc::new(object(json!({
             "type": "object",
@@ -213,6 +241,18 @@ impl SubagentService {
                 icons: None,
                 meta: None,
             },
+            Tool {
+                name: "get-run-events".into(),
+                title: Some("Get run events".into()),
+                description: Some(
+                    "Poll for events from a run. Use since_index for incremental fetching.".into(),
+                ),
+                input_schema: events_schema,
+                output_schema: Some(events_output_schema),
+                annotations: None,
+                icons: None,
+                meta: None,
+            },
         ];
 
         // Codex-only extended tools
@@ -264,6 +304,7 @@ impl SubagentService {
             }
             "stop-run" | "stop_run" => self.handle_stop(args).await,
             "get-run-history" | "get_run_history" => self.handle_history(args).await,
+            "get-run-events" | "get_run_events" => self.handle_get_events(args).await,
             "download-transcript-secure" | "download_transcript_secure" => {
                 self.handle_transcript().await
             }
@@ -480,6 +521,90 @@ impl SubagentService {
         })
     }
 
+    async fn handle_get_events(
+        &self,
+        args: Option<&JsonMap<String, Value>>,
+    ) -> Result<CallToolResult> {
+        let args = args.ok_or_else(|| anyhow!("arguments required"))?;
+        let run_id_val = args
+            .get("run_id")
+            .ok_or_else(|| anyhow!("run_id is required"))?;
+        let run_id = run_id_from_value(run_id_val)?;
+
+        // Optional since_index for incremental fetching
+        let since_index = args
+            .get("since_index")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+
+        // Fetch the run record
+        let record = match self.store.run(run_id).await? {
+            Some(r) => r,
+            None => {
+                return Ok(CallToolResult {
+                    content: vec![Content::text(format!("run not found: {}", run_id))],
+                    structured_content: Some(json!({
+                        "error": format!("run not found: {}", run_id),
+                        "run_id": run_id.to_string()
+                    })),
+                    is_error: Some(true),
+                    meta: None,
+                });
+            }
+        };
+
+        let total_count = record.events.len();
+
+        // Determine the slice of events to return
+        let (events_to_return, start_index) = match since_index {
+            Some(idx) => {
+                // Return events after the given index
+                let start = idx + 1;
+                if start >= total_count {
+                    (Vec::new(), start)
+                } else {
+                    (record.events[start..].to_vec(), start)
+                }
+            }
+            None => {
+                // Return all events
+                (record.events.clone(), 0)
+            }
+        };
+
+        // Format events with their indices
+        let events_json: Vec<Value> = events_to_return
+            .iter()
+            .enumerate()
+            .map(|(i, event)| {
+                json!({
+                    "index": start_index + i,
+                    "ts": event.ts.to_string(),
+                    "kind": event.kind,
+                    "data": event.data
+                })
+            })
+            .collect();
+
+        let has_more = false; // For now, we return all matching events
+
+        Ok(CallToolResult {
+            content: vec![Content::text(format!(
+                "events: {} of {} total",
+                events_json.len(),
+                total_count
+            ))],
+            structured_content: Some(json!({
+                "run_id": run_id.to_string(),
+                "events": events_json,
+                "total_count": total_count,
+                "has_more": has_more
+            })),
+            is_error: Some(false),
+            meta: None,
+        })
+    }
+
     async fn handle_transcript(&self) -> Result<CallToolResult> {
         Ok(CallToolResult {
             content: vec![Content::text("secure transcripts are not yet implemented")],
@@ -493,10 +618,11 @@ impl SubagentService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{MemRunStore, RunState};
+    use crate::store::{MemRunStore, RunEvent, RunRequest, RunState};
     use skrills_discovery::{SkillRoot, SkillSource};
     use std::fs;
     use tempfile::tempdir;
+    use time::OffsetDateTime;
 
     fn create_agent_file(dir: &std::path::Path, name: &str, content: &str) {
         let agents_dir = dir.join("agents");
@@ -995,5 +1121,269 @@ Content."#,
         let result = service.handle_run(true, args.as_ref()).await.unwrap();
 
         assert!(result.structured_content.is_some());
+    }
+
+    // =============================================================
+    // Tests for get-run-events (Task 6)
+    // =============================================================
+
+    #[tokio::test]
+    async fn tools_include_get_run_events() {
+        let service =
+            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        let tools = service.tools();
+        let names: Vec<_> = tools.iter().map(|t| t.name.as_ref()).collect();
+        assert!(
+            names.contains(&"get-run-events"),
+            "should have get-run-events tool"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_run_events_returns_all_events_without_since_index() {
+        let store = Arc::new(MemRunStore::new());
+        let run_id = store
+            .create_run(RunRequest {
+                backend: BackendKind::Codex,
+                prompt: "test".into(),
+                template_id: None,
+                output_schema: None,
+                async_mode: false,
+                tracing: false,
+            })
+            .await
+            .unwrap();
+
+        // Add some events
+        for i in 0..3 {
+            store
+                .append_event(
+                    run_id,
+                    RunEvent {
+                        ts: OffsetDateTime::now_utc(),
+                        kind: format!("event-{}", i),
+                        data: Some(json!({"index": i})),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        let service = SubagentService::with_store(store, BackendKind::Codex).unwrap();
+        let args = json!({"run_id": run_id.0.to_string()}).as_object().cloned();
+        let result = service
+            .handle_call("get-run-events", args.as_ref())
+            .await
+            .unwrap();
+
+        let content = result
+            .structured_content
+            .expect("should have structured content");
+        let events = content
+            .get("events")
+            .and_then(|v| v.as_array())
+            .expect("should have events array");
+        assert_eq!(events.len(), 3);
+
+        // Check that events have proper index
+        assert_eq!(events[0].get("index").and_then(|v| v.as_u64()), Some(0));
+        assert_eq!(events[1].get("index").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(events[2].get("index").and_then(|v| v.as_u64()), Some(2));
+
+        // Check total_count
+        assert_eq!(content.get("total_count").and_then(|v| v.as_u64()), Some(3));
+    }
+
+    #[tokio::test]
+    async fn get_run_events_with_since_index_returns_incremental() {
+        let store = Arc::new(MemRunStore::new());
+        let run_id = store
+            .create_run(RunRequest {
+                backend: BackendKind::Codex,
+                prompt: "test".into(),
+                template_id: None,
+                output_schema: None,
+                async_mode: false,
+                tracing: false,
+            })
+            .await
+            .unwrap();
+
+        // Add 5 events
+        for i in 0..5 {
+            store
+                .append_event(
+                    run_id,
+                    RunEvent {
+                        ts: OffsetDateTime::now_utc(),
+                        kind: format!("event-{}", i),
+                        data: Some(json!({"num": i})),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        let service = SubagentService::with_store(store, BackendKind::Codex).unwrap();
+
+        // Get events after index 2 (should return events at indices 3 and 4)
+        let args = json!({"run_id": run_id.0.to_string(), "since_index": 2})
+            .as_object()
+            .cloned();
+        let result = service
+            .handle_call("get-run-events", args.as_ref())
+            .await
+            .unwrap();
+
+        let content = result
+            .structured_content
+            .expect("should have structured content");
+        let events = content
+            .get("events")
+            .and_then(|v| v.as_array())
+            .expect("should have events array");
+        assert_eq!(events.len(), 2, "should return 2 events after index 2");
+
+        // Verify the indices start from 3
+        assert_eq!(events[0].get("index").and_then(|v| v.as_u64()), Some(3));
+        assert_eq!(events[1].get("index").and_then(|v| v.as_u64()), Some(4));
+
+        // total_count should still be 5 (total events in run)
+        assert_eq!(content.get("total_count").and_then(|v| v.as_u64()), Some(5));
+    }
+
+    #[tokio::test]
+    async fn get_run_events_with_no_events_returns_empty_array() {
+        let store = Arc::new(MemRunStore::new());
+        let run_id = store
+            .create_run(RunRequest {
+                backend: BackendKind::Codex,
+                prompt: "test".into(),
+                template_id: None,
+                output_schema: None,
+                async_mode: false,
+                tracing: false,
+            })
+            .await
+            .unwrap();
+
+        let service = SubagentService::with_store(store, BackendKind::Codex).unwrap();
+        let args = json!({"run_id": run_id.0.to_string()}).as_object().cloned();
+        let result = service
+            .handle_call("get-run-events", args.as_ref())
+            .await
+            .unwrap();
+
+        let content = result
+            .structured_content
+            .expect("should have structured content");
+        let events = content
+            .get("events")
+            .and_then(|v| v.as_array())
+            .expect("should have events array");
+        assert!(events.is_empty());
+        assert_eq!(content.get("total_count").and_then(|v| v.as_u64()), Some(0));
+    }
+
+    #[tokio::test]
+    async fn get_run_events_with_invalid_run_id_returns_error() {
+        let service =
+            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+
+        let args = json!({"run_id": "00000000-0000-0000-0000-000000000000"})
+            .as_object()
+            .cloned();
+        let result = service
+            .handle_call("get-run-events", args.as_ref())
+            .await
+            .unwrap();
+
+        // Should return error response
+        assert_eq!(result.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn get_run_events_since_index_beyond_events_returns_empty() {
+        let store = Arc::new(MemRunStore::new());
+        let run_id = store
+            .create_run(RunRequest {
+                backend: BackendKind::Codex,
+                prompt: "test".into(),
+                template_id: None,
+                output_schema: None,
+                async_mode: false,
+                tracing: false,
+            })
+            .await
+            .unwrap();
+
+        // Add 3 events
+        for i in 0..3 {
+            store
+                .append_event(
+                    run_id,
+                    RunEvent {
+                        ts: OffsetDateTime::now_utc(),
+                        kind: format!("event-{}", i),
+                        data: None,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        let service = SubagentService::with_store(store, BackendKind::Codex).unwrap();
+
+        // Request events after index 10 (beyond the 3 events we have)
+        let args = json!({"run_id": run_id.0.to_string(), "since_index": 10})
+            .as_object()
+            .cloned();
+        let result = service
+            .handle_call("get-run-events", args.as_ref())
+            .await
+            .unwrap();
+
+        let content = result
+            .structured_content
+            .expect("should have structured content");
+        let events = content
+            .get("events")
+            .and_then(|v| v.as_array())
+            .expect("should have events array");
+        assert!(
+            events.is_empty(),
+            "should return empty array when since_index is beyond events"
+        );
+        assert_eq!(content.get("total_count").and_then(|v| v.as_u64()), Some(3));
+        assert_eq!(
+            content.get("has_more").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+    }
+
+    #[tokio::test]
+    async fn get_run_events_snake_case_alias_works() {
+        let store = Arc::new(MemRunStore::new());
+        let run_id = store
+            .create_run(RunRequest {
+                backend: BackendKind::Codex,
+                prompt: "test".into(),
+                template_id: None,
+                output_schema: None,
+                async_mode: false,
+                tracing: false,
+            })
+            .await
+            .unwrap();
+
+        let service = SubagentService::with_store(store, BackendKind::Codex).unwrap();
+        let args = json!({"run_id": run_id.0.to_string()}).as_object().cloned();
+
+        // Should work with both naming conventions
+        let result_dash = service.handle_call("get-run-events", args.as_ref()).await;
+        let result_underscore = service.handle_call("get_run_events", args.as_ref()).await;
+
+        assert!(result_dash.is_ok());
+        assert!(result_underscore.is_ok());
     }
 }
