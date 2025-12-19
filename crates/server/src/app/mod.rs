@@ -211,6 +211,11 @@ impl SkillService {
         // Collect all skill URIs for sibling detection
         let all_uris = cache.skill_uris()?;
 
+        // Validate that the requested URI exists
+        if !all_uris.contains(&uri.to_string()) {
+            anyhow::bail!("Skill not found: {}", uri);
+        }
+
         // Get direct relationships
         let dependencies: Vec<String> = cache.dependencies_raw(uri);
         let dependents: Vec<String> = cache.dependents_raw(uri);
@@ -250,11 +255,19 @@ impl SkillService {
             };
 
             if include_quality {
-                if let Ok(meta) = cache.skill_by_uri(dep_uri) {
-                    if let Ok(content) = fs::read_to_string(&meta.path) {
-                        let analysis = analyze_skill(&meta.path, &content);
-                        rec.quality_score = Some(analysis.quality_score);
-                        rec.score += analysis.quality_score; // Add quality bonus
+                match cache.skill_by_uri(dep_uri) {
+                    Ok(meta) => match fs::read_to_string(&meta.path) {
+                        Ok(content) => {
+                            let analysis = analyze_skill(&meta.path, &content);
+                            rec.quality_score = Some(analysis.quality_score);
+                            rec.score += analysis.quality_score; // Add quality bonus
+                        }
+                        Err(e) => {
+                            tracing::warn!(uri = %dep_uri, error = %e, "Failed to read skill for quality scoring");
+                        }
+                    },
+                    Err(e) => {
+                        tracing::warn!(uri = %dep_uri, error = %e, "Failed to find skill metadata for quality scoring");
                     }
                 }
             }
@@ -272,11 +285,19 @@ impl SkillService {
             };
 
             if include_quality {
-                if let Ok(meta) = cache.skill_by_uri(dep_uri) {
-                    if let Ok(content) = fs::read_to_string(&meta.path) {
-                        let analysis = analyze_skill(&meta.path, &content);
-                        rec.quality_score = Some(analysis.quality_score);
-                        rec.score += analysis.quality_score;
+                match cache.skill_by_uri(dep_uri) {
+                    Ok(meta) => match fs::read_to_string(&meta.path) {
+                        Ok(content) => {
+                            let analysis = analyze_skill(&meta.path, &content);
+                            rec.quality_score = Some(analysis.quality_score);
+                            rec.score += analysis.quality_score;
+                        }
+                        Err(e) => {
+                            tracing::warn!(uri = %dep_uri, error = %e, "Failed to read skill for quality scoring");
+                        }
+                    },
+                    Err(e) => {
+                        tracing::warn!(uri = %dep_uri, error = %e, "Failed to find skill metadata for quality scoring");
                     }
                 }
             }
@@ -294,11 +315,19 @@ impl SkillService {
             };
 
             if include_quality {
-                if let Ok(meta) = cache.skill_by_uri(sib_uri) {
-                    if let Ok(content) = fs::read_to_string(&meta.path) {
-                        let analysis = analyze_skill(&meta.path, &content);
-                        rec.quality_score = Some(analysis.quality_score);
-                        rec.score += analysis.quality_score;
+                match cache.skill_by_uri(sib_uri) {
+                    Ok(meta) => match fs::read_to_string(&meta.path) {
+                        Ok(content) => {
+                            let analysis = analyze_skill(&meta.path, &content);
+                            rec.quality_score = Some(analysis.quality_score);
+                            rec.score += analysis.quality_score;
+                        }
+                        Err(e) => {
+                            tracing::warn!(uri = %sib_uri, error = %e, "Failed to read skill for quality scoring");
+                        }
+                    },
+                    Err(e) => {
+                        tracing::warn!(uri = %sib_uri, error = %e, "Failed to find skill metadata for quality scoring");
                     }
                 }
             }

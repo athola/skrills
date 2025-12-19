@@ -32,7 +32,14 @@ pub(crate) fn handle_recommend_command(
     for meta in &skills {
         let content = match std::fs::read_to_string(&meta.path) {
             Ok(c) => c,
-            Err(_) => continue,
+            Err(e) => {
+                tracing::warn!(
+                    path = %meta.path.display(),
+                    error = %e,
+                    "Failed to read skill file, skipping in recommendation analysis"
+                );
+                continue;
+            }
         };
 
         let skill_uri = format!("skill://skrills/{}/{}", meta.source.label(), meta.name);
