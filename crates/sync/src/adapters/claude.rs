@@ -110,11 +110,9 @@ impl ClaudeAdapter {
     }
 }
 
-impl Default for ClaudeAdapter {
-    fn default() -> Self {
-        Self::new().expect("Failed to create ClaudeAdapter")
-    }
-}
+// Note: We intentionally do not implement Default for ClaudeAdapter because
+// construction requires home directory resolution which can fail. Use
+// ClaudeAdapter::new() or ClaudeAdapter::with_root() instead.
 
 impl AgentAdapter for ClaudeAdapter {
     fn name(&self) -> &str {

@@ -1,5 +1,10 @@
 # Changelog Highlights
 
+## 0.3.4 (2025-12-19)
+
+- **NEW: Skill Recommendations**: Added `skrills recommend` CLI command and `recommend-skills` MCP tool for suggesting related skills based on dependency graph relationships (dependencies, dependents, and siblings).
+- **Options**: `--limit` for max recommendations, `--include-quality` for quality scores, `--format` for text/json output.
+
 ## 0.3.3 (2025-12-18)
 
 - **NEW: Metrics Command**: Added `skrills metrics` CLI command and `skill-metrics` MCP tool for aggregate statistics including quality distribution, dependency graphs, and token usage.

@@ -25,7 +25,7 @@ pub struct ClaudeAdapter {
 }
 
 impl ClaudeAdapter {
-    pub fn new(model: String) -> Self {
+    pub fn new(model: String) -> Result<Self> {
         let config = AdapterConfig::from_env("CLAUDE", &model, DEFAULT_BASE, DEFAULT_TIMEOUT_MS)
             .unwrap_or_else(|_| AdapterConfig {
                 api_key: String::new(),
@@ -36,12 +36,12 @@ impl ClaudeAdapter {
         Self::with_config(config)
     }
 
-    pub fn with_config(config: AdapterConfig) -> Self {
+    pub fn with_config(config: AdapterConfig) -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(config.timeout)
             .build()
-            .expect("failed to build reqwest client");
-        Self { config, client }
+            .context("failed to build HTTP client")?;
+        Ok(Self { config, client })
     }
 
     async fn execute_run(
@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn test_claude_adapter_new() {
-        let adapter = ClaudeAdapter::new("claude-3-haiku-20240307".to_string());
+        let adapter = ClaudeAdapter::new("claude-3-haiku-20240307".to_string()).unwrap();
         assert_eq!(adapter.config.model, "claude-3-haiku-20240307");
         assert_eq!(adapter.config.base_url.as_str(), DEFAULT_BASE);
         assert_eq!(
@@ -340,7 +340,7 @@ mod tests {
             timeout: Duration::from_secs(30),
         };
 
-        let adapter = ClaudeAdapter::with_config(config.clone());
+        let adapter = ClaudeAdapter::with_config(config.clone()).unwrap();
         assert_eq!(adapter.config.api_key, "test-key");
         assert_eq!(adapter.config.model, "test-model");
         assert_eq!(adapter.config.base_url.as_str(), "https://test.com/");
@@ -348,13 +348,13 @@ mod tests {
 
     #[test]
     fn test_claude_adapter_backend() {
-        let adapter = ClaudeAdapter::new("claude-3-haiku-20240307".to_string());
+        let adapter = ClaudeAdapter::new("claude-3-haiku-20240307".to_string()).unwrap();
         assert_eq!(adapter.backend(), BackendKind::Claude);
     }
 
     #[test]
     fn test_claude_capabilities() {
-        let adapter = ClaudeAdapter::new("claude-3-haiku-20240307".to_string());
+        let adapter = ClaudeAdapter::new("claude-3-haiku-20240307".to_string()).unwrap();
         let capabilities = adapter.capabilities();
 
         assert!(capabilities.supports_schema);
@@ -365,7 +365,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_claude_list_templates() {
-        let adapter = ClaudeAdapter::new("claude-3-haiku-20240307".to_string());
+        let adapter = ClaudeAdapter::new("claude-3-haiku-20240307".to_string()).unwrap();
         let templates = adapter.list_templates().await.unwrap();
 
         assert_eq!(templates.len(), 1);
@@ -549,7 +549,7 @@ mod tests {
     #[tokio::test]
     async fn test_claude_run_creates_record() {
         // This test demonstrates the run flow without actually calling Claude API
-        let adapter = ClaudeAdapter::new("claude-3-haiku-20240307".to_string());
+        let adapter = ClaudeAdapter::new("claude-3-haiku-20240307".to_string()).unwrap();
 
         // Note: This test shows the intended usage pattern
         // In practice, you'd need an implementation of RunStore

@@ -18,31 +18,46 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Package all crates (dry-run, dependency order)
+      - name: Verify crate packaging (dry-run)
         run: |
           set -euo pipefail
 
-          run_pkg() {
+          # List files that would be included in the package
+          # This validates include/exclude patterns without requiring
+          # dependencies to exist on crates.io
+          list_pkg() {
+            crate="$1"
+            echo "::group::cargo package --list -p $crate"
+            cargo package -p "$crate" --list --allow-dirty
+            echo "::endgroup::"
+          }
+
+          # Full package validation (only for crates already on crates.io)
+          full_pkg() {
             crate="$1"
             echo "::group::cargo package -p $crate"
             cargo package -p "$crate" --allow-dirty
             echo "::endgroup::"
           }
 
-          # Level 0: leaf crates (no internal dependencies)
-          run_pkg skrills-validate
-          run_pkg skrills-state
-          run_pkg skrills-discovery
+          # Verify file inclusion for all crates
+          echo "=== Verifying package file inclusion ==="
+          for crate in skrills-validate skrills-state skrills-discovery \
+                       skrills_sync skrills-subagents skrills-analyze \
+                       skrills-server skrills; do
+            list_pkg "$crate"
+          done
 
-          # Level 1: depend on leaf crates only
-          run_pkg skrills_sync
-          run_pkg skrills-subagents
-          run_pkg skrills-analyze
+          # Full package validation only for crates already on crates.io
+          # (their dependencies are resolvable)
+          echo "=== Full package validation for published crates ==="
+          full_pkg skrills-state
+          full_pkg skrills-discovery
 
-          # Level 2: server depends on all above
-          run_pkg skrills-server
+          # Verify all crates compile
+          echo "=== Verifying compilation ==="
+          echo "::group::cargo check --workspace"
+          cargo check --workspace
+          echo "::endgroup::"
 
-          # Level 3: cli depends on server
-          run_pkg skrills
-
-          echo "[OK] All crates packaged successfully"
+          echo "[OK] All crate packaging checks passed"

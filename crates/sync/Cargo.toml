@@ -1,6 +1,6 @@
 [package]
 name = "skrills_sync"
-version = "0.3.3"
+version = "0.3.4"
 edition.workspace = true
 
 [dependencies]
@@ -11,7 +11,7 @@ sha2.workspace = true
 walkdir.workspace = true
 dirs.workspace = true
 thiserror.workspace = true
-skrills-validate = { path = "../validate", version = "0.3.3" }
+skrills-validate = { path = "../validate", version = "0.3.4" }
 
 [dev-dependencies]
 tempfile.workspace = true

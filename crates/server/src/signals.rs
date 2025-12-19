@@ -14,6 +14,14 @@ use anyhow::Result;
 #[allow(unsafe_code)]
 pub fn ignore_sigchld() -> Result<()> {
     use std::ptr;
+    // SAFETY: This code configures the process-wide SIGCHLD handler.
+    // - We use SIG_IGN with SA_NOCLDWAIT to automatically reap zombies.
+    // - This is safe because: (1) libc::sigaction is the standard POSIX API
+    //   for signal handling, (2) we zero-initialize the sigaction struct,
+    //   (3) we check the return code and propagate errors, and (4) we call
+    //   sigemptyset to properly initialize the signal mask.
+    // - Caller invariants: Must be called during single-threaded startup
+    //   before spawning threads that might wait on child processes.
     unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
         sa.sa_flags = libc::SA_NOCLDWAIT | libc::SA_RESTART;
