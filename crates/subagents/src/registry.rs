@@ -78,7 +78,7 @@ impl AgentRegistry {
                     agents.insert(
                         key,
                         CachedAgent {
-                            meta,  // move instead of clone - meta is owned and not used after
+                            meta, // move instead of clone - meta is owned and not used after
                             config,
                         },
                     );
