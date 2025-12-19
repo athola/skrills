@@ -574,6 +574,7 @@ fn test_parse_uri_with_query() {
 
 #[test]
 fn validate_skills_tool_dependency_validation() {
+    let _guard = crate::test_support::env_guard();
     let temp = tempdir().unwrap();
     let skill_dir = temp.path().join("skills");
     std::fs::create_dir_all(&skill_dir).unwrap();

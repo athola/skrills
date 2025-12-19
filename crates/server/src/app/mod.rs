@@ -18,8 +18,8 @@ use crate::cache::SkillCache;
 use crate::cli::{Cli, Commands};
 use crate::commands::{
     handle_agent_command, handle_analyze_command, handle_metrics_command, handle_mirror_command,
-    handle_serve_command, handle_setup_command, handle_sync_agents_command, handle_sync_command,
-    handle_validate_command,
+    handle_recommend_command, handle_serve_command, handle_setup_command,
+    handle_sync_agents_command, handle_sync_command, handle_validate_command,
 };
 use crate::discovery::{
     merge_extra_dirs, priority_labels, read_skill, skill_roots, AGENTS_DESCRIPTION, AGENTS_NAME,
@@ -49,9 +49,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-// Re-export metrics types from dedicated module
+// Re-export metrics and recommendation types from dedicated module
 pub use crate::metrics_types::{
-    DependencyStats, HubSkill, MetricsValidationSummary, QualityDistribution, SkillMetrics,
+    DependencyStats, HubSkill, MetricsValidationSummary, QualityDistribution,
+    RecommendationRelationship, SkillMetrics, SkillRecommendation, SkillRecommendations,
     SkillTokenInfo, TokenStats,
 };
 
@@ -186,6 +187,142 @@ impl SkillService {
     pub(crate) fn get_transitive_dependents(&self, uri: &str) -> Result<Vec<String>> {
         let mut cache = self.cache.lock();
         cache.get_transitive_dependents(uri)
+    }
+
+    /// Get skill recommendations based on dependency relationships.
+    ///
+    /// The algorithm:
+    /// 1. Get direct dependencies of the skill (skills it needs)
+    /// 2. Get direct dependents (skills that need it)
+    /// 3. Find sibling skills (share common dependencies)
+    /// 4. Rank by relationship type and optionally quality score
+    pub(crate) fn recommend_skills(
+        &self,
+        uri: &str,
+        limit: usize,
+        include_quality: bool,
+    ) -> Result<SkillRecommendations> {
+        use skrills_analyze::analyze_skill;
+        use std::collections::HashSet;
+
+        let mut cache = self.cache.lock();
+        cache.ensure_fresh()?;
+
+        // Collect all skill URIs for sibling detection
+        let all_uris = cache.skill_uris()?;
+
+        // Get direct relationships
+        let dependencies: Vec<String> = cache.dependencies_raw(uri);
+        let dependents: Vec<String> = cache.dependents_raw(uri);
+
+        // Find siblings (skills that share dependencies with this skill)
+        let source_deps: HashSet<_> = dependencies.iter().cloned().collect();
+        let mut siblings: Vec<String> = Vec::new();
+
+        if !source_deps.is_empty() {
+            for other_uri in &all_uris {
+                if other_uri == uri {
+                    continue;
+                }
+                // Skip if already in dependencies or dependents
+                if dependencies.contains(other_uri) || dependents.contains(other_uri) {
+                    continue;
+                }
+                let other_deps: HashSet<_> =
+                    cache.dependencies_raw(other_uri).into_iter().collect();
+                // Check for shared dependencies
+                if !source_deps.is_disjoint(&other_deps) {
+                    siblings.push(other_uri.clone());
+                }
+            }
+        }
+
+        // Build recommendations with scores
+        let mut recommendations: Vec<SkillRecommendation> = Vec::new();
+
+        // Dependencies get highest base score (most immediately useful)
+        for dep_uri in &dependencies {
+            let mut rec = SkillRecommendation {
+                uri: dep_uri.clone(),
+                relationship: RecommendationRelationship::Dependency,
+                quality_score: None,
+                score: 3.0, // Base score for dependencies
+            };
+
+            if include_quality {
+                if let Ok(meta) = cache.skill_by_uri(dep_uri) {
+                    if let Ok(content) = fs::read_to_string(&meta.path) {
+                        let analysis = analyze_skill(&meta.path, &content);
+                        rec.quality_score = Some(analysis.quality_score);
+                        rec.score += analysis.quality_score; // Add quality bonus
+                    }
+                }
+            }
+
+            recommendations.push(rec);
+        }
+
+        // Dependents get medium base score
+        for dep_uri in &dependents {
+            let mut rec = SkillRecommendation {
+                uri: dep_uri.clone(),
+                relationship: RecommendationRelationship::Dependent,
+                quality_score: None,
+                score: 2.0, // Base score for dependents
+            };
+
+            if include_quality {
+                if let Ok(meta) = cache.skill_by_uri(dep_uri) {
+                    if let Ok(content) = fs::read_to_string(&meta.path) {
+                        let analysis = analyze_skill(&meta.path, &content);
+                        rec.quality_score = Some(analysis.quality_score);
+                        rec.score += analysis.quality_score;
+                    }
+                }
+            }
+
+            recommendations.push(rec);
+        }
+
+        // Siblings get lowest base score
+        for sib_uri in &siblings {
+            let mut rec = SkillRecommendation {
+                uri: sib_uri.clone(),
+                relationship: RecommendationRelationship::Sibling,
+                quality_score: None,
+                score: 1.0, // Base score for siblings
+            };
+
+            if include_quality {
+                if let Ok(meta) = cache.skill_by_uri(sib_uri) {
+                    if let Ok(content) = fs::read_to_string(&meta.path) {
+                        let analysis = analyze_skill(&meta.path, &content);
+                        rec.quality_score = Some(analysis.quality_score);
+                        rec.score += analysis.quality_score;
+                    }
+                }
+            }
+
+            recommendations.push(rec);
+        }
+
+        // Sort by score descending
+        recommendations.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let total_found = recommendations.len();
+
+        // Apply limit
+        recommendations.truncate(limit);
+
+        Ok(SkillRecommendations {
+            source_uri: uri.to_string(),
+            total_found,
+            recommendations,
+        })
     }
 
     /// Compute aggregate metrics for all discovered skills.
@@ -471,18 +608,12 @@ impl SkillService {
                 });
 
                 if check_dependencies {
-                    skill_json
+                    let skill_object = skill_json
                         .as_object_mut()
-                        .unwrap()
-                        .insert("dependency_issues".to_string(), json!(dependency_issues));
-                    skill_json
-                        .as_object_mut()
-                        .unwrap()
-                        .insert("dependency_count".to_string(), json!(dependency_count));
-                    skill_json
-                        .as_object_mut()
-                        .unwrap()
-                        .insert("missing_count".to_string(), json!(missing_count));
+                        .expect("skill_json is an object constructed inline");
+                    skill_object.insert("dependency_issues".to_string(), json!(dependency_issues));
+                    skill_object.insert("dependency_count".to_string(), json!(dependency_count));
+                    skill_object.insert("missing_count".to_string(), json!(missing_count));
                 }
 
                 results.push(skill_json);
@@ -1366,6 +1497,13 @@ pub fn run() -> Result<()> {
             format,
             include_validation,
         } => handle_metrics_command(skill_dirs, format, include_validation),
+        Commands::Recommend {
+            uri,
+            skill_dirs,
+            format,
+            limit,
+            include_quality,
+        } => handle_recommend_command(uri, skill_dirs, format, limit, include_quality),
     }
 }
 

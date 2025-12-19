@@ -8,34 +8,41 @@ on:
       - "crates/**/Cargo.toml"
       - ".github/workflows/publish-dry-run.yml"
       - ".github/workflows/release.yml"
+      - "scripts/publish_crates.sh"
 
 jobs:
   publish-dry-run:
-    name: Dry-run cargo publish (dependency order)
+    name: Dry-run cargo publish (all crates)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Package/build crates (dry-run)
+      - name: Package all crates (dry-run, dependency order)
         run: |
           set -euo pipefail
 
           run_pkg() {
             crate="$1"
-            echo "::group::package $crate"
-            cargo package -p "$crate"
+            echo "::group::cargo package -p $crate"
+            cargo package -p "$crate" --allow-dirty
             echo "::endgroup::"
           }
 
-          # Package leaf crates; build dependents to avoid registry lookup.
+          # Level 0: leaf crates (no internal dependencies)
+          run_pkg skrills-validate
           run_pkg skrills-state
           run_pkg skrills-discovery
 
-          echo "::group::check skrills-server"
-          cargo check -p skrills-server
-          echo "::endgroup::"
+          # Level 1: depend on leaf crates only
+          run_pkg skrills_sync
+          run_pkg skrills-subagents
+          run_pkg skrills-analyze
 
-          echo "::group::check skrills (cli)"
-          cargo check -p skrills
-          echo "::endgroup::"
+          # Level 2: server depends on all above
+          run_pkg skrills-server
+
+          # Level 3: cli depends on server
+          run_pkg skrills
+
+          echo "[OK] All crates packaged successfully"

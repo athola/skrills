@@ -11,10 +11,9 @@ sha2.workspace = true
 walkdir.workspace = true
 dirs.workspace = true
 thiserror.workspace = true
-skrills-validate = { path = "../validate" }
+skrills-validate = { path = "../validate", version = "0.3.3" }
 
 [dev-dependencies]
 tempfile.workspace = true
-mockall = "0.12.1"
+mockall = "0.14.0"
 tokio = { version = "1", features = ["full"] }
-

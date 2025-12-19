@@ -76,8 +76,11 @@ pub(crate) fn handle_metrics_command(
         let skill_uri = format!("skill://skrills/{}/{}", meta.source.label(), meta.name);
 
         // Track largest skill
-        if largest_skill.is_none() || analysis.tokens.total > largest_skill.as_ref().unwrap().tokens
-        {
+        let should_replace = match largest_skill.as_ref() {
+            None => true,
+            Some(s) => analysis.tokens.total > s.tokens,
+        };
+        if should_replace {
             largest_skill = Some(SkillTokenInfo {
                 uri: skill_uri.clone(),
                 tokens: analysis.tokens.total,

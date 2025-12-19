@@ -192,6 +192,24 @@ pub enum Commands {
         #[arg(long)]
         include_validation: bool,
     },
+    /// Recommends related skills based on dependency relationships.
+    Recommend {
+        /// Skill URI to get recommendations for.
+        #[arg(required = true)]
+        uri: String,
+        /// Skills directory to include (default: all discovered skills).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+        /// Output format: text or json.
+        #[arg(long, default_value = "text")]
+        format: String,
+        /// Maximum number of recommendations.
+        #[arg(long, default_value = "10")]
+        limit: usize,
+        /// Include quality scores in recommendations.
+        #[arg(long, default_value_t = true)]
+        include_quality: bool,
+    },
     /// Interactive TUI for sync and pin management.
     Tui {
         /// Additional skill directories (repeatable).
