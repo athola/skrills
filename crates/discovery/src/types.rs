@@ -148,6 +148,29 @@ impl AgentMeta {
 ///
 /// This struct represents the fully parsed agent configuration, with
 /// tools converted from comma-separated strings to vectors.
+///
+/// # Agent Definition Format
+///
+/// Agent files use YAML frontmatter followed by markdown content:
+///
+/// ```yaml
+/// ---
+/// name: code-reviewer
+/// description: Reviews code for bugs and style issues
+/// tools: Read, Grep, Glob
+/// model: sonnet
+/// permissionMode: default
+/// skills: superpowers:code-review
+/// ---
+///
+/// You are an expert code reviewer. Analyze the provided code for:
+/// - Bugs and logic errors
+/// - Style violations
+/// - Security issues
+/// ```
+///
+/// The `tools` and `skills` fields accept comma-separated strings in the
+/// YAML frontmatter, which are parsed into `Vec<String>` in `AgentConfig`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     /// Agent name.

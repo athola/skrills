@@ -203,6 +203,12 @@ impl CodexCliAdapter {
         request: RunRequest,
         store: Arc<dyn RunStore>,
     ) -> Result<()> {
+        tracing::info!(
+            run_id = %run_id,
+            binary = %self.config.binary,
+            "Starting CLI subprocess execution"
+        );
+
         // Record start event
         store
             .append_event(
@@ -238,6 +244,12 @@ impl CodexCliAdapter {
         cmd.stderr(std::process::Stdio::piped());
 
         // Spawn the process
+        tracing::debug!(
+            run_id = %run_id,
+            args = ?args,
+            working_dir = ?self.config.working_dir,
+            "Spawning CLI process"
+        );
         let mut child = cmd.spawn().map_err(|e| CliError::SpawnFailed {
             binary: self.config.binary.clone(),
             source: e,
@@ -299,6 +311,10 @@ impl CodexCliAdapter {
 
         // Update status based on exit code
         if status.success() {
+            tracing::info!(
+                run_id = %run_id,
+                "CLI subprocess completed successfully"
+            );
             store
                 .append_event(
                     run_id,
@@ -322,6 +338,11 @@ impl CodexCliAdapter {
                 .await?;
         } else {
             let exit_code = status.code();
+            tracing::warn!(
+                run_id = %run_id,
+                exit_code = ?exit_code,
+                "CLI subprocess failed"
+            );
             let msg = if error_output.is_empty() {
                 format!("CLI exited with code {:?}", exit_code)
             } else {
