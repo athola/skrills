@@ -378,7 +378,12 @@ impl DependencyGraph {
             }
 
             // Handle missing (edges only point to valid indices, but check anyway)
-            debug_assert!(edge.target < self.skills.len(), "edge target out of bounds");
+            debug_assert!(
+                edge.target < self.skills.len(),
+                "edge target {} out of bounds (max index: {})",
+                edge.target,
+                self.skills.len().saturating_sub(1)
+            );
             if edge.target >= self.skills.len() {
                 if edge.optional && !self.options.strict_optional {
                     warnings.push("Skipped optional dependency (invalid index)".to_string());
