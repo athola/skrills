@@ -1,6 +1,7 @@
 //! Sync orchestrator that coordinates adapters and manages sync flow.
 
 use crate::adapters::AgentAdapter;
+use crate::models::transform_model;
 use crate::report::{SkipReason, SyncReport, WriteReport};
 use crate::Result;
 use anyhow::bail;
@@ -185,9 +186,21 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
             }
         }
 
-        // Sync preferences
+        // Sync preferences (with model transformation)
         if params.sync_preferences {
-            let prefs = self.source.read_preferences()?;
+            let mut prefs = self.source.read_preferences()?;
+
+            // Transform model name to target platform equivalent
+            if let Some(ref model) = prefs.model {
+                if let Some(transformed) =
+                    transform_model(model, self.source.name(), self.target.name())
+                {
+                    prefs.model = Some(transformed);
+                }
+                // If transformation returns None (unknown model), keep original
+                // This allows passthrough of unrecognized models
+            }
+
             if !params.dry_run {
                 report.preferences = self.target.write_preferences(&prefs)?;
             } else {
@@ -429,5 +442,98 @@ mod tests {
         let orchestrator = SyncOrchestrator::new(source, target);
         assert_eq!(orchestrator.source_name(), "claude");
         assert_eq!(orchestrator.target_name(), "codex");
+    }
+
+    #[test]
+    fn sync_transforms_model_claude_to_codex() {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+
+        // Create source settings with Claude model
+        let settings_path = src_dir.path().join("settings.json");
+        fs::write(&settings_path, r#"{"model": "sonnet"}"#).unwrap();
+
+        let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
+        let target = CodexAdapter::with_root(tgt_dir.path().to_path_buf());
+
+        let orchestrator = SyncOrchestrator::new(source, target);
+        let params = SyncParams {
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: true,
+            sync_skills: false,
+            ..Default::default()
+        };
+
+        let report = orchestrator.sync(&params).unwrap();
+        assert_eq!(report.preferences.written, 1);
+
+        // Verify model was transformed to OpenAI equivalent
+        let tgt_config = tgt_dir.path().join("config.json");
+        let content = fs::read_to_string(&tgt_config).unwrap();
+        let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(settings["model"], "gpt-4o-mini");
+    }
+
+    #[test]
+    fn sync_transforms_model_codex_to_claude() {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+
+        // Create source config with OpenAI model
+        let config_path = src_dir.path().join("config.json");
+        fs::write(&config_path, r#"{"model": "gpt-4o"}"#).unwrap();
+
+        let source = CodexAdapter::with_root(src_dir.path().to_path_buf());
+        let target = ClaudeAdapter::with_root(tgt_dir.path().to_path_buf());
+
+        let orchestrator = SyncOrchestrator::new(source, target);
+        let params = SyncParams {
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: true,
+            sync_skills: false,
+            ..Default::default()
+        };
+
+        let report = orchestrator.sync(&params).unwrap();
+        assert_eq!(report.preferences.written, 1);
+
+        // Verify model was transformed to Claude equivalent
+        let tgt_settings = tgt_dir.path().join("settings.json");
+        let content = fs::read_to_string(&tgt_settings).unwrap();
+        let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(settings["model"], "opus");
+    }
+
+    #[test]
+    fn sync_preserves_unknown_model() {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+
+        // Create source settings with unknown model
+        let settings_path = src_dir.path().join("settings.json");
+        fs::write(&settings_path, r#"{"model": "custom-model-v1"}"#).unwrap();
+
+        let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
+        let target = CodexAdapter::with_root(tgt_dir.path().to_path_buf());
+
+        let orchestrator = SyncOrchestrator::new(source, target);
+        let params = SyncParams {
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: true,
+            sync_skills: false,
+            ..Default::default()
+        };
+
+        let report = orchestrator.sync(&params).unwrap();
+        assert_eq!(report.preferences.written, 1);
+
+        // Unknown model should be passed through unchanged
+        let tgt_config = tgt_dir.path().join("config.json");
+        let content = fs::read_to_string(&tgt_config).unwrap();
+        let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(settings["model"], "custom-model-v1");
     }
 }
