@@ -37,10 +37,10 @@ pub enum CliError {
 
     /// The process exited with a non-zero exit code.
     ///
-    /// Note: Currently process failures are recorded via [`RunStore::update_status`]
-    /// rather than returned as errors. This variant is provided for API consumers
-    /// who may want to construct or match on this error type directly.
-    #[allow(dead_code)]
+    /// Currently process failures are recorded via [`RunStore::update_status`]
+    /// rather than returned as errors, but this variant is exposed for:
+    /// - API consumers who want to construct or match on this error type
+    /// - Test code that verifies error display formatting
     #[error("CLI process exited with code {exit_code:?}: {stderr}")]
     ProcessFailed {
         exit_code: Option<i32>,
