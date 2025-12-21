@@ -19,6 +19,7 @@ sha2.workspace = true
 walkdir.workspace = true
 dirs.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 skrills-validate = { path = "../validate", version = "0.3.4" }
 
 [dev-dependencies]

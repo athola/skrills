@@ -102,10 +102,20 @@ impl CliConfig {
         let working_dir = std::env::var("SKRILLS_CLI_WORKING_DIR")
             .ok()
             .map(PathBuf::from);
-        let timeout_ms = std::env::var("SKRILLS_CLI_TIMEOUT_MS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(DEFAULT_TIMEOUT_MS);
+        let timeout_ms = match std::env::var("SKRILLS_CLI_TIMEOUT_MS") {
+            Ok(v) => match v.parse::<u64>() {
+                Ok(ms) => ms,
+                Err(_) => {
+                    tracing::warn!(
+                        value = %v,
+                        default = DEFAULT_TIMEOUT_MS,
+                        "Invalid SKRILLS_CLI_TIMEOUT_MS value, using default"
+                    );
+                    DEFAULT_TIMEOUT_MS
+                }
+            },
+            Err(_) => DEFAULT_TIMEOUT_MS,
+        };
 
         Self {
             binary,
@@ -305,6 +315,10 @@ impl CodexCliAdapter {
                 process.child.wait().await.map_err(CliError::WaitFailed)?
             } else {
                 // Process was already removed (e.g., by stop())
+                tracing::debug!(
+                    run_id = %run_id,
+                    "Process already removed from tracking - likely stopped by user"
+                );
                 return Ok(());
             }
         };
@@ -449,7 +463,7 @@ impl BackendAdapter for CodexCliAdapter {
                 .await
             {
                 tracing::error!("CLI execution failed: {}", err);
-                let _ = store_clone
+                if let Err(store_err) = store_clone
                     .append_event(
                         run_id,
                         RunEvent {
@@ -458,8 +472,16 @@ impl BackendAdapter for CodexCliAdapter {
                             data: Some(json!({"message": err.to_string()})),
                         },
                     )
-                    .await;
-                let _ = store_clone
+                    .await
+                {
+                    tracing::error!(
+                        run_id = %run_id,
+                        original_error = %err,
+                        store_error = %store_err,
+                        "Failed to record error event in store - error details may be lost"
+                    );
+                }
+                if let Err(store_err) = store_clone
                     .update_status(
                         run_id,
                         RunStatus {
@@ -468,7 +490,14 @@ impl BackendAdapter for CodexCliAdapter {
                             updated_at: OffsetDateTime::now_utc(),
                         },
                     )
-                    .await;
+                    .await
+                {
+                    tracing::error!(
+                        run_id = %run_id,
+                        store_error = %store_err,
+                        "Failed to update run status to Failed - run may appear stuck"
+                    );
+                }
             }
         });
 
@@ -485,7 +514,13 @@ impl BackendAdapter for CodexCliAdapter {
             let mut processes = self.processes.lock().await;
             if let Some(mut process) = processes.remove(&run_id) {
                 // Attempt to kill the process
-                let _ = process.child.kill().await;
+                if let Err(kill_err) = process.child.kill().await {
+                    tracing::warn!(
+                        run_id = %run_id,
+                        error = %kill_err,
+                        "Failed to kill subprocess - process may still be running"
+                    );
+                }
             }
         }
 

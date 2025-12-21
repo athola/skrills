@@ -196,9 +196,15 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                     transform_model(model, self.source.name(), self.target.name())
                 {
                     prefs.model = Some(transformed);
+                } else {
+                    // Unknown model - keep original but log it
+                    tracing::debug!(
+                        model = %model,
+                        source = %self.source.name(),
+                        target = %self.target.name(),
+                        "Unknown model passed through without transformation"
+                    );
                 }
-                // If transformation returns None (unknown model), keep original
-                // This allows passthrough of unrecognized models
             }
 
             if !params.dry_run {
