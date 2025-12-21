@@ -5,10 +5,17 @@ edition = "2021"
 description = "Subagent MCP tools for the skrills server with pluggable backends."
 license = "MIT"
 authors = ["Skrills Maintainers"]
+repository = "https://github.com/athola/skrills"
+homepage = "https://github.com/athola/skrills"
+documentation = "https://athola.github.io/skrills/"
+readme = "README.md"
+keywords = ["mcp", "skills", "subagents", "agents", "ai"]
+categories = ["development-tools"]
 
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+dirs.workspace = true
 rmcp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -21,6 +28,7 @@ thiserror.workspace = true
 tempfile.workspace = true
 parking_lot.workspace = true
 
+skrills-discovery = { path = "../discovery", version = "0.3.4" }
 skrills-state = { path = "../state", version = "0.3.4" }
 
 [dev-dependencies]

@@ -2,6 +2,14 @@
 name = "skrills_sync"
 version = "0.3.4"
 edition.workspace = true
+description = "Preference synchronization and validation sync utilities for skrills"
+license = "MIT"
+repository = "https://github.com/athola/skrills"
+homepage = "https://github.com/athola/skrills"
+documentation = "https://athola.github.io/skrills/"
+readme = "../../README.md"
+keywords = ["mcp", "skills", "sync", "preferences", "config"]
+categories = ["development-tools"]
 
 [dependencies]
 anyhow.workspace = true
@@ -11,6 +19,7 @@ sha2.workspace = true
 walkdir.workspace = true
 dirs.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 skrills-validate = { path = "../validate", version = "0.3.4" }
 
 [dev-dependencies]

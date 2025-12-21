@@ -102,12 +102,14 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 pub mod adapters;
 pub mod common;
+pub mod models;
 pub mod orchestrator;
 pub mod report;
 pub mod validation;
 
 pub use adapters::{AgentAdapter, ClaudeAdapter, CodexAdapter, FieldSupport};
 pub use common::{Command, CommonConfig, McpServer, Preferences, SyncMeta};
+pub use models::transform_model;
 pub use orchestrator::{parse_direction, SyncDirection, SyncOrchestrator, SyncParams};
 pub use report::{SkipReason, SyncReport, WriteReport};
 pub use validation::{

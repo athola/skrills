@@ -98,20 +98,24 @@ impl ServerHandler for SkillService {
                 if matches!(
                     name.as_str(),
                     "list-subagents"
+                        | "list-agents"
                         | "run-subagent"
                         | "run-subagent-async"
                         | "get-run-status"
                         | "get-async-status"
                         | "stop-run"
                         | "get-run-history"
+                        | "get-run-events"
                         | "download-transcript-secure"
                         | "list_subagents"
+                        | "list_agents"
                         | "run_subagent"
                         | "run_subagent_async"
                         | "get_run_status"
                         | "get_async_status"
                         | "stop_run"
                         | "get_run_history"
+                        | "get_run_events"
                         | "download_transcript_secure"
                 ) {
                     if let Some(service) = &self.subagents {
@@ -540,6 +544,8 @@ impl ServerHandler for SkillService {
                             });
 
                             if include_suggestions && !analysis.suggestions.is_empty() {
+                                // SAFETY: json!({...}) with braces always produces Value::Object,
+                                // so as_object_mut() cannot fail here.
                                 result
                                     .as_object_mut()
                                     .expect("analysis result JSON is an object constructed inline")

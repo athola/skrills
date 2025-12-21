@@ -45,5 +45,6 @@ pub use scanner::{
     priority_labels_and_rank_map, priority_with_override, DiscoveryConfig,
 };
 pub use types::{
-    parse_source_key, AgentMeta, Diagnostics, DuplicateInfo, SkillMeta, SkillRoot, SkillSource,
+    parse_agent_config, parse_source_key, AgentConfig, AgentMeta, Diagnostics, DuplicateInfo,
+    SkillMeta, SkillRoot, SkillSource,
 };

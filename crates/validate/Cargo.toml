@@ -3,6 +3,13 @@ name = "skrills-validate"
 version = "0.3.4"
 edition.workspace = true
 description = "Skill validation for Claude Code and Codex CLI"
+license = "MIT"
+repository = "https://github.com/athola/skrills"
+homepage = "https://github.com/athola/skrills"
+documentation = "https://athola.github.io/skrills/"
+readme = "../../README.md"
+keywords = ["mcp", "skills", "validation", "linting", "cli"]
+categories = ["development-tools"]
 
 [dependencies]
 serde = { workspace = true }
