@@ -350,10 +350,7 @@ mod tests {
     #[test]
     fn test_sanitize_github_query_handles_quoted_values() {
         // Quoted operator values should be removed
-        assert_eq!(
-            sanitize_github_query(r#"test repo:"owner/repo""#),
-            "test"
-        );
+        assert_eq!(sanitize_github_query(r#"test repo:"owner/repo""#), "test");
     }
 
     #[test]

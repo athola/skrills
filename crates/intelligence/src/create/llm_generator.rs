@@ -40,7 +40,9 @@ fn validate_cli_binary(name: &str) -> Result<&str, &'static str> {
     }
 
     // Reject shell metacharacters
-    let forbidden_chars = ['|', ';', '&', '$', '`', '(', ')', '{', '}', '<', '>', '!', '*', '?'];
+    let forbidden_chars = [
+        '|', ';', '&', '$', '`', '(', ')', '{', '}', '<', '>', '!', '*', '?',
+    ];
     if name.chars().any(|c| forbidden_chars.contains(&c)) {
         return Err("CLI binary name contains forbidden shell characters");
     }
