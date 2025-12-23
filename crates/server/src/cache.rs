@@ -433,3 +433,172 @@ impl SkillCache {
         Ok(self.dep_graph.transitive_dependents(uri))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support;
+    use skrills_discovery::SkillSource;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use tempfile::tempdir;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(v) = &self.previous {
+                std::env::set_var(self.key, v);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn set_env_var(key: &'static str, value: Option<&str>) -> EnvVarGuard {
+        let previous = std::env::var(key).ok();
+        if let Some(val) = value {
+            std::env::set_var(key, val);
+        } else {
+            std::env::remove_var(key);
+        }
+        EnvVarGuard { key, previous }
+    }
+
+    fn write_skill(root: &Path, name: &str) -> PathBuf {
+        let skill_dir = root.join(name);
+        fs::create_dir_all(&skill_dir).expect("create skill dir");
+        let path = skill_dir.join("SKILL.md");
+        fs::write(&path, "demo skill").expect("write skill");
+        path
+    }
+
+    #[test]
+    fn cache_refreshes_after_ttl_and_discovers_new_skill() {
+        /*
+        GIVEN a cache with a short TTL
+        WHEN new skills appear after the TTL
+        THEN refresh should discover them
+        */
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let cache_path = temp.path().join("skills-cache.json");
+        let _cache_env = set_env_var(
+            "SKRILLS_CACHE_PATH",
+            Some(cache_path.to_str().expect("cache path")),
+        );
+
+        let root_dir = temp.path().join("skills");
+        write_skill(&root_dir, "alpha");
+        let root = SkillRoot {
+            root: root_dir.clone(),
+            source: SkillSource::Codex,
+        };
+
+        let mut cache = SkillCache::new_with_ttl(vec![root], Duration::from_millis(5));
+        let (skills, _dups) = cache
+            .skills_with_dups()
+            .expect("initial skill scan should succeed");
+        assert!(
+            skills.iter().any(|s| s.name.contains("alpha")),
+            "alpha should be present"
+        );
+
+        write_skill(&root_dir, "beta");
+
+        let started = Instant::now();
+        loop {
+            let (skills, _dups) = cache.skills_with_dups().expect("refresh should succeed");
+            if skills.len() >= 2 {
+                break;
+            }
+            if started.elapsed() >= Duration::from_secs(1) {
+                panic!("cache did not refresh within expected time");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn cache_invalidate_triggers_rescan_after_snapshot() {
+        /*
+        GIVEN a cache with an existing snapshot
+        WHEN invalidate is called and the underlying skill is removed
+        THEN a subsequent refresh should reflect the removal
+        */
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let cache_path = temp.path().join("skills-cache.json");
+        let _cache_env = set_env_var(
+            "SKRILLS_CACHE_PATH",
+            Some(cache_path.to_str().expect("cache path")),
+        );
+
+        let root_dir = temp.path().join("skills");
+        let skill_path = write_skill(&root_dir, "alpha");
+        let root = SkillRoot {
+            root: root_dir.clone(),
+            source: SkillSource::Codex,
+        };
+
+        let mut cache = SkillCache::new_with_ttl(vec![root], Duration::from_secs(60));
+        let (skills, _dups) = cache
+            .skills_with_dups()
+            .expect("initial skill scan should succeed");
+        assert_eq!(skills.len(), 1, "expected one skill in cache");
+
+        fs::remove_file(&skill_path).expect("remove skill");
+        cache.invalidate();
+
+        let _ = cache
+            .skills_with_dups()
+            .expect("snapshot reload should succeed");
+        let (skills, _dups) = cache.skills_with_dups().expect("rescan should succeed");
+        assert!(skills.is_empty(), "expected cache to drop removed skill");
+    }
+
+    #[test]
+    fn cache_supports_parallel_reads() {
+        /*
+        GIVEN a shared cache behind a mutex
+        WHEN multiple threads read concurrently
+        THEN all reads should succeed without panic
+        */
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let cache_path = temp.path().join("skills-cache.json");
+        let _cache_env = set_env_var(
+            "SKRILLS_CACHE_PATH",
+            Some(cache_path.to_str().expect("cache path")),
+        );
+
+        let root_dir = temp.path().join("skills");
+        write_skill(&root_dir, "alpha");
+        let root = SkillRoot {
+            root: root_dir.clone(),
+            source: SkillSource::Codex,
+        };
+
+        let cache = SkillCache::new_with_ttl(vec![root], Duration::from_secs(60));
+        let shared = Arc::new(std::sync::Mutex::new(cache));
+
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let shared = Arc::clone(&shared);
+                std::thread::spawn(move || {
+                    let mut guard = shared.lock().expect("cache lock");
+                    let (skills, _dups) =
+                        guard.skills_with_dups().expect("cache read should succeed");
+                    assert!(!skills.is_empty(), "expected skills in cache");
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().expect("thread join");
+        }
+    }
+}

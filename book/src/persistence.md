@@ -1,37 +1,43 @@
-# State Management and Persistence
+# Understanding Skrills Data
 
-`skrills` uses minimal persistent state, focusing on discovery caches and sync mirrors. This chapter describes what data is retained and how to inspect or reset it.
+Skrills stores minimal data on disk. This chapter explains what gets saved, where to find it, and how to reset things when needed.
 
-## What Is Persisted
+## What Skrills Saves
 
-### Codex Skills (Discovery Root)
+### Your Skills
 
-Codex discovers skills from `~/.codex/skills/**/SKILL.md` (recursive). When you run `skrills sync` or `skrills mirror`, skrills copies `SKILL.md` skills (and their adjacent supporting files) into `~/.codex/skills/` so Codex can load them.
+Skrills discovers skills from these directories:
 
-Codex skills are behind an experimental feature flag in `~/.codex/config.toml`:
+| Location | Purpose |
+|----------|---------|
+| `~/.codex/skills/` | Codex CLI skills |
+| `~/.claude/skills/` | Claude Code skills |
+| `~/.agent/skills/` | Universal agent skills |
+
+When you run `skrills sync` or `skrills mirror`, skrills copies skills between these directories so both tools can access them.
+
+**Note:** Codex skills require an experimental feature flag in `~/.codex/config.toml`:
 
 ```toml
 [features]
 skills = true
 ```
 
-### Skill Mirrors (Optional)
-
-`~/.codex/skills-mirror/` is a legacy/optional directory used by older versions of `skrills` to keep a full, byte-for-byte mirror of Claude assets. Current `skrills` releases sync skills into `~/.codex/skills/` and agents into `~/.codex/agents/` without creating `~/.codex/skills-mirror/` by default.
-
-Command files are mirrored byte-for-byte (non-UTF-8 safe) and can skip overwriting existing targets with `--skip-existing-commands`.
-
 ### Discovery Cache
 
-The discovery cache is stored in `~/.codex/skills-cache.json` (configurable via `SKRILLS_CACHE_PATH`). It stores discovered skill metadata to prevent repeated directory traversals:
+To avoid scanning directories repeatedly, skrills caches skill metadata:
 
-- TTL configurable via `SKRILLS_CACHE_TTL_MS` or `cache_ttl_ms` in the manifest
-- Automatically refreshes when stale
-- Live invalidation available with `--watch` flag on `skrills serve`
+**Location:** `~/.codex/skills-cache.json`
 
-### Skills Manifest
+The cache refreshes automatically when:
+- The time-to-live (TTL) expires (default: 60 seconds)
+- You use the `--watch` flag with `skrills serve`
 
-The `~/.codex/skills-manifest.json` file controls skill discovery:
+### Manifest
+
+The manifest controls which directories skrills searches and in what order:
+
+**Location:** `~/.codex/skills-manifest.json`
 
 ```json
 {
@@ -41,69 +47,79 @@ The `~/.codex/skills-manifest.json` file controls skill discovery:
 }
 ```
 
+| Field | Purpose |
+|-------|---------|
+| `priority` | Search order for skill directories |
+| `expose_agents` | Include agent definitions in discovery |
+| `cache_ttl_ms` | How long to cache results (milliseconds) |
+
 ### Subagent Configuration
 
-If present, `~/.codex/subagents.toml` sets defaults for subagent execution:
+Settings for launching subagents:
+
+**Location:** `~/.claude/subagents.toml` or `~/.codex/subagents.toml`
 
 ```toml
+execution_mode = "cli"
+cli_binary = "auto"
 default_backend = "codex"
 ```
 
-The `SKRILLS_SUBAGENTS_DEFAULT_BACKEND` environment variable overrides `default_backend` at runtime.
+| Field | Purpose |
+|-------|---------|
+| `execution_mode` | `cli` (run commands) or `api` (use API) |
+| `cli_binary` | Which CLI to use: `claude`, `codex`, or `auto` |
+| `default_backend` | Default API backend when using API mode |
 
-## What Is NOT Persisted
+## What Skrills Does NOT Save
 
-- **User prompts**: Prompts are transient and never written to disk.
-- **Validation results**: Run `skrills validate` each time; results are not cached.
-- **Analysis results**: Run `skrills analyze` each time; results are not cached.
+Skrills keeps these things temporary:
 
-## Inspecting State
+- **Validation results** — Run `skrills validate` each time
+- **Analysis results** — Run `skrills analyze` each time
+- **User prompts** — Never written to disk
 
-### View Discovered Skills
+## Checking What's Stored
 
-```bash
-skrills validate --format json  # Shows all discovered skills with validation status
-```
-
-### Preview Sync Changes
-
-```bash
-skrills sync-status --from claude  # Shows what would be synced
-```
-
-### Diagnose Configuration
+### See discovered skills
 
 ```bash
-skrills doctor  # Verifies Codex MCP configuration
+skrills validate --format json
 ```
 
-## Clean Resets
+### Preview sync changes
 
-### Clear Codex Skills
+```bash
+skrills sync-status --from claude
+```
+
+### Verify configuration
+
+```bash
+skrills doctor
+```
+
+## Resetting Things
+
+### Clear synced skills
+
+Remove skills that were copied from another tool:
 
 ```bash
 rm -rf ~/.codex/skills/
 ```
 
-### Clear Skill Mirrors
+### Clear the cache
 
-Remove synced skills to read only from original directories:
-
-```bash
-rm -rf ~/.codex/skills-mirror/
-```
-
-### Clear Discovery Cache
-
-Force re-discovery of all skills:
+Force skrills to re-scan all directories:
 
 ```bash
 rm ~/.codex/skills-cache.json
 ```
 
-### Full Reset
+### Full reset
 
-Remove all skrills state files:
+Remove all skrills state and start fresh:
 
 ```bash
 rm -rf ~/.codex/skills/
@@ -111,4 +127,15 @@ rm -rf ~/.codex/skills-mirror/
 rm ~/.codex/skills-cache.json
 rm ~/.codex/skills-manifest.json
 rm ~/.codex/subagents.toml
+rm ~/.claude/subagents.toml
+```
+
+After a full reset, run `skrills setup` to reconfigure.
+
+## Legacy Files
+
+Older versions of skrills used `~/.codex/skills-mirror/` to store a complete copy of Claude assets. Current versions sync directly to `~/.codex/skills/` instead. You can safely delete the mirror directory:
+
+```bash
+rm -rf ~/.codex/skills-mirror/
 ```

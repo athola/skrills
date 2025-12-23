@@ -68,7 +68,12 @@ async fn wait_for_run_succeeded(
         let status = peer
             .call_tool(CallToolRequestParam {
                 name: "get-run-status".into(),
-                arguments: Some(json!({ "run_id": run_id }).as_object().cloned().unwrap()),
+                arguments: Some(
+                    json!({ "run_id": run_id })
+                        .as_object()
+                        .cloned()
+                        .expect("run_id args should be object"),
+                ),
             })
             .await?;
         let content = status.structured_content.unwrap_or(serde_json::Value::Null);
@@ -176,7 +181,12 @@ async fn given_skrills_server_with_subagents_when_executing_run_subagent_then_co
     );
 
     // Execute subagent with codex backend
-    let args = json!({"prompt": "ping", "backend": "codex", "stream": false});
+    let args = json!({
+        "prompt": "ping",
+        "backend": "codex",
+        "stream": false,
+        "execution_mode": "api"
+    });
     let result = peer
         .call_tool(CallToolRequestParam {
             name: "run-subagent".into(),
@@ -267,7 +277,11 @@ async fn given_server_with_multiple_backends_when_switching_default_then_routes_
     let peer = client.peer().clone();
 
     // Execute request without specifying backend (should use codex)
-    let args = json!({"prompt": "test", "stream": false});
+    let args = json!({
+        "prompt": "test",
+        "stream": false,
+        "execution_mode": "api"
+    });
     let result = peer
         .call_tool(CallToolRequestParam {
             name: "run-subagent".into(),
@@ -298,8 +312,84 @@ async fn given_server_when_streaming_enabled_then_emits_events() -> anyhow::Resu
     // GIVEN a running skrills server
     // WHEN executing a subagent with streaming enabled
     // THEN it should emit streaming events during execution
-    // This test would verify that streaming works correctly
-    // Implementation would follow similar pattern to the main test
-    // but with stream: true and verification of event emission
+    let _guard = TEST_LOCK.lock().await;
+
+    let tmp = tempfile::tempdir()?;
+    std::fs::create_dir_all(tmp.path().join(".codex/skills"))?;
+
+    let server = MockServer::start().await;
+    let _codex_mock = Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"choices": [{"message": {"content": "streaming reply"}}]})),
+        )
+        .mount(&server)
+        .await;
+
+    let binary_path = ensure_skrills_binary().await?;
+
+    let mut command = Command::new(&binary_path);
+    command.arg("serve");
+    command.env("HOME", tmp.path());
+    command.env("SKRILLS_CODEX_API_KEY", "test-codex-key");
+    command.env("SKRILLS_CODEX_BASE_URL", format!("{}/v1/", server.uri()));
+    command.env("SKRILLS_SUBAGENTS_DEFAULT_BACKEND", "codex");
+
+    let (transport, _stderr) = TokioChildProcess::builder(command).spawn()?;
+    let client = timeout(Duration::from_secs(5), serve_client((), transport)).await??;
+    let peer = client.peer().clone();
+
+    let args = json!({
+        "prompt": "stream",
+        "backend": "codex",
+        "stream": true,
+        "execution_mode": "api"
+    });
+    let result = peer
+        .call_tool(CallToolRequestParam {
+            name: "run-subagent".into(),
+            arguments: args.as_object().cloned(),
+        })
+        .await?;
+
+    let run_id = result
+        .structured_content
+        .as_ref()
+        .and_then(|v: &serde_json::Value| v.get("run_id"))
+        .and_then(|v: &serde_json::Value| v.as_str())
+        .expect("run_id string")
+        .to_string();
+
+    let _content = wait_for_run_succeeded(&peer, &run_id, Duration::from_secs(10)).await?;
+
+    let events_result = peer
+        .call_tool(CallToolRequestParam {
+            name: "get-run-events".into(),
+            arguments: Some(
+                json!({ "run_id": run_id })
+                    .as_object()
+                    .cloned()
+                    .expect("get-run-events args should be object"),
+            ),
+        })
+        .await?;
+
+    let events = events_result
+        .structured_content
+        .as_ref()
+        .and_then(|v: &serde_json::Value| v.get("events"))
+        .and_then(|v: &serde_json::Value| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    assert!(
+        events
+            .iter()
+            .any(|e| e.get("kind").and_then(|v| v.as_str()) == Some("stream")),
+        "expected at least one stream event"
+    );
+
+    client.cancel().await?;
     Ok(())
 }

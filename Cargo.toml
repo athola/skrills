@@ -8,6 +8,7 @@ members = [
     "crates/subagents",
     "crates/validate",
     "crates/analyze",
+    "crates/intelligence",
 ]
 resolver = "2"
 

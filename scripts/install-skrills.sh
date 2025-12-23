@@ -26,17 +26,6 @@ fi
 BIN_PATH="${BIN_PATH:-${SKRILLS_BIN:-$HOME/.cargo/bin/skrills}}"
 CLIENT="${SKRILLS_CLIENT:-auto}"
 
-# Determine base dir (may inform client detection)
-if [ -n "${SKRILLS_BASE_DIR:-}" ]; then
-  BASE_DIR="$SKRILLS_BASE_DIR"
-elif [ "$CLIENT" = "claude" ]; then
-  BASE_DIR="$HOME/.claude"
-else
-  # Default to .codex for auto-detection or explicit codex
-  BASE_DIR="$HOME/.codex"
-fi
-mkdir -p "$BASE_DIR"
-
 detect_client_from_base() {
   local base_hint="$1"
   shopt -s nocasematch 2>/dev/null || true
@@ -71,16 +60,48 @@ probe_signature_files() {
 }
 
 if [ "$CLIENT" = "auto" ]; then
-  candidate=$(detect_client_from_base "$BASE_DIR")
-  if [ -z "$candidate" ]; then
-    candidate=$(probe_signature_files "$BASE_DIR")
+  candidate=""
+  if [ -n "${SKRILLS_BASE_DIR:-}" ]; then
+    candidate=$(detect_client_from_base "$SKRILLS_BASE_DIR")
+    if [ -z "$candidate" ]; then
+      candidate=$(probe_signature_files "$SKRILLS_BASE_DIR")
+    fi
   fi
   if [ -z "$candidate" ]; then
-    CLIENT="codex" # MCP-first default
+    if [ -n "${CLAUDE_CODE_SESSION:-}" ] || [ -n "${CLAUDE_CLI:-}" ] || [ -n "${__CLAUDE_MCP_SERVER:-}" ] || [ -n "${CLAUDE_CODE_ENTRYPOINT:-}" ]; then
+      candidate="claude"
+    fi
+  fi
+  if [ -z "$candidate" ]; then
+    if [ -n "${CODEX_SESSION_ID:-}" ] || [ -n "${CODEX_CLI:-}" ] || [ -n "${CODEX_HOME:-}" ]; then
+      candidate="codex"
+    fi
+  fi
+  if [ -z "$candidate" ]; then
+    candidate=$(detect_client_from_base "$BIN_PATH")
+  fi
+  if [ -z "$candidate" ]; then
+    candidate=$(probe_signature_files "$HOME/.claude")
+  fi
+  if [ -z "$candidate" ]; then
+    candidate=$(probe_signature_files "$HOME/.codex")
+  fi
+  if [ -z "$candidate" ]; then
+    CLIENT="claude" # Default installer target when detection fails
   else
     CLIENT="$candidate"
   fi
 fi
+
+# Determine base dir (may inform client detection)
+if [ -n "${SKRILLS_BASE_DIR:-}" ]; then
+  BASE_DIR="$SKRILLS_BASE_DIR"
+elif [ "$CLIENT" = "claude" ]; then
+  BASE_DIR="$HOME/.claude"
+else
+  BASE_DIR="$HOME/.codex"
+fi
+mkdir -p "$BASE_DIR"
 
 MCP_PATH="$BASE_DIR/.mcp.json"
 CONFIG_TOML="$BASE_DIR/config.toml"
@@ -202,7 +223,7 @@ install_subagents_config() {
   if [ -f "$example" ]; then
     mkdir -p "$(dirname "$config_path")"
     cp "$example" "$config_path"
-    echo "Installed default subagents config to $config_path (default_backend=codex)"
+    echo "Installed default subagents config to $config_path (execution_mode=cli, cli_binary=auto)"
   else
     echo "Warning: default subagents config example missing at $example" >&2
   fi

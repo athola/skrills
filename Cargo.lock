@@ -2031,6 +2031,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "skrills-intelligence"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "dirs",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
+ "walkdir",
+]
+
+[[package]]
 name = "skrills-server"
 version = "0.3.4"
 dependencies = [
@@ -2053,12 +2071,14 @@ dependencies = [
  "shellexpand",
  "skrills-analyze",
  "skrills-discovery",
+ "skrills-intelligence",
  "skrills-state",
  "skrills-subagents",
  "skrills-validate",
  "skrills_sync",
  "tempfile",
  "tokio",
+ "tokio-util",
  "toml",
  "tracing",
  "tracing-subscriber",
@@ -2097,6 +2117,7 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
+ "toml",
  "tracing",
  "uuid",
  "wiremock",

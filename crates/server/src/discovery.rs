@@ -28,7 +28,7 @@ pub const AGENTS_NAME: &str = "AGENTS.md";
 /// Description of the AGENTS.md document.
 pub const AGENTS_DESCRIPTION: &str = "AI Agent Development Guidelines";
 /// Content of the AGENTS.md document.
-pub const AGENTS_TEXT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../AGENTS.md"));
+pub const AGENTS_TEXT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/AGENTS.md"));
 /// Environment variable to control exposure of AGENTS.md.
 pub const ENV_EXPOSE_AGENTS: &str = "SKRILLS_EXPOSE_AGENTS";
 /// Command template used to launch an agent specification.

@@ -1,78 +1,114 @@
-# Project Overview
+# What is Skrills?
 
-`skrills` is a skills support engine for Claude Code and Codex CLI. It validates skills for compatibility, analyzes token usage, and synchronizes configurations bidirectionally between both CLIs.
+Skrills helps you manage AI assistant skills across different tools. If you use Claude Code, Codex CLI, or both, skrills keeps your skills organized, validated, and synchronized.
 
-## Core Capabilities
+## The Problem Skrills Solves
 
-- **Validation**: Validates skills against Claude Code (permissive) and Codex CLI (strict) requirements. Includes auto-fix capability to add missing frontmatter.
-- **Analysis**: Analyzes skills for token usage, dependencies, and optimization opportunities.
-- **Bidirectional Sync**: Synchronizes skills, slash commands, MCP server configurations, and preferences between Claude Code and Codex CLI.
-- **MCP Server**: Operates over standard I/O (stdio), providing tools for validation, analysis, and sync operations.
-- **Subagents Runtime**: Provides MCP tools for executing subagents with configurable backends (Claude-style or Codex-style).
+AI coding assistants like Claude Code and Codex CLI use "skills" — instructions that teach them specific behaviors. But these tools store skills differently and have different requirements. Skrills bridges this gap.
 
-## Architecture
+**Without skrills:**
+- Skills written for Claude Code may not work in Codex CLI
+- You manually copy skills between tools
+- Large skills slow down your assistant without warning
+- You discover compatibility problems only when skills fail
 
-Skrills is organized as a Rust workspace with specialized crates:
+**With skrills:**
+- Validate skills work across both tools before problems occur
+- Sync skills automatically with one command
+- Identify which skills consume the most tokens
+- Get suggestions to optimize slow or bloated skills
 
-- `crates/server`: MCP server runtime and CLI.
-- `crates/validate`: Skill validation for Claude Code and Codex CLI compatibility.
-- `crates/analyze`: Token counting, dependency analysis, and optimization suggestions.
-- `crates/sync`: Bidirectional sync between Claude/Codex (skills, commands, prefs, MCP servers).
-- `crates/discovery`: Skill discovery and ranking across multiple directories.
-- `crates/state`: Persistent store for manifests and mirrors.
-- `crates/subagents`: Shared subagent runtime and backends for Codex/Claude delegation.
+## Core Features
 
-## Skill Discovery
+### Validate Skills
 
-Skills are discovered by searching through a prioritized sequence of directories:
-
-1. `~/.codex/skills`
-2. `~/.codex/skills-mirror` (optional/legacy mirror of Claude assets)
-3. `~/.claude/skills`
-4. `~/.agent/skills`
-
-You can customize discovery priority using a `~/.codex/skills-manifest.json` file:
-
-```json
-{ "priority": ["codex","mirror","claude","agent"], "cache_ttl_ms": 60000 }
-```
-
-## Typical Workflows
-
-### Validate Skills for Codex Compatibility
+Check that your skills meet requirements for Claude Code and Codex CLI:
 
 ```bash
-skrills validate --target codex
-skrills validate --target codex --autofix  # Auto-add missing frontmatter
+skrills validate --target codex              # Check Codex compatibility
+skrills validate --target codex --autofix    # Fix issues automatically
 ```
 
-### Analyze Skill Token Usage
+### Analyze Token Usage
+
+Find skills that consume excessive context:
 
 ```bash
 skrills analyze --min-tokens 1000 --suggestions
 ```
 
-### Sync All Configurations from Claude to Codex
+### Sync Between Tools
+
+Copy all your settings from one tool to another:
 
 ```bash
-skrills sync-all --from claude --skip-existing-commands
+skrills sync-all --from claude
 ```
 
-### Start MCP Server
+### Run as MCP Server
+
+Expose skrills capabilities to your AI assistant:
 
 ```bash
 skrills serve
 ```
 
-### Launch a Mirrored Agent
+## Quick Start
 
-```bash
-skrills agent codex-dev
-```
+1. **Install skrills:**
+   ```bash
+   curl -LsSf https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh | sh
+   ```
 
-## Installation
+2. **Check your skills work:**
+   ```bash
+   skrills validate
+   ```
 
-- **macOS / Linux**: `curl -LsSf https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh | sh`
-- **Windows PowerShell**: See installation guide for PowerShell command.
-- **crates.io**: `cargo install skrills`
-- **From source**: `cargo install --path crates/cli --force`
+3. **Sync from Claude to Codex (if you use both):**
+   ```bash
+   skrills sync-all --from claude
+   ```
+
+## Key Concepts
+
+### Skills
+
+Skills are markdown files (named `SKILL.md`) that teach your AI assistant specific behaviors. They contain instructions, examples, and metadata. Skrills discovers skills from these directories:
+
+1. `~/.codex/skills` — Codex CLI skills
+2. `~/.claude/skills` — Claude Code skills
+3. `~/.agent/skills` — Universal agent skills
+
+### MCP (Model Context Protocol)
+
+MCP lets AI assistants communicate with external tools. Skrills runs as an MCP server, exposing its capabilities directly to Claude Code or Codex CLI. This means your assistant can validate skills, analyze token usage, or sync configurations without you running commands manually.
+
+### Validation Targets
+
+Claude Code and Codex CLI have different requirements:
+- **Claude Code** — Permissive. Most valid markdown works.
+- **Codex CLI** — Strict. Requires specific frontmatter fields.
+
+Use `--target both` to ensure skills work everywhere.
+
+## Architecture (For the Curious)
+
+Skrills is built as a Rust workspace with focused crates:
+
+| Crate | Purpose |
+|-------|---------|
+| `server` | MCP server and CLI interface |
+| `validate` | Skill validation for both platforms |
+| `analyze` | Token counting and optimization hints |
+| `intelligence` | Smart recommendations and skill creation |
+| `sync` | Bidirectional sync between Claude and Codex |
+| `discovery` | Find and rank skills across directories |
+| `subagents` | Delegate tasks to Claude or Codex |
+
+## Next Steps
+
+- **New to skrills?** Start with the [Installation Guide](installation.md)
+- **Using both CLIs?** See the [Sync Guide](sync-guide.md)
+- **Optimizing skills?** Check [MCP Token Optimization](mcp-token-optimization.md)
+- **Have questions?** Browse the [FAQ](faq.md)

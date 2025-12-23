@@ -25,6 +25,7 @@ graph TD
     server --> sync[sync]
     server --> validate[validate]
     server --> analyze[analyze]
+    server --> intelligence[intelligence]
     server --> subagents[subagents]
     sync --> validate
     analyze --> validate
@@ -32,6 +33,7 @@ graph TD
 
     subgraph leaf["Leaf Crates (no internal deps)"]
         discovery[discovery]
+        intelligence
         state
         validate
     end
@@ -46,6 +48,7 @@ graph TD
 | `sync` | Bidirectional Claude/Codex sync |
 | `validate` | Skill validation (Claude/Codex) |
 | `analyze` | Token counting, dependencies |
+| `intelligence` | Context-aware recommendations, project analysis, skill creation helpers |
 | `discovery` | Skill/agent discovery, ranking |
 | `state` | Environment config, persistence |
 | `subagents` | Multi-backend agent runtime |
@@ -58,16 +61,31 @@ graph TD
 - **Feature flags**: `subagents` and `watch` are optional features for smaller binaries.
 - **Composition over inheritance**: Generic `SyncOrchestrator<S, T>` uses compile-time dispatch.
 
+## Module Organization
+
+The `app` module is split into submodules to stay under the 2500 LOC threshold per ADR-0001:
+
+| Module | Lines | Purpose |
+|--------|-------|---------|
+| `mod.rs` | ~1600 | Core SkillService, MCP handlers, resource serving |
+| `intelligence.rs` | ~740 | Intelligence tool implementations (recommendations, project analysis, skill creation) |
+
+**LOC Monitoring**: When `app/mod.rs` approaches 2000 lines, evaluate extracting the next logical group of methods. Candidates include subagent tool handlers or resource-serving methods.
+
 ## Future Considerations
 
 - Formalize additional ADRs as architecture evolves.
-- Split `app.rs` into smaller modules if it grows beyond 2500 LOC.
 - Extract command handlers to `commands/` submodules as functionality expands.
-- Phase 5: add a `resolve-dependencies` MCP tool in a separate PR.
+- Keep CLI and MCP tool lists aligned as new tools ship.
+- Consider consolidating `sync-from-claude` with `sync-all` or documenting their distinct roles.
+- Consider versioning the intelligence tool inputs/outputs as the API surface grows.
 - Consider extracting `SkillFrontmatter` / `DeclaredDependency` into a `skrills-types` crate if more crates need them.
-- Phase 6: add an `--check-deps` flag to the `validate` CLI.
+- Consider adding an `--check-deps` flag to the `validate` CLI.
 
 ## Related Documents
 
 - [ADR 0001: Pivot to Support Engine](adr/0001-pivot-to-support-engine.md)
+- [ADR 0002: Skill Dependency Resolution](adr/0002-skill-dependency-resolution.md)
+- [ADR 0003: CLI Parity for Intelligence Tools](adr/0003-cli-parity-intelligence-tools.md)
+- [ADR 0004: Intelligence Crate Versioning](adr/0004-intelligence-crate-versioning.md)
 - [Book: Overview](../book/src/overview.md)

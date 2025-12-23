@@ -14,10 +14,8 @@ CARGO_CMD = CARGO_HOME=$(CARGO_HOME) $(CARGO)
 DEMO_RUN = HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH)
 
 CARGO_GUARD_TARGETS := fmt lint check test test-unit test-integration test-setup \
-	build build-min serve-help install coverage docs book book-serve clean \
-	ci precommit dogfood demo-doctor demo-setup-claude demo-setup-codex \
-	demo-setup-both demo-setup-uninstall demo-setup-reinstall \
-	demo-setup-universal demo-setup-first-run demo-setup-all demo-all
+	test-coverage build build-min serve-help install coverage docs book book-serve \
+	clean security deps-update
 
 define open_file
 	@if [ -f "$(1)" ]; then \
@@ -35,10 +33,44 @@ define ensure_mdbook
 	fi
 endef
 
+define assert_file
+	@test -f "$(1)" || (echo "ERROR: $(2)" && exit 1)
+endef
+
+define assert_exec
+	@test -x "$(1)" || (echo "ERROR: $(2)" && exit 1)
+endef
+
+define verify_claude_setup
+	@echo "==> Verifying Claude setup..."
+	$(call assert_file,$(HOME_DIR)/.claude/.mcp.json,Claude MCP config not created)
+	$(call assert_exec,$(HOME_DIR)/.claude/bin/skrills,Binary not installed)
+	@echo "==> Claude setup verified successfully"
+endef
+
+define verify_codex_setup
+	@echo "==> Verifying Codex setup..."
+	$(call assert_exec,$(HOME_DIR)/.codex/bin/skrills,Binary not installed)
+	@echo "==> Codex setup verified successfully (TLS certs optional)"
+endef
+
+define verify_both_setup
+	@echo "==> Verifying both clients setup..."
+	$(call assert_file,$(HOME_DIR)/.claude/.mcp.json,Claude MCP config not created)
+	$(call assert_exec,$(HOME_DIR)/.claude/bin/skrills,Binary not installed)
+	@echo "==> Both clients setup verified successfully"
+endef
+
+define verify_claude_reinstall
+	@echo "==> Verifying reinstall..."
+	$(call assert_file,$(HOME_DIR)/.claude/.mcp.json,MCP config not created)
+	@echo "==> Reinstall verified successfully"
+endef
+
 # Phony targets: core developer flow
 .PHONY: help fmt lint lint-md check test test-unit test-integration test-setup \
 	build build-min serve-help install status coverage test-coverage dogfood ci precommit \
-	clean clean-demo githooks require-cargo security deps-update
+	clean clean-demo githooks require-cargo security deps-update check-deps
 # Phony targets: docs
 .PHONY: docs book book-serve
 # Phony targets: demos
@@ -46,6 +78,9 @@ endef
 	demo-setup-both demo-setup-uninstall demo-setup-reinstall \
 	demo-setup-universal demo-setup-first-run demo-setup-all
 .NOTPARALLEL: demo-all demo-setup-all
+.SILENT: demo-doctor demo-all demo-setup-claude demo-setup-codex demo-setup-both \
+	demo-setup-uninstall demo-setup-reinstall demo-setup-universal demo-setup-first-run \
+	demo-setup-all
 
 $(CARGO_GUARD_TARGETS): require-cargo
 
@@ -60,7 +95,7 @@ help:
 	@printf "  %-23s %s\n" "test-setup" "run setup module tests"
 	@printf "  %-23s %s\n" "test-coverage" "run tests with coverage report"
 	@printf "  %-23s %s\n" "build | build-min" "release builds"
-	@printf "  %-23s %s\n" "install" "install skrills to ~/.cargo/bin"
+	@printf "  %-23s %s\n" "install" "install skrills to $(CARGO_HOME)/bin"
 	@printf "  %-23s %s\n" "serve-help" "binary --help smoke check"
 	@printf "  %-23s %s\n" "status" "show project status and environment"
 	@printf "  %-23s %s\n" "coverage" "generate test coverage report"
@@ -70,6 +105,8 @@ help:
 	@printf "  %-23s %s\n" "require-cargo" "guard: ensure cargo is available"
 	@printf "  %-23s %s\n" "security" "run cargo audit"
 	@printf "  %-23s %s\n" "deps-update" "update dependencies"
+	@printf "  %-23s %s\n" "check-deps" "check optional tool availability"
+	@printf "  %-23s %s\n" "" "optional tools: mdbook, cargo-audit, cargo-llvm-cov, cargo-tarpaulin"
 	@printf "\nDocs\n"
 	@printf "  %-23s %s\n" "docs" "build rustdoc and open"
 	@printf "  %-23s %s\n" "book | book-serve" "build or serve mdBook"
@@ -92,7 +129,7 @@ lint:
 	$(CARGO_CMD) clippy --workspace --all-targets -- -D warnings
 
 lint-md:
-	./scripts/lint-markdown.sh
+	$(SHELL) ./scripts/lint-markdown.sh
 
 check:
 	$(CARGO_CMD) check --workspace --all-targets
@@ -129,17 +166,16 @@ serve-help:
 
 status:
 	@echo "=== Skrills Status ==="
-	@echo "Version: $$(grep '^version' crates/cli/Cargo.toml | head -1 | cut -d'"' -f2)"
+	@version=$$(grep '^version' crates/cli/Cargo.toml | head -1 | cut -d'=' -f2 | cut -d'#' -f1 | tr -d " \"'"); \
+	echo "Version: $$version"
 	@echo "Rust: $$(rustc --version)"
 	@echo "Cargo: $$(cargo --version)"
 	@echo "Branch: $$(git rev-parse --abbrev-ref HEAD)"
 	@echo "Commit: $$(git rev-parse --short HEAD)"
 	@echo "Binary: $(BIN_PATH) $$(test -f $(BIN_PATH) && echo '(exists)' || echo '(not built)')"
 
-install: build
-	@mkdir -p $(HOME)/.cargo/bin
-	@cp $(BIN_PATH) $(HOME)/.cargo/bin/$(BIN)
-	@echo "Installed $(BIN) to ~/.cargo/bin/"
+install:
+	$(CARGO_CMD) install --path crates/cli --locked
 
 githooks:
 	./scripts/install-git-hooks.sh
@@ -159,12 +195,12 @@ docs:
 
 book:
 	$(call ensure_mdbook)
-	$(CARGO_CMD) $(MDBOOK) build book
+	PATH=$(CARGO_HOME)/bin:$$PATH $(MDBOOK) build book
 	$(call open_file,$(CURDIR)/book/book/index.html)
 
 book-serve:
 	$(call ensure_mdbook)
-	$(CARGO_CMD) $(MDBOOK) serve book --open --hostname 127.0.0.1 --port 3000
+	PATH=$(CARGO_HOME)/bin:$$PATH $(MDBOOK) serve book --open --hostname 127.0.0.1 --port 3000
 
 # --- Demo helpers ---------------------------------------------------------
 
@@ -188,27 +224,19 @@ demo-setup-claude: demo-fixtures build
 	@echo "==> Demo: Setup for Claude Code (non-interactive)"
 	@rm -rf $(HOME_DIR)/.claude
 	$(DEMO_RUN) setup --client claude --bin-dir $(HOME_DIR)/.claude/bin --yes
-	@echo "==> Verifying Claude setup..."
-	@test -f $(HOME_DIR)/.claude/.mcp.json || (echo "ERROR: MCP config not created" && exit 1)
-	@test -x $(HOME_DIR)/.claude/bin/skrills || (echo "ERROR: Binary not installed" && exit 1)
-	@echo "==> Claude setup verified successfully"
+	$(call verify_claude_setup)
 
 demo-setup-codex: demo-fixtures build
 	@echo "==> Demo: Setup for Codex (non-interactive)"
 	@rm -rf $(HOME_DIR)/.codex
 	$(DEMO_RUN) setup --client codex --bin-dir $(HOME_DIR)/.codex/bin --yes
-	@echo "==> Verifying Codex setup..."
-	@test -x $(HOME_DIR)/.codex/bin/skrills || (echo "ERROR: Binary not installed" && exit 1)
-	@echo "==> Codex setup verified successfully (TLS certs optional)"
+	$(call verify_codex_setup)
 
 demo-setup-both: demo-fixtures build
 	@echo "==> Demo: Setup for both Claude Code and Codex"
 	@rm -rf $(HOME_DIR)/.claude $(HOME_DIR)/.codex
 	$(DEMO_RUN) setup --client both --bin-dir $(HOME_DIR)/.claude/bin --yes
-	@echo "==> Verifying both clients setup..."
-	@test -f $(HOME_DIR)/.claude/.mcp.json || (echo "ERROR: Claude MCP config not created" && exit 1)
-	@test -x $(HOME_DIR)/.claude/bin/skrills || (echo "ERROR: Binary not installed" && exit 1)
-	@echo "==> Both clients setup verified successfully"
+	$(call verify_both_setup)
 
 demo-setup-uninstall: demo-setup-claude
 	@echo "==> Demo: Uninstall Claude setup"
@@ -219,9 +247,7 @@ demo-setup-uninstall: demo-setup-claude
 demo-setup-reinstall: demo-setup-claude
 	@echo "==> Demo: Reinstall Claude setup"
 	$(DEMO_RUN) setup --client claude --bin-dir $(HOME_DIR)/.claude/bin --reinstall --yes
-	@echo "==> Verifying reinstall..."
-	@test -f $(HOME_DIR)/.claude/.mcp.json || (echo "ERROR: MCP config not created" && exit 1)
-	@echo "==> Reinstall verified successfully"
+	$(call verify_claude_reinstall)
 
 demo-setup-universal: demo-fixtures build
 	@echo "==> Demo: Setup with universal sync"
@@ -253,6 +279,13 @@ clean-demo:
 ci: fmt lint test
 
 precommit: fmt lint lint-md test
+
+check-deps:
+	@echo "Checking optional dependencies..."
+	@command -v cargo-audit >/dev/null 2>&1 && echo "  cargo-audit: ok" || echo "  cargo-audit: missing"
+	@command -v cargo-llvm-cov >/dev/null 2>&1 && echo "  cargo-llvm-cov: ok" || echo "  cargo-llvm-cov: missing"
+	@command -v $(MDBOOK) >/dev/null 2>&1 && echo "  mdbook: ok" || echo "  mdbook: missing"
+	@command -v cargo-tarpaulin >/dev/null 2>&1 && echo "  cargo-tarpaulin: ok" || echo "  cargo-tarpaulin: missing"
 
 security:
 	@if command -v cargo-audit >/dev/null 2>&1; then \

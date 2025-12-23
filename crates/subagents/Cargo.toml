@@ -27,6 +27,7 @@ reqwest.workspace = true
 thiserror.workspace = true
 tempfile.workspace = true
 parking_lot.workspace = true
+toml.workspace = true
 
 skrills-discovery = { path = "../discovery", version = "0.3.4" }
 skrills-state = { path = "../state", version = "0.3.4" }

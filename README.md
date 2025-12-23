@@ -24,10 +24,11 @@ Skills support engine for Claude Code and Codex CLI. Validates, analyzes, and sy
 - `crates/server`: MCP server runtime and CLI.
 - `crates/validate`: Validation logic for Claude Code and Codex CLI compatibility.
 - `crates/analyze`: Token counting, dependency analysis, and optimization.
+- `crates/intelligence`: Context-aware recommendations, project analysis, and skill creation helpers.
 - `crates/sync`: Bidirectional sync logic (skills, commands, prefs, MCP servers).
 - `crates/discovery`: Skill discovery and ranking.
 - `crates/state`: Persistent store for manifests and mirrors.
-- `crates/subagents`: Shared subagent runtime and backends.
+- `crates/subagents`: Shared subagent runtime and backends (including `StateRunStore::load_from_disk` for reloading persisted runs).
 
 ## Installation
 - macOS / Linux:
@@ -87,6 +88,8 @@ When running as an MCP server (`skrills serve`), the following tools are availab
 - `validate-skills` - Validate skills for CLI compatibility
 - `analyze-skills` - Analyze token usage and dependencies
 - `skill-metrics` - Aggregate statistics (quality, tokens, dependencies)
+- `resolve-dependencies` - Resolve direct or transitive dependencies/dependents for a skill URI
+- `sync-from-claude` - Copy Claude skills into the Codex mirror
 - `sync-skills` - Sync skills between Claude and Codex
 - `sync-commands` - Sync slash commands
 - `sync-mcp-servers` - Sync MCP configurations
@@ -99,11 +102,45 @@ When running as an MCP server (`skrills serve`), the following tools are availab
 - `disable-skill-trace` - Remove trace/probe skill directories (does not remove markers)
 - `skill-loading-selftest` - Return a one-shot probe line and expected response to confirm skills are loading
 
+### Intelligence tools
+- `recommend-skills-smart` - Smart recommendations using dependencies, usage patterns, and project context
+- `analyze-project-context` - Analyze languages, frameworks, and keywords in a project directory
+- `suggest-new-skills` - Identify skill gaps based on context and usage
+- `create-skill` - Create a new skill via GitHub search, LLM generation, or both
+- `search-skills-github` - Search GitHub for existing `SKILL.md` files
+
+**CLI parity notes**:
+- `skrills sync-from-claude` is an alias for `skrills sync` (copy Claude skills into the Codex mirror).
+- `resolve-dependencies` and the intelligence tools are available via CLI commands (see below).
+
+### MCP tool inputs (selected)
+`sync-from-claude`:
+```json
+{}
+```
+
+`resolve-dependencies`:
+```json
+{ "uri": "skill://skrills/codex/my-skill/SKILL.md", "direction": "dependencies", "transitive": true }
+```
+
+### Smart recommendation workflows (examples)
+1. Project-aware recommendations:
+   - `analyze-project-context` -> `recommend-skills-smart` -> `suggest-new-skills`
+2. GitHub-assisted skill creation:
+   - `search-skills-github` -> `create-skill` (use `dry_run: true` to preview)
+
 ## CLI guide (selected)
 - `skrills validate [--target claude|codex|both] [--autofix]` — validate skills for CLI compatibility.
 - `skrills analyze [--min-tokens N] [--suggestions]` — analyze token usage and dependencies.
 - `skrills metrics [--format text|json] [--include-validation]` — aggregate statistics and quality distribution.
 - `skrills recommend <uri> [--limit N] [--include-quality]` — suggest related skills based on dependencies.
+- `skrills resolve-dependencies <uri> [--direction dependencies|dependents] [--transitive] [--format text|json]` — resolve dependencies or dependents.
+- `skrills recommend-skills-smart [--uri URI] [--prompt TEXT] [--project-dir DIR]` — smart recommendations using usage and context.
+- `skrills analyze-project-context [--project-dir DIR] [--include-git true|false] [--commit-limit N] [--format text|json]` — analyze project context for recommendations.
+- `skrills suggest-new-skills [--project-dir DIR] [--focus-area AREA]` — identify gaps and suggestions.
+- `skrills create-skill <name> --description TEXT [--method github|llm|both] [--target-dir DIR]` — create skills via GitHub search or LLM generation (target dir defaults to installed client, Claude preferred).
+- `skrills search-skills-github <query> [--limit N] [--format text|json]` — search GitHub for skills.
 - `skrills sync-all [--from claude|codex] [--skip-existing-commands]` — sync all configurations.
 - `skrills sync-commands [--from claude|codex] [--dry-run] [--skip-existing-commands]` — byte-for-byte command sync.
 - `skrills mirror` — mirror skills/agents/commands/prefs from Claude to Codex.
@@ -116,9 +153,12 @@ When running as an MCP server (`skrills serve`), the following tools are availab
 - `SKRILLS_CACHE_TTL_MS` — discovery cache TTL.
 - `SKRILLS_CLIENT` — force installer target (`codex` or `claude`).
 - `SKRILLS_NO_MIRROR=1` — skip post-install mirror on Codex.
+- `GITHUB_TOKEN` — optional GitHub API token for `search-skills-github` and GitHub-backed `create-skill` to avoid rate limits.
 - Subagents ship **on by default**: binaries are built with the `subagents` feature.
-- `SKRILLS_SUBAGENTS_DEFAULT_BACKEND` — default backend (`codex` or `claude`) when launching subagents.
-- `~/.codex/subagents.toml` — optional override file for subagent defaults.
+- `SKRILLS_SUBAGENTS_EXECUTION_MODE` — default subagent mode (`cli` or `api`, default `cli`).
+- `SKRILLS_SUBAGENTS_DEFAULT_BACKEND` — default API backend (`codex` or `claude`) when `execution_mode=api`.
+- `SKRILLS_CLI_BINARY` — override CLI binary for headless subagents (auto uses current client; fallback `claude`).
+- `~/.claude/subagents.toml` or `~/.codex/subagents.toml` — optional defaults (`execution_mode`, `cli_binary`, `default_backend`; `cli_binary = "auto"` follows current client using CLI env or server path).
 
 ## Documentation
 - mdBook (primary): https://athola.github.io/skrills/

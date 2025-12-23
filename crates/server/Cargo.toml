@@ -45,6 +45,7 @@ skrills-state = { path = "../state", version = "0.3.4" }
 skrills_sync = { path = "../sync", version = "0.3.4" }
 skrills-validate = { path = "../validate", version = "0.3.4" }
 skrills-analyze = { path = "../analyze", version = "0.3.4" }
+skrills-intelligence = { path = "../intelligence", version = "0.4.0" }
 shellexpand = "3"
 
 [features]
@@ -57,3 +58,4 @@ test-support = []
 [dev-dependencies]
 rmcp = { workspace = true, features = ["client", "transport-async-rw", "transport-child-process"] }
 wiremock = "0.6"
+tokio-util = "0.7"

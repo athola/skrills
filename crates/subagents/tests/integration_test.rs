@@ -19,8 +19,11 @@ use tempfile::TempDir;
 use skrills_discovery::{SkillRoot, SkillSource};
 use skrills_subagents::backend::cli::{CliConfig, CodexCliAdapter};
 use skrills_subagents::registry::AgentRegistry;
-use skrills_subagents::store::{BackendKind, MemRunStore, RunEvent, RunRequest, RunState};
+use skrills_subagents::store::{
+    BackendKind, MemRunStore, RunEvent, RunId, RunRequest, RunState, RunStatus,
+};
 use skrills_subagents::{RunStore, SubagentService};
+use tokio::time::{sleep, Instant};
 
 /// Test fixture for creating isolated test environments with agent files.
 struct IntegrationTestFixture {
@@ -87,6 +90,39 @@ impl IntegrationTestFixture {
             BackendKind::Codex,
             self.registry.clone(),
         )
+    }
+}
+
+async fn wait_for_run_state(
+    store: Arc<dyn RunStore>,
+    run_id: RunId,
+    expected: RunState,
+    timeout: Duration,
+) -> anyhow::Result<RunStatus> {
+    let started = Instant::now();
+    let mut last_state: Option<RunState> = None;
+    loop {
+        if let Some(status) = store.status(run_id).await? {
+            last_state = Some(status.state.clone());
+            if status.state == expected {
+                return Ok(status);
+            }
+            if matches!(status.state, RunState::Failed | RunState::Canceled) {
+                anyhow::bail!(
+                    "run ended early: expected {:?}, got {:?}",
+                    expected,
+                    status.state
+                );
+            }
+        }
+        if started.elapsed() >= timeout {
+            anyhow::bail!(
+                "timed out waiting for {:?}; last_state={:?}",
+                expected,
+                last_state
+            );
+        }
+        sleep(Duration::from_millis(10)).await;
     }
 }
 
@@ -1074,12 +1110,19 @@ mod cli_adapter_integration_tests {
             tracing: false,
         };
 
-        let run_id = adapter.run(request, store.clone()).await.unwrap();
+        let run_id = adapter
+            .run(request, store.clone())
+            .await
+            .expect("run should start");
 
-        // Wait for subprocess to complete
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let status = store.status(run_id).await.unwrap().unwrap();
+        let status = wait_for_run_state(
+            store.clone(),
+            run_id,
+            RunState::Succeeded,
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("echo should succeed");
         assert_eq!(
             status.state,
             RunState::Succeeded,
@@ -1088,7 +1131,11 @@ mod cli_adapter_integration_tests {
         );
 
         // Verify events were recorded
-        let record = store.run(run_id).await.unwrap().unwrap();
+        let record = store
+            .run(run_id)
+            .await
+            .expect("run lookup should succeed")
+            .expect("run should exist");
         assert!(
             record.events.iter().any(|e| e.kind == "start"),
             "should have start event"
@@ -1121,12 +1168,19 @@ mod cli_adapter_integration_tests {
             tracing: false,
         };
 
-        let run_id = adapter.run(request, store.clone()).await.unwrap();
+        let run_id = adapter
+            .run(request, store.clone())
+            .await
+            .expect("run should start");
 
-        // Wait for subprocess to complete
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let status = store.status(run_id).await.unwrap().unwrap();
+        let status = wait_for_run_state(
+            store.clone(),
+            run_id,
+            RunState::Failed,
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("false should fail");
         assert_eq!(
             status.state,
             RunState::Failed,
@@ -1135,7 +1189,11 @@ mod cli_adapter_integration_tests {
         );
 
         // Verify error event was recorded
-        let record = store.run(run_id).await.unwrap().unwrap();
+        let record = store
+            .run(run_id)
+            .await
+            .expect("run lookup should succeed")
+            .expect("run should exist");
         assert!(
             record.events.iter().any(|e| e.kind == "error"),
             "should have error event"
@@ -1164,21 +1222,42 @@ mod cli_adapter_integration_tests {
             tracing: false,
         };
 
-        let run_id = adapter.run(request, store.clone()).await.unwrap();
+        let run_id = adapter
+            .run(request, store.clone())
+            .await
+            .expect("run should start");
 
-        // Wait for completion
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        wait_for_run_state(
+            store.clone(),
+            run_id,
+            RunState::Succeeded,
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("pwd should succeed");
 
-        let record = store.run(run_id).await.unwrap().unwrap();
+        let record = store
+            .run(run_id)
+            .await
+            .expect("run lookup should succeed")
+            .expect("run should exist");
 
         // Should have completion event with output
-        let completion = record.events.iter().find(|e| e.kind == "completion");
-        assert!(completion.is_some(), "should have completion event");
+        let completion = record
+            .events
+            .iter()
+            .find(|e| e.kind == "completion")
+            .expect("should have completion event");
 
-        let data = completion.unwrap().data.as_ref().unwrap();
-        let text = data.get("text").and_then(|v| v.as_str());
-        assert!(text.is_some(), "completion should have text");
-        assert!(!text.unwrap().is_empty(), "text should not be empty");
+        let data = completion
+            .data
+            .as_ref()
+            .expect("completion should have data");
+        let text = data
+            .get("text")
+            .and_then(|v| v.as_str())
+            .expect("completion should have text");
+        assert!(!text.is_empty(), "text should not be empty");
     }
 
     #[tokio::test]
@@ -1206,13 +1285,23 @@ mod cli_adapter_integration_tests {
             tracing: false,
         };
 
-        let run_id = store.create_run(request).await.unwrap();
+        let run_id = store
+            .create_run(request)
+            .await
+            .expect("run creation should succeed");
 
         // Stop the run
-        let stopped = adapter.stop(run_id, store.clone()).await.unwrap();
+        let stopped = adapter
+            .stop(run_id, store.clone())
+            .await
+            .expect("stop should succeed");
         assert!(stopped, "stop should succeed");
 
-        let status = store.status(run_id).await.unwrap().unwrap();
+        let status = store
+            .status(run_id)
+            .await
+            .expect("status lookup should succeed")
+            .expect("run should exist");
         assert_eq!(status.state, RunState::Canceled);
     }
 }
