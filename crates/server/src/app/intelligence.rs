@@ -82,26 +82,63 @@ impl SkillService {
         // Load usage analytics if requested
         if include_usage {
             let mut events = Vec::new();
+            let mut load_errors: Vec<String> = Vec::new();
+
             if let Some(home) = dirs::home_dir() {
                 let claude_projects = home.join(".claude/projects");
                 if claude_projects.exists() {
-                    if let Ok(claude_events) = parse_claude_sessions(&claude_projects) {
-                        events.extend(claude_events);
+                    match parse_claude_sessions(&claude_projects) {
+                        Ok(claude_events) => events.extend(claude_events),
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                path = %claude_projects.display(),
+                                "Failed to parse Claude session data"
+                            );
+                            load_errors.push(format!("Claude sessions: {}", e));
+                        }
                     }
                 }
 
-                let mut codex_events = Vec::new();
                 let codex_skills_history = home.join(".codex/skills-history.json");
-                if let Ok(history_events) = parse_codex_skills_history(&codex_skills_history) {
-                    codex_events = history_events;
+                let mut codex_events = Vec::new();
+
+                match parse_codex_skills_history(&codex_skills_history) {
+                    Ok(history_events) => codex_events = history_events,
+                    Err(e) => {
+                        tracing::debug!(
+                            error = %e,
+                            path = %codex_skills_history.display(),
+                            "Could not parse Codex skills history, trying sessions"
+                        );
+                    }
                 }
+
                 if codex_events.is_empty() {
                     let codex_sessions = home.join(".codex/sessions");
-                    if let Ok(session_events) = parse_codex_sessions(&codex_sessions) {
-                        codex_events = session_events;
+                    match parse_codex_sessions(&codex_sessions) {
+                        Ok(session_events) => codex_events = session_events,
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                path = %codex_sessions.display(),
+                                "Failed to parse Codex session data"
+                            );
+                            load_errors.push(format!("Codex sessions: {}", e));
+                        }
                     }
                 }
                 events.extend(codex_events);
+            } else {
+                tracing::warn!("Could not determine home directory for usage analytics");
+            }
+
+            if !load_errors.is_empty() {
+                tracing::info!(
+                    errors = ?load_errors,
+                    events_loaded = events.len(),
+                    "Usage analytics loaded with some errors"
+                );
             }
 
             if !events.is_empty() {
@@ -487,6 +524,19 @@ impl SkillService {
             .get("name")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("Missing required parameter: name"))?;
+
+        // Security: Reject path traversal attempts and hidden files
+        if name.contains("..") {
+            return Err(anyhow!(
+                "Invalid name: path traversal sequences ('..') are not allowed"
+            ));
+        }
+        if name.starts_with('.') {
+            return Err(anyhow!(
+                "Invalid name: hidden files (starting with '.') are not allowed"
+            ));
+        }
+
         let mut name_components = std::path::Path::new(name).components();
         let is_simple_name = matches!(
             name_components.next(),

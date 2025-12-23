@@ -62,10 +62,85 @@ struct Repository {
     description: Option<String>,
 }
 
+/// Sanitize user input to prevent GitHub search operator injection.
+/// Strips known GitHub search operators that could manipulate search semantics.
+fn sanitize_github_query(query: &str) -> String {
+    // GitHub search operators that could be injected (colon-based operators)
+    let colon_operators = [
+        "repo:",
+        "org:",
+        "user:",
+        "in:",
+        "size:",
+        "fork:",
+        "forks:",
+        "stars:",
+        "topics:",
+        "topic:",
+        "created:",
+        "pushed:",
+        "updated:",
+        "is:",
+        "archived:",
+        "license:",
+        "language:",
+        "filename:",
+        "path:",
+        "extension:",
+    ];
+
+    // Boolean operators (must be standalone words, case-insensitive)
+    let boolean_operators = ["NOT", "AND", "OR"];
+
+    let mut sanitized = query.to_string();
+
+    // Remove colon-based operators
+    for op in colon_operators {
+        loop {
+            let lower = sanitized.to_lowercase();
+            if let Some(pos) = lower.find(&op.to_lowercase()) {
+                // Find the end of the operator value (space or end of string)
+                let rest = &sanitized[pos + op.len()..];
+                let end = if rest.starts_with('"') {
+                    // Quoted value - find closing quote
+                    rest.strip_prefix('"')
+                        .and_then(|s| s.find('"'))
+                        .map(|p| pos + op.len() + p + 2)
+                        .unwrap_or(sanitized.len())
+                } else {
+                    // Unquoted value - find next space
+                    rest.find(' ')
+                        .map(|p| pos + op.len() + p)
+                        .unwrap_or(sanitized.len())
+                };
+                sanitized = format!("{}{}", &sanitized[..pos], &sanitized[end..]);
+            } else {
+                break;
+            }
+        }
+    }
+
+    // Remove standalone boolean operators (word boundaries check)
+    let words: Vec<&str> = sanitized.split_whitespace().collect();
+    let filtered_words: Vec<&str> = words
+        .into_iter()
+        .filter(|word| {
+            !boolean_operators
+                .iter()
+                .any(|op| word.eq_ignore_ascii_case(op))
+        })
+        .collect();
+
+    filtered_words.join(" ")
+}
+
 /// Search GitHub for skills matching the query.
 pub async fn search_github_skills(query: &str, limit: usize) -> Result<Vec<GitHubSkillResult>> {
+    // Sanitize user input to prevent search operator injection
+    let sanitized_query = sanitize_github_query(query);
+
     // Build search query for SKILL.md files
-    let search_query = format!("{} filename:SKILL.md", query);
+    let search_query = format!("{} filename:SKILL.md", sanitized_query);
 
     let client = reqwest::Client::new();
 
@@ -85,7 +160,26 @@ pub async fn search_github_skills(query: &str, limit: usize) -> Result<Vec<GitHu
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("GitHub API error ({}): {}", status, body);
+
+        // Provide actionable error messages for common GitHub API errors
+        let error_msg = match status.as_u16() {
+            403 => {
+                if body.contains("rate limit") || body.contains("API rate limit exceeded") {
+                    "GitHub API rate limit exceeded. Wait a few minutes and try again, or set GITHUB_TOKEN environment variable for higher limits."
+                } else {
+                    "GitHub API access forbidden. Check your GITHUB_TOKEN permissions."
+                }
+            }
+            401 => "GitHub API authentication failed. Verify your GITHUB_TOKEN is valid.",
+            422 => "GitHub search query invalid. Try simplifying your search terms.",
+            _ => "",
+        };
+
+        if error_msg.is_empty() {
+            anyhow::bail!("GitHub API error ({}): {}", status, body);
+        } else {
+            anyhow::bail!("{} (HTTP {})", error_msg, status);
+        }
     }
 
     let search_result: SearchResponse = response.json().await?;
@@ -233,5 +327,59 @@ mod tests {
             .build()
             .unwrap();
         assert!(request.headers().get(AUTHORIZATION).is_none());
+    }
+
+    #[test]
+    fn test_sanitize_github_query_removes_operators() {
+        // Test removal of common injection operators
+        assert_eq!(sanitize_github_query("test repo:evil/repo"), "test");
+        assert_eq!(sanitize_github_query("test org:malicious"), "test");
+        assert_eq!(sanitize_github_query("test stars:>1000"), "test");
+        assert_eq!(sanitize_github_query("test language:rust"), "test");
+        assert_eq!(sanitize_github_query("test is:archived"), "test");
+    }
+
+    #[test]
+    fn test_sanitize_github_query_preserves_normal_text() {
+        // Normal queries should pass through unchanged
+        assert_eq!(sanitize_github_query("testing skills"), "testing skills");
+        assert_eq!(sanitize_github_query("rust async"), "rust async");
+        assert_eq!(sanitize_github_query("hello world"), "hello world");
+    }
+
+    #[test]
+    fn test_sanitize_github_query_handles_quoted_values() {
+        // Quoted operator values should be removed
+        assert_eq!(
+            sanitize_github_query(r#"test repo:"owner/repo""#),
+            "test"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_github_query_collapses_whitespace() {
+        // Multiple spaces should be collapsed
+        assert_eq!(
+            sanitize_github_query("test   multiple   spaces"),
+            "test multiple spaces"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_github_query_case_insensitive() {
+        // Operators should be removed regardless of case
+        assert_eq!(sanitize_github_query("test REPO:evil"), "test");
+        assert_eq!(sanitize_github_query("test Repo:evil"), "test");
+    }
+
+    #[test]
+    fn test_sanitize_github_query_removes_boolean_operators() {
+        // Boolean operators should be removed as standalone words only
+        assert_eq!(sanitize_github_query("foo AND bar"), "foo bar");
+        assert_eq!(sanitize_github_query("foo OR bar"), "foo bar");
+        assert_eq!(sanitize_github_query("NOT foo"), "foo");
+        // But words containing these should NOT be affected
+        assert_eq!(sanitize_github_query("Oregon skills"), "Oregon skills");
+        assert_eq!(sanitize_github_query("android app"), "android app");
     }
 }

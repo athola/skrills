@@ -123,15 +123,23 @@ pub fn analyze_project_with_options(
     profile.frameworks = detect_frameworks(&profile.dependencies);
 
     // Parse README for description and keywords
-    if let Ok((desc, keywords)) = parse_readme(root) {
-        profile.description = desc;
-        profile.keywords = keywords;
+    match parse_readme(root) {
+        Ok((desc, keywords)) => {
+            profile.description = desc;
+            profile.keywords = keywords;
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, "Could not parse README for project context");
+        }
     }
 
     // Extract git commit keywords
     if options.include_git {
-        if let Ok(git_keywords) = extract_git_keywords(root, options.commit_limit) {
-            profile.git_keywords = git_keywords;
+        match extract_git_keywords(root, options.commit_limit) {
+            Ok(git_keywords) => profile.git_keywords = git_keywords,
+            Err(e) => {
+                tracing::debug!(error = %e, "Could not extract git keywords");
+            }
         }
     }
 
@@ -199,24 +207,39 @@ fn parse_all_dependencies(root: &Path) -> Result<HashMap<String, Vec<DependencyI
     // Rust: Cargo.toml
     let cargo_path = root.join("Cargo.toml");
     if cargo_path.exists() {
-        if let Ok(rust_deps) = parse_cargo_toml(&cargo_path) {
-            deps.insert("rust".to_string(), rust_deps);
+        match parse_cargo_toml(&cargo_path) {
+            Ok(rust_deps) => {
+                deps.insert("rust".to_string(), rust_deps);
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, path = %cargo_path.display(), "Could not parse Cargo.toml");
+            }
         }
     }
 
     // Node.js: package.json
     let package_path = root.join("package.json");
     if package_path.exists() {
-        if let Ok(npm_deps) = parse_package_json(&package_path) {
-            deps.insert("npm".to_string(), npm_deps);
+        match parse_package_json(&package_path) {
+            Ok(npm_deps) => {
+                deps.insert("npm".to_string(), npm_deps);
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, path = %package_path.display(), "Could not parse package.json");
+            }
         }
     }
 
     // Python: pyproject.toml
     let pyproject_path = root.join("pyproject.toml");
     if pyproject_path.exists() {
-        if let Ok(py_deps) = parse_pyproject_toml(&pyproject_path) {
-            deps.insert("python".to_string(), py_deps);
+        match parse_pyproject_toml(&pyproject_path) {
+            Ok(py_deps) => {
+                deps.insert("python".to_string(), py_deps);
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, path = %pyproject_path.display(), "Could not parse pyproject.toml");
+            }
         }
     }
 
@@ -224,8 +247,13 @@ fn parse_all_dependencies(root: &Path) -> Result<HashMap<String, Vec<DependencyI
     if !deps.contains_key("python") {
         let requirements_path = root.join("requirements.txt");
         if requirements_path.exists() {
-            if let Ok(py_deps) = parse_requirements_txt(&requirements_path) {
-                deps.insert("python".to_string(), py_deps);
+            match parse_requirements_txt(&requirements_path) {
+                Ok(py_deps) => {
+                    deps.insert("python".to_string(), py_deps);
+                }
+                Err(e) => {
+                    tracing::debug!(error = %e, path = %requirements_path.display(), "Could not parse requirements.txt");
+                }
             }
         }
     }

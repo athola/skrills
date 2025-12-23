@@ -26,13 +26,58 @@ Requirements:
 Output ONLY the complete SKILL.md content, starting with the --- YAML frontmatter delimiter.
 Do not include any explanation before or after the skill content."#;
 
+/// Validate CLI binary name to prevent command injection.
+/// Rejects paths, special characters, and suspiciously long names.
+fn validate_cli_binary(name: &str) -> Result<&str, &'static str> {
+    // Reject empty names
+    if name.is_empty() {
+        return Err("CLI binary name cannot be empty");
+    }
+
+    // Reject path separators (prevent path traversal)
+    if name.contains('/') || name.contains('\\') {
+        return Err("CLI binary name cannot contain path separators");
+    }
+
+    // Reject shell metacharacters
+    let forbidden_chars = ['|', ';', '&', '$', '`', '(', ')', '{', '}', '<', '>', '!', '*', '?'];
+    if name.chars().any(|c| forbidden_chars.contains(&c)) {
+        return Err("CLI binary name contains forbidden shell characters");
+    }
+
+    // Reject suspiciously long names (typical binary names are short)
+    if name.len() > 64 {
+        return Err("CLI binary name is too long");
+    }
+
+    // Reject names that don't look like valid identifiers
+    if !name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err("CLI binary name contains invalid characters");
+    }
+
+    Ok(name)
+}
+
 fn cli_binary_override() -> Option<String> {
     let raw = std::env::var("SKRILLS_CLI_BINARY").ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
         None
     } else {
-        Some(trimmed.to_string())
+        match validate_cli_binary(trimmed) {
+            Ok(valid) => Some(valid.to_string()),
+            Err(reason) => {
+                tracing::warn!(
+                    binary = trimmed,
+                    reason,
+                    "Invalid SKRILLS_CLI_BINARY value, using auto-detection"
+                );
+                None
+            }
+        }
     }
 }
 
@@ -246,5 +291,40 @@ This is a test."#;
         } else {
             std::env::remove_var("SKRILLS_CLI_BINARY");
         }
+    }
+
+    #[test]
+    fn test_validate_cli_binary_accepts_valid_names() {
+        // Valid binary names
+        assert!(validate_cli_binary("claude").is_ok());
+        assert!(validate_cli_binary("codex").is_ok());
+        assert!(validate_cli_binary("my-cli").is_ok());
+        assert!(validate_cli_binary("my_cli").is_ok());
+        assert!(validate_cli_binary("cli.exe").is_ok());
+    }
+
+    #[test]
+    fn test_validate_cli_binary_rejects_path_traversal() {
+        // Path separators should be rejected
+        assert!(validate_cli_binary("/usr/bin/evil").is_err());
+        assert!(validate_cli_binary("../../../bin/sh").is_err());
+        assert!(validate_cli_binary("C:\\Windows\\cmd.exe").is_err());
+    }
+
+    #[test]
+    fn test_validate_cli_binary_rejects_shell_metacharacters() {
+        // Shell injection characters should be rejected
+        assert!(validate_cli_binary("cmd; rm -rf /").is_err());
+        assert!(validate_cli_binary("cmd | cat /etc/passwd").is_err());
+        assert!(validate_cli_binary("$(whoami)").is_err());
+        assert!(validate_cli_binary("`id`").is_err());
+        assert!(validate_cli_binary("cmd & background").is_err());
+    }
+
+    #[test]
+    fn test_validate_cli_binary_rejects_empty_and_long() {
+        // Empty and excessively long names should be rejected
+        assert!(validate_cli_binary("").is_err());
+        assert!(validate_cli_binary(&"a".repeat(100)).is_err());
     }
 }
