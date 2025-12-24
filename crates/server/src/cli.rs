@@ -49,6 +49,23 @@ impl std::fmt::Display for CreateSkillMethod {
     }
 }
 
+/// Output format for command results.
+#[derive(Debug, Clone, Copy, ValueEnum, Default, PartialEq, Eq)]
+pub enum OutputFormat {
+    /// Human-readable text output.
+    #[default]
+    Text,
+    /// JSON output for machine parsing.
+    Json,
+}
+
+impl OutputFormat {
+    /// Check if this format is JSON.
+    pub fn is_json(&self) -> bool {
+        matches!(self, Self::Json)
+    }
+}
+
 /// Command-line interface for the `skrills` application.
 #[derive(Debug, Parser)]
 #[command(
@@ -196,8 +213,8 @@ pub enum Commands {
         #[arg(long)]
         backup: bool,
         /// Output format: text or json.
-        #[arg(long, default_value = "text")]
-        format: String,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
         /// Only show skills with errors.
         #[arg(long)]
         errors_only: bool,
@@ -208,8 +225,8 @@ pub enum Commands {
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
         /// Output format: text or json.
-        #[arg(long, default_value = "text")]
-        format: String,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
         /// Only show skills exceeding this token count.
         #[arg(long)]
         min_tokens: Option<usize>,
@@ -223,8 +240,8 @@ pub enum Commands {
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
         /// Output format: text or json.
-        #[arg(long, default_value = "text")]
-        format: String,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
         /// Include validation summary (slower).
         #[arg(long)]
         include_validation: bool,
@@ -238,8 +255,8 @@ pub enum Commands {
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
         /// Output format: text or json.
-        #[arg(long, default_value = "text")]
-        format: String,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
         /// Maximum number of recommendations.
         #[arg(long, default_value = "10")]
         limit: usize,
@@ -262,8 +279,8 @@ pub enum Commands {
         #[arg(long, default_value_t = true, value_parser = clap::builder::BoolishValueParser::new(), action = ArgAction::Set)]
         transitive: bool,
         /// Output format: text or json.
-        #[arg(long, default_value = "text")]
-        format: String,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
     },
     /// Smart skill recommendations using dependencies, usage patterns, and project context.
     RecommendSkillsSmart {
@@ -286,8 +303,8 @@ pub enum Commands {
         #[arg(long, default_value_t = true, value_parser = clap::builder::BoolishValueParser::new(), action = ArgAction::Set)]
         include_context: bool,
         /// Output format: text or json.
-        #[arg(long, default_value = "text")]
-        format: String,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
         /// Skills directory to include (default: all discovered skills).
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
@@ -304,8 +321,8 @@ pub enum Commands {
         #[arg(long, default_value = "50")]
         commit_limit: usize,
         /// Output format: text or json.
-        #[arg(long, default_value = "text")]
-        format: String,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
     },
     /// Suggest new skills to create based on project context.
     SuggestNewSkills {
@@ -316,8 +333,8 @@ pub enum Commands {
         #[arg(long = "focus-area")]
         focus_areas: Vec<String>,
         /// Output format: text or json.
-        #[arg(long, default_value = "text")]
-        format: String,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
         /// Skills directory to include (default: all discovered skills).
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
@@ -343,8 +360,8 @@ pub enum Commands {
         #[arg(long)]
         dry_run: bool,
         /// Output format: text or json.
-        #[arg(long, default_value = "text")]
-        format: String,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
     },
     /// Search GitHub for existing SKILL.md files.
     SearchSkillsGithub {
@@ -355,8 +372,8 @@ pub enum Commands {
         #[arg(long, default_value = "10")]
         limit: usize,
         /// Output format: text or json.
-        #[arg(long, default_value = "text")]
-        format: String,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
     },
     /// Interactive TUI for sync and pin management.
     Tui {
@@ -526,7 +543,7 @@ mod tests {
                 assert_eq!(uri, "skill://skrills/codex/test-skill");
                 assert!(matches!(direction, DependencyDirection::Dependents));
                 assert!(!transitive);
-                assert_eq!(format, "json");
+                assert_eq!(format, OutputFormat::Json);
                 assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/skills")]);
             }
             _ => panic!("expected ResolveDependencies command"),
@@ -574,7 +591,7 @@ mod tests {
                 assert_eq!(limit, 5);
                 assert!(!include_usage);
                 assert!(include_context);
-                assert_eq!(format, "json");
+                assert_eq!(format, OutputFormat::Json);
                 assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/skills")]);
             }
             _ => panic!("expected RecommendSkillsSmart command"),
@@ -607,7 +624,7 @@ mod tests {
                 assert_eq!(project_dir, Some(PathBuf::from("/tmp/project")));
                 assert!(!include_git);
                 assert_eq!(commit_limit, 25);
-                assert_eq!(format, "json");
+                assert_eq!(format, OutputFormat::Json);
             }
             _ => panic!("expected AnalyzeProjectContext command"),
         }
@@ -643,7 +660,7 @@ mod tests {
                     focus_areas,
                     vec!["testing".to_string(), "deployment".to_string()]
                 );
-                assert_eq!(format, "json");
+                assert_eq!(format, OutputFormat::Json);
                 assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/skills")]);
             }
             _ => panic!("expected SuggestNewSkills command"),
@@ -686,7 +703,7 @@ mod tests {
                 assert_eq!(target_dir, Some(PathBuf::from("/tmp/skills")));
                 assert_eq!(project_dir, Some(PathBuf::from("/tmp/project")));
                 assert!(dry_run);
-                assert_eq!(format, "json");
+                assert_eq!(format, OutputFormat::Json);
             }
             _ => panic!("expected CreateSkill command"),
         }
@@ -728,7 +745,7 @@ mod tests {
             }) => {
                 assert_eq!(query, "testing skills");
                 assert_eq!(limit, 5);
-                assert_eq!(format, "json");
+                assert_eq!(format, OutputFormat::Json);
             }
             _ => panic!("expected SearchSkillsGithub command"),
         }

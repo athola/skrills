@@ -30,6 +30,8 @@ pub struct GitHubSkillResult {
     pub repo_url: String,
     /// Path to the skill file within the repo.
     pub skill_path: String,
+    /// Direct URL to the skill file on GitHub.
+    pub file_url: String,
     /// Repository description.
     pub description: Option<String>,
     /// Number of stars.
@@ -48,7 +50,6 @@ struct SearchResponse {
 #[derive(Deserialize)]
 struct SearchItem {
     path: String,
-    #[allow(dead_code)]
     html_url: String,
     repository: Repository,
 }
@@ -192,6 +193,7 @@ pub async fn search_github_skills(query: &str, limit: usize) -> Result<Vec<GitHu
             GitHubSkillResult {
                 repo_url: item.repository.html_url,
                 skill_path: item.path,
+                file_url: item.html_url,
                 description: item.repository.description,
                 stars: item.repository.stargazers_count,
                 last_updated: item.repository.updated_at,
@@ -210,7 +212,7 @@ fn build_raw_url(full_name: &str, path: &str) -> String {
 }
 
 /// Fetch the content of a skill from its raw URL.
-#[allow(dead_code)]
+#[allow(dead_code)] // Public API for external consumers
 pub async fn fetch_skill_content(raw_url: &str) -> Result<String> {
     let client = reqwest::Client::new();
 
@@ -230,7 +232,7 @@ pub async fn fetch_skill_content(raw_url: &str) -> Result<String> {
 }
 
 /// Search for skills with specific criteria.
-#[allow(dead_code)]
+#[allow(dead_code)] // Public API for external consumers
 pub async fn search_skills_advanced(
     keywords: &[String],
     language: Option<&str>,

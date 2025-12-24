@@ -1,5 +1,5 @@
 use crate::app::SkillService;
-use crate::cli::DependencyDirection;
+use crate::cli::{DependencyDirection, OutputFormat};
 use crate::discovery::merge_extra_dirs;
 use anyhow::Result;
 use serde_json::json;
@@ -12,7 +12,7 @@ pub(crate) fn handle_resolve_dependencies_command(
     skill_dirs: Vec<PathBuf>,
     direction: DependencyDirection,
     transitive: bool,
-    format: String,
+    format: OutputFormat,
 ) -> Result<()> {
     let extra_dirs = merge_extra_dirs(&skill_dirs);
     let ttl = cache_ttl(&load_manifest_settings);
@@ -38,7 +38,7 @@ pub(crate) fn handle_resolve_dependencies_command(
         (DependencyDirection::Dependents, false) => "direct dependents",
     };
 
-    if format == "json" {
+    if format.is_json() {
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
@@ -152,7 +152,7 @@ A test skill.
             vec![skill_dir],
             DependencyDirection::Dependencies,
             true,
-            "json".into(),
+            OutputFormat::Json,
         );
 
         assert!(result.is_ok());
@@ -175,7 +175,7 @@ A test skill.
             vec![skill_dir],
             DependencyDirection::Dependencies,
             true,
-            "json".into(),
+            OutputFormat::Json,
         );
 
         assert!(result.is_err());

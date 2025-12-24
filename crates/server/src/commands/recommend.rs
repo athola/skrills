@@ -1,6 +1,7 @@
 //! CLI handler for the `recommend` command.
 
 use crate::app::{RecommendationRelationship, SkillRecommendations};
+use crate::cli::OutputFormat;
 use crate::discovery::merge_extra_dirs;
 use anyhow::Result;
 use skrills_analyze::{analyze_skill, DependencyGraph, DependencyType};
@@ -11,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 pub(crate) fn handle_recommend_command(
     uri: String,
     skill_dirs: Vec<std::path::PathBuf>,
-    format: String,
+    format: OutputFormat,
     limit: usize,
     include_quality: bool,
 ) -> Result<()> {
@@ -156,7 +157,7 @@ pub(crate) fn handle_recommend_command(
     };
 
     // Output
-    if format == "json" {
+    if format.is_json() {
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
         print_recommendations_human(&result, &uri_to_name);
@@ -286,7 +287,7 @@ A test skill.
         let result = handle_recommend_command(
             "skill://test".into(),
             vec![skill_dir],
-            "text".into(),
+            OutputFormat::Text,
             10,
             true,
         );
@@ -304,7 +305,7 @@ A test skill.
         let result = handle_recommend_command(
             "skill://nonexistent".into(),
             vec![skill_dir],
-            "text".into(),
+            OutputFormat::Text,
             10,
             true,
         );
@@ -334,7 +335,7 @@ A test skill.
         let result = handle_recommend_command(
             "skill://skrills/codex/skill-a".into(),
             vec![skill_dir],
-            "json".into(),
+            OutputFormat::Json,
             10,
             true,
         );

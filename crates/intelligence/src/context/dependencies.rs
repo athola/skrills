@@ -194,6 +194,23 @@ pub fn parse_pyproject_toml(path: &Path) -> Result<Vec<DependencyInfo>> {
                 }
             }
         }
+
+        // Parse [tool.uv.sources] and [tool.uv.dev-dependencies] (uv)
+        if let Some(uv) = tool.get("uv") {
+            // Parse dev-dependencies from uv (array of package specs)
+            if let Some(dev_deps) = uv.get("dev-dependencies").and_then(|d| d.as_array()) {
+                for dep in dev_deps {
+                    if let Some(dep_str) = dep.as_str() {
+                        let (name, version) = parse_python_dep_string(dep_str);
+                        deps.push(DependencyInfo {
+                            name,
+                            version,
+                            dev: true,
+                        });
+                    }
+                }
+            }
+        }
     }
 
     Ok(deps)
@@ -360,5 +377,41 @@ dev = ["pytest>=7.0"]
             parse_python_dep_string("requests[security]"),
             ("requests".to_string(), None)
         );
+    }
+
+    #[test]
+    fn test_parse_pyproject_toml_uv() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("pyproject.toml");
+
+        let content = r#"
+[project]
+dependencies = [
+    "httpx>=0.25.0",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0",
+    "ruff>=0.1.0",
+]
+"#;
+
+        fs::write(&path, content).unwrap();
+
+        let deps = parse_pyproject_toml(&path).unwrap();
+        assert_eq!(deps.len(), 3);
+
+        let httpx = deps.iter().find(|d| d.name == "httpx").unwrap();
+        assert_eq!(httpx.version, Some(">=0.25.0".to_string()));
+        assert!(!httpx.dev);
+
+        let pytest = deps.iter().find(|d| d.name == "pytest").unwrap();
+        assert_eq!(pytest.version, Some(">=8.0".to_string()));
+        assert!(pytest.dev);
+
+        let ruff = deps.iter().find(|d| d.name == "ruff").unwrap();
+        assert_eq!(ruff.version, Some(">=0.1.0".to_string()));
+        assert!(ruff.dev);
     }
 }

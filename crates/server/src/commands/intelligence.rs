@@ -1,5 +1,5 @@
 use crate::app::SkillService;
-use crate::cli::CreateSkillMethod;
+use crate::cli::{CreateSkillMethod, OutputFormat};
 use crate::discovery::merge_extra_dirs;
 use anyhow::Result;
 use rmcp::model::CallToolResult;
@@ -22,8 +22,8 @@ fn tool_text(result: &CallToolResult) -> String {
         .join("\n")
 }
 
-fn print_tool_result(result: CallToolResult, format: &str) -> Result<()> {
-    if format == "json" {
+fn print_tool_result(result: CallToolResult, format: OutputFormat) -> Result<()> {
+    if format.is_json() {
         if let Some(value) = result.structured_content {
             println!("{}", serde_json::to_string_pretty(&value)?);
         } else {
@@ -48,7 +48,7 @@ pub(crate) fn handle_recommend_skills_smart_command(
     limit: usize,
     include_usage: bool,
     include_context: bool,
-    format: String,
+    format: OutputFormat,
     skill_dirs: Vec<PathBuf>,
 ) -> Result<()> {
     let service = build_service(skill_dirs)?;
@@ -72,7 +72,7 @@ pub(crate) fn handle_recommend_skills_smart_command(
     args.insert("include_context".into(), json!(include_context));
 
     let result = service.recommend_skills_smart_tool(args)?;
-    print_tool_result(result, &format)
+    print_tool_result(result, format)
 }
 
 /// Handle the `analyze-project-context` command.
@@ -80,7 +80,7 @@ pub(crate) fn handle_analyze_project_context_command(
     project_dir: Option<PathBuf>,
     include_git: bool,
     commit_limit: usize,
-    format: String,
+    format: OutputFormat,
 ) -> Result<()> {
     let service = build_service(Vec::new())?;
     let mut args: JsonMap<String, Value> = JsonMap::new();
@@ -95,14 +95,14 @@ pub(crate) fn handle_analyze_project_context_command(
     args.insert("commit_limit".into(), json!(commit_limit));
 
     let result = service.analyze_project_context_tool(args)?;
-    print_tool_result(result, &format)
+    print_tool_result(result, format)
 }
 
 /// Handle the `suggest-new-skills` command.
 pub(crate) fn handle_suggest_new_skills_command(
     project_dir: Option<PathBuf>,
     focus_areas: Vec<String>,
-    format: String,
+    format: OutputFormat,
     skill_dirs: Vec<PathBuf>,
 ) -> Result<()> {
     let service = build_service(skill_dirs)?;
@@ -122,7 +122,7 @@ pub(crate) fn handle_suggest_new_skills_command(
     }
 
     let result = service.suggest_new_skills_tool(args)?;
-    print_tool_result(result, &format)
+    print_tool_result(result, format)
 }
 
 /// Handle the `create-skill` command.
@@ -133,7 +133,7 @@ pub(crate) fn handle_create_skill_command(
     target_dir: Option<PathBuf>,
     project_dir: Option<PathBuf>,
     dry_run: bool,
-    format: String,
+    format: OutputFormat,
 ) -> Result<()> {
     let service = build_service(Vec::new())?;
     let mut args: JsonMap<String, Value> = JsonMap::new();
@@ -157,14 +157,14 @@ pub(crate) fn handle_create_skill_command(
     }
 
     let result = service.create_skill_tool_sync(args)?;
-    print_tool_result(result, &format)
+    print_tool_result(result, format)
 }
 
 /// Handle the `search-skills-github` command.
 pub(crate) fn handle_search_skills_github_command(
     query: String,
     limit: usize,
-    format: String,
+    format: OutputFormat,
 ) -> Result<()> {
     let service = build_service(Vec::new())?;
     let mut args: JsonMap<String, Value> = JsonMap::new();
@@ -173,7 +173,7 @@ pub(crate) fn handle_search_skills_github_command(
     args.insert("limit".into(), json!(limit));
 
     let result = service.search_skills_github_tool_sync(args)?;
-    print_tool_result(result, &format)
+    print_tool_result(result, format)
 }
 
 #[cfg(test)]
@@ -263,7 +263,7 @@ A test skill.
             5,
             false,
             false,
-            "json".into(),
+            OutputFormat::Json,
             vec![skill_dir],
         );
 
@@ -298,7 +298,7 @@ A test skill.
         let result = handle_suggest_new_skills_command(
             Some(project_dir.path().to_path_buf()),
             vec!["testing".to_string()],
-            "json".into(),
+            OutputFormat::Json,
             vec![skill_dir],
         );
 

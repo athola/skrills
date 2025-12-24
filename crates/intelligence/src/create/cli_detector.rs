@@ -89,17 +89,28 @@ pub fn get_cli_binary(env: CliEnvironment) -> &'static str {
 }
 
 /// Check if a CLI binary is available in PATH.
-#[allow(dead_code)]
+#[allow(dead_code)] // Public API for external consumers
 pub fn is_cli_available(binary: &str) -> bool {
-    std::process::Command::new("which")
-        .arg(binary)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    #[cfg(unix)]
+    {
+        std::process::Command::new("which")
+            .arg(binary)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    #[cfg(windows)]
+    {
+        std::process::Command::new("where")
+            .arg(binary)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
 }
 
 /// Get the best available CLI binary.
-#[allow(dead_code)]
+#[allow(dead_code)] // Public API for external consumers
 pub fn get_available_cli() -> Option<&'static str> {
     let env = detect_cli_environment();
     let preferred = get_cli_binary(env);
@@ -137,5 +148,27 @@ mod tests {
         assert_eq!(get_cli_binary(CliEnvironment::ClaudeCode), "claude");
         assert_eq!(get_cli_binary(CliEnvironment::CodexCli), "codex");
         assert_eq!(get_cli_binary(CliEnvironment::Unknown), "claude");
+    }
+
+    #[test]
+    fn test_is_cli_available_common_binary() {
+        // Test with a binary that should exist on most systems
+        #[cfg(unix)]
+        {
+            assert!(is_cli_available("ls"));
+            assert!(!is_cli_available("nonexistent_binary_12345"));
+        }
+        #[cfg(windows)]
+        {
+            assert!(is_cli_available("cmd"));
+            assert!(!is_cli_available("nonexistent_binary_12345"));
+        }
+    }
+
+    #[test]
+    fn test_get_available_cli() {
+        // This test just verifies the function works without panicking
+        // The result depends on what's installed on the system
+        let _ = get_available_cli();
     }
 }

@@ -131,7 +131,6 @@ pub fn parse_codex_command_history(history_path: &Path) -> Result<Vec<CommandEnt
 }
 
 /// Parse Codex session files from ~/.codex/sessions/
-#[allow(dead_code)]
 pub fn parse_codex_sessions(sessions_dir: &Path) -> Result<Vec<SkillUsageEvent>> {
     let mut events = Vec::new();
 
@@ -161,7 +160,6 @@ pub fn parse_codex_sessions(sessions_dir: &Path) -> Result<Vec<SkillUsageEvent>>
     Ok(events)
 }
 
-#[allow(dead_code)]
 fn parse_codex_session_file(path: &Path) -> Result<Vec<SkillUsageEvent>> {
     let mut events = Vec::new();
     let content = fs::read_to_string(path)?;
@@ -211,7 +209,6 @@ fn parse_codex_session_file(path: &Path) -> Result<Vec<SkillUsageEvent>> {
     Ok(events)
 }
 
-#[allow(dead_code)]
 fn extract_skill_from_args(args: &Value) -> Option<String> {
     if let Some(skill) = args.get("skill").and_then(|s| s.as_str()) {
         return Some(skill.to_string());
@@ -227,7 +224,6 @@ fn extract_skill_from_args(args: &Value) -> Option<String> {
     None
 }
 
-#[allow(dead_code)]
 fn parse_codex_timestamp(s: &str) -> Option<u64> {
     // Try ISO 8601 format first
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {

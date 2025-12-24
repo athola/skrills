@@ -335,9 +335,14 @@ impl SkillService {
             .get("commit_limit")
             .and_then(|v| v.as_u64())
             .unwrap_or(50) as usize;
+        let max_languages = args
+            .get("max_languages")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(10) as usize;
         let options = AnalyzeProjectOptions {
             include_git,
             commit_limit,
+            max_languages,
         };
 
         let profile = analyze_project_with_options(&project_dir, options)?;

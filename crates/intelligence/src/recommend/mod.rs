@@ -23,8 +23,6 @@ pub struct SmartRecommendation {
     pub explanation: String,
     /// Recommendation source signals.
     pub signals: Vec<RecommendationSignal>,
-    /// Quality score if available.
-    pub quality_score: Option<f64>,
 }
 
 /// Breakdown of recommendation score components.

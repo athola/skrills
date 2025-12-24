@@ -41,7 +41,7 @@ pub fn parse_claude_sessions(projects_dir: &Path) -> Result<Vec<SkillUsageEvent>
 }
 
 /// Parse Claude Code command history from ~/.claude/history.jsonl
-#[allow(dead_code)]
+#[allow(dead_code)] // Public API for external consumers
 pub fn parse_claude_command_history(history_path: &Path) -> Result<Vec<CommandEntry>> {
     let mut entries = Vec::new();
 

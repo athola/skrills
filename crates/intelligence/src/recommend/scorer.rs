@@ -194,7 +194,6 @@ impl Scorer for RecommendationScorer {
             score_breakdown: breakdown,
             explanation,
             signals,
-            quality_score: self.quality_scores.get(uri).copied(),
         }
     }
 }

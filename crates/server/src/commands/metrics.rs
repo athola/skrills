@@ -4,6 +4,7 @@ use crate::app::{
     DependencyStats, HubSkill, MetricsValidationSummary, QualityDistribution, SkillMetrics,
     SkillTokenInfo, TokenStats,
 };
+use crate::cli::OutputFormat;
 use crate::discovery::merge_extra_dirs;
 use anyhow::Result;
 use skrills_analyze::DependencyGraph;
@@ -13,7 +14,7 @@ use std::collections::HashMap;
 /// Handle the `metrics` command.
 pub(crate) fn handle_metrics_command(
     skill_dirs: Vec<std::path::PathBuf>,
-    format: String,
+    format: OutputFormat,
     include_validation: bool,
 ) -> Result<()> {
     use skrills_analyze::analyze_skill;
@@ -186,7 +187,7 @@ pub(crate) fn handle_metrics_command(
     };
 
     // Output
-    if format == "json" {
+    if format.is_json() {
         println!("{}", serde_json::to_string_pretty(&metrics)?);
     } else {
         print_metrics_human(&metrics);
@@ -321,7 +322,7 @@ A test skill.
         fs::create_dir_all(&skill_dir).unwrap();
 
         // WHEN we run handle_metrics_command
-        let result = handle_metrics_command(vec![skill_dir], "text".into(), false);
+        let result = handle_metrics_command(vec![skill_dir], OutputFormat::Text, false);
 
         // THEN it should succeed (prints "No skills found.")
         assert!(result.is_ok());
@@ -340,7 +341,7 @@ A test skill.
         );
 
         // WHEN we run handle_metrics_command with json format
-        let result = handle_metrics_command(vec![skill_dir], "json".into(), false);
+        let result = handle_metrics_command(vec![skill_dir], OutputFormat::Json, false);
 
         // THEN it should succeed
         assert!(result.is_ok());
@@ -359,7 +360,7 @@ A test skill.
         );
 
         // WHEN we run handle_metrics_command with validation enabled
-        let result = handle_metrics_command(vec![skill_dir], "text".into(), true);
+        let result = handle_metrics_command(vec![skill_dir], OutputFormat::Text, true);
 
         // THEN it should succeed
         assert!(result.is_ok());
@@ -405,7 +406,7 @@ skill(high-quality)
         create_skill(&skill_dir, "low-skill", low_quality);
 
         // WHEN we run handle_metrics_command
-        let result = handle_metrics_command(vec![skill_dir], "text".into(), false);
+        let result = handle_metrics_command(vec![skill_dir], OutputFormat::Text, false);
 
         // THEN it should succeed and process all 3 skills
         assert!(result.is_ok());

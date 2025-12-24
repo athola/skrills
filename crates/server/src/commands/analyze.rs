@@ -1,3 +1,4 @@
+use crate::cli::OutputFormat;
 use crate::discovery::merge_extra_dirs;
 use anyhow::Result;
 use skrills_discovery::{discover_skills, extra_skill_roots};
@@ -5,7 +6,7 @@ use skrills_discovery::{discover_skills, extra_skill_roots};
 /// Handle the `analyze` command.
 pub(crate) fn handle_analyze_command(
     skill_dirs: Vec<std::path::PathBuf>,
-    format: String,
+    format: OutputFormat,
     min_tokens: Option<usize>,
     suggestions: bool,
 ) -> Result<()> {
@@ -39,7 +40,7 @@ pub(crate) fn handle_analyze_command(
         analyses.push(analysis);
     }
 
-    if format == "json" {
+    if format.is_json() {
         println!("{}", serde_json::to_string_pretty(&analyses)?);
     } else {
         let summary = AnalysisSummary::from_analyses(&analyses);

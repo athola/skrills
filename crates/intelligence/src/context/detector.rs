@@ -87,6 +87,9 @@ pub struct AnalyzeProjectOptions {
     pub include_git: bool,
     /// Number of recent commits to analyze when include_git is true.
     pub commit_limit: usize,
+    /// Maximum number of languages to include in results.
+    /// Languages are sorted by file count. Set to 0 for unlimited.
+    pub max_languages: usize,
 }
 
 impl Default for AnalyzeProjectOptions {
@@ -94,6 +97,7 @@ impl Default for AnalyzeProjectOptions {
         Self {
             include_git: true,
             commit_limit: 50,
+            max_languages: 10,
         }
     }
 }
@@ -114,7 +118,19 @@ pub fn analyze_project_with_options(
     };
 
     // Detect languages from file extensions
-    profile.languages = detect_languages(root)?;
+    let all_languages = detect_languages(root)?;
+
+    // Apply max_languages limit if set
+    profile.languages = if options.max_languages > 0 && all_languages.len() > options.max_languages
+    {
+        // Sort by file count and take top N
+        let mut sorted: Vec<_> = all_languages.into_iter().collect();
+        sorted.sort_by(|a, b| b.1.file_count.cmp(&a.1.file_count));
+        sorted.truncate(options.max_languages);
+        sorted.into_iter().collect()
+    } else {
+        all_languages
+    };
 
     // Parse dependency files
     profile.dependencies = parse_all_dependencies(root)?;
@@ -357,19 +373,20 @@ pub fn detect_frameworks(deps: &HashMap<String, Vec<DependencyInfo>>) -> Vec<Str
 
 /// Parse README file for description and keywords.
 fn parse_readme(root: &Path) -> Result<(Option<String>, Vec<String>)> {
-    let readme_names = [
-        "README.md",
-        "readme.md",
-        "README",
-        "readme.rst",
-        "README.rst",
-    ];
+    // Use case-insensitive matching to avoid duplicating entries
+    let readme_patterns = ["readme.md", "readme", "readme.rst"];
 
-    for name in readme_names {
-        let path = root.join(name);
-        if path.exists() {
-            let content = fs::read_to_string(&path)?;
-            return Ok(parse_readme_content(&content));
+    // Read directory entries once and match case-insensitively
+    if let Ok(entries) = fs::read_dir(root) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let file_name = entry.file_name();
+            let name_lower = file_name.to_string_lossy().to_lowercase();
+            for pattern in readme_patterns {
+                if name_lower == pattern {
+                    let content = fs::read_to_string(entry.path())?;
+                    return Ok(parse_readme_content(&content));
+                }
+            }
         }
     }
 
@@ -550,6 +567,7 @@ mod tests {
         let options = AnalyzeProjectOptions {
             include_git: false,
             commit_limit: 1,
+            max_languages: 10,
         };
         let profile = analyze_project_with_options(temp.path(), options).unwrap();
 
@@ -569,6 +587,7 @@ mod tests {
         let options = AnalyzeProjectOptions {
             include_git: true,
             commit_limit: 1,
+            max_languages: 10,
         };
         let profile = analyze_project_with_options(temp.path(), options).unwrap();
 
