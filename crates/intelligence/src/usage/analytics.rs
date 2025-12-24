@@ -135,7 +135,6 @@ fn is_stop_word(word: &str) -> bool {
 }
 
 /// Get top co-occurring skills for a given skill.
-#[allow(dead_code)] // Public API for external consumers
 pub fn get_cooccurring_skills(
     analytics: &UsageAnalytics,
     skill: &str,
@@ -154,7 +153,6 @@ pub fn get_cooccurring_skills(
 }
 
 /// Calculate a recency score (0.0 - 1.0) based on last usage.
-#[allow(dead_code)] // Public API for external consumers
 pub fn recency_score(analytics: &UsageAnalytics, skill: &str, now: u64) -> f64 {
     if let Some(&last_used) = analytics.recency.get(skill) {
         if last_used == 0 || now == 0 {

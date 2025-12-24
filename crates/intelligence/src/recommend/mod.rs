@@ -3,7 +3,7 @@
 mod explainer;
 mod scorer;
 
-pub use explainer::generate_explanation;
+pub use explainer::{generate_explanation, summarize_recommendations};
 pub use scorer::{RecommendationScorer, Scorer};
 
 use serde::{Deserialize, Serialize};

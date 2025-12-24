@@ -16,12 +16,15 @@ pub use context::{
     LanguageInfo, ProjectProfile, ProjectType,
 };
 pub use create::{
-    generate_skill_sync, search_github_skills, CliEnvironment, CreateSkillRequest,
+    fetch_skill_content, generate_skill_sync, get_available_cli, is_cli_available,
+    search_github_skills, search_skills_advanced, CliEnvironment, CreateSkillRequest,
     CreateSkillResult, CreationMethod, GitHubSkillResult,
 };
 pub use recommend::{
-    RecommendationSignal, ScoreBreakdown, SkillGap, SkillGapAnalysis, SmartRecommendation,
+    summarize_recommendations, RecommendationSignal, ScoreBreakdown, SkillGap, SkillGapAnalysis,
+    SmartRecommendation,
 };
 pub use usage::{
-    build_analytics, CommandEntry, PromptAffinity, SkillUsageEvent, TimeRange, UsageAnalytics,
+    build_analytics, get_cooccurring_skills, parse_claude_command_history, recency_score,
+    CommandEntry, PromptAffinity, SkillUsageEvent, TimeRange, UsageAnalytics,
 };

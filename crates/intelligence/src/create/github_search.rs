@@ -212,7 +212,6 @@ fn build_raw_url(full_name: &str, path: &str) -> String {
 }
 
 /// Fetch the content of a skill from its raw URL.
-#[allow(dead_code)] // Public API for external consumers
 pub async fn fetch_skill_content(raw_url: &str) -> Result<String> {
     let client = reqwest::Client::new();
 
@@ -232,7 +231,6 @@ pub async fn fetch_skill_content(raw_url: &str) -> Result<String> {
 }
 
 /// Search for skills with specific criteria.
-#[allow(dead_code)] // Public API for external consumers
 pub async fn search_skills_advanced(
     keywords: &[String],
     language: Option<&str>,

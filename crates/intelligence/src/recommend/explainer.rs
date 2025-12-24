@@ -85,7 +85,6 @@ fn format_recency(timestamp: u64) -> String {
 }
 
 /// Generate a summary of multiple recommendations.
-#[allow(dead_code)] // Public API for external consumers
 pub fn summarize_recommendations(count: usize, has_usage: bool, has_context: bool) -> String {
     let mut parts = Vec::new();
 

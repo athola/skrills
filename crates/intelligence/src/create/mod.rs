@@ -4,8 +4,12 @@ mod cli_detector;
 mod github_search;
 mod llm_generator;
 
-pub use cli_detector::{detect_cli_environment, get_cli_binary, CliEnvironment};
-pub use github_search::{search_github_skills, GitHubSkillResult};
+pub use cli_detector::{
+    detect_cli_environment, get_available_cli, get_cli_binary, is_cli_available, CliEnvironment,
+};
+pub use github_search::{
+    fetch_skill_content, search_github_skills, search_skills_advanced, GitHubSkillResult,
+};
 pub use llm_generator::{generate_skill_sync, generate_skill_with_llm};
 
 use crate::context::ProjectProfile;

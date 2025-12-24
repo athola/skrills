@@ -89,7 +89,6 @@ pub fn get_cli_binary(env: CliEnvironment) -> &'static str {
 }
 
 /// Check if a CLI binary is available in PATH.
-#[allow(dead_code)] // Public API for external consumers
 pub fn is_cli_available(binary: &str) -> bool {
     #[cfg(unix)]
     {
@@ -110,7 +109,6 @@ pub fn is_cli_available(binary: &str) -> bool {
 }
 
 /// Get the best available CLI binary.
-#[allow(dead_code)] // Public API for external consumers
 pub fn get_available_cli() -> Option<&'static str> {
     let env = detect_cli_environment();
     let preferred = get_cli_binary(env);
