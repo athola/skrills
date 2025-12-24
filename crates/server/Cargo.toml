@@ -1,6 +1,6 @@
 [package]
 name = "skrills-server"
-version = "0.3.4"
+version = "0.4.0"
 edition = "2021"
 description = "Core library for the skrills MCP server: discovery, filtering, manifest generation, and runtime control."
 license = "MIT"
@@ -38,13 +38,13 @@ semver.workspace = true
 flate2.workspace = true
 parking_lot.workspace = true
 
-skrills-subagents = { path = "../subagents", version = "0.3.4", optional = true }
+skrills-subagents = { path = "../subagents", version = "0.4.0", optional = true }
 
-skrills-discovery = { path = "../discovery", version = "0.3.4" }
-skrills-state = { path = "../state", version = "0.3.4" }
-skrills_sync = { path = "../sync", version = "0.3.4" }
-skrills-validate = { path = "../validate", version = "0.3.4" }
-skrills-analyze = { path = "../analyze", version = "0.3.4" }
+skrills-discovery = { path = "../discovery", version = "0.4.0" }
+skrills-state = { path = "../state", version = "0.4.0" }
+skrills_sync = { path = "../sync", version = "0.4.0" }
+skrills-validate = { path = "../validate", version = "0.4.0" }
+skrills-analyze = { path = "../analyze", version = "0.4.0" }
 skrills-intelligence = { path = "../intelligence", version = "0.4.0" }
 shellexpand = "3"
 

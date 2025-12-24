@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 - 2025-12-24
+- **NEW: Intelligent Skills**: Added `skrills-intelligence` crate with project context analysis, skill recommendations, and skill creation capabilities.
+- **NEW: Project Context Detection**: Automatically detect programming languages, frameworks, project type, and extract keywords from README and git history.
+- **NEW: Smart Recommendations**: Context-aware skill recommendations based on project profile, usage analytics, and dependency relationships.
+- **NEW: Skill Creation**: Create new skills via GitHub search or LLM generation with project context awareness.
+- **NEW: Usage Analytics**: Parse Claude Code and Codex CLI history for skill usage patterns and co-occurrence analysis.
+- **Security Fixes**: Added path traversal guard, GitHub query injection sanitization, and CLI binary name validation.
+- **Error Handling**: Improved error logging for silent failures and actionable GitHub API error messages.
+
 ## 0.3.4 - 2025-12-19
 - **NEW: Skill Recommendations**: Added `skrills recommend` CLI command and `recommend-skills` MCP tool for suggesting related skills based on dependency graph relationships (dependencies, dependents, and siblings).
 
