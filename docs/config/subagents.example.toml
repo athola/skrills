@@ -1,7 +1,15 @@
 # Example subagents configuration for skrills
-# Copy to ~/.codex/subagents.toml or set SKRILLS_SUBAGENTS_DEFAULT_BACKEND env var.
+# Copy to ~/.codex/subagents.toml or ~/.claude/subagents.toml.
+# Environment overrides: SKRILLS_SUBAGENTS_EXECUTION_MODE, SKRILLS_SUBAGENTS_DEFAULT_BACKEND, SKRILLS_CLI_BINARY.
 
-# default backend to use when client doesn't request one: "codex" or "claude"
+# Execution mode for subagent runs: "cli" (headless local CLI) or "api"
+execution_mode = "cli"
+
+# CLI binary to use when execution_mode = "cli" ("auto" matches current client)
+# Auto detection uses SKRILLS_CLIENT or CLI env (CLAUDE/CODEX), then server binary path (falls back to claude).
+cli_binary = "auto"
+
+# Default backend when execution_mode = "api" and no backend is specified
 default_backend = "codex"
 
 # Optional model overrides

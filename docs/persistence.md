@@ -40,11 +40,15 @@ The `~/.codex/skills-manifest.json` file stores discovery configuration:
 
 ### Subagents Configuration
 
-The `~/.codex/subagents.toml` file stores subagent defaults:
+The `~/.claude/subagents.toml` or `~/.codex/subagents.toml` file stores subagent defaults:
 
 ```toml
+execution_mode = "cli"
+cli_binary = "auto"
 default_backend = "codex"
 ```
+
+`cli_binary = "auto"` selects `claude` or `codex` using `SKRILLS_CLIENT`, CLI env (CLAUDE/CODEX), or the server binary path (fallback is `claude`).
 
 ## What Is NOT Persisted
 
@@ -102,6 +106,7 @@ rm -rf ~/.codex/skills-mirror/
 rm ~/.codex/skills-cache.json
 rm ~/.codex/skills-manifest.json
 rm ~/.codex/subagents.toml
+rm ~/.claude/subagents.toml
 ```
 
 ## Operational Tips

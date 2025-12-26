@@ -100,9 +100,9 @@ resolve(skill, registry, options) -> Result<ResolutionResult>:
 {
   "success": true,
   "resolved": [
-    { "uri": "skill://skrills/codex/base-skill", "name": "base-skill", "depth": 2 },
-    { "uri": "skill://skrills/codex/utility", "name": "utility", "depth": 1 },
-    { "uri": "skill://skrills/codex/my-skill", "name": "my-skill", "depth": 0 }
+    { "uri": "skill://skrills/codex/base-skill/SKILL.md", "name": "base-skill", "depth": 2 },
+    { "uri": "skill://skrills/codex/utility/SKILL.md", "name": "utility", "depth": 1 },
+    { "uri": "skill://skrills/codex/my-skill/SKILL.md", "name": "my-skill", "depth": 0 }
   ],
   "warnings": ["Skipped optional dependency: optional-helper"],
   "content": "..." // Only if include_content=true (concatenated)

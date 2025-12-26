@@ -14,12 +14,19 @@
 //! On Unix-like systems, a `SIGCHLD` handler prevents zombie processes.
 //! Keep this file under ~2500 LOC; split it into modules before crossing the limit.
 
+mod intelligence;
+#[cfg(test)]
+pub(crate) use intelligence::{resolve_project_dir, select_default_skill_root};
+
 use crate::cache::SkillCache;
 use crate::cli::{Cli, Commands};
 use crate::commands::{
-    handle_agent_command, handle_analyze_command, handle_metrics_command, handle_mirror_command,
-    handle_recommend_command, handle_serve_command, handle_setup_command,
-    handle_sync_agents_command, handle_sync_command, handle_validate_command,
+    handle_agent_command, handle_analyze_command, handle_analyze_project_context_command,
+    handle_create_skill_command, handle_metrics_command, handle_mirror_command,
+    handle_recommend_command, handle_recommend_skills_smart_command,
+    handle_resolve_dependencies_command, handle_search_skills_github_command, handle_serve_command,
+    handle_setup_command, handle_suggest_new_skills_command, handle_sync_agents_command,
+    handle_sync_command, handle_validate_command,
 };
 use crate::discovery::{
     merge_extra_dirs, priority_labels, read_skill, skill_roots, AGENTS_DESCRIPTION, AGENTS_NAME,
@@ -1535,6 +1542,66 @@ pub fn run() -> Result<()> {
             limit,
             include_quality,
         } => handle_recommend_command(uri, skill_dirs, format, limit, include_quality),
+        Commands::ResolveDependencies {
+            uri,
+            skill_dirs,
+            direction,
+            transitive,
+            format,
+        } => handle_resolve_dependencies_command(uri, skill_dirs, direction, transitive, format),
+        Commands::RecommendSkillsSmart {
+            uri,
+            prompt,
+            project_dir,
+            limit,
+            include_usage,
+            include_context,
+            format,
+            skill_dirs,
+        } => handle_recommend_skills_smart_command(
+            uri,
+            prompt,
+            project_dir,
+            limit,
+            include_usage,
+            include_context,
+            format,
+            skill_dirs,
+        ),
+        Commands::AnalyzeProjectContext {
+            project_dir,
+            include_git,
+            commit_limit,
+            format,
+        } => handle_analyze_project_context_command(project_dir, include_git, commit_limit, format),
+        Commands::SuggestNewSkills {
+            project_dir,
+            focus_areas,
+            format,
+            skill_dirs,
+        } => handle_suggest_new_skills_command(project_dir, focus_areas, format, skill_dirs),
+        Commands::CreateSkill {
+            name,
+            description,
+            method,
+            target_dir,
+            project_dir,
+            dry_run,
+            format,
+        } => handle_create_skill_command(
+            name,
+            description,
+            method,
+            target_dir,
+            project_dir,
+            dry_run,
+            format,
+        ),
+        Commands::SearchSkillsGithub {
+            query,
+            limit,
+            format,
+        } => handle_search_skills_github_command(query, limit, format),
     }
 }
 

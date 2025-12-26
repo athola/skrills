@@ -131,8 +131,17 @@ impl ServerHandler for SkillService {
                     }
                 }
             }
-            let result = || -> Result<CallToolResult> {
-                match request.name.as_ref() {
+            let result = match request.name.as_ref() {
+                "create-skill" => {
+                    let args = request.arguments.clone().unwrap_or_default();
+                    self.create_skill_tool(args).await
+                }
+                "search-skills-github" => {
+                    let args = request.arguments.clone().unwrap_or_default();
+                    self.search_skills_github_tool(args).await
+                }
+                _ => (|| -> Result<CallToolResult> {
+                    match request.name.as_ref() {
                     "sync-from-claude" => {
                         let include_marketplace = request
                             .arguments
@@ -743,11 +752,208 @@ impl ServerHandler for SkillService {
                         let args = request.arguments.clone().unwrap_or_default();
                         self.skill_loading_selftest_tool(args)
                     }
+                    // Intelligence tools (smart recommendations, project context, skill creation)
+                    "recommend-skills-smart" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.recommend_skills_smart_tool(args)
+                    }
+                    "analyze-project-context" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.analyze_project_context_tool(args)
+                    }
+                    "suggest-new-skills" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.suggest_new_skills_tool(args)
+                    }
                     other => Err(anyhow!("unknown tool {other}")),
                 }
-            }()
+                })(),
+            }
             .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None));
             result
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::discovery::AGENTS_URI;
+    use crate::test_support;
+    use rmcp::model::{Extensions, Meta, RequestId};
+    use rmcp::service::{serve_directly, RequestContext, RunningService};
+    use std::future::Future;
+    use std::time::Duration;
+    use tempfile::tempdir;
+    use tokio_util::sync::CancellationToken;
+
+    fn service_with_context(
+        service: SkillService,
+    ) -> (
+        RunningService<rmcp::RoleServer, SkillService>,
+        RequestContext<rmcp::RoleServer>,
+        tokio::io::DuplexStream,
+    ) {
+        let (client, server) = tokio::io::duplex(64);
+        let running = serve_directly::<rmcp::RoleServer, _, _, _, _>(service, server, None);
+        let context = RequestContext {
+            ct: CancellationToken::new(),
+            id: RequestId::Number(1),
+            meta: Meta::new(),
+            extensions: Extensions::new(),
+            peer: running.peer().clone(),
+        };
+        (running, context, client)
+    }
+
+    fn build_service(temp: &tempfile::TempDir) -> SkillService {
+        let skill_root = temp.path().join(".codex/skills/demo");
+        std::fs::create_dir_all(&skill_root).expect("create skill root");
+        std::fs::write(skill_root.join("SKILL.md"), "demo skill").expect("write skill");
+        SkillService::new_with_ttl(Vec::new(), std::time::Duration::from_secs(1))
+            .expect("service should build")
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(v) = &self.previous {
+                std::env::set_var(self.key, v);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn set_env_var(key: &'static str, value: Option<&str>) -> EnvVarGuard {
+        let previous = std::env::var(key).ok();
+        if let Some(val) = value {
+            std::env::set_var(key, val);
+        } else {
+            std::env::remove_var(key);
+        }
+        EnvVarGuard { key, previous }
+    }
+
+    fn run_async<T>(future: impl Future<Output = T>) -> T {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime should build");
+        let result = runtime.block_on(future);
+        runtime.shutdown_timeout(Duration::from_millis(100));
+        result
+    }
+
+    #[test]
+    fn list_resources_includes_agents_doc() {
+        /*
+        GIVEN a service with a temp home and skill roots
+        WHEN listing resources
+        THEN the AGENTS.md resource should be included
+        */
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var(
+            "HOME",
+            Some(
+                temp.path()
+                    .to_str()
+                    .expect("temp home should be valid utf-8"),
+            ),
+        );
+
+        let service = build_service(&temp);
+        let result = run_async(async move {
+            let (running, context, _client) = service_with_context(service);
+            running
+                .service()
+                .list_resources(None, context)
+                .await
+                .expect("list_resources should succeed")
+        });
+
+        assert!(
+            result.resources.iter().any(|r| r.uri == AGENTS_URI),
+            "AGENTS resource should be listed"
+        );
+    }
+
+    #[test]
+    fn list_tools_includes_core_tooling() {
+        /*
+        GIVEN a service
+        WHEN listing tools
+        THEN core tools like create-skill should be present
+        */
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var(
+            "HOME",
+            Some(
+                temp.path()
+                    .to_str()
+                    .expect("temp home should be valid utf-8"),
+            ),
+        );
+
+        let service = build_service(&temp);
+        let result = run_async(async move {
+            let (running, context, _client) = service_with_context(service);
+            running
+                .service()
+                .list_tools(None, context)
+                .await
+                .expect("list_tools should succeed")
+        });
+
+        assert!(
+            result.tools.iter().any(|tool| tool.name == "create-skill"),
+            "create-skill tool should be available"
+        );
+    }
+
+    #[test]
+    fn call_tool_unknown_returns_error() {
+        /*
+        GIVEN a service
+        WHEN calling an unknown tool
+        THEN it should return a structured error
+        */
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var(
+            "HOME",
+            Some(
+                temp.path()
+                    .to_str()
+                    .expect("temp home should be valid utf-8"),
+            ),
+        );
+
+        let service = build_service(&temp);
+        let result = run_async(async move {
+            let (running, context, _client) = service_with_context(service);
+            running
+                .service()
+                .call_tool(
+                    CallToolRequestParam {
+                        name: "does-not-exist".into(),
+                        arguments: None,
+                    },
+                    context,
+                )
+                .await
+        });
+
+        let err = result.expect_err("unknown tool should error");
+        assert!(
+            err.message.contains("unknown tool"),
+            "error message should mention unknown tool"
+        );
     }
 }

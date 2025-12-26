@@ -1,15 +1,97 @@
 use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use rmcp::model::{object, JsonObject};
 use rmcp::model::{CallToolResult, Content, Tool};
+use serde::Deserialize;
 use serde_json::{json, Map as JsonMap, Value};
 
 use crate::backend::BackendAdapter;
-use crate::backend::{claude::ClaudeAdapter, cli::CodexCliAdapter, codex::CodexAdapter};
+use crate::backend::{
+    claude::ClaudeAdapter,
+    cli::{CliConfig, CodexCliAdapter},
+    codex::CodexAdapter,
+};
+use crate::cli_detection::{
+    cli_binary_from_client_env, cli_binary_from_exe_path, client_hint_from_env,
+    client_hint_from_exe_path, normalize_cli_binary, DEFAULT_CLI_BINARY,
+};
 use crate::registry::AgentRegistry;
 use crate::store::{default_store_path, BackendKind, RunId, RunRequest, RunStore, StateRunStore};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecutionMode {
+    Cli,
+    Api,
+}
+
+fn execution_mode_from_str(raw: &str) -> Option<ExecutionMode> {
+    if raw.eq_ignore_ascii_case("cli") || raw.eq_ignore_ascii_case("headless") {
+        Some(ExecutionMode::Cli)
+    } else if raw.eq_ignore_ascii_case("api") {
+        Some(ExecutionMode::Api)
+    } else {
+        None
+    }
+}
+
+fn parse_execution_mode(raw: &str) -> Result<ExecutionMode> {
+    execution_mode_from_str(raw).ok_or_else(|| anyhow!("execution_mode must be 'cli' or 'api'"))
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SubagentsFileConfig {
+    #[serde(default)]
+    default_backend: Option<String>,
+    #[serde(default)]
+    execution_mode: Option<String>,
+    #[serde(default)]
+    cli_binary: Option<String>,
+}
+
+fn subagents_config_paths() -> Vec<PathBuf> {
+    let Ok(home) = skrills_state::home_dir() else {
+        return Vec::new();
+    };
+    let claude = home.join(".claude/subagents.toml");
+    let codex = home.join(".codex/subagents.toml");
+    match client_hint_from_env().or_else(client_hint_from_exe_path) {
+        Some("codex") => vec![codex, claude],
+        Some("claude") => vec![claude, codex],
+        _ => vec![claude, codex],
+    }
+}
+
+fn load_subagents_file_config() -> SubagentsFileConfig {
+    for path in subagents_config_paths() {
+        if !path.exists() {
+            continue;
+        }
+        match fs::read_to_string(&path) {
+            Ok(raw) => match toml::from_str::<SubagentsFileConfig>(&raw) {
+                Ok(config) => return config,
+                Err(err) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %err,
+                        "failed to parse subagents config"
+                    );
+                }
+            },
+            Err(err) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %err,
+                    "failed to read subagents config"
+                );
+            }
+        }
+    }
+    SubagentsFileConfig::default()
+}
 
 fn backend_from_str(raw: &str) -> BackendKind {
     if raw.eq_ignore_ascii_case("codex")
@@ -35,20 +117,24 @@ fn run_id_from_value(val: &Value) -> Result<RunId> {
 pub struct SubagentService {
     store: Arc<dyn RunStore>,
     adapters: HashMap<BackendKind, Arc<dyn BackendAdapter>>,
-    cli_adapter: Arc<CodexCliAdapter>,
     default_backend: BackendKind,
+    default_execution_mode: ExecutionMode,
+    cli_binary: Option<String>,
     registry: Arc<AgentRegistry>,
 }
 
 impl SubagentService {
     pub fn new() -> Result<Self> {
         let store = Arc::new(StateRunStore::new(default_store_path()?)?);
+        let file_config = load_subagents_file_config();
         let default_backend = std::env::var("SKRILLS_SUBAGENTS_DEFAULT_BACKEND")
             .ok()
             .as_deref()
             .map(backend_from_str)
+            .or_else(|| file_config.default_backend.as_deref().map(backend_from_str))
             .unwrap_or(BackendKind::Codex);
-        Self::with_store(store, default_backend)
+        let registry = Arc::new(AgentRegistry::discover()?);
+        Self::with_store_and_registry_with_config(store, default_backend, registry, file_config)
     }
 
     pub fn with_store(store: Arc<dyn RunStore>, default_backend: BackendKind) -> Result<Self> {
@@ -61,6 +147,16 @@ impl SubagentService {
         default_backend: BackendKind,
         registry: Arc<AgentRegistry>,
     ) -> Result<Self> {
+        let file_config = load_subagents_file_config();
+        Self::with_store_and_registry_with_config(store, default_backend, registry, file_config)
+    }
+
+    fn with_store_and_registry_with_config(
+        store: Arc<dyn RunStore>,
+        default_backend: BackendKind,
+        registry: Arc<AgentRegistry>,
+        file_config: SubagentsFileConfig,
+    ) -> Result<Self> {
         let mut adapters: HashMap<BackendKind, Arc<dyn BackendAdapter>> = HashMap::new();
         adapters.insert(
             BackendKind::Codex,
@@ -71,14 +167,19 @@ impl SubagentService {
             Arc::new(ClaudeAdapter::new("claude-code".into())?),
         );
 
-        // CLI adapter for agents that require tool execution
-        let cli_adapter = Arc::new(CodexCliAdapter::from_env());
+        let default_execution_mode = file_config
+            .execution_mode
+            .as_deref()
+            .and_then(execution_mode_from_str)
+            .unwrap_or(ExecutionMode::Cli);
+        let cli_binary = normalize_cli_binary(file_config.cli_binary);
 
         Ok(Self {
             store,
             adapters,
-            cli_adapter,
             default_backend,
+            default_execution_mode,
+            cli_binary,
             registry,
         })
     }
@@ -91,6 +192,56 @@ impl SubagentService {
             .ok_or_else(|| anyhow!("backend not configured: {key:?}"))
     }
 
+    fn cli_adapter_for(&self, cli_binary_override: Option<String>) -> Arc<CodexCliAdapter> {
+        let env_binary = normalize_cli_binary(std::env::var("SKRILLS_CLI_BINARY").ok());
+        let mut config = CliConfig::from_env();
+        if env_binary.is_none() {
+            config.binary = self.default_cli_binary();
+        }
+        if let Some(binary) = cli_binary_override {
+            config.binary = binary;
+        }
+        Arc::new(CodexCliAdapter::with_config(config))
+    }
+
+    fn execution_mode_from_env(&self) -> Option<ExecutionMode> {
+        match std::env::var("SKRILLS_SUBAGENTS_EXECUTION_MODE") {
+            Ok(raw) => {
+                if let Some(mode) = execution_mode_from_str(&raw) {
+                    Some(mode)
+                } else {
+                    tracing::warn!(
+                        value = %raw,
+                        "invalid SKRILLS_SUBAGENTS_EXECUTION_MODE (expected 'cli' or 'api')"
+                    );
+                    None
+                }
+            }
+            Err(_) => None,
+        }
+    }
+
+    fn default_execution_mode(&self) -> ExecutionMode {
+        self.execution_mode_from_env()
+            .unwrap_or(self.default_execution_mode)
+    }
+
+    fn default_backend_from_env(&self) -> BackendKind {
+        std::env::var("SKRILLS_SUBAGENTS_DEFAULT_BACKEND")
+            .ok()
+            .as_deref()
+            .map(backend_from_str)
+            .unwrap_or_else(|| self.default_backend.clone())
+    }
+
+    fn default_cli_binary(&self) -> String {
+        self.cli_binary
+            .clone()
+            .or_else(cli_binary_from_client_env)
+            .or_else(cli_binary_from_exe_path)
+            .unwrap_or_else(|| DEFAULT_CLI_BINARY.to_string())
+    }
+
     pub fn tools(&self) -> Vec<Tool> {
         let run_schema: Arc<JsonObject> = Arc::new(object(json!({
             "type": "object",
@@ -98,7 +249,9 @@ impl SubagentService {
             "properties": {
                 "prompt": {"type": "string", "description": "User instruction"},
                 "agent_id": {"type": "string", "description": "Agent name to run (from list-agents). When specified, routes to appropriate execution path based on agent capabilities."},
-                "backend": {"type": "string", "description": "codex|claude|other (ignored if agent_id is specified)"},
+                "backend": {"type": "string", "description": "codex|claude|other (used only when execution_mode=api and agent_id is not specified)"},
+                "execution_mode": {"type": "string", "description": "cli|api (default: cli). cli uses local headless CLI; api uses network APIs."},
+                "cli_binary": {"type": "string", "description": "CLI binary to run in cli mode (overrides SKRILLS_CLI_BINARY/config)"},
                 "template_id": {"type": "string"},
                 "output_schema": {"type": "object"},
                 "tracing": {"type": "boolean"},
@@ -318,6 +471,8 @@ impl SubagentService {
             let mut t = adapter.list_templates().await?;
             templates.append(&mut t);
         }
+        let mut cli_templates = self.cli_adapter_for(None).list_templates().await?;
+        templates.append(&mut cli_templates);
         Ok(CallToolResult {
             content: vec![Content::text("listed subagents")],
             structured_content: Some(json!({"templates": templates})),
@@ -379,17 +534,30 @@ impl SubagentService {
             .get("stream")
             .and_then(|v| v.as_bool())
             .unwrap_or(async_mode);
+        let execution_mode = args
+            .get("execution_mode")
+            .and_then(|v| v.as_str())
+            .map(parse_execution_mode)
+            .transpose()?
+            .unwrap_or_else(|| self.default_execution_mode());
+        let cli_binary_override = args
+            .get("cli_binary")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         // Smart routing: if agent_id is specified, use agent-based routing
-        let adapter = if let Some(agent_name) = agent_id {
-            self.route_for_agent(agent_name)?
+        let adapter: Arc<dyn BackendAdapter> = if let Some(agent_name) = agent_id {
+            self.route_for_agent(agent_name, execution_mode, cli_binary_override.clone())?
+        } else if matches!(execution_mode, ExecutionMode::Cli) {
+            self.cli_adapter_for(cli_binary_override)
         } else {
-            // Fallback: no agent_id, use backend from args or default
+            // API mode: use backend from args or default.
             let backend = args
                 .get("backend")
                 .and_then(|v| v.as_str())
-                .map(backend_from_str);
-            self.adapter_for(backend)?
+                .map(backend_from_str)
+                .unwrap_or_else(|| self.default_backend_from_env());
+            self.adapter_for(Some(backend))?
         };
 
         let request = RunRequest {
@@ -420,7 +588,12 @@ impl SubagentService {
     /// - CLI adapter if agent requires tools (spawns CLI subprocess)
     /// - API adapter if agent doesn't require tools
     /// - Error if agent not found
-    fn route_for_agent(&self, agent_name: &str) -> Result<Arc<dyn BackendAdapter>> {
+    fn route_for_agent(
+        &self,
+        agent_name: &str,
+        execution_mode: ExecutionMode,
+        cli_binary_override: Option<String>,
+    ) -> Result<Arc<dyn BackendAdapter>> {
         let agent = self
             .registry
             .get(agent_name)
@@ -429,14 +602,20 @@ impl SubagentService {
         // Check if agent requires CLI execution (has tools)
         let requires_cli = agent.config.tools.as_ref().is_some_and(|t| !t.is_empty());
 
-        if requires_cli {
+        if matches!(execution_mode, ExecutionMode::Cli) || requires_cli {
+            if matches!(execution_mode, ExecutionMode::Api) && requires_cli {
+                tracing::debug!(
+                    "execution_mode=api requested for agent '{}' but tools require CLI",
+                    agent_name
+                );
+            }
             // Use CLI adapter for agents that require tool execution
             tracing::debug!(
                 "routing agent '{}' to CLI adapter (tools: {:?})",
                 agent_name,
                 agent.config.tools
             );
-            return Ok(self.cli_adapter.clone() as Arc<dyn BackendAdapter>);
+            return Ok(self.cli_adapter_for(cli_binary_override) as Arc<dyn BackendAdapter>);
         }
 
         // Agent doesn't require tools - use API adapter
@@ -465,7 +644,7 @@ impl SubagentService {
                 BackendKind::Codex
             }
             // Default to the service's default backend
-            _ => self.default_backend.clone(),
+            _ => self.default_backend_from_env(),
         }
     }
 
@@ -620,7 +799,9 @@ mod tests {
     use super::*;
     use crate::store::{MemRunStore, RunEvent, RunRequest, RunState};
     use skrills_discovery::{SkillRoot, SkillSource};
+    use std::env;
     use std::fs;
+    use std::sync::Mutex;
     use tempfile::tempdir;
     use time::OffsetDateTime;
 
@@ -628,6 +809,37 @@ mod tests {
         let agents_dir = dir.join("agents");
         fs::create_dir_all(&agents_dir).unwrap();
         fs::write(agents_dir.join(name), content).unwrap();
+    }
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(v) = &self.previous {
+                env::set_var(self.key, v);
+            } else {
+                env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn set_env_var(key: &'static str, value: Option<&str>) -> EnvVarGuard {
+        let previous = env::var(key).ok();
+        if let Some(v) = value {
+            env::set_var(key, v);
+        } else {
+            env::remove_var(key);
+        }
+        EnvVarGuard { key, previous }
     }
 
     #[tokio::test]
@@ -846,7 +1058,7 @@ Content."#,
     async fn run_and_status_round_trip() {
         let service =
             SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
-        let args = json!({"prompt": "hi", "backend": "codex"})
+        let args = json!({"prompt": "hi", "backend": "codex", "execution_mode": "api"})
             .as_object()
             .cloned();
         let result = service.handle_run(false, args.as_ref()).await.unwrap();
@@ -895,6 +1107,14 @@ Content."#,
             props.get("agent_id").is_some(),
             "run-subagent should have agent_id property"
         );
+        assert!(
+            props.get("execution_mode").is_some(),
+            "run-subagent should have execution_mode property"
+        );
+        assert!(
+            props.get("cli_binary").is_some(),
+            "run-subagent should have cli_binary property"
+        );
 
         // Check run-subagent-async
         let async_tool = tools
@@ -910,19 +1130,155 @@ Content."#,
             async_props.get("agent_id").is_some(),
             "run-subagent-async should have agent_id property"
         );
+        assert!(
+            async_props.get("execution_mode").is_some(),
+            "run-subagent-async should have execution_mode property"
+        );
+        assert!(
+            async_props.get("cli_binary").is_some(),
+            "run-subagent-async should have cli_binary property"
+        );
     }
 
     #[tokio::test]
-    async fn run_without_agent_id_uses_default_backend() {
+    async fn cli_binary_defaults_to_codex_when_client_env_codex() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let _home_guard = set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+        let _client_guard = set_env_var("SKRILLS_CLIENT", Some("codex"));
+        let _cli_guard = set_env_var("SKRILLS_CLI_BINARY", None);
+        let _claude_session = set_env_var("CLAUDE_CODE_SESSION", None);
+        let _claude_cli = set_env_var("CLAUDE_CLI", None);
+        let _claude_mcp = set_env_var("__CLAUDE_MCP_SERVER", None);
+        let _claude_entry = set_env_var("CLAUDE_CODE_ENTRYPOINT", None);
+        let _codex_session = set_env_var("CODEX_SESSION_ID", None);
+        let _codex_cli = set_env_var("CODEX_CLI", None);
+        let _codex_home = set_env_var("CODEX_HOME", None);
+
+        let service =
+            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        assert_eq!(service.default_cli_binary(), "codex");
+    }
+
+    #[tokio::test]
+    async fn cli_binary_defaults_to_claude_when_client_env_claude() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let _home_guard = set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+        let _client_guard = set_env_var("SKRILLS_CLIENT", Some("claude"));
+        let _cli_guard = set_env_var("SKRILLS_CLI_BINARY", None);
+        let _claude_session = set_env_var("CLAUDE_CODE_SESSION", None);
+        let _claude_cli = set_env_var("CLAUDE_CLI", None);
+        let _claude_mcp = set_env_var("__CLAUDE_MCP_SERVER", None);
+        let _claude_entry = set_env_var("CLAUDE_CODE_ENTRYPOINT", None);
+        let _codex_session = set_env_var("CODEX_SESSION_ID", None);
+        let _codex_cli = set_env_var("CODEX_CLI", None);
+        let _codex_home = set_env_var("CODEX_HOME", None);
+
+        let service =
+            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        assert_eq!(service.default_cli_binary(), "claude");
+    }
+
+    #[tokio::test]
+    async fn cli_binary_defaults_to_codex_when_codex_session_env_present() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let _home_guard = set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+        let _client_guard = set_env_var("SKRILLS_CLIENT", None);
+        let _codex_guard = set_env_var("CODEX_SESSION_ID", Some("session-123"));
+        let _cli_guard = set_env_var("SKRILLS_CLI_BINARY", None);
+        let _claude_session = set_env_var("CLAUDE_CODE_SESSION", None);
+        let _claude_cli = set_env_var("CLAUDE_CLI", None);
+        let _claude_mcp = set_env_var("__CLAUDE_MCP_SERVER", None);
+        let _claude_entry = set_env_var("CLAUDE_CODE_ENTRYPOINT", None);
+
+        let service =
+            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        assert_eq!(service.default_cli_binary(), "codex");
+    }
+
+    #[tokio::test]
+    async fn cli_binary_defaults_to_claude_when_claude_session_env_present() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let _home_guard = set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+        let _client_guard = set_env_var("SKRILLS_CLIENT", None);
+        let _claude_guard = set_env_var("CLAUDE_CODE_SESSION", Some("session-123"));
+        let _cli_guard = set_env_var("SKRILLS_CLI_BINARY", None);
+        let _codex_session = set_env_var("CODEX_SESSION_ID", None);
+        let _codex_cli = set_env_var("CODEX_CLI", None);
+        let _codex_home = set_env_var("CODEX_HOME", None);
+
+        let service =
+            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        assert_eq!(service.default_cli_binary(), "claude");
+    }
+
+    #[tokio::test]
+    async fn cli_binary_env_auto_uses_default() {
+        let adapter = {
+            let _guard = env_guard();
+            let temp = tempdir().unwrap();
+            let _home_guard = set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+            let _client_guard = set_env_var("SKRILLS_CLIENT", Some("codex"));
+            let _cli_guard = set_env_var("SKRILLS_CLI_BINARY", Some("auto"));
+            let _claude_session = set_env_var("CLAUDE_CODE_SESSION", None);
+            let _claude_cli = set_env_var("CLAUDE_CLI", None);
+            let _claude_mcp = set_env_var("__CLAUDE_MCP_SERVER", None);
+            let _claude_entry = set_env_var("CLAUDE_CODE_ENTRYPOINT", None);
+            let _codex_session = set_env_var("CODEX_SESSION_ID", None);
+            let _codex_cli = set_env_var("CODEX_CLI", None);
+            let _codex_home = set_env_var("CODEX_HOME", None);
+
+            let service =
+                SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex)
+                    .unwrap();
+            service.cli_adapter_for(None)
+        };
+
+        let templates = adapter.list_templates().await.unwrap();
+        let name = templates
+            .first()
+            .map(|t| t.name.to_lowercase())
+            .unwrap_or_default();
+
+        assert!(name.contains("codex"));
+    }
+
+    #[tokio::test]
+    async fn run_without_agent_id_defaults_to_cli_mode() {
         let service =
             SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
         let args = json!({"prompt": "hi"}).as_object().cloned();
         let result = service.handle_run(false, args.as_ref()).await.unwrap();
 
-        // Should succeed using default backend (Codex)
+        // Should succeed using CLI mode by default.
         assert!(result.structured_content.is_some());
         let content = result.structured_content.unwrap();
         assert!(content.get("run_id").is_some());
+        let message = content
+            .get("status")
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.as_str());
+        assert_eq!(message, Some("spawning CLI process"));
+    }
+
+    #[tokio::test]
+    async fn run_with_execution_mode_api_uses_api_adapter() {
+        let service =
+            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        let args = json!({"prompt": "hi", "execution_mode": "api", "backend": "codex"})
+            .as_object()
+            .cloned();
+        let result = service.handle_run(false, args.as_ref()).await.unwrap();
+
+        let content = result.structured_content.unwrap();
+        let message = content
+            .get("status")
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.as_str());
+        assert_eq!(message, Some("dispatched"));
     }
 
     #[tokio::test]
@@ -956,7 +1312,7 @@ You are an API agent."#,
         )
         .unwrap();
 
-        let args = json!({"prompt": "hi", "agent_id": "api-agent"})
+        let args = json!({"prompt": "hi", "agent_id": "api-agent", "execution_mode": "api"})
             .as_object()
             .cloned();
         let result = service.handle_run(false, args.as_ref()).await.unwrap();
@@ -965,6 +1321,11 @@ You are an API agent."#,
         assert!(result.structured_content.is_some());
         let content = result.structured_content.unwrap();
         assert!(content.get("run_id").is_some());
+        let message = content
+            .get("status")
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.as_str());
+        assert_eq!(message, Some("dispatched"));
     }
 
     #[tokio::test]
@@ -1009,6 +1370,51 @@ You are a CLI agent."#,
         assert!(result.is_ok(), "should route to CLI adapter: {:?}", result);
         let content = result.unwrap().structured_content.unwrap();
         assert!(content.get("run_id").is_some(), "should have run_id");
+    }
+
+    #[tokio::test]
+    async fn run_with_agent_id_with_tools_execution_mode_api_still_uses_cli() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path();
+
+        // Create an agent WITH tools (requires CLI)
+        create_agent_file(
+            &home.join(".codex"),
+            "cli-agent.md",
+            r#"---
+name: cli-agent
+description: An agent with tools
+tools: Read, Bash, Glob
+model: sonnet
+---
+
+You are a CLI agent."#,
+        );
+
+        let roots = vec![SkillRoot {
+            root: home.join(".codex/agents"),
+            source: SkillSource::Codex,
+        }];
+
+        let registry = Arc::new(AgentRegistry::discover_from_roots(&roots).unwrap());
+        let service = SubagentService::with_store_and_registry(
+            Arc::new(MemRunStore::new()),
+            BackendKind::Codex,
+            registry,
+        )
+        .unwrap();
+
+        let args = json!({"prompt": "hi", "agent_id": "cli-agent", "execution_mode": "api"})
+            .as_object()
+            .cloned();
+        let result = service.handle_run(false, args.as_ref()).await.unwrap();
+
+        let content = result.structured_content.unwrap();
+        let message = content
+            .get("status")
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.as_str());
+        assert_eq!(message, Some("spawning CLI process"));
     }
 
     #[tokio::test]

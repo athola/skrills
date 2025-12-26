@@ -54,7 +54,10 @@ pub fn validate_codex(path: &Path, content: &str) -> ValidationResult {
         return result;
     }
 
-    let fm = parsed.frontmatter.as_ref().unwrap();
+    let fm = parsed
+        .frontmatter
+        .as_ref()
+        .expect("frontmatter required for Codex validation");
 
     // Update name from frontmatter
     if let Some(ref n) = fm.name {

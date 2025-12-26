@@ -7,6 +7,7 @@
 #![deny(unsafe_code)]
 
 pub mod backend;
+mod cli_detection;
 pub mod registry;
 pub mod service;
 pub mod store;

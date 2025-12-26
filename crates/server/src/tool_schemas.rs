@@ -241,7 +241,7 @@ pub(crate) fn dependency_tools() -> Vec<Tool> {
                 json!({
                     "uri": {
                         "type": "string",
-                        "description": "Skill URI (e.g., skill://skrills/user/my-skill)"
+                        "description": "Skill URI (e.g., skill://skrills/codex/my-skill/SKILL.md)"
                     },
                     "direction": {
                         "type": "string",
@@ -284,7 +284,7 @@ pub(crate) fn recommend_tools() -> Vec<Tool> {
                 json!({
                     "uri": {
                         "type": "string",
-                        "description": "Skill URI to get recommendations for (e.g., skill://skrills/user/my-skill)"
+                        "description": "Skill URI to get recommendations for (e.g., skill://skrills/codex/my-skill/SKILL.md)"
                     },
                     "limit": {
                         "type": "integer",
@@ -454,6 +454,215 @@ pub(crate) fn trace_tools() -> Vec<Tool> {
     ]
 }
 
+/// Returns intelligent recommendation and skill creation tools.
+///
+/// Tools: recommend-skills-smart, analyze-project-context, suggest-new-skills,
+/// create-skill, search-skills-github
+pub(crate) fn intelligence_tools() -> Vec<Tool> {
+    vec![
+        Tool {
+            name: "recommend-skills-smart".into(),
+            title: Some("Smart skill recommendations".into()),
+            description: Some(
+                "Enhanced recommendations combining dependency relationships, usage patterns, \
+                 and project context. Returns scored recommendations with explanations."
+                    .into(),
+            ),
+            input_schema: Arc::new({
+                let mut schema = JsonMap::new();
+                schema.insert("type".into(), json!("object"));
+                schema.insert(
+                    "properties".into(),
+                    json!({
+                        "uri": {
+                            "type": "string",
+                            "description": "Optional skill URI for relationship-based recommendations"
+                        },
+                        "prompt": {
+                            "type": "string",
+                            "description": "Optional prompt text for semantic matching"
+                        },
+                        "project_dir": {
+                            "type": "string",
+                            "description": "Project directory for context analysis (defaults to cwd)"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "default": 10,
+                            "description": "Maximum recommendations to return"
+                        },
+                        "include_usage": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Include usage pattern analysis"
+                        },
+                        "include_context": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Include project context analysis"
+                        }
+                    }),
+                );
+                schema.insert("additionalProperties".into(), json!(false));
+                schema
+            }),
+            output_schema: None,
+            annotations: Some(ToolAnnotations::default()),
+            icons: None,
+            meta: None,
+        },
+        Tool {
+            name: "analyze-project-context".into(),
+            title: Some("Analyze project context".into()),
+            description: Some(
+                "Analyzes the current project to build a context profile including \
+                 languages, dependencies, frameworks, and keywords."
+                    .into(),
+            ),
+            input_schema: Arc::new({
+                let mut schema = JsonMap::new();
+                schema.insert("type".into(), json!("object"));
+                schema.insert(
+                    "properties".into(),
+                    json!({
+                        "project_dir": {
+                            "type": "string",
+                            "description": "Project directory to analyze (defaults to cwd)"
+                        },
+                        "include_git": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Include git commit keyword analysis"
+                        },
+                        "commit_limit": {
+                            "type": "integer",
+                            "default": 50,
+                            "description": "Number of recent commits to analyze"
+                        }
+                    }),
+                );
+                schema.insert("additionalProperties".into(), json!(false));
+                schema
+            }),
+            output_schema: None,
+            annotations: Some(ToolAnnotations::default()),
+            icons: None,
+            meta: None,
+        },
+        Tool {
+            name: "suggest-new-skills".into(),
+            title: Some("Suggest skills to create".into()),
+            description: Some(
+                "Identifies gaps in your skill library based on project context \
+                 and usage patterns, suggesting new skills to create."
+                    .into(),
+            ),
+            input_schema: Arc::new({
+                let mut schema = JsonMap::new();
+                schema.insert("type".into(), json!("object"));
+                schema.insert(
+                    "properties".into(),
+                    json!({
+                        "project_dir": {
+                            "type": "string",
+                            "description": "Project directory for context"
+                        },
+                        "focus_areas": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Specific areas to focus on (e.g., 'testing', 'deployment')"
+                        }
+                    }),
+                );
+                schema.insert("additionalProperties".into(), json!(false));
+                schema
+            }),
+            output_schema: None,
+            annotations: Some(ToolAnnotations::default()),
+            icons: None,
+            meta: None,
+        },
+        Tool {
+            name: "create-skill".into(),
+            title: Some("Create a new skill".into()),
+            description: Some(
+                "Creates a new skill via GitHub search, LLM generation, or both. \
+                 Default behavior: search GitHub first, then generate if not found."
+                    .into(),
+            ),
+            input_schema: Arc::new({
+                let mut schema = JsonMap::new();
+                schema.insert("type".into(), json!("object"));
+                schema.insert(
+                    "properties".into(),
+                    json!({
+                        "name": {
+                            "type": "string",
+                            "description": "Name or topic for the skill"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Detailed description of what the skill should do"
+                        },
+                        "method": {
+                            "type": "string",
+                            "enum": ["github", "llm", "both"],
+                            "default": "both",
+                            "description": "Creation method: 'github' (search), 'llm' (generate), or 'both'"
+                        },
+                        "target_dir": {
+                            "type": "string",
+                            "description": "Directory to create skill in (defaults to installed client, Claude preferred)"
+                        },
+                        "dry_run": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Preview without creating files"
+                        }
+                    }),
+                );
+                schema.insert("required".into(), json!(["name", "description"]));
+                schema
+            }),
+            output_schema: None,
+            annotations: Some(ToolAnnotations::default()),
+            icons: None,
+            meta: None,
+        },
+        Tool {
+            name: "search-skills-github".into(),
+            title: Some("Search GitHub for skills".into()),
+            description: Some(
+                "Searches GitHub for existing SKILL.md files matching the query.".into(),
+            ),
+            input_schema: Arc::new({
+                let mut schema = JsonMap::new();
+                schema.insert("type".into(), json!("object"));
+                schema.insert(
+                    "properties".into(),
+                    json!({
+                        "query": {
+                            "type": "string",
+                            "description": "Search query for skills"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "default": 10,
+                            "description": "Maximum results to return"
+                        }
+                    }),
+                );
+                schema.insert("required".into(), json!(["query"]));
+                schema
+            }),
+            output_schema: None,
+            annotations: Some(ToolAnnotations::default()),
+            icons: None,
+            meta: None,
+        },
+    ]
+}
+
 /// Returns all MCP tools.
 ///
 /// This combines all tool groups and is used by the `list_tools()` handler.
@@ -465,6 +674,7 @@ pub(crate) fn all_tools() -> Vec<Tool> {
     tools.extend(recommend_tools());
     tools.extend(metrics_tools());
     tools.extend(trace_tools());
+    tools.extend(intelligence_tools());
     tools
 }
 
@@ -475,8 +685,13 @@ mod tests {
     #[test]
     fn test_all_tools_returns_expected_count() {
         let tools = all_tools();
-        // 7 sync + 2 validation + 1 dependency + 1 recommend + 1 metrics + 4 trace = 16 tools
-        assert_eq!(tools.len(), 16);
+        // 7 sync + 2 validation + 1 dependency + 1 recommend + 1 metrics + 4 trace + 5 intelligence = 21 tools
+        assert_eq!(tools.len(), 21);
+    }
+
+    #[test]
+    fn test_intelligence_tools_count() {
+        assert_eq!(intelligence_tools().len(), 5);
     }
 
     #[test]

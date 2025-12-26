@@ -19,6 +19,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
 use crate::backend::{AdapterCapabilities, BackendAdapter};
+use crate::cli_detection::{default_cli_binary, normalize_cli_binary};
 use crate::store::{
     BackendKind, RunEvent, RunId, RunRecord, RunRequest, RunState, RunStatus, RunStore,
     SubagentTemplate,
@@ -73,7 +74,7 @@ pub struct CliConfig {
 impl Default for CliConfig {
     fn default() -> Self {
         Self {
-            binary: "codex".to_string(),
+            binary: default_cli_binary(),
             working_dir: None,
             env_vars: HashMap::new(),
             timeout: Duration::from_millis(DEFAULT_TIMEOUT_MS),
@@ -94,11 +95,12 @@ impl CliConfig {
     /// Create configuration from environment variables.
     ///
     /// Looks for:
-    /// - SKRILLS_CLI_BINARY: Path to the CLI binary
+    /// - SKRILLS_CLI_BINARY: Path to the CLI binary ("auto" uses current client)
     /// - SKRILLS_CLI_WORKING_DIR: Working directory
     /// - SKRILLS_CLI_TIMEOUT_MS: Timeout in milliseconds
     pub fn from_env() -> Self {
-        let binary = std::env::var("SKRILLS_CLI_BINARY").unwrap_or_else(|_| "codex".to_string());
+        let binary = normalize_cli_binary(std::env::var("SKRILLS_CLI_BINARY").ok())
+            .unwrap_or_else(default_cli_binary);
         let working_dir = std::env::var("SKRILLS_CLI_WORKING_DIR")
             .ok()
             .map(PathBuf::from);
@@ -538,15 +540,77 @@ impl BackendAdapter for CodexCliAdapter {
 mod tests {
     use super::*;
     use crate::store::MemRunStore;
+    use std::env;
+    use std::sync::LazyLock;
+    use tokio::sync::Mutex;
+
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    async fn env_guard() -> tokio::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().await
+    }
+
+    fn env_guard_blocking() -> tokio::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.blocking_lock()
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(v) = &self.previous {
+                env::set_var(self.key, v);
+            } else {
+                env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn set_env_var(key: &'static str, value: Option<&str>) -> EnvVarGuard {
+        let previous = env::var(key).ok();
+        if let Some(v) = value {
+            env::set_var(key, v);
+        } else {
+            env::remove_var(key);
+        }
+        EnvVarGuard { key, previous }
+    }
+
+    fn set_cli_env(client: Option<&str>, cli_binary: Option<&str>) -> Vec<EnvVarGuard> {
+        vec![
+            set_env_var("SKRILLS_CLIENT", client),
+            set_env_var("SKRILLS_CLI_BINARY", cli_binary),
+            set_env_var("CLAUDE_CODE_SESSION", None),
+            set_env_var("CLAUDE_CLI", None),
+            set_env_var("__CLAUDE_MCP_SERVER", None),
+            set_env_var("CLAUDE_CODE_ENTRYPOINT", None),
+            set_env_var("CODEX_SESSION_ID", None),
+            set_env_var("CODEX_CLI", None),
+            set_env_var("CODEX_HOME", None),
+        ]
+    }
 
     #[test]
     fn test_cli_config_default() {
+        let _guard = env_guard_blocking();
+        let _env_guards = set_cli_env(None, None);
         let config = CliConfig::default();
-        assert_eq!(config.binary, "codex");
+        assert_eq!(config.binary, "claude");
         assert!(config.working_dir.is_none());
         assert!(config.env_vars.is_empty());
         assert_eq!(config.timeout, Duration::from_millis(DEFAULT_TIMEOUT_MS));
         assert!(config.non_interactive);
+    }
+
+    #[test]
+    fn test_cli_config_from_env_auto_uses_client_hint() {
+        let _guard = env_guard_blocking();
+        let _env_guards = set_cli_env(Some("codex"), Some("auto"));
+        let config = CliConfig::from_env();
+        assert_eq!(config.binary, "codex");
     }
 
     #[test]
@@ -570,6 +634,8 @@ mod tests {
 
     #[test]
     fn test_codex_cli_adapter_new() {
+        let _guard = env_guard_blocking();
+        let _env_guards = set_cli_env(Some("codex"), None);
         let adapter = CodexCliAdapter::new();
         assert_eq!(adapter.config.binary, "codex");
     }
@@ -583,12 +649,16 @@ mod tests {
 
     #[test]
     fn test_codex_cli_adapter_backend() {
+        let _guard = env_guard_blocking();
+        let _env_guards = set_cli_env(Some("codex"), None);
         let adapter = CodexCliAdapter::new();
         assert_eq!(adapter.backend(), BackendKind::Codex);
     }
 
     #[test]
     fn test_codex_cli_adapter_capabilities() {
+        let _guard = env_guard_blocking();
+        let _env_guards = set_cli_env(Some("codex"), None);
         let adapter = CodexCliAdapter::new();
         let caps = adapter.capabilities();
 
@@ -600,6 +670,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_codex_cli_adapter_list_templates() {
+        let _guard = env_guard().await;
+        let _env_guards = set_cli_env(Some("codex"), None);
         let adapter = CodexCliAdapter::new();
         let templates = adapter.list_templates().await.unwrap();
 
@@ -614,6 +686,8 @@ mod tests {
 
     #[test]
     fn test_build_command_args_codex() {
+        let _guard = env_guard_blocking();
+        let _env_guards = set_cli_env(Some("codex"), None);
         let adapter = CodexCliAdapter::new();
         let args = adapter.build_command_args("test prompt");
 
@@ -729,6 +803,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_status_returns_run_status() {
+        let _guard = env_guard().await;
+        let _env_guards = set_cli_env(Some("codex"), None);
         let store: Arc<dyn RunStore> = Arc::new(MemRunStore::new());
         let adapter = CodexCliAdapter::new();
 
@@ -750,6 +826,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_stop_cancels_run() {
+        let _guard = env_guard().await;
+        let _env_guards = set_cli_env(Some("codex"), None);
         let store: Arc<dyn RunStore> = Arc::new(MemRunStore::new());
         let adapter = CodexCliAdapter::new();
 
@@ -774,6 +852,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_history_returns_runs() {
+        let _guard = env_guard().await;
+        let _env_guards = set_cli_env(Some("codex"), None);
         let store: Arc<dyn RunStore> = Arc::new(MemRunStore::new());
         let adapter = CodexCliAdapter::new();
 

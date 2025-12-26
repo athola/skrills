@@ -1,3 +1,4 @@
+use crate::cli::OutputFormat;
 use crate::discovery::merge_extra_dirs;
 use anyhow::Result;
 use skrills_discovery::{discover_skills, extra_skill_roots};
@@ -8,7 +9,7 @@ pub(crate) fn handle_validate_command(
     target: crate::cli::ValidationTarget,
     autofix: bool,
     backup: bool,
-    format: String,
+    format: OutputFormat,
     errors_only: bool,
 ) -> Result<()> {
     use skrills_validate::{
@@ -73,7 +74,7 @@ pub(crate) fn handle_validate_command(
         }
     }
 
-    if format == "json" {
+    if format.is_json() {
         println!("{}", serde_json::to_string_pretty(&results)?);
     } else {
         let summary = ValidationSummary::from_results(&results);

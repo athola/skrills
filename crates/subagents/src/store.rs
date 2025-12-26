@@ -211,26 +211,24 @@ pub struct StateRunStore {
 
 impl StateRunStore {
     pub fn new(path: PathBuf) -> Result<Self> {
-        let mut store = Self {
+        let records = read_records(&path)?;
+        let mut runs = HashMap::new();
+        for record in records {
+            runs.insert(record.id, record);
+        }
+        Ok(Self {
             path,
-            inner: Arc::new(Mutex::new(HashMap::new())),
-        };
-        store.load_from_disk()?;
-        Ok(store)
+            inner: Arc::new(Mutex::new(runs)),
+        })
     }
 
-    fn load_from_disk(&mut self) -> Result<()> {
-        let mut guard = self
-            .inner
-            .try_lock()
-            .map_err(|_| anyhow::anyhow!("failed to acquire run store lock during init"))?;
+    /// Reload the in-memory store from disk, waiting for the lock.
+    pub async fn load_from_disk(&self) -> Result<()> {
+        let records = read_records(&self.path)?;
+        let mut guard = self.inner.lock().await;
         guard.clear();
-        if self.path.exists() {
-            let text = fs::read_to_string(&self.path)?;
-            let records: Vec<RunRecord> = serde_json::from_str(&text)?;
-            for record in records {
-                guard.insert(record.id, record);
-            }
+        for record in records {
+            guard.insert(record.id, record);
         }
         Ok(())
     }
@@ -258,6 +256,16 @@ impl StateRunStore {
 /// Default on-disk path for persisted runs.
 pub fn default_store_path() -> Result<PathBuf> {
     Ok(home_dir()?.join(".codex/subagents/runs.json"))
+}
+
+fn read_records(path: &PathBuf) -> Result<Vec<RunRecord>> {
+    if path.exists() {
+        let text = fs::read_to_string(path)?;
+        let records: Vec<RunRecord> = serde_json::from_str(&text)?;
+        Ok(records)
+    } else {
+        Ok(Vec::new())
+    }
 }
 
 #[async_trait]
@@ -419,6 +427,7 @@ mod tests {
 #[cfg(test)]
 mod store_tests {
     use super::*;
+    use tokio::time::Duration;
 
     fn sample_request() -> RunRequest {
         RunRequest {
@@ -504,5 +513,37 @@ mod store_tests {
         // History should include the run.
         let hist = reopened.history(10).await.unwrap();
         assert_eq!(hist.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn given_state_store_when_load_contended_then_waits_for_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runs.json");
+        fs::write(&path, "[]").unwrap();
+
+        let store = Arc::new(StateRunStore::new(path).unwrap());
+        let inner = store.inner.clone();
+
+        let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let lock_task = tokio::spawn(async move {
+            let _guard = inner.lock().await;
+            let _ = locked_tx.send(());
+            let _ = release_rx.await;
+        });
+
+        locked_rx.await.unwrap();
+
+        let store_clone = Arc::clone(&store);
+        let load_task = tokio::spawn(async move { store_clone.load_from_disk().await });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(!load_task.is_finished());
+
+        let _ = release_tx.send(());
+        let result = tokio::time::timeout(Duration::from_secs(1), load_task).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().unwrap().is_ok());
+
+        let _ = lock_task.await;
     }
 }

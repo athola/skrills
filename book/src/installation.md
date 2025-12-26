@@ -1,80 +1,151 @@
 # Installation Guide
 
-## crates.io (Recommended)
+## Quick Install (Recommended)
 
-To install the binary from `crates.io`, run the following command:
+Most users should run this one-liner:
+
+**macOS / Linux:**
+```bash
+curl -LsSf https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh | sh
+```
+
+**Windows PowerShell:**
+```powershell
+powershell -ExecutionPolicy Bypass -NoLogo -NoProfile -Command "iwr https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.ps1 -UseBasicParsing | iex"
+```
+
+The installer:
+1. Downloads the correct binary for your system
+2. Installs it to `~/.codex/bin` (or detects your setup)
+3. Registers skrills as an MCP server
+4. Syncs your Claude skills to Codex (if both exist)
+
+## Verify Installation
+
+```bash
+skrills --version
+skrills doctor        # Check configuration
+```
+
+## Alternative: Install from crates.io
+
+If you have Rust installed:
 
 ```bash
 cargo install skrills
 ```
 
-## One-Liners (Release Artifacts)
+## Alternative: Build from Source
+
+Clone and build locally:
 
 ```bash
-# macOS / Linux
-curl -LsSf https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh | sh
-
-# Windows
-powershell -ExecutionPolicy Bypass -NoLogo -NoProfile -Command "Remove-Item alias:curl -ErrorAction SilentlyContinue; iwr https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.ps1 -UseBasicParsing | iex"
-```
-
-You can customize the installation using environment variables or flags:
-- `SKRILLS_GH_REPO`: Overrides the default GitHub repository (`athola/skrills`).
-- `SKRILLS_VERSION`: Installs a specific version (use the tag without the leading `v` prefix).
-- `SKRILLS_BIN_DIR`: Sets the installation directory (defaulting to `~/.codex/bin`).
-- `SKRILLS_TARGET`: Sets the Rust target triple (e.g., `x86_64-unknown-linux-gnu`) for platform-specific builds.
-- `SKRILLS_CLIENT`: Forces the installer to configure for a client: `codex` or `claude`. If not set, the installer attempts auto-detection based on the presence of `~/.claude` or `~/.codex` directories.
-- `SKRILLS_BASE_DIR`: Overrides the client configuration root directory.
-- `SKRILLS_NO_MIRROR`: When set to `1`, skips the post-install mirror step that copies Claude assets into Codex (Codex installs only).
-- `--install-path <PATH>`: Sets the installation directory for the binaries.
-- `--client <codex|claude>`: Forces the installer to target a client type: `codex` or `claude`.
-- `--base-dir <PATH>`: Overrides the root directory for client configuration files.
-- `--local`: Builds `skrills` from a local source checkout instead of downloading release artifacts.
-
-## Common Scenarios
-
-```bash
-# Codex Default (auto-detected from ~/.codex):
-curl -LsSf https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh | sh
-
-# Claude (auto-detected from ~/.claude):
-SKRILLS_BIN_DIR="$HOME/.claude/bin" \
-  curl -LsSf https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh | sh
-
-# Explicit Claude setup with custom base directory:
-SKRILLS_CLIENT=claude SKRILLS_BASE_DIR=/tmp/claude-demo \
-  curl -LsSf https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh | sh
-```
-
-## From Source
-
-To install from source (requires Rust toolchain), run:
-
-```bash
+git clone https://github.com/athola/skrills.git
+cd skrills
 cargo install --path crates/cli --force
 ```
 
-## Hook & MCP Registration
+## Customizing Installation
 
-The installer configures client-specific hooks (where applicable) and registers the MCP server. On Codex installs it also mirrors Claude assets into Codex unless `SKRILLS_NO_MIRROR=1`. If `~/.claude` is missing, the installer skips mirroring and prints a reminder to run `skrills mirror` later once Claude assets exist. This process starts with:
+The installer accepts environment variables to customize behavior:
 
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `SKRILLS_CLIENT` | Target `codex` or `claude` | Auto-detected |
+| `SKRILLS_BIN_DIR` | Where to install the binary | `~/.codex/bin` |
+| `SKRILLS_VERSION` | Install a specific version | Latest |
+| `SKRILLS_NO_MIRROR` | Skip syncing Claude skills | Disabled |
+
+### Examples
+
+**Install for Claude Code only:**
 ```bash
-./scripts/install-skrills.sh [--universal] [--universal-only]
+SKRILLS_CLIENT=claude SKRILLS_BIN_DIR="$HOME/.claude/bin" \
+  curl -LsSf https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh | sh
 ```
 
-- **Hooks**: For Claude, the installer creates the [`~/.claude/hooks/prompt.on_user_prompt_submit`](~/.claude/hooks/prompt.on_user_prompt_submit) file. For Codex, hooks are not currently implemented.
-- **MCP Registration**: During the registration process, the installer updates both [`~/.codex/mcp_servers.json`](~/.codex/mcp_servers.json) and [`~/.codex/config.toml`](~/.codex/config.toml).
-- **Legacy Cleanup**: Removes obsolete `codex-mcp-skills` binaries and their associated configuration entries.
-- **Universal Skill Mirroring**: If enabled, this mirrors skills to the `~/.agent/skills` directory, making them accessible across various agent environments.
+**Install a specific version:**
+```bash
+SKRILLS_VERSION=0.4.0 \
+  curl -LsSf https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh | sh
+```
 
-## Make Targets
+**Skip syncing Claude skills to Codex:**
+```bash
+SKRILLS_NO_MIRROR=1 \
+  curl -LsSf https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh | sh
+```
 
-For convenience during development, the `Makefile` provides several common targets:
+## What the Installer Configures
+
+### MCP Server Registration
+
+The installer registers skrills as an MCP server so your AI assistant can use it directly. Configuration appears in:
+- `~/.codex/mcp_servers.json` — Codex MCP registry
+- `~/.codex/config.toml` — Codex configuration
+
+### Hooks (Claude Code only)
+
+For Claude Code, the installer creates a hook at `~/.claude/hooks/prompt.on_user_prompt_submit` to integrate skrills features.
+
+### Skill Mirroring
+
+By default, the installer copies your Claude skills to `~/.codex/skills/` so Codex can discover them. Skip this with `SKRILLS_NO_MIRROR=1`.
+
+## Troubleshooting
+
+### "Command not found" after installation
+
+Add the bin directory to your PATH:
+
+```bash
+# For Codex (default)
+export PATH="$HOME/.codex/bin:$PATH"
+
+# For Claude
+export PATH="$HOME/.claude/bin:$PATH"
+```
+
+Add this line to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.) to make it permanent.
+
+### MCP server not recognized
+
+Re-run the installer or manually register:
+
+```bash
+skrills setup --client codex --reinstall
+```
+
+Then run `skrills doctor` to verify.
+
+### Wrong platform binary
+
+If the installer picks the wrong architecture, specify it explicitly:
+
+```bash
+SKRILLS_TARGET=x86_64-unknown-linux-gnu \
+  curl -LsSf https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh | sh
+```
+
+Find your target triple with:
+```bash
+rustc -vV | grep host
+```
+
+## Development Setup
+
+For contributors, the Makefile provides common targets:
 
 ```bash
 make build         # Release build
 make test          # Run tests
 make lint          # Run linting
-make book          # Build mdBook
-make book-serve    # Live mdBook on localhost:3000
+make book          # Build this documentation
+make book-serve    # Live preview on localhost:3000
 ```
+
+## Next Steps
+
+- Run `skrills validate` to check your skills
+- See [CLI Usage Reference](cli.md) for all commands
+- Check [Runtime Configuration](runtime-tuning.md) to customize behavior
