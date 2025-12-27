@@ -28,11 +28,13 @@ while read -r line; do
     in_members=1
   fi
   if (( in_members )); then
-    while read -r match; do
-      member="${match%\"}"
-      member="${member#\"}"
-      WORKSPACE_MEMBERS+=("${member}")
-    done < <(grep -oE '"[^"]+"' <<< "${line}" || true)
+    if matches=$(grep -oE '"[^"]+"' <<< "${line}" 2>/dev/null); then
+      while read -r match; do
+        member="${match%\"}"
+        member="${member#\"}"
+        WORKSPACE_MEMBERS+=("${member}")
+      done <<< "${matches}"
+    fi
     if [[ "${line}" == *"]"* ]]; then
       in_members=0
     fi

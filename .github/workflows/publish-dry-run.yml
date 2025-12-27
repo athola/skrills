@@ -44,6 +44,10 @@ jobs:
           # Verify file inclusion for all crates
           echo "=== Verifying package file inclusion ==="
           publish_order="$(scripts/verify_publish_order.sh --print-order)"
+          if [[ -z "${publish_order}" ]]; then
+            echo "ERROR: No crates in publish order" >&2
+            exit 1
+          fi
           for crate in ${publish_order}; do
             list_pkg "$crate"
           done
