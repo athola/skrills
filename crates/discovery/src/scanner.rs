@@ -1,8 +1,9 @@
 use crate::types::{parse_source_key, DuplicateInfo, SkillMeta, SkillRoot, SkillSource};
 use crate::Result;
+use blake2::digest::consts::U32;
+use blake2::{Blake2b, Digest};
 use pathdiff::diff_paths;
 use rayon::prelude::*;
-use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -122,7 +123,9 @@ fn is_agent_file(entry: &walkdir::DirEntry) -> bool {
         .any(|p| p.file_name().is_some_and(|n| n == "agents"))
 }
 
-/// Computes the SHA256 hash of a file.
+type Blake2b256 = Blake2b<U32>;
+
+/// Computes the BLAKE2b-256 hash of a file.
 fn file_hash(path: &Path) -> Result<String> {
     let meta = fs::metadata(path)?;
     let size = meta.len();
@@ -134,7 +137,7 @@ fn file_hash(path: &Path) -> Result<String> {
         .unwrap_or(0);
     // Using size + mtime gives us a cheap fingerprint without reading file contents.
     // Hash only a small prefix to stay cheap but content-sensitive.
-    let mut hasher = Sha256::new();
+    let mut hasher = Blake2b256::new();
     hasher.update(size.to_le_bytes());
     hasher.update(mtime.to_le_bytes());
     if size > 0 {
@@ -348,7 +351,7 @@ pub fn extra_skill_roots(extra: &[PathBuf]) -> Vec<SkillRoot> {
         .collect()
 }
 
-/// Computes the SHA256 hash of a file.
+/// Computes the BLAKE2b-256 hash of a file.
 pub fn hash_file(path: &Path) -> Result<String> {
     file_hash(path)
 }
@@ -650,6 +653,16 @@ mod tests {
 
         assert_eq!(hash1, hash2);
         assert!(!hash1.is_empty());
+    }
+
+    #[test]
+    fn hash_file_uses_blake2b_256_length() {
+        let tmp = tempdir().unwrap();
+        let file = tmp.path().join("len.md");
+        fs::write(&file, "len").unwrap();
+
+        let hash = hash_file(&file).unwrap();
+        assert_eq!(hash.len(), 64, "BLAKE2b-256 hex is 64 chars");
     }
 
     #[test]

@@ -30,6 +30,7 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3.19", features = ["fmt", "env-filter"], default-features = false }
 sha2 = "0.10"
+blake2 = "0.10"
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 pathdiff = "0.2"
