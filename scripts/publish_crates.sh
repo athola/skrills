@@ -37,7 +37,7 @@ publish_one() {
     return
   fi
   echo "Publishing $crate v$version"
-  cargo publish -p "$crate" --token "$CARGO_REGISTRY_TOKEN"
+  cargo publish -p "$crate"
   # allow index to update before dependents publish
   sleep 20
 }
@@ -48,6 +48,7 @@ require_token
 publish_one skrills-validate
 publish_one skrills-state
 publish_one skrills-discovery
+publish_one skrills-intelligence
 
 # Level 1: depend on leaf crates only
 publish_one skrills_sync

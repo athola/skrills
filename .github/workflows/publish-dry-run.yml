@@ -21,6 +21,7 @@ jobs:
       - name: Verify crate packaging (dry-run)
         run: |
           set -euo pipefail
+          scripts/verify_publish_order.sh
 
           # List files that would be included in the package
           # This validates include/exclude patterns without requiring
@@ -42,9 +43,12 @@ jobs:
 
           # Verify file inclusion for all crates
           echo "=== Verifying package file inclusion ==="
-          for crate in skrills-validate skrills-state skrills-discovery \
-                       skrills_sync skrills-subagents skrills-analyze \
-                       skrills-server skrills; do
+          publish_order="$(scripts/verify_publish_order.sh --print-order)"
+          if [[ -z "${publish_order}" ]]; then
+            echo "ERROR: No crates in publish order" >&2
+            exit 1
+          fi
+          for crate in ${publish_order}; do
             list_pkg "$crate"
           done
 

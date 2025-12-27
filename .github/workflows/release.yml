@@ -180,6 +180,7 @@ jobs:
             echo "CARGO_REGISTRY_TOKEN is not set; cannot publish." >&2
             exit 1
           fi
+          scripts/verify_publish_order.sh
 
           pkg() {
             crate="$1"
