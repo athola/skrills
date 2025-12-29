@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.2 - 2025-12-29
+- **NEW: Fuzzy Skill Search**: Added `search-skills-fuzzy` MCP tool with trigram-based similarity matching for typo-tolerant skill discovery (e.g., "databas" finds "database").
+- **Improved Tests**: Added comprehensive edge case tests for similarity matching (unicode, empty strings, punctuation, long strings) and integration tests for fuzzy search tool.
+
 ## 0.4.0 - 2025-12-24
 - **NEW: Intelligent Skills**: Added `skrills-intelligence` crate with project context analysis, skill recommendations, and skill creation capabilities.
 - **NEW: Project Context Detection**: Automatically detect programming languages, frameworks, project type, and extract keywords from README and git history.

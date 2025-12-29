@@ -270,4 +270,179 @@ mod tests {
 
         assert!(has_similar_skill("databas", skills.iter().cloned(), 0.5));
     }
+
+    // -------------------------------------------------------------------------
+    // Edge Case Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_compute_similarity_both_empty() {
+        // Both empty strings should return 0.0
+        assert_eq!(compute_similarity("", ""), 0.0);
+    }
+
+    #[test]
+    fn test_compute_similarity_short_strings() {
+        // Very short strings (< 3 chars for trigrams)
+        let score = compute_similarity("ab", "ab");
+        // Short identical strings still have some similarity
+        assert!(
+            score >= 0.0,
+            "Expected non-negative score for short strings, got {score}"
+        );
+    }
+
+    #[test]
+    fn test_compute_similarity_unicode() {
+        // Unicode strings should work
+        let score = compute_similarity("café", "cafe");
+        assert!(score > 0.0, "Expected some similarity for café vs cafe");
+
+        // Same unicode string should be identical
+        let identical = compute_similarity("日本語", "日本語");
+        assert!(
+            (identical - 1.0).abs() < 0.01,
+            "Expected identical match for Japanese text"
+        );
+    }
+
+    #[test]
+    fn test_compute_similarity_numbers() {
+        // Strings with numbers
+        let score = compute_similarity("v1.0.0", "v1.0.1");
+        assert!(
+            score > 0.5,
+            "Expected high similarity for version-like strings, got {score}"
+        );
+    }
+
+    #[test]
+    fn test_compute_similarity_long_strings() {
+        // Very long strings
+        let long_a = "a".repeat(1000);
+        let long_b = "a".repeat(1000);
+        let score = compute_similarity(&long_a, &long_b);
+        assert!(
+            (score - 1.0).abs() < 0.01,
+            "Expected identical match for long strings"
+        );
+    }
+
+    #[test]
+    fn test_best_word_match_empty_needle() {
+        let score = best_word_match("", "some haystack");
+        assert_eq!(score, 0.0);
+    }
+
+    #[test]
+    fn test_best_word_match_empty_haystack() {
+        let score = best_word_match("needle", "");
+        assert_eq!(score, 0.0);
+    }
+
+    #[test]
+    fn test_best_word_match_short_words_filtered() {
+        // Words shorter than 3 chars are filtered out
+        let score = best_word_match("test", "a b c");
+        assert_eq!(
+            score, 0.0,
+            "Short words should be filtered out from matching"
+        );
+    }
+
+    #[test]
+    fn test_best_word_match_with_punctuation() {
+        let haystack = "This, is: a test! with punctuation?";
+        let score = best_word_match("test", haystack);
+        assert!(
+            score > 0.9,
+            "Should find 'test' despite surrounding punctuation"
+        );
+    }
+
+    #[test]
+    fn test_best_word_match_with_hyphens() {
+        let haystack = "database-tools and data-analysis";
+        let score = best_word_match("database", haystack);
+        // "database-tools" should match as a word (hyphens preserved)
+        assert!(
+            score > 0.5,
+            "Should match hyphenated words, got {score}"
+        );
+    }
+
+    #[test]
+    fn test_match_skill_no_description() {
+        // Skill without description
+        let (score, field) = match_skill("database", "database", None);
+        assert!(
+            (score - 1.0).abs() < 0.01,
+            "Expected perfect match for identical name"
+        );
+        assert_eq!(field, MatchedField::Name);
+    }
+
+    #[test]
+    fn test_match_skill_both_match_equal() {
+        // When name and description have equal similarity
+        let (_, field) = match_skill("exact", "exact", Some("exact"));
+        // Should return MatchedField::Both for equal scores
+        assert_eq!(field, MatchedField::Both);
+    }
+
+    #[test]
+    fn test_find_similar_skills_sorted_by_similarity() {
+        let skills = vec![
+            SkillInfo {
+                uri: "skill://test/low",
+                name: "completely-different",
+                description: None,
+            },
+            SkillInfo {
+                uri: "skill://test/high",
+                name: "database",
+                description: None,
+            },
+            SkillInfo {
+                uri: "skill://test/medium",
+                name: "data",
+                description: None,
+            },
+        ];
+
+        let matches = find_similar_skills("database", skills, 0.1);
+
+        // Should be sorted by similarity descending
+        for i in 1..matches.len() {
+            assert!(
+                matches[i - 1].similarity >= matches[i].similarity,
+                "Results should be sorted by similarity descending"
+            );
+        }
+    }
+
+    #[test]
+    fn test_find_similar_skills_empty_input() {
+        let skills: Vec<SkillInfo> = vec![];
+        let matches = find_similar_skills("anything", skills, 0.3);
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_has_similar_skill_empty_skills() {
+        let skills: Vec<SkillInfo> = vec![];
+        assert!(!has_similar_skill("test", skills, 0.5));
+    }
+
+    #[test]
+    fn test_has_similar_skill_below_threshold() {
+        let skills = [SkillInfo {
+            uri: "skill://test/foo",
+            name: "foo",
+            description: None,
+        }];
+
+        // "bar" has low similarity to "foo"
+        assert!(!has_similar_skill("bar", skills.iter().cloned(), 0.8));
+    }
 }

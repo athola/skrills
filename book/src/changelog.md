@@ -1,5 +1,11 @@
 # Changelog Highlights
 
+## 0.4.2 (2025-12-29)
+
+- **NEW: Fuzzy Skill Search**: Added `search-skills-fuzzy` MCP tool with trigram-based similarity matching for typo-tolerant skill discovery.
+- **Example**: Query "databas" will find skills named "database" with high similarity scores.
+- **Parameters**: `query` (search term), `threshold` (similarity cutoff, default 0.3), `limit` (max results).
+
 ## 0.3.4 (2025-12-19)
 
 - **NEW: Skill Recommendations**: Added `skrills recommend` CLI command and `recommend-skills` MCP tool for suggesting related skills based on dependency graph relationships (dependencies, dependents, and siblings).
