@@ -14,6 +14,7 @@ const CONTEXT_MATCH_WEIGHT: f64 = 2.0;
 const RECENCY_WEIGHT: f64 = 1.5;
 const PROMPT_MATCH_WEIGHT: f64 = 1.5;
 const QUALITY_WEIGHT: f64 = 1.0;
+const SIMILARITY_WEIGHT: f64 = 2.5;
 
 /// Trait for computing recommendation scores.
 pub trait Scorer {
@@ -173,6 +174,10 @@ impl Scorer for RecommendationScorer {
                 }
                 RecommendationSignal::HighQuality { score } => {
                     breakdown.quality_score += QUALITY_WEIGHT * score;
+                }
+                RecommendationSignal::SimilarityMatch { similarity, .. } => {
+                    // Similarity is 0.0-1.0, scale by weight
+                    breakdown.context_score += SIMILARITY_WEIGHT * similarity;
                 }
             }
         }

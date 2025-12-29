@@ -21,8 +21,9 @@ pub use create::{
     CreateSkillResult, CreationMethod, GitHubSkillResult,
 };
 pub use recommend::{
-    summarize_recommendations, RecommendationSignal, ScoreBreakdown, SkillGap, SkillGapAnalysis,
-    SmartRecommendation,
+    compute_similarity, find_similar_skills, has_similar_skill, match_skill,
+    summarize_recommendations, MatchedField, RecommendationSignal, ScoreBreakdown, SkillGap,
+    SkillGapAnalysis, SkillInfo, SkillMatch, SmartRecommendation, DEFAULT_THRESHOLD,
 };
 pub use usage::{
     build_analytics, get_cooccurring_skills, parse_claude_command_history, recency_score,

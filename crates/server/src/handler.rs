@@ -765,6 +765,10 @@ impl ServerHandler for SkillService {
                         let args = request.arguments.clone().unwrap_or_default();
                         self.suggest_new_skills_tool(args)
                     }
+                    "search-skills-fuzzy" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.search_skills_fuzzy_tool(args)
+                    }
                     other => Err(anyhow!("unknown tool {other}")),
                 }
                 })(),
