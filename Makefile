@@ -101,6 +101,7 @@ help:
 	@printf "  %-23s %s\n" "coverage" "generate test coverage report"
 	@printf "  %-23s %s\n" "dogfood" "run skrills on its own codebase"
 	@printf "  %-23s %s\n" "ci | precommit" "run common pipelines"
+	@printf "  %-23s %s\n" "hooks" "install git pre-commit hooks"
 	@printf "  %-23s %s\n" "clean | clean-demo" "clean builds or demo HOME"
 	@printf "  %-23s %s\n" "require-cargo" "guard: ensure cargo is available"
 	@printf "  %-23s %s\n" "security" "run cargo audit"
@@ -279,6 +280,11 @@ clean-demo:
 ci: fmt lint test
 
 precommit: fmt lint lint-md test
+
+hooks:
+	@git config core.hooksPath githooks
+	@echo "Git hooks installed (githooks/pre-commit)"
+	@echo "Pre-commit will run: make precommit"
 
 check-deps:
 	@echo "Checking optional dependencies..."

@@ -365,10 +365,7 @@ mod tests {
         let haystack = "database-tools and data-analysis";
         let score = best_word_match("database", haystack);
         // "database-tools" should match as a word (hyphens preserved)
-        assert!(
-            score > 0.5,
-            "Should match hyphenated words, got {score}"
-        );
+        assert!(score > 0.5, "Should match hyphenated words, got {score}");
     }
 
     #[test]

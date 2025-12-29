@@ -1160,7 +1160,10 @@ Handles database operations.
     // Should find the skill
     assert!(!result.is_error.unwrap_or(true));
     let structured = result.structured_content.unwrap();
-    let total = structured.get("total_found").and_then(|v| v.as_u64()).unwrap();
+    let total = structured
+        .get("total_found")
+        .and_then(|v| v.as_u64())
+        .unwrap();
     assert!(total >= 1, "Expected at least 1 match, got {}", total);
 
     let results = structured.get("results").unwrap().as_array().unwrap();
@@ -1223,8 +1226,14 @@ description: Database operations
     // Should still find the skill
     assert!(!result.is_error.unwrap_or(true));
     let structured = result.structured_content.unwrap();
-    let total = structured.get("total_found").and_then(|v| v.as_u64()).unwrap();
-    assert!(total >= 1, "Expected to find 'database' with typo 'databas'");
+    let total = structured
+        .get("total_found")
+        .and_then(|v| v.as_u64())
+        .unwrap();
+    assert!(
+        total >= 1,
+        "Expected to find 'database' with typo 'databas'"
+    );
 
     let results = structured.get("results").unwrap().as_array().unwrap();
     let first = &results[0];
@@ -1286,7 +1295,10 @@ description: Database operations
     // Should return empty results
     assert!(!result.is_error.unwrap_or(true));
     let structured = result.structured_content.unwrap();
-    let total = structured.get("total_found").and_then(|v| v.as_u64()).unwrap();
+    let total = structured
+        .get("total_found")
+        .and_then(|v| v.as_u64())
+        .unwrap();
     assert_eq!(total, 0, "Expected no matches for unrelated query");
 }
 
@@ -1487,7 +1499,10 @@ description: Database operations
 
     let result = service.search_skills_fuzzy_tool(args).unwrap();
     let structured = result.structured_content.unwrap();
-    let total = structured.get("total_found").and_then(|v| v.as_u64()).unwrap();
+    let total = structured
+        .get("total_found")
+        .and_then(|v| v.as_u64())
+        .unwrap();
 
     assert!(
         total >= 1,
