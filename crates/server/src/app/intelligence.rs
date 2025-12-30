@@ -760,6 +760,7 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
+        use anyhow::Context;
         use skrills_intelligence::{find_similar_skills, SkillInfo, DEFAULT_THRESHOLD};
 
         let query = args
@@ -767,23 +768,40 @@ impl SkillService {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("Missing required parameter: query"))?;
 
+        // Validate and clamp threshold to valid range [0.0, 1.0]
         let threshold = args
             .get("threshold")
             .and_then(|v| v.as_f64())
+            .map(|t| t.clamp(0.0, 1.0))
             .unwrap_or(DEFAULT_THRESHOLD);
 
-        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+        // Validate and clamp limit to reasonable bounds [1, 1000]
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|l| l.clamp(1, 1000) as usize)
+            .unwrap_or(10);
 
         // Note: include_description is accepted but currently unused since
         // SkillMeta doesn't cache parsed descriptions. Future enhancement could
         // cache frontmatter descriptions for richer matching.
-        let _include_description = args
-            .get("include_description")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
+        if args.get("include_description").is_some() {
+            tracing::debug!(
+                "include_description parameter is not yet implemented; matching uses names only"
+            );
+        }
+
+        tracing::debug!(
+            query = %query,
+            threshold = %threshold,
+            limit = %limit,
+            "Starting fuzzy skill search"
+        );
 
         // Get all skills
-        let (skills, _) = self.current_skills_with_dups()?;
+        let (skills, _) = self
+            .current_skills_with_dups()
+            .context("Failed to load skills for fuzzy search")?;
 
         // Build skill info for matching (name-only for now)
         let skill_infos: Vec<(String, String)> = skills
@@ -808,6 +826,13 @@ impl SkillService {
 
         // Limit results
         let results: Vec<_> = matches.into_iter().take(limit).collect();
+
+        tracing::debug!(
+            query = %query,
+            total_skills = skills.len(),
+            matches_found = results.len(),
+            "Fuzzy skill search completed"
+        );
 
         let text = if results.is_empty() {
             format!(

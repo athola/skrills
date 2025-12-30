@@ -693,7 +693,7 @@ pub(crate) fn intelligence_tools() -> Vec<Tool> {
                         "include_description": {
                             "type": "boolean",
                             "default": true,
-                            "description": "Also search skill descriptions"
+                            "description": "Also search skill descriptions (not yet implemented - currently matches names only)"
                         }
                     }),
                 );

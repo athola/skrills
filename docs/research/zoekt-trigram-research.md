@@ -184,12 +184,12 @@ impl TrigramIndex {
 ```toml
 # crates/intelligence/Cargo.toml
 [dependencies]
-trigram = "0.2"
+trigram = "0.4"  # Updated from 0.2 in the actual implementation
 ```
 
 ### Task 2: Create Similarity Module
 
-New file: `crates/intelligence/src/similarity.rs`
+Implemented at: `crates/intelligence/src/recommend/similarity.rs`
 
 - `skill_similarity(skill: &SkillMetadata, query: &str) -> f64`
 - `find_similar_skills(skills: &[SkillMetadata], query: &str, threshold: f64) -> Vec<Match>`

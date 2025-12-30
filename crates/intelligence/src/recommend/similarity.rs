@@ -123,8 +123,12 @@ pub fn find_similar_skills<'a>(
         })
         .collect();
 
-    // Sort by similarity descending
-    matches.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
+    // Sort by similarity descending (use unwrap_or for NaN safety)
+    matches.sort_by(|a, b| {
+        b.similarity
+            .partial_cmp(&a.similarity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     matches
 }

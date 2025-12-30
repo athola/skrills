@@ -1453,6 +1453,98 @@ fn test_search_skills_fuzzy_missing_query() {
     );
 }
 
+/// Tests for search_skills_fuzzy_tool - empty query string
+/// GIVEN a SkillService with skills
+/// WHEN search_skills_fuzzy is called with an empty query string
+/// THEN it should return zero results (not an error)
+#[test]
+fn test_search_skills_fuzzy_empty_query_string() {
+    use skrills_discovery::SkillRoot;
+
+    let temp = tempdir().unwrap();
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).unwrap();
+
+    let skill_dir = skills_dir.join("test-skill");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: test-skill\n---\n# Test\n",
+    )
+    .unwrap();
+
+    let roots = vec![SkillRoot {
+        root: skills_dir.clone(),
+        source: skrills_discovery::SkillSource::Extra(0),
+    }];
+
+    let service = SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
+    service.invalidate_cache().unwrap();
+
+    let args = json!({
+        "query": "",
+        "threshold": 0.3
+    })
+    .as_object()
+    .cloned()
+    .unwrap();
+
+    let result = service.search_skills_fuzzy_tool(args).unwrap();
+    assert!(!result.is_error.unwrap_or(true));
+    let structured = result.structured_content.unwrap();
+    let total = structured
+        .get("total_found")
+        .and_then(|v| v.as_u64())
+        .unwrap();
+    assert_eq!(total, 0, "Empty query should return no results");
+}
+
+/// Tests for search_skills_fuzzy_tool - whitespace-only query
+/// GIVEN a SkillService with skills
+/// WHEN search_skills_fuzzy is called with whitespace-only query
+/// THEN it should return zero results
+#[test]
+fn test_search_skills_fuzzy_whitespace_query() {
+    use skrills_discovery::SkillRoot;
+
+    let temp = tempdir().unwrap();
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).unwrap();
+
+    let skill_dir = skills_dir.join("test-skill");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: test-skill\n---\n# Test\n",
+    )
+    .unwrap();
+
+    let roots = vec![SkillRoot {
+        root: skills_dir.clone(),
+        source: skrills_discovery::SkillSource::Extra(0),
+    }];
+
+    let service = SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
+    service.invalidate_cache().unwrap();
+
+    let args = json!({
+        "query": "   ",
+        "threshold": 0.3
+    })
+    .as_object()
+    .cloned()
+    .unwrap();
+
+    let result = service.search_skills_fuzzy_tool(args).unwrap();
+    assert!(!result.is_error.unwrap_or(true));
+    let structured = result.structured_content.unwrap();
+    let total = structured
+        .get("total_found")
+        .and_then(|v| v.as_u64())
+        .unwrap();
+    assert_eq!(total, 0, "Whitespace-only query should return no results");
+}
+
 /// Tests for search_skills_fuzzy_tool - case insensitivity
 /// GIVEN a SkillService with skills
 /// WHEN search_skills_fuzzy is called with different case
