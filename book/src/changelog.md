@@ -6,6 +6,31 @@
 - **Example**: Query "databas" will find skills named "database" with high similarity scores.
 - **Parameters**: `query` (search term), `threshold` (similarity cutoff, default 0.3), `limit` (max results).
 
+## 0.4.1 (2025-12-27)
+
+- **Hashing**: Switched file hash algorithm to blake2b-256 for improved performance and security.
+- **CI/CD**: Improved error handling in publish verification workflow.
+- **Documentation**: Added README for the intelligence crate.
+
+## 0.4.0 (2025-12-24)
+
+- **NEW: Intelligent Skills**: Added `skrills-intelligence` crate with project context analysis, skill recommendations, and skill creation.
+- **NEW: Project Context Detection**: Automatically detect languages, frameworks, and project type from README and git history.
+- **NEW: Smart Recommendations**: Context-aware skill recommendations based on project profile and usage analytics.
+- **NEW: Skill Creation**: Create new skills via GitHub search or LLM generation with project context.
+- **NEW: Usage Analytics**: Parse Claude Code and Codex CLI history for skill usage patterns.
+- **Security**: Path traversal guard, GitHub query injection sanitization, CLI binary name validation.
+
+## 0.3.5 (2025-12-21)
+
+- **NEW: Agent Discovery**: Added `list-agents` MCP tool for discovering available agents with metadata caching.
+- **NEW: Run Events Polling**: Added `get-run-events` MCP tool for polling-based event retrieval.
+- **NEW: Codex CLI Adapter**: Subprocess execution of Codex CLI agents via `CodexCliAdapter`.
+- **NEW: Smart Routing**: Automatic backend selection based on `agent_id` parameter.
+- **NEW: Model Mapping**: Cross-platform model preference sync for consistent agent configuration.
+- **Error Handling**: Structured `CliError` enum with better error messages; logging for silent failures.
+- **Testing**: Comprehensive integration tests for subagent workflow.
+
 ## 0.3.4 (2025-12-19)
 
 - **NEW: Skill Recommendations**: Added `skrills recommend` CLI command and `recommend-skills` MCP tool for suggesting related skills based on dependency graph relationships (dependencies, dependents, and siblings).
