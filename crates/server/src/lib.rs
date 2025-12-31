@@ -25,6 +25,10 @@ mod test_support;
 mod tool_schemas;
 mod tui;
 
+/// HTTP transport for remote MCP access.
+#[cfg(feature = "http-transport")]
+pub(crate) mod http_transport;
+
 /// Command-line interface for the server.
 pub mod cli;
 /// Skill discovery mechanism.
