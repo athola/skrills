@@ -16,7 +16,11 @@ pub(crate) fn handle_serve_command(
     cache_ttl_ms: Option<u64>,
     trace_wire: bool,
     #[cfg(feature = "watch")] watch: bool,
+    #[cfg(feature = "http-transport")] http: Option<String>,
 ) -> Result<()> {
+    // HTTP transport placeholder - will be implemented in later tasks
+    #[cfg(feature = "http-transport")]
+    let _ = http;
     let ttl = cache_ttl_ms
         .map(Duration::from_millis)
         .unwrap_or_else(|| cache_ttl(&load_manifest_settings));

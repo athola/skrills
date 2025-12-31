@@ -80,7 +80,7 @@ pub struct Cli {
 /// Available `skrills` commands.
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Runs as an MCP server over stdio.
+    /// Runs as an MCP server over stdio (default) or HTTP.
     Serve {
         /// Additional skill directories (repeatable).
         #[arg(long = "skill-dir", value_name = "DIR")]
@@ -95,6 +95,11 @@ pub enum Commands {
         /// Watches filesystem for changes and invalidates caches immediately.
         #[arg(long, default_value_t = false)]
         watch: bool,
+        #[cfg(feature = "http-transport")]
+        /// Bind address for HTTP transport (e.g., "0.0.0.0:3000" or "127.0.0.1:8080").
+        /// When specified, serves MCP over HTTP instead of stdio.
+        #[arg(long, value_name = "BIND_ADDR")]
+        http: Option<String>,
     },
     /// Mirrors Claude assets (skills, agents, commands, MCP prefs) into Codex defaults and refreshes AGENTS.md.
     Mirror {
@@ -470,12 +475,16 @@ mod tests {
                 trace_wire,
                 #[cfg(feature = "watch")]
                 watch,
+                #[cfg(feature = "http-transport")]
+                http,
             }) => {
                 assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/skills")]);
                 assert_eq!(cache_ttl_ms, Some(1500));
                 assert!(trace_wire);
                 #[cfg(feature = "watch")]
                 assert!(!watch);
+                #[cfg(feature = "http-transport")]
+                assert!(http.is_none());
             }
             _ => panic!("expected Serve command"),
         }

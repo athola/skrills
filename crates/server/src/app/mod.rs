@@ -1215,6 +1215,8 @@ pub fn run() -> Result<()> {
         trace_wire: false,
         #[cfg(feature = "watch")]
         watch: false,
+        #[cfg(feature = "http-transport")]
+        http: None,
     }) {
         Commands::Serve {
             skill_dirs,
@@ -1222,12 +1224,16 @@ pub fn run() -> Result<()> {
             trace_wire,
             #[cfg(feature = "watch")]
             watch,
+            #[cfg(feature = "http-transport")]
+            http,
         } => handle_serve_command(
             skill_dirs,
             cache_ttl_ms,
             trace_wire,
             #[cfg(feature = "watch")]
             watch,
+            #[cfg(feature = "http-transport")]
+            http,
         ),
         Commands::Mirror {
             dry_run,
