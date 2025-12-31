@@ -72,6 +72,43 @@ skrills serve
 skrills agent codex-dev
 ```
 
+## Remote MCP Access (Experimental)
+
+Skrills can expose its MCP server over HTTP for remote client access:
+
+```bash
+# Build with HTTP transport support
+cargo build --features http-transport --release
+
+# Start server on HTTP (instead of stdio)
+skrills serve --http 0.0.0.0:3000
+```
+
+### Client Configuration
+
+Configure your MCP client to connect:
+
+```json
+{
+  "mcpServers": {
+    "skrills-remote": {
+      "url": "http://your-server:3000/mcp"
+    }
+  }
+}
+```
+
+### Security Warning
+
+Phase 1 has **no authentication**. Only use on trusted networks or behind a reverse proxy with authentication.
+
+For untrusted networks, use SSH tunneling:
+
+```bash
+ssh -L 3000:localhost:3000 your-server
+# Then connect to localhost:3000
+```
+
 ## Validation
 
 Skrills validates skills against two targets:
