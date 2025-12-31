@@ -67,7 +67,7 @@ pub use crate::metrics_types::{
 ///
 /// This service discovers, caches, and facilitates interaction with skills.
 /// It employs in-memory caches for skill metadata and content to optimize performance.
-pub(crate) struct SkillService {
+pub struct SkillService {
     /// The cache for skill metadata.
     pub(crate) cache: Arc<Mutex<SkillCache>>,
     /// Optional subagent service (enabled via `subagents` feature).
@@ -120,7 +120,7 @@ impl SkillService {
     }
 
     /// Create a new `SkillService` with a custom cache TTL.
-    pub(crate) fn new_with_ttl(extra_dirs: Vec<PathBuf>, ttl: Duration) -> Result<Self> {
+    pub fn new_with_ttl(extra_dirs: Vec<PathBuf>, ttl: Duration) -> Result<Self> {
         let build_started = Instant::now();
         let roots = skill_roots(&extra_dirs)?;
         let elapsed_ms = build_started.elapsed().as_millis();

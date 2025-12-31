@@ -11,7 +11,7 @@
 #![deny(unsafe_code)]
 
 #[cfg_attr(test, allow(dead_code))]
-pub(crate) mod app;
+pub mod app;
 pub(crate) mod cache;
 mod commands;
 mod doctor;
@@ -27,7 +27,7 @@ mod tui;
 
 /// HTTP transport for remote MCP access.
 #[cfg(feature = "http-transport")]
-pub(crate) mod http_transport;
+pub mod http_transport;
 
 /// Command-line interface for the server.
 pub mod cli;
