@@ -15,6 +15,7 @@ categories = ["command-line-utilities", "development-tools"]
 # Ship CLI with subagent support enabled by default.
 default = ["subagents"]
 subagents = ["skrills-server/subagents"]
+http-transport = ["skrills-server/http-transport"]
 
 [dependencies]
 skrills-server = { path = "../server", version = "0.4.0" }
