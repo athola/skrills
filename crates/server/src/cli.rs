@@ -507,6 +507,10 @@ mod tests {
 
     #[test]
     fn sync_from_claude_alias_parses() {
+        let _guard = env_guard();
+        // Ensure env var is cleared so default is used
+        let _env = set_env_var("SKRILLS_INCLUDE_MARKETPLACE", None);
+
         let cli = Cli::try_parse_from(["skrills", "sync-from-claude"]).expect("alias should parse");
 
         match cli.command {
