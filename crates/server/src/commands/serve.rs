@@ -18,12 +18,30 @@ pub(crate) fn handle_serve_command(
     #[cfg(feature = "watch")] watch: bool,
     #[cfg(feature = "http-transport")] http: Option<String>,
 ) -> Result<()> {
-    // HTTP transport placeholder - will be implemented in later tasks
-    #[cfg(feature = "http-transport")]
-    let _ = http;
     let ttl = cache_ttl_ms
         .map(Duration::from_millis)
         .unwrap_or_else(|| cache_ttl(&load_manifest_settings));
+
+    let rt = Runtime::new()?;
+
+    // HTTP transport mode
+    #[cfg(feature = "http-transport")]
+    if let Some(bind_addr) = http {
+        // Clone values needed for the factory closure
+        let skill_dirs_clone = skill_dirs.clone();
+        return rt.block_on(async move {
+            crate::http_transport::serve_http(
+                move || {
+                    SkillService::new_with_ttl(merge_extra_dirs(&skill_dirs_clone), ttl)
+                        .map_err(std::io::Error::other)
+                },
+                &bind_addr,
+            )
+            .await
+        });
+    }
+
+    // Default: stdio transport
     let service = SkillService::new_with_ttl(merge_extra_dirs(&skill_dirs), ttl)?;
 
     #[cfg(feature = "watch")]
@@ -34,7 +52,6 @@ pub(crate) fn handle_serve_command(
     };
 
     let transport = stdio_with_optional_trace(trace_wire);
-    let rt = Runtime::new()?;
     let running = rt.block_on(async {
         serve_server(service, transport)
             .await
