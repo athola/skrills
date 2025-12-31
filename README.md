@@ -108,6 +108,7 @@ When running as an MCP server (`skrills serve`), the following tools are availab
 - `suggest-new-skills` - Identify skill gaps based on context and usage
 - `create-skill` - Create a new skill via GitHub search, LLM generation, or both
 - `search-skills-github` - Search GitHub for existing `SKILL.md` files
+- `search-skills-fuzzy` - Trigram-based fuzzy search for installed skills (typo-tolerant)
 
 **CLI parity notes**:
 - `skrills sync-from-claude` is an alias for `skrills sync` (copy Claude skills into the Codex mirror).
@@ -124,11 +125,18 @@ When running as an MCP server (`skrills serve`), the following tools are availab
 { "uri": "skill://skrills/codex/my-skill/SKILL.md", "direction": "dependencies", "transitive": true }
 ```
 
+`search-skills-fuzzy`:
+```json
+{ "query": "databas", "threshold": 0.3, "limit": 10 }
+```
+
 ### Smart recommendation workflows (examples)
 1. Project-aware recommendations:
    - `analyze-project-context` -> `recommend-skills-smart` -> `suggest-new-skills`
 2. GitHub-assisted skill creation:
    - `search-skills-github` -> `create-skill` (use `dry_run: true` to preview)
+3. Fuzzy skill discovery (typo-tolerant):
+   - `search-skills-fuzzy` with query `"databas"` finds `"database"` skills
 
 ## CLI guide (selected)
 - `skrills validate [--target claude|codex|both] [--autofix]` — validate skills for CLI compatibility.

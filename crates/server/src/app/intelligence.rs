@@ -752,6 +752,130 @@ impl SkillService {
             .build()?;
         rt.block_on(self.search_skills_github_tool(args))
     }
+
+    /// Fuzzy search for installed skills using trigram matching.
+    ///
+    /// Tolerates typos and finds similar skill names.
+    pub(crate) fn search_skills_fuzzy_tool(
+        &self,
+        args: JsonMap<String, Value>,
+    ) -> Result<CallToolResult> {
+        use anyhow::Context;
+        use skrills_intelligence::{find_similar_skills, SkillInfo, DEFAULT_THRESHOLD};
+
+        let query = args
+            .get("query")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("Missing required parameter: query"))?;
+
+        // Validate and clamp threshold to valid range [0.0, 1.0]
+        let threshold = args
+            .get("threshold")
+            .and_then(|v| v.as_f64())
+            .map(|t| t.clamp(0.0, 1.0))
+            .unwrap_or(DEFAULT_THRESHOLD);
+
+        // Validate and clamp limit to reasonable bounds [1, 1000]
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|l| l.clamp(1, 1000) as usize)
+            .unwrap_or(10);
+
+        // Note: include_description is accepted but currently unused since
+        // SkillMeta doesn't cache parsed descriptions. Future enhancement could
+        // cache frontmatter descriptions for richer matching.
+        if args.get("include_description").is_some() {
+            tracing::debug!(
+                "include_description parameter is not yet implemented; matching uses names only"
+            );
+        }
+
+        tracing::debug!(
+            query = %query,
+            threshold = %threshold,
+            limit = %limit,
+            "Starting fuzzy skill search"
+        );
+
+        // Get all skills
+        let (skills, _) = self
+            .current_skills_with_dups()
+            .context("Failed to load skills for fuzzy search")?;
+
+        // Build skill info for matching (name-only for now)
+        let skill_infos: Vec<(String, String)> = skills
+            .iter()
+            .map(|meta| {
+                let uri = format!("skill://skrills/{}/{}", meta.source.label(), meta.name);
+                (uri, meta.name.clone())
+            })
+            .collect();
+
+        let skill_info_refs: Vec<SkillInfo<'_>> = skill_infos
+            .iter()
+            .map(|(uri, name)| SkillInfo {
+                uri: uri.as_str(),
+                name: name.as_str(),
+                description: None, // TODO: Cache descriptions for richer matching
+            })
+            .collect();
+
+        // Perform fuzzy matching
+        let matches = find_similar_skills(query, skill_info_refs, threshold);
+
+        // Limit results
+        let results: Vec<_> = matches.into_iter().take(limit).collect();
+
+        tracing::debug!(
+            query = %query,
+            total_skills = skills.len(),
+            matches_found = results.len(),
+            "Fuzzy skill search completed"
+        );
+
+        let text = if results.is_empty() {
+            format!(
+                "No skills found matching '{}' (threshold: {:.1}%)",
+                query,
+                threshold * 100.0
+            )
+        } else {
+            let mut lines = vec![format!(
+                "Found {} skills matching '{}' (threshold: {:.1}%):",
+                results.len(),
+                query,
+                threshold * 100.0
+            )];
+            for m in &results {
+                lines.push(format!(
+                    "  - {} ({:.0}% match via {:?})",
+                    m.name,
+                    m.similarity * 100.0,
+                    m.matched_field
+                ));
+            }
+            lines.join("\n")
+        };
+
+        Ok(CallToolResult {
+            content: vec![Content::text(text)],
+            structured_content: Some(json!({
+                "query": query,
+                "threshold": threshold,
+                "total_found": results.len(),
+                "results": results.iter().map(|m| json!({
+                    "uri": m.uri,
+                    "name": m.name,
+                    "description": m.description,
+                    "similarity": m.similarity,
+                    "matched_field": format!("{:?}", m.matched_field),
+                })).collect::<Vec<_>>(),
+            })),
+            is_error: Some(false),
+            meta: None,
+        })
+    }
 }
 
 // -------------------------------------------------------------------------

@@ -2000,7 +2000,7 @@ checksum = "e320a6c5ad31d271ad523dcf3ad13e2767ad8b1cb8f047f75a8aeaf8da139da2"
 
 [[package]]
 name = "skrills"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "scopeguard",
@@ -2010,7 +2010,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-analyze"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "parking_lot",
@@ -2027,7 +2027,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-discovery"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "blake2",
@@ -2042,7 +2042,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-intelligence"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2055,12 +2055,13 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "trigram",
  "walkdir",
 ]
 
 [[package]]
 name = "skrills-server"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "base64",
@@ -2098,7 +2099,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-state"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "dirs",
@@ -2109,7 +2110,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-subagents"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2135,7 +2136,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-validate"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "regex",
@@ -2149,7 +2150,7 @@ dependencies = [
 
 [[package]]
 name = "skrills_sync"
-version = "0.4.0"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "dirs",
@@ -2537,6 +2538,16 @@ dependencies = [
  "thread_local",
  "tracing",
  "tracing-core",
+]
+
+[[package]]
+name = "trigram"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "324350103581dfc6869f2c9399c019f394ac49a7ab16af23206add07851c5347"
+dependencies = [
+ "lazy_static",
+ "regex",
 ]
 
 [[package]]

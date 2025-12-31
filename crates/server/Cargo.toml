@@ -1,6 +1,6 @@
 [package]
 name = "skrills-server"
-version = "0.4.0"
+version = "0.4.2"
 edition = "2021"
 description = "Core library for the skrills MCP server: discovery, filtering, manifest generation, and runtime control."
 license = "MIT"

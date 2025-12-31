@@ -2,9 +2,14 @@
 
 mod explainer;
 mod scorer;
+pub mod similarity;
 
 pub use explainer::{generate_explanation, summarize_recommendations};
 pub use scorer::{RecommendationScorer, Scorer};
+pub use similarity::{
+    compute_similarity, find_similar_skills, has_similar_skill, match_skill, MatchedField,
+    SkillInfo, SkillMatch, DEFAULT_THRESHOLD,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -79,6 +84,13 @@ pub enum RecommendationSignal {
         /// Quality score (0.0 - 1.0).
         score: f64,
     },
+    /// Skill matches via trigram similarity.
+    SimilarityMatch {
+        /// Query that was matched.
+        query: String,
+        /// Similarity score (0.0 - 1.0).
+        similarity: f64,
+    },
 }
 
 impl RecommendationSignal {
@@ -93,6 +105,7 @@ impl RecommendationSignal {
             Self::RecentlyUsed { .. } => "recently-used",
             Self::PromptMatch { .. } => "prompt-match",
             Self::HighQuality { .. } => "high-quality",
+            Self::SimilarityMatch { .. } => "similarity-match",
         }
     }
 }

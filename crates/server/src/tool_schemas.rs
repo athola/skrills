@@ -660,6 +660,51 @@ pub(crate) fn intelligence_tools() -> Vec<Tool> {
             icons: None,
             meta: None,
         },
+        Tool {
+            name: "search-skills-fuzzy".into(),
+            title: Some("Fuzzy search installed skills".into()),
+            description: Some(
+                "Search installed skills using trigram-based fuzzy matching. \
+                 Tolerates typos and finds similar skill names (e.g., 'databas' finds 'database')."
+                    .into(),
+            ),
+            input_schema: Arc::new({
+                let mut schema = JsonMap::new();
+                schema.insert("type".into(), json!("object"));
+                schema.insert(
+                    "properties".into(),
+                    json!({
+                        "query": {
+                            "type": "string",
+                            "description": "Search query (skill name or partial match)"
+                        },
+                        "threshold": {
+                            "type": "number",
+                            "default": 0.3,
+                            "minimum": 0.0,
+                            "maximum": 1.0,
+                            "description": "Similarity threshold (0.0-1.0). Lower = more results, higher = stricter matching"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "default": 10,
+                            "description": "Maximum results to return"
+                        },
+                        "include_description": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Also search skill descriptions (not yet implemented - currently matches names only)"
+                        }
+                    }),
+                );
+                schema.insert("required".into(), json!(["query"]));
+                schema
+            }),
+            output_schema: None,
+            annotations: Some(ToolAnnotations::default()),
+            icons: None,
+            meta: None,
+        },
     ]
 }
 
@@ -685,13 +730,13 @@ mod tests {
     #[test]
     fn test_all_tools_returns_expected_count() {
         let tools = all_tools();
-        // 7 sync + 2 validation + 1 dependency + 1 recommend + 1 metrics + 4 trace + 5 intelligence = 21 tools
-        assert_eq!(tools.len(), 21);
+        // 7 sync + 2 validation + 1 dependency + 1 recommend + 1 metrics + 4 trace + 6 intelligence = 22 tools
+        assert_eq!(tools.len(), 22);
     }
 
     #[test]
     fn test_intelligence_tools_count() {
-        assert_eq!(intelligence_tools().len(), 5);
+        assert_eq!(intelligence_tools().len(), 6);
     }
 
     #[test]

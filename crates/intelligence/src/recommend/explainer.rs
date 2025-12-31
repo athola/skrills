@@ -36,6 +36,13 @@ pub fn generate_explanation(signals: &[RecommendationSignal]) -> String {
             RecommendationSignal::HighQuality { score } => {
                 format!("High quality skill ({:.0}%)", score * 100.0)
             }
+            RecommendationSignal::SimilarityMatch { query, similarity } => {
+                format!(
+                    "Similar to \"{}\" ({:.0}% match)",
+                    query,
+                    similarity * 100.0
+                )
+            }
         };
         parts.push(part);
     }
