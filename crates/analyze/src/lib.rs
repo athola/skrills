@@ -34,11 +34,11 @@ pub mod resolve;
 pub mod tokens;
 
 pub use deps::{analyze_dependencies, Dependency, DependencyAnalysis, DependencyType};
-pub use graph::DependencyGraph;
+pub use graph::RelationshipGraph;
 pub use optimize::{quality_score, suggest_optimizations, OptimizationType, Priority, Suggestion};
 pub use resolve::{
-    DependencyGraph as ResolveDependencyGraph, DependencyResolver, GraphBuilder, InMemoryRegistry,
-    ResolutionResult, ResolveError, ResolveOptions, ResolvedDependency, SkillInfo, SkillRegistry,
+    DependencyGraph, DependencyResolver, GraphBuilder, InMemoryRegistry, ResolutionResult,
+    ResolveError, ResolveOptions, ResolvedDependency, SkillInfo, SkillRegistry,
 };
 // Re-export SkillSource for users of the resolve API
 pub use skrills_discovery::SkillSource;

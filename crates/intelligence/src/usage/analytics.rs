@@ -3,6 +3,15 @@
 use super::{PromptAffinity, SkillUsageEvent, TimeRange, UsageAnalytics};
 use std::collections::{HashMap, HashSet};
 
+/// Tracks keyword statistics for confidence calculation.
+#[derive(Default)]
+struct KeywordStats {
+    /// Unique skills associated with this keyword.
+    skills: HashSet<String>,
+    /// Number of events where this keyword appeared.
+    occurrence_count: u64,
+}
+
 /// Build usage analytics from a collection of skill usage events.
 pub fn build_analytics(events: Vec<SkillUsageEvent>) -> UsageAnalytics {
     if events.is_empty() {
@@ -12,7 +21,7 @@ pub fn build_analytics(events: Vec<SkillUsageEvent>) -> UsageAnalytics {
     let mut frequency: HashMap<String, u64> = HashMap::new();
     let mut recency: HashMap<String, u64> = HashMap::new();
     let mut cooccurrence: HashMap<String, HashMap<String, u64>> = HashMap::new();
-    let mut prompt_skill_map: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut keyword_stats: HashMap<String, KeywordStats> = HashMap::new();
 
     // Track skills by session for co-occurrence
     let mut session_skills: HashMap<String, Vec<String>> = HashMap::new();
@@ -37,14 +46,13 @@ pub fn build_analytics(events: Vec<SkillUsageEvent>) -> UsageAnalytics {
             .or_default()
             .push(event.skill_path.clone());
 
-        // Track prompt -> skill mapping
+        // Track prompt -> skill mapping with occurrence counts
         if let Some(ref prompt) = event.prompt_context {
             let keywords = extract_keywords(prompt);
             for keyword in keywords {
-                prompt_skill_map
-                    .entry(keyword)
-                    .or_default()
-                    .insert(event.skill_path.clone());
+                let stats = keyword_stats.entry(keyword).or_default();
+                stats.skills.insert(event.skill_path.clone());
+                stats.occurrence_count += 1;
             }
         }
 
@@ -78,16 +86,17 @@ pub fn build_analytics(events: Vec<SkillUsageEvent>) -> UsageAnalytics {
         }
     }
 
-    // Build prompt affinities
-    let prompt_affinities: Vec<PromptAffinity> = prompt_skill_map
+    // Build prompt affinities with corrected confidence calculation
+    // Confidence = occurrence_count / total_events (how often this keyword appears)
+    let prompt_affinities: Vec<PromptAffinity> = keyword_stats
         .into_iter()
-        .filter(|(_, skills)| !skills.is_empty())
-        .map(|(keyword, skills)| {
-            let skill_count = skills.len();
+        .filter(|(_, stats)| !stats.skills.is_empty())
+        .map(|(keyword, stats)| {
             PromptAffinity {
                 keywords: vec![keyword],
-                associated_skills: skills.into_iter().collect(),
-                confidence: (skill_count as f64 / events.len() as f64).min(1.0),
+                associated_skills: stats.skills.into_iter().collect(),
+                // Confidence based on keyword occurrence frequency, not unique skill count
+                confidence: (stats.occurrence_count as f64 / events.len() as f64).min(1.0),
             }
         })
         .collect();
@@ -270,5 +279,56 @@ mod tests {
         // Stop words should be filtered
         assert!(!keywords.contains(&"the".to_string()));
         assert!(!keywords.contains(&"with".to_string()));
+    }
+
+    #[test]
+    fn test_prompt_affinity_confidence() {
+        // Test that confidence is based on keyword occurrence count, not unique skill count
+        let events = vec![
+            SkillUsageEvent {
+                timestamp: 1000,
+                skill_path: "skill-a".to_string(),
+                session_id: "s1".to_string(),
+                prompt_context: Some("help with rust code".to_string()),
+            },
+            SkillUsageEvent {
+                timestamp: 2000,
+                skill_path: "skill-a".to_string(), // Same skill, same keyword
+                session_id: "s1".to_string(),
+                prompt_context: Some("rust debugging".to_string()),
+            },
+            SkillUsageEvent {
+                timestamp: 3000,
+                skill_path: "skill-b".to_string(),
+                session_id: "s1".to_string(),
+                prompt_context: Some("python testing".to_string()),
+            },
+        ];
+
+        let analytics = build_analytics(events);
+
+        // Find the "rust" keyword affinity
+        let rust_affinity = analytics
+            .prompt_affinities
+            .iter()
+            .find(|a| a.keywords.contains(&"rust".to_string()));
+
+        assert!(rust_affinity.is_some(), "Should have rust keyword affinity");
+        let affinity = rust_affinity.unwrap();
+
+        // "rust" appears in 2 of 3 events, so confidence should be 2/3 ≈ 0.667
+        // NOT 1/3 (which would be if we used unique skill count = 1)
+        assert!(
+            affinity.confidence > 0.6 && affinity.confidence < 0.7,
+            "Confidence should be ~0.667 (2/3 events), got {}",
+            affinity.confidence
+        );
+
+        // Should have 1 unique skill associated (skill-a used twice with "rust")
+        assert_eq!(
+            affinity.associated_skills.len(),
+            1,
+            "Should have 1 unique skill"
+        );
     }
 }

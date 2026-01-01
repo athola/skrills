@@ -3,6 +3,7 @@
 # Set CARGO_HOME to a writable path to avoid sandbox/root perms issues.
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
+.DELETE_ON_ERROR:
 
 CARGO ?= cargo
 CARGO_HOME ?= .cargo
@@ -10,12 +11,15 @@ HOME_DIR ?= $(CURDIR)/.home-tmp
 BIN ?= skrills
 BIN_PATH ?= target/release/$(BIN)
 MDBOOK ?= mdbook
+# Test thread count: defaults to 1 for isolation (tests share filesystem state).
+# Override with TEST_THREADS=4 for faster parallel runs if tests are independent.
+TEST_THREADS ?= 1
 CARGO_CMD = CARGO_HOME=$(CARGO_HOME) $(CARGO)
 DEMO_RUN = HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH)
 
 CARGO_GUARD_TARGETS := fmt lint check test test-unit test-integration test-setup \
 	test-coverage build build-min serve-help install coverage docs book book-serve \
-	clean security deps-update
+	clean security deny deps-update
 
 define open_file
 	@if [ -f "$(1)" ]; then \
@@ -41,36 +45,20 @@ define assert_exec
 	@test -x "$(1)" || (echo "ERROR: $(2)" && exit 1)
 endef
 
-define verify_claude_setup
-	@echo "==> Verifying Claude setup..."
-	$(call assert_file,$(HOME_DIR)/.claude/.mcp.json,Claude MCP config not created)
-	$(call assert_exec,$(HOME_DIR)/.claude/bin/skrills,Binary not installed)
-	@echo "==> Claude setup verified successfully"
-endef
-
-define verify_codex_setup
-	@echo "==> Verifying Codex setup..."
-	$(call assert_exec,$(HOME_DIR)/.codex/bin/skrills,Binary not installed)
-	@echo "==> Codex setup verified successfully (TLS certs optional)"
-endef
-
-define verify_both_setup
-	@echo "==> Verifying both clients setup..."
-	$(call assert_file,$(HOME_DIR)/.claude/.mcp.json,Claude MCP config not created)
-	$(call assert_exec,$(HOME_DIR)/.claude/bin/skrills,Binary not installed)
-	@echo "==> Both clients setup verified successfully"
-endef
-
-define verify_claude_reinstall
-	@echo "==> Verifying reinstall..."
-	$(call assert_file,$(HOME_DIR)/.claude/.mcp.json,MCP config not created)
-	@echo "==> Reinstall verified successfully"
+# Unified verification macro: $(1)=label, $(2)=checks (space-separated: mcp claude codex)
+# Examples: $(call verify_setup,Claude,mcp claude), $(call verify_setup,Codex,codex)
+define verify_setup
+	@echo "==> Verifying $(1) setup..."
+	$(if $(findstring mcp,$(2)),$(call assert_file,$(HOME_DIR)/.claude/.mcp.json,Claude MCP config not created))
+	$(if $(findstring claude,$(2)),$(call assert_exec,$(HOME_DIR)/.claude/bin/skrills,Claude binary not installed))
+	$(if $(findstring codex,$(2)),$(call assert_exec,$(HOME_DIR)/.codex/bin/skrills,Codex binary not installed))
+	@echo "==> $(1) setup verified successfully"
 endef
 
 # Phony targets: core developer flow
 .PHONY: help fmt lint lint-md check test test-unit test-integration test-setup \
 	build build-min serve-help install status coverage test-coverage dogfood ci precommit \
-	clean clean-demo githooks require-cargo security deps-update check-deps
+	clean clean-demo githooks hooks require-cargo security deny deps-update check-deps
 # Phony targets: docs
 .PHONY: docs book book-serve
 # Phony targets: demos
@@ -105,9 +93,10 @@ help:
 	@printf "  %-23s %s\n" "clean | clean-demo" "clean builds or demo HOME"
 	@printf "  %-23s %s\n" "require-cargo" "guard: ensure cargo is available"
 	@printf "  %-23s %s\n" "security" "run cargo audit"
+	@printf "  %-23s %s\n" "deny" "run cargo deny (licenses, bans, sources)"
 	@printf "  %-23s %s\n" "deps-update" "update dependencies"
 	@printf "  %-23s %s\n" "check-deps" "check optional tool availability"
-	@printf "  %-23s %s\n" "" "optional tools: mdbook, cargo-audit, cargo-llvm-cov, cargo-tarpaulin"
+	@printf "  %-23s %s\n" "" "optional: mdbook, cargo-audit, cargo-deny, cargo-llvm-cov"
 	@printf "\nDocs\n"
 	@printf "  %-23s %s\n" "docs" "build rustdoc and open"
 	@printf "  %-23s %s\n" "book | book-serve" "build or serve mdBook"
@@ -136,10 +125,10 @@ check:
 	$(CARGO_CMD) check --workspace --all-targets
 
 test:
-	$(CARGO_CMD) test --workspace --all-features -- --test-threads=1
+	$(CARGO_CMD) test --workspace --all-features -- --test-threads=$(TEST_THREADS)
 
 test-unit:
-	$(CARGO_CMD) test --workspace --lib --all-features -- --test-threads=1
+	$(CARGO_CMD) test --workspace --lib --all-features -- --test-threads=$(TEST_THREADS)
 
 test-integration:
 	$(CARGO_CMD) test --workspace --test '*' --all-features
@@ -225,19 +214,19 @@ demo-setup-claude: demo-fixtures build
 	@echo "==> Demo: Setup for Claude Code (non-interactive)"
 	@rm -rf $(HOME_DIR)/.claude
 	$(DEMO_RUN) setup --client claude --bin-dir $(HOME_DIR)/.claude/bin --yes
-	$(call verify_claude_setup)
+	$(call verify_setup,Claude,mcp claude)
 
 demo-setup-codex: demo-fixtures build
 	@echo "==> Demo: Setup for Codex (non-interactive)"
 	@rm -rf $(HOME_DIR)/.codex
 	$(DEMO_RUN) setup --client codex --bin-dir $(HOME_DIR)/.codex/bin --yes
-	$(call verify_codex_setup)
+	$(call verify_setup,Codex,codex)
 
 demo-setup-both: demo-fixtures build
 	@echo "==> Demo: Setup for both Claude Code and Codex"
 	@rm -rf $(HOME_DIR)/.claude $(HOME_DIR)/.codex
 	$(DEMO_RUN) setup --client both --bin-dir $(HOME_DIR)/.claude/bin --yes
-	$(call verify_both_setup)
+	$(call verify_setup,Both clients,mcp claude)
 
 demo-setup-uninstall: demo-setup-claude
 	@echo "==> Demo: Uninstall Claude setup"
@@ -248,7 +237,7 @@ demo-setup-uninstall: demo-setup-claude
 demo-setup-reinstall: demo-setup-claude
 	@echo "==> Demo: Reinstall Claude setup"
 	$(DEMO_RUN) setup --client claude --bin-dir $(HOME_DIR)/.claude/bin --reinstall --yes
-	$(call verify_claude_reinstall)
+	$(call verify_setup,Reinstall,mcp)
 
 demo-setup-universal: demo-fixtures build
 	@echo "==> Demo: Setup with universal sync"
@@ -289,6 +278,7 @@ hooks:
 check-deps:
 	@echo "Checking optional dependencies..."
 	@command -v cargo-audit >/dev/null 2>&1 && echo "  cargo-audit: ok" || echo "  cargo-audit: missing"
+	@command -v cargo-deny >/dev/null 2>&1 && echo "  cargo-deny: ok" || echo "  cargo-deny: missing"
 	@command -v cargo-llvm-cov >/dev/null 2>&1 && echo "  cargo-llvm-cov: ok" || echo "  cargo-llvm-cov: missing"
 	@command -v $(MDBOOK) >/dev/null 2>&1 && echo "  mdbook: ok" || echo "  mdbook: missing"
 	@command -v cargo-tarpaulin >/dev/null 2>&1 && echo "  cargo-tarpaulin: ok" || echo "  cargo-tarpaulin: missing"
@@ -298,6 +288,14 @@ security:
 		$(CARGO_CMD) audit; \
 	else \
 		echo "cargo-audit not installed. Run: cargo install cargo-audit"; \
+		exit 1; \
+	fi
+
+deny:
+	@if command -v cargo-deny >/dev/null 2>&1; then \
+		$(CARGO_CMD) deny check; \
+	else \
+		echo "cargo-deny not installed. Run: cargo install cargo-deny"; \
 		exit 1; \
 	fi
 

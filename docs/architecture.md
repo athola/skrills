@@ -29,6 +29,7 @@ graph TD
     server --> subagents[subagents]
     sync --> validate
     analyze --> validate
+    analyze --> discovery
     subagents --> state[state]
 
     subgraph leaf["Leaf Crates (no internal deps)"]
@@ -56,7 +57,7 @@ graph TD
 ## Design Principles
 
 - **Leaf crates**: `validate`, `discovery`, `state` have no internal dependencies.
-- **Near-leaf crates**: `analyze` depends only on `validate` for frontmatter types.
+- **Near-leaf crates**: `analyze` depends on `validate` (frontmatter types) and `discovery` (path resolution).
 - **Trait-based abstraction**: `AgentAdapter` enables pluggable source/target adapters.
 - **Feature flags**: `subagents` and `watch` are optional features for smaller binaries.
 - **Composition over inheritance**: Generic `SyncOrchestrator<S, T>` uses compile-time dispatch.

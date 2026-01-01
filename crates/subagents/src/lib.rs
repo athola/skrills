@@ -10,7 +10,9 @@ pub mod backend;
 mod cli_detection;
 pub mod registry;
 pub mod service;
+pub mod settings;
 pub mod store;
+pub mod tool_schemas;
 
 pub use registry::{AgentRegistry, CachedAgent};
 pub use service::SubagentService;

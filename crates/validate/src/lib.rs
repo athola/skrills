@@ -25,6 +25,11 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+/// Error type for validation operations.
+pub type Error = anyhow::Error;
+/// Result type for validation operations.
+pub type Result<T> = std::result::Result<T, Error>;
+
 pub mod autofix;
 pub mod claude;
 pub mod codex;
@@ -75,10 +80,10 @@ pub fn validate_skill(path: &Path, content: &str, target: ValidationTarget) -> V
 }
 
 /// Validate all skills in a directory.
-pub fn validate_all(
-    dir: &Path,
-    target: ValidationTarget,
-) -> Result<Vec<ValidationResult>, std::io::Error> {
+///
+/// Recursively walks the directory looking for `SKILL.md` files,
+/// skipping hidden directories and symlinks to match Codex discovery behavior.
+pub fn validate_all(dir: &Path, target: ValidationTarget) -> Result<Vec<ValidationResult>> {
     let mut results = Vec::new();
 
     let is_hidden_rel_path = |path: &Path| {

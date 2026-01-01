@@ -50,3 +50,21 @@ jobs:
         run: cargo install cargo-audit --locked
       - name: Run cargo audit
         run: cargo audit
+
+  cargo-deny:
+    name: Cargo deny
+    needs: changes
+    if: github.event_name == 'schedule' || needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+      - name: Run cargo deny (licenses)
+        run: cargo deny check licenses
+      - name: Run cargo deny (bans)
+        run: cargo deny check bans
+      - name: Run cargo deny (sources)
+        run: cargo deny check sources

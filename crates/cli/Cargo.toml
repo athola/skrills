@@ -18,7 +18,7 @@ subagents = ["skrills-server/subagents"]
 http-transport = ["skrills-server/http-transport"]
 
 [dependencies]
-skrills-server = { path = "../server", version = "0.4.0" }
+skrills-server = { path = "../server", version = "0.4.2" }
 anyhow.workspace = true
 
 [dev-dependencies]
