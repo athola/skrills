@@ -1,37 +1,31 @@
 # What is Skrills?
 
-Skrills helps you manage AI assistant skills across different tools. If you use Claude Code, Codex CLI, or both, skrills keeps your skills organized, validated, and synchronized.
+Skrills validates, analyzes, and synchronizes skills across Claude Code and Codex CLI. It ensures compatibility between the two environments and helps manage context usage.
 
-## The Problem Skrills Solves
+## The Problem
 
-AI coding assistants like Claude Code and Codex CLI use "skills" — instructions that teach them specific behaviors. But these tools store skills differently and have different requirements. Skrills bridges this gap.
+Claude Code and Codex CLI both use markdown-based "skills," but they have different requirements:
+- **Claude Code**: Permissive structure.
+- **Codex CLI**: Strict YAML frontmatter and character limits.
 
-**Without skrills:**
-- Skills written for Claude Code may not work in Codex CLI
-- You manually copy skills between tools
-- Large skills slow down your assistant without warning
-- You discover compatibility problems only when skills fail
-
-**With skrills:**
-- Validate skills work across both tools before problems occur
-- Sync skills automatically with one command
-- Identify which skills consume the most tokens
-- Get suggestions to optimize slow or bloated skills
+This discrepancy causes skills written for one tool to fail in the other. Skrills bridges this by:
+- **Validating** frontmatter and schema compliance.
+- **Syncing** configurations and skills bidirectionally.
+- **Analyzing** token usage to prevent context overflow.
 
 ## Core Features
 
 ### Validate Skills
 
-Check that your skills meet requirements for Claude Code and Codex CLI:
+Check compliance and auto-fix frontmatter:
 
 ```bash
-skrills validate --target codex              # Check Codex compatibility
-skrills validate --target codex --autofix    # Fix issues automatically
+skrills validate --target codex --autofix
 ```
 
 ### Analyze Token Usage
 
-Find skills that consume excessive context:
+Identify heavy skills:
 
 ```bash
 skrills analyze --min-tokens 1000 --suggestions
@@ -39,7 +33,7 @@ skrills analyze --min-tokens 1000 --suggestions
 
 ### Sync Between Tools
 
-Copy all your settings from one tool to another:
+Mirror configuration:
 
 ```bash
 skrills sync-all --from claude
@@ -47,7 +41,7 @@ skrills sync-all --from claude
 
 ### Run as MCP Server
 
-Expose skrills capabilities to your AI assistant:
+Expose these capabilities directly to the assistant:
 
 ```bash
 skrills serve
@@ -55,17 +49,17 @@ skrills serve
 
 ## Quick Start
 
-1. **Install skrills:**
+1. **Install:**
    ```bash
    curl -LsSf https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh | sh
    ```
 
-2. **Check your skills work:**
+2. **Validate:**
    ```bash
    skrills validate
    ```
 
-3. **Sync from Claude to Codex (if you use both):**
+3. **Sync:**
    ```bash
    skrills sync-all --from claude
    ```
@@ -74,41 +68,37 @@ skrills serve
 
 ### Skills
 
-Skills are markdown files (named `SKILL.md`) that teach your AI assistant specific behaviors. They contain instructions, examples, and metadata. Skrills discovers skills from these directories:
-
-1. `~/.codex/skills` — Codex CLI skills
-2. `~/.claude/skills` — Claude Code skills
-3. `~/.agent/skills` — Universal agent skills
+Skills are `SKILL.md` files containing instructions and metadata. Skrills scans:
+1. `~/.codex/skills`
+2. `~/.claude/skills`
+3. `~/.agent/skills` (Universal)
 
 ### MCP (Model Context Protocol)
 
-MCP lets AI assistants communicate with external tools. Skrills runs as an MCP server, exposing its capabilities directly to Claude Code or Codex CLI. This means your assistant can validate skills, analyze token usage, or sync configurations without you running commands manually.
+Skrills implements the Model Context Protocol, allowing assistants to invoke its tools (validation, analysis, sync) directly during a session.
 
 ### Validation Targets
 
-Claude Code and Codex CLI have different requirements:
-- **Claude Code** — Permissive. Most valid markdown works.
-- **Codex CLI** — Strict. Requires specific frontmatter fields.
+- **Claude Code**: Permissive.
+- **Codex CLI**: Strict (requires `name`, `description` in frontmatter).
 
-Use `--target both` to ensure skills work everywhere.
+## Architecture
 
-## Architecture (For the Curious)
-
-Skrills is built as a Rust workspace with focused crates:
+Skrills is a Rust workspace:
 
 | Crate | Purpose |
 |-------|---------|
 | `server` | MCP server and CLI interface |
-| `validate` | Skill validation for both platforms |
-| `analyze` | Token counting and optimization hints |
-| `intelligence` | Smart recommendations and skill creation |
-| `sync` | Bidirectional sync between Claude and Codex |
-| `discovery` | Find and rank skills across directories |
-| `subagents` | Delegate tasks to Claude or Codex |
+| `validate` | Skill validation |
+| `analyze` | Token counting |
+| `intelligence` | Recommendations and skill creation |
+| `sync` | Bidirectional sync |
+| `discovery` | Skill discovery |
+| `subagents` | Task delegation |
 
 ## Next Steps
 
-- **New to skrills?** Start with the [Installation Guide](installation.md)
-- **Using both CLIs?** See the [Sync Guide](sync-guide.md)
-- **Optimizing skills?** Check [MCP Token Optimization](mcp-token-optimization.md)
-- **Have questions?** Browse the [FAQ](faq.md)
+- [Installation Guide](installation.md)
+- [Sync Guide](sync-guide.md)
+- [MCP Token Optimization](mcp-token-optimization.md)
+- [FAQ](faq.md)

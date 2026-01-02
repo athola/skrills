@@ -51,8 +51,9 @@ skrills-intelligence = { path = "../intelligence", version = "0.4.2" }
 shellexpand = "3"
 
 [features]
-# Enable subagents by default so MCP exposes subagent tools out of the box.
-default = ["watch", "subagents"]
+# Enable subagents and HTTP transport by default so MCP exposes subagent tools
+# and remote access capabilities out of the box.
+default = ["watch", "subagents", "http-transport"]
 watch = ["notify"]
 subagents = ["skrills-subagents"]
 http-transport = ["axum", "tower"]

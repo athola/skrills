@@ -243,11 +243,12 @@ impl StateRunStore {
             runs
         };
         if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create store directory: {}", parent.display()))?;
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create store directory: {}", parent.display())
+            })?;
         }
-        let data = serde_json::to_string_pretty(&runs)
-            .context("failed to serialize run records")?;
+        let data =
+            serde_json::to_string_pretty(&runs).context("failed to serialize run records")?;
 
         // Atomic write: write to temp file then rename to avoid partial writes on crash.
         let temp_path = self.path.with_extension("tmp");

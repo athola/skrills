@@ -14,11 +14,12 @@
 Skills support engine for Claude Code and Codex CLI. Validates, analyzes, and syncs skills bidirectionally between both CLIs.
 
 ## Why Skrills
-- **Validate skills**: Checks markdown against Claude Code (permissive) and Codex CLI (strict frontmatter) rules. Auto-fix adds missing metadata.
-- **Analyze skills**: Reports token usage, identifies dependencies, and suggests optimizations.
-- **Sync**: Bidirectional sync for skills, commands, MCP servers, and preferences between Claude Code and Codex CLI.
-- **Safe command sync**: `sync-commands` uses byte-for-byte comparison and `--skip-existing-commands` to prevent overwriting local customizations. Preserves non-UTF-8 binaries.
-- **Unified tools**: Mirror (`mirror`), sync (`sync`, `sync-all`), interactive diagnostics (`tui`), and agent launcher (`skrills agent <name>`) in one binary.
+Skrills bridges the gap between Claude Code and Codex CLI. It validates markdown skills against Codex's stricter frontmatter requirements (fixing them automatically), analyzes token usage to prevent context overflow, and syncs configurations bidirectionally. One binary handles everything: mirroring, diagnostics, and running the MCP server.
+
+It solves specific friction points in dual-CLI workflows:
+- **Validation**: Claude Code is permissive, but Codex requires strict YAML frontmatter. Skrills enforces these rules.
+- **Safety**: The `sync-commands` tool checks file hashes before writing, ensuring you don't overwrite local customizations or break non-UTF-8 binaries.
+- **Efficiency**: It reports token usage and suggests optimizations, helping you manage context window limits.
 
 ## Architecture (workspace crates)
 - `crates/server`: MCP server runtime and CLI.
@@ -74,12 +75,9 @@ skrills agent codex-dev
 
 ## Remote MCP Access (Experimental)
 
-Skrills can expose its MCP server over HTTP for remote client access:
+Skrills can expose its MCP server over HTTP for remote client access. HTTP transport is enabled by default in all release binaries.
 
 ```bash
-# Build with HTTP transport support
-cargo build --features http-transport --release
-
 # Start server on HTTP (instead of stdio)
 skrills serve --http 0.0.0.0:3000
 ```

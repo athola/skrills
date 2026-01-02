@@ -12,8 +12,9 @@ keywords = ["mcp", "cli", "skills", "agents", "codex"]
 categories = ["command-line-utilities", "development-tools"]
 
 [features]
-# Ship CLI with subagent support enabled by default.
-default = ["subagents"]
+# Ship CLI with subagents and HTTP transport enabled by default.
+# This ensures release binaries from GitHub have full functionality.
+default = ["subagents", "http-transport"]
 subagents = ["skrills-server/subagents"]
 http-transport = ["skrills-server/http-transport"]
 

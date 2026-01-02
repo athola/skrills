@@ -1,6 +1,6 @@
 # Architecture
 
-The skrills CLI layers command parsing on top of focused command handlers that delegate to subsystems for discovery, synchronization, and runtime management. At runtime the `app` module wires the CLI to the `SkillService`, which exposes resources and tools over MCP while reusing shared state and discovery utilities.
+The CLI delegates command parsing to focused handlers that call subsystems for discovery, synchronization, and runtime management. The `app` module connects the CLI to the `SkillService`, which exposes resources and tools over MCP.
 
 ## Runtime Flow
 
@@ -59,29 +59,29 @@ graph TD
 - **Leaf crates**: `validate`, `discovery`, `state` have no internal dependencies.
 - **Near-leaf crates**: `analyze` depends on `validate` (frontmatter types) and `discovery` (path resolution).
 - **Trait-based abstraction**: `AgentAdapter` enables pluggable source/target adapters.
-- **Feature flags**: `subagents` and `watch` are optional features for smaller binaries.
-- **Composition over inheritance**: Generic `SyncOrchestrator<S, T>` uses compile-time dispatch.
+- **Feature flags**: `subagents` and `watch` are optional features.
+- **Composition**: `SyncOrchestrator<S, T>` uses compile-time dispatch for performance and type safety.
 
 ## Module Organization
 
-The `app` module is split into submodules to stay under the 2500 LOC threshold per ADR-0001:
+The `app` module is split to stay under the 2500 LOC threshold (ADR-0001):
 
 | Module | Lines | Purpose |
 |--------|-------|---------|
 | `mod.rs` | ~1600 | Core SkillService, MCP handlers, resource serving |
-| `intelligence.rs` | ~740 | Intelligence tool implementations (recommendations, project analysis, skill creation) |
+| `intelligence.rs` | ~740 | Intelligence tool implementations |
 
-**LOC Monitoring**: When `app/mod.rs` approaches 2000 lines, evaluate extracting the next logical group of methods. Candidates include subagent tool handlers or resource-serving methods.
+**LOC Monitoring**: When `app/mod.rs` approaches 2000 lines, extract the next logical group (e.g., subagent tool handlers or resource-serving methods).
 
 ## Future Considerations
 
-- Formalize additional ADRs as architecture evolves.
+- Document architectural changes in ADRs.
 - Extract command handlers to `commands/` submodules as functionality expands.
-- Keep CLI and MCP tool lists aligned as new tools ship.
-- Consider consolidating `sync-from-claude` with `sync-all` or documenting their distinct roles.
-- Consider versioning the intelligence tool inputs/outputs as the API surface grows.
-- Consider extracting `SkillFrontmatter` / `DeclaredDependency` into a `skrills-types` crate if more crates need them.
-- Consider adding an `--check-deps` flag to the `validate` CLI.
+- Align CLI and MCP tool lists as new tools ship.
+- Evaluate consolidating `sync-from-claude` with `sync-all`.
+- Version intelligence tool inputs/outputs as the API grows.
+- Consider extracting `SkillFrontmatter` / `DeclaredDependency` into `skrills-types`.
+- Add `--check-deps` flag to the `validate` CLI.
 
 ## Related Documents
 

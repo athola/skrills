@@ -2,35 +2,32 @@
 
 ### Why did the installer URL with `/main/` fail?
 
-The installer URL with `/main/` can fail if the repository's default branch is not named `main`. To avoid this issue, we use the branch-agnostic `/HEAD/` path in the installer URL: `https://raw.githubusercontent.com/${SKRILLS_GH_REPO:-athola/skrills}/HEAD/scripts/install.sh`. This special path automatically resolves to the latest commit on the default branch.
+The installer fails if the repository's default branch isn't named `main`. Use the `/HEAD/` path to automatically resolve the latest commit on the default branch: `https://raw.githubusercontent.com/${SKRILLS_GH_REPO:-athola/skrills}/HEAD/scripts/install.sh`.
 
 ### Which release asset should I download manually?
 
-Select the archive that matches your system's architecture (target triple). For example, for a 64-bit Linux system, download `skrills-x86_64-unknown-linux-gnu.tar.gz`. After extracting, you'll find the `skrills` binary at the root.
+Download the archive for your system's architecture (e.g., `skrills-x86_64-unknown-linux-gnu.tar.gz`). The binary is at the root of the archive.
 
 ### How do I resolve the `MCP startup failed: missing field "type"` error in Codex?
 
-This error indicates the MCP server registration is missing `type = "stdio"`. Reinstall with the latest installer (`install.sh` or `install.ps1`).
+The MCP server registration is missing `type = "stdio"`. Reinstall with the latest installer, or fix manually:
 
-For manual fix:
 1. Add `type: "stdio"` to the `skrills` entry in `~/.codex/mcp_servers.json`
 2. Add `type = "stdio"` under `[mcp_servers."skrills"]` in `~/.codex/config.toml`
 3. Restart Codex
 
-Run `skrills doctor` to verify configuration.
+Run `skrills doctor` to verify.
 
 ### Does this project replace my existing Claude skills?
 
-No. Skrills is non-destructive. It reads skills from their default locations and can mirror them between Claude and Codex. It won't overwrite files unless you explicitly run sync commands (and even then, `--skip-existing-commands` protects local customizations).
+No. Skrills is non-destructive. It mirrors skills between Claude and Codex and only overwrites files if you explicitly run `sync` commands (and `--skip-existing-commands` prevents overwriting local changes).
 
 ### How is this project different from other skill management tools?
 
-Skrills focuses on skill quality and cross-CLI portability:
-- **Validation**: Validates skills against Claude Code (permissive) and Codex CLI (strict) requirements
-- **Analysis**: Identifies optimization opportunities based on token usage
-- **Bidirectional Sync**: Keeps configurations in sync between Claude Code and Codex CLI
-
-See the [Comparison](../book/src/comparison.md) for details.
+Skrills prioritizes validation and portability:
+- **Validation**: Checks skills against Claude Code (permissive) and Codex CLI (strict) requirements.
+- **Analysis**: Reports token usage to help optimize context.
+- **Bidirectional Sync**: Keeps configurations consistent between CLIs.
 
 ### How do I validate skills for Codex compatibility?
 
@@ -48,14 +45,8 @@ Use the `Makefile`:
 
 ### Does the system work offline?
 
-Yes. As long as you have the `skrills` binary and skills stored locally, both the MCP server and CLI work without internet access.
+Yes. The MCP server and CLI work without internet access if the binary and skills are local.
 
 ### What are the security considerations?
 
-Skrills is designed with security in mind:
-- Server communicates over standard I/O
-- Operates with minimal file access privileges
-- No bundled secrets
-- You control which skill directories are exposed
-
-Always review third-party skills before using them.
+Skrills operates with minimal privileges over standard I/O and has no bundled secrets. You control which skill directories are exposed. always review third-party skills before use.
