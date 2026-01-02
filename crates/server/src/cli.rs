@@ -95,9 +95,9 @@ pub enum Commands {
         /// Watches filesystem for changes and invalidates caches immediately.
         #[arg(long, default_value_t = false)]
         watch: bool,
-        #[cfg(feature = "http-transport")]
         /// Bind address for HTTP transport (e.g., "0.0.0.0:3000" or "127.0.0.1:8080").
         /// When specified, serves MCP over HTTP instead of stdio.
+        /// Requires the `http-transport` feature (enabled by default).
         #[arg(long, value_name = "BIND_ADDR")]
         http: Option<String>,
     },
@@ -475,7 +475,6 @@ mod tests {
                 trace_wire,
                 #[cfg(feature = "watch")]
                 watch,
-                #[cfg(feature = "http-transport")]
                 http,
             }) => {
                 assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/skills")]);
@@ -483,7 +482,6 @@ mod tests {
                 assert!(trace_wire);
                 #[cfg(feature = "watch")]
                 assert!(!watch);
-                #[cfg(feature = "http-transport")]
                 assert!(http.is_none());
             }
             _ => panic!("expected Serve command"),

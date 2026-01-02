@@ -16,7 +16,7 @@ pub(crate) fn handle_serve_command(
     cache_ttl_ms: Option<u64>,
     trace_wire: bool,
     #[cfg(feature = "watch")] watch: bool,
-    #[cfg(feature = "http-transport")] http: Option<String>,
+    http: Option<String>,
 ) -> Result<()> {
     let ttl = cache_ttl_ms
         .map(Duration::from_millis)
@@ -25,20 +25,30 @@ pub(crate) fn handle_serve_command(
     let rt = Runtime::new()?;
 
     // HTTP transport mode
-    #[cfg(feature = "http-transport")]
     if let Some(bind_addr) = http {
-        // Clone values needed for the factory closure
-        let skill_dirs_clone = skill_dirs.clone();
-        return rt.block_on(async move {
-            crate::http_transport::serve_http(
-                move || {
-                    SkillService::new_with_ttl(merge_extra_dirs(&skill_dirs_clone), ttl)
-                        .map_err(std::io::Error::other)
-                },
-                &bind_addr,
-            )
-            .await
-        });
+        #[cfg(feature = "http-transport")]
+        {
+            // Clone values needed for the factory closure
+            let skill_dirs_clone = skill_dirs.clone();
+            return rt.block_on(async move {
+                crate::http_transport::serve_http(
+                    move || {
+                        SkillService::new_with_ttl(merge_extra_dirs(&skill_dirs_clone), ttl)
+                            .map_err(std::io::Error::other)
+                    },
+                    &bind_addr,
+                )
+                .await
+            });
+        }
+
+        #[cfg(not(feature = "http-transport"))]
+        {
+            let _ = bind_addr; // suppress unused warning
+            return Err(anyhow!(
+                "HTTP transport requested but not available (built without 'http-transport' feature)"
+            ));
+        }
     }
 
     // Default: stdio transport
