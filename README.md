@@ -25,7 +25,7 @@ It solves specific friction points in dual-CLI workflows:
 - `crates/server`: MCP server runtime and CLI.
 - `crates/validate`: Validation logic for Claude Code and Codex CLI compatibility.
 - `crates/analyze`: Token counting, dependency analysis, and optimization.
-- `crates/intelligence`: Context-aware recommendations, project analysis, and skill creation helpers.
+- `crates/intelligence`: Context-aware recommendations, project analysis, skill creation helpers, empirical pattern mining, and behavioral analytics.
 - `crates/sync`: Bidirectional sync logic (skills, commands, prefs, MCP servers).
 - `crates/discovery`: Skill discovery and ranking.
 - `crates/state`: Persistent store for manifests and mirrors.
@@ -154,9 +154,15 @@ When running as an MCP server (`skrills serve`), the following tools are availab
 - `recommend-skills-smart` - Smart recommendations using dependencies, usage patterns, and project context
 - `analyze-project-context` - Analyze languages, frameworks, and keywords in a project directory
 - `suggest-new-skills` - Identify skill gaps based on context and usage
-- `create-skill` - Create a new skill via GitHub search, LLM generation, or both
+- `create-skill` - Create a new skill via GitHub search, LLM generation, empirical patterns, or combinations
 - `search-skills-github` - Search GitHub for existing `SKILL.md` files
 - `search-skills-fuzzy` - Trigram-based fuzzy search for installed skills (typo-tolerant)
+
+#### Empirical skill creation (0.4.4+)
+The `--method empirical` option mines Claude Code and Codex CLI session history to extract successful tool sequences and failure anti-patterns. It clusters similar sessions and generates skills grounded in observed behavior rather than LLM imagination.
+
+#### Comparative recommendations (0.4.4+)
+Deviation scoring compares actual skill-assisted outcomes against category baselines (Testing, Debugging, Documentation, etc.) to identify underperforming skills and surface improvement opportunities.
 
 **CLI parity notes**:
 - `skrills sync-from-claude` is an alias for `skrills sync` (copy Claude skills into the Codex mirror).
@@ -195,7 +201,7 @@ When running as an MCP server (`skrills serve`), the following tools are availab
 - `skrills recommend-skills-smart [--uri URI] [--prompt TEXT] [--project-dir DIR]` — smart recommendations using usage and context.
 - `skrills analyze-project-context [--project-dir DIR] [--include-git true|false] [--commit-limit N] [--format text|json]` — analyze project context for recommendations.
 - `skrills suggest-new-skills [--project-dir DIR] [--focus-area AREA]` — identify gaps and suggestions.
-- `skrills create-skill <name> --description TEXT [--method github|llm|both] [--target-dir DIR]` — create skills via GitHub search or LLM generation (target dir defaults to installed client, Claude preferred).
+- `skrills create-skill <name> --description TEXT [--method github|llm|empirical|both] [--target-dir DIR]` — create skills via GitHub search, LLM generation, or empirical session patterns (target dir defaults to installed client, Claude preferred).
 - `skrills search-skills-github <query> [--limit N] [--format text|json]` — search GitHub for skills.
 - `skrills sync-all [--from claude|codex] [--skip-existing-commands]` — sync all configurations.
 - `skrills sync-commands [--from claude|codex] [--dry-run] [--skip-existing-commands]` — byte-for-byte command sync.

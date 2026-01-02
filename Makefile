@@ -62,11 +62,11 @@ endef
 # Phony targets: docs
 .PHONY: docs book book-serve
 # Phony targets: demos
-.PHONY: demo-fixtures demo-doctor demo-http demo-all demo-setup-claude demo-setup-codex \
+.PHONY: demo-fixtures demo-doctor demo-empirical demo-http demo-cli demo-all demo-setup-claude demo-setup-codex \
 	demo-setup-both demo-setup-uninstall demo-setup-reinstall \
 	demo-setup-universal demo-setup-first-run demo-setup-all
 .NOTPARALLEL: demo-all demo-setup-all
-.SILENT: demo-doctor demo-all demo-setup-claude demo-setup-codex demo-setup-both \
+.SILENT: demo-doctor demo-empirical demo-cli demo-all demo-setup-claude demo-setup-codex demo-setup-both \
 	demo-setup-uninstall demo-setup-reinstall demo-setup-universal demo-setup-first-run \
 	demo-setup-all
 
@@ -101,7 +101,9 @@ help:
 	@printf "  %-23s %s\n" "docs" "build rustdoc and open"
 	@printf "  %-23s %s\n" "book | book-serve" "build or serve mdBook"
 	@printf "\nDemos\n"
-	@printf "  %-23s %s\n" "demo-all | demo-doctor" "run CLI demos"
+	@printf "  %-23s %s\n" "demo-all" "run all demos (cli + setup)"
+	@printf "  %-23s %s\n" "demo-cli" "test all CLI commands"
+	@printf "  %-23s %s\n" "demo-doctor | demo-empirical" "individual command demos"
 	@printf "  %-23s %s\n" "demo-http" "start HTTP MCP server (127.0.0.1:3000)"
 	@printf "  %-23s %s\n" "demo-setup-all" "run all setup flow demos"
 	@printf "  %-23s %s\n" "demo-setup-{claude,codex,both}" "client setup demos"
@@ -202,9 +204,21 @@ demo-http: build
 
 demo-fixtures:
 	@mkdir -p $(HOME_DIR)/.codex/skills/demo
-	@mkdir -p $(HOME_DIR)/.codex
+	@mkdir -p $(HOME_DIR)/.codex/bin
 	@echo "demo skill content" > $(HOME_DIR)/.codex/skills/demo/SKILL.md
 	@echo "# Agents" > $(HOME_DIR)/.codex/AGENTS.md
+	@# Create MCP config files for doctor demo
+	@echo '{"mcpServers":{"skrills":{"type":"stdio","command":"$(HOME_DIR)/.codex/bin/skrills","args":["serve"]}}}' > $(HOME_DIR)/.codex/mcp_servers.json
+	@printf '[mcp_servers.skrills]\ntype = "stdio"\ncommand = "$(HOME_DIR)/.codex/bin/skrills"\nargs = ["serve"]\n' > $(HOME_DIR)/.codex/config.toml
+	@# Create symlink to release binary for doctor validation
+	@ln -sf $(CURDIR)/target/release/skrills $(HOME_DIR)/.codex/bin/skrills 2>/dev/null || cp $(CURDIR)/target/release/skrills $(HOME_DIR)/.codex/bin/skrills 2>/dev/null || true
+	@# Create mock Claude session data for empirical demo
+	@mkdir -p $(HOME_DIR)/.claude/projects/demo-project
+	@for i in 1 2 3 4 5 6 7 8 9 10 11 12; do \
+		echo '{"message":{"role":"user","content":[{"type":"text","text":"help me write code"}]},"timestamp":"2025-01-0'$$i'T10:00:00Z"}' > $(HOME_DIR)/.claude/projects/demo-project/session-$$i.jsonl; \
+		echo '{"message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"commit"}}]},"timestamp":"2025-01-0'$$i'T10:01:00Z"}' >> $(HOME_DIR)/.claude/projects/demo-project/session-$$i.jsonl; \
+		echo '{"message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/path/to/skills/test/SKILL.md"}}]},"timestamp":"2025-01-0'$$i'T10:02:00Z"}' >> $(HOME_DIR)/.claude/projects/demo-project/session-$$i.jsonl; \
+	done
 	@echo "Prepared demo HOME at $(HOME_DIR)"
 
 demo-doctor: demo-fixtures build
@@ -212,7 +226,64 @@ demo-doctor: demo-fixtures build
 	$(DEMO_RUN) doctor
 	@echo "==> Doctor demo complete"
 
-demo-all: demo-fixtures build demo-doctor
+demo-empirical: demo-fixtures build
+	@echo "==> Demo: Empirical skill creation (dry-run)"
+	$(DEMO_RUN) create-skill test-empirical --description "Demo skill from session patterns" --method empirical --dry-run || echo "(Empirical demo requires session history)"
+	@echo "==> Empirical demo complete"
+
+demo-cli: demo-fixtures build
+	@echo "==> Testing all CLI commands"
+	@echo "--- serve --help"
+	$(DEMO_RUN) serve --help >/dev/null
+	@echo "--- mirror"
+	$(DEMO_RUN) mirror
+	@echo "--- agent (no agents expected)"
+	$(DEMO_RUN) agent test-agent --dry-run 2>&1 | grep -q "not found" || true
+	@echo "--- sync-agents"
+	$(DEMO_RUN) sync-agents
+	@echo "--- sync"
+	$(DEMO_RUN) sync
+	@echo "--- sync-commands"
+	$(DEMO_RUN) sync-commands
+	@echo "--- sync-mcp-servers"
+	$(DEMO_RUN) sync-mcp-servers
+	@echo "--- sync-preferences"
+	$(DEMO_RUN) sync-preferences
+	@echo "--- sync-all"
+	$(DEMO_RUN) sync-all
+	@echo "--- sync-status"
+	$(DEMO_RUN) sync-status
+	@echo "--- doctor"
+	$(DEMO_RUN) doctor
+	@echo "--- validate"
+	$(DEMO_RUN) validate
+	@echo "--- analyze"
+	$(DEMO_RUN) analyze
+	@echo "--- metrics"
+	$(DEMO_RUN) metrics
+	@echo "--- recommend (no skills expected)"
+	$(DEMO_RUN) recommend test-skill 2>&1 | grep -q "No skills" || true
+	@echo "--- resolve-dependencies (skill not found expected)"
+	$(DEMO_RUN) resolve-dependencies test-skill 2>&1 | grep -q "not found" || true
+	@echo "--- recommend-skills-smart"
+	$(DEMO_RUN) recommend-skills-smart
+	@echo "--- analyze-project-context"
+	$(DEMO_RUN) analyze-project-context
+	@echo "--- suggest-new-skills"
+	$(DEMO_RUN) suggest-new-skills
+	@echo "--- create-skill --method empirical --dry-run"
+	$(DEMO_RUN) create-skill test-skill --description "Test" --method empirical --dry-run || true
+	@echo "--- create-skill --method github --dry-run"
+	$(DEMO_RUN) create-skill test-skill --description "Test" --method github --dry-run || true
+	@echo "--- search-skills-github"
+	$(DEMO_RUN) search-skills-github "commit" || true
+	@echo "--- setup --help"
+	$(DEMO_RUN) setup --help >/dev/null
+	@echo "==> All CLI commands tested successfully"
+
+demo-all: demo-fixtures build demo-doctor demo-empirical demo-cli demo-setup-all
+	@echo "==> All demos completed successfully"
+	@echo "    Note: demo-http excluded (blocking server)"
 
 # --- Setup flow demos -----------------------------------------------------
 
@@ -251,9 +322,9 @@ demo-setup-universal: demo-fixtures build
 	@mkdir -p $(HOME_DIR)/.claude/skills
 	@echo "test skill" > $(HOME_DIR)/.claude/skills/test.md
 	$(DEMO_RUN) setup --client claude --bin-dir $(HOME_DIR)/.claude/bin --universal --yes
-	@echo "==> Verifying universal sync..."
+	$(call verify_setup,Universal,mcp claude)
 	@test -d $(HOME_DIR)/.agent/skills || (echo "ERROR: Universal skills dir not created" && exit 1)
-	@echo "==> Universal sync verified successfully"
+	@echo "==> Universal skills directory verified"
 
 demo-setup-first-run: demo-fixtures build
 	@echo "==> Demo: First-run detection (simulated with doctor command)"

@@ -256,11 +256,12 @@ skrills suggest-new-skills --focus-area ci --focus-area deployment
 
 ### create-skill
 
-Generate a new skill via GitHub search, LLM generation, or both:
+Generate a new skill via GitHub search, LLM generation, empirical patterns, or both:
 
 ```bash
 skrills create-skill my-new-skill --description "Helps with testing"
 skrills create-skill my-new-skill --description "..." --method github
+skrills create-skill my-new-skill --description "..." --method empirical  # From session patterns
 skrills create-skill my-new-skill --description "..." --dry-run  # Preview
 ```
 
@@ -269,11 +270,13 @@ skrills create-skill my-new-skill --description "..." --dry-run  # Preview
 | Option | Purpose |
 |--------|---------|
 | `--description <TEXT>` | Required description of the skill |
-| `--method <METHOD>` | `github`, `llm`, or `both` (default: `both`) |
+| `--method <METHOD>` | `github`, `llm`, `empirical`, or `both` (default: `both`) |
 | `--target-dir <DIR>` | Where to save (default: installed client, Claude preferred) |
 | `--project-dir <DIR>` | Project directory for context |
 | `--dry-run` | Preview without writing files |
 | `--format <FORMAT>` | `text` or `json` (default: `text`) |
+
+The `empirical` method analyzes Claude Code and Codex CLI session history to extract successful tool sequences and failure anti-patterns. It clusters similar sessions and generates skills grounded in observed behavior rather than LLM imagination.
 
 ### search-skills-github
 

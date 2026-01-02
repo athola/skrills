@@ -31,6 +31,8 @@ pub enum CreateSkillMethod {
     Llm,
     /// Use both GitHub search and LLM generation.
     Both,
+    /// Generate from empirical session patterns.
+    Empirical,
 }
 
 impl CreateSkillMethod {
@@ -39,6 +41,7 @@ impl CreateSkillMethod {
             Self::Github => "github",
             Self::Llm => "llm",
             Self::Both => "both",
+            Self::Empirical => "empirical",
         }
     }
 }
@@ -344,7 +347,7 @@ pub enum Commands {
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
     },
-    /// Create a new skill via GitHub search, LLM generation, or both.
+    /// Create a new skill via GitHub search, LLM generation, empirical patterns, or both.
     CreateSkill {
         /// Name or topic for the skill.
         #[arg(required = true)]
@@ -352,7 +355,7 @@ pub enum Commands {
         /// Detailed description of what the skill should do.
         #[arg(long)]
         description: String,
-        /// Creation method: github, llm, or both.
+        /// Creation method: github, llm, both, or empirical.
         #[arg(long, default_value = "both", value_enum)]
         method: CreateSkillMethod,
         /// Directory to create skill in (defaults to installed client, Claude preferred).

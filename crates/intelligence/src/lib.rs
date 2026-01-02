@@ -16,9 +16,9 @@ pub use context::{
     LanguageInfo, ProjectProfile, ProjectType,
 };
 pub use create::{
-    fetch_skill_content, generate_skill_sync, get_available_cli, is_cli_available,
-    search_github_skills, search_skills_advanced, CliEnvironment, CreateSkillRequest,
-    CreateSkillResult, CreationMethod, GitHubSkillResult,
+    fetch_skill_content, generate_skill_sync, generate_skill_with_llm, get_available_cli,
+    is_cli_available, search_github_skills, search_skills_advanced, CliEnvironment,
+    CreateSkillRequest, CreateSkillResult, CreationMethod, GitHubSkillResult,
 };
 pub use recommend::{
     compute_similarity, find_similar_skills, has_similar_skill, match_skill,
@@ -26,6 +26,6 @@ pub use recommend::{
     SkillGapAnalysis, SkillInfo, SkillMatch, SmartRecommendation, DEFAULT_THRESHOLD,
 };
 pub use usage::{
-    build_analytics, get_cooccurring_skills, parse_claude_command_history, recency_score,
-    CommandEntry, PromptAffinity, SkillUsageEvent, TimeRange, UsageAnalytics,
+    build_analytics, get_cooccurring_skills, parse_claude_command_history, parse_claude_sessions,
+    recency_score, CommandEntry, PromptAffinity, SkillUsageEvent, TimeRange, UsageAnalytics,
 };

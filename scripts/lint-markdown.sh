@@ -24,6 +24,8 @@ PATTERNS=(
   "!.cargo-home/**"
   "!.cargo-tmp/**"
   "!.cargo/**"
+  "!.home-tmp/**"
+  "!.codex/**"
 )
 
 echo "running markdownlint-cli2..."

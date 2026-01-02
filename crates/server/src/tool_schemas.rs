@@ -606,9 +606,9 @@ pub(crate) fn intelligence_tools() -> Vec<Tool> {
                         },
                         "method": {
                             "type": "string",
-                            "enum": ["github", "llm", "both"],
+                            "enum": ["github", "llm", "both", "empirical"],
                             "default": "both",
-                            "description": "Creation method: 'github' (search), 'llm' (generate), or 'both'"
+                            "description": "Creation method: 'github' (search), 'llm' (generate), 'both', or 'empirical' (session patterns)"
                         },
                         "target_dir": {
                             "type": "string",

@@ -58,7 +58,9 @@ struct SearchItem {
 struct Repository {
     full_name: String,
     html_url: String,
+    #[serde(default)]
     stargazers_count: u64,
+    #[serde(default)]
     updated_at: String,
     description: Option<String>,
 }
