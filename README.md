@@ -82,6 +82,19 @@ Skrills can expose its MCP server over HTTP for remote client access. HTTP trans
 skrills serve --http 0.0.0.0:3000
 ```
 
+### Installation with HTTP Transport
+
+To install with HTTP transport pre-configured (instead of stdio), use the `--http` flag:
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh | sh -s -- --http 127.0.0.1:3000
+```
+
+This will:
+- Install a systemd user service that runs `skrills serve --http <addr>`
+- Configure MCP clients with the HTTP URL instead of stdio command
+- Provide service management via `systemctl --user`
+
 ### Client Configuration
 
 Configure your MCP client to connect:

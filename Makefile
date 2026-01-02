@@ -62,7 +62,7 @@ endef
 # Phony targets: docs
 .PHONY: docs book book-serve
 # Phony targets: demos
-.PHONY: demo-fixtures demo-doctor demo-all demo-setup-claude demo-setup-codex \
+.PHONY: demo-fixtures demo-doctor demo-http demo-all demo-setup-claude demo-setup-codex \
 	demo-setup-both demo-setup-uninstall demo-setup-reinstall \
 	demo-setup-universal demo-setup-first-run demo-setup-all
 .NOTPARALLEL: demo-all demo-setup-all
@@ -102,6 +102,7 @@ help:
 	@printf "  %-23s %s\n" "book | book-serve" "build or serve mdBook"
 	@printf "\nDemos\n"
 	@printf "  %-23s %s\n" "demo-all | demo-doctor" "run CLI demos"
+	@printf "  %-23s %s\n" "demo-http" "start HTTP MCP server (127.0.0.1:3000)"
 	@printf "  %-23s %s\n" "demo-setup-all" "run all setup flow demos"
 	@printf "  %-23s %s\n" "demo-setup-{claude,codex,both}" "client setup demos"
 	@printf "  %-23s %s\n" "demo-setup-{uninstall,reinstall}" "lifecycle demos"
@@ -193,6 +194,11 @@ book-serve:
 	PATH=$(CARGO_HOME)/bin:$$PATH $(MDBOOK) serve book --open --hostname 127.0.0.1 --port 3000
 
 # --- Demo helpers ---------------------------------------------------------
+
+demo-http: build
+	@echo "==> Demo: HTTP Transport (starts server, ctrl-c to stop)"
+	@echo "    Connect to http://127.0.0.1:3000/mcp"
+	$(BIN_PATH) serve --http 127.0.0.1:3000
 
 demo-fixtures:
 	@mkdir -p $(HOME_DIR)/.codex/skills/demo

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.3 (Unreleased)
+- **NEW: HTTP Transport Installation**: Added `--http` flag to install scripts for HTTP transport instead of stdio. Installs systemd user service and configures MCP clients with HTTP URL.
+- **Improved: Runtime HTTP Configuration**: The `--http` CLI flag is now always visible and runtime-checked, rather than compile-time gated.
+- **Default: HTTP Transport Enabled**: HTTP transport feature is now enabled by default in release builds.
+
 ## 0.4.2 - 2025-12-29
 - **NEW: Fuzzy Skill Search**: Added `search-skills-fuzzy` MCP tool with trigram-based similarity matching for typo-tolerant skill discovery (e.g., "databas" finds "database").
 - **Improved Tests**: Added comprehensive edge case tests for similarity matching (unicode, empty strings, punctuation, long strings) and integration tests for fuzzy search tool.
