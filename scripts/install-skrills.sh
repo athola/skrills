@@ -7,6 +7,8 @@
 # Environment:
 #   SKRILLS_MIRROR_SOURCE  Source directory for mirroring skills (default: ~/.claude).
 #                          Automatically skipped if same as install location.
+#   SKRILLS_HTTP           Bind address for HTTP transport (e.g., 127.0.0.1:3000).
+#                          When set, installs systemd user service and configures MCP with URL.
 set -euo pipefail
 
 UNIVERSAL=0
@@ -25,6 +27,7 @@ fi
 # Preferred binary path (can be set by outer installer via BIN_PATH or SKRILLS_BIN).
 BIN_PATH="${BIN_PATH:-${SKRILLS_BIN:-$HOME/.cargo/bin/skrills}}"
 CLIENT="${SKRILLS_CLIENT:-auto}"
+HTTP_ADDR="${SKRILLS_HTTP:-}"
 
 detect_client_from_base() {
   local base_hint="$1"
@@ -360,6 +363,74 @@ PY
   echo "Enabled Codex experimental skills feature in $CONFIG_TOML"
 }
 
+install_systemd_service() {
+  # Install skrills as a systemd user service for HTTP transport mode
+  local bind_addr="$1"
+  local service_dir="$HOME/.config/systemd/user"
+  local service_file="$service_dir/skrills.service"
+
+  # Check if systemd user services are available
+  if ! command -v systemctl >/dev/null 2>&1; then
+    echo "Warning: systemctl not found. Cannot install systemd service." >&2
+    echo "You'll need to start skrills manually: $BIN_PATH serve --http $bind_addr" >&2
+    return 1
+  fi
+
+  # Check if user session is available
+  if ! systemctl --user status >/dev/null 2>&1; then
+    echo "Warning: systemd user session not available (are you in an SSH session without lingering?)." >&2
+    echo "Try: loginctl enable-linger $USER" >&2
+    echo "You can start skrills manually: $BIN_PATH serve --http $bind_addr" >&2
+    return 1
+  fi
+
+  mkdir -p "$service_dir"
+
+  cat > "$service_file" <<EOF
+[Unit]
+Description=Skrills MCP Server (HTTP Transport)
+Documentation=https://github.com/athola/skrills
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$BIN_PATH serve --http $bind_addr
+Restart=on-failure
+RestartSec=5
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target
+EOF
+
+  echo "Created systemd user service at $service_file"
+
+  # Reload systemd and enable/start the service
+  if systemctl --user daemon-reload; then
+    if systemctl --user enable skrills.service; then
+      if systemctl --user restart skrills.service; then
+        echo "Started skrills HTTP server on $bind_addr"
+        # Give it a moment to start
+        sleep 1
+        if systemctl --user is-active --quiet skrills.service; then
+          echo "Service is running. Check status with: systemctl --user status skrills"
+        else
+          echo "Warning: Service may have failed to start. Check: journalctl --user -u skrills" >&2
+        fi
+      else
+        echo "Warning: Failed to start skrills service. Check: journalctl --user -u skrills" >&2
+        return 1
+      fi
+    else
+      echo "Warning: Failed to enable skrills service" >&2
+      return 1
+    fi
+  else
+    echo "Warning: Failed to reload systemd daemon" >&2
+    return 1
+  fi
+}
+
 if [ "$UNIVERSAL_ONLY" -eq 1 ]; then
   sync_universal
   exit 0
@@ -369,41 +440,93 @@ clean_legacy_artifacts
 clean_invalid_claude_model
 install_subagents_config
 
-# Configure MCP server for Claude Code using claude mcp add command
+# Configure MCP server for Claude Code
 if [ "$CLIENT" = "claude" ]; then
-  # Use the official claude mcp add command for proper registration
-  if command -v claude >/dev/null 2>&1; then
-    echo "Registering skrills MCP server with Claude Code..."
-    if claude mcp add --transport stdio skrills -- "$BIN_PATH" serve 2>/dev/null; then
-      echo "Successfully registered skrills MCP server"
-    else
-      echo "Warning: Failed to register MCP server using 'claude mcp add'. Falling back to manual configuration." >&2
+  if [ -n "$HTTP_ADDR" ]; then
+    # HTTP transport mode: install systemd service and register with URL
+    echo "Installing skrills with HTTP transport on $HTTP_ADDR..."
+    install_systemd_service "$HTTP_ADDR" || true
 
-      # Fallback: Create .mcp.json manually if claude command fails
-      mkdir -p "$(dirname "$MCP_PATH")"
-      if command -v jq >/dev/null 2>&1; then
-        if [ -f "$MCP_PATH" ]; then
-          tmp=$(mktemp)
-          jq '.mcpServers."skrills" = {"type": "stdio", "command": "'"$BIN_PATH"'", "args": ["serve"]}' "$MCP_PATH" > "$tmp"
-          if mv "$tmp" "$MCP_PATH"; then
-            echo "Updated skrills MCP server in $MCP_PATH"
+    # Construct the MCP URL (assume /mcp endpoint)
+    MCP_URL="http://${HTTP_ADDR}/mcp"
+
+    # Register with Claude Code using HTTP transport
+    if command -v claude >/dev/null 2>&1; then
+      echo "Registering skrills MCP server (HTTP) with Claude Code..."
+      if claude mcp add --transport http skrills --url "$MCP_URL" 2>/dev/null; then
+        echo "Successfully registered skrills MCP server (HTTP)"
+      else
+        echo "Warning: Failed to register MCP server using 'claude mcp add'. Falling back to manual configuration." >&2
+        # Fallback: Create .mcp.json manually
+        mkdir -p "$(dirname "$MCP_PATH")"
+        if command -v jq >/dev/null 2>&1; then
+          if [ -f "$MCP_PATH" ]; then
+            tmp=$(mktemp)
+            jq --arg url "$MCP_URL" '.mcpServers."skrills" = {"type": "http", "url": $url}' "$MCP_PATH" > "$tmp"
+            mv "$tmp" "$MCP_PATH" && echo "Updated skrills MCP server (HTTP) in $MCP_PATH" || rm -f "$tmp"
           else
-            echo "Warning: unable to update $MCP_PATH (permission denied?)" >&2
-            rm -f "$tmp"
+            tmp=$(mktemp)
+            jq -n --arg url "$MCP_URL" '{mcpServers: {skrills: {type: "http", url: $url}}}' > "$tmp"
+            mv "$tmp" "$MCP_PATH" && echo "Created $MCP_PATH with skrills MCP server (HTTP)" || rm -f "$tmp"
           fi
         else
-          tmp=$(mktemp)
-          jq -n --arg bin "$BIN_PATH" '{mcpServers: {skrills: {type: "stdio", command: $bin, args: ["serve"]}}}' > "$tmp"
-          if mv "$tmp" "$MCP_PATH"; then
-            echo "Created $MCP_PATH with skrills MCP server"
-          else
-            echo "Warning: unable to create $MCP_PATH (permission denied?)" >&2
-            rm -f "$tmp"
-          fi
+          python3 - <<'PY' "$MCP_PATH" "$MCP_URL"
+import json, os, sys
+mcp_path, mcp_url = sys.argv[1], sys.argv[2]
+data = {"mcpServers": {}}
+if os.path.exists(mcp_path):
+    try:
+        with open(mcp_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        pass
+data.setdefault("mcpServers", {})["skrills"] = {"type": "http", "url": mcp_url}
+with open(mcp_path, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+print(f"Configured skrills MCP server (HTTP) in {mcp_path}")
+PY
         fi
+      fi
+    else
+      echo "Warning: 'claude' command not found. Cannot register MCP server automatically." >&2
+      echo "Add to your Claude Code settings:" >&2
+      echo "  {\"mcpServers\": {\"skrills\": {\"type\": \"http\", \"url\": \"$MCP_URL\"}}}" >&2
+    fi
+  else
+    # Default: stdio transport mode
+    if command -v claude >/dev/null 2>&1; then
+      echo "Registering skrills MCP server with Claude Code..."
+      if claude mcp add --transport stdio skrills -- "$BIN_PATH" serve 2>/dev/null; then
+        echo "Successfully registered skrills MCP server"
       else
-        # Fallback to Python
-        python3 - <<'PY' "$MCP_PATH" "$BIN_PATH"
+        echo "Warning: Failed to register MCP server using 'claude mcp add'. Falling back to manual configuration." >&2
+
+        # Fallback: Create .mcp.json manually if claude command fails
+        mkdir -p "$(dirname "$MCP_PATH")"
+        if command -v jq >/dev/null 2>&1; then
+          if [ -f "$MCP_PATH" ]; then
+            tmp=$(mktemp)
+            jq '.mcpServers."skrills" = {"type": "stdio", "command": "'"$BIN_PATH"'", "args": ["serve"]}' "$MCP_PATH" > "$tmp"
+            if mv "$tmp" "$MCP_PATH"; then
+              echo "Updated skrills MCP server in $MCP_PATH"
+            else
+              echo "Warning: unable to update $MCP_PATH (permission denied?)" >&2
+              rm -f "$tmp"
+            fi
+          else
+            tmp=$(mktemp)
+            jq -n --arg bin "$BIN_PATH" '{mcpServers: {skrills: {type: "stdio", command: $bin, args: ["serve"]}}}' > "$tmp"
+            if mv "$tmp" "$MCP_PATH"; then
+              echo "Created $MCP_PATH with skrills MCP server"
+            else
+              echo "Warning: unable to create $MCP_PATH (permission denied?)" >&2
+              rm -f "$tmp"
+            fi
+          fi
+        else
+          # Fallback to Python
+          python3 - <<'PY' "$MCP_PATH" "$BIN_PATH"
 import json, os, sys
 mcp_path, bin_path = sys.argv[1], sys.argv[2]
 data = {"mcpServers": {}}
@@ -423,54 +546,89 @@ with open(mcp_path, "w", encoding="utf-8") as f:
     f.write("\n")
 print(f"Configured skrills MCP server in {mcp_path}")
 PY
+        fi
       fi
+    else
+      echo "Warning: 'claude' command not found. Cannot register MCP server automatically." >&2
+      echo "Please manually run: claude mcp add --transport stdio skrills -- $BIN_PATH serve" >&2
     fi
-  else
-    echo "Warning: 'claude' command not found. Cannot register MCP server automatically." >&2
-    echo "Please manually run: claude mcp add --transport stdio skrills -- $BIN_PATH serve" >&2
   fi
 fi
 
 # Configure MCP server for Codex in config.toml
 if [ "$CLIENT" = "codex" ]; then
-  # Register skrills MCP server in config.toml
-  if [ -f "$CONFIG_TOML" ]; then
-    if grep -q '\[mcp_servers.skrills\]' "$CONFIG_TOML" 2>/dev/null; then
-      # Ensure required type field exists; older installs may be missing it.
-      if ! awk '
-        /^\[mcp_servers\.skrills\]/{inside=1}
-        inside && /^\[/ && !/^\[mcp_servers\.skrills\]/{inside=0}
-        inside && /^[[:space:]]*type[[:space:]]*=/{found=1}
-        END{exit(found?0:1)}
-      ' "$CONFIG_TOML"; then
-        tmp=$(mktemp)
-        awk '
-          BEGIN{inside=0;added=0}
+  if [ -n "$HTTP_ADDR" ]; then
+    # HTTP transport mode for Codex
+    echo "Installing skrills with HTTP transport on $HTTP_ADDR..."
+    install_systemd_service "$HTTP_ADDR" || true
+
+    MCP_URL="http://${HTTP_ADDR}/mcp"
+
+    # Remove any existing stdio config and add HTTP config
+    if [ -f "$CONFIG_TOML" ]; then
+      # Remove existing skrills entry
+      tmp=$(mktemp)
+      awk '
+        BEGIN { skip = 0 }
+        /^\[mcp_servers\.skrills\]/ { skip = 1; next }
+        /^\[/ { if (skip) skip = 0 }
+        { if (!skip) print }
+      ' "$CONFIG_TOML" > "$tmp" && mv "$tmp" "$CONFIG_TOML"
+    fi
+
+    # Add HTTP MCP server entry
+    mkdir -p "$(dirname "$CONFIG_TOML")"
+    tmp=$(mktemp)
+    cat > "$tmp" <<MCP_ENTRY
+# Skrills MCP server for skill sync, validation, and analysis (HTTP transport)
+[mcp_servers.skrills]
+type = "http"
+url = "$MCP_URL"
+
+MCP_ENTRY
+    if [ -f "$CONFIG_TOML" ]; then
+      cat "$CONFIG_TOML" >> "$tmp"
+    fi
+    mv "$tmp" "$CONFIG_TOML"
+    echo "Registered skrills MCP server (HTTP) in $CONFIG_TOML"
+  else
+    # Default: stdio transport mode
+    if [ -f "$CONFIG_TOML" ]; then
+      if grep -q '\[mcp_servers.skrills\]' "$CONFIG_TOML" 2>/dev/null; then
+        # Ensure required type field exists; older installs may be missing it.
+        if ! awk '
           /^\[mcp_servers\.skrills\]/{inside=1}
           inside && /^\[/ && !/^\[mcp_servers\.skrills\]/{inside=0}
-          {
-            if(inside && /^[[:space:]]*type[[:space:]]*=/){added=1}
-            print
-            if(inside && /^[[:space:]]*command[[:space:]]*=/ && added==0){
-              print "type = \"stdio\""
-              added=1
+          inside && /^[[:space:]]*type[[:space:]]*=/{found=1}
+          END{exit(found?0:1)}
+        ' "$CONFIG_TOML"; then
+          tmp=$(mktemp)
+          awk '
+            BEGIN{inside=0;added=0}
+            /^\[mcp_servers\.skrills\]/{inside=1}
+            inside && /^\[/ && !/^\[mcp_servers\.skrills\]/{inside=0}
+            {
+              if(inside && /^[[:space:]]*type[[:space:]]*=/){added=1}
+              print
+              if(inside && /^[[:space:]]*command[[:space:]]*=/ && added==0){
+                print "type = \"stdio\""
+                added=1
+              }
             }
-          }
-          END{
-            if(inside && added==0){
-              print "type = \"stdio\""
+            END{
+              if(inside && added==0){
+                print "type = \"stdio\""
+              }
             }
-          }
-        ' "$CONFIG_TOML" > "$tmp" && mv "$tmp" "$CONFIG_TOML"
-        echo "Patched missing type=\"stdio\" for skrills in $CONFIG_TOML"
+          ' "$CONFIG_TOML" > "$tmp" && mv "$tmp" "$CONFIG_TOML"
+          echo "Patched missing type=\"stdio\" for skrills in $CONFIG_TOML"
+        else
+          echo "skrills MCP server already registered in $CONFIG_TOML"
+        fi
       else
-        echo "skrills MCP server already registered in $CONFIG_TOML"
-      fi
-    else
-      # Add skrills MCP server entry
-      tmp=$(mktemp)
-      # Prepend to existing config.toml (skrills entry first)
-      cat > "$tmp" <<MCP_ENTRY
+        # Add skrills MCP server entry
+        tmp=$(mktemp)
+        cat > "$tmp" <<MCP_ENTRY
 # Skrills MCP server for skill sync, validation, and analysis
 [mcp_servers.skrills]
 command = "$BIN_PATH"
@@ -478,22 +636,22 @@ type = "stdio"
 args = ["serve"]
 
 MCP_ENTRY
-      # Append existing config.toml content
-      cat "$CONFIG_TOML" >> "$tmp"
-      mv "$tmp" "$CONFIG_TOML"
-      echo "Registered skrills MCP server in $CONFIG_TOML"
-    fi
-  else
-    # Create new config.toml with skrills MCP server
-    mkdir -p "$(dirname "$CONFIG_TOML")"
-    cat > "$CONFIG_TOML" <<CONFIG
+        cat "$CONFIG_TOML" >> "$tmp"
+        mv "$tmp" "$CONFIG_TOML"
+        echo "Registered skrills MCP server in $CONFIG_TOML"
+      fi
+    else
+      # Create new config.toml with skrills MCP server
+      mkdir -p "$(dirname "$CONFIG_TOML")"
+      cat > "$CONFIG_TOML" <<CONFIG
 # Skrills MCP server for skill sync, validation, and analysis
 [mcp_servers.skrills]
 command = "$BIN_PATH"
 type = "stdio"
 args = ["serve"]
 CONFIG
-    echo "Created $CONFIG_TOML with skrills MCP server"
+      echo "Created $CONFIG_TOML with skrills MCP server"
+    fi
   fi
   enable_codex_skills_feature
 fi
@@ -503,14 +661,24 @@ if [ "$CLIENT" = "codex" ]; then
   echo ""
   echo "Install complete for Codex."
   echo ""
-  echo "The skrills MCP server has been registered in ~/.codex/config.toml"
+  if [ -n "$HTTP_ADDR" ]; then
+    echo "The skrills MCP server has been registered in ~/.codex/config.toml (HTTP: $HTTP_ADDR)"
+    echo "Service management: systemctl --user {status|restart|stop} skrills"
+  else
+    echo "The skrills MCP server has been registered in ~/.codex/config.toml"
+  fi
   echo "Available tools: sync-skills, sync-commands, sync-all, validate-skills, analyze-skills"
 else
   warm_cache_snapshot
   echo ""
   echo "Install complete for Claude Code."
   echo ""
-  echo "The skrills MCP server has been registered."
+  if [ -n "$HTTP_ADDR" ]; then
+    echo "The skrills MCP server has been registered (HTTP: $HTTP_ADDR)"
+    echo "Service management: systemctl --user {status|restart|stop} skrills"
+  else
+    echo "The skrills MCP server has been registered."
+  fi
   echo "Available tools: sync-skills, sync-commands, sync-all, validate-skills, analyze-skills"
 fi
 
