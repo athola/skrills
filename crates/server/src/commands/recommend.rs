@@ -4,7 +4,7 @@ use crate::app::{RecommendationRelationship, SkillRecommendations};
 use crate::cli::OutputFormat;
 use crate::discovery::merge_extra_dirs;
 use anyhow::Result;
-use skrills_analyze::{analyze_skill, DependencyGraph, DependencyType};
+use skrills_analyze::{analyze_skill, DependencyType, RelationshipGraph};
 use skrills_discovery::{discover_skills, extra_skill_roots};
 use std::collections::{HashMap, HashSet};
 
@@ -26,7 +26,7 @@ pub(crate) fn handle_recommend_command(
     }
 
     // Build dependency graph and collect quality scores
-    let mut dep_graph = DependencyGraph::new();
+    let mut dep_graph = RelationshipGraph::new();
     let mut quality_scores: HashMap<String, f64> = HashMap::new();
     let mut uri_to_name: HashMap<String, String> = HashMap::new();
 

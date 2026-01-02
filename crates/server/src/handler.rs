@@ -7,6 +7,18 @@
 //! - `read_resource()` - reads a specific skill resource by URI
 //! - `list_tools()` - lists all MCP tools with their JSON schemas
 //! - `call_tool()` - dispatches tool calls to specific handlers
+//!
+//! # Tool Naming Convention
+//!
+//! MCP tools accept **both kebab-case and snake_case** for tool names:
+//! - `validate-skill` or `validate_skill`
+//! - `analyze-tokens` or `analyze_tokens`
+//! - `sync-from-claude` or `sync_from_claude`
+//!
+//! This dual convention exists because MCP clients may normalize tool names differently.
+//! Claude Code uses kebab-case internally but MCP spec examples often show snake_case.
+//! The canonical names in `list_tools()` use kebab-case, but `call_tool()` normalizes
+//! incoming names to support both conventions for compatibility.
 
 use crate::app::SkillService;
 use crate::discovery::{is_skill_file, priority_labels_and_rank_map};

@@ -2,7 +2,7 @@
 
 ## Overview
 
-When using skrills as an MCP server, token usage is generally low because the server focuses on targeted operations (validation, analysis, sync) rather than returning large skill metadata payloads.
+The Skrills MCP server minimizes token usage by returning targeted summaries rather than full skill metadata payloads.
 
 ## MCP Tools Token Impact
 
@@ -28,9 +28,9 @@ When the `subagents` feature is enabled:
 
 ## Best Practices
 
-### Use CLI for Batch Operations
+### Prefer CLI for Batch Operations
 
-For operations on many skills, the CLI is often more efficient than repeated MCP tool calls:
+For operations involving many skills, the CLI is more efficient than repeated MCP tool calls:
 
 ```bash
 # Validate all skills (single operation)
@@ -42,7 +42,7 @@ skrills analyze --min-tokens 1000 --format json
 
 ### Filter Output
 
-Use output filtering options to reduce payload size:
+Use filtering options to reduce payload size:
 
 ```bash
 # Only show errors
@@ -54,7 +54,7 @@ skrills analyze --min-tokens 2000
 
 ### Preview Before Sync
 
-Use `sync-status` to preview changes before running a full sync:
+Use `sync-status` to preview changes:
 
 ```bash
 skrills sync-status --from claude

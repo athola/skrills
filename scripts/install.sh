@@ -218,6 +218,7 @@ install_hook_and_mcp()
   BIN_PATH="$bin_dir/$bin_name" SKRILLS_UNIVERSAL="${SKRILLS_UNIVERSAL:-0}" \
     SKRILLS_CLIENT="${SKRILLS_CLIENT}" SKRILLS_BASE_DIR="$base_dir" \
     SKRILLS_MIRROR_SOURCE="${SKRILLS_MIRROR_SOURCE:-}" \
+    SKRILLS_HTTP="${SKRILLS_HTTP:-}" \
     "$PWD/scripts/install-skrills.sh"
 }
 
@@ -243,6 +244,8 @@ Options:
   --install-path PATH  Override install directory (sets SKRILLS_BIN_DIR)
   --client codex|claude  Target client for hook/MCP paths (default: codex)
   --base-dir PATH   Override client base dir (default: ~/.codex or ~/.claude per client)
+  --http [ADDR]    Use HTTP transport instead of stdio (e.g., --http 127.0.0.1:3000)
+                   Installs as systemd user service and configures MCP with URL
   -h, --help       Show this help
 
 Environment:
@@ -256,6 +259,7 @@ Environment:
   SKRILLS_MIRROR_SOURCE  source directory for mirroring skills (default: $HOME/.claude)
                          automatically skipped if same as install location to prevent redundancy
   SKRILLS_SKIP_PATH_MESSAGE set to 1 to silence PATH hint
+  SKRILLS_HTTP           bind address for HTTP transport (e.g., 127.0.0.1:3000)
 USAGE
 }
 
@@ -263,6 +267,7 @@ parse_args()
 {
   LOCAL_BUILD=0
   SKRILLS_CLIENT="codex"
+  SKRILLS_HTTP="${SKRILLS_HTTP:-}"
   while [ $# -gt 0 ]; do
     case "$1" in
       --install-path)
@@ -288,6 +293,14 @@ parse_args()
         ;;
       --base-dir=*)
         SKRILLS_BASE_DIR="${1#*=}"
+        ;;
+      --http)
+        shift
+        [ $# -gt 0 ] || fail "--http requires a bind address (e.g., 127.0.0.1:3000)"
+        SKRILLS_HTTP="$1"
+        ;;
+      --http=*)
+        SKRILLS_HTTP="${1#*=}"
         ;;
       --local) LOCAL_BUILD=1 ;;
       -h|--help) usage; exit 0 ;;

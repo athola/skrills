@@ -134,11 +134,12 @@ pub fn analyze_dependencies(skill_path: &Path, content: &str) -> DependencyAnaly
     analysis
 }
 
-static URL_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"https?://[^\s\)\]>]+").unwrap());
+static URL_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"https?://[^\s\)\]>]+").expect("URL_REGEX is valid"));
 static LINK_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[([^\]]*)\]\(([^)]+)\)").unwrap());
+    LazyLock::new(|| Regex::new(r"\[([^\]]*)\]\(([^)]+)\)").expect("LINK_REGEX is valid"));
 static IMAGE_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"!\[([^\]]*)\]\(([^)]+)\)").unwrap());
+    LazyLock::new(|| Regex::new(r"!\[([^\]]*)\]\(([^)]+)\)").expect("IMAGE_REGEX is valid"));
 
 fn extract_content_dependencies(
     analysis: &mut DependencyAnalysis,

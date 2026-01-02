@@ -47,8 +47,23 @@ pub fn compute_similarity(a: &str, b: &str) -> f64 {
 
 /// Find the best word match within a haystack string.
 ///
-/// Splits the haystack into words and returns the highest similarity score
-/// for any word matching the needle.
+/// Splits the haystack into words (on non-alphanumeric chars except `-` and `_`)
+/// and returns the highest trigram similarity score for any word matching the needle.
+/// Words shorter than 3 characters are filtered out since trigrams require at least 3 chars.
+///
+/// # Arguments
+/// * `needle` - The search term to match against words in the haystack
+/// * `haystack` - A string to split into words and search within
+///
+/// # Returns
+/// The highest similarity score (0.0 - 1.0) found, or 0.0 if no matches
+///
+/// # Example
+/// ```
+/// use skrills_intelligence::recommend::similarity::best_word_match;
+/// let score = best_word_match("database", "A PostgreSQL database manager");
+/// assert!(score > 0.9); // "database" matches exactly
+/// ```
 pub fn best_word_match(needle: &str, haystack: &str) -> f64 {
     if needle.is_empty() || haystack.is_empty() {
         return 0.0;

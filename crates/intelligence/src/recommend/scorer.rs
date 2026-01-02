@@ -160,7 +160,12 @@ impl Scorer for RecommendationScorer {
                 }
                 RecommendationSignal::CoUsed { count } => {
                     // Logarithmic scaling for co-occurrence
-                    breakdown.usage_score += COUSED_WEIGHT * (*count as f64).log2().max(1.0);
+                    // Use log2(count + 1) to ensure: count=1 → 1.0, count=3 → 2.0, count=7 → 3.0
+                    // This avoids the edge case where count=0 and count=1 produce identical scores
+                    if *count > 0 {
+                        breakdown.usage_score +=
+                            COUSED_WEIGHT * ((*count + 1) as f64).log2().max(1.0);
+                    }
                 }
                 RecommendationSignal::ProjectMatch { matched } => {
                     breakdown.context_score += CONTEXT_MATCH_WEIGHT * matched.len() as f64;
@@ -274,5 +279,114 @@ mod tests {
         let matches = scorer.get_project_matches("rust-async-tokio");
         assert!(matches.contains(&"Rust".to_string()));
         assert!(matches.contains(&"Tokio".to_string()));
+    }
+
+    // -------------------------------------------------------------------------
+    // Edge Case Tests for Mathematical Correctness
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_coused_count_zero_produces_no_score() {
+        let scorer = RecommendationScorer::new();
+        let signals = vec![RecommendationSignal::CoUsed { count: 0 }];
+        let rec = scorer.score("skill://test/skill", signals);
+
+        // count=0 should NOT contribute to usage score
+        assert_eq!(
+            rec.score_breakdown.usage_score, 0.0,
+            "count=0 should produce no usage score"
+        );
+    }
+
+    #[test]
+    fn test_coused_count_one_different_from_zero() {
+        let scorer = RecommendationScorer::new();
+
+        let rec_zero = scorer.score(
+            "skill://test/skill",
+            vec![RecommendationSignal::CoUsed { count: 0 }],
+        );
+        let rec_one = scorer.score(
+            "skill://test/skill",
+            vec![RecommendationSignal::CoUsed { count: 1 }],
+        );
+
+        // count=1 should produce higher score than count=0
+        assert!(
+            rec_one.score > rec_zero.score,
+            "count=1 ({}) should produce higher score than count=0 ({})",
+            rec_one.score,
+            rec_zero.score
+        );
+    }
+
+    #[test]
+    fn test_coused_logarithmic_scaling() {
+        let scorer = RecommendationScorer::new();
+
+        let rec_1 = scorer.score(
+            "skill://test/skill",
+            vec![RecommendationSignal::CoUsed { count: 1 }],
+        );
+        let rec_3 = scorer.score(
+            "skill://test/skill",
+            vec![RecommendationSignal::CoUsed { count: 3 }],
+        );
+        let rec_7 = scorer.score(
+            "skill://test/skill",
+            vec![RecommendationSignal::CoUsed { count: 7 }],
+        );
+
+        // log2(2) = 1.0, log2(4) = 2.0, log2(8) = 3.0
+        // So count=1→1.0, count=3→2.0, count=7→3.0 (using log2(count+1))
+        assert!(
+            rec_3.score > rec_1.score,
+            "count=3 should score higher than count=1"
+        );
+        assert!(
+            rec_7.score > rec_3.score,
+            "count=7 should score higher than count=3"
+        );
+
+        // Verify logarithmic growth (not linear)
+        let growth_1_to_3 = rec_3.score - rec_1.score;
+        let growth_3_to_7 = rec_7.score - rec_3.score;
+
+        // log2(4) - log2(2) = 1.0, log2(8) - log2(4) = 1.0
+        // Growth should be approximately equal (both ~COUSED_WEIGHT)
+        assert!(
+            (growth_1_to_3 - growth_3_to_7).abs() < 0.1,
+            "Logarithmic scaling should show equal growth increments"
+        );
+    }
+
+    #[test]
+    fn test_similarity_score_bounds() {
+        let scorer = RecommendationScorer::new();
+
+        // Test similarity at bounds
+        let rec_zero = scorer.score(
+            "skill://test/skill",
+            vec![RecommendationSignal::SimilarityMatch {
+                query: "test".to_string(),
+                similarity: 0.0,
+            }],
+        );
+        let rec_one = scorer.score(
+            "skill://test/skill",
+            vec![RecommendationSignal::SimilarityMatch {
+                query: "test".to_string(),
+                similarity: 1.0,
+            }],
+        );
+
+        assert_eq!(
+            rec_zero.score_breakdown.context_score, 0.0,
+            "similarity=0.0 should produce 0.0 context score"
+        );
+        assert!(
+            (rec_one.score_breakdown.context_score - SIMILARITY_WEIGHT).abs() < 0.001,
+            "similarity=1.0 should produce SIMILARITY_WEIGHT context score"
+        );
     }
 }

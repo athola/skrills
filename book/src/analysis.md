@@ -1,6 +1,6 @@
 # Skill Analysis
 
-Skrills analyzes skills for token usage, dependencies, and optimization opportunities. This helps you understand the context window impact of your skills and identify candidates for optimization.
+Skrills analyzes skills for token usage, dependencies, and optimization opportunities.
 
 ## Token Analysis
 
@@ -46,20 +46,18 @@ skrills analyze --skill-dir ~/my-skills
 
 ## Understanding Token Counts
 
-Token counts are estimates based on the skill content. They help you:
-
-1. **Budget context window usage**: Large skills consume more of the available context.
-2. **Identify optimization targets**: Skills with high token counts may benefit from refactoring.
-3. **Compare alternatives**: Choose between skill variants based on efficiency.
+Token counts estimate context impact, helping you:
+1. **Budget context**: Large skills consume available context.
+2. **Target optimization**: Identify candidates for refactoring.
+3. **Compare alternatives**: Select efficient skill variants.
 
 ## Optimization Suggestions
 
-When using `--suggestions`, skrills provides recommendations such as:
-
+The `--suggestions` flag flags potential issues:
 - **Split large skills**: Skills over 2000 tokens may benefit from modular decomposition.
-- **Remove redundant content**: Duplicate information across skills.
-- **Simplify examples**: Verbose examples can often be condensed.
-- **Use references**: Link to external docs instead of embedding large content.
+- **Remove redundant content**: Eliminate duplication.
+- **Simplify examples**: Condense verbose examples.
+- **Use references**: Link to external docs instead of embedding content.
 
 ## MCP Tool
 
@@ -77,7 +75,7 @@ When running as an MCP server (`skrills serve`), the `analyze-skills` tool provi
 
 ## Best Practices
 
-1. **Set token budgets**: Establish team guidelines for maximum skill token counts.
-2. **Review regularly**: Run analysis after adding new skills or updating existing ones.
-3. **Prioritize high-impact skills**: Focus optimization efforts on frequently-used skills.
-4. **Test after optimization**: Ensure skills still work correctly after reducing content.
+1. **Set budgets**: Establish guidelines for maximum skill token counts.
+2. **Review regularly**: Run analysis after adding or updating skills.
+3. **Prioritize**: Focus optimization on frequently used skills.
+4. **Test**: Verify skills function correctly after refactoring.

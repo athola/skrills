@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -211,7 +211,8 @@ pub struct StateRunStore {
 
 impl StateRunStore {
     pub fn new(path: PathBuf) -> Result<Self> {
-        let records = read_records(&path)?;
+        let records = read_records(&path)
+            .with_context(|| format!("failed to initialize store from: {}", path.display()))?;
         let mut runs = HashMap::new();
         for record in records {
             runs.insert(record.id, record);
@@ -224,7 +225,8 @@ impl StateRunStore {
 
     /// Reload the in-memory store from disk, waiting for the lock.
     pub async fn load_from_disk(&self) -> Result<()> {
-        let records = read_records(&self.path)?;
+        let records = read_records(&self.path)
+            .with_context(|| format!("failed to reload store from: {}", self.path.display()))?;
         let mut guard = self.inner.lock().await;
         guard.clear();
         for record in records {
@@ -241,14 +243,19 @@ impl StateRunStore {
             runs
         };
         if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create store directory: {}", parent.display())
+            })?;
         }
-        let data = serde_json::to_string_pretty(&runs)?;
+        let data =
+            serde_json::to_string_pretty(&runs).context("failed to serialize run records")?;
 
         // Atomic write: write to temp file then rename to avoid partial writes on crash.
         let temp_path = self.path.with_extension("tmp");
-        fs::write(&temp_path, &data)?;
-        fs::rename(&temp_path, &self.path)?;
+        fs::write(&temp_path, &data)
+            .with_context(|| format!("failed to write temp file: {}", temp_path.display()))?;
+        fs::rename(&temp_path, &self.path)
+            .with_context(|| format!("failed to rename temp file to: {}", self.path.display()))?;
         Ok(())
     }
 }
@@ -260,8 +267,10 @@ pub fn default_store_path() -> Result<PathBuf> {
 
 fn read_records(path: &PathBuf) -> Result<Vec<RunRecord>> {
     if path.exists() {
-        let text = fs::read_to_string(path)?;
-        let records: Vec<RunRecord> = serde_json::from_str(&text)?;
+        let text = fs::read_to_string(path)
+            .with_context(|| format!("failed to read store file: {}", path.display()))?;
+        let records: Vec<RunRecord> = serde_json::from_str(&text)
+            .with_context(|| format!("failed to parse store file: {}", path.display()))?;
         Ok(records)
     } else {
         Ok(Vec::new())

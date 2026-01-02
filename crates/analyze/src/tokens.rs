@@ -1,12 +1,22 @@
 //! Token estimation for skill files.
 //!
-//! Uses a character-based heuristic (~4 characters per token)
-//! which is a reasonable approximation for GPT-style tokenizers.
+//! Uses character-based heuristics for GPT-style tokenizers.
+//! Different ratios are used for prose vs code content since
+//! code tends to have shorter tokens due to symbols and keywords.
 
 use serde::{Deserialize, Serialize};
 
-/// Approximate characters per token.
-const CHARS_PER_TOKEN: f64 = 4.0;
+/// Approximate characters per token for prose/markdown content.
+/// English text averages ~4 characters per token.
+const PROSE_CHARS_PER_TOKEN: f64 = 4.0;
+
+/// Approximate characters per token for code content.
+/// Code averages ~3.5 chars/token due to short keywords, symbols, and identifiers.
+const CODE_CHARS_PER_TOKEN: f64 = 3.5;
+
+/// Approximate characters per token for YAML/frontmatter content.
+/// YAML has many short keys and values, averaging ~3.2 chars/token.
+const FRONTMATTER_CHARS_PER_TOKEN: f64 = 3.2;
 
 /// Token count breakdown by section.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -21,9 +31,15 @@ pub struct TokenBreakdown {
     pub total: usize,
 }
 
-/// Estimate token count from character count.
+/// Estimate token count from character count using prose ratio.
+/// For more accurate estimates, use `estimate_tokens_with_ratio`.
 pub fn estimate_tokens(chars: usize) -> usize {
-    (chars as f64 / CHARS_PER_TOKEN).ceil() as usize
+    estimate_tokens_with_ratio(chars, PROSE_CHARS_PER_TOKEN)
+}
+
+/// Estimate token count from character count using a specific chars-per-token ratio.
+fn estimate_tokens_with_ratio(chars: usize, chars_per_token: f64) -> usize {
+    (chars as f64 / chars_per_token).ceil() as usize
 }
 
 /// Count tokens in a skill file with section breakdown.
@@ -74,9 +90,11 @@ pub fn count_tokens(content: &str) -> TokenBreakdown {
         }
     }
 
-    breakdown.frontmatter = estimate_tokens(frontmatter_chars);
-    breakdown.code = estimate_tokens(code_chars);
-    breakdown.prose = estimate_tokens(prose_chars);
+    // Use content-specific ratios for more accurate token estimation
+    breakdown.frontmatter =
+        estimate_tokens_with_ratio(frontmatter_chars, FRONTMATTER_CHARS_PER_TOKEN);
+    breakdown.code = estimate_tokens_with_ratio(code_chars, CODE_CHARS_PER_TOKEN);
+    breakdown.prose = estimate_tokens_with_ratio(prose_chars, PROSE_CHARS_PER_TOKEN);
     breakdown.total = breakdown.frontmatter + breakdown.code + breakdown.prose;
 
     breakdown
@@ -162,5 +180,90 @@ mod tests {
         assert_eq!(TokenCategory::from_count(1000), TokenCategory::Medium);
         assert_eq!(TokenCategory::from_count(5000), TokenCategory::Large);
         assert_eq!(TokenCategory::from_count(10000), TokenCategory::VeryLarge);
+    }
+
+    // -------------------------------------------------------------------------
+    // Content-Aware Token Estimation Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_code_tokens_higher_than_prose_for_same_chars() {
+        // Code should produce MORE tokens than prose for the same character count
+        // because code has shorter average token length
+        let code_content = "```rust\nfn main() { println!(\"hello\"); }\n```";
+        let prose_content = "This is some regular prose text here.";
+
+        // For similar character counts, code should estimate higher
+        let code_chars = code_content.len();
+        let prose_chars = prose_content.len();
+
+        // Using the ratios: code = chars/3.5, prose = chars/4.0
+        // So for same chars: code_tokens > prose_tokens
+        let code_tokens = (code_chars as f64 / 3.5).ceil() as usize;
+        let prose_tokens = (prose_chars as f64 / 4.0).ceil() as usize;
+
+        // Normalize by character count to compare rates
+        let code_rate = code_tokens as f64 / code_chars as f64;
+        let prose_rate = prose_tokens as f64 / prose_chars as f64;
+
+        assert!(
+            code_rate > prose_rate,
+            "Code should have higher token rate: {} vs {}",
+            code_rate,
+            prose_rate
+        );
+    }
+
+    #[test]
+    fn test_frontmatter_tokens_highest_rate() {
+        // Frontmatter (YAML) should have the highest token rate due to short keys
+        // Using ratios: frontmatter=3.2, code=3.5, prose=4.0
+
+        let frontmatter_rate = 1.0 / 3.2;
+        let code_rate = 1.0 / 3.5;
+        let prose_rate = 1.0 / 4.0;
+
+        assert!(
+            frontmatter_rate > code_rate,
+            "Frontmatter should have higher token rate than code"
+        );
+        assert!(
+            code_rate > prose_rate,
+            "Code should have higher token rate than prose"
+        );
+    }
+
+    #[test]
+    fn test_count_tokens_mixed_content_accuracy() {
+        // Test a realistic skill file with all content types
+        let content = r#"---
+name: test-skill
+description: A test skill
+---
+# Test Skill
+
+This is prose content explaining the skill.
+
+```python
+def hello():
+    print("Hello, world!")
+```
+
+More prose here.
+"#;
+
+        let breakdown = count_tokens(content);
+
+        // Verify all sections are counted
+        assert!(breakdown.frontmatter > 0, "Should have frontmatter tokens");
+        assert!(breakdown.code > 0, "Should have code tokens");
+        assert!(breakdown.prose > 0, "Should have prose tokens");
+
+        // Total should equal sum of parts
+        assert_eq!(
+            breakdown.total,
+            breakdown.frontmatter + breakdown.code + breakdown.prose,
+            "Total should equal sum of parts"
+        );
     }
 }

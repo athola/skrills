@@ -6,11 +6,49 @@
 //! - Persistent snapshots for faster startup
 //! - Dependency graph tracking for skill relationships
 //!
+//! # Concurrency Model
+//!
 //! The cache is designed to be shared via `Arc<Mutex<SkillCache>>` for thread-safe access.
+//! This pattern is used because:
+//!
+//! - **Interior mutability**: The cache needs to refresh itself when stale, even during
+//!   "read" operations like `skill_by_uri`. Using `Mutex` allows mutable access through
+//!   a shared reference.
+//!
+//! - **Coarse-grained locking**: We use a single mutex around the entire cache rather
+//!   than fine-grained locks because:
+//!   - Most operations are fast (hash lookups, vector iteration)
+//!   - Refresh operations are infrequent (TTL-gated)
+//!   - Simpler reasoning about correctness
+//!
+//! - **`parking_lot::Mutex`** is preferred over `std::sync::Mutex` for:
+//!   - No poisoning (simpler error handling)
+//!   - Better performance under low contention
+//!   - Smaller memory footprint
+//!
+//! ## Usage Pattern
+//!
+//! ```ignore
+//! let cache: Arc<Mutex<SkillCache>> = Arc::new(Mutex::new(SkillCache::new(roots)));
+//!
+//! // Multiple handlers can share the cache
+//! let cache_clone = Arc::clone(&cache);
+//! tokio::spawn(async move {
+//!     let mut guard = cache_clone.lock();
+//!     let skills = guard.skills_with_dups()?;
+//!     // Lock released when guard drops
+//! });
+//! ```
+//!
+//! ## Thread Safety Notes
+//!
+//! - All public methods that modify state require `&mut self`
+//! - The snapshot path is resolved once at construction to avoid env var races
+//! - File I/O is performed while holding the lock (acceptable given TTL gating)
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use skrills_analyze::DependencyGraph;
+use skrills_analyze::RelationshipGraph;
 use skrills_discovery::{discover_skills, DuplicateInfo, SkillMeta, SkillRoot};
 use skrills_state::{cache_ttl, home_dir, load_manifest_settings};
 use std::collections::HashMap;
@@ -22,6 +60,16 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 ///
 /// Stores metadata for discovered skills to prevent repeated directory traversals.
 /// The cache includes a time-to-live (TTL) and automatically refreshes when stale.
+///
+/// # Thread Safety
+///
+/// This struct is **not** `Send` or `Sync` by itself. For concurrent access, wrap it
+/// in `Arc<Mutex<SkillCache>>` using `parking_lot::Mutex`. See the module-level
+/// documentation for the concurrency model rationale.
+///
+/// Most methods take `&mut self` because they may trigger a cache refresh when the
+/// TTL has expired. The `_raw` suffix methods are exceptions that take `&self` but
+/// should only be called after ensuring the cache is fresh via `ensure_fresh()`.
 pub(crate) struct SkillCache {
     roots: Vec<SkillRoot>,
     ttl: Duration,
@@ -31,8 +79,8 @@ pub(crate) struct SkillCache {
     uri_index: HashMap<String, usize>,
     /// Snapshot path is resolved once to avoid cross-test/env races
     snapshot_path: Option<PathBuf>,
-    /// Dependency graph for skill relationships
-    dep_graph: DependencyGraph,
+    /// Relationship graph for skill dependencies (simple graph, not full resolver)
+    dep_graph: RelationshipGraph,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -61,7 +109,7 @@ impl SkillCache {
             duplicates: Vec::new(),
             uri_index: HashMap::new(),
             snapshot_path,
-            dep_graph: DependencyGraph::new(),
+            dep_graph: RelationshipGraph::new(),
         };
         if let Err(e) = cache.try_load_snapshot() {
             tracing::debug!(
@@ -109,8 +157,8 @@ impl SkillCache {
     }
 
     /// Build the dependency graph for a set of skills.
-    fn build_dependency_graph(&self, skills: &[SkillMeta]) -> DependencyGraph {
-        let mut dep_graph = DependencyGraph::new();
+    fn build_dependency_graph(&self, skills: &[SkillMeta]) -> RelationshipGraph {
+        let mut dep_graph = RelationshipGraph::new();
         for skill in skills {
             let skill_uri = format!("skill://skrills/{}/{}", skill.source.label(), skill.name);
             dep_graph.add_skill(&skill_uri);
@@ -284,7 +332,7 @@ impl SkillCache {
         self.skills.clear();
         self.duplicates.clear();
         self.uri_index.clear();
-        self.dep_graph = DependencyGraph::new();
+        self.dep_graph = RelationshipGraph::new();
     }
 
     /// Refresh the cache if the TTL has expired or the cache is empty.
@@ -583,13 +631,13 @@ mod tests {
         };
 
         let cache = SkillCache::new_with_ttl(vec![root], Duration::from_secs(60));
-        let shared = Arc::new(std::sync::Mutex::new(cache));
+        let shared = Arc::new(parking_lot::Mutex::new(cache));
 
         let handles: Vec<_> = (0..4)
             .map(|_| {
                 let shared = Arc::clone(&shared);
                 std::thread::spawn(move || {
-                    let mut guard = shared.lock().expect("cache lock");
+                    let mut guard = shared.lock();
                     let (skills, _dups) =
                         guard.skills_with_dups().expect("cache read should succeed");
                     assert!(!skills.is_empty(), "expected skills in cache");

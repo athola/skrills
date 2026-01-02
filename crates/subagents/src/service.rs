@@ -1,12 +1,8 @@
 use std::collections::HashMap;
-use std::fs;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use rmcp::model::{object, JsonObject};
 use rmcp::model::{CallToolResult, Content, Tool};
-use serde::Deserialize;
 use serde_json::{json, Map as JsonMap, Value};
 
 use crate::backend::BackendAdapter;
@@ -16,95 +12,12 @@ use crate::backend::{
     codex::CodexAdapter,
 };
 use crate::cli_detection::{
-    cli_binary_from_client_env, cli_binary_from_exe_path, client_hint_from_env,
-    client_hint_from_exe_path, normalize_cli_binary, DEFAULT_CLI_BINARY,
+    cli_binary_from_client_env, cli_binary_from_exe_path, normalize_cli_binary, DEFAULT_CLI_BINARY,
 };
 use crate::registry::AgentRegistry;
+use crate::settings::{backend_from_str, load_file_config, ExecutionMode, SubagentsFileConfig};
 use crate::store::{default_store_path, BackendKind, RunId, RunRequest, RunStore, StateRunStore};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExecutionMode {
-    Cli,
-    Api,
-}
-
-fn execution_mode_from_str(raw: &str) -> Option<ExecutionMode> {
-    if raw.eq_ignore_ascii_case("cli") || raw.eq_ignore_ascii_case("headless") {
-        Some(ExecutionMode::Cli)
-    } else if raw.eq_ignore_ascii_case("api") {
-        Some(ExecutionMode::Api)
-    } else {
-        None
-    }
-}
-
-fn parse_execution_mode(raw: &str) -> Result<ExecutionMode> {
-    execution_mode_from_str(raw).ok_or_else(|| anyhow!("execution_mode must be 'cli' or 'api'"))
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct SubagentsFileConfig {
-    #[serde(default)]
-    default_backend: Option<String>,
-    #[serde(default)]
-    execution_mode: Option<String>,
-    #[serde(default)]
-    cli_binary: Option<String>,
-}
-
-fn subagents_config_paths() -> Vec<PathBuf> {
-    let Ok(home) = skrills_state::home_dir() else {
-        return Vec::new();
-    };
-    let claude = home.join(".claude/subagents.toml");
-    let codex = home.join(".codex/subagents.toml");
-    match client_hint_from_env().or_else(client_hint_from_exe_path) {
-        Some("codex") => vec![codex, claude],
-        Some("claude") => vec![claude, codex],
-        _ => vec![claude, codex],
-    }
-}
-
-fn load_subagents_file_config() -> SubagentsFileConfig {
-    for path in subagents_config_paths() {
-        if !path.exists() {
-            continue;
-        }
-        match fs::read_to_string(&path) {
-            Ok(raw) => match toml::from_str::<SubagentsFileConfig>(&raw) {
-                Ok(config) => return config,
-                Err(err) => {
-                    tracing::warn!(
-                        path = %path.display(),
-                        error = %err,
-                        "failed to parse subagents config"
-                    );
-                }
-            },
-            Err(err) => {
-                tracing::warn!(
-                    path = %path.display(),
-                    error = %err,
-                    "failed to read subagents config"
-                );
-            }
-        }
-    }
-    SubagentsFileConfig::default()
-}
-
-fn backend_from_str(raw: &str) -> BackendKind {
-    if raw.eq_ignore_ascii_case("codex")
-        || raw.eq_ignore_ascii_case("gpt")
-        || raw.eq_ignore_ascii_case("openai")
-    {
-        BackendKind::Codex
-    } else if raw.eq_ignore_ascii_case("claude") || raw.eq_ignore_ascii_case("anthropic") {
-        BackendKind::Claude
-    } else {
-        BackendKind::Other(raw.to_string())
-    }
-}
+use crate::tool_schemas;
 
 fn run_id_from_value(val: &Value) -> Result<RunId> {
     let s = val
@@ -126,7 +39,7 @@ pub struct SubagentService {
 impl SubagentService {
     pub fn new() -> Result<Self> {
         let store = Arc::new(StateRunStore::new(default_store_path()?)?);
-        let file_config = load_subagents_file_config();
+        let file_config = load_file_config();
         let default_backend = std::env::var("SKRILLS_SUBAGENTS_DEFAULT_BACKEND")
             .ok()
             .as_deref()
@@ -147,7 +60,7 @@ impl SubagentService {
         default_backend: BackendKind,
         registry: Arc<AgentRegistry>,
     ) -> Result<Self> {
-        let file_config = load_subagents_file_config();
+        let file_config = load_file_config();
         Self::with_store_and_registry_with_config(store, default_backend, registry, file_config)
     }
 
@@ -170,8 +83,8 @@ impl SubagentService {
         let default_execution_mode = file_config
             .execution_mode
             .as_deref()
-            .and_then(execution_mode_from_str)
-            .unwrap_or(ExecutionMode::Cli);
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_default();
         let cli_binary = normalize_cli_binary(file_config.cli_binary);
 
         Ok(Self {
@@ -206,17 +119,16 @@ impl SubagentService {
 
     fn execution_mode_from_env(&self) -> Option<ExecutionMode> {
         match std::env::var("SKRILLS_SUBAGENTS_EXECUTION_MODE") {
-            Ok(raw) => {
-                if let Some(mode) = execution_mode_from_str(&raw) {
-                    Some(mode)
-                } else {
+            Ok(raw) => match raw.parse() {
+                Ok(mode) => Some(mode),
+                Err(_) => {
                     tracing::warn!(
                         value = %raw,
                         "invalid SKRILLS_SUBAGENTS_EXECUTION_MODE (expected 'cli' or 'api')"
                     );
                     None
                 }
-            }
+            },
             Err(_) => None,
         }
     }
@@ -243,203 +155,7 @@ impl SubagentService {
     }
 
     pub fn tools(&self) -> Vec<Tool> {
-        let run_schema: Arc<JsonObject> = Arc::new(object(json!({
-            "type": "object",
-            "required": ["prompt"],
-            "properties": {
-                "prompt": {"type": "string", "description": "User instruction"},
-                "agent_id": {"type": "string", "description": "Agent name to run (from list-agents). When specified, routes to appropriate execution path based on agent capabilities."},
-                "backend": {"type": "string", "description": "codex|claude|other (used only when execution_mode=api and agent_id is not specified)"},
-                "execution_mode": {"type": "string", "description": "cli|api (default: cli). cli uses local headless CLI; api uses network APIs."},
-                "cli_binary": {"type": "string", "description": "CLI binary to run in cli mode (overrides SKRILLS_CLI_BINARY/config)"},
-                "template_id": {"type": "string"},
-                "output_schema": {"type": "object"},
-                "tracing": {"type": "boolean"},
-                "stream": {"type": "boolean"},
-                "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 300000}
-            }
-        })));
-        let run_id_schema: Arc<JsonObject> = Arc::new(object(json!({
-            "type": "object",
-            "required": ["run_id"],
-            "properties": {"run_id": {"type": "string"}}
-        })));
-        let history_schema: Arc<JsonObject> = Arc::new(object(json!({
-            "type": "object",
-            "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 50}},
-        })));
-        let events_schema: Arc<JsonObject> = Arc::new(object(json!({
-            "type": "object",
-            "required": ["run_id"],
-            "properties": {
-                "run_id": {"type": "string", "description": "The run ID to get events for"},
-                "since_index": {"type": "integer", "minimum": 0, "description": "Return events after this index (0-based)"}
-            }
-        })));
-        let events_output_schema: Arc<JsonObject> = Arc::new(object(json!({
-            "type": "object",
-            "properties": {
-                "run_id": {"type": "string"},
-                "events": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "index": {"type": "integer"},
-                            "ts": {"type": "string"},
-                            "kind": {"type": "string"},
-                            "data": {}
-                        }
-                    }
-                },
-                "total_count": {"type": "integer"},
-                "has_more": {"type": "boolean"}
-            }
-        })));
-
-        let run_output_schema: Arc<JsonObject> = Arc::new(object(json!({
-            "type": "object",
-            "required": ["run_id"],
-            "properties": {
-                "run_id": {"type": "string"},
-                "status": {"type": "object"},
-                "events": {"type": "array", "items": {"type": "object"}}
-            }
-        })));
-        let list_output_schema: Arc<JsonObject> = Arc::new(object(json!({
-            "type": "object",
-            "properties": {"templates": {"type": "array", "items": {"type": "object"}}}
-        })));
-        let agents_output_schema: Arc<JsonObject> = Arc::new(object(json!({
-            "type": "object",
-            "properties": {
-                "agents": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string"},
-                            "description": {"type": "string"},
-                            "tools": {"type": "array", "items": {"type": "string"}},
-                            "model": {"type": "string"},
-                            "source": {"type": "string"},
-                            "path": {"type": "string"},
-                            "requires_cli": {"type": "boolean"}
-                        }
-                    }
-                }
-            }
-        })));
-
-        let mut tools = vec![
-            Tool {
-                name: "list-subagents".into(),
-                title: Some("List subagent templates".into()),
-                description: Some("List available subagent templates and capabilities".into()),
-                input_schema: Arc::new(JsonObject::default()),
-                output_schema: Some(list_output_schema),
-                annotations: None,
-                icons: None,
-                meta: None,
-            },
-            Tool {
-                name: "list-agents".into(),
-                title: Some("List discovered agents".into()),
-                description: Some(
-                    "List all discovered agent definitions from standard locations".into(),
-                ),
-                input_schema: Arc::new(JsonObject::default()),
-                output_schema: Some(agents_output_schema),
-                annotations: None,
-                icons: None,
-                meta: None,
-            },
-            Tool {
-                name: "run-subagent".into(),
-                title: Some("Run a subagent".into()),
-                description: Some("Run a subagent with optional backend/template selection".into()),
-                input_schema: run_schema.clone(),
-                output_schema: Some(run_output_schema.clone()),
-                annotations: None,
-                icons: None,
-                meta: None,
-            },
-            Tool {
-                name: "get-run-status".into(),
-                title: Some("Get subagent run status".into()),
-                description: Some("Fetch status for a run".into()),
-                input_schema: run_id_schema.clone(),
-                output_schema: Some(run_output_schema.clone()),
-                annotations: None,
-                icons: None,
-                meta: None,
-            },
-            Tool {
-                name: "stop-run".into(),
-                title: Some("Stop a running subagent".into()),
-                description: Some("Attempt to cancel a running subagent".into()),
-                input_schema: run_id_schema.clone(),
-                output_schema: Some(run_output_schema.clone()),
-                annotations: None,
-                icons: None,
-                meta: None,
-            },
-            Tool {
-                name: "get-run-history".into(),
-                title: Some("Recent runs".into()),
-                description: Some("Return recent subagent runs".into()),
-                input_schema: history_schema.clone(),
-                output_schema: Some(run_output_schema.clone()),
-                annotations: None,
-                icons: None,
-                meta: None,
-            },
-            Tool {
-                name: "get-run-events".into(),
-                title: Some("Get run events".into()),
-                description: Some(
-                    "Poll for events from a run. Use since_index for incremental fetching.".into(),
-                ),
-                input_schema: events_schema,
-                output_schema: Some(events_output_schema),
-                annotations: None,
-                icons: None,
-                meta: None,
-            },
-        ];
-
-        // Codex-only extended tools
-        tools.push(Tool {
-            name: "run-subagent-async".into(),
-            title: Some("Run subagent asynchronously".into()),
-            description: Some("Start background run (Codex-capable backends).".into()),
-            input_schema: run_schema,
-            output_schema: Some(run_output_schema.clone()),
-            annotations: None,
-            icons: None,
-            meta: None,
-        });
-        tools.push(Tool {
-            name: "get-async-status".into(),
-            title: Some("Status for async run".into()),
-            description: Some("Fetch status for async runs".into()),
-            input_schema: run_id_schema,
-            output_schema: Some(run_output_schema.clone()),
-            annotations: None,
-            icons: None,
-            meta: None,
-        });
-        tools.push(Tool {
-            name: "download-transcript-secure".into(),
-            title: Some("Download secure transcript".into()),
-            description: Some("Fetch encrypted reasoning transcript (Codex only)".into()),
-            input_schema: Arc::new(JsonObject::default()),
-            output_schema: None,
-            annotations: None,
-            icons: None,
-            meta: None,
-        });
-        tools
+        tool_schemas::all_tools()
     }
 
     pub async fn handle_call(
@@ -537,7 +253,7 @@ impl SubagentService {
         let execution_mode = args
             .get("execution_mode")
             .and_then(|v| v.as_str())
-            .map(parse_execution_mode)
+            .map(ExecutionMode::parse)
             .transpose()?
             .unwrap_or_else(|| self.default_execution_mode());
         let cli_binary_override = args

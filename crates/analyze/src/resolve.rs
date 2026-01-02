@@ -255,6 +255,7 @@ impl DependencyGraph {
     /// Resolve dependencies for a skill by name.
     ///
     /// Returns cached result if available, otherwise computes and caches.
+    #[must_use = "resolution result contains important dependency information"]
     pub fn resolve(&self, skill_name: &str) -> Result<ResolutionResult, ResolveError> {
         let idx = self
             .name_index
@@ -529,6 +530,7 @@ impl GraphBuilder {
     /// Build the dependency graph.
     ///
     /// This pre-computes the adjacency list and validates all edges.
+    #[must_use = "builder pattern returns the constructed graph"]
     pub fn build(self) -> Result<DependencyGraph, ResolveError> {
         let mut name_index: HashMap<String, usize> = HashMap::new();
         let mut build_warnings: Vec<String> = Vec::new();
@@ -641,6 +643,7 @@ impl<'a, R: SkillRegistry> DependencyResolver<'a, R> {
     }
 
     /// Resolve dependencies for a skill by name.
+    #[must_use = "resolution result contains important dependency information"]
     pub fn resolve(&self, skill_name: &str) -> Result<ResolutionResult, ResolveError> {
         let mut visited: HashSet<String> = HashSet::new();
         let mut in_stack: HashSet<String> = HashSet::new();

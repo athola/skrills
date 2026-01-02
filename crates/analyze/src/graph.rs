@@ -1,22 +1,29 @@
-//! Dependency graph for analyzing skill relationships.
+//! Relationship graph for analyzing skill connections.
 //!
-//! Provides a graph structure to track dependencies between skills and
-//! compute transitive closures and reverse dependencies.
+//! Provides a simple graph structure to track relationships between skills
+//! and compute transitive closures and reverse lookups.
+//!
+//! For full dependency resolution with version constraints and caching,
+//! see [`crate::resolve::DependencyGraph`].
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 
-/// A graph of skill dependencies.
+/// A simple graph of skill relationships.
 ///
-/// Tracks which skills depend on which other skills, allowing for
-/// transitive dependency resolution and reverse dependency lookups.
+/// Tracks which skills relate to (depend on) other skills, allowing for
+/// transitive traversal and reverse lookups. This is a lightweight structure
+/// for basic graph operations.
+///
+/// For full dependency resolution with version constraints, source pinning,
+/// and caching, use [`crate::resolve::DependencyGraph`] instead.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct DependencyGraph {
+pub struct RelationshipGraph {
     /// Adjacency list: skill URI → set of dependency URIs
     edges: HashMap<String, HashSet<String>>,
 }
 
-impl DependencyGraph {
+impl RelationshipGraph {
     /// Create a new empty dependency graph.
     pub fn new() -> Self {
         Self::default()
@@ -209,7 +216,7 @@ mod tests {
 
     #[test]
     fn test_add_skill() {
-        let mut graph = DependencyGraph::new();
+        let mut graph = RelationshipGraph::new();
         graph.add_skill("skill://skrills/user/test");
 
         assert_eq!(graph.len(), 1);
@@ -220,7 +227,7 @@ mod tests {
 
     #[test]
     fn test_add_dependency() {
-        let mut graph = DependencyGraph::new();
+        let mut graph = RelationshipGraph::new();
         graph.add_dependency("skill://skrills/user/a", "skill://skrills/user/b");
 
         assert_eq!(graph.len(), 2);
@@ -230,7 +237,7 @@ mod tests {
 
     #[test]
     fn test_add_dependencies_multiple() {
-        let mut graph = DependencyGraph::new();
+        let mut graph = RelationshipGraph::new();
         graph.add_dependencies(
             "skill://skrills/user/a",
             vec![
@@ -247,7 +254,7 @@ mod tests {
 
     #[test]
     fn test_resolve_transitive_simple() {
-        let mut graph = DependencyGraph::new();
+        let mut graph = RelationshipGraph::new();
         // A → B → C
         graph.add_dependency("skill://skrills/user/a", "skill://skrills/user/b");
         graph.add_dependency("skill://skrills/user/b", "skill://skrills/user/c");
@@ -260,7 +267,7 @@ mod tests {
 
     #[test]
     fn test_resolve_transitive_diamond() {
-        let mut graph = DependencyGraph::new();
+        let mut graph = RelationshipGraph::new();
         // A → B → D
         // A → C → D
         graph.add_dependency("skill://skrills/user/a", "skill://skrills/user/b");
@@ -286,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_resolve_handles_cycles() {
-        let mut graph = DependencyGraph::new();
+        let mut graph = RelationshipGraph::new();
         // A → B → C → A (cycle)
         graph.add_dependency("skill://skrills/user/a", "skill://skrills/user/b");
         graph.add_dependency("skill://skrills/user/b", "skill://skrills/user/c");
@@ -301,7 +308,7 @@ mod tests {
 
     #[test]
     fn test_dependents_direct() {
-        let mut graph = DependencyGraph::new();
+        let mut graph = RelationshipGraph::new();
         // A → C, B → C
         graph.add_dependency("skill://skrills/user/a", "skill://skrills/user/c");
         graph.add_dependency("skill://skrills/user/b", "skill://skrills/user/c");
@@ -314,7 +321,7 @@ mod tests {
 
     #[test]
     fn test_transitive_dependents() {
-        let mut graph = DependencyGraph::new();
+        let mut graph = RelationshipGraph::new();
         // A → B → C
         graph.add_dependency("skill://skrills/user/a", "skill://skrills/user/b");
         graph.add_dependency("skill://skrills/user/b", "skill://skrills/user/c");
@@ -327,7 +334,7 @@ mod tests {
 
     #[test]
     fn test_has_cycle_detection() {
-        let mut graph = DependencyGraph::new();
+        let mut graph = RelationshipGraph::new();
         // A → B → C → A (cycle)
         graph.add_dependency("skill://skrills/user/a", "skill://skrills/user/b");
         graph.add_dependency("skill://skrills/user/b", "skill://skrills/user/c");
@@ -340,7 +347,7 @@ mod tests {
 
     #[test]
     fn test_no_cycle_detection() {
-        let mut graph = DependencyGraph::new();
+        let mut graph = RelationshipGraph::new();
         // A → B → C (no cycle)
         graph.add_dependency("skill://skrills/user/a", "skill://skrills/user/b");
         graph.add_dependency("skill://skrills/user/b", "skill://skrills/user/c");
@@ -352,7 +359,7 @@ mod tests {
 
     #[test]
     fn test_empty_graph() {
-        let graph = DependencyGraph::new();
+        let graph = RelationshipGraph::new();
         assert!(graph.is_empty());
         assert_eq!(graph.len(), 0);
 
@@ -362,7 +369,7 @@ mod tests {
 
     #[test]
     fn test_dependencies_nonexistent_skill() {
-        let graph = DependencyGraph::new();
+        let graph = RelationshipGraph::new();
         let deps = graph.dependencies("skill://skrills/user/nonexistent");
         assert!(deps.is_empty());
     }

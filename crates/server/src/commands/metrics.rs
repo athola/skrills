@@ -7,7 +7,7 @@ use crate::app::{
 use crate::cli::OutputFormat;
 use crate::discovery::merge_extra_dirs;
 use anyhow::Result;
-use skrills_analyze::DependencyGraph;
+use skrills_analyze::RelationshipGraph;
 use skrills_discovery::{discover_skills, extra_skill_roots};
 use std::collections::HashMap;
 
@@ -43,7 +43,7 @@ pub(crate) fn handle_metrics_command(
     let mut with_warnings = 0usize;
 
     // Build dependency graph
-    let mut dep_graph = DependencyGraph::new();
+    let mut dep_graph = RelationshipGraph::new();
 
     for meta in &skills {
         // Read skill content (before counting to ensure consistent totals)

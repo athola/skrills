@@ -1,17 +1,16 @@
 //! Public entry point for the `skrills` server crate.
 //!
-//! This crate provides the core logic for the `skrills` server, organized into
-//! modules for maintainability:
+//! Core logic for the `skrills` server, organized into modules:
 //!
 //! - `app`: Core application entry point and MCP server.
-//! - `doctor`: Provides configuration diagnostics.
-//! - `sync`: Manages skill synchronization.
-//! - `tui`: Implements the interactive terminal UI.
+//! - `doctor`: Configuration diagnostics.
+//! - `sync`: Skill synchronization management.
+//! - `tui`: Interactive terminal UI.
 
 #![deny(unsafe_code)]
 
 #[cfg_attr(test, allow(dead_code))]
-pub(crate) mod app;
+pub mod app;
 pub(crate) mod cache;
 mod commands;
 mod doctor;
@@ -24,6 +23,10 @@ mod sync;
 mod test_support;
 mod tool_schemas;
 mod tui;
+
+/// HTTP transport for remote MCP access.
+#[cfg(feature = "http-transport")]
+pub mod http_transport;
 
 /// Command-line interface for the server.
 pub mod cli;

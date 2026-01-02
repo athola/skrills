@@ -80,7 +80,7 @@ pub struct Cli {
 /// Available `skrills` commands.
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Runs as an MCP server over stdio.
+    /// Runs as an MCP server over stdio (default) or HTTP.
     Serve {
         /// Additional skill directories (repeatable).
         #[arg(long = "skill-dir", value_name = "DIR")]
@@ -95,6 +95,11 @@ pub enum Commands {
         /// Watches filesystem for changes and invalidates caches immediately.
         #[arg(long, default_value_t = false)]
         watch: bool,
+        /// Bind address for HTTP transport (e.g., "0.0.0.0:3000" or "127.0.0.1:8080").
+        /// When specified, serves MCP over HTTP instead of stdio.
+        /// Requires the `http-transport` feature (enabled by default).
+        #[arg(long, value_name = "BIND_ADDR")]
+        http: Option<String>,
     },
     /// Mirrors Claude assets (skills, agents, commands, MCP prefs) into Codex defaults and refreshes AGENTS.md.
     Mirror {
@@ -470,12 +475,14 @@ mod tests {
                 trace_wire,
                 #[cfg(feature = "watch")]
                 watch,
+                http,
             }) => {
                 assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/skills")]);
                 assert_eq!(cache_ttl_ms, Some(1500));
                 assert!(trace_wire);
                 #[cfg(feature = "watch")]
                 assert!(!watch);
+                assert!(http.is_none());
             }
             _ => panic!("expected Serve command"),
         }
@@ -498,6 +505,10 @@ mod tests {
 
     #[test]
     fn sync_from_claude_alias_parses() {
+        let _guard = env_guard();
+        // Ensure env var is cleared so default is used
+        let _env = set_env_var("SKRILLS_INCLUDE_MARKETPLACE", None);
+
         let cli = Cli::try_parse_from(["skrills", "sync-from-claude"]).expect("alias should parse");
 
         match cli.command {

@@ -6,6 +6,35 @@ use std::path::Path;
 use std::process::Command;
 
 /// Extract keywords from recent git commit messages.
+///
+/// Analyzes the most recent commits in a git repository to identify frequently
+/// mentioned keywords. This helps with intelligent skill recommendations based on
+/// what the user has been working on.
+///
+/// # Arguments
+/// * `root` - The root directory of the git repository
+/// * `commit_limit` - Maximum number of commits to analyze
+///
+/// # Returns
+/// A vector of up to 30 keywords sorted by frequency (most common first).
+/// Keywords are normalized to lowercase and filtered to exclude:
+/// - Words shorter than 3 characters
+/// - Common stop words (the, and, for, etc.)
+/// - Commit action words (add, fix, update, remove, etc.)
+/// - Conventional commit prefixes (feat:, fix:, docs:, etc.)
+///
+/// # Errors
+/// Returns an error if git is not available or the directory is not a git repository.
+///
+/// # Example
+/// ```no_run
+/// use std::path::Path;
+/// use skrills_intelligence::context::extract_git_keywords;
+///
+/// let keywords = extract_git_keywords(Path::new("."), 50)?;
+/// // keywords might contain: ["authentication", "database", "api", ...]
+/// # Ok::<(), anyhow::Error>(())
+/// ```
 pub fn extract_git_keywords(root: &Path, commit_limit: usize) -> Result<Vec<String>> {
     // Run git log to get recent commit messages
     let output = Command::new("git")
