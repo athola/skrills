@@ -474,4 +474,3 @@ impl SkillService {
         })
     }
 }
-

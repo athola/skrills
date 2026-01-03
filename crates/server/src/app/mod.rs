@@ -656,7 +656,6 @@ impl SkillService {
 
         Ok(true)
     }
-
 }
 
 /// Parse URI and extract query parameters.
