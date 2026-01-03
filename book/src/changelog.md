@@ -1,5 +1,18 @@
 # Changelog Highlights
 
+## 0.4.4 (2026-01-02)
+
+- **NEW: Empirical Skill Creation**: Generate skills from session patterns via `--method empirical`. Mines Claude Code/Codex CLI history for successful tool sequences and failure anti-patterns.
+- **NEW: Comparative Recommendations**: Deviation scoring compares actual vs expected outcomes per skill category (Testing, Debugging, Documentation, etc.).
+- **NEW: Behavioral Analytics**: Extract tool calls, file access patterns, and session outcomes from history.
+- **Improved: Install Script**: User-scoped MCP registration (`--scope user`) with better error capture.
+
+## 0.4.3 (2025-12-31)
+
+- **NEW: HTTP Transport**: `--http` flag for HTTP transport instead of stdio.
+- **Runtime Configuration**: HTTP flag is runtime-checked, not compile-time gated.
+- **Default**: HTTP transport enabled by default in release builds.
+
 ## 0.4.2 (2025-12-29)
 
 - **NEW: Fuzzy Skill Search**: Added `search-skills-fuzzy` MCP tool with trigram-based similarity matching for typo-tolerant skill discovery.

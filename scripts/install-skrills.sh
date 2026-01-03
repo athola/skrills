@@ -453,10 +453,13 @@ if [ "$CLIENT" = "claude" ]; then
     # Register with Claude Code using HTTP transport
     if command -v claude >/dev/null 2>&1; then
       echo "Registering skrills MCP server (HTTP) with Claude Code..."
-      if claude mcp add --transport http skrills --url "$MCP_URL" 2>/dev/null; then
+      # Capture both stdout and stderr for debugging
+      mcp_add_output=$(claude mcp add --transport http --scope user skrills "$MCP_URL" 2>&1) && mcp_add_success=1 || mcp_add_success=0
+      if [ "$mcp_add_success" = "1" ]; then
         echo "Successfully registered skrills MCP server (HTTP)"
       else
-        echo "Warning: Failed to register MCP server using 'claude mcp add'. Falling back to manual configuration." >&2
+        echo "Warning: 'claude mcp add' failed. Falling back to manual configuration." >&2
+        [ -n "$mcp_add_output" ] && echo "  Details: $mcp_add_output" >&2
         # Fallback: Create .mcp.json manually
         mkdir -p "$(dirname "$MCP_PATH")"
         if command -v jq >/dev/null 2>&1; then
@@ -497,10 +500,13 @@ PY
     # Default: stdio transport mode
     if command -v claude >/dev/null 2>&1; then
       echo "Registering skrills MCP server with Claude Code..."
-      if claude mcp add --transport stdio skrills -- "$BIN_PATH" serve 2>/dev/null; then
+      # Capture both stdout and stderr for debugging
+      mcp_add_output=$(claude mcp add --transport stdio --scope user skrills -- "$BIN_PATH" serve 2>&1) && mcp_add_success=1 || mcp_add_success=0
+      if [ "$mcp_add_success" = "1" ]; then
         echo "Successfully registered skrills MCP server"
       else
-        echo "Warning: Failed to register MCP server using 'claude mcp add'. Falling back to manual configuration." >&2
+        echo "Warning: 'claude mcp add' failed. Falling back to manual configuration." >&2
+        [ -n "$mcp_add_output" ] && echo "  Details: $mcp_add_output" >&2
 
         # Fallback: Create .mcp.json manually if claude command fails
         mkdir -p "$(dirname "$MCP_PATH")"

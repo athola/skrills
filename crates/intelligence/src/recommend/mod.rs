@@ -1,9 +1,15 @@
 //! Smart skill recommendations combining multiple signals.
 
+pub mod comparative;
 mod explainer;
 mod scorer;
 pub mod similarity;
 
+pub use comparative::{
+    compute_deviation_score, compute_effectiveness, get_baseline_expectations,
+    infer_skill_category, DeviationEvidence, DeviationScore, EffectivenessMetric, ExpectedOutcome,
+    OutcomeMetrics, SkillCategory,
+};
 pub use explainer::{generate_explanation, summarize_recommendations};
 pub use scorer::{RecommendationScorer, Scorer};
 pub use similarity::{

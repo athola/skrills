@@ -226,7 +226,7 @@ Communication between components occurs via standard I/O (stdio) or network, int
 ## Security Testing
 
 ### Continuous Security
-**Automated Checks (CI/CD)**: We maintain continuous security through automated checks integrated into the CI/CD pipeline.
+**Automated Checks (CI/CD)**: Security checks run in the CI/CD pipeline.
 ```yaml
 # .github/workflows/security.yml
 - name: Dependency Audit

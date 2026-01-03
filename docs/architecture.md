@@ -49,7 +49,7 @@ graph TD
 | `sync` | Bidirectional Claude/Codex sync |
 | `validate` | Skill validation (Claude/Codex) |
 | `analyze` | Token counting, dependencies |
-| `intelligence` | Context-aware recommendations, project analysis, skill creation helpers |
+| `intelligence` | Recommendations, project analysis, skill generation |
 | `discovery` | Skill/agent discovery, ranking |
 | `state` | Environment config, persistence |
 | `subagents` | Multi-backend agent runtime |

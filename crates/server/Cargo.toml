@@ -1,6 +1,6 @@
 [package]
 name = "skrills-server"
-version = "0.4.2"
+version = "0.4.4"
 edition = "2021"
 description = "Core library for the skrills MCP server: discovery, filtering, manifest generation, and runtime control."
 license = "MIT"
@@ -40,14 +40,14 @@ parking_lot.workspace = true
 axum = { version = "0.8", optional = true }
 tower = { version = "0.5", optional = true }
 
-skrills-subagents = { path = "../subagents", version = "0.4.2", optional = true }
+skrills-subagents = { path = "../subagents", version = "0.4.4", optional = true }
 
-skrills-discovery = { path = "../discovery", version = "0.4.2" }
-skrills-state = { path = "../state", version = "0.4.2" }
-skrills_sync = { path = "../sync", version = "0.4.2" }
-skrills-validate = { path = "../validate", version = "0.4.2" }
-skrills-analyze = { path = "../analyze", version = "0.4.2" }
-skrills-intelligence = { path = "../intelligence", version = "0.4.2" }
+skrills-discovery = { path = "../discovery", version = "0.4.4" }
+skrills-state = { path = "../state", version = "0.4.4" }
+skrills_sync = { path = "../sync", version = "0.4.4" }
+skrills-validate = { path = "../validate", version = "0.4.4" }
+skrills-analyze = { path = "../analyze", version = "0.4.4" }
+skrills-intelligence = { path = "../intelligence", version = "0.4.4" }
 shellexpand = "3"
 
 [features]

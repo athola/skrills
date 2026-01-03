@@ -69,10 +69,10 @@ make fmt lint test --quiet build
 
 ### Effective Prompting
 
-A meticulously structured prompt significantly increases the likelihood of generating high-quality results. Request detailed comparisons of approaches, with implementation outlines, trade-offs, and complexity assessments.
+A structured prompt increases the likelihood of high-quality results. Request detailed comparisons of approaches, with implementation outlines, trade-offs, and complexity assessments.
 
 ### Role Prompting
-Assigning a specific role to an agent can enhance its performance by providing a focused perspective (e.g., a security expert or a senior developer). The precision of the role definition directly correlates with the quality of the agent's output.
+Assigning a specific role to an agent enhances performance by providing a focused perspective (e.g., a security expert or a senior developer). Precise role definitions improve output quality.
 
 Using XML tags can also help structure prompts and responses:
 ```xml
@@ -300,7 +300,7 @@ Agents can be registered via:
 For detailed configuration options, see `docs/runtime-options.md` and `book/src/cli.md`.
 
 <!-- available_skills:start -->
-<!-- Skills discovered dynamically. Last sync: 1765958141 UTC. Total: 120 skills. -->
+<!-- Skills discovered dynamically. Last sync: 1767394163 UTC. Total: 1 skills. -->
 <!-- Use CLI commands for current skill inventory:
      jq -r '.skills[].path' ~/.codex/skills-cache.json
      find ~/.codex/skills -name SKILL.md -type f
@@ -308,11 +308,3 @@ For detailed configuration options, see `docs/runtime-options.md` and `book/src/
      skrills doctor            - View discovery diagnostics
 -->
 <!-- available_skills:end -->
-
-<!-- available_agents:start -->
-<!-- Agents discovered dynamically. Total: 291 agents. -->
-<!-- Use CLI commands for current agent inventory:
-     skrills sync-agents       - Sync agents from external sources
-     skrills doctor            - View agent discovery diagnostics
--->
-<!-- available_agents:end -->

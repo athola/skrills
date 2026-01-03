@@ -521,7 +521,7 @@ impl SkillService {
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
         use skrills_intelligence::{
-            analyze_project, generate_skill_sync, search_github_skills, CreateSkillRequest,
+            analyze_project, generate_skill_with_llm, search_github_skills, CreateSkillRequest,
             CreationMethod,
         };
 
@@ -606,7 +606,7 @@ impl SkillService {
 
         // LLM generation
         if method == CreationMethod::LLMGenerate || method == CreationMethod::Both {
-            match generate_skill_sync(&request) {
+            match generate_skill_with_llm(&request).await {
                 Ok(result) => {
                     if result.success {
                         llm_content = result.content;
@@ -617,6 +617,84 @@ impl SkillService {
                 Err(e) => {
                     errors.push(format!("LLM generation error: {}", e));
                 }
+            }
+        }
+
+        // Empirical generation from session patterns
+        if method == CreationMethod::Empirical {
+            use skrills_intelligence::parse_claude_sessions;
+
+            // Try to load session data from Claude projects directory
+            let claude_projects = match skrills_state::home_dir() {
+                Ok(home) => home.join(".claude").join("projects"),
+                Err(e) => {
+                    let error_msg = format!(
+                        "Could not determine home directory: {}. \
+                         Use --method llm or --method both instead.",
+                        e
+                    );
+                    errors.push(error_msg.clone());
+                    return Ok(CallToolResult {
+                        content: vec![Content::text(error_msg)],
+                        structured_content: Some(json!({
+                            "success": false,
+                            "method": method_str,
+                            "name": name,
+                            "errors": errors,
+                        })),
+                        is_error: Some(true),
+                        meta: None,
+                    });
+                }
+            };
+
+            if claude_projects.exists() {
+                match parse_claude_sessions(&claude_projects) {
+                    Ok(events) if events.len() >= 10 => {
+                        // Empirical generation requires BehavioralEvent data with tool
+                        // sequences and file accesses. Currently we only have basic
+                        // SkillUsageEvent data. This feature is in preview.
+                        let preview_msg = format!(
+                            "Found {} session events. Empirical skill generation from \
+                             behavioral patterns is in preview. Use --method llm or \
+                             --method both for production use.",
+                            events.len()
+                        );
+                        return Ok(CallToolResult {
+                            content: vec![Content::text(&preview_msg)],
+                            structured_content: Some(json!({
+                                "success": true,
+                                "method": method_str,
+                                "name": name,
+                                "dry_run": dry_run,
+                                "preview": true,
+                                "session_events": events.len(),
+                                "message": preview_msg,
+                            })),
+                            is_error: Some(false),
+                            meta: None,
+                        });
+                    }
+                    Ok(events) => {
+                        errors.push(format!(
+                            "Found {} session events, but empirical generation requires \
+                             at least 10 sessions with detailed behavioral data. \
+                             Use Claude Code more to build up patterns, or use \
+                             --method llm or --method both.",
+                            events.len()
+                        ));
+                    }
+                    Err(e) => {
+                        errors.push(format!("Failed to parse session history: {}", e));
+                    }
+                }
+            } else {
+                errors.push(format!(
+                    "Session history directory not found: {}. \
+                     Use Claude Code to build up behavioral patterns, or use \
+                     --method llm or --method both.",
+                    claude_projects.display()
+                ));
             }
         }
 

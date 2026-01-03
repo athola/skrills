@@ -1,11 +1,16 @@
 //! Skill creation via GitHub search or LLM generation.
 
 mod cli_detector;
+pub mod empirical;
 mod github_search;
 mod llm_generator;
 
 pub use cli_detector::{
     detect_cli_environment, get_available_cli, get_cli_binary, is_cli_available, CliEnvironment,
+};
+pub use empirical::{
+    cluster_sessions, format_as_skill_md, generate_skill_from_cluster, ClusteredBehavior,
+    ClusteringResult, EmpiricalSkillContent, FailurePattern, SuccessPattern,
 };
 pub use github_search::{
     fetch_skill_content, search_github_skills, search_skills_advanced, GitHubSkillResult,
@@ -22,7 +27,9 @@ pub enum CreationMethod {
     GitHubSearch,
     /// Generate using LLM.
     LLMGenerate,
-    /// Default: both in sequence.
+    /// Generate from empirical session patterns.
+    Empirical,
+    /// Default: both GitHub search and LLM in sequence.
     #[default]
     Both,
 }
@@ -32,6 +39,7 @@ impl std::fmt::Display for CreationMethod {
         match self {
             Self::GitHubSearch => write!(f, "github"),
             Self::LLMGenerate => write!(f, "llm"),
+            Self::Empirical => write!(f, "empirical"),
             Self::Both => write!(f, "both"),
         }
     }
@@ -44,6 +52,7 @@ impl std::str::FromStr for CreationMethod {
         match s.to_lowercase().as_str() {
             "github" | "search" => Ok(Self::GitHubSearch),
             "llm" | "generate" => Ok(Self::LLMGenerate),
+            "empirical" | "pattern" | "patterns" => Ok(Self::Empirical),
             "both" | "all" => Ok(Self::Both),
             _ => Err(format!("Unknown creation method: {}", s)),
         }

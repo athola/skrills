@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.4.3 (Unreleased)
+## 0.4.4 - 2026-01-02
+- **NEW: Empirical Skill Creation**: Generate skills from observed session patterns via `--method empirical`. Clusters successful tool sequences and failure patterns from Claude Code/Codex CLI history.
+- **NEW: Comparative Recommendations**: Deviation scoring compares actual skill-assisted outcomes against category baselines (Testing, Debugging, Documentation, etc.) to identify underperforming skills.
+- **NEW: Behavioral Analytics**: Extract tool call sequences, file access patterns, and session outcomes (success/failure/partial) from session history for richer usage analysis.
+- **Improved: Install Script**: Better error capture and user-scoped MCP registration with `--scope user` flag. Fallback logic now shows detailed error messages.
+
+## 0.4.3 - 2025-12-31
 - **NEW: HTTP Transport Installation**: Added `--http` flag to install scripts for HTTP transport instead of stdio. Installs systemd user service and configures MCP clients with HTTP URL.
 - **Improved: Runtime HTTP Configuration**: The `--http` CLI flag is now always visible and runtime-checked, rather than compile-time gated.
 - **Default: HTTP Transport Enabled**: HTTP transport feature is now enabled by default in release builds.

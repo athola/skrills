@@ -1,10 +1,16 @@
 //! Usage analytics from Claude Code and Codex CLI session data.
 
 mod analytics;
+pub mod behavioral;
 mod claude_parser;
 mod codex_parser;
 
 pub use analytics::{build_analytics, get_cooccurring_skills, recency_score};
+pub use behavioral::{
+    build_behavioral_patterns, detect_session_outcome, extract_common_ngrams,
+    extract_file_accesses, extract_tool_calls, BehavioralEvent, BehavioralPatterns, FileAccess,
+    FileOperation, OutcomeStatus, SessionOutcome, SkillUsageEventData, ToolCall, ToolStatus,
+};
 pub use claude_parser::{parse_claude_command_history, parse_claude_sessions};
 pub use codex_parser::{
     parse_codex_command_history, parse_codex_sessions, parse_codex_skills_history,

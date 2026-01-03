@@ -14,18 +14,18 @@
 Skills support engine for Claude Code and Codex CLI. Validates, analyzes, and syncs skills bidirectionally between both CLIs.
 
 ## Why Skrills
-Skrills bridges the gap between Claude Code and Codex CLI. It validates markdown skills against Codex's stricter frontmatter requirements (fixing them automatically), analyzes token usage to prevent context overflow, and syncs configurations bidirectionally. One binary handles everything: mirroring, diagnostics, and running the MCP server.
+Skrills manages skills and configurations for Claude Code and Codex CLI. It validates markdown files against Codex's strict YAML frontmatter requirements, analyzes token usage to manage context limits, and syncs configurations between tools. A single binary provides mirroring, diagnostics, and an MCP server.
 
 It solves specific friction points in dual-CLI workflows:
-- **Validation**: Claude Code is permissive, but Codex requires strict YAML frontmatter. Skrills enforces these rules.
-- **Safety**: The `sync-commands` tool checks file hashes before writing, ensuring you don't overwrite local customizations or break non-UTF-8 binaries.
-- **Efficiency**: It reports token usage and suggests optimizations, helping you manage context window limits.
+- **Validation**: Claude Code is permissive, but Codex requires strict YAML frontmatter. Skrills validates against these rules.
+- **Safety**: The `sync-commands` tool checks file hashes before writing, preventing local customizations from being overwritten.
+- **Efficiency**: It reports token usage and suggests optimizations to help manage context window limits.
 
 ## Architecture (workspace crates)
 - `crates/server`: MCP server runtime and CLI.
 - `crates/validate`: Validation logic for Claude Code and Codex CLI compatibility.
 - `crates/analyze`: Token counting, dependency analysis, and optimization.
-- `crates/intelligence`: Context-aware recommendations, project analysis, and skill creation helpers.
+- `crates/intelligence`: Recommendations, project analysis, and skill generation based on session history and patterns.
 - `crates/sync`: Bidirectional sync logic (skills, commands, prefs, MCP servers).
 - `crates/discovery`: Skill discovery and ranking.
 - `crates/state`: Persistent store for manifests and mirrors.
@@ -154,9 +154,15 @@ When running as an MCP server (`skrills serve`), the following tools are availab
 - `recommend-skills-smart` - Smart recommendations using dependencies, usage patterns, and project context
 - `analyze-project-context` - Analyze languages, frameworks, and keywords in a project directory
 - `suggest-new-skills` - Identify skill gaps based on context and usage
-- `create-skill` - Create a new skill via GitHub search, LLM generation, or both
+- `create-skill` - Create a new skill via GitHub search, LLM generation, empirical patterns, or combinations
 - `search-skills-github` - Search GitHub for existing `SKILL.md` files
 - `search-skills-fuzzy` - Trigram-based fuzzy search for installed skills (typo-tolerant)
+
+#### Empirical skill creation (0.4.4+)
+The `--method empirical` option mines Claude Code and Codex CLI session history to extract successful tool sequences and failure anti-patterns. It clusters similar sessions and generates skills grounded in observed behavior rather than LLM imagination.
+
+#### Comparative recommendations (0.4.4+)
+Deviation scoring compares actual skill-assisted outcomes against category baselines (Testing, Debugging, Documentation, etc.) to identify underperforming skills and surface improvement opportunities.
 
 **CLI parity notes**:
 - `skrills sync-from-claude` is an alias for `skrills sync` (copy Claude skills into the Codex mirror).
@@ -195,7 +201,7 @@ When running as an MCP server (`skrills serve`), the following tools are availab
 - `skrills recommend-skills-smart [--uri URI] [--prompt TEXT] [--project-dir DIR]` — smart recommendations using usage and context.
 - `skrills analyze-project-context [--project-dir DIR] [--include-git true|false] [--commit-limit N] [--format text|json]` — analyze project context for recommendations.
 - `skrills suggest-new-skills [--project-dir DIR] [--focus-area AREA]` — identify gaps and suggestions.
-- `skrills create-skill <name> --description TEXT [--method github|llm|both] [--target-dir DIR]` — create skills via GitHub search or LLM generation (target dir defaults to installed client, Claude preferred).
+- `skrills create-skill <name> --description TEXT [--method github|llm|empirical|both] [--target-dir DIR]` — create skills via GitHub search, LLM generation, or empirical session patterns (target dir defaults to installed client, Claude preferred).
 - `skrills search-skills-github <query> [--limit N] [--format text|json]` — search GitHub for skills.
 - `skrills sync-all [--from claude|codex] [--skip-existing-commands]` — sync all configurations.
 - `skrills sync-commands [--from claude|codex] [--dry-run] [--skip-existing-commands]` — byte-for-byte command sync.
