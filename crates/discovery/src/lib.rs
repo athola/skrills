@@ -40,9 +40,10 @@ pub mod scanner;
 pub mod types;
 
 pub use scanner::{
-    default_priority, default_roots, discover_agents, discover_skills, extra_skill_roots,
-    extract_refs_from_agents, hash_file, load_priority_override, priority_labels,
-    priority_labels_and_rank_map, priority_with_override, DiscoveryConfig,
+    default_priority, default_roots, discover_agents, discover_skills, discover_skills_with_depth,
+    extra_skill_roots, extract_refs_from_agents, hash_file, load_priority_override,
+    priority_labels, priority_labels_and_rank_map, priority_with_override, DiscoveryConfig,
+    DEFAULT_MAX_DEPTH,
 };
 pub use types::{
     parse_agent_config, parse_source_key, AgentConfig, AgentMeta, Diagnostics, DuplicateInfo,

@@ -45,6 +45,142 @@ pub const AGENTS_AGENT_SECTION_END: &str = "<!-- available_agents:end -->";
 pub const DEFAULT_EMBED_PREVIEW_BYTES: usize = 4096;
 /// Default embedding threshold.
 pub const DEFAULT_EMBED_THRESHOLD: f32 = 0.18;
+/// Environment variable to specify CLI type for agent file selection.
+pub const ENV_CLI_TYPE: &str = "SKRILLS_CLI_TYPE";
+
+/// Represents the type of CLI that skrills is integrated with.
+///
+/// Each CLI type has its own configuration directory and agent file naming convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CliType {
+    /// Codex CLI (default) - uses `~/.codex/AGENTS.md`
+    Codex,
+    /// Claude CLI - uses `~/.claude/CLAUDE.md`
+    Claude,
+    /// Gemini CLI - uses `~/.gemini/GEMINI.md`
+    Gemini,
+    /// Qwen CLI - uses `~/.qwen/QWEN.md`
+    Qwen,
+}
+
+impl CliType {
+    /// Returns the config directory name for this CLI type.
+    pub fn config_dir(&self) -> &'static str {
+        match self {
+            CliType::Codex => ".codex",
+            CliType::Claude => ".claude",
+            CliType::Gemini => ".gemini",
+            CliType::Qwen => ".qwen",
+        }
+    }
+
+    /// Returns the agent file name for this CLI type.
+    pub fn agent_file(&self) -> &'static str {
+        match self {
+            CliType::Codex => "AGENTS.md",
+            CliType::Claude => "CLAUDE.md",
+            CliType::Gemini => "GEMINI.md",
+            CliType::Qwen => "QWEN.md",
+        }
+    }
+
+    /// Returns the full path to the agent file.
+    pub fn agent_path(&self, home: &Path) -> PathBuf {
+        home.join(self.config_dir()).join(self.agent_file())
+    }
+}
+
+/// Error returned when parsing an invalid CLI type string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseCliTypeError(String);
+
+impl std::fmt::Display for ParseCliTypeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown CLI type: {}", self.0)
+    }
+}
+
+impl std::error::Error for ParseCliTypeError {}
+
+impl std::str::FromStr for CliType {
+    type Err = ParseCliTypeError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "codex" => Ok(CliType::Codex),
+            "claude" => Ok(CliType::Claude),
+            "gemini" => Ok(CliType::Gemini),
+            "qwen" => Ok(CliType::Qwen),
+            _ => Err(ParseCliTypeError(s.to_string())),
+        }
+    }
+}
+
+impl std::fmt::Display for CliType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CliType::Codex => write!(f, "codex"),
+            CliType::Claude => write!(f, "claude"),
+            CliType::Gemini => write!(f, "gemini"),
+            CliType::Qwen => write!(f, "qwen"),
+        }
+    }
+}
+
+/// Detects the CLI type from environment variables.
+///
+/// Checks the `SKRILLS_CLI_TYPE` environment variable first.
+/// Returns `CliType::Codex` as the default if not set or unrecognized.
+pub fn detect_cli_type() -> CliType {
+    if let Ok(cli_type) = std::env::var(ENV_CLI_TYPE) {
+        cli_type.parse().unwrap_or(CliType::Codex)
+    } else {
+        CliType::Codex
+    }
+}
+
+/// Reads the agent file content for the detected CLI type.
+///
+/// Attempts to read the appropriate agent file based on CLI type.
+/// Falls back to the embedded `AGENTS_TEXT` if the file doesn't exist.
+pub fn read_agent_file() -> Result<String> {
+    let home = home_dir()?;
+    read_agent_file_for_cli(detect_cli_type(), &home)
+}
+
+/// Reads the agent file content for a specific CLI type.
+///
+/// Attempts to read the appropriate agent file based on CLI type.
+/// Falls back to the embedded `AGENTS_TEXT` if the file doesn't exist.
+pub fn read_agent_file_for_cli(cli_type: CliType, home: &Path) -> Result<String> {
+    let path = cli_type.agent_path(home);
+    if path.exists() {
+        fs::read_to_string(&path).map_err(|e| anyhow!("failed to read agent file: {}", e))
+    } else {
+        // Fall back to embedded AGENTS.md
+        Ok(AGENTS_TEXT.to_string())
+    }
+}
+
+/// Returns the path to the agent file for the detected CLI type.
+///
+/// Returns `None` if the file doesn't exist.
+pub fn agent_file_path() -> Result<Option<PathBuf>> {
+    let home = home_dir()?;
+    agent_file_path_for_cli(detect_cli_type(), &home)
+}
+
+/// Returns the path to the agent file for a specific CLI type.
+///
+/// Returns `None` if the file doesn't exist.
+pub fn agent_file_path_for_cli(cli_type: CliType, home: &Path) -> Result<Option<PathBuf>> {
+    let path = cli_type.agent_path(home);
+    if path.exists() {
+        Ok(Some(path))
+    } else {
+        Ok(None)
+    }
+}
 
 /// Returns priority labels for skill sources.
 pub fn priority_labels() -> Vec<String> {
@@ -903,5 +1039,155 @@ mod tests {
     fn trigram_similarity_is_ascii_case_insensitive() {
         assert_eq!(trigram_similarity("AbC", "abc"), 1.0);
         assert_eq!(trigram_similarity("abc", "abd"), 0.0);
+    }
+
+    // CliType tests
+
+    #[test]
+    fn cli_type_config_dir_returns_correct_directories() {
+        assert_eq!(CliType::Codex.config_dir(), ".codex");
+        assert_eq!(CliType::Claude.config_dir(), ".claude");
+        assert_eq!(CliType::Gemini.config_dir(), ".gemini");
+        assert_eq!(CliType::Qwen.config_dir(), ".qwen");
+    }
+
+    #[test]
+    fn cli_type_agent_file_returns_correct_filenames() {
+        assert_eq!(CliType::Codex.agent_file(), "AGENTS.md");
+        assert_eq!(CliType::Claude.agent_file(), "CLAUDE.md");
+        assert_eq!(CliType::Gemini.agent_file(), "GEMINI.md");
+        assert_eq!(CliType::Qwen.agent_file(), "QWEN.md");
+    }
+
+    #[test]
+    fn cli_type_agent_path_constructs_correct_path() {
+        let home = PathBuf::from("/home/user");
+        assert_eq!(
+            CliType::Codex.agent_path(&home),
+            PathBuf::from("/home/user/.codex/AGENTS.md")
+        );
+        assert_eq!(
+            CliType::Claude.agent_path(&home),
+            PathBuf::from("/home/user/.claude/CLAUDE.md")
+        );
+        assert_eq!(
+            CliType::Gemini.agent_path(&home),
+            PathBuf::from("/home/user/.gemini/GEMINI.md")
+        );
+        assert_eq!(
+            CliType::Qwen.agent_path(&home),
+            PathBuf::from("/home/user/.qwen/QWEN.md")
+        );
+    }
+
+    #[test]
+    fn cli_type_from_str_parses_valid_types() {
+        assert_eq!("codex".parse::<CliType>(), Ok(CliType::Codex));
+        assert_eq!("claude".parse::<CliType>(), Ok(CliType::Claude));
+        assert_eq!("gemini".parse::<CliType>(), Ok(CliType::Gemini));
+        assert_eq!("qwen".parse::<CliType>(), Ok(CliType::Qwen));
+    }
+
+    #[test]
+    fn cli_type_from_str_is_case_insensitive() {
+        assert_eq!("CODEX".parse::<CliType>(), Ok(CliType::Codex));
+        assert_eq!("Claude".parse::<CliType>(), Ok(CliType::Claude));
+        assert_eq!("GEMINI".parse::<CliType>(), Ok(CliType::Gemini));
+        assert_eq!("Qwen".parse::<CliType>(), Ok(CliType::Qwen));
+    }
+
+    #[test]
+    fn cli_type_from_str_returns_error_for_invalid() {
+        assert!("invalid".parse::<CliType>().is_err());
+        assert!("".parse::<CliType>().is_err());
+        assert!("openai".parse::<CliType>().is_err());
+    }
+
+    #[test]
+    fn cli_type_display_formats_correctly() {
+        assert_eq!(format!("{}", CliType::Codex), "codex");
+        assert_eq!(format!("{}", CliType::Claude), "claude");
+        assert_eq!(format!("{}", CliType::Gemini), "gemini");
+        assert_eq!(format!("{}", CliType::Qwen), "qwen");
+    }
+
+    #[test]
+    fn detect_cli_type_defaults_to_codex() {
+        let _guard = env_guard();
+        std::env::remove_var(ENV_CLI_TYPE);
+        assert_eq!(detect_cli_type(), CliType::Codex);
+    }
+
+    #[test]
+    fn detect_cli_type_respects_env_var() {
+        let _guard = env_guard();
+
+        std::env::set_var(ENV_CLI_TYPE, "claude");
+        assert_eq!(detect_cli_type(), CliType::Claude);
+
+        std::env::set_var(ENV_CLI_TYPE, "gemini");
+        assert_eq!(detect_cli_type(), CliType::Gemini);
+
+        std::env::set_var(ENV_CLI_TYPE, "qwen");
+        assert_eq!(detect_cli_type(), CliType::Qwen);
+
+        std::env::remove_var(ENV_CLI_TYPE);
+    }
+
+    #[test]
+    fn detect_cli_type_defaults_on_invalid_value() {
+        let _guard = env_guard();
+        std::env::set_var(ENV_CLI_TYPE, "invalid-cli");
+        assert_eq!(detect_cli_type(), CliType::Codex);
+        std::env::remove_var(ENV_CLI_TYPE);
+    }
+
+    #[test]
+    fn read_agent_file_for_cli_reads_existing_file() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path();
+
+        // Create the Claude agent file
+        let claude_dir = home.join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        let claude_file = claude_dir.join("CLAUDE.md");
+        fs::write(&claude_file, "# Claude Agent Config").unwrap();
+
+        let content = read_agent_file_for_cli(CliType::Claude, home).unwrap();
+        assert_eq!(content, "# Claude Agent Config");
+    }
+
+    #[test]
+    fn read_agent_file_for_cli_falls_back_to_embedded() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path();
+
+        // Don't create any files, should fall back to embedded
+        let content = read_agent_file_for_cli(CliType::Claude, home).unwrap();
+        assert_eq!(content, AGENTS_TEXT);
+    }
+
+    #[test]
+    fn agent_file_path_for_cli_returns_path_when_exists() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path();
+
+        // Create the Gemini agent file
+        let gemini_dir = home.join(".gemini");
+        fs::create_dir_all(&gemini_dir).unwrap();
+        let gemini_file = gemini_dir.join("GEMINI.md");
+        fs::write(&gemini_file, "# Gemini Config").unwrap();
+
+        let path = agent_file_path_for_cli(CliType::Gemini, home).unwrap();
+        assert_eq!(path, Some(gemini_file));
+    }
+
+    #[test]
+    fn agent_file_path_for_cli_returns_none_when_missing() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path();
+
+        let path = agent_file_path_for_cli(CliType::Qwen, home).unwrap();
+        assert_eq!(path, None);
     }
 }

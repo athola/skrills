@@ -24,6 +24,9 @@ mod test_support;
 mod tool_schemas;
 mod tui;
 
+/// Skills manifest for caching and quick loading.
+pub mod manifest;
+
 /// HTTP transport for remote MCP access.
 #[cfg(feature = "http-transport")]
 pub mod http_transport;

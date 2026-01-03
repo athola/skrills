@@ -361,7 +361,8 @@ impl AgentAdapter for CodexAdapter {
         let mut report = WriteReport::default();
 
         for cmd in commands {
-            let path = dir.join(format!("{}.md", cmd.name));
+            let safe_name = sanitize_name(&cmd.name);
+            let path = dir.join(format!("{}.md", safe_name));
 
             if path.exists() {
                 let existing = fs::read(&path)?;
@@ -471,7 +472,8 @@ impl AgentAdapter for CodexAdapter {
                 skill.name.clone()
             };
 
-            let path = dir.join(&skill_rel_dir).join("SKILL.md");
+            let safe_rel_dir = sanitize_name(&skill_rel_dir);
+            let path = dir.join(&safe_rel_dir).join("SKILL.md");
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -496,10 +498,28 @@ impl AgentAdapter for CodexAdapter {
     }
 }
 
+/// Sanitizes a command/skill name to prevent path traversal attacks.
+/// Only allows alphanumeric characters, hyphens, and underscores.
+fn sanitize_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn sanitize_name_removes_path_traversal() {
+        assert_eq!(sanitize_name("../../../etc/passwd"), "etcpasswd");
+        assert_eq!(sanitize_name("valid-name_123"), "valid-name_123");
+        assert_eq!(sanitize_name("../../malicious"), "malicious");
+        assert_eq!(sanitize_name("normal"), "normal");
+        assert_eq!(sanitize_name("with spaces"), "withspaces");
+        assert_eq!(sanitize_name("has/slashes"), "hasslashes");
+    }
 
     #[test]
     fn codex_adapter_name() {
@@ -698,5 +718,66 @@ mod tests {
         let skills = adapter.read_skills().unwrap();
         let names: std::collections::HashSet<_> = skills.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains("nested/foo"));
+    }
+
+    #[test]
+    fn read_mcp_servers_invalid_json_returns_error() {
+        let tmp = tempdir().unwrap();
+        let config_path = tmp.path().join("config.json");
+        fs::write(&config_path, "{ invalid json }").unwrap();
+
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let result = adapter.read_mcp_servers();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn read_preferences_invalid_json_returns_error() {
+        let tmp = tempdir().unwrap();
+        let config_path = tmp.path().join("config.json");
+        fs::write(&config_path, "not valid json at all").unwrap();
+
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let result = adapter.read_preferences();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn write_mcp_servers_invalid_existing_json_returns_error() {
+        let tmp = tempdir().unwrap();
+        let config_path = tmp.path().join("config.json");
+        fs::write(&config_path, "{ corrupted json }").unwrap();
+
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let mut servers = HashMap::new();
+        servers.insert(
+            "test-server".to_string(),
+            McpServer {
+                name: "test-server".to_string(),
+                command: "/bin/test".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+                enabled: true,
+            },
+        );
+
+        let result = adapter.write_mcp_servers(&servers);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn write_preferences_invalid_existing_json_returns_error() {
+        let tmp = tempdir().unwrap();
+        let config_path = tmp.path().join("config.json");
+        fs::write(&config_path, "{ malformed: json, }").unwrap();
+
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let prefs = Preferences {
+            model: Some("gpt-4o".to_string()),
+            custom: HashMap::new(),
+        };
+
+        let result = adapter.write_preferences(&prefs);
+        assert!(result.is_err());
     }
 }
