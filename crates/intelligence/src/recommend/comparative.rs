@@ -564,11 +564,15 @@ pub fn compute_effectiveness(
         with_skill_metrics.retry_rate,
         without_skill_metrics.retry_rate,
     ) {
-        if with_retry > 0.0 {
-            // Improvement if skill sessions have lower retry rate
+        if with_retry > 0.0 && without_retry > 0.001 {
+            // Both have retries - calculate ratio (higher = better)
             without_retry / with_retry
+        } else if with_retry > 0.0 {
+            // Baseline has no retries but skill introduces some - slight negative
+            0.5
         } else {
-            1.5 // No retries with skill = good improvement
+            // No retries with skill = good improvement
+            1.5
         }
     } else {
         1.0 // No data, assume neutral

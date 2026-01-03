@@ -10,6 +10,23 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 // ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Truncate a string safely at UTF-8 character boundaries.
+fn safe_truncate(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        let mut end = max_len.saturating_sub(3); // Leave room for "..."
+        while !s.is_char_boundary(end) && end > 0 {
+            end -= 1;
+        }
+        format!("{}...", &s[..end])
+    }
+}
+
+// ============================================================================
 // Core Data Structures
 // ============================================================================
 
@@ -169,14 +186,7 @@ pub fn extract_tool_calls(session_content: &str) -> Vec<ToolCall> {
                         if let Some(name) = block.get("name").and_then(|n| n.as_str()) {
                             let input_summary = block
                                 .get("input")
-                                .map(|i| {
-                                    let s = i.to_string();
-                                    if s.len() > 200 {
-                                        format!("{}...", &s[..197])
-                                    } else {
-                                        s
-                                    }
-                                })
+                                .map(|i| safe_truncate(&i.to_string(), 200))
                                 .unwrap_or_default();
 
                             let timestamp =
@@ -261,12 +271,7 @@ fn extract_file_path(input_summary: &str) -> Option<String> {
     // Parse JSON input to find file_path parameter
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(input_summary) {
         if let Some(path) = json.get("file_path").and_then(|p| p.as_str()) {
-            let truncated = if path.len() > 200 {
-                format!("{}...", &path[..197])
-            } else {
-                path.to_string()
-            };
-            return Some(truncated);
+            return Some(safe_truncate(path, 200));
         }
     }
     None
