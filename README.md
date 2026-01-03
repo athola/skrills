@@ -14,18 +14,18 @@
 Skills support engine for Claude Code and Codex CLI. Validates, analyzes, and syncs skills bidirectionally between both CLIs.
 
 ## Why Skrills
-Skrills bridges the gap between Claude Code and Codex CLI. It validates markdown skills against Codex's stricter frontmatter requirements (fixing them automatically), analyzes token usage to prevent context overflow, and syncs configurations bidirectionally. One binary handles everything: mirroring, diagnostics, and running the MCP server.
+Skrills manages skills and configurations for Claude Code and Codex CLI. It validates markdown files against Codex's strict YAML frontmatter requirements, analyzes token usage to manage context limits, and syncs configurations between tools. A single binary provides mirroring, diagnostics, and an MCP server.
 
 It solves specific friction points in dual-CLI workflows:
-- **Validation**: Claude Code is permissive, but Codex requires strict YAML frontmatter. Skrills enforces these rules.
-- **Safety**: The `sync-commands` tool checks file hashes before writing, ensuring you don't overwrite local customizations or break non-UTF-8 binaries.
-- **Efficiency**: It reports token usage and suggests optimizations, helping you manage context window limits.
+- **Validation**: Claude Code is permissive, but Codex requires strict YAML frontmatter. Skrills validates against these rules.
+- **Safety**: The `sync-commands` tool checks file hashes before writing, preventing local customizations from being overwritten.
+- **Efficiency**: It reports token usage and suggests optimizations to help manage context window limits.
 
 ## Architecture (workspace crates)
 - `crates/server`: MCP server runtime and CLI.
 - `crates/validate`: Validation logic for Claude Code and Codex CLI compatibility.
 - `crates/analyze`: Token counting, dependency analysis, and optimization.
-- `crates/intelligence`: Context-aware recommendations, project analysis, skill creation helpers, empirical pattern mining, and behavioral analytics.
+- `crates/intelligence`: Recommendations, project analysis, and skill generation based on session history and patterns.
 - `crates/sync`: Bidirectional sync logic (skills, commands, prefs, MCP servers).
 - `crates/discovery`: Skill discovery and ranking.
 - `crates/state`: Persistent store for manifests and mirrors.

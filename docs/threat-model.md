@@ -71,12 +71,12 @@ flowchart TD
 ## Threat Actors
 
 ### Internal Threats
-1. **Malicious Plugin Author**: A malicious plugin author can create or modify `SKILL.md` files. Motivations typically involve code injection, data exfiltration, or other forms of subversion. Capability: Medium to High.
-2. **Compromised User Account**: A compromised user account grants an attacker full filesystem access. Motivations can range from data theft to privilege escalation. Capability: High.
+1. **Malicious Plugin Author**: Can create or modify `SKILL.md` files. Motivations typically involve code injection, data exfiltration, or other forms of subversion. Capability: Medium to High.
+2. **Compromised User Account**: Grants an attacker full filesystem access. Motivations can range from data theft to privilege escalation. Capability: High.
 
 ### External Threats
-1. **Malicious Client**: A malicious client, with access to the MCP protocol, might attempt resource exhaustion or unauthorized data extraction. Capability: Low to Medium.
-2. **Supply Chain Attack**: A supply chain attack involves compromised dependencies. Motivations can include backdoor installation or data theft. Capability: High.
+1. **Malicious Client**: With access to the MCP protocol, might attempt resource exhaustion or unauthorized data extraction. Capability: Low to Medium.
+2. **Supply Chain Attack**: Involves compromised dependencies. Motivations can include backdoor installation or data theft. Capability: High.
 
 ---
 
@@ -93,42 +93,42 @@ flowchart TD
 - **Threat**: An attacker attempts to access files or directories outside the authorized skill directories.
 - **Scenarios**: Scenarios include a malicious skill defining a path like `../../etc/passwd`, a symlink attack, or an MCP client requesting a resource using a path traversal sequence.
 - **Impact**: Medium: Potential consequences include information disclosure, unauthorized access to configuration files, and possible credential theft.
-- **Mitigations**: Mitigations include robust path canonicalization within the `resolve_skill()` function, strict validation of all file paths, preventing arbitrary file access, and restricting skill root directories to only known and trusted locations.
+- **Mitigations**: Robust path canonicalization within the `resolve_skill()` function, strict validation of all file paths, preventing arbitrary file access, and restricting skill root directories to only known and trusted locations.
 - **Residual Risk**: Low.
 
 ### 3. Denial of Service (DoS)
 - **Threat**: Resource exhaustion initiated through malicious or excessive requests.
 - **Scenarios**: Potential scenarios include uploads of excessively large skill files, memory exhaustion via cache poisoning, or CPU exhaustion triggered by intensive embedding generation.
 - **Impact**: Medium: This can lead to service unavailability, severe performance degradation, and excessive resource consumption.
-- **Mitigations**: Mitigations include enforcing strict file size limits, using cache Time-To-Live (TTL) to prevent unbounded cache growth, enforcing request timeouts, and establishing concurrent request limits.
+- **Mitigations**: Enforcing strict file size limits, using cache Time-To-Live (TTL) to prevent unbounded cache growth, enforcing request timeouts, and establishing concurrent request limits.
 - **Residual Risk**: Medium.
 
 ### 4. Information Disclosure
 - **Threat**: The unintentional leakage of sensitive data through logs or error messages.
 - **Scenarios**: Scenarios include API keys being logged in plaintext, user prompts appearing in debug logs, the exposure of internal filesystem paths, or stack traces revealing sensitive data.
 - **Impact**: Medium: Consequences may include credential compromise, privacy violations, and an expanded attack surface.
-- **Mitigations**: Mitigations include structured logging, careful configuration of log levels, scrubbing credentials from logs (planned), redacting prompts in telemetry (planned), and sanitizing error messages (planned).
+- **Mitigations**: Structured logging, careful configuration of log levels, scrubbing credentials from logs (planned), redacting prompts in telemetry (planned), and sanitizing error messages (planned).
 - **Residual Risk**: Medium.
 
 ### 5. Dependency Vulnerabilities
 - **Threat**: Exploitation of vulnerabilities present in third-party crates or libraries.
 - **Scenarios**: Scenarios include known Common Vulnerabilities and Exposures (CVEs) in direct or transitive dependencies, supply chain compromises, or vulnerabilities within indirectly linked dependencies.
 - **Impact**: Varies: The impact can range from low to critical, potentially leading to Remote Code Execution (RCE), data theft, or complete service compromise.
-- **Mitigations**: Mitigations include regular and timely dependency updates, integrating `cargo audit` into the CI/CD pipeline, maintaining a minimal dependency footprint, establishing a rigorous dependency review process, implementing automated vulnerability scanning (planned), and generating a Software Bill of Materials (SBOM) (planned).
+- **Mitigations**: Regular and timely dependency updates, integrating `cargo audit` into the CI/CD pipeline, maintaining a minimal dependency footprint, establishing a rigorous dependency review process, implementing automated vulnerability scanning (planned), and generating a Software Bill of Materials (SBOM) (planned).
 - **Residual Risk**: Low.
 
 ### 6. Cache Poisoning
 - **Threat**: The injection of malicious or corrupted data into the system's cache.
 - **Scenarios**: Scenarios include undetected modifications to skill files, hash collision attacks, or cache corruption due to race conditions.
 - **Impact**: Medium: Potential impact involves skill content manipulation, Denial of Service (DoS) through cache invalidation, or incorrect skill rendering.
-- **Mitigations**: Mitigations include hash-based cache validation, checks against file modification times, Time-To-Live (TTL)-based expiration, atomic cache operations, and implementing cache integrity verification (planned).
+- **Mitigations**: Hash-based cache validation, checks against file modification times, Time-To-Live (TTL)-based expiration, atomic cache operations, and implementing cache integrity verification (planned).
 - **Residual Risk**: Low.
 
 ### 7. Configuration Tampering
 - **Threat**: Unauthorized modification of system configuration settings.
 - **Scenarios**: Scenarios include direct modification of configuration files, injection of malicious environment variables, or exploitation of runtime override mechanisms.
 - **Impact**: High: This can lead to privilege escalation, bypass of security controls, and critical service misconfiguration.
-- **Mitigations**: Mitigations include restrictive file permissions, robust configuration validation, establishing secure default settings, and planning for configuration signing/checksums and an immutable configuration mode.
+- **Mitigations**: Restrictive file permissions, robust configuration validation, establishing secure default settings, and planning for configuration signing/checksums and an immutable configuration mode.
 - **Residual Risk**: Medium.
 
 ---

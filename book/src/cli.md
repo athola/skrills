@@ -1,6 +1,6 @@
 # CLI Reference
 
-This reference organizes commands by what you want to accomplish.
+Commands organized by task.
 
 ## Checking Your Skills
 
@@ -276,7 +276,7 @@ skrills create-skill my-new-skill --description "..." --dry-run  # Preview
 | `--dry-run` | Preview without writing files |
 | `--format <FORMAT>` | `text` or `json` (default: `text`) |
 
-The `empirical` method analyzes Claude Code and Codex CLI session history to extract successful tool sequences and failure anti-patterns. It clusters similar sessions and generates skills grounded in observed behavior rather than LLM imagination.
+The `empirical` method analyzes Claude Code and Codex CLI session history to extract successful tool sequences and failure anti-patterns. It clusters similar sessions and generates skills based on observed behavior.
 
 ### search-skills-github
 

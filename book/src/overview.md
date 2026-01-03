@@ -8,7 +8,7 @@ Claude Code and Codex CLI both use markdown-based "skills," but they have differ
 - **Claude Code**: Permissive structure.
 - **Codex CLI**: Strict YAML frontmatter and character limits.
 
-This discrepancy causes skills written for one tool to fail in the other. Skrills bridges this by:
+Skills written for one tool often fail in the other. Skrills solves this by:
 - **Validating** frontmatter and schema compliance.
 - **Syncing** configurations and skills bidirectionally.
 - **Analyzing** token usage to prevent context overflow.

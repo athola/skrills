@@ -69,10 +69,10 @@ make fmt lint test --quiet build
 
 ### Effective Prompting
 
-A meticulously structured prompt significantly increases the likelihood of generating high-quality results. Request detailed comparisons of approaches, with implementation outlines, trade-offs, and complexity assessments.
+A structured prompt increases the likelihood of high-quality results. Request detailed comparisons of approaches, with implementation outlines, trade-offs, and complexity assessments.
 
 ### Role Prompting
-Assigning a specific role to an agent can enhance its performance by providing a focused perspective (e.g., a security expert or a senior developer). The precision of the role definition directly correlates with the quality of the agent's output.
+Assigning a specific role to an agent enhances performance by providing a focused perspective (e.g., a security expert or a senior developer). Precise role definitions improve output quality.
 
 Using XML tags can also help structure prompts and responses:
 ```xml

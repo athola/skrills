@@ -1,9 +1,9 @@
-//! Intelligent skill recommendations based on usage patterns and project context.
+//! Skill recommendations based on usage patterns and project context.
 //!
 //! This crate provides:
 //! - Usage analytics from Claude Code and Codex CLI session data
 //! - Project context analysis (languages, dependencies, frameworks)
-//! - Smart skill recommendations combining multiple signals
+//! - Recommendations combining multiple signals
 //! - Skill creation via GitHub search or LLM generation
 
 pub mod context;

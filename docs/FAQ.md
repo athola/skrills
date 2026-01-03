@@ -49,4 +49,4 @@ Yes. The MCP server and CLI work without internet access if the binary and skill
 
 ### What are the security considerations?
 
-Skrills operates with minimal privileges over standard I/O and has no bundled secrets. You control which skill directories are exposed. always review third-party skills before use.
+Skrills operates with minimal privileges over standard I/O and has no bundled secrets. You control which skill directories are exposed. Always review third-party skills before use.

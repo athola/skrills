@@ -1,6 +1,6 @@
 # skrills CLI
 
-Binary entrypoint for the `skrills` MCP server and tools. Installs the `skrills` executable to discover local `SKILL.md` files, filter them by prompt and embeddings, and serve them to MCP clients.
+Binary entrypoint for the `skrills` MCP server and tools. Installs the `skrills` executable to discover local `SKILL.md` files, filter them by name and content, and serve them to MCP clients.
 
 ## Install
 ```bash

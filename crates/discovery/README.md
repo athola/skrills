@@ -1,6 +1,6 @@
 # skrills-discovery
 
-Library for finding and hashing local `SKILL.md` files used by the skrills MCP server. Provides traversal, hashing, and manifest-friendly metadata used by higher-level crates.
+Library for finding and hashing local `SKILL.md` files used by the skrills MCP server. Provides traversal, hashing, and metadata used by higher-level crates.
 
 ## Project resources
 - Source & issues: https://github.com/athola/skrills
