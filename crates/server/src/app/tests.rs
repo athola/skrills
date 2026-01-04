@@ -1601,3 +1601,263 @@ description: Database operations
         "Expected case-insensitive match for DATABASE -> database"
     );
 }
+
+// -------------------------------------------------------------------------
+// Tool Handler Tests (tools.rs)
+// -------------------------------------------------------------------------
+
+/// Tests for parse_trace_target helper function
+/// GIVEN various target argument values
+/// WHEN parse_trace_target is called
+/// THEN it should return the correct TraceTarget enum
+#[test]
+fn test_parse_trace_target_claude_returns_claude_target() {
+    let args = json!({"target": "claude"}).as_object().cloned().unwrap();
+    let target = SkillService::parse_trace_target(&args);
+    assert_eq!(format!("{:?}", target), "Claude");
+}
+
+#[test]
+fn test_parse_trace_target_codex_returns_codex_target() {
+    let args = json!({"target": "codex"}).as_object().cloned().unwrap();
+    let target = SkillService::parse_trace_target(&args);
+    assert_eq!(format!("{:?}", target), "Codex");
+}
+
+#[test]
+fn test_parse_trace_target_both_or_invalid_returns_both_target() {
+    // Test "both" explicitly
+    let args = json!({"target": "both"}).as_object().cloned().unwrap();
+    let target = SkillService::parse_trace_target(&args);
+    assert_eq!(format!("{:?}", target), "Both");
+
+    // Test missing/invalid target (defaults to both)
+    let args = json!({}).as_object().cloned().unwrap();
+    let target = SkillService::parse_trace_target(&args);
+    assert_eq!(format!("{:?}", target), "Both");
+
+    // Test random invalid value
+    let args = json!({"target": "invalid"}).as_object().cloned().unwrap();
+    let target = SkillService::parse_trace_target(&args);
+    assert_eq!(format!("{:?}", target), "Both");
+}
+
+/// Tests for skill_loading_status_tool
+/// GIVEN a SkillService
+/// WHEN skill_loading_status_tool is called
+/// THEN it should return status with structured content
+#[test]
+fn test_skill_loading_status_tool_returns_status() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+
+    let original_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", temp.path());
+
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
+
+    let args = json!({"target": "both"}).as_object().cloned().unwrap();
+    let result = service.skill_loading_status_tool(args).unwrap();
+
+    match original_home {
+        Some(val) => std::env::set_var("HOME", val),
+        None => std::env::remove_var("HOME"),
+    }
+
+    // Should not error and should have structured content
+    assert!(!result.is_error.unwrap_or(true));
+    let structured = result.structured_content.unwrap();
+    // Should contain skill_files_found field (may be 0 in test environment)
+    assert!(structured.get("skill_files_found").is_some());
+    // Should contain instrumented_markers_found field
+    assert!(structured.get("instrumented_markers_found").is_some());
+}
+
+/// Tests for skill_loading_status_tool with options
+/// GIVEN a SkillService
+/// WHEN skill_loading_status_tool is called with optional flags
+/// THEN it should accept and process the options
+#[test]
+fn test_skill_loading_status_tool_accepts_optional_flags() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+
+    let original_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", temp.path());
+
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
+
+    // Test with various optional flags
+    let args = json!({
+        "target": "claude",
+        "include_cache": true,
+        "include_marketplace": false,
+        "include_mirror": true,
+        "include_agent": false
+    })
+    .as_object()
+    .cloned()
+    .unwrap();
+
+    let result = service.skill_loading_status_tool(args);
+
+    match original_home {
+        Some(val) => std::env::set_var("HOME", val),
+        None => std::env::remove_var("HOME"),
+    }
+
+    // Should not error when processing flags
+    assert!(result.is_ok(), "skill_loading_status_tool should accept optional flags");
+}
+
+/// Tests for skill_loading_selftest_tool
+/// GIVEN a SkillService
+/// WHEN skill_loading_selftest_tool is called
+/// THEN it should return probe configuration
+#[test]
+fn test_skill_loading_selftest_tool_returns_probe_config() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+
+    let original_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", temp.path());
+
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
+
+    let args = json!({"target": "both", "dry_run": false})
+        .as_object()
+        .cloned()
+        .unwrap();
+
+    let result = service.skill_loading_selftest_tool(args).unwrap();
+
+    match original_home {
+        Some(val) => std::env::set_var("HOME", val),
+        None => std::env::remove_var("HOME"),
+    }
+
+    assert!(!result.is_error.unwrap_or(true));
+    let structured = result.structured_content.unwrap();
+
+    // Should contain probe_line and expected_response
+    assert!(structured.get("probe_line").is_some());
+    assert!(structured.get("expected_response").is_some());
+    assert!(structured.get("target").is_some());
+
+    // probe_line and expected_response should match format
+    let probe_line = structured.get("probe_line").unwrap().as_str().unwrap();
+    assert!(probe_line.starts_with("SKRILLS_PROBE:"));
+}
+
+/// Tests for skill_loading_selftest_tool with dry_run
+/// GIVEN a SkillService
+/// WHEN skill_loading_selftest_tool is called with dry_run=true
+/// THEN it should still return valid probe config
+#[test]
+fn test_skill_loading_selftest_tool_dry_run_returns_config() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+
+    let original_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", temp.path());
+
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
+
+    let args = json!({"target": "claude", "dry_run": true})
+        .as_object()
+        .cloned()
+        .unwrap();
+
+    let result = service.skill_loading_selftest_tool(args).unwrap();
+
+    match original_home {
+        Some(val) => std::env::set_var("HOME", val),
+        None => std::env::remove_var("HOME"),
+    }
+
+    assert!(!result.is_error.unwrap_or(true));
+    let structured = result.structured_content.unwrap();
+
+    // Even with dry_run, should get valid probe config
+    let probe_line = structured.get("probe_line").unwrap().as_str().unwrap();
+    assert!(probe_line.starts_with("SKRILLS_PROBE:"));
+
+    // Should contain notes array
+    let notes = structured.get("notes").and_then(|v| v.as_array()).unwrap();
+    assert!(!notes.is_empty(), "Expected notes array with helpful information");
+}
+
+/// Tests for disable_skill_trace_tool
+/// GIVEN a SkillService
+/// WHEN disable_skill_trace_tool is called with dry_run
+/// THEN it should return removal info without actual removal
+#[test]
+fn test_disable_skill_trace_tool_dry_run_returns_info() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+
+    let original_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", temp.path());
+
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
+
+    let args = json!({"target": "both", "dry_run": true})
+        .as_object()
+        .cloned()
+        .unwrap();
+
+    let result = service.disable_skill_trace_tool(args).unwrap();
+
+    match original_home {
+        Some(val) => std::env::set_var("HOME", val),
+        None => std::env::remove_var("HOME"),
+    }
+
+    assert!(!result.is_error.unwrap_or(true));
+
+    // For dry_run, structured content should have dry_run flag
+    let structured = result.structured_content.unwrap();
+    assert_eq!(structured.get("dry_run").unwrap(), &json!(true));
+    // removed field should indicate what would be removed
+    assert!(structured.get("removed").is_some());
+}
+
+/// Tests for disable_skill_trace_tool with different targets
+/// GIVEN a SkillService
+/// WHEN disable_skill_trace_tool is called for different targets
+/// THEN it should accept claude, codex, and both
+#[test]
+fn test_disable_skill_trace_tool_accepts_all_targets() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+
+    let original_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", temp.path());
+
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
+
+    for target in ["claude", "codex", "both"] {
+        let args = json!({"target": target, "dry_run": true})
+            .as_object()
+            .cloned()
+            .unwrap();
+
+        let result = service.disable_skill_trace_tool(args);
+
+        match original_home {
+            Some(ref val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert!(
+            result.is_ok(),
+            "disable_skill_trace_tool should accept target '{}'",
+            target
+        );
+    }
+
+    match original_home {
+        Some(val) => std::env::set_var("HOME", val),
+        None => std::env::remove_var("HOME"),
+    }
+}
