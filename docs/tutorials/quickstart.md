@@ -29,24 +29,24 @@ This counts all SKILL.md files in your Claude plugin cache. In the demo, we have
 
 ### 2. Validate Skills
 
-Validate a sample of skills for compatibility:
+Validate skills for compatibility:
 
 ```bash
-skrills validate --sample 5 --errors-only
+skrills validate --errors-only
 ```
 
 This checks that skills work on both platforms:
 - **Claude Code**: Permissive validation (frontmatter optional)
 - **Codex**: Strict validation (requires `name:` and `description:` frontmatter)
 
-The `--sample 5` flag validates 5 random skills for quick testing. Use without `--sample` to validate all skills.
+The `--errors-only` flag shows only skills with validation issues. Use without it to see all validation results.
 
 ### 3. Analyze Token Usage
 
 Analyze skills for optimization opportunities:
 
 ```bash
-skrills analyze --sample 10 --suggestions --min-tokens 300
+skrills analyze --suggestions --min-tokens 300
 ```
 
 This shows:
@@ -75,12 +75,6 @@ Displays:
 Copy skills from Claude Code to Codex:
 
 ```bash
-skrills sync --sample 5
-```
-
-This syncs a sample of 5 skills. For production use, sync all skills:
-
-```bash
 skrills sync
 ```
 
@@ -88,6 +82,7 @@ The sync command:
 - Converts frontmatter to Codex-compatible format
 - Preserves skill content and metadata
 - Creates the `~/.codex/skills/` directory if needed
+- Copies all discovered skills by default
 
 ### 6. View Metrics
 

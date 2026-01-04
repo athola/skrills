@@ -29,11 +29,11 @@ Type "find ~/.claude/plugins/cache -name 'SKILL.md' | wc -l"
 Enter
 Sleep 2s
 
-# Validate a sample of skills
+# Validate skills
 Type "# Validate skills work on both Claude Code and Codex"
 Enter
 Sleep 500ms
-Type "skrills validate --sample 5 --errors-only"
+Type "skrills validate --errors-only"
 Enter
 Sleep 5s
 
@@ -41,7 +41,7 @@ Sleep 5s
 Type "# Analyze skills for token optimization opportunities"
 Enter
 Sleep 500ms
-Type "skrills analyze --sample 10 --suggestions --min-tokens 300"
+Type "skrills analyze --suggestions --min-tokens 300"
 Enter
 Sleep 6s
 
@@ -57,7 +57,7 @@ Sleep 4s
 Type "# Sync skills from Claude Code to Codex"
 Enter
 Sleep 500ms
-Type "skrills sync --sample 5"
+Type "skrills sync"
 Enter
 Sleep 4s
 
