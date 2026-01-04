@@ -19,45 +19,60 @@ Skrills provides bidirectional synchronization with validation and analysis for 
 
 ### 1. Check Available Skills
 
-First, see how many skills you have available:
+First, see what skills you have in your Claude Code skills directory:
 
 ```bash
-find ~/.claude/plugins/cache -name 'SKILL.md' | wc -l
+ls ~/.claude/skills
 ```
 
-This counts all SKILL.md files in your Claude plugin cache. In the demo, we have 400+ skills available.
+Skills can also be discovered from `~/.claude/plugins/cache/` if you have Claude Code plugins installed.
 
 ### 2. Validate Skills
 
 Validate skills for compatibility:
 
 ```bash
-skrills validate --errors-only
+skrills validate
 ```
 
 This checks that skills work on both platforms:
 - **Claude Code**: Permissive validation (frontmatter optional)
 - **Codex**: Strict validation (requires `name:` and `description:` frontmatter)
 
-The `--errors-only` flag shows only skills with validation issues. Use without it to see all validation results.
+Use `--errors-only` to show only skills with validation issues.
 
 ### 3. Analyze Token Usage
 
 Analyze skills for optimization opportunities:
 
 ```bash
-skrills analyze --suggestions --min-tokens 300
+skrills analyze --suggestions
 ```
 
 This shows:
 - Token count per skill
-- Dependencies between skills
+- Size distribution (small, medium, large)
+- Quality scores
 - Suggestions for reducing context bloat
-- Skills exceeding the token threshold
 
 Use `--min-tokens` to filter for skills that need optimization attention.
 
-### 4. Check Sync Status
+### 4. View Metrics
+
+Get aggregate statistics about your skills:
+
+```bash
+skrills metrics
+```
+
+Shows:
+- Total number of skills
+- Skills by source (codex, claude, cache, etc.)
+- Quality distribution
+- Token statistics
+- Dependency information
+
+### 5. Check Sync Status
 
 See what's different between Claude Code and Codex:
 
@@ -66,11 +81,11 @@ skrills sync-status
 ```
 
 Displays:
-- Skills present in one platform but not the other
+- Skills pending sync
 - Configuration differences (MCP servers, preferences)
 - Slash commands that need syncing
 
-### 5. Sync Skills to Codex
+### 6. Sync Skills to Codex
 
 Copy skills from Claude Code to Codex:
 
@@ -82,21 +97,12 @@ The sync command:
 - Converts frontmatter to Codex-compatible format
 - Preserves skill content and metadata
 - Creates the `~/.codex/skills/` directory if needed
-- Copies all discovered skills by default
+- Enables experimental skills feature in Codex config
 
-### 6. View Metrics
-
-Get aggregate statistics about your skills:
-
+After syncing, verify with:
 ```bash
-skrills metrics
+find ~/.codex/skills -name 'SKILL.md'
 ```
-
-Shows:
-- Total number of skills
-- Average token count
-- Skills by category/type
-- Dependency information
 
 ## Tips
 
@@ -104,9 +110,10 @@ Shows:
 - Run `skrills validate --autofix --backup` to automatically fix issues
 - Use `skrills tui` for interactive sync management
 - Check `skrills doctor` to diagnose MCP configuration issues
+- Set `SKRILLS_INCLUDE_CLAUDE=1` to include Claude plugin cache in discovery
 
 ## Requirements
 
 - Rust toolchain (for building from source)
 - Claude Code and/or Codex CLI installed
-- Skills in `~/.claude/plugins/cache/` or `~/.codex/skills/`
+- Skills in `~/.claude/skills/`, `~/.claude/plugins/cache/`, or `~/.codex/skills/`

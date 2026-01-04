@@ -11,7 +11,12 @@ Set Theme "Catppuccin Mocha"
 Set Padding 20
 Set TypingSpeed 50ms
 Set Shell "bash"
+
+# Set up environment - use demo skills from repo
 Env PATH "/home/alext/.local/bin:/home/alext/skrills/target/release:/usr/local/bin:/usr/bin:/bin"
+Env SKRILLS_SKILL_DIR "/home/alext/skrills/assets/demo-skills"
+Env SKRILLS_INCLUDE_CLAUDE "1"
+Env HOME "/tmp/skrills-demo"
 
 # Title
 Type "# Skrills: Unified Skills for Claude Code & Codex"
@@ -21,29 +26,52 @@ Type "clear"
 Enter
 Sleep 400ms
 
-# Show available skills count
-Type "# First, let's see what skills we have available"
+# Setup demo environment with skills in Claude directory
+Type "# Set up demo environment with sample skills"
+Enter
+Sleep 300ms
+Type "mkdir -p ~/.claude/skills ~/.codex/skills"
+Enter
+Sleep 300ms
+Type "cp -r $SKRILLS_SKILL_DIR/* ~/.claude/skills/"
+Enter
+Sleep 300ms
+# Mark skrills as configured to skip setup prompt
+Type `echo '{"mcpServers":{"skrills":{}}}' > ~/.claude/.mcp.json`
 Enter
 Sleep 500ms
-Type "find ~/.claude/plugins/cache -name 'SKILL.md' | wc -l"
+
+# Show available skills
+Type "# Skills in Claude Code directory"
+Enter
+Sleep 500ms
+Type "ls ~/.claude/skills"
 Enter
 Sleep 2s
 
 # Validate skills
-Type "# Validate skills work on both Claude Code and Codex"
+Type "# Validate skills for Claude Code and Codex compatibility"
 Enter
 Sleep 500ms
-Type "skrills validate --errors-only"
+Type "skrills validate"
 Enter
-Sleep 5s
+Sleep 3s
 
 # Analyze skills for token usage
-Type "# Analyze skills for token optimization opportunities"
+Type "# Analyze skills for token usage and quality"
 Enter
 Sleep 500ms
-Type "skrills analyze --suggestions --min-tokens 300"
+Type "skrills analyze --suggestions"
 Enter
-Sleep 6s
+Sleep 4s
+
+# Show metrics
+Type "# View aggregate metrics about discovered skills"
+Enter
+Sleep 500ms
+Type "skrills metrics"
+Enter
+Sleep 4s
 
 # Show sync status
 Type "# Check sync status between Claude Code and Codex"
@@ -51,7 +79,7 @@ Enter
 Sleep 500ms
 Type "skrills sync-status"
 Enter
-Sleep 4s
+Sleep 3s
 
 # Sync skills to Codex
 Type "# Sync skills from Claude Code to Codex"
@@ -59,17 +87,17 @@ Enter
 Sleep 500ms
 Type "skrills sync"
 Enter
-Sleep 4s
+Sleep 3s
 
-# Show metrics
-Type "# View metrics about discovered skills"
+# Verify sync
+Type "# Verify skills were synced to ~/.codex/skills"
 Enter
 Sleep 500ms
-Type "skrills metrics"
+Type "find ~/.codex/skills -name 'SKILL.md' | head -5"
 Enter
-Sleep 4s
+Sleep 2s
 
 # Final message
-Type echo "# Skills now work seamlessly on both platforms!"
+Type "echo '# Skills now work seamlessly on both platforms!'"
 Enter
 Sleep 2s
