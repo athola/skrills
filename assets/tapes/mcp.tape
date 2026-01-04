@@ -1,5 +1,5 @@
 # Skrills MCP Demo
-# Demonstrates MCP server usage with both Claude Code and Codex
+# Demonstrates MCP server integration with Claude Code
 # Run: vhs assets/tapes/mcp.tape
 
 Output assets/gifs/mcp.gif
@@ -11,57 +11,69 @@ Set Theme "Catppuccin Mocha"
 Set Padding 20
 Set TypingSpeed 50ms
 Set Shell "bash"
+
+# Set up environment
 Env PATH "/home/alext/.local/bin:/home/alext/skrills/target/release:/usr/local/bin:/usr/bin:/bin"
+Env SKRILLS_SKILL_DIR "/home/alext/skrills/assets/demo-skills"
 
 # Title
-Type "# Skrills MCP Server: Claude Code & Codex Integration"
+Type "# Skrills MCP Server: Testing with Claude Code"
 Enter
 Sleep 800ms
 Type "clear"
 Enter
 Sleep 400ms
 
-# Show help for serve command
-Type "# The skrills MCP server works with both Claude Code and Codex"
+# Show skrills MCP serve command
+Type "# Skrills provides an MCP server for Claude Code"
 Enter
 Sleep 500ms
-Type "skrills serve --help"
+Type "skrills serve --help | head -15"
 Enter
 Sleep 3s
 
-# Check MCP configuration
-Type "# Check if skrills is configured in Claude Code"
+# Show MCP configuration
+Type "# MCP configuration in ~/.claude/settings.local.json"
 Enter
 Sleep 500ms
-Type "cat ~/.claude/settings.json | grep -A 5 'mcpServers' | head -20"
+Type "cat ~/.claude/settings.local.json | grep -A 5 skrills"
 Enter
 Sleep 2s
 
-# Show doctor command
-Type "# Diagnose MCP configuration for Codex"
+# Check MCP server status
+Type "# Verify skrills MCP server is connected in Claude Code"
 Enter
 Sleep 500ms
-Type "skrills doctor"
+Type "claude mcp list | grep skrills"
 Enter
-Sleep 4s
+Sleep 3s
 
-# Sync MCP servers
-Type "# Sync MCP server configurations between platforms"
+# Test MCP tool inside Claude Code CLI
+Type "# Test the autoload-snippet MCP tool inside Claude Code"
 Enter
 Sleep 500ms
-Type "skrills sync-mcp-servers --dry-run"
+Type "claude -p 'Use mcp__skrills__autoload-snippet to load skrills://skill/coding-assistant' --model haiku --max-budget-usd 0.05 2>&1 | head -30"
 Enter
-Sleep 4s
+Sleep 15s
 
-# Show available MCP tools
-Type "# List MCP tools provided by skrills"
+# Show what tools are available
+Type "# Skrills MCP provides these tools to Claude Code:"
 Enter
 Sleep 500ms
-Type "echo 'Skrills MCP provides: autoload-snippet, search-skills, resolve-dependencies, recommend-skills'"
+Type "echo 'mcp__skrills__autoload-snippet - Load skill content'"
+Enter
+Sleep 400ms
+Type "echo 'mcp__skrills__search-skills - Search by name/content'"
+Enter
+Sleep 400ms
+Type "echo 'mcp__skrills__resolve-dependencies - Find dependencies'"
+Enter
+Sleep 400ms
+Type "echo 'mcp__skrills__recommend-skills - Get recommendations'"
 Enter
 Sleep 2s
 
 # Final message
-Type echo "# Use skrills serve in MCP config for both platforms!"
+Type "# MCP tools work seamlessly inside Claude Code!"
 Enter
 Sleep 2s

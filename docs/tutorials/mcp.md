@@ -1,6 +1,6 @@
-# MCP Integration: Claude Code & Codex
+# MCP Integration: Testing with Claude Code
 
-This tutorial shows how to use Skrills as an MCP server to provide dynamic skill loading and management for both Claude Code and Codex.
+This tutorial shows how to use Skrills as an MCP server and **test MCP tool functionality inside Claude Code CLI**.
 
 ![MCP Demo](../../assets/gifs/mcp.gif)
 
@@ -12,13 +12,11 @@ Skrills can run as an MCP (Model Context Protocol) server, providing tools for:
 - **resolve-dependencies**: Find skill dependencies
 - **recommend-skills**: Get skill recommendations
 
-The same MCP server works with both Claude Code and Codex.
-
 ## Setup
 
 ### For Claude Code
 
-Add to your `~/.claude/settings.json`:
+Add to your `~/.claude/settings.local.json` (or `~/.claude/settings.json`):
 
 ```json
 {
@@ -46,63 +44,99 @@ Add to your `~/.codex/mcp.json`:
 }
 ```
 
-## Using the MCP Tools
+## Testing MCP Inside Claude Code
 
-### Check MCP Configuration
+### Step 1: Verify MCP Connection
 
-Verify the MCP server is configured:
-
-```bash
-cat ~/.claude/settings.json | grep -A 5 'mcpServers'
-```
-
-### Diagnose MCP Setup
-
-Run the doctor command to check configuration:
+Check that the skrills MCP server is connected:
 
 ```bash
-skrills doctor
+claude mcp list
 ```
 
-This shows:
-- Whether skrills is configured as an MCP server
-- Platform-specific configuration status
-- Any issues that need fixing
+You should see output like:
 
-### Sync MCP Configurations
+```
+skrills: skrills serve - ✓ Connected
+```
 
-Copy MCP server settings between platforms:
+### Step 2: Test MCP Tools in Claude Code CLI
+
+Use `claude -p` (print mode) to test MCP tools non-interactively:
 
 ```bash
-skrills sync-mcp-servers --dry-run
+claude -p "Use the mcp__skrills__autoload-snippet tool to load the skill from skrills://skill/coding-assistant and show its content" --model haiku
 ```
 
-Use without `--dry-run` to actually sync:
+This command:
+- Starts Claude Code in non-interactive mode (`-p`)
+- Sends a prompt that invokes the MCP tool
+- Uses the haiku model for faster/cheaper testing
+- Displays the skill content loaded via MCP
+
+### Step 3: Interactive Testing
+
+Start an interactive Claude Code session and ask it to use MCP tools:
 
 ```bash
-skrills sync-mcp-servers
+claude
 ```
+
+Then try prompts like:
+- "Search for skills related to testing"
+- "Load the debug-helper skill using MCP"
+- "Show me skill recommendations for API work"
 
 ## Available MCP Tools
 
-When running as an MCP server, skrills provides these tools:
+When running as an MCP server, skrills provides these tools to Claude Code:
 
-| Tool | Description |
-|------|-------------|
-| `autoload-snippet` | Load skill content by URI |
-| `search-skills` | Search skills by name/content |
-| `resolve-dependencies` | Find dependencies for a skill |
-| `recommend-skills` | Get related skill recommendations |
+| Tool | Description | Example Usage |
+|------|-------------|---------------|
+| `mcp__skrills__autoload-snippet` | Load skill content by URI | `skrills://skill/coding-assistant` |
+| `mcp__skrills__search-skills` | Search skills by name/content | "search for testing skills" |
+| `mcp__skrills__resolve-dependencies` | Find dependencies for a skill | "what does debug-helper depend on" |
+| `mcp__skrills__recommend-skills` | Get related skill recommendations | "recommend skills for API work" |
+
+## Troubleshooting
+
+### MCP Server Not Connecting
+
+1. Check if skrills is in PATH:
+   ```bash
+   which skrills
+   ```
+
+2. Verify the configuration:
+   ```bash
+   cat ~/.claude/settings.local.json | grep -A 5 'mcpServers'
+   ```
+
+3. Run the doctor command:
+   ```bash
+   skrills doctor
+   ```
+
+### Tools Not Available
+
+If Claude Code can't find the MCP tools:
+
+1. Restart Claude Code to reload MCP configuration
+2. Check server logs with `--mcp-debug`:
+   ```bash
+   claude --debug
+   ```
 
 ## Tips
 
-- Use `skrills serve --help` to see server options
-- The server runs over stdio by default (MCP standard)
-- Use `--dry-run` to preview MCP sync changes
-- Check `skrills doctor` if MCP tools aren't available
+- Use `claude -p` for scripted testing of MCP tools
+- Add `--model haiku` for faster/cheaper test runs
+- Use `--max-budget-usd 0.10` to limit API costs during testing
+- Check `claude mcp list` to verify server connection status
+- Use `skrills serve --help` to see MCP server options
 
 ## Requirements
 
 - Skrills installed and in PATH
-- Claude Code or Codex configured for MCP
-- MCP client support in your Claude application
+- Claude Code CLI installed
+- Valid Anthropic API key (for `claude -p` testing)
