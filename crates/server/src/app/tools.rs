@@ -73,7 +73,10 @@ impl SkillService {
         for meta in &skills {
             let mut content = match fs::read_to_string(&meta.path) {
                 Ok(c) => c,
-                Err(_) => continue,
+                Err(e) => {
+                    tracing::warn!(path = %meta.path.display(), error = %e, "Failed to read skill file during validation, skipping");
+                    continue;
+                }
             };
             let mut result = validate_skill(&meta.path, &content, validation_target);
             let mut autofixed_skill = false;
@@ -85,12 +88,17 @@ impl SkillService {
                     suggested_name: Some(meta.name.clone()),
                     suggested_description: None,
                 };
-                if let Ok(fix_result) = autofix_frontmatter(&meta.path, &content, &opts) {
-                    if fix_result.modified {
-                        autofixed += 1;
-                        autofixed_skill = true;
-                        content = fs::read_to_string(&meta.path).unwrap_or(content);
-                        result = validate_skill(&meta.path, &content, validation_target);
+                match autofix_frontmatter(&meta.path, &content, &opts) {
+                    Ok(fix_result) => {
+                        if fix_result.modified {
+                            autofixed += 1;
+                            autofixed_skill = true;
+                            content = fs::read_to_string(&meta.path).unwrap_or(content);
+                            result = validate_skill(&meta.path, &content, validation_target);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(path = %meta.path.display(), error = %e, "Autofix failed for skill");
                     }
                 }
             }
@@ -123,16 +131,21 @@ impl SkillService {
 
                 // Check for unresolved skill dependencies
                 let skill_uri = format!("skill://skrills/{}/{}", meta.source.label(), meta.name);
-                if let Ok(deps) = self.resolve_dependencies(&skill_uri) {
-                    for dep_uri in deps {
-                        // Check if the dependency exists in our valid skills set
-                        if !valid_skill_uris.contains(&dep_uri) {
-                            dependency_issues.push(json!({
-                                "type": "unresolved_skill",
-                                "target": dep_uri
-                            }));
-                            missing_count += 1;
+                match self.resolve_dependencies(&skill_uri) {
+                    Ok(deps) => {
+                        for dep_uri in deps {
+                            // Check if the dependency exists in our valid skills set
+                            if !valid_skill_uris.contains(&dep_uri) {
+                                dependency_issues.push(json!({
+                                    "type": "unresolved_skill",
+                                    "target": dep_uri
+                                }));
+                                missing_count += 1;
+                            }
                         }
+                    }
+                    Err(e) => {
+                        tracing::warn!(skill_uri = %skill_uri, error = %e, "Failed to resolve skill dependencies");
                     }
                 }
 
