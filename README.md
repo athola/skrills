@@ -13,11 +13,21 @@
 
 Skills support engine for Claude Code and Codex CLI. Validates, analyzes, and syncs skills bidirectionally between both CLIs.
 
-## Demo
+## Demos
 
-![Skrills Demo](assets/gifs/quickstart.gif)
+### Quickstart
+Validate, analyze, and sync skills between Claude Code and Codex.
 
-See the [quickstart tutorial](docs/tutorials/quickstart.md) for a detailed walkthrough.
+![Skrills Quickstart](assets/gifs/quickstart.gif)
+
+*See the [quickstart tutorial](docs/tutorials/quickstart.md) for a detailed walkthrough.*
+
+### MCP Integration
+Use skrills as an MCP server for dynamic skill loading in both Claude Code and Codex.
+
+![Skrills MCP](assets/gifs/mcp.gif)
+
+*See the [MCP tutorial](docs/tutorials/mcp.md) for setup instructions.*
 
 ## Why Skrills
 Skrills manages skills and configurations for Claude Code and Codex CLI. It validates markdown files against Codex's strict YAML frontmatter requirements, analyzes token usage to manage context limits, and syncs configurations between tools. A single binary provides mirroring, diagnostics, and an MCP server.
