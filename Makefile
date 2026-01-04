@@ -58,7 +58,8 @@ endef
 # Phony targets: core developer flow
 .PHONY: help fmt lint lint-md check test test-unit test-integration test-setup \
 	build build-min serve-help install status coverage test-coverage dogfood ci precommit \
-	clean clean-demo githooks hooks require-cargo security deny deps-update check-deps
+	clean clean-demo githooks hooks require-cargo security deny deps-update check-deps \
+	quick watch bench release
 # Phony targets: docs
 .PHONY: docs book book-serve
 # Phony targets: demos
@@ -89,6 +90,10 @@ help:
 	@printf "  %-23s %s\n" "coverage" "generate test coverage report"
 	@printf "  %-23s %s\n" "dogfood" "run skrills on its own codebase"
 	@printf "  %-23s %s\n" "ci | precommit" "run common pipelines"
+	@printf "  %-23s %s\n" "quick" "fast check (fmt + check, no tests)"
+	@printf "  %-23s %s\n" "watch" "watch mode with cargo-watch"
+	@printf "  %-23s %s\n" "bench" "run benchmarks"
+	@printf "  %-23s %s\n" "release" "full release validation"
 	@printf "  %-23s %s\n" "hooks" "install git pre-commit hooks"
 	@printf "  %-23s %s\n" "clean | clean-demo" "clean builds or demo HOME"
 	@printf "  %-23s %s\n" "require-cargo" "guard: ensure cargo is available"
@@ -336,6 +341,25 @@ demo-setup-first-run: demo-fixtures build
 demo-setup-all: demo-setup-claude demo-setup-codex demo-setup-both demo-setup-uninstall demo-setup-reinstall demo-setup-universal demo-setup-first-run
 	@echo "==> All setup demos completed successfully"
 
+quick: fmt check
+	@echo "==> Quick check passed"
+
+watch:
+	@if command -v cargo-watch >/dev/null 2>&1; then \
+		$(CARGO_CMD) watch -x 'check --workspace'; \
+	else \
+		echo "cargo-watch not installed. Run: cargo install cargo-watch"; \
+		exit 1; \
+	fi
+
+bench:
+	$(CARGO_CMD) bench --workspace
+
+release: fmt lint test build
+	@echo "==> Release validation complete"
+	@echo "    Binary: $(BIN_PATH)"
+	@$(BIN_PATH) --version
+
 clean:
 	CARGO_HOME=$(CARGO_HOME) $(CARGO) clean
 
@@ -357,6 +381,7 @@ check-deps:
 	@command -v cargo-audit >/dev/null 2>&1 && echo "  cargo-audit: ok" || echo "  cargo-audit: missing"
 	@command -v cargo-deny >/dev/null 2>&1 && echo "  cargo-deny: ok" || echo "  cargo-deny: missing"
 	@command -v cargo-llvm-cov >/dev/null 2>&1 && echo "  cargo-llvm-cov: ok" || echo "  cargo-llvm-cov: missing"
+	@command -v cargo-watch >/dev/null 2>&1 && echo "  cargo-watch: ok" || echo "  cargo-watch: missing"
 	@command -v $(MDBOOK) >/dev/null 2>&1 && echo "  mdbook: ok" || echo "  mdbook: missing"
 	@command -v cargo-tarpaulin >/dev/null 2>&1 && echo "  cargo-tarpaulin: ok" || echo "  cargo-tarpaulin: missing"
 

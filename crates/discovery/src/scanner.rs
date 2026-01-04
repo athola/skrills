@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use walkdir::WalkDir;
 
+/// Default maximum depth for skill discovery.
+pub const DEFAULT_MAX_DEPTH: usize = 20;
+
 // Common heavy directories to skip during discovery to reduce first-run latency.
 const IGNORE_DIRS: &[&str] = &[
     "node_modules",
@@ -32,6 +35,8 @@ pub struct DiscoveryConfig {
     pub cache_ttl_ms: Duration,
     /// Ordered list of skill sources to override default priority.
     pub priority_override: Option<Vec<SkillSource>>,
+    /// Maximum directory depth for scanning.
+    pub max_depth: usize,
 }
 
 impl DiscoveryConfig {
@@ -45,6 +50,22 @@ impl DiscoveryConfig {
             roots,
             cache_ttl_ms,
             priority_override,
+            max_depth: DEFAULT_MAX_DEPTH,
+        }
+    }
+
+    /// Creates a new `DiscoveryConfig` with a custom max depth.
+    pub fn with_max_depth(
+        roots: Vec<SkillRoot>,
+        cache_ttl_ms: Duration,
+        priority_override: Option<Vec<SkillSource>>,
+        max_depth: usize,
+    ) -> Self {
+        Self {
+            roots,
+            cache_ttl_ms,
+            priority_override,
+            max_depth,
         }
     }
 }
@@ -158,9 +179,8 @@ fn file_hash(path: &Path) -> Result<String> {
 fn collect_skills_from(
     roots: &[SkillRoot],
     mut dup_log: Option<&mut Vec<DuplicateInfo>>,
+    max_depth: usize,
 ) -> Result<Vec<SkillMeta>> {
-    // Allow deeply nested skill folders but cap traversal to avoid runaway scans.
-    const MAX_SKILL_DEPTH: usize = 20;
     let mut skills = Vec::new();
     let mut seen: std::collections::HashMap<String, (String, String)> =
         std::collections::HashMap::new(); // name -> (source, root)
@@ -171,7 +191,7 @@ fn collect_skills_from(
         }
         let entries: Vec<_> = WalkDir::new(root)
             .min_depth(1)
-            .max_depth(MAX_SKILL_DEPTH)
+            .max_depth(max_depth)
             .into_iter()
             .filter_entry(|e| {
                 if e.file_type().is_symlink() {
@@ -234,11 +254,28 @@ fn collect_skills_from(
 /// If `dup_log` is provided, logs duplicate skill information. Duplicates happen
 /// when a skill with the same name exists in multiple roots; only the highest priority
 /// one is kept.
+///
+/// Uses [`DEFAULT_MAX_DEPTH`] for directory traversal depth.
 pub fn discover_skills(
     roots: &[SkillRoot],
     dup_log: Option<&mut Vec<DuplicateInfo>>,
 ) -> Result<Vec<SkillMeta>> {
-    collect_skills_from(roots, dup_log)
+    collect_skills_from(roots, dup_log, DEFAULT_MAX_DEPTH)
+}
+
+/// Discovers and collects skill metadata from the provided roots with a custom depth limit.
+///
+/// If `dup_log` is provided, logs duplicate skill information. Duplicates happen
+/// when a skill with the same name exists in multiple roots; only the highest priority
+/// one is kept.
+///
+/// The `max_depth` parameter controls how deep the scanner will traverse into subdirectories.
+pub fn discover_skills_with_depth(
+    roots: &[SkillRoot],
+    dup_log: Option<&mut Vec<DuplicateInfo>>,
+    max_depth: usize,
+) -> Result<Vec<SkillMeta>> {
+    collect_skills_from(roots, dup_log, max_depth)
 }
 
 /// Collects agent metadata from the provided roots.
@@ -749,5 +786,48 @@ mod tests {
 
         let skills = discover_skills(&roots, None).unwrap();
         assert_eq!(skills.len(), 0);
+    }
+
+    #[test]
+    fn test_discover_skills_respects_custom_depth() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("skills");
+
+        // Create skill at depth 3 (a/b/c)
+        let deep_path = root.join("a/b/c");
+        fs::create_dir_all(&deep_path).unwrap();
+        fs::write(deep_path.join("SKILL.md"), "deep skill").unwrap();
+
+        let roots = vec![SkillRoot {
+            root: root.clone(),
+            source: SkillSource::Codex,
+        }];
+
+        // With depth 2, should NOT find the skill at depth 3
+        let skills = discover_skills_with_depth(&roots, None, 2).unwrap();
+        assert!(
+            skills.is_empty(),
+            "Skill at depth 3 should not be found with max_depth=2"
+        );
+
+        // With depth 4, should find it
+        let skills = discover_skills_with_depth(&roots, None, 4).unwrap();
+        assert_eq!(
+            skills.len(),
+            1,
+            "Skill at depth 3 should be found with max_depth=4"
+        );
+    }
+
+    #[test]
+    fn test_discovery_config_default_max_depth() {
+        let config = DiscoveryConfig::new(vec![], Duration::from_millis(1000), None);
+        assert_eq!(config.max_depth, DEFAULT_MAX_DEPTH);
+    }
+
+    #[test]
+    fn test_discovery_config_with_custom_max_depth() {
+        let config = DiscoveryConfig::with_max_depth(vec![], Duration::from_millis(1000), None, 5);
+        assert_eq!(config.max_depth, 5);
     }
 }

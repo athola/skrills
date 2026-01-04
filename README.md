@@ -13,6 +13,12 @@
 
 Skills support engine for Claude Code and Codex CLI. Validates, analyzes, and syncs skills bidirectionally between both CLIs.
 
+## Demo
+
+![Skrills Demo](assets/gifs/quickstart.gif)
+
+See the [quickstart tutorial](docs/tutorials/quickstart.md) for a detailed walkthrough.
+
 ## Why Skrills
 Skrills manages skills and configurations for Claude Code and Codex CLI. It validates markdown files against Codex's strict YAML frontmatter requirements, analyzes token usage to manage context limits, and syncs configurations between tools. A single binary provides mirroring, diagnostics, and an MCP server.
 
@@ -150,6 +156,8 @@ When running as an MCP server (`skrills serve`), the following tools are availab
 - `disable-skill-trace` - Remove trace/probe skill directories (does not remove markers)
 - `skill-loading-selftest` - Return a one-shot probe line and expected response to confirm skills are loading
 
+> **Testing**: All skill loading tools include comprehensive test coverage covering edge cases, dry-run modes, and target validation for Claude, Codex, and Both targets.
+
 ### Intelligence tools
 - `recommend-skills-smart` - Smart recommendations using dependencies, usage patterns, and project context
 - `analyze-project-context` - Analyze languages, frameworks, and keywords in a project directory
@@ -239,6 +247,7 @@ make fmt lint test --quiet
 ```
 - Rust toolchain ≥ 1.75 recommended.
 - End-to-end MCP tests are in `crates/server/tests/`; sample agents in `crates/subagents/`.
+- Comprehensive tool handler tests cover edge cases, dry-run modes, and target validation for all MCP tools (see `crates/server/src/app/tests.rs`).
 
 ## Skill loading validation (Claude Code and Codex)
 

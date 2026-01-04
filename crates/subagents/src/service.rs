@@ -1245,6 +1245,43 @@ Content."#,
         assert!(result.structured_content.is_some());
     }
 
+    #[tokio::test]
+    async fn handle_call_with_unknown_tool_returns_error() {
+        let service =
+            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+
+        let result = service.handle_call("nonexistent-tool", None).await;
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("unknown tool"),
+            "expected 'unknown tool' error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_call_with_invalid_tool_name_returns_error() {
+        let service =
+            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+
+        // Test various invalid tool names
+        for invalid_name in [
+            "",
+            "foo-bar-baz",
+            "unknown_command",
+            "definitely-not-a-tool",
+        ] {
+            let result = service.handle_call(invalid_name, None).await;
+            assert!(
+                result.is_err(),
+                "expected error for tool name '{}', but got Ok",
+                invalid_name
+            );
+        }
+    }
+
     // =============================================================
     // Tests for get-run-events (Task 6)
     // =============================================================
