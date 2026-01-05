@@ -767,6 +767,7 @@ pub fn run() -> Result<()> {
         #[cfg(feature = "watch")]
         watch: false,
         http: None,
+        list_tools: false,
     }) {
         Commands::Serve {
             skill_dirs,
@@ -775,6 +776,7 @@ pub fn run() -> Result<()> {
             #[cfg(feature = "watch")]
             watch,
             http,
+            list_tools,
         } => handle_serve_command(
             skill_dirs,
             cache_ttl_ms,
@@ -782,6 +784,7 @@ pub fn run() -> Result<()> {
             #[cfg(feature = "watch")]
             watch,
             http,
+            list_tools,
         ),
         Commands::Mirror {
             dry_run,

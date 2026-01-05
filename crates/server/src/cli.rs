@@ -103,6 +103,9 @@ pub enum Commands {
         /// Requires the `http-transport` feature (enabled by default).
         #[arg(long, value_name = "BIND_ADDR")]
         http: Option<String>,
+        /// List all available MCP tools and exit.
+        #[arg(long, default_value_t = false)]
+        list_tools: bool,
     },
     /// Mirrors Claude assets (skills, agents, commands, MCP prefs) into Codex defaults and refreshes AGENTS.md.
     Mirror {
@@ -479,6 +482,7 @@ mod tests {
                 #[cfg(feature = "watch")]
                 watch,
                 http,
+                list_tools,
             }) => {
                 assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/skills")]);
                 assert_eq!(cache_ttl_ms, Some(1500));
@@ -486,6 +490,7 @@ mod tests {
                 #[cfg(feature = "watch")]
                 assert!(!watch);
                 assert!(http.is_none());
+                assert!(!list_tools);
             }
             _ => panic!("expected Serve command"),
         }
