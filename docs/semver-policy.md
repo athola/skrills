@@ -4,7 +4,7 @@ This project is in its `0.x` release series. During this incubation period, we f
 
 ## Policy
 
-- **Compatibility**: While we try to maintain compatibility with the documented public API, the interface is still evolving. Consequently, fixes or additions that might be breaking changes may be introduced. All such modifications are recorded in [`docs/CHANGELOG.md`](docs/CHANGELOG.md).
+- **Compatibility**: We aim for compatibility with the documented public API, but the interface is evolving. Breaking changes may occur and will be recorded in [`docs/CHANGELOG.md`](docs/CHANGELOG.md).
 - **Feature Flags**: The `watch` feature, which enables filesystem watching, is optional. This feature gate should be considered when embedding the library into other projects to manage dependencies.
 - **Tooling Guardrails**: Our Continuous Integration (CI) pipeline has checks to prevent accidental changes to the public API. You must run local checks before submitting pull requests; refer to [`CONTRIBUTING.md`](CONTRIBUTING.md) for detailed instructions.
 

@@ -32,9 +32,9 @@ Use skrills as an MCP server for dynamic skill loading in both Claude Code and C
 ## Why Skrills
 Skrills manages skills and configurations for Claude Code and Codex CLI. It validates markdown files against Codex's strict YAML frontmatter requirements, analyzes token usage to manage context limits, and syncs configurations between tools. A single binary provides mirroring, diagnostics, and an MCP server.
 
-It solves specific friction points in dual-CLI workflows:
-- **Validation**: Claude Code is permissive, but Codex requires strict YAML frontmatter. Skrills validates against these rules.
-- **Safety**: The `sync-commands` tool checks file hashes before writing, preventing local customizations from being overwritten.
+Skrills addresses differences in validation, safety, and efficiency between the two CLIs:
+- **Validation**: Claude Code accepts raw markdown, while Codex enforces strict YAML frontmatter. Skrills validates against these rules.
+- **Safety**: The `sync-commands` tool checks file hashes before writing to prevent overwriting local customizations.
 - **Efficiency**: It reports token usage and suggests optimizations to help manage context window limits.
 
 ## Architecture (workspace crates)
@@ -127,7 +127,7 @@ Configure your MCP client to connect:
 
 ### Security Warning
 
-Phase 1 has **no authentication**. Only use on trusted networks or behind a reverse proxy with authentication.
+The current release has **no authentication**. Only use on trusted networks or behind a reverse proxy with authentication.
 
 For untrusted networks, use SSH tunneling:
 
@@ -147,26 +147,21 @@ The `--autofix` flag derives missing frontmatter from the file path and content.
 
 ## MCP Tools
 
-When running as an MCP server (`skrills serve`), the following tools are available:
+When running as an MCP server (`skrills serve`), several categories of tools become available:
 
-- `validate-skills` - Validate skills for CLI compatibility
-- `analyze-skills` - Analyze token usage and dependencies
-- `skill-metrics` - Aggregate statistics (quality, tokens, dependencies)
-- `resolve-dependencies` - Resolve direct or transitive dependencies/dependents for a skill URI
-- `sync-from-claude` - Copy Claude skills into the Codex mirror
-- `sync-skills` - Sync skills between Claude and Codex
-- `sync-commands` - Sync slash commands
-- `sync-mcp-servers` - Sync MCP configurations
-- `sync-preferences` - Sync preferences
-- `sync-all` - Sync everything
-- `sync-status` - Preview sync changes (dry run)
-- `recommend-skills` - Suggest related skills based on dependency relationships
-- `skill-loading-status` - Report skill roots, trace/probe install status, and marker coverage
-- `enable-skill-trace` - Install trace/probe skills and optionally instrument SKILL.md files with markers
-- `disable-skill-trace` - Remove trace/probe skill directories (does not remove markers)
-- `skill-loading-selftest` - Return a one-shot probe line and expected response to confirm skills are loading
+**Validation & Analysis**
+`validate-skills` checks CLI compatibility, while `analyze-skills` reports token usage and dependencies. `skill-metrics` aggregates quality and dependency statistics.
 
-> **Testing**: All skill loading tools include comprehensive test coverage covering edge cases, dry-run modes, and target validation for Claude, Codex, and Both targets.
+**Synchronization**
+A suite of sync tools (`sync-skills`, `sync-commands`, `sync-mcp-servers`, `sync-preferences`, `sync-all`) handles data transfer between Claude and Codex. `sync-from-claude` is a dedicated alias for copying Claude skills to the Codex mirror. `sync-status` provides a dry-run preview of changes.
+
+**Dependencies & Loading**
+`resolve-dependencies` finds direct or transitive relationships for a skill URI. `skill-loading-status` reports on root scanning and marker coverage. `enable-skill-trace` and `disable-skill-trace` manage debug skills for tracing, while `skill-loading-selftest` confirms loading via a probe.
+
+**Intelligence**
+`recommend-skills` suggests related skills based on dependencies. `recommend-skills-smart` adds usage patterns and project context to recommendations. `analyze-project-context` scans languages and frameworks to inform suggestions. `suggest-new-skills` identifies gaps, and `create-skill` generates new skills via GitHub search, LLM generation, or empirical patterns. `search-skills-github` and `search-skills-fuzzy` provide search capabilities.
+
+> **Testing**: Tool handler tests cover edge cases, dry-run modes, and target validation for Claude, Codex, and both targets.
 
 ### Intelligence tools
 - `recommend-skills-smart` - Smart recommendations using dependencies, usage patterns, and project context
@@ -237,7 +232,7 @@ Deviation scoring compares actual skill-assisted outcomes against category basel
 - Subagents ship **on by default**: binaries are built with the `subagents` feature.
 - `SKRILLS_SUBAGENTS_EXECUTION_MODE` — default subagent mode (`cli` or `api`, default `cli`).
 - `SKRILLS_SUBAGENTS_DEFAULT_BACKEND` — default API backend (`codex` or `claude`) when `execution_mode=api`.
-- `SKRILLS_CLI_BINARY` — override CLI binary for headless subagents (auto uses current client; fallback `claude`).
+- `SKRILLS_CLI_BINARY` — override CLI binary for headless subagents (auto uses current client; default `claude`).
 - `~/.claude/subagents.toml` or `~/.codex/subagents.toml` — optional defaults (`execution_mode`, `cli_binary`, `default_backend`; `cli_binary = "auto"` follows current client using CLI env or server path).
 
 ## Documentation
@@ -257,13 +252,13 @@ make fmt lint test --quiet
 ```
 - Rust toolchain ≥ 1.75 recommended.
 - End-to-end MCP tests are in `crates/server/tests/`; sample agents in `crates/subagents/`.
-- Comprehensive tool handler tests cover edge cases, dry-run modes, and target validation for all MCP tools (see `crates/server/src/app/tests.rs`).
+- Tool handler tests cover edge cases, dry-run modes, and target validation for all MCP tools (see `crates/server/src/app/tests.rs`).
 
 ## Skill loading validation (Claude Code and Codex)
 
-Neither Claude Code nor Codex CLI guarantees a built-in, user-visible report of which `SKILL.md` files were injected into the current prompt. Skrills provides an opt-in, deterministic workflow for validation:
+Claude Code and Codex CLI do not inherently report which `SKILL.md` files were injected into the current prompt. Skrills provides an opt-in, deterministic workflow for validation:
 
-This workflow is for debugging. The trace/probe skills add prompt overhead; remove them when finished.
+This workflow helps with debugging. The trace/probe skills add prompt overhead; remove them when finished.
 
 1. Call `enable-skill-trace` (use `dry_run: true` to preview). This installs two debug skills and can instrument skill files by appending `<!-- skrills-skill-id: ... -->` markers (with optional backups).
 2. Restart the Claude/Codex session if the client does not hot-reload skills.

@@ -6,16 +6,16 @@ This document provides essential guidelines for building AI coding agents that p
 
 ## Guiding Principles
 
-- **Iterate Incrementally**: Prioritize small, functional changes as they are generally safer and more manageable than attempting extensive rewrites
-- **Adapt to Project Conventions**: Recognize that each project maintains its unique set of conventions. Adapt to these established patterns rather than rigidly adhering to a prescribed set of external rules
-- **Engineer Pragmatically**: Strive for a balanced approach to engineering, carefully weighing trade-offs such as performance, readability, and security within the specific project context
-- **Base Decisions on Evidence**: Ground all technical decisions in empirical data, drawing insights from profiling, metrics, and other measurable observations, rather than relying solely on intuition
-- **Explore Diverse Solutions**: Generate and evaluate multiple potential approaches before committing to a single one, thereby avoiding the tendency to settle on the initial idea
-- **Prioritize Simplicity**: Favor simple, well-established solutions. If code necessitates extensive commenting to convey its intent, it is often an indicator that refactoring is required for clarity
-- **Single Responsibility Principle**: Adhere to the Single Responsibility Principle, ensuring that each component serves one distinct and clearly defined purpose
-- **Defer Abstraction**: Refrain from introducing abstractions until a clear and recurring pattern has been unequivocally identified (e.g., as per the Rule of Three)
-- **Document Assumptions**: When proposing solutions, explicitly document their advantages, disadvantages, and your confidence level. This practice fosters transparency in the decision-making process
-- **Cultivate Design Diversity**: Actively explore and embrace different approaches to problem-solving to avoid "mode collapse," a state where one habitually applies the same design pattern to every challenge
+- **Iterate Incrementally**: Prioritize small, functional changes. They are safer and easier to manage than large rewrites.
+- **Adapt to Project Conventions**: Each project has its own conventions. Adapt to them rather than sticking to external rules.
+- **Engineer Pragmatically**: Balance trade-offs like performance, readability, and security within the context.
+- **Base Decisions on Evidence**: Ground technical decisions in data (profiling, metrics) rather than intuition.
+- **Explore Diverse Solutions**: Generate and evaluate multiple approaches before committing to one.
+- **Prioritize Simplicity**: Favor simple, standard solutions. Code that needs extensive comments usually needs refactoring.
+- **Single Responsibility Principle**: Each component should serve one distinct, clearly defined purpose.
+- **Defer Abstraction**: Avoid abstractions until a clear pattern is identified (e.g., Rule of Three).
+- **Document Assumptions**: Explicitly document advantages, disadvantages, and confidence levels. This fosters transparency.
+- **Cultivate Design Diversity**: Explore different approaches to avoid applying the same pattern to every problem ("mode collapse").
 
 ---
 
@@ -23,27 +23,27 @@ This document provides essential guidelines for building AI coding agents that p
 
 ### Implementation Cycle
 
-1. **Understand**: Begin by thoroughly reading existing code, identifying established patterns, and reviewing associated tests
-2. **Explore**: Develop multiple viable approaches, clearly articulating their respective trade-offs
-3. **Test**: When applicable, author a failing test case prior to implementing new code to drive development
-4. **Implement**: Write the minimal amount of code necessary to satisfy the test case
-5. **Refactor**: Refine and clean the code while ensuring all tests continue to pass
-6. **Commit**: Craft a clear and concise commit message that elucidates the rationale behind the change
+1. **Understand**: Read existing code, identify patterns, and review tests.
+2. **Explore**: Develop multiple viable approaches and articulate their trade-offs.
+3. **Test**: Write a failing test case before implementing new code (when applicable).
+4. **Implement**: Write the minimal code necessary to pass the test.
+5. **Refactor**: Clean the code while ensuring tests pass.
+6. **Commit**: Write a clear commit message explaining the change.
 
 ### When Stuck
 
-If you have made three unsuccessful attempts to solve a problem:
+If you fail three times:
 
-1. Document all failures, including full error outputs
-2. Investigate two or three alternative approaches to the problem
-3. Critically re-evaluate underlying assumptions about the problem
-4. Experiment with a fundamentally different or simpler approach
-5. If the issue persists, seek assistance, providing comprehensive context from the preceding steps
+1. Document failures and error outputs.
+2. Investigate 2-3 alternative approaches.
+3. Re-evaluate underlying assumptions.
+4. Experiment with a simpler approach.
+5. If the issue persists, ask for help with context from the previous steps.
 
 ### Session Management
 
-- Utilize the session history to analyze errors and monitor the progression of the development process
-- For complex tasks, consider documenting the current state and then clearing the session to initiate a fresh start
+- Use session history to analyze errors and monitor progress.
+- For complex tasks, document the current state, then clear the session and restart.
 
 ---
 
@@ -53,15 +53,15 @@ If you have made three unsuccessful attempts to solve a problem:
 
 Every commit must:
 
-- The codebase must compile or build successfully
-- All existing tests must pass, with no tests skipped
-- New functionality must be accompanied by corresponding new tests
-- The code must adhere to project linting rules and produce no warnings
-- Each commit must include a clear message explaining the change's rationale
+- Compile or build successfully.
+- Pass all existing tests.
+- Include tests for new functionality.
+- Follow linting rules (no warnings).
+- Include a clear message explaining the rationale.
 
 ### Pre-Commit Workflow
 
-Execute the following command prior to committing to ensure all quality checks pass:
+Run this before committing:
 
 ```bash
 make fmt lint test --quiet build
@@ -69,10 +69,10 @@ make fmt lint test --quiet build
 
 ### Effective Prompting
 
-A structured prompt increases the likelihood of high-quality results. Request detailed comparisons of approaches, with implementation outlines, trade-offs, and complexity assessments.
+A structured prompt increases the chance of high-quality results. Request detailed comparisons, implementation outlines, trade-offs, and complexity assessments.
 
 ### Role Prompting
-Assigning a specific role to an agent enhances performance by providing a focused perspective (e.g., a security expert or a senior developer). Precise role definitions improve output quality.
+Assigning a specific role to an agent can enhance its performance by providing a focused perspective (e.g., a security expert or a senior developer). The precision of the role definition directly correlates with the quality of the agent's output.
 
 Using XML tags can also help structure prompts and responses:
 ```xml
@@ -139,52 +139,52 @@ When evaluating and selecting between different approaches, the following factor
 - **Measure Before Optimizing**: Avoid premature optimization; first, identify performance bottlenecks through profiling tools before attempting to optimize code.
 - **Prioritize Macro-Optimizations**: Recognize that algorithmic and architectural improvements yield significantly greater performance impacts compared to micro-optimizations.
 - **Document Performance Trade-offs**: If a security measure introduces a performance impact, document this trade-off and provide a clear explanation of its necessity.
-- **Strategize Cache Invalidation**: Develop a clear and robust strategy for invalidating caches whenever underlying data undergoes modification.
+- **Strategize Cache Invalidation**: Develop a reliable strategy for invalidating caches whenever underlying data undergoes modification.
 
 ---
 
 ## Integrating with Existing Codebases
 
 ### Learning a New Codebase
-Prior to initiating code development, thoroughly familiarize yourself with the existing project codebase:
-1. Identify at least three existing features that closely resemble the functionality you intend to build.
-2. Pinpoint common patterns for error handling, testing methodologies, and naming conventions within the project.
-3. Leverage the project's established libraries and utility functions.
-4. Adhere to established patterns and best practices for writing tests within the codebase.
+Before starting:
+1. Identify at least three existing features similar to what you intend to build.
+2. Identify patterns for error handling, testing, and naming.
+3. Use established libraries and utility functions.
+4. Follow established testing patterns.
 
 ### Tooling and Dependencies
-- Utilize the project's established tools and systems.
-- Refrain from introducing new tools or external dependencies without a clear and compelling justification.
-- Adhere strictly to project conventions and established patterns.
-- Prioritize the use of built-in functionality over introducing new external dependencies.
+- Use established tools and systems.
+- Avoid new tools or external dependencies without a clear justification.
+- Stick to project conventions.
+- Prefer built-in functionality over new dependencies.
 
 ### Automation and Consistency
-- Employ automation (e.g., GitHub Actions) for conducting pull request checks.
-- Ensure consistent configuration across the codebase, particularly within a monorepo structure.
-- Endeavor to maintain consistent patterns across all projects within the organization.
+- Use automation (e.g., GitHub Actions) for PR checks.
+- Ensure consistent configuration (especially in monorepos).
+- Maintain consistent patterns across projects.
 
 ---
 
 ## Context Management
 
 ### Command Optimization
-To maintain clear context and avoid overwhelming output, refrain from executing commands that generate excessive verbose output. Strive for specificity.
+To maintain clear context and avoid overwhelming output, avoid executing commands that generate excessive output. Be specific.
 
 **Verbose commands to avoid:**
-- `npm install` or `pip install` without employing a quiet flag.
-- `git log` or `git diff` without specifying output limits.
-- `ls -la` or `find .` without imposing result limits.
+- `npm install` or `pip install` without a quiet flag.
+- `git log` or `git diff` without output limits.
+- `ls -la` or `find .` without limits.
 
 **Targeted commands to use instead:**
-- For quieter installations, use `npm install --silent` or `pip install --quiet`.
-- For concise Git history, employ `git log --oneline -5` or `git diff --stat`.
-- To limit file listings, use `ls -1 | head -20` or `find . -name "*.py" | head -10`.
+- `npm install --silent` or `pip install --quiet`.
+- `git log --oneline -5` or `git diff --stat`.
+- `ls -1 | head -20` or `find . -name "*.py" | head -10`.
 
 ### Session Management
-- Utilize `/context` to monitor token usage during sessions.
-- Exercise caution with `/compact` due to its potential for opacity and error-proneness.
-- Employ `/clear` and `/catchup` commands to facilitate clean session restarts.
-- Resume sessions when necessary to analyze errors effectively.
+- Use `/context` to monitor token usage.
+- Use `/compact` cautiously (it can hide errors).
+- Use `/clear` and `/catchup` to clean up sessions.
+- Resume sessions to analyze errors.
 
 ---
 
@@ -300,7 +300,7 @@ Agents can be registered via:
 For detailed configuration options, see `docs/runtime-options.md` and `book/src/cli.md`.
 
 <!-- available_skills:start -->
-<!-- Skills discovered dynamically. Last sync: 1767394163 UTC. Total: 1 skills. -->
+<!-- Skills discovered dynamically. Last sync: 1765958141 UTC. Total: 120 skills. -->
 <!-- Use CLI commands for current skill inventory:
      jq -r '.skills[].path' ~/.codex/skills-cache.json
      find ~/.codex/skills -name SKILL.md -type f
@@ -308,3 +308,11 @@ For detailed configuration options, see `docs/runtime-options.md` and `book/src/
      skrills doctor            - View discovery diagnostics
 -->
 <!-- available_skills:end -->
+
+<!-- available_agents:start -->
+<!-- Agents discovered dynamically. Total: 291 agents. -->
+<!-- Use CLI commands for current agent inventory:
+     skrills sync-agents       - Sync agents from external sources
+     skrills doctor            - View agent discovery diagnostics
+-->
+<!-- available_agents:end -->

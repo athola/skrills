@@ -1,6 +1,6 @@
 //! Skill analysis: token counting, dependencies, and optimization.
 //!
-//! This crate provides comprehensive analysis of SKILL.md files:
+//! This crate provides analysis of SKILL.md files:
 //! - Token estimation with section breakdown
 //! - Dependency analysis (local files, external URLs)
 //! - Optimization suggestions

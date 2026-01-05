@@ -102,7 +102,7 @@ impl Default for AnalyzeProjectOptions {
     }
 }
 
-/// Analyze a project directory and build a comprehensive profile.
+/// Analyze a project directory and build a profile.
 pub fn analyze_project(root: &Path) -> Result<ProjectProfile> {
     analyze_project_with_options(root, AnalyzeProjectOptions::default())
 }

@@ -130,7 +130,7 @@ EOF
 
 ### Planned Enhancements
 
-#### Rate Limiting (Q4 2025)
+#### Rate Limiting
 - Token bucket algorithm.
 - Per-client limits.
 - Per-operation costs.
@@ -142,7 +142,7 @@ EOF
 
 ---
 
-#### Enhanced Audit Logging (Q4 2025)
+#### Enhanced Audit Logging
 - mTLS authentication and API key validation failures.
 - Authorization decisions and configuration changes.
 - Tamper-evident logging.
@@ -153,7 +153,7 @@ EOF
 
 ---
 
-#### Skill Signing & Verification (Q1 2026)
+#### Skill Signing & Verification
 - Cryptographic signatures for skills.
 - Publisher verification and trust framework.
 - Revocation mechanism.
