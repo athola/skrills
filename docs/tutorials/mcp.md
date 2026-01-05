@@ -6,11 +6,12 @@ This tutorial shows how to use Skrills as an MCP server and **test MCP tool func
 
 ## Overview
 
-Skrills can run as an MCP (Model Context Protocol) server, providing tools for:
-- **autoload-snippet**: Load skill content dynamically
-- **search-skills**: Search skills by name or content
-- **resolve-dependencies**: Find skill dependencies
-- **recommend-skills**: Get skill recommendations
+Skrills can run as an MCP (Model Context Protocol) server, providing:
+- **Skills as Resources**: Each discovered skill is exposed as an MCP resource
+- **search-skills-fuzzy**: Fuzzy search skills by name or content
+- **resolve-dependencies**: Find skill dependencies and dependents
+- **recommend-skills**: Get related skill recommendations
+- **skill-metrics**: View aggregate skill statistics
 
 ## Setup
 
@@ -60,19 +61,23 @@ You should see output like:
 skrills: skrills serve - ✓ Connected
 ```
 
-### Step 2: Test MCP Tools in Claude Code CLI
+### Step 2: Test MCP Resources in Claude Code CLI
 
-Use `claude -p` (print mode) to test MCP tools non-interactively:
+Use `claude -p` (print mode) to test MCP features non-interactively:
 
 ```bash
-claude -p "Use the mcp__skrills__autoload-snippet tool to load the skill from skrills://skill/coding-assistant and show its content" --model haiku
+# List available skill resources
+claude -p "List all MCP resources from the skrills server" --model haiku
+
+# Search for skills
+claude -p "Use mcp__skrills__search-skills-fuzzy with query 'coding'" --model haiku
 ```
 
 This command:
 - Starts Claude Code in non-interactive mode (`-p`)
-- Sends a prompt that invokes the MCP tool
+- Sends a prompt that invokes MCP resources/tools
 - Uses the haiku model for faster/cheaper testing
-- Displays the skill content loaded via MCP
+- Returns discovered skills and their content
 
 ### Step 3: Interactive Testing
 
@@ -87,16 +92,27 @@ Then try prompts like:
 - "Load the debug-helper skill using MCP"
 - "Show me skill recommendations for API work"
 
-## Available MCP Tools
+## Available MCP Features
 
-When running as an MCP server, skrills provides these tools to Claude Code:
+### Resources
 
-| Tool | Description | Example Usage |
-|------|-------------|---------------|
-| `mcp__skrills__autoload-snippet` | Load skill content by URI | `skrills://skill/coding-assistant` |
-| `mcp__skrills__search-skills` | Search skills by name/content | "search for testing skills" |
-| `mcp__skrills__resolve-dependencies` | Find dependencies for a skill | "what does debug-helper depend on" |
-| `mcp__skrills__recommend-skills` | Get related skill recommendations | "recommend skills for API work" |
+Skills are exposed as MCP resources with URIs like `skill://skrills/{source}/{name}`:
+- Use `ListMcpResourcesTool` to list available skills
+- Use `ReadMcpResourceTool` to read skill content
+
+### Tools
+
+When running as an MCP server, skrills provides these tools:
+
+| Tool | Description |
+|------|-------------|
+| `search-skills-fuzzy` | Fuzzy search skills by name or content |
+| `recommend-skills` | Get related skill recommendations based on dependencies |
+| `recommend-skills-smart` | AI-powered skill recommendations |
+| `resolve-dependencies` | Find dependencies or dependents for a skill |
+| `skill-metrics` | View aggregate statistics about discovered skills |
+| `validate-skills` | Validate skills for compatibility |
+| `analyze-skills` | Analyze skills for token usage and optimization |
 
 ## Troubleshooting
 

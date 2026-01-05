@@ -17,7 +17,7 @@ Env PATH "/home/alext/.nvm/versions/node/v25.2.1/bin:/home/alext/.local/bin:/hom
 Env SKRILLS_SKILL_DIR "/home/alext/skrills/assets/demo-skills"
 
 # Title
-Type "# Skrills MCP Server: Testing with Claude Code"
+Type "# Skrills MCP Server: Skills via Model Context Protocol"
 Enter
 Sleep 800ms
 Type "clear"
@@ -28,9 +28,9 @@ Sleep 400ms
 Type "# Skrills provides an MCP server for Claude Code"
 Enter
 Sleep 500ms
-Type "skrills serve --help | head -15"
+Type "skrills serve --help | head -12"
 Enter
-Sleep 3s
+Sleep 6s
 
 # Show MCP configuration format
 Type "# Add to ~/.claude/settings.local.json mcpServers section:"
@@ -46,34 +46,31 @@ Enter
 Sleep 500ms
 Type "claude mcp list | grep skrills"
 Enter
-Sleep 3s
+Sleep 10s
 
-# Test MCP tool inside Claude Code CLI
-Type "# Test the autoload-snippet MCP tool inside Claude Code"
+# Show available MCP tools
+Type "# Available MCP tools:"
 Enter
 Sleep 500ms
-Type "claude -p 'Use mcp__skrills__autoload-snippet to load skrills://skill/coding-assistant' --model haiku --max-budget-usd 0.05 2>&1 | head -30"
+Type "echo 'create-skill, search-skills-github, sync-from-claude, sync-skills'"
 Enter
-Sleep 15s
-
-# Show what tools are available
-Type "# Skrills MCP provides these tools to Claude Code:"
+Sleep 1s
+Type "echo 'sync-commands, sync-mcp-servers, sync-preferences, sync-all'"
 Enter
-Sleep 500ms
-Type "echo 'mcp__skrills__autoload-snippet - Load skill content'"
-Enter
-Sleep 400ms
-Type "echo 'mcp__skrills__search-skills - Search by name/content'"
-Enter
-Sleep 400ms
-Type "echo 'mcp__skrills__resolve-dependencies - Find dependencies'"
-Enter
-Sleep 400ms
-Type "echo 'mcp__skrills__recommend-skills - Get recommendations'"
+Sleep 1s
+Type "echo 'validate-skills, analyze-skills, skill-metrics, recommend-skills'"
 Enter
 Sleep 2s
 
+# Show skill discovery
+Type "# See discovered skills via CLI"
+Enter
+Sleep 500ms
+Type "skrills metrics"
+Enter
+Sleep 6s
+
 # Final message
-Type "# MCP tools work seamlessly inside Claude Code!"
+Type "# Skills work seamlessly with Claude Code via MCP!"
 Enter
 Sleep 2s
