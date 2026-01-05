@@ -13,7 +13,7 @@ Set TypingSpeed 50ms
 Set Shell "bash"
 
 # Set up environment
-Env PATH "/home/alext/.local/bin:/home/alext/skrills/target/release:/usr/local/bin:/usr/bin:/bin"
+Env PATH "/home/alext/.nvm/versions/node/v25.2.1/bin:/home/alext/.local/bin:/home/alext/skrills/target/release:/usr/local/bin:/usr/bin:/bin"
 Env SKRILLS_SKILL_DIR "/home/alext/skrills/assets/demo-skills"
 
 # Title
@@ -32,11 +32,11 @@ Type "skrills serve --help | head -15"
 Enter
 Sleep 3s
 
-# Show MCP configuration
-Type "# MCP configuration in ~/.claude/settings.local.json"
+# Show MCP configuration format
+Type "# Add to ~/.claude/settings.local.json mcpServers section:"
 Enter
 Sleep 500ms
-Type "cat ~/.claude/settings.local.json | grep -A 5 skrills"
+Type "# skrills: { command: skrills, args: [serve] }"
 Enter
 Sleep 2s
 
