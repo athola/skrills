@@ -555,4 +555,198 @@ mod store_tests {
 
         let _ = lock_task.await;
     }
+
+    #[tokio::test]
+    async fn test_update_status_nonexistent_run_returns_error() {
+        let store = MemRunStore::new();
+        let fake_id = RunId(uuid::Uuid::new_v4());
+        let status = RunStatus {
+            state: RunState::Running,
+            message: Some("test".into()),
+            updated_at: OffsetDateTime::now_utc(),
+        };
+        let result = store.update_status(fake_id, status).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("run not found"),
+            "expected 'run not found' error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_append_event_nonexistent_run_returns_error() {
+        let store = MemRunStore::new();
+        let fake_id = RunId(uuid::Uuid::new_v4());
+        let event = RunEvent {
+            ts: OffsetDateTime::now_utc(),
+            kind: "test".into(),
+            data: None,
+        };
+        let result = store.append_event(fake_id, event).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("run not found"),
+            "expected 'run not found' error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stop_already_completed_run_returns_false() {
+        let store = MemRunStore::new();
+        let run_id = store.create_run(sample_request()).await.unwrap();
+
+        // Mark as succeeded
+        store
+            .update_status(
+                run_id,
+                RunStatus {
+                    state: RunState::Succeeded,
+                    message: Some("done".into()),
+                    updated_at: OffsetDateTime::now_utc(),
+                },
+            )
+            .await
+            .unwrap();
+
+        // Stop should return false for already-completed runs
+        let stopped = store.stop(run_id).await.unwrap();
+        assert!(!stopped, "stop() should return false for completed runs");
+
+        // Verify status is still Succeeded (not changed to Canceled)
+        let status = store.status(run_id).await.unwrap().unwrap();
+        assert_eq!(status.state, RunState::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn test_stop_already_failed_run_returns_false() {
+        let store = MemRunStore::new();
+        let run_id = store.create_run(sample_request()).await.unwrap();
+
+        // Mark as failed
+        store
+            .update_status(
+                run_id,
+                RunStatus {
+                    state: RunState::Failed,
+                    message: Some("error".into()),
+                    updated_at: OffsetDateTime::now_utc(),
+                },
+            )
+            .await
+            .unwrap();
+
+        // Stop should return false for already-failed runs
+        let stopped = store.stop(run_id).await.unwrap();
+        assert!(!stopped, "stop() should return false for failed runs");
+    }
+
+    #[tokio::test]
+    async fn test_stop_already_canceled_run_returns_false() {
+        let store = MemRunStore::new();
+        let run_id = store.create_run(sample_request()).await.unwrap();
+
+        // First stop succeeds
+        let first_stop = store.stop(run_id).await.unwrap();
+        assert!(first_stop, "first stop() should succeed");
+
+        // Second stop returns false (already canceled)
+        let second_stop = store.stop(run_id).await.unwrap();
+        assert!(
+            !second_stop,
+            "stop() should return false for already-canceled runs"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stop_nonexistent_run_returns_error() {
+        let store = MemRunStore::new();
+        let fake_id = RunId(uuid::Uuid::new_v4());
+        let result = store.stop(fake_id).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("run not found"),
+            "expected 'run not found' error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_state_store_corrupted_file_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runs.json");
+        fs::write(&path, "{ corrupted json }").unwrap();
+
+        let result = StateRunStore::new(path);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(
+            err.to_string().contains("failed to")
+                || err.to_string().contains("parse")
+                || err.to_string().contains("invalid"),
+            "expected parse/initialization error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_state_store_update_status_nonexistent_run_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runs.json");
+        let store = StateRunStore::new(path).unwrap();
+
+        let fake_id = RunId(uuid::Uuid::new_v4());
+        let status = RunStatus {
+            state: RunState::Running,
+            message: Some("test".into()),
+            updated_at: OffsetDateTime::now_utc(),
+        };
+        let result = store.update_status(fake_id, status).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_state_store_append_event_nonexistent_run_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runs.json");
+        let store = StateRunStore::new(path).unwrap();
+
+        let fake_id = RunId(uuid::Uuid::new_v4());
+        let event = RunEvent {
+            ts: OffsetDateTime::now_utc(),
+            kind: "test".into(),
+            data: None,
+        };
+        let result = store.append_event(fake_id, event).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_state_store_stop_already_completed_run_returns_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runs.json");
+        let store = StateRunStore::new(path).unwrap();
+        let run_id = store.create_run(sample_request()).await.unwrap();
+
+        // Mark as succeeded
+        store
+            .update_status(
+                run_id,
+                RunStatus {
+                    state: RunState::Succeeded,
+                    message: Some("done".into()),
+                    updated_at: OffsetDateTime::now_utc(),
+                },
+            )
+            .await
+            .unwrap();
+
+        // Stop should return false
+        let stopped = store.stop(run_id).await.unwrap();
+        assert!(!stopped);
+    }
 }

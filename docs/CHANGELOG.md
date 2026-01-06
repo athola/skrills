@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.4.5 - 2026-01-03
+- **Testing**: Added comprehensive test coverage for tool handler functions including `parse_trace_target`, `skill_loading_status_tool`, `skill_loading_selftest_tool`, and `disable_skill_trace_tool`. Tests cover edge cases, dry-run modes, and target validation for Claude, Codex, and Both trace targets.
+
 ## 0.4.4 - 2026-01-02
 - **NEW: Empirical Skill Creation**: Generate skills from observed session patterns via `--method empirical`. Clusters successful tool sequences and failure patterns from Claude Code/Codex CLI history.
 - **NEW: Comparative Recommendations**: Deviation scoring compares actual skill-assisted outcomes against category baselines (Testing, Debugging, Documentation, etc.) to identify underperforming skills.

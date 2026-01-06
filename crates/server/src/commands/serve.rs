@@ -2,6 +2,7 @@
 
 use crate::app::{start_fs_watcher, SkillService};
 use crate::discovery::merge_extra_dirs;
+use crate::tool_schemas::all_tools;
 use crate::trace::stdio_with_optional_trace;
 use anyhow::{anyhow, Result};
 use rmcp::service::serve_server;
@@ -17,7 +18,29 @@ pub(crate) fn handle_serve_command(
     trace_wire: bool,
     #[cfg(feature = "watch")] watch: bool,
     http: Option<String>,
+    list_tools: bool,
 ) -> Result<()> {
+    // Handle --list-tools: print tool names and exit
+    if list_tools {
+        let tools = all_tools();
+        println!("Available MCP tools ({} total):", tools.len());
+        println!();
+        for tool in &tools {
+            println!("  {}", tool.name);
+            if let Some(ref desc) = tool.description {
+                // Truncate description to first line or 80 chars
+                let short_desc = desc.lines().next().unwrap_or("");
+                let display = if short_desc.len() > 72 {
+                    format!("{}...", &short_desc[..69])
+                } else {
+                    short_desc.to_string()
+                };
+                println!("    {}", display);
+            }
+        }
+        return Ok(());
+    }
+
     let ttl = cache_ttl_ms
         .map(Duration::from_millis)
         .unwrap_or_else(|| cache_ttl(&load_manifest_settings));

@@ -24,13 +24,20 @@ pub struct CodexAdapter {
 
 impl CodexAdapter {
     pub fn new(model: String) -> Result<Self> {
-        let config = AdapterConfig::from_env("CODEX", &model, DEFAULT_BASE, DEFAULT_TIMEOUT_MS)
-            .unwrap_or_else(|_| AdapterConfig {
-                api_key: String::new(),
-                base_url: Url::parse(DEFAULT_BASE).expect("valid default base"),
-                model,
-                timeout: Duration::from_millis(DEFAULT_TIMEOUT_MS),
-            });
+        let config =
+            match AdapterConfig::from_env("CODEX", &model, DEFAULT_BASE, DEFAULT_TIMEOUT_MS) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(error = %e, "adapter config unavailable; API calls will fail");
+                    AdapterConfig {
+                        api_key: String::new(),
+                        base_url: Url::parse(DEFAULT_BASE)
+                            .expect("DEFAULT_BASE constant must be a valid URL"),
+                        model,
+                        timeout: Duration::from_millis(DEFAULT_TIMEOUT_MS),
+                    }
+                }
+            };
         Self::with_config(config)
     }
 
@@ -658,6 +665,18 @@ mod tests {
         // Note: Actual execution requires a valid API key
         assert!(
             adapter.config.api_key.is_empty() || adapter.config.api_key == "skrills_codex_api_key"
+        );
+    }
+
+    #[test]
+    fn default_base_url_is_valid() {
+        // Validates that DEFAULT_BASE is a well-formed URL at test time.
+        // This documents the invariant and catches any changes to the const
+        // that would break URL parsing.
+        assert!(
+            Url::parse(DEFAULT_BASE).is_ok(),
+            "DEFAULT_BASE must be a valid URL: {}",
+            DEFAULT_BASE
         );
     }
 }

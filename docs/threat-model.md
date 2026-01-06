@@ -272,10 +272,10 @@ flowchart TD
 ## Future Enhancements
 
 ### Roadmap
-1. **Skill Signing (Q1 2026)**: Implement cryptographic signatures for skills, establish publisher verification processes, and develop a robust trust framework.
-2. **Rate Limiting (Q4 2025)**: Introduce a token bucket algorithm for rate limiting, implement per-client limits, and provide flexible configuration options.
-3. **Audit Logging (Q4 2025)**: Develop structured audit events, implement tamper-evident logs, and enable seamless SIEM integration.
-4. **Secrets Management (Q1 2026)**: Automate key rotation, integrate with Hardware Security Modules (HSM), and provide HashiCorp Vault support.
+1. **Skill Signing**: Implement cryptographic signatures for skills, establish publisher verification processes, and develop a robust trust framework.
+2. **Rate Limiting**: Introduce a token bucket algorithm for rate limiting, implement per-client limits, and provide flexible configuration options.
+3. **Audit Logging**: Develop structured audit events, implement tamper-evident logs, and enable seamless SIEM integration.
+4. **Secrets Management**: Automate key rotation, integrate with Hardware Security Modules (HSM), and provide HashiCorp Vault support.
 
 ---
 
