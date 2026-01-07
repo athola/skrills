@@ -181,7 +181,7 @@ flowchart TD
 - Tracking of all configuration changes.
 - Auditing of skill access and usage.
 
-**See**: Audit Logging (TODO: create docs/audit-logging.md)
+**See**: [Audit Logging](audit-logging.md)
 
 #### Secrets Management
 - Robust key rotation mechanisms.
@@ -237,7 +237,7 @@ flowchart TD
 - **CWE Top 25**: We consider the CWE Top 25, focusing on preventing issues like Path Traversal, Missing Authentication, and Resource Exhaustion.
 - **NIST CSF**: Our security practices align with the NIST Cybersecurity Framework, encompassing its core functions: Identify, Protect, Detect, Respond, and Recover.
 
-**See**: [Compliance in `audit-logging.md`](audit-logging.md#compliance)
+**See**: [Compliance section in Audit Logging](audit-logging.md#compliance)
 
 ---
 

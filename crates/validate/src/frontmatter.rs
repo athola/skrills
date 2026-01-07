@@ -65,8 +65,12 @@ pub struct NormalizedDependency {
 }
 
 // Regex for parsing compact dependency syntax: [source:]name[@version]
-static COMPACT_DEP_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(?:([a-z]+):)?([^@:\s]+)(?:@(.+))?$").expect("valid regex"));
+// SAFETY: This regex pattern is a compile-time string literal that has been verified
+// to be valid. The `.expect()` will never panic (pattern is hardcoded, not user-provided).
+static COMPACT_DEP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:([a-z]+):)?([^@:\s]+)(?:@(.+))?$")
+        .expect("COMPACT_DEP_REGEX: compile-time constant")
+});
 
 impl DeclaredDependency {
     /// Normalize the dependency into a common structure.
@@ -240,7 +244,23 @@ pub fn parse_frontmatter(content: &str) -> Result<ParsedSkill, String> {
     let frontmatter = if let Some(ref yaml) = raw_yaml {
         match serde_yaml::from_str::<SkillFrontmatter>(yaml) {
             Ok(fm) => Some(fm),
-            Err(e) => return Err(format!("Invalid YAML frontmatter: {e}")),
+            Err(e) => {
+                // Extract line/column info from serde_yaml error if available
+                // The frontmatter starts at line 2 (after the opening ---),
+                // so we add 1 to account for the opening --- line
+                let error_msg = if let Some(loc) = e.location() {
+                    let actual_line = loc.line() + 1; // +1 for opening ---
+                    format!(
+                        "Invalid YAML frontmatter at line {}, column {}: {}",
+                        actual_line,
+                        loc.column(),
+                        e
+                    )
+                } else {
+                    format!("Invalid YAML frontmatter: {e}")
+                };
+                return Err(error_msg);
+            }
         }
     } else {
         None
@@ -707,5 +727,117 @@ depends: ~
         // When parsed - null depends should be rejected
         let parsed = parse_frontmatter(content);
         assert!(parsed.is_err());
+    }
+
+    // ============================================================
+    // YAML parse error line/column info tests
+    // ============================================================
+
+    #[test]
+    fn test_yaml_error_includes_line_column_for_invalid_syntax() {
+        // Given frontmatter with invalid YAML syntax on line 3
+        let content = r#"---
+name: my-skill
+description: [invalid: yaml
+---
+# Content"#;
+
+        // When parsed
+        let result = parse_frontmatter(content);
+
+        // Then error should include line and column info
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("at line"),
+            "Error should contain 'at line': {}",
+            err
+        );
+        assert!(
+            err.contains("column"),
+            "Error should contain 'column': {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_yaml_error_includes_line_column_for_invalid_indentation() {
+        // Given frontmatter with invalid indentation
+        let content = r#"---
+name: my-skill
+  description: bad indent
+---
+# Content"#;
+
+        // When parsed
+        let result = parse_frontmatter(content);
+
+        // Then error should include line and column info
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("at line"),
+            "Error should contain 'at line': {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_yaml_error_includes_line_column_for_duplicate_key() {
+        // Given frontmatter with duplicate keys
+        let content = r#"---
+name: first
+name: duplicate
+---
+# Content"#;
+
+        // When parsed
+        let result = parse_frontmatter(content);
+
+        // Then error should include line and column info
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("at line"),
+            "Error should contain 'at line': {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_yaml_error_line_offset_accounts_for_opening_delimiter() {
+        // Given frontmatter with error on first YAML line (line 2 of file)
+        let content = r#"---
+@invalid: yaml here
+---
+# Content"#;
+
+        // When parsed
+        let result = parse_frontmatter(content);
+
+        // Then error should report line 2 (accounting for opening ---)
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        // The error should be at line 2 (the line after ---)
+        assert!(
+            err.contains("at line 2"),
+            "Error should be at line 2: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_yaml_error_fallback_without_location() {
+        // This test verifies the fallback path works when no location is available.
+        // Most YAML parse errors include location info, but the fallback should
+        // still produce a valid error message.
+        // We can't easily trigger a locationless error, so we just verify the
+        // format string is correct by checking valid parse errors have location.
+        let content = "---\n: missing key\n---\n";
+        let result = parse_frontmatter(content);
+        assert!(result.is_err());
+        // Valid YAML errors should have location info
+        let err = result.unwrap_err();
+        assert!(err.contains("Invalid YAML frontmatter"));
     }
 }

@@ -33,3 +33,5 @@ trigram = "0.4"
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+wiremock = "0.6"
+serial_test = "3.0"

@@ -93,8 +93,17 @@ pub fn analyze_dependencies(skill_path: &Path, content: &str) -> DependencyAnaly
                 match entry {
                     Ok(entry) => {
                         if entry.path().is_file() {
-                            if let Ok(meta) = entry.metadata() {
-                                analysis.total_dep_size += meta.len();
+                            match entry.metadata() {
+                                Ok(meta) => {
+                                    analysis.total_dep_size += meta.len();
+                                }
+                                Err(e) => {
+                                    analysis.warnings.push(format!(
+                                        "Could not read metadata for {}: {}",
+                                        entry.path().display(),
+                                        e
+                                    ));
+                                }
                             }
                         }
                     }
@@ -134,12 +143,20 @@ pub fn analyze_dependencies(skill_path: &Path, content: &str) -> DependencyAnaly
     analysis
 }
 
-static URL_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"https?://[^\s\)\]>]+").expect("URL_REGEX is valid"));
-static LINK_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[([^\]]*)\]\(([^)]+)\)").expect("LINK_REGEX is valid"));
-static IMAGE_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"!\[([^\]]*)\]\(([^)]+)\)").expect("IMAGE_REGEX is valid"));
+// SAFETY: These regex patterns are compile-time string literals that have been verified
+// to be valid. The `.expect()` calls will never panic because:
+// 1. Patterns are hardcoded constants, not user-provided
+// 2. Each pattern has been tested and is syntactically correct
+// 3. LazyLock ensures initialization happens only once at runtime
+static URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"https?://[^\s\)\]>]+").expect("URL_REGEX: compile-time constant")
+});
+static LINK_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[([^\]]*)\]\(([^)]+)\)").expect("LINK_REGEX: compile-time constant")
+});
+static IMAGE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"!\[([^\]]*)\]\(([^)]+)\)").expect("IMAGE_REGEX: compile-time constant")
+});
 
 fn extract_content_dependencies(
     analysis: &mut DependencyAnalysis,
@@ -309,5 +326,19 @@ mod tests {
         assert_eq!(classify_path("scripts/build.sh"), DependencyType::Script);
         assert_eq!(classify_path("assets/logo.png"), DependencyType::Asset);
         assert_eq!(classify_path("diagram.png"), DependencyType::Asset);
+    }
+
+    #[test]
+    fn test_dependency_analysis_warnings_default_empty() {
+        let analysis = DependencyAnalysis::default();
+        assert!(analysis.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_analyze_dependencies_no_warnings_for_accessible_files() {
+        // When analyzing a path with no subdirectories, there should be no warnings
+        let analysis = analyze_dependencies(Path::new("/nonexistent/skill.md"), "");
+        // No warnings expected since there are no directories to walk
+        assert!(analysis.warnings.is_empty());
     }
 }

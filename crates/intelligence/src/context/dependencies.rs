@@ -414,4 +414,380 @@ dev-dependencies = [
         assert_eq!(ruff.version, Some(">=0.1.0".to_string()));
         assert!(ruff.dev);
     }
+
+    // ============================================
+    // Additional tests for >90% coverage (Issue #60)
+    // ============================================
+
+    #[test]
+    fn test_parse_cargo_toml_build_dependencies() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("Cargo.toml");
+
+        let content = r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[dependencies]
+serde = "1.0"
+
+[build-dependencies]
+cc = "1.0"
+bindgen = { version = "0.60" }
+"#;
+
+        fs::write(&path, content).unwrap();
+
+        let deps = parse_cargo_toml(&path).unwrap();
+        assert_eq!(deps.len(), 3);
+
+        // Build dependencies should be treated as dev deps
+        let cc = deps.iter().find(|d| d.name == "cc").unwrap();
+        assert_eq!(cc.version, Some("1.0".to_string()));
+        assert!(cc.dev); // Build deps are treated as dev deps
+
+        let bindgen = deps.iter().find(|d| d.name == "bindgen").unwrap();
+        assert_eq!(bindgen.version, Some("0.60".to_string()));
+        assert!(bindgen.dev);
+    }
+
+    #[test]
+    fn test_parse_cargo_toml_no_version_in_table() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("Cargo.toml");
+
+        let content = r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[dependencies]
+# Path dependency without version
+local-crate = { path = "../local-crate" }
+# Git dependency without version
+git-crate = { git = "https://github.com/user/repo" }
+"#;
+
+        fs::write(&path, content).unwrap();
+
+        let deps = parse_cargo_toml(&path).unwrap();
+        assert_eq!(deps.len(), 2);
+
+        let local = deps.iter().find(|d| d.name == "local-crate").unwrap();
+        assert_eq!(local.version, None);
+
+        let git = deps.iter().find(|d| d.name == "git-crate").unwrap();
+        assert_eq!(git.version, None);
+    }
+
+    #[test]
+    fn test_parse_cargo_toml_empty_sections() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("Cargo.toml");
+
+        let content = r#"
+[package]
+name = "test"
+version = "0.1.0"
+"#;
+
+        fs::write(&path, content).unwrap();
+
+        let deps = parse_cargo_toml(&path).unwrap();
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn test_parse_package_json_peer_dependencies() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("package.json");
+
+        let content = r#"{
+  "dependencies": {
+    "lodash": "4.17.21"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "peerDependencies": {
+    "react": ">=17.0.0"
+  }
+}"#;
+
+        fs::write(&path, content).unwrap();
+
+        let deps = parse_package_json(&path).unwrap();
+        assert_eq!(deps.len(), 3);
+
+        // Peer dependencies should be treated as non-dev
+        let react = deps.iter().find(|d| d.name == "react").unwrap();
+        assert_eq!(react.version, Some(">=17.0.0".to_string()));
+        assert!(!react.dev);
+    }
+
+    #[test]
+    fn test_parse_package_json_empty_sections() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("package.json");
+
+        let content = r#"{
+  "name": "my-package",
+  "version": "1.0.0"
+}"#;
+
+        fs::write(&path, content).unwrap();
+
+        let deps = parse_package_json(&path).unwrap();
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn test_parse_package_json_null_versions() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("package.json");
+
+        let content = r#"{
+  "dependencies": {
+    "workspace-pkg": null
+  }
+}"#;
+
+        fs::write(&path, content).unwrap();
+
+        let deps = parse_package_json(&path).unwrap();
+        assert_eq!(deps.len(), 1);
+
+        let pkg = deps.iter().find(|d| d.name == "workspace-pkg").unwrap();
+        assert_eq!(pkg.version, None);
+    }
+
+    #[test]
+    fn test_parse_pyproject_toml_poetry() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("pyproject.toml");
+
+        let content = r#"
+[tool.poetry]
+name = "my-project"
+version = "1.0.0"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+requests = "^2.28"
+pydantic = { version = "^2.0", extras = ["email"] }
+
+[tool.poetry.dev-dependencies]
+pytest = "^7.0"
+"#;
+
+        fs::write(&path, content).unwrap();
+
+        let deps = parse_pyproject_toml(&path).unwrap();
+
+        // Python should be skipped
+        assert!(!deps.iter().any(|d| d.name == "python"));
+
+        let requests = deps.iter().find(|d| d.name == "requests").unwrap();
+        assert_eq!(requests.version, Some("^2.28".to_string()));
+        assert!(!requests.dev);
+
+        let pydantic = deps.iter().find(|d| d.name == "pydantic").unwrap();
+        assert_eq!(pydantic.version, Some("^2.0".to_string()));
+
+        let pytest = deps.iter().find(|d| d.name == "pytest").unwrap();
+        assert!(pytest.dev);
+    }
+
+    #[test]
+    fn test_parse_pyproject_toml_poetry_groups() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("pyproject.toml");
+
+        let content = r#"
+[tool.poetry]
+name = "my-project"
+version = "1.0.0"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.0"
+black = "^23.0"
+
+[tool.poetry.group.test.dependencies]
+coverage = "^7.0"
+
+[tool.poetry.group.docs.dependencies]
+sphinx = "^6.0"
+"#;
+
+        fs::write(&path, content).unwrap();
+
+        let deps = parse_pyproject_toml(&path).unwrap();
+
+        // dev and test groups should be marked as dev
+        let pytest = deps.iter().find(|d| d.name == "pytest").unwrap();
+        assert!(pytest.dev);
+
+        let coverage = deps.iter().find(|d| d.name == "coverage").unwrap();
+        assert!(coverage.dev);
+
+        // docs group is not dev/test, so not marked as dev
+        let sphinx = deps.iter().find(|d| d.name == "sphinx").unwrap();
+        assert!(!sphinx.dev);
+    }
+
+    #[test]
+    fn test_parse_pyproject_toml_multiple_optional_dependency_groups() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("pyproject.toml");
+
+        let content = r#"
+[project]
+dependencies = ["requests"]
+
+[project.optional-dependencies]
+dev = ["pytest", "black"]
+test = ["coverage"]
+docs = ["sphinx"]
+"#;
+
+        fs::write(&path, content).unwrap();
+
+        let deps = parse_pyproject_toml(&path).unwrap();
+
+        // All optional-dependencies are treated as dev
+        let pytest = deps.iter().find(|d| d.name == "pytest").unwrap();
+        assert!(pytest.dev);
+
+        let sphinx = deps.iter().find(|d| d.name == "sphinx").unwrap();
+        assert!(sphinx.dev);
+    }
+
+    #[test]
+    fn test_parse_python_dep_string_various_operators() {
+        // Test different version operators
+        assert_eq!(
+            parse_python_dep_string("pkg==1.0.0"),
+            ("pkg".to_string(), Some("==1.0.0".to_string()))
+        );
+        assert_eq!(
+            parse_python_dep_string("pkg!=1.0.0"),
+            ("pkg".to_string(), Some("!=1.0.0".to_string()))
+        );
+        assert_eq!(
+            parse_python_dep_string("pkg<2.0"),
+            ("pkg".to_string(), Some("<2.0".to_string()))
+        );
+        assert_eq!(
+            parse_python_dep_string("pkg>1.0"),
+            ("pkg".to_string(), Some(">1.0".to_string()))
+        );
+        assert_eq!(
+            parse_python_dep_string("pkg~=1.4.2"),
+            ("pkg".to_string(), Some("~=1.4.2".to_string()))
+        );
+        assert_eq!(
+            parse_python_dep_string("pkg^1.0"),
+            ("pkg".to_string(), Some("^1.0".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_parse_python_dep_string_with_whitespace() {
+        assert_eq!(
+            parse_python_dep_string("  requests  "),
+            ("requests".to_string(), None)
+        );
+        assert_eq!(
+            parse_python_dep_string("  requests >= 2.0  "),
+            ("requests".to_string(), Some(">= 2.0".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_parse_python_dep_string_complex_extras() {
+        assert_eq!(
+            parse_python_dep_string("package[extra1,extra2]>=1.0"),
+            ("package".to_string(), Some(">=1.0".to_string()))
+        );
+        assert_eq!(
+            parse_python_dep_string("package[extra1,extra2]"),
+            ("package".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn test_extract_cargo_version_array_value() {
+        // Test that non-string, non-table values return None
+        let array_value = toml::Value::Array(vec![toml::Value::String("1.0".to_string())]);
+        assert_eq!(extract_cargo_version(&array_value), None);
+    }
+
+    #[test]
+    fn test_extract_poetry_version_array_value() {
+        // Test that non-string, non-table values return None
+        let array_value = toml::Value::Array(vec![toml::Value::String("1.0".to_string())]);
+        assert_eq!(extract_poetry_version(&array_value), None);
+    }
+
+    #[test]
+    fn test_parse_pyproject_toml_empty() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("pyproject.toml");
+
+        let content = r#"
+[build-system]
+requires = ["setuptools"]
+"#;
+
+        fs::write(&path, content).unwrap();
+
+        let deps = parse_pyproject_toml(&path).unwrap();
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn test_parse_cargo_toml_invalid_file() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("Cargo.toml");
+
+        fs::write(&path, "this is not valid toml {{{").unwrap();
+
+        let result = parse_cargo_toml(&path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_package_json_invalid_file() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("package.json");
+
+        fs::write(&path, "this is not valid json {{{").unwrap();
+
+        let result = parse_package_json(&path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_pyproject_toml_invalid_file() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("pyproject.toml");
+
+        fs::write(&path, "this is not valid toml {{{").unwrap();
+
+        let result = parse_pyproject_toml(&path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_nonexistent_file() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("nonexistent.toml");
+
+        let result = parse_cargo_toml(&path);
+        assert!(result.is_err());
+    }
 }
