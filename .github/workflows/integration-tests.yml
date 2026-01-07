@@ -230,7 +230,7 @@ jobs:
       - name: Run sync integration tests
         run: |
           echo "Running sync integration tests..."
-          cargo test -p skrills_sync --test sync_integration -- --nocapture
+          cargo test -p skrills-sync --test sync_integration -- --nocapture
           echo "Sync integration tests completed!"
 
   integration-test-summary:
@@ -289,7 +289,7 @@ jobs:
           cargo llvm-cov --lib --lcov --tests \
             -p skrills-server \
             -p skrills-subagents \
-            -p skrills_sync \
+            -p skrills-sync \
             -- \
             subagents_end_to_end \
             subagent_service_integration \

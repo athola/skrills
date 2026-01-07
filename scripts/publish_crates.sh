@@ -51,7 +51,7 @@ publish_one skrills-discovery
 publish_one skrills-intelligence
 
 # Level 1: depend on leaf crates only
-publish_one skrills_sync
+publish_one skrills-sync
 publish_one skrills-subagents
 publish_one skrills-analyze
 
