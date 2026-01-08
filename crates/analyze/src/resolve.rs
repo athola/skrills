@@ -1238,9 +1238,17 @@ mod tests {
             result.warnings[0].contains("optional"),
             "Warning should mention 'optional'"
         );
+        // Check for "not found" message template, not the dependency name "missing"
+        // (which would pass by coincidence since "missing" is both the dep name
+        // and a word that could appear in error messages)
         assert!(
-            result.warnings[0].contains("missing"),
-            "Warning should mention the dependency name 'missing'"
+            result.warnings[0].contains("not found"),
+            "Warning should indicate the dependency was not found"
+        );
+        // Also verify the actual dependency name appears
+        assert!(
+            result.warnings[0].contains("'missing'"),
+            "Warning should mention the dependency name in quotes"
         );
     }
 

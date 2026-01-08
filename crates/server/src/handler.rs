@@ -565,7 +565,7 @@ impl ServerHandler for SkillService {
                             });
 
                             if include_suggestions && !analysis.suggestions.is_empty() {
-                                // SAFETY: json!({...}) with braces always produces Value::Object,
+                                // RATIONALE: json!({...}) with braces always produces Value::Object,
                                 // so as_object_mut() cannot fail here.
                                 result
                                     .as_object_mut()

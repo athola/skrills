@@ -35,12 +35,21 @@ const TRACE_SKILL_DIR: &str = "skrills-skill-trace";
 const PROBE_SKILL_DIR: &str = "skrills-skill-probe";
 
 /// Returns an actionable hint based on the I/O error kind.
+#[must_use]
 fn get_actionable_hint(error: &std::io::Error) -> &'static str {
     use std::io::ErrorKind;
     match error.kind() {
         ErrorKind::PermissionDenied => "Check file permissions or run with appropriate privileges",
         ErrorKind::NotFound => "Verify the file exists at the specified path",
-        ErrorKind::AlreadyExists => "The file already exists",
+        ErrorKind::AlreadyExists => "The file already exists; remove or rename it first",
+        ErrorKind::OutOfMemory => "System is out of memory; free resources and retry",
+        ErrorKind::Interrupted => "Operation was interrupted; retry the operation",
+        ErrorKind::InvalidInput => "Invalid input provided; check path format and encoding",
+        ErrorKind::InvalidData => "File contains invalid data; check file integrity",
+        ErrorKind::TimedOut => "Operation timed out; check system load or retry",
+        ErrorKind::WriteZero => "Could not write data; check disk space",
+        ErrorKind::StorageFull => "Storage is full; free disk space and retry",
+        ErrorKind::ReadOnlyFilesystem => "Filesystem is read-only; remount or use different path",
         _ => "Check system resources and file accessibility",
     }
 }

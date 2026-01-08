@@ -143,11 +143,12 @@ pub fn analyze_dependencies(skill_path: &Path, content: &str) -> DependencyAnaly
     analysis
 }
 
-// SAFETY: These regex patterns are compile-time string literals that have been verified
+// RATIONALE: These regex patterns are compile-time string literals that have been verified
 // to be valid. The `.expect()` calls will never panic because:
 // 1. Patterns are hardcoded constants, not user-provided
 // 2. Each pattern has been tested and is syntactically correct
 // 3. LazyLock ensures initialization happens only once at runtime
+// (Using RATIONALE instead of SAFETY since this is safe code, not unsafe)
 static URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"https?://[^\s\)\]>]+").expect("URL_REGEX: compile-time constant")
 });
@@ -340,5 +341,75 @@ mod tests {
         let analysis = analyze_dependencies(Path::new("/nonexistent/skill.md"), "");
         // No warnings expected since there are no directories to walk
         assert!(analysis.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_extract_markdown_images() {
+        // Explicitly tests IMAGE_REGEX pattern extraction
+        let content = r#"
+Here's an image: ![alt text](images/diagram.png)
+And another: ![logo](assets/logo.svg)
+URL images should be skipped: ![remote](https://example.com/pic.jpg)
+HTTP too: ![http](http://example.com/pic.jpg)
+"#;
+        let mut analysis = DependencyAnalysis::default();
+        extract_content_dependencies(&mut analysis, Path::new("."), content);
+
+        // Should extract the local image paths as Asset dependencies
+        let assets: Vec<_> = analysis
+            .dependencies
+            .iter()
+            .filter(|d| d.dep_type == DependencyType::Asset)
+            .collect();
+
+        assert_eq!(assets.len(), 2, "Should extract 2 local image paths");
+        assert!(
+            assets.iter().any(|d| d.target == "images/diagram.png"),
+            "Should extract images/diagram.png"
+        );
+        assert!(
+            assets.iter().any(|d| d.target == "assets/logo.svg"),
+            "Should extract assets/logo.svg"
+        );
+
+        // URL images should be captured as ExternalUrl, not Asset
+        let urls: Vec<_> = analysis
+            .dependencies
+            .iter()
+            .filter(|d| d.dep_type == DependencyType::ExternalUrl)
+            .collect();
+
+        assert!(
+            urls.iter()
+                .any(|d| d.target.contains("example.com/pic.jpg")),
+            "URL images should be extracted as ExternalUrl"
+        );
+    }
+
+    #[test]
+    fn test_image_regex_edge_cases() {
+        // Additional edge cases for IMAGE_REGEX
+        let content = r#"
+Empty alt: ![](path/to/image.png)
+With spaces in alt: ![my cool diagram](diagram.png)
+Nested brackets should not confuse: ![text with [brackets]](file.png)
+"#;
+        let mut analysis = DependencyAnalysis::default();
+        extract_content_dependencies(&mut analysis, Path::new("."), content);
+
+        let assets: Vec<_> = analysis
+            .dependencies
+            .iter()
+            .filter(|d| d.dep_type == DependencyType::Asset)
+            .collect();
+
+        assert!(
+            assets.iter().any(|d| d.target == "path/to/image.png"),
+            "Should handle empty alt text"
+        );
+        assert!(
+            assets.iter().any(|d| d.target == "diagram.png"),
+            "Should handle spaces in alt text"
+        );
     }
 }

@@ -1562,4 +1562,105 @@ This is the real description.
             );
         }
     }
+
+    #[test]
+    fn test_analyze_project_nonexistent_directory_behavior() {
+        // Test that analyze_project handles nonexistent directories gracefully.
+        // Current behavior: returns empty profile (not an error).
+        // This is acceptable for skill recommendations - an empty profile simply
+        // means no language/framework context is available, which is valid.
+        let nonexistent = Path::new("/nonexistent/path/that/should/not/exist");
+        let result = analyze_project(nonexistent);
+
+        // Either an error or empty result is acceptable - key is no panic
+        match result {
+            Ok(profile) => {
+                // Empty profile is valid for nonexistent directory
+                assert!(profile.languages.is_empty());
+                assert!(profile.dependencies.is_empty());
+            }
+            Err(e) => {
+                // An error is also acceptable
+                assert!(!e.to_string().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn test_detect_languages_nonexistent_behavior() {
+        // detect_languages on nonexistent path should either error or return empty
+        let nonexistent = Path::new("/nonexistent/path/that/should/not/exist");
+        let result = detect_languages(nonexistent);
+
+        match result {
+            Ok(languages) => assert!(languages.is_empty()),
+            Err(e) => assert!(!e.to_string().is_empty()),
+        }
+    }
+
+    #[test]
+    fn test_analyze_project_empty_directory_succeeds() {
+        // An empty but accessible directory should succeed with empty results
+        let tmp = tempdir().unwrap();
+        let options = AnalyzeProjectOptions {
+            include_git: false,
+            commit_limit: 0,
+            max_languages: 10,
+        };
+
+        let result = analyze_project_with_options(tmp.path(), options);
+        assert!(result.is_ok(), "Empty directory should succeed");
+
+        let profile = result.unwrap();
+        assert!(profile.languages.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_analyze_project_handles_permission_errors() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempdir().unwrap();
+        let restricted = tmp.path().join("restricted");
+        fs::create_dir(&restricted).unwrap();
+        fs::write(restricted.join("test.rs"), "fn main() {}").unwrap();
+
+        // Remove read permissions from directory
+        let mut perms = fs::metadata(&restricted).unwrap().permissions();
+        perms.set_mode(0o000);
+        fs::set_permissions(&restricted, perms).unwrap();
+
+        // Test should either error or succeed with partial results (not panic)
+        let options = AnalyzeProjectOptions {
+            include_git: false,
+            commit_limit: 0,
+            max_languages: 10,
+        };
+        let result = analyze_project_with_options(tmp.path(), options);
+
+        // Restore permissions before assertions so cleanup works
+        let mut perms = fs::metadata(&restricted).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&restricted, perms).unwrap();
+
+        // Either succeeds with partial results or returns a clear error - both are valid
+        // The key is it should NOT panic
+        match result {
+            Ok(profile) => {
+                // If it succeeded, the restricted directory should have been skipped
+                // so we shouldn't see any Rust files detected from it
+                assert!(
+                    profile.languages.get("Rust").is_none_or(|l| l.file_count == 0),
+                    "Should not detect files from permission-denied directory"
+                );
+            }
+            Err(e) => {
+                // An error is acceptable - verify it's a meaningful error
+                assert!(
+                    !e.to_string().is_empty(),
+                    "Error should have a descriptive message"
+                );
+            }
+        }
+    }
 }

@@ -65,7 +65,7 @@ pub struct NormalizedDependency {
 }
 
 // Regex for parsing compact dependency syntax: [source:]name[@version]
-// SAFETY: This regex pattern is a compile-time string literal that has been verified
+// RATIONALE: This regex pattern is a compile-time string literal that has been verified
 // to be valid. The `.expect()` will never panic (pattern is hardcoded, not user-provided).
 static COMPACT_DEP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?:([a-z]+):)?([^@:\s]+)(?:@(.+))?$")
