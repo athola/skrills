@@ -1650,7 +1650,10 @@ This is the real description.
                 // If it succeeded, the restricted directory should have been skipped
                 // so we shouldn't see any Rust files detected from it
                 assert!(
-                    profile.languages.get("Rust").is_none_or(|l| l.file_count == 0),
+                    profile
+                        .languages
+                        .get("Rust")
+                        .is_none_or(|l| l.file_count == 0),
                     "Should not detect files from permission-denied directory"
                 );
             }
