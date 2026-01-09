@@ -170,7 +170,7 @@ impl SkillService {
                 });
 
                 if check_dependencies {
-                    // SAFETY: json!({...}) with braces always produces Value::Object,
+                    // RATIONALE: json!({...}) with braces always produces Value::Object,
                     // so as_object_mut() cannot fail here.
                     let skill_object = skill_json
                         .as_object_mut()

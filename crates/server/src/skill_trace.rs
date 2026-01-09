@@ -34,6 +34,26 @@ const IGNORE_DIRS: &[&str] = &[
 const TRACE_SKILL_DIR: &str = "skrills-skill-trace";
 const PROBE_SKILL_DIR: &str = "skrills-skill-probe";
 
+/// Returns an actionable hint based on the I/O error kind.
+#[must_use]
+fn get_actionable_hint(error: &std::io::Error) -> &'static str {
+    use std::io::ErrorKind;
+    match error.kind() {
+        ErrorKind::PermissionDenied => "Check file permissions or run with appropriate privileges",
+        ErrorKind::NotFound => "Verify the file exists at the specified path",
+        ErrorKind::AlreadyExists => "The file already exists; remove or rename it first",
+        ErrorKind::OutOfMemory => "System is out of memory; free resources and retry",
+        ErrorKind::Interrupted => "Operation was interrupted; retry the operation",
+        ErrorKind::InvalidInput => "Invalid input provided; check path format and encoding",
+        ErrorKind::InvalidData => "File contains invalid data; check file integrity",
+        ErrorKind::TimedOut => "Operation timed out; check system load or retry",
+        ErrorKind::WriteZero => "Could not write data; check disk space",
+        ErrorKind::StorageFull => "Storage is full; free disk space and retry",
+        ErrorKind::ReadOnlyFilesystem => "Filesystem is read-only; remount or use different path",
+        _ => "Check system resources and file accessibility",
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[derive(Default)]
@@ -286,10 +306,15 @@ fn instrument_root(
         let entry = match entry_result {
             Ok(e) => e,
             Err(e) => {
+                let hint = e
+                    .io_error()
+                    .map(get_actionable_hint)
+                    .unwrap_or("Check system resources and file accessibility");
                 report.warnings.push(format!(
-                    "failed to access entry in {}: {}",
+                    "failed to access entry in {}: {}. {}",
                     root.display(),
-                    e
+                    e,
+                    hint
                 ));
                 continue;
             }
@@ -311,9 +336,10 @@ fn instrument_root(
         let original = match fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => {
+                let hint = get_actionable_hint(&e);
                 report
                     .warnings
-                    .push(format!("failed to read {}: {e}", path.display()));
+                    .push(format!("failed to read {}: {e}. {hint}", path.display()));
                 continue;
             }
         };
@@ -649,10 +675,15 @@ pub fn status(
             let entry = match entry_result {
                 Ok(e) => e,
                 Err(e) => {
+                    let hint = e
+                        .io_error()
+                        .map(get_actionable_hint)
+                        .unwrap_or("Check system resources and file accessibility");
                     warnings.push(format!(
-                        "failed to access entry in {}: {}",
+                        "failed to access entry in {}: {}. {}",
                         root.display(),
-                        e
+                        e,
+                        hint
                     ));
                     continue;
                 }

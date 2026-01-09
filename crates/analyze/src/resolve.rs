@@ -595,8 +595,13 @@ impl GraphBuilder {
                             name: dep.name,
                             required_by: skill.name.clone(),
                         });
+                    } else {
+                        // Optional dependency not found - add warning
+                        build_warnings.push(format!(
+                            "Skipped optional dependency '{}' for '{}' - not found in workspace",
+                            dep.name, skill.name
+                        ));
                     }
-                    // Optional missing deps are silently skipped during build
                 }
             }
         }
@@ -1223,6 +1228,28 @@ mod tests {
 
         let result = graph.resolve("parent").unwrap();
         assert_eq!(result.resolved.len(), 1);
+
+        // Verify warning is present for skipped optional dependency
+        assert!(
+            !result.warnings.is_empty(),
+            "Expected warning for skipped optional dependency"
+        );
+        assert!(
+            result.warnings[0].contains("optional"),
+            "Warning should mention 'optional'"
+        );
+        // Check for "not found" message template, not the dependency name "missing"
+        // (which would pass by coincidence since "missing" is both the dep name
+        // and a word that could appear in error messages)
+        assert!(
+            result.warnings[0].contains("not found"),
+            "Warning should indicate the dependency was not found"
+        );
+        // Also verify the actual dependency name appears
+        assert!(
+            result.warnings[0].contains("'missing'"),
+            "Warning should mention the dependency name in quotes"
+        );
     }
 
     #[test]

@@ -37,7 +37,7 @@ This document outlines key security considerations, features, and best practices
 - Details configuration options and the implementation roadmap.
 - Describes strategies for Denial-of-Service (DoS) protection.
 
-6. **Audit Logging** (TODO: create docs/audit-logging.md)
+6. **[Audit Logging](audit-logging.md)**
 - Requirements for security event logging.
 - Guidelines for mTLS authentication audit trails.
 - Guidance for SIEM integration and compliance considerations.
@@ -149,7 +149,7 @@ EOF
 
 **Status**: Partially implemented; basic logging through `tracing` is currently operational.
 
-**See**: Audit Logging (TODO: create docs/audit-logging.md)
+**See**: [Audit Logging](audit-logging.md)
 
 ---
 
@@ -219,7 +219,7 @@ Communication between components occurs via standard I/O (stdio) or network, int
 - **CCPA**: Follows CCPA's privacy by design principles.
 - **SOC 2**: Meets SOC 2 requirements with robust audit logging and access controls.
 
-**See**: Compliance section in Audit Logging (TODO: create docs/audit-logging.md#compliance)
+**See**: [Compliance section in Audit Logging](audit-logging.md#compliance)
 
 ---
 

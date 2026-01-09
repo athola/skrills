@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.6 - 2026-01-08
+- **Bug Fixes**: Address 14 issues including warnings for skipped optional dependencies, YAML line/column info in parse errors, SAFETY comments for regex patterns, and actionable hints for I/O errors.
+- **Testing**: Add 282 new tests across claude_parser, codex_parser, context detector, github_search, dependencies, llm_generator, and scorer modules.
+- **Documentation**: Add comprehensive audit-logging.md covering security events, mTLS audit trails, and SIEM integration.
+- **CI**: Update workflow to use skrills-sync package name after crate rename.
+- **Build**: Add fmt-check target to catch formatting issues in pre-commit hooks.
+
 ## 0.4.5 - 2026-01-03
 - **Testing**: Added comprehensive test coverage for tool handler functions including `parse_trace_target`, `skill_loading_status_tool`, `skill_loading_selftest_tool`, and `disable_skill_trace_tool`. Tests cover edge cases, dry-run modes, and target validation for Claude, Codex, and Both trace targets.
 

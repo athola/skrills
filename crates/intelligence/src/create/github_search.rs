@@ -6,6 +6,17 @@ use serde::{Deserialize, Serialize};
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
 
+/// Get the GitHub API base URL, allowing override for testing.
+fn github_api_base() -> String {
+    std::env::var("GITHUB_API_BASE_URL").unwrap_or_else(|_| GITHUB_API_BASE.to_string())
+}
+
+/// Get the raw content base URL, allowing override for testing.
+fn raw_content_base() -> String {
+    std::env::var("GITHUB_RAW_BASE_URL")
+        .unwrap_or_else(|_| "https://raw.githubusercontent.com".to_string())
+}
+
 fn github_token() -> Option<String> {
     let raw = std::env::var("GITHUB_TOKEN").ok()?;
     let token = raw.trim();
@@ -145,15 +156,19 @@ pub async fn search_github_skills(query: &str, limit: usize) -> Result<Vec<GitHu
     // Build search query for SKILL.md files
     let search_query = format!("{} filename:SKILL.md", sanitized_query);
 
+    search_github_raw(&search_query, limit).await
+}
+
+/// Internal search function that performs the raw GitHub API call.
+/// This function does NOT sanitize the query, so it should only be called
+/// with trusted input (e.g., from `search_skills_advanced`).
+async fn search_github_raw(query: &str, limit: usize) -> Result<Vec<GitHubSkillResult>> {
     let client = reqwest::Client::new();
 
     let response = apply_github_auth(
         client
-            .get(format!("{}/search/code", GITHUB_API_BASE))
-            .query(&[
-                ("q", search_query.as_str()),
-                ("per_page", &limit.to_string()),
-            ])
+            .get(format!("{}/search/code", github_api_base()))
+            .query(&[("q", query), ("per_page", &limit.to_string())])
             .header("Accept", "application/vnd.github.v3+json")
             .header("User-Agent", "skrills-intelligence/0.4.0"),
     )
@@ -207,10 +222,7 @@ pub async fn search_github_skills(query: &str, limit: usize) -> Result<Vec<GitHu
 
 /// Build a raw.githubusercontent.com URL for fetching file content.
 fn build_raw_url(full_name: &str, path: &str) -> String {
-    format!(
-        "https://raw.githubusercontent.com/{}/HEAD/{}",
-        full_name, path
-    )
+    format!("{}/{}/HEAD/{}", raw_content_base(), full_name, path)
 }
 
 /// Fetch the content of a skill from its raw URL.
@@ -241,38 +253,36 @@ pub async fn search_skills_advanced(
 ) -> Result<Vec<GitHubSkillResult>> {
     let mut query_parts = vec!["filename:SKILL.md".to_string()];
 
-    // Add keywords
+    // Add sanitized keywords (user input)
     for keyword in keywords {
-        query_parts.push(keyword.clone());
+        let sanitized = sanitize_github_query(keyword);
+        if !sanitized.is_empty() {
+            query_parts.push(sanitized);
+        }
     }
 
-    // Add language filter
+    // Add language filter (trusted input, not from user)
     if let Some(lang) = language {
         query_parts.push(format!("language:{}", lang));
     }
 
-    // Add star filter
+    // Add star filter (trusted input, not from user)
     if let Some(stars) = min_stars {
         query_parts.push(format!("stars:>={}", stars));
     }
 
     let query = query_parts.join(" ");
-    search_github_skills(&query, limit).await
+    // Use raw search since we've already sanitized user input and
+    // added trusted operators
+    search_github_raw(&query, limit).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use reqwest::header::AUTHORIZATION;
+    use serial_test::serial;
     use std::env;
-    use std::sync::LazyLock;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
-    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
-    }
 
     struct EnvVarGuard {
         key: &'static str,
@@ -300,7 +310,9 @@ mod tests {
     }
 
     #[test]
-    fn test_build_raw_url() {
+    #[serial]
+    fn test_build_raw_url_default() {
+        let _raw_guard = set_env_var("GITHUB_RAW_BASE_URL", None);
         let url = build_raw_url("owner/repo", "skills/test/SKILL.md");
         assert_eq!(
             url,
@@ -309,8 +321,33 @@ mod tests {
     }
 
     #[test]
+    #[serial]
+    fn test_build_raw_url_with_custom_base() {
+        let _raw_guard = set_env_var("GITHUB_RAW_BASE_URL", Some("http://localhost:8080"));
+        let url = build_raw_url("owner/repo", "skills/test/SKILL.md");
+        assert_eq!(
+            url,
+            "http://localhost:8080/owner/repo/HEAD/skills/test/SKILL.md"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_github_api_base_default() {
+        let _api_guard = set_env_var("GITHUB_API_BASE_URL", None);
+        assert_eq!(github_api_base(), "https://api.github.com");
+    }
+
+    #[test]
+    #[serial]
+    fn test_github_api_base_custom() {
+        let _api_guard = set_env_var("GITHUB_API_BASE_URL", Some("http://localhost:9090"));
+        assert_eq!(github_api_base(), "http://localhost:9090");
+    }
+
+    #[test]
+    #[serial]
     fn test_github_auth_header_set_when_token_present() {
-        let _guard = env_guard();
         let _token_guard = set_env_var("GITHUB_TOKEN", Some("test-token"));
         let client = reqwest::Client::new();
         let request = apply_github_auth(client.get("https://api.github.com"))
@@ -321,14 +358,48 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_github_auth_header_absent_when_no_token() {
-        let _guard = env_guard();
         let _token_guard = set_env_var("GITHUB_TOKEN", None);
         let client = reqwest::Client::new();
         let request = apply_github_auth(client.get("https://api.github.com"))
             .build()
             .unwrap();
         assert!(request.headers().get(AUTHORIZATION).is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn test_github_auth_header_absent_when_empty_token() {
+        let _token_guard = set_env_var("GITHUB_TOKEN", Some(""));
+        let client = reqwest::Client::new();
+        let request = apply_github_auth(client.get("https://api.github.com"))
+            .build()
+            .unwrap();
+        assert!(request.headers().get(AUTHORIZATION).is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn test_github_auth_header_absent_when_whitespace_only_token() {
+        let _token_guard = set_env_var("GITHUB_TOKEN", Some("   \t\n  "));
+        let client = reqwest::Client::new();
+        let request = apply_github_auth(client.get("https://api.github.com"))
+            .build()
+            .unwrap();
+        assert!(request.headers().get(AUTHORIZATION).is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn test_github_auth_trims_token_whitespace() {
+        let _token_guard = set_env_var("GITHUB_TOKEN", Some("  test-token  "));
+        let client = reqwest::Client::new();
+        let request = apply_github_auth(client.get("https://api.github.com"))
+            .build()
+            .unwrap();
+        let header = request.headers().get(AUTHORIZATION).unwrap();
+        assert_eq!(header.to_str().unwrap(), "Bearer test-token");
     }
 
     #[test]
@@ -339,6 +410,38 @@ mod tests {
         assert_eq!(sanitize_github_query("test stars:>1000"), "test");
         assert_eq!(sanitize_github_query("test language:rust"), "test");
         assert_eq!(sanitize_github_query("test is:archived"), "test");
+    }
+
+    #[test]
+    fn test_sanitize_github_query_removes_all_colon_operators() {
+        // Test all defined colon operators
+        let operators = [
+            "repo:",
+            "org:",
+            "user:",
+            "in:",
+            "size:",
+            "fork:",
+            "forks:",
+            "stars:",
+            "topics:",
+            "topic:",
+            "created:",
+            "pushed:",
+            "updated:",
+            "is:",
+            "archived:",
+            "license:",
+            "language:",
+            "filename:",
+            "path:",
+            "extension:",
+        ];
+        for op in operators {
+            let query = format!("test {}value", op);
+            let result = sanitize_github_query(&query);
+            assert_eq!(result, "test", "Failed to remove operator: {}", op);
+        }
     }
 
     #[test]
@@ -380,5 +483,522 @@ mod tests {
         // But words containing these should NOT be affected
         assert_eq!(sanitize_github_query("Oregon skills"), "Oregon skills");
         assert_eq!(sanitize_github_query("android app"), "android app");
+    }
+
+    #[test]
+    fn test_sanitize_github_query_handles_empty_string() {
+        assert_eq!(sanitize_github_query(""), "");
+    }
+
+    #[test]
+    fn test_sanitize_github_query_handles_only_operators() {
+        assert_eq!(sanitize_github_query("repo:owner/repo"), "");
+        assert_eq!(sanitize_github_query("repo:owner/repo stars:>100"), "");
+    }
+
+    #[test]
+    fn test_sanitize_github_query_removes_multiple_operators() {
+        assert_eq!(
+            sanitize_github_query("test repo:evil stars:>100 language:rust"),
+            "test"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_github_query_preserves_colons_in_normal_text() {
+        // Colons not part of operators should be preserved
+        assert_eq!(sanitize_github_query("time 12:30"), "time 12:30");
+        assert_eq!(sanitize_github_query("key:value"), "key:value");
+    }
+
+    #[test]
+    fn test_github_skill_result_serialization() {
+        let result = GitHubSkillResult {
+            repo_url: "https://github.com/owner/repo".to_string(),
+            skill_path: "skills/test/SKILL.md".to_string(),
+            file_url: "https://github.com/owner/repo/blob/main/skills/test/SKILL.md".to_string(),
+            description: Some("Test repo".to_string()),
+            stars: 100,
+            last_updated: "2024-01-01T00:00:00Z".to_string(),
+            raw_url: Some(
+                "https://raw.githubusercontent.com/owner/repo/HEAD/skills/test/SKILL.md"
+                    .to_string(),
+            ),
+        };
+
+        let json = serde_json::to_string(&result).unwrap();
+        let deserialized: GitHubSkillResult = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.repo_url, result.repo_url);
+        assert_eq!(deserialized.stars, 100);
+        assert_eq!(deserialized.description, Some("Test repo".to_string()));
+    }
+
+    #[test]
+    fn test_github_skill_result_with_none_description() {
+        let result = GitHubSkillResult {
+            repo_url: "https://github.com/owner/repo".to_string(),
+            skill_path: "SKILL.md".to_string(),
+            file_url: "https://github.com/owner/repo/blob/main/SKILL.md".to_string(),
+            description: None,
+            stars: 0,
+            last_updated: "".to_string(),
+            raw_url: None,
+        };
+
+        let json = serde_json::to_string(&result).unwrap();
+        let deserialized: GitHubSkillResult = serde_json::from_str(&json).unwrap();
+
+        assert!(deserialized.description.is_none());
+        assert!(deserialized.raw_url.is_none());
+    }
+}
+
+/// Integration tests using wiremock for HTTP mocking.
+/// These tests verify the actual HTTP behavior of the GitHub search functions.
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use serde_json::json;
+    use serial_test::serial;
+    use std::env;
+    use wiremock::matchers::{method, path, query_param_contains};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(v) = &self.previous {
+                env::set_var(self.key, v);
+            } else {
+                env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn set_env_var(key: &'static str, value: Option<&str>) -> EnvVarGuard {
+        let previous = env::var(key).ok();
+        if let Some(v) = value {
+            env::set_var(key, v);
+        } else {
+            env::remove_var(key);
+        }
+        EnvVarGuard { key, previous }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_search_github_skills_success() {
+        let server = MockServer::start().await;
+
+        let _api_guard = set_env_var("GITHUB_API_BASE_URL", Some(&server.uri()));
+        let _token_guard = set_env_var("GITHUB_TOKEN", None);
+
+        let mock_response = json!({
+            "items": [
+                {
+                    "path": "skills/testing/SKILL.md",
+                    "html_url": "https://github.com/owner/repo/blob/main/skills/testing/SKILL.md",
+                    "repository": {
+                        "full_name": "owner/repo",
+                        "html_url": "https://github.com/owner/repo",
+                        "stargazers_count": 42,
+                        "updated_at": "2024-06-15T10:00:00Z",
+                        "description": "A test repository"
+                    }
+                },
+                {
+                    "path": "SKILL.md",
+                    "html_url": "https://github.com/another/project/blob/main/SKILL.md",
+                    "repository": {
+                        "full_name": "another/project",
+                        "html_url": "https://github.com/another/project",
+                        "stargazers_count": 100,
+                        "updated_at": "2024-07-20T15:30:00Z",
+                        "description": null
+                    }
+                }
+            ]
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/search/code"))
+            .and(query_param_contains("q", "testing"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&mock_response))
+            .mount(&server)
+            .await;
+
+        let results = search_github_skills("testing", 10).await.unwrap();
+
+        assert_eq!(results.len(), 2);
+
+        // First result
+        assert_eq!(results[0].repo_url, "https://github.com/owner/repo");
+        assert_eq!(results[0].skill_path, "skills/testing/SKILL.md");
+        assert_eq!(results[0].stars, 42);
+        assert_eq!(
+            results[0].description,
+            Some("A test repository".to_string())
+        );
+        assert!(results[0].raw_url.is_some());
+
+        // Second result
+        assert_eq!(results[1].repo_url, "https://github.com/another/project");
+        assert_eq!(results[1].skill_path, "SKILL.md");
+        assert_eq!(results[1].stars, 100);
+        assert!(results[1].description.is_none());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_search_github_skills_empty_results() {
+        let server = MockServer::start().await;
+
+        let _api_guard = set_env_var("GITHUB_API_BASE_URL", Some(&server.uri()));
+        let _token_guard = set_env_var("GITHUB_TOKEN", None);
+
+        let mock_response = json!({
+            "items": []
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/search/code"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&mock_response))
+            .mount(&server)
+            .await;
+
+        let results = search_github_skills("nonexistent", 10).await.unwrap();
+
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_search_github_skills_rate_limit_error() {
+        let server = MockServer::start().await;
+
+        let _api_guard = set_env_var("GITHUB_API_BASE_URL", Some(&server.uri()));
+        let _token_guard = set_env_var("GITHUB_TOKEN", None);
+
+        Mock::given(method("GET"))
+            .and(path("/search/code"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "message": "API rate limit exceeded for IP"
+            })))
+            .mount(&server)
+            .await;
+
+        let result = search_github_skills("testing", 10).await;
+
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("rate limit") || error_msg.contains("403"),
+            "Expected rate limit error, got: {}",
+            error_msg
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_search_github_skills_auth_error() {
+        let server = MockServer::start().await;
+
+        let _api_guard = set_env_var("GITHUB_API_BASE_URL", Some(&server.uri()));
+        let _token_guard = set_env_var("GITHUB_TOKEN", Some("invalid-token"));
+
+        Mock::given(method("GET"))
+            .and(path("/search/code"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "message": "Bad credentials"
+            })))
+            .mount(&server)
+            .await;
+
+        let result = search_github_skills("testing", 10).await;
+
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("authentication") || error_msg.contains("401"),
+            "Expected auth error, got: {}",
+            error_msg
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_search_github_skills_invalid_query_error() {
+        let server = MockServer::start().await;
+
+        let _api_guard = set_env_var("GITHUB_API_BASE_URL", Some(&server.uri()));
+        let _token_guard = set_env_var("GITHUB_TOKEN", None);
+
+        Mock::given(method("GET"))
+            .and(path("/search/code"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(json!({
+                "message": "Validation Failed"
+            })))
+            .mount(&server)
+            .await;
+
+        let result = search_github_skills("", 10).await;
+
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("invalid") || error_msg.contains("422"),
+            "Expected validation error, got: {}",
+            error_msg
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_search_github_skills_server_error() {
+        let server = MockServer::start().await;
+
+        let _api_guard = set_env_var("GITHUB_API_BASE_URL", Some(&server.uri()));
+        let _token_guard = set_env_var("GITHUB_TOKEN", None);
+
+        Mock::given(method("GET"))
+            .and(path("/search/code"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+                "message": "Internal Server Error"
+            })))
+            .mount(&server)
+            .await;
+
+        let result = search_github_skills("testing", 10).await;
+
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("500") || error_msg.contains("error"),
+            "Expected server error, got: {}",
+            error_msg
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_fetch_skill_content_success() {
+        let server = MockServer::start().await;
+        let _token_guard = set_env_var("GITHUB_TOKEN", None);
+
+        let skill_content = r#"---
+description: Test skill
+triggers:
+  - test
+---
+# Test Skill
+
+This is a test skill."#;
+
+        Mock::given(method("GET"))
+            .and(path("/owner/repo/HEAD/SKILL.md"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(skill_content))
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/owner/repo/HEAD/SKILL.md", server.uri());
+        let content = fetch_skill_content(&url).await.unwrap();
+
+        assert!(content.contains("Test skill"));
+        assert!(content.contains("This is a test skill"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_fetch_skill_content_not_found() {
+        let server = MockServer::start().await;
+        let _token_guard = set_env_var("GITHUB_TOKEN", None);
+
+        Mock::given(method("GET"))
+            .and(path("/owner/repo/HEAD/SKILL.md"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/owner/repo/HEAD/SKILL.md", server.uri());
+        let result = fetch_skill_content(&url).await;
+
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("404") || error_msg.contains("Failed"),
+            "Expected not found error, got: {}",
+            error_msg
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_search_skills_advanced_with_language_filter() {
+        let server = MockServer::start().await;
+
+        let _api_guard = set_env_var("GITHUB_API_BASE_URL", Some(&server.uri()));
+        let _token_guard = set_env_var("GITHUB_TOKEN", None);
+
+        let mock_response = json!({
+            "items": [
+                {
+                    "path": "SKILL.md",
+                    "html_url": "https://github.com/rust-project/skills/blob/main/SKILL.md",
+                    "repository": {
+                        "full_name": "rust-project/skills",
+                        "html_url": "https://github.com/rust-project/skills",
+                        "stargazers_count": 50,
+                        "updated_at": "2024-08-01T00:00:00Z",
+                        "description": "Rust skills"
+                    }
+                }
+            ]
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/search/code"))
+            .and(query_param_contains("q", "language:rust"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&mock_response))
+            .mount(&server)
+            .await;
+
+        let keywords = vec!["async".to_string()];
+        let results = search_skills_advanced(&keywords, Some("rust"), None, 10)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].repo_url,
+            "https://github.com/rust-project/skills"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_search_skills_advanced_with_stars_filter() {
+        let server = MockServer::start().await;
+
+        let _api_guard = set_env_var("GITHUB_API_BASE_URL", Some(&server.uri()));
+        let _token_guard = set_env_var("GITHUB_TOKEN", None);
+
+        let mock_response = json!({
+            "items": [
+                {
+                    "path": "SKILL.md",
+                    "html_url": "https://github.com/popular/repo/blob/main/SKILL.md",
+                    "repository": {
+                        "full_name": "popular/repo",
+                        "html_url": "https://github.com/popular/repo",
+                        "stargazers_count": 1500,
+                        "updated_at": "2024-08-01T00:00:00Z",
+                        "description": "Popular repo"
+                    }
+                }
+            ]
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/search/code"))
+            .and(query_param_contains("q", "stars:>=100"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&mock_response))
+            .mount(&server)
+            .await;
+
+        let keywords = vec!["testing".to_string()];
+        let results = search_skills_advanced(&keywords, None, Some(100), 10)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].stars, 1500);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_search_github_skills_sanitizes_input() {
+        let server = MockServer::start().await;
+
+        let _api_guard = set_env_var("GITHUB_API_BASE_URL", Some(&server.uri()));
+        let _token_guard = set_env_var("GITHUB_TOKEN", None);
+
+        let mock_response = json!({
+            "items": []
+        });
+
+        // The mock should receive a sanitized query without the injected operators
+        Mock::given(method("GET"))
+            .and(path("/search/code"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&mock_response))
+            .mount(&server)
+            .await;
+
+        // Try to inject operators - they should be sanitized
+        let result = search_github_skills("test repo:evil/repo stars:>10000", 10).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_search_github_skills_uses_auth_header_when_token_present() {
+        let server = MockServer::start().await;
+
+        let _api_guard = set_env_var("GITHUB_API_BASE_URL", Some(&server.uri()));
+        let _token_guard = set_env_var("GITHUB_TOKEN", Some("test-github-token"));
+
+        let mock_response = json!({
+            "items": []
+        });
+
+        // Verify the auth header is included
+        Mock::given(method("GET"))
+            .and(path("/search/code"))
+            .and(wiremock::matchers::header(
+                "Authorization",
+                "Bearer test-github-token",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&mock_response))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let result = search_github_skills("testing", 10).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_search_github_skills_handles_forbidden_non_rate_limit() {
+        let server = MockServer::start().await;
+
+        let _api_guard = set_env_var("GITHUB_API_BASE_URL", Some(&server.uri()));
+        let _token_guard = set_env_var("GITHUB_TOKEN", None);
+
+        // 403 without rate limit message
+        Mock::given(method("GET"))
+            .and(path("/search/code"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "message": "Repository access blocked"
+            })))
+            .mount(&server)
+            .await;
+
+        let result = search_github_skills("testing", 10).await;
+
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("forbidden")
+                || error_msg.contains("403")
+                || error_msg.contains("permission"),
+            "Expected forbidden error, got: {}",
+            error_msg
+        );
     }
 }

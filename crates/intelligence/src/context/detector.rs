@@ -678,4 +678,992 @@ This is a great project for testing things.
         assert!(desc.unwrap().contains("great project"));
         assert!(keywords.contains(&"features".to_string()));
     }
+
+    // ============================================
+    // Additional tests for >90% coverage (Issue #60)
+    // ============================================
+
+    #[test]
+    fn test_detect_languages_multiple_languages() {
+        let tmp = tempdir().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+
+        // Rust files (more files, should be primary)
+        fs::write(src.join("main.rs"), "fn main() {}").unwrap();
+        fs::write(src.join("lib.rs"), "pub fn x() {}").unwrap();
+        fs::write(src.join("util.rs"), "pub fn y() {}").unwrap();
+
+        // Python files (fewer)
+        fs::write(src.join("script.py"), "print('hi')").unwrap();
+
+        // JavaScript files
+        fs::write(src.join("index.js"), "console.log()").unwrap();
+
+        let languages = detect_languages(tmp.path()).unwrap();
+
+        assert!(languages.contains_key("Rust"));
+        assert!(languages.contains_key("Python"));
+        assert!(languages.contains_key("JavaScript"));
+
+        assert_eq!(languages["Rust"].file_count, 3);
+        assert!(languages["Rust"].primary);
+        assert!(!languages["Python"].primary);
+        assert!(!languages["JavaScript"].primary);
+    }
+
+    #[test]
+    fn test_detect_languages_skips_hidden_dirs() {
+        let tmp = tempdir().unwrap();
+
+        // File in hidden directory should be skipped
+        let hidden = tmp.path().join(".hidden");
+        fs::create_dir_all(&hidden).unwrap();
+        fs::write(hidden.join("secret.rs"), "fn x() {}").unwrap();
+
+        // File in node_modules should be skipped
+        let node_modules = tmp.path().join("node_modules");
+        fs::create_dir_all(&node_modules).unwrap();
+        fs::write(node_modules.join("dep.js"), "x()").unwrap();
+
+        // File in target should be skipped
+        let target = tmp.path().join("target");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("build.rs"), "fn x() {}").unwrap();
+
+        // Only visible file
+        fs::write(tmp.path().join("main.py"), "print()").unwrap();
+
+        let languages = detect_languages(tmp.path()).unwrap();
+
+        assert_eq!(languages.len(), 1);
+        assert!(languages.contains_key("Python"));
+        assert!(!languages.contains_key("Rust"));
+        assert!(!languages.contains_key("JavaScript"));
+    }
+
+    #[test]
+    fn test_detect_languages_case_insensitive_extensions() {
+        let tmp = tempdir().unwrap();
+
+        fs::write(tmp.path().join("file.RS"), "fn main() {}").unwrap();
+        fs::write(tmp.path().join("file.Py"), "print()").unwrap();
+        fs::write(tmp.path().join("file.JS"), "x()").unwrap();
+
+        let languages = detect_languages(tmp.path()).unwrap();
+
+        assert!(languages.contains_key("Rust"));
+        assert!(languages.contains_key("Python"));
+        assert!(languages.contains_key("JavaScript"));
+    }
+
+    #[test]
+    fn test_detect_languages_typescript_variants() {
+        let tmp = tempdir().unwrap();
+
+        fs::write(tmp.path().join("file.ts"), "const x: number = 1;").unwrap();
+        fs::write(tmp.path().join("component.tsx"), "<div/>").unwrap();
+
+        let languages = detect_languages(tmp.path()).unwrap();
+
+        assert!(languages.contains_key("TypeScript"));
+        assert_eq!(languages["TypeScript"].file_count, 2);
+        assert!(languages["TypeScript"]
+            .extensions
+            .contains(&"ts".to_string()));
+        assert!(languages["TypeScript"]
+            .extensions
+            .contains(&"tsx".to_string()));
+    }
+
+    #[test]
+    fn test_detect_languages_cpp_variants() {
+        let tmp = tempdir().unwrap();
+
+        fs::write(tmp.path().join("file.cpp"), "int main() {}").unwrap();
+        fs::write(tmp.path().join("file.cc"), "int main() {}").unwrap();
+        fs::write(tmp.path().join("file.hpp"), "#pragma once").unwrap();
+
+        let languages = detect_languages(tmp.path()).unwrap();
+
+        assert!(languages.contains_key("C++"));
+        assert_eq!(languages["C++"].file_count, 3);
+    }
+
+    #[test]
+    fn test_analyze_project_options_default() {
+        let opts = AnalyzeProjectOptions::default();
+        assert!(opts.include_git);
+        assert_eq!(opts.commit_limit, 50);
+        assert_eq!(opts.max_languages, 10);
+    }
+
+    #[test]
+    fn test_analyze_project_max_languages_limit() {
+        let tmp = tempdir().unwrap();
+
+        // Create files in many languages to exceed the limit
+        let langs = [
+            ("file.rs", "Rust"),
+            ("file.py", "Python"),
+            ("file.js", "JavaScript"),
+            ("file.ts", "TypeScript"),
+            ("file.go", "Go"),
+            ("file.java", "Java"),
+            ("file.rb", "Ruby"),
+            ("file.php", "PHP"),
+            ("file.swift", "Swift"),
+            ("file.c", "C"),
+            ("file.cpp", "C++"),
+            ("file.cs", "C#"),
+        ];
+
+        for (filename, _) in &langs {
+            fs::write(tmp.path().join(filename), "// code").unwrap();
+        }
+
+        let options = AnalyzeProjectOptions {
+            include_git: false,
+            commit_limit: 0,
+            max_languages: 3,
+        };
+
+        let profile = analyze_project_with_options(tmp.path(), options).unwrap();
+
+        assert_eq!(profile.languages.len(), 3);
+    }
+
+    #[test]
+    fn test_classify_project_type_pnpm_workspace() {
+        let tmp = tempdir().unwrap();
+        fs::write(
+            tmp.path().join("pnpm-workspace.yaml"),
+            "packages:\n  - 'packages/*'",
+        )
+        .unwrap();
+
+        let profile = ProjectProfile::default();
+        let project_type = classify_project_type(tmp.path(), &profile);
+
+        assert_eq!(project_type, ProjectType::Monorepo);
+    }
+
+    #[test]
+    fn test_classify_project_type_nx() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("nx.json"), "{}").unwrap();
+
+        let profile = ProjectProfile::default();
+        let project_type = classify_project_type(tmp.path(), &profile);
+
+        assert_eq!(project_type, ProjectType::Monorepo);
+    }
+
+    #[test]
+    fn test_classify_project_type_cargo_workspace() {
+        let tmp = tempdir().unwrap();
+        let cargo = r#"
+[workspace]
+members = ["crates/*"]
+"#;
+        fs::write(tmp.path().join("Cargo.toml"), cargo).unwrap();
+
+        let profile = ProjectProfile::default();
+        let project_type = classify_project_type(tmp.path(), &profile);
+
+        assert_eq!(project_type, ProjectType::Monorepo);
+    }
+
+    #[test]
+    fn test_classify_project_type_plugin() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("plugin.json"), "{}").unwrap();
+
+        let profile = ProjectProfile::default();
+        let project_type = classify_project_type(tmp.path(), &profile);
+
+        assert_eq!(project_type, ProjectType::Plugin);
+    }
+
+    #[test]
+    fn test_classify_project_type_claude_plugin() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join(".claude-plugin"), "").unwrap();
+
+        let profile = ProjectProfile::default();
+        let project_type = classify_project_type(tmp.path(), &profile);
+
+        assert_eq!(project_type, ProjectType::Plugin);
+    }
+
+    #[test]
+    fn test_classify_project_type_plugin_from_keywords() {
+        let tmp = tempdir().unwrap();
+
+        let profile = ProjectProfile {
+            keywords: vec!["plugin".to_string(), "cli".to_string()],
+            ..Default::default()
+        };
+
+        let project_type = classify_project_type(tmp.path(), &profile);
+
+        assert_eq!(project_type, ProjectType::Plugin);
+    }
+
+    #[test]
+    fn test_classify_project_type_extension_keyword() {
+        let tmp = tempdir().unwrap();
+
+        let profile = ProjectProfile {
+            keywords: vec!["extension".to_string()],
+            ..Default::default()
+        };
+
+        let project_type = classify_project_type(tmp.path(), &profile);
+
+        assert_eq!(project_type, ProjectType::Plugin);
+    }
+
+    #[test]
+    fn test_classify_project_type_service_dockerfile() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("Dockerfile"), "FROM rust").unwrap();
+
+        let profile = ProjectProfile::default();
+        let project_type = classify_project_type(tmp.path(), &profile);
+
+        assert_eq!(project_type, ProjectType::Service);
+    }
+
+    #[test]
+    fn test_classify_project_type_service_docker_compose() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("docker-compose.yml"), "version: '3'").unwrap();
+
+        let profile = ProjectProfile::default();
+        let project_type = classify_project_type(tmp.path(), &profile);
+
+        assert_eq!(project_type, ProjectType::Service);
+    }
+
+    #[test]
+    fn test_classify_project_type_service_docker_compose_yaml() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("docker-compose.yaml"), "version: '3'").unwrap();
+
+        let profile = ProjectProfile::default();
+        let project_type = classify_project_type(tmp.path(), &profile);
+
+        assert_eq!(project_type, ProjectType::Service);
+    }
+
+    #[test]
+    fn test_classify_project_type_service_from_frameworks() {
+        let tmp = tempdir().unwrap();
+
+        let profile = ProjectProfile {
+            frameworks: vec!["FastAPI".to_string()],
+            ..Default::default()
+        };
+
+        let project_type = classify_project_type(tmp.path(), &profile);
+
+        assert_eq!(project_type, ProjectType::Service);
+    }
+
+    #[test]
+    fn test_classify_project_type_service_express_framework() {
+        let tmp = tempdir().unwrap();
+
+        let profile = ProjectProfile {
+            frameworks: vec!["Express".to_string()],
+            ..Default::default()
+        };
+
+        let project_type = classify_project_type(tmp.path(), &profile);
+
+        assert_eq!(project_type, ProjectType::Service);
+    }
+
+    #[test]
+    fn test_classify_project_type_service_axum_framework() {
+        let tmp = tempdir().unwrap();
+
+        let profile = ProjectProfile {
+            frameworks: vec!["Axum".to_string()],
+            ..Default::default()
+        };
+
+        let project_type = classify_project_type(tmp.path(), &profile);
+
+        assert_eq!(project_type, ProjectType::Service);
+    }
+
+    #[test]
+    fn test_classify_project_type_library_rust_lib_rs() {
+        let tmp = tempdir().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.rs"), "pub fn foo() {}").unwrap();
+
+        let profile = ProjectProfile::default();
+        let project_type = classify_project_type(tmp.path(), &profile);
+
+        assert_eq!(project_type, ProjectType::Library);
+    }
+
+    #[test]
+    fn test_classify_project_type_library_cargo_lib_section() {
+        let tmp = tempdir().unwrap();
+        let cargo = r#"
+[package]
+name = "mylib"
+version = "0.1.0"
+
+[lib]
+name = "mylib"
+"#;
+        fs::write(tmp.path().join("Cargo.toml"), cargo).unwrap();
+
+        let mut profile = ProjectProfile::default();
+        profile.dependencies.insert("rust".to_string(), Vec::new());
+
+        let project_type = classify_project_type(tmp.path(), &profile);
+
+        assert_eq!(project_type, ProjectType::Library);
+    }
+
+    #[test]
+    fn test_classify_project_type_application_main_rs() {
+        let tmp = tempdir().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("main.rs"), "fn main() {}").unwrap();
+
+        let profile = ProjectProfile::default();
+        let project_type = classify_project_type(tmp.path(), &profile);
+
+        assert_eq!(project_type, ProjectType::Application);
+    }
+
+    #[test]
+    fn test_classify_project_type_application_main_py() {
+        let tmp = tempdir().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("main.py"), "if __name__ == '__main__': pass").unwrap();
+
+        let profile = ProjectProfile::default();
+        let project_type = classify_project_type(tmp.path(), &profile);
+
+        assert_eq!(project_type, ProjectType::Application);
+    }
+
+    #[test]
+    fn test_classify_project_type_application_index_ts() {
+        let tmp = tempdir().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("index.ts"), "console.log()").unwrap();
+
+        let profile = ProjectProfile::default();
+        let project_type = classify_project_type(tmp.path(), &profile);
+
+        assert_eq!(project_type, ProjectType::Application);
+    }
+
+    #[test]
+    fn test_classify_project_type_application_index_js() {
+        let tmp = tempdir().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("index.js"), "console.log()").unwrap();
+
+        let profile = ProjectProfile::default();
+        let project_type = classify_project_type(tmp.path(), &profile);
+
+        assert_eq!(project_type, ProjectType::Application);
+    }
+
+    #[test]
+    fn test_classify_project_type_application_app_py() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("app.py"), "app = Flask(__name__)").unwrap();
+
+        let profile = ProjectProfile::default();
+        let project_type = classify_project_type(tmp.path(), &profile);
+
+        assert_eq!(project_type, ProjectType::Application);
+    }
+
+    #[test]
+    fn test_classify_project_type_unknown() {
+        let tmp = tempdir().unwrap();
+        // Just an empty directory with no project markers
+
+        let profile = ProjectProfile::default();
+        let project_type = classify_project_type(tmp.path(), &profile);
+
+        assert_eq!(project_type, ProjectType::Unknown);
+    }
+
+    #[test]
+    fn test_parse_readme_content_with_badges() {
+        let content = r#"# My Project
+
+![Build Status](https://travis-ci.org/user/repo.svg)
+[![Coverage](https://codecov.io/badge)](https://codecov.io)
+
+This is the actual description of the project.
+
+## Installation
+"#;
+
+        let (desc, _) = parse_readme_content(content);
+
+        assert!(desc.is_some());
+        let desc = desc.unwrap();
+        // Should skip badges and get actual description
+        assert!(desc.contains("actual description"));
+        assert!(!desc.contains("travis-ci"));
+    }
+
+    #[test]
+    fn test_parse_readme_content_truncates_long_description() {
+        let content = format!("# Project\n\n{}", "A very long description. ".repeat(100));
+
+        let (desc, _) = parse_readme_content(&content);
+
+        assert!(desc.is_some());
+        let desc = desc.unwrap();
+        assert!(desc.len() <= 503); // 500 chars + "..."
+        assert!(desc.ends_with("..."));
+    }
+
+    #[test]
+    fn test_parse_readme_content_extracts_multiple_keywords() {
+        let content = r#"# Project Name
+
+Description here.
+
+## Installation Guide
+
+## Configuration Options
+
+## Usage Examples
+
+## Contributing Guidelines
+"#;
+
+        let (_, keywords) = parse_readme_content(content);
+
+        assert!(keywords.contains(&"installation".to_string()));
+        assert!(keywords.contains(&"configuration".to_string()));
+        assert!(keywords.contains(&"usage".to_string()));
+        assert!(keywords.contains(&"contributing".to_string()));
+    }
+
+    #[test]
+    fn test_parse_readme_content_filters_short_words() {
+        let content = r#"# A B C
+
+Description.
+
+## In To Of At
+"#;
+
+        let (_, keywords) = parse_readme_content(content);
+
+        // Words shorter than 3 chars should be filtered
+        assert!(!keywords.iter().any(|k| k.len() < 3));
+    }
+
+    #[test]
+    fn test_parse_readme_content_no_description() {
+        let content = r#"# Project
+
+"#;
+
+        let (desc, _) = parse_readme_content(content);
+
+        // Empty description case
+        assert!(desc.is_none() || desc.as_ref().map(|d| d.is_empty()).unwrap_or(false));
+    }
+
+    #[test]
+    fn test_parse_readme_content_description_after_multiple_headers() {
+        let content = r#"# Header One
+
+Some text under first header.
+
+## Header Two
+"#;
+
+        let (desc, _) = parse_readme_content(content);
+
+        assert!(desc.is_some());
+        assert!(desc.unwrap().contains("text under first"));
+    }
+
+    #[test]
+    fn test_detect_frameworks_python_frameworks() {
+        let mut deps = HashMap::new();
+        deps.insert(
+            "python".to_string(),
+            vec![
+                DependencyInfo {
+                    name: "fastapi".to_string(),
+                    version: Some(">=0.100.0".to_string()),
+                    dev: false,
+                },
+                DependencyInfo {
+                    name: "pytest".to_string(),
+                    version: None,
+                    dev: true,
+                },
+                DependencyInfo {
+                    name: "pandas".to_string(),
+                    version: Some(">=2.0".to_string()),
+                    dev: false,
+                },
+            ],
+        );
+
+        let frameworks = detect_frameworks(&deps);
+
+        assert!(frameworks.contains(&"FastAPI".to_string()));
+        assert!(frameworks.contains(&"pytest".to_string()));
+        assert!(frameworks.contains(&"pandas".to_string()));
+    }
+
+    #[test]
+    fn test_detect_frameworks_rust_frameworks() {
+        let mut deps = HashMap::new();
+        deps.insert(
+            "rust".to_string(),
+            vec![
+                DependencyInfo {
+                    name: "axum".to_string(),
+                    version: Some("0.7".to_string()),
+                    dev: false,
+                },
+                DependencyInfo {
+                    name: "tokio".to_string(),
+                    version: Some("1".to_string()),
+                    dev: false,
+                },
+                DependencyInfo {
+                    name: "serde".to_string(),
+                    version: Some("1".to_string()),
+                    dev: false,
+                },
+            ],
+        );
+
+        let frameworks = detect_frameworks(&deps);
+
+        assert!(frameworks.contains(&"Axum".to_string()));
+        assert!(frameworks.contains(&"Tokio".to_string()));
+        assert!(frameworks.contains(&"Serde".to_string()));
+    }
+
+    #[test]
+    fn test_detect_frameworks_no_duplicates() {
+        let mut deps = HashMap::new();
+        deps.insert(
+            "npm".to_string(),
+            vec![
+                DependencyInfo {
+                    name: "react".to_string(),
+                    version: None,
+                    dev: false,
+                },
+                DependencyInfo {
+                    name: "react-dom".to_string(),
+                    version: None,
+                    dev: false,
+                },
+            ],
+        );
+
+        let frameworks = detect_frameworks(&deps);
+
+        // Both contain "react" but should only have one React entry
+        let react_count = frameworks.iter().filter(|f| *f == "React").count();
+        assert_eq!(react_count, 1);
+    }
+
+    #[test]
+    fn test_detect_frameworks_empty_deps() {
+        let deps: HashMap<String, Vec<DependencyInfo>> = HashMap::new();
+        let frameworks = detect_frameworks(&deps);
+
+        assert!(frameworks.is_empty());
+    }
+
+    #[test]
+    fn test_parse_requirements_txt() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("requirements.txt");
+
+        let content = r#"
+# This is a comment
+requests>=2.28.0
+flask==2.3.0
+-e git+https://github.com/user/repo.git#egg=somepackage
+numpy
+pandas<2.0,>=1.5.0
+
+pytest>=7.0
+"#;
+
+        fs::write(&path, content).unwrap();
+
+        let deps = parse_requirements_txt(&path).unwrap();
+
+        assert_eq!(deps.len(), 5); // Comments and -e lines are skipped
+
+        let requests = deps.iter().find(|d| d.name == "requests").unwrap();
+        assert_eq!(requests.version, Some(">=2.28.0".to_string()));
+
+        let flask = deps.iter().find(|d| d.name == "flask").unwrap();
+        assert_eq!(flask.version, Some("==2.3.0".to_string()));
+
+        let numpy = deps.iter().find(|d| d.name == "numpy").unwrap();
+        assert_eq!(numpy.version, None);
+    }
+
+    #[test]
+    fn test_analyze_project_with_readme() {
+        let tmp = tempdir().unwrap();
+
+        fs::write(
+            tmp.path().join("README.md"),
+            "# Test Project\n\nThis is a test project for CI/CD.",
+        )
+        .unwrap();
+
+        let options = AnalyzeProjectOptions {
+            include_git: false,
+            commit_limit: 0,
+            max_languages: 10,
+        };
+
+        let profile = analyze_project_with_options(tmp.path(), options).unwrap();
+
+        assert!(profile.description.is_some());
+        assert!(profile.description.unwrap().contains("test project"));
+    }
+
+    #[test]
+    fn test_analyze_project_without_readme() {
+        let tmp = tempdir().unwrap();
+        // No README file
+
+        let options = AnalyzeProjectOptions {
+            include_git: false,
+            commit_limit: 0,
+            max_languages: 10,
+        };
+
+        let profile = analyze_project_with_options(tmp.path(), options).unwrap();
+
+        // Should not fail, just have empty description
+        assert!(profile.description.is_none());
+    }
+
+    #[test]
+    fn test_analyze_project_case_insensitive_readme() {
+        let tmp = tempdir().unwrap();
+
+        // All caps README
+        fs::write(
+            tmp.path().join("README"),
+            "# Plain README\n\nNo extension here.",
+        )
+        .unwrap();
+
+        let options = AnalyzeProjectOptions {
+            include_git: false,
+            commit_limit: 0,
+            max_languages: 10,
+        };
+
+        let profile = analyze_project_with_options(tmp.path(), options).unwrap();
+
+        assert!(profile.description.is_some());
+    }
+
+    #[test]
+    fn test_analyze_project_detects_dependencies() {
+        let tmp = tempdir().unwrap();
+
+        let cargo = r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[dependencies]
+serde = "1.0"
+"#;
+        fs::write(tmp.path().join("Cargo.toml"), cargo).unwrap();
+
+        let options = AnalyzeProjectOptions {
+            include_git: false,
+            commit_limit: 0,
+            max_languages: 10,
+        };
+
+        let profile = analyze_project_with_options(tmp.path(), options).unwrap();
+
+        assert!(profile.dependencies.contains_key("rust"));
+        let rust_deps = &profile.dependencies["rust"];
+        assert!(rust_deps.iter().any(|d| d.name == "serde"));
+    }
+
+    #[test]
+    fn test_analyze_project_detects_frameworks_from_deps() {
+        let tmp = tempdir().unwrap();
+
+        let package_json = r#"{
+  "dependencies": {
+    "express": "4.18.2",
+    "react": "^18.0.0"
+  }
+}"#;
+        fs::write(tmp.path().join("package.json"), package_json).unwrap();
+
+        let options = AnalyzeProjectOptions {
+            include_git: false,
+            commit_limit: 0,
+            max_languages: 10,
+        };
+
+        let profile = analyze_project_with_options(tmp.path(), options).unwrap();
+
+        assert!(profile.frameworks.contains(&"Express".to_string()));
+        assert!(profile.frameworks.contains(&"React".to_string()));
+    }
+
+    #[test]
+    fn test_analyze_project_uses_default_options() {
+        let tmp = tempdir().unwrap();
+
+        // Just ensure analyze_project works (wrapper for with_options)
+        let profile = analyze_project(tmp.path()).unwrap();
+
+        assert_eq!(profile.root, tmp.path());
+    }
+
+    #[test]
+    fn test_requirements_txt_fallback_when_no_pyproject() {
+        let tmp = tempdir().unwrap();
+
+        // Only requirements.txt, no pyproject.toml
+        fs::write(tmp.path().join("requirements.txt"), "requests>=2.0\n").unwrap();
+
+        let options = AnalyzeProjectOptions {
+            include_git: false,
+            commit_limit: 0,
+            max_languages: 10,
+        };
+
+        let profile = analyze_project_with_options(tmp.path(), options).unwrap();
+
+        assert!(profile.dependencies.contains_key("python"));
+        let py_deps = &profile.dependencies["python"];
+        assert!(py_deps.iter().any(|d| d.name == "requests"));
+    }
+
+    #[test]
+    fn test_pyproject_takes_precedence_over_requirements() {
+        let tmp = tempdir().unwrap();
+
+        // Both files exist
+        fs::write(tmp.path().join("requirements.txt"), "old-package>=1.0\n").unwrap();
+
+        let pyproject = r#"
+[project]
+dependencies = ["new-package>=2.0"]
+"#;
+        fs::write(tmp.path().join("pyproject.toml"), pyproject).unwrap();
+
+        let options = AnalyzeProjectOptions {
+            include_git: false,
+            commit_limit: 0,
+            max_languages: 10,
+        };
+
+        let profile = analyze_project_with_options(tmp.path(), options).unwrap();
+
+        assert!(profile.dependencies.contains_key("python"));
+        let py_deps = &profile.dependencies["python"];
+        // Should have pyproject.toml deps, not requirements.txt
+        assert!(py_deps.iter().any(|d| d.name == "new-package"));
+        assert!(!py_deps.iter().any(|d| d.name == "old-package"));
+    }
+
+    #[test]
+    fn test_parse_readme_content_skips_link_lines() {
+        let content = r#"# Project
+
+[Documentation](https://docs.example.com)
+[GitHub](https://github.com/user/repo)
+
+This is the real description.
+
+## Features
+"#;
+
+        let (desc, _) = parse_readme_content(content);
+
+        assert!(desc.is_some());
+        let desc = desc.unwrap();
+        assert!(desc.contains("real description"));
+        assert!(!desc.contains("Documentation"));
+    }
+
+    #[test]
+    fn test_detect_languages_all_extensions() {
+        let tmp = tempdir().unwrap();
+
+        // Test a variety of extensions to ensure coverage
+        let files = [
+            ("main.rs", "Rust"),
+            ("script.pyw", "Python"),
+            ("app.mjs", "JavaScript"),
+            ("app.cjs", "JavaScript"),
+            ("main.kt", "Kotlin"),
+            ("main.kts", "Kotlin"),
+            ("header.hxx", "C++"),
+            ("source.cxx", "C++"),
+            ("script.exs", "Elixir"),
+            ("module.erl", "Erlang"),
+            ("header.hrl", "Erlang"),
+            ("main.cljs", "ClojureScript"),
+            ("main.mli", "OCaml"),
+            ("script.fsx", "F#"),
+            ("main.nim", "Nim"),
+            ("main.v", "V"),
+            ("main.cr", "Crystal"),
+        ];
+
+        for (filename, _) in &files {
+            fs::write(tmp.path().join(filename), "code").unwrap();
+        }
+
+        let languages = detect_languages(tmp.path()).unwrap();
+
+        for (_, lang) in &files {
+            assert!(
+                languages.contains_key(*lang),
+                "Expected language {} to be detected",
+                lang
+            );
+        }
+    }
+
+    #[test]
+    fn test_analyze_project_nonexistent_directory_behavior() {
+        // Test that analyze_project handles nonexistent directories gracefully.
+        // Current behavior: returns empty profile (not an error).
+        // This is acceptable for skill recommendations - an empty profile simply
+        // means no language/framework context is available, which is valid.
+        let nonexistent = Path::new("/nonexistent/path/that/should/not/exist");
+        let result = analyze_project(nonexistent);
+
+        // Either an error or empty result is acceptable - key is no panic
+        match result {
+            Ok(profile) => {
+                // Empty profile is valid for nonexistent directory
+                assert!(profile.languages.is_empty());
+                assert!(profile.dependencies.is_empty());
+            }
+            Err(e) => {
+                // An error is also acceptable
+                assert!(!e.to_string().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn test_detect_languages_nonexistent_behavior() {
+        // detect_languages on nonexistent path should either error or return empty
+        let nonexistent = Path::new("/nonexistent/path/that/should/not/exist");
+        let result = detect_languages(nonexistent);
+
+        match result {
+            Ok(languages) => assert!(languages.is_empty()),
+            Err(e) => assert!(!e.to_string().is_empty()),
+        }
+    }
+
+    #[test]
+    fn test_analyze_project_empty_directory_succeeds() {
+        // An empty but accessible directory should succeed with empty results
+        let tmp = tempdir().unwrap();
+        let options = AnalyzeProjectOptions {
+            include_git: false,
+            commit_limit: 0,
+            max_languages: 10,
+        };
+
+        let result = analyze_project_with_options(tmp.path(), options);
+        assert!(result.is_ok(), "Empty directory should succeed");
+
+        let profile = result.unwrap();
+        assert!(profile.languages.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_analyze_project_handles_permission_errors() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempdir().unwrap();
+        let restricted = tmp.path().join("restricted");
+        fs::create_dir(&restricted).unwrap();
+        fs::write(restricted.join("test.rs"), "fn main() {}").unwrap();
+
+        // Remove read permissions from directory
+        let mut perms = fs::metadata(&restricted).unwrap().permissions();
+        perms.set_mode(0o000);
+        fs::set_permissions(&restricted, perms).unwrap();
+
+        // Test should either error or succeed with partial results (not panic)
+        let options = AnalyzeProjectOptions {
+            include_git: false,
+            commit_limit: 0,
+            max_languages: 10,
+        };
+        let result = analyze_project_with_options(tmp.path(), options);
+
+        // Restore permissions before assertions so cleanup works
+        let mut perms = fs::metadata(&restricted).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&restricted, perms).unwrap();
+
+        // Either succeeds with partial results or returns a clear error - both are valid
+        // The key is it should NOT panic
+        match result {
+            Ok(profile) => {
+                // If it succeeded, the restricted directory should have been skipped
+                // so we shouldn't see any Rust files detected from it
+                assert!(
+                    profile
+                        .languages
+                        .get("Rust")
+                        .is_none_or(|l| l.file_count == 0),
+                    "Should not detect files from permission-denied directory"
+                );
+            }
+            Err(e) => {
+                // An error is acceptable - verify it's a meaningful error
+                assert!(
+                    !e.to_string().is_empty(),
+                    "Error should have a descriptive message"
+                );
+            }
+        }
+    }
 }

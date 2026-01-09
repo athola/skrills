@@ -162,3 +162,320 @@ impl CreateSkillResult {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod creation_method {
+        use super::*;
+
+        #[test]
+        fn default_is_both() {
+            assert_eq!(CreationMethod::default(), CreationMethod::Both);
+        }
+
+        #[test]
+        fn display_github_search() {
+            assert_eq!(CreationMethod::GitHubSearch.to_string(), "github");
+        }
+
+        #[test]
+        fn display_llm_generate() {
+            assert_eq!(CreationMethod::LLMGenerate.to_string(), "llm");
+        }
+
+        #[test]
+        fn display_empirical() {
+            assert_eq!(CreationMethod::Empirical.to_string(), "empirical");
+        }
+
+        #[test]
+        fn display_both() {
+            assert_eq!(CreationMethod::Both.to_string(), "both");
+        }
+
+        #[test]
+        fn from_str_github_variants() {
+            assert_eq!(
+                "github".parse::<CreationMethod>().unwrap(),
+                CreationMethod::GitHubSearch
+            );
+            assert_eq!(
+                "search".parse::<CreationMethod>().unwrap(),
+                CreationMethod::GitHubSearch
+            );
+            assert_eq!(
+                "GITHUB".parse::<CreationMethod>().unwrap(),
+                CreationMethod::GitHubSearch
+            );
+        }
+
+        #[test]
+        fn from_str_llm_variants() {
+            assert_eq!(
+                "llm".parse::<CreationMethod>().unwrap(),
+                CreationMethod::LLMGenerate
+            );
+            assert_eq!(
+                "generate".parse::<CreationMethod>().unwrap(),
+                CreationMethod::LLMGenerate
+            );
+            assert_eq!(
+                "LLM".parse::<CreationMethod>().unwrap(),
+                CreationMethod::LLMGenerate
+            );
+        }
+
+        #[test]
+        fn from_str_empirical_variants() {
+            assert_eq!(
+                "empirical".parse::<CreationMethod>().unwrap(),
+                CreationMethod::Empirical
+            );
+            assert_eq!(
+                "pattern".parse::<CreationMethod>().unwrap(),
+                CreationMethod::Empirical
+            );
+            assert_eq!(
+                "patterns".parse::<CreationMethod>().unwrap(),
+                CreationMethod::Empirical
+            );
+        }
+
+        #[test]
+        fn from_str_both_variants() {
+            assert_eq!(
+                "both".parse::<CreationMethod>().unwrap(),
+                CreationMethod::Both
+            );
+            assert_eq!(
+                "all".parse::<CreationMethod>().unwrap(),
+                CreationMethod::Both
+            );
+        }
+
+        #[test]
+        fn from_str_invalid() {
+            let result = "invalid".parse::<CreationMethod>();
+            assert!(result.is_err());
+            assert_eq!(
+                result.unwrap_err(),
+                "Unknown creation method: invalid".to_string()
+            );
+        }
+
+        #[test]
+        fn serialize_deserialize_roundtrip() {
+            let methods = [
+                CreationMethod::GitHubSearch,
+                CreationMethod::LLMGenerate,
+                CreationMethod::Empirical,
+                CreationMethod::Both,
+            ];
+
+            for method in methods {
+                let json = serde_json::to_string(&method).unwrap();
+                let parsed: CreationMethod = serde_json::from_str(&json).unwrap();
+                assert_eq!(method, parsed);
+            }
+        }
+
+        #[test]
+        fn clone_and_debug() {
+            let method = CreationMethod::LLMGenerate;
+            let cloned = method.clone();
+            assert_eq!(method, cloned);
+
+            let debug = format!("{:?}", method);
+            assert!(debug.contains("LLMGenerate"));
+        }
+    }
+
+    mod create_skill_request {
+        use super::*;
+
+        #[test]
+        fn new_sets_name_and_description() {
+            let request = CreateSkillRequest::new("test-skill", "A test skill");
+
+            assert_eq!(request.name, "test-skill");
+            assert_eq!(request.description, "A test skill");
+        }
+
+        #[test]
+        fn new_has_default_values() {
+            let request = CreateSkillRequest::new("name", "desc");
+
+            assert!(request.target_dir.is_none());
+            assert_eq!(request.method, CreationMethod::Both);
+            assert!(request.project_context.is_none());
+            assert!(!request.dry_run);
+        }
+
+        #[test]
+        fn with_target_dir() {
+            let request =
+                CreateSkillRequest::new("name", "desc").with_target_dir("/path/to/skills");
+
+            assert_eq!(request.target_dir, Some("/path/to/skills".to_string()));
+        }
+
+        #[test]
+        fn with_method() {
+            let request =
+                CreateSkillRequest::new("name", "desc").with_method(CreationMethod::GitHubSearch);
+
+            assert_eq!(request.method, CreationMethod::GitHubSearch);
+        }
+
+        #[test]
+        fn dry_run_enables_flag() {
+            let request = CreateSkillRequest::new("name", "desc").dry_run();
+
+            assert!(request.dry_run);
+        }
+
+        #[test]
+        fn builder_chaining() {
+            let request = CreateSkillRequest::new("chained-skill", "Full builder test")
+                .with_target_dir("/skills")
+                .with_method(CreationMethod::LLMGenerate)
+                .dry_run();
+
+            assert_eq!(request.name, "chained-skill");
+            assert_eq!(request.description, "Full builder test");
+            assert_eq!(request.target_dir, Some("/skills".to_string()));
+            assert_eq!(request.method, CreationMethod::LLMGenerate);
+            assert!(request.dry_run);
+        }
+
+        #[test]
+        fn serialize_deserialize_roundtrip() {
+            let request = CreateSkillRequest::new("serialization-test", "Testing JSON")
+                .with_target_dir("/test")
+                .with_method(CreationMethod::Empirical)
+                .dry_run();
+
+            let json = serde_json::to_string(&request).unwrap();
+            let parsed: CreateSkillRequest = serde_json::from_str(&json).unwrap();
+
+            assert_eq!(request.name, parsed.name);
+            assert_eq!(request.description, parsed.description);
+            assert_eq!(request.target_dir, parsed.target_dir);
+            assert_eq!(request.method, parsed.method);
+            assert_eq!(request.dry_run, parsed.dry_run);
+        }
+
+        #[test]
+        fn clone_and_debug() {
+            let request = CreateSkillRequest::new("debug-test", "Testing debug");
+            let cloned = request.clone();
+
+            assert_eq!(request.name, cloned.name);
+
+            let debug = format!("{:?}", request);
+            assert!(debug.contains("debug-test"));
+        }
+    }
+
+    mod create_skill_result {
+        use super::*;
+
+        #[test]
+        fn success_factory() {
+            let result = CreateSkillResult::success(
+                CreationMethod::LLMGenerate,
+                "# Skill content".to_string(),
+                Some("/path/skill.md".to_string()),
+            );
+
+            assert!(result.success);
+            assert_eq!(result.method_used, CreationMethod::LLMGenerate);
+            assert_eq!(result.content, Some("# Skill content".to_string()));
+            assert_eq!(result.path, Some("/path/skill.md".to_string()));
+            assert!(result.github_results.is_none());
+            assert!(result.error.is_none());
+        }
+
+        #[test]
+        fn success_without_path() {
+            let result =
+                CreateSkillResult::success(CreationMethod::Both, "content".to_string(), None);
+
+            assert!(result.success);
+            assert!(result.path.is_none());
+            assert!(result.content.is_some());
+        }
+
+        #[test]
+        fn failure_factory() {
+            let result =
+                CreateSkillResult::failure(CreationMethod::GitHubSearch, "API rate limit exceeded");
+
+            assert!(!result.success);
+            assert_eq!(result.method_used, CreationMethod::GitHubSearch);
+            assert_eq!(result.error, Some("API rate limit exceeded".to_string()));
+            assert!(result.path.is_none());
+            assert!(result.content.is_none());
+            assert!(result.github_results.is_none());
+        }
+
+        #[test]
+        fn with_github_results() {
+            let github_result = GitHubSkillResult {
+                repo_url: "https://github.com/owner/repo".to_string(),
+                skill_path: "SKILL.md".to_string(),
+                file_url: "https://github.com/owner/repo/blob/main/SKILL.md".to_string(),
+                description: Some("A skill".to_string()),
+                stars: 42,
+                last_updated: "2024-01-01T00:00:00Z".to_string(),
+                raw_url: Some(
+                    "https://raw.githubusercontent.com/owner/repo/main/SKILL.md".to_string(),
+                ),
+            };
+
+            let result = CreateSkillResult::success(
+                CreationMethod::GitHubSearch,
+                "content".to_string(),
+                None,
+            )
+            .with_github_results(vec![github_result.clone()]);
+
+            assert!(result.github_results.is_some());
+            let results = result.github_results.unwrap();
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].skill_path, "SKILL.md");
+            assert_eq!(results[0].stars, 42);
+        }
+
+        #[test]
+        fn serialize_deserialize_roundtrip() {
+            let result = CreateSkillResult::success(
+                CreationMethod::Empirical,
+                "Empirical content".to_string(),
+                Some("/empirical/skill.md".to_string()),
+            );
+
+            let json = serde_json::to_string(&result).unwrap();
+            let parsed: CreateSkillResult = serde_json::from_str(&json).unwrap();
+
+            assert_eq!(result.success, parsed.success);
+            assert_eq!(result.method_used, parsed.method_used);
+            assert_eq!(result.content, parsed.content);
+            assert_eq!(result.path, parsed.path);
+        }
+
+        #[test]
+        fn clone_and_debug() {
+            let result = CreateSkillResult::failure(CreationMethod::Both, "test error");
+            let cloned = result.clone();
+
+            assert_eq!(result.success, cloned.success);
+            assert_eq!(result.error, cloned.error);
+
+            let debug = format!("{:?}", result);
+            assert!(debug.contains("test error"));
+        }
+    }
+}

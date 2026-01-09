@@ -1,6 +1,6 @@
 [package]
 name = "skrills-validate"
-version = "0.4.5"
+version = "0.4.6"
 edition.workspace = true
 description = "Skill validation for Claude Code and Codex CLI"
 license = "MIT"

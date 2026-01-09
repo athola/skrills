@@ -17,7 +17,7 @@ TEST_THREADS ?= 1
 CARGO_CMD = CARGO_HOME=$(CARGO_HOME) $(CARGO)
 DEMO_RUN = HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH)
 
-CARGO_GUARD_TARGETS := fmt lint check test test-unit test-integration test-setup \
+CARGO_GUARD_TARGETS := fmt fmt-check lint check test test-unit test-integration test-setup \
 	test-coverage build build-min serve-help install coverage docs book book-serve \
 	clean security deny deps-update
 
@@ -56,7 +56,7 @@ define verify_setup
 endef
 
 # Phony targets: core developer flow
-.PHONY: help fmt lint lint-md check test test-unit test-integration test-setup \
+.PHONY: help fmt fmt-check lint lint-md check test test-unit test-integration test-setup \
 	build build-min serve-help install status coverage test-coverage dogfood ci precommit \
 	clean clean-demo githooks hooks require-cargo security deny deps-update check-deps \
 	quick watch bench release
@@ -76,7 +76,7 @@ $(CARGO_GUARD_TARGETS): require-cargo
 help:
 	@printf "Usage: make <target>\n\n"
 	@printf "Core\n"
-	@printf "  %-23s %s\n" "fmt" "format workspace"
+	@printf "  %-23s %s\n" "fmt | fmt-check" "format workspace or check only"
 	@printf "  %-23s %s\n" "lint" "clippy with -D warnings"
 	@printf "  %-23s %s\n" "lint-md" "lint markdown files"
 	@printf "  %-23s %s\n" "check" "cargo check all targets"
@@ -122,6 +122,9 @@ require-cargo:
 
 fmt:
 	$(CARGO_CMD) fmt --all
+
+fmt-check:
+	$(CARGO_CMD) fmt --all -- --check
 
 lint:
 	$(CARGO_CMD) clippy --workspace --all-targets -- -D warnings
@@ -369,7 +372,7 @@ clean-demo:
 
 ci: fmt lint test
 
-precommit: fmt lint lint-md test
+precommit: fmt-check lint lint-md test
 
 hooks:
 	@git config core.hooksPath githooks

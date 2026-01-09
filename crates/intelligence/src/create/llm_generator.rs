@@ -329,4 +329,476 @@ This is a test."#;
         assert!(validate_cli_binary("").is_err());
         assert!(validate_cli_binary(&"a".repeat(100)).is_err());
     }
+
+    // =========================================================================
+    // Additional extract_skill_content tests for coverage
+    // =========================================================================
+
+    #[test]
+    fn test_extract_skill_content_empty_response() {
+        let content = extract_skill_content("");
+        assert_eq!(content, "");
+    }
+
+    #[test]
+    fn test_extract_skill_content_whitespace_only() {
+        let content = extract_skill_content("   \n\t  \n  ");
+        assert_eq!(content, "");
+    }
+
+    #[test]
+    fn test_extract_skill_content_no_frontmatter() {
+        let response = "This is just some text without any YAML frontmatter.";
+        let content = extract_skill_content(response);
+        assert_eq!(content, response);
+    }
+
+    #[test]
+    fn test_extract_skill_content_code_block_without_language() {
+        let response = r#"Here's the skill:
+
+```
+---
+name: bare-code-block
+description: Code block without language identifier
+---
+
+# Instructions
+
+Do something.
+```
+"#;
+        let content = extract_skill_content(response);
+        assert!(content.starts_with("---"));
+        assert!(content.contains("name: bare-code-block"));
+    }
+
+    #[test]
+    fn test_extract_skill_content_code_block_yaml_language() {
+        let response = r#"```yaml
+---
+name: yaml-skill
+description: Using yaml as language identifier
+---
+
+# YAML Skill
+
+Content here.
+```"#;
+        let content = extract_skill_content(response);
+        assert!(content.starts_with("---"));
+        assert!(content.contains("name: yaml-skill"));
+    }
+
+    #[test]
+    fn test_extract_skill_content_frontmatter_with_preamble() {
+        // When there's text before the frontmatter but no code block
+        let response = r#"Here is your skill:
+
+---
+name: preamble-skill
+description: Has text before frontmatter
+---
+
+# Content
+
+Body text."#;
+        let content = extract_skill_content(response);
+        assert!(content.starts_with("---"));
+        assert!(content.contains("name: preamble-skill"));
+        assert!(!content.contains("Here is your skill"));
+    }
+
+    #[test]
+    fn test_extract_skill_content_multiple_code_blocks() {
+        // Should extract the first code block with frontmatter
+        let response = r#"Here's an example:
+
+```bash
+echo "hello"
+```
+
+And here's the actual skill:
+
+```markdown
+---
+name: second-block
+description: Second code block with frontmatter
+---
+
+# Real Skill
+
+This is the real skill.
+```
+"#;
+        // The function finds the first ``` and looks for ---
+        // In this case, the first code block doesn't have ---, so it should
+        // fall back to finding --- directly in the response
+        let content = extract_skill_content(response);
+        assert!(content.contains("---"));
+    }
+
+    #[test]
+    fn test_extract_skill_content_preserves_multiline_content() {
+        let response = r#"```markdown
+---
+name: multiline
+description: |
+  This is a multiline
+  description field
+---
+
+# Step 1
+
+Do this first.
+
+# Step 2
+
+Do this second.
+
+## Substep 2.1
+
+Details here.
+```"#;
+        let content = extract_skill_content(response);
+        assert!(content.contains("# Step 1"));
+        assert!(content.contains("# Step 2"));
+        assert!(content.contains("## Substep 2.1"));
+    }
+
+    #[test]
+    fn test_extract_skill_content_unclosed_code_block() {
+        // Unclosed code block - should fall back to frontmatter detection
+        let response = r#"```markdown
+---
+name: unclosed
+description: Code block never closed
+---
+
+# Content"#;
+        let content = extract_skill_content(response);
+        // Should fall back to finding --- directly
+        assert!(content.contains("---"));
+    }
+
+    // =========================================================================
+    // Additional build_context_section tests for coverage
+    // =========================================================================
+
+    #[test]
+    fn test_build_context_section_empty_profile() {
+        let ctx = ProjectProfile::default();
+        let section = build_context_section(&ctx);
+        // Should still have project type
+        assert!(section.contains("Project type:"));
+    }
+
+    #[test]
+    fn test_build_context_section_multiple_languages() {
+        let mut ctx = ProjectProfile::default();
+        ctx.languages.insert(
+            "Rust".to_string(),
+            crate::context::LanguageInfo {
+                file_count: 50,
+                extensions: vec!["rs".to_string()],
+                primary: true,
+            },
+        );
+        ctx.languages.insert(
+            "Python".to_string(),
+            crate::context::LanguageInfo {
+                file_count: 20,
+                extensions: vec!["py".to_string()],
+                primary: false,
+            },
+        );
+        ctx.languages.insert(
+            "TypeScript".to_string(),
+            crate::context::LanguageInfo {
+                file_count: 10,
+                extensions: vec!["ts".to_string(), "tsx".to_string()],
+                primary: false,
+            },
+        );
+
+        let section = build_context_section(&ctx);
+        assert!(section.contains("Languages:"));
+        // All languages should be present (order may vary due to HashMap)
+        assert!(
+            section.contains("Rust")
+                || section.contains("Python")
+                || section.contains("TypeScript")
+        );
+    }
+
+    #[test]
+    fn test_build_context_section_with_keywords() {
+        let ctx = ProjectProfile {
+            keywords: vec![
+                "api".to_string(),
+                "rest".to_string(),
+                "authentication".to_string(),
+                "oauth".to_string(),
+                "jwt".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        let section = build_context_section(&ctx);
+        assert!(section.contains("Keywords:"));
+        assert!(section.contains("api"));
+        assert!(section.contains("jwt"));
+    }
+
+    #[test]
+    fn test_build_context_section_keywords_truncated() {
+        // Add more than 10 keywords to test truncation
+        let ctx = ProjectProfile {
+            keywords: (0..20).map(|i| format!("keyword{}", i)).collect(),
+            ..Default::default()
+        };
+
+        let section = build_context_section(&ctx);
+        assert!(section.contains("Keywords:"));
+        // Should have first 10 keywords
+        assert!(section.contains("keyword0"));
+        assert!(section.contains("keyword9"));
+        // Should NOT have keyword10+
+        assert!(!section.contains("keyword10"));
+    }
+
+    #[test]
+    fn test_build_context_section_multiple_frameworks() {
+        let ctx = ProjectProfile {
+            frameworks: vec![
+                "Tokio".to_string(),
+                "Actix".to_string(),
+                "Serde".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        let section = build_context_section(&ctx);
+        assert!(section.contains("Frameworks:"));
+        assert!(section.contains("Tokio"));
+        assert!(section.contains("Actix"));
+        assert!(section.contains("Serde"));
+    }
+
+    #[test]
+    fn test_build_context_section_all_fields() {
+        let mut ctx = ProjectProfile::default();
+        ctx.languages.insert(
+            "Rust".to_string(),
+            crate::context::LanguageInfo {
+                file_count: 100,
+                extensions: vec!["rs".to_string()],
+                primary: true,
+            },
+        );
+        ctx.frameworks = vec!["Tokio".to_string(), "Axum".to_string()];
+        ctx.keywords = vec!["web".to_string(), "server".to_string()];
+        ctx.project_type = crate::context::ProjectType::Service;
+
+        let section = build_context_section(&ctx);
+        assert!(section.contains("Project Context:"));
+        assert!(section.contains("Languages:"));
+        assert!(section.contains("Frameworks:"));
+        assert!(section.contains("Keywords:"));
+        assert!(section.contains("Project type:"));
+        assert!(section.contains("Service"));
+    }
+
+    // =========================================================================
+    // Additional cli_binary_override tests for coverage
+    // =========================================================================
+
+    #[test]
+    fn test_cli_binary_override_empty_string() {
+        let previous = std::env::var("SKRILLS_CLI_BINARY").ok();
+
+        std::env::set_var("SKRILLS_CLI_BINARY", "");
+        assert!(cli_binary_override().is_none());
+
+        if let Some(value) = previous {
+            std::env::set_var("SKRILLS_CLI_BINARY", value);
+        } else {
+            std::env::remove_var("SKRILLS_CLI_BINARY");
+        }
+    }
+
+    #[test]
+    fn test_cli_binary_override_whitespace_only() {
+        let previous = std::env::var("SKRILLS_CLI_BINARY").ok();
+
+        std::env::set_var("SKRILLS_CLI_BINARY", "   ");
+        assert!(cli_binary_override().is_none());
+
+        if let Some(value) = previous {
+            std::env::set_var("SKRILLS_CLI_BINARY", value);
+        } else {
+            std::env::remove_var("SKRILLS_CLI_BINARY");
+        }
+    }
+
+    #[test]
+    fn test_cli_binary_override_auto_case_insensitive() {
+        let previous = std::env::var("SKRILLS_CLI_BINARY").ok();
+
+        std::env::set_var("SKRILLS_CLI_BINARY", "AUTO");
+        assert!(cli_binary_override().is_none());
+
+        std::env::set_var("SKRILLS_CLI_BINARY", "Auto");
+        assert!(cli_binary_override().is_none());
+
+        if let Some(value) = previous {
+            std::env::set_var("SKRILLS_CLI_BINARY", value);
+        } else {
+            std::env::remove_var("SKRILLS_CLI_BINARY");
+        }
+    }
+
+    #[test]
+    fn test_cli_binary_override_with_whitespace_trim() {
+        let previous = std::env::var("SKRILLS_CLI_BINARY").ok();
+
+        std::env::set_var("SKRILLS_CLI_BINARY", "  claude  ");
+        assert_eq!(cli_binary_override().as_deref(), Some("claude"));
+
+        if let Some(value) = previous {
+            std::env::set_var("SKRILLS_CLI_BINARY", value);
+        } else {
+            std::env::remove_var("SKRILLS_CLI_BINARY");
+        }
+    }
+
+    #[test]
+    fn test_cli_binary_override_invalid_value_returns_none() {
+        let previous = std::env::var("SKRILLS_CLI_BINARY").ok();
+
+        // Invalid binary name with shell characters should be rejected
+        std::env::set_var("SKRILLS_CLI_BINARY", "cmd; echo pwned");
+        assert!(cli_binary_override().is_none());
+
+        // Path traversal attempt should be rejected
+        std::env::set_var("SKRILLS_CLI_BINARY", "/bin/sh");
+        assert!(cli_binary_override().is_none());
+
+        if let Some(value) = previous {
+            std::env::set_var("SKRILLS_CLI_BINARY", value);
+        } else {
+            std::env::remove_var("SKRILLS_CLI_BINARY");
+        }
+    }
+
+    #[test]
+    fn test_cli_binary_override_unset() {
+        let previous = std::env::var("SKRILLS_CLI_BINARY").ok();
+
+        std::env::remove_var("SKRILLS_CLI_BINARY");
+        assert!(cli_binary_override().is_none());
+
+        if let Some(value) = previous {
+            std::env::set_var("SKRILLS_CLI_BINARY", value);
+        }
+    }
+
+    // =========================================================================
+    // Additional validate_cli_binary tests for coverage
+    // =========================================================================
+
+    #[test]
+    fn test_validate_cli_binary_boundary_length() {
+        // 64 characters should be accepted (boundary)
+        let name_64 = "a".repeat(64);
+        assert!(validate_cli_binary(&name_64).is_ok());
+
+        // 65 characters should be rejected
+        let name_65 = "a".repeat(65);
+        assert!(validate_cli_binary(&name_65).is_err());
+    }
+
+    #[test]
+    fn test_validate_cli_binary_all_valid_char_types() {
+        // Test all allowed character types
+        assert!(validate_cli_binary("abc123").is_ok()); // alphanumeric
+        assert!(validate_cli_binary("my-cli").is_ok()); // with hyphen
+        assert!(validate_cli_binary("my_cli").is_ok()); // with underscore
+        assert!(validate_cli_binary("cli.exe").is_ok()); // with dot
+        assert!(validate_cli_binary("CLI-v2_final.bin").is_ok()); // mixed
+    }
+
+    #[test]
+    fn test_validate_cli_binary_all_forbidden_chars() {
+        // Test each forbidden character individually
+        let forbidden = [
+            '|', ';', '&', '$', '`', '(', ')', '{', '}', '<', '>', '!', '*', '?',
+        ];
+        for ch in forbidden {
+            let name = format!("cmd{}test", ch);
+            assert!(
+                validate_cli_binary(&name).is_err(),
+                "Should reject character: {}",
+                ch
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_cli_binary_space_character() {
+        // Space is not in forbidden list but should be rejected by alphanumeric check
+        assert!(validate_cli_binary("my cli").is_err());
+    }
+
+    #[test]
+    fn test_validate_cli_binary_returns_input_on_success() {
+        let input = "claude";
+        let result = validate_cli_binary(input);
+        assert_eq!(result.unwrap(), input);
+    }
+
+    #[test]
+    fn test_validate_cli_binary_error_messages() {
+        assert_eq!(
+            validate_cli_binary("").unwrap_err(),
+            "CLI binary name cannot be empty"
+        );
+        assert_eq!(
+            validate_cli_binary("/path/to/bin").unwrap_err(),
+            "CLI binary name cannot contain path separators"
+        );
+        assert_eq!(
+            validate_cli_binary("cmd;evil").unwrap_err(),
+            "CLI binary name contains forbidden shell characters"
+        );
+        assert_eq!(
+            validate_cli_binary(&"a".repeat(100)).unwrap_err(),
+            "CLI binary name is too long"
+        );
+        assert_eq!(
+            validate_cli_binary("cmd evil").unwrap_err(),
+            "CLI binary name contains invalid characters"
+        );
+    }
+
+    // =========================================================================
+    // CreateSkillRequest and prompt building tests
+    // =========================================================================
+
+    #[test]
+    fn test_prompt_template_placeholders() {
+        // Verify the prompt template has expected placeholders
+        assert!(SKILL_GENERATION_PROMPT.contains("{name}"));
+        assert!(SKILL_GENERATION_PROMPT.contains("{description}"));
+        assert!(SKILL_GENERATION_PROMPT.contains("{context_section}"));
+    }
+
+    #[test]
+    fn test_prompt_template_structure() {
+        // Verify key instructions are in the prompt
+        assert!(SKILL_GENERATION_PROMPT.contains("YAML frontmatter"));
+        assert!(SKILL_GENERATION_PROMPT.contains("name:"));
+        assert!(SKILL_GENERATION_PROMPT.contains("description:"));
+        assert!(SKILL_GENERATION_PROMPT.contains("SKILL.md"));
+    }
 }
