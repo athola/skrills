@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.7 - 2026-01-09
+- **Chore**: Version bump to republish after v0.4.6 tag protection issue.
+- All changes from 0.4.6 are included in this release.
+
 ## 0.4.6 - 2026-01-08
 - **Bug Fixes**: Address 14 issues including warnings for skipped optional dependencies, YAML line/column info in parse errors, SAFETY comments for regex patterns, and actionable hints for I/O errors.
 - **Testing**: Add 282 new tests across claude_parser, codex_parser, context detector, github_search, dependencies, llm_generator, and scorer modules.
