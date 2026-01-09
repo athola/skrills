@@ -2213,8 +2213,8 @@ dependencies = [
  "skrills-intelligence",
  "skrills-state",
  "skrills-subagents",
- "skrills-sync",
  "skrills-validate",
+ "skrills_sync",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -2264,7 +2264,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "skrills-sync"
+name = "skrills-validate"
+version = "0.4.6"
+dependencies = [
+ "anyhow",
+ "regex",
+ "semver",
+ "serde",
+ "serde_yaml",
+ "tempfile",
+ "thiserror",
+ "walkdir",
+]
+
+[[package]]
+name = "skrills_sync"
 version = "0.4.6"
 dependencies = [
  "anyhow",
@@ -2278,20 +2292,6 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
- "walkdir",
-]
-
-[[package]]
-name = "skrills-validate"
-version = "0.4.6"
-dependencies = [
- "anyhow",
- "regex",
- "semver",
- "serde",
- "serde_yaml",
- "tempfile",
- "thiserror",
  "walkdir",
 ]
 

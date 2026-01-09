@@ -4,7 +4,7 @@
 - **Bug Fixes**: Address 14 issues including warnings for skipped optional dependencies, YAML line/column info in parse errors, SAFETY comments for regex patterns, and actionable hints for I/O errors.
 - **Testing**: Add 282 new tests across claude_parser, codex_parser, context detector, github_search, dependencies, llm_generator, and scorer modules.
 - **Documentation**: Add comprehensive audit-logging.md covering security events, mTLS audit trails, and SIEM integration.
-- **CI**: Update workflow to use skrills-sync package name after crate rename.
+- **CI**: Revert sync crate name to skrills_sync (crates.io disallows renaming published crates).
 - **Build**: Add fmt-check target to catch formatting issues in pre-commit hooks.
 
 ## 0.4.5 - 2026-01-03
