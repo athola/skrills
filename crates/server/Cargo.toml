@@ -44,7 +44,7 @@ skrills-subagents = { path = "../subagents", version = "0.4.5", optional = true 
 
 skrills-discovery = { path = "../discovery", version = "0.4.5" }
 skrills-state = { path = "../state", version = "0.4.5" }
-skrills-sync = { path = "../sync", version = "0.4.5" }
+skrills_sync = { path = "../sync", version = "0.4.5" }
 skrills-validate = { path = "../validate", version = "0.4.5" }
 skrills-analyze = { path = "../analyze", version = "0.4.5" }
 skrills-intelligence = { path = "../intelligence", version = "0.4.5" }
