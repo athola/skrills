@@ -995,6 +995,7 @@ mod tests {
                 source: SkillSource::Codex,
                 root: PathBuf::from("/tmp"),
                 hash: "x".to_string(),
+                description: None,
             },
             SkillMeta {
                 name: "Baz".to_string(),
@@ -1002,6 +1003,7 @@ mod tests {
                 source: SkillSource::Codex,
                 root: PathBuf::from("/tmp"),
                 hash: "y".to_string(),
+                description: None,
             },
         ];
 

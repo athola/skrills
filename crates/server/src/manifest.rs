@@ -322,6 +322,7 @@ mod tests {
                 source: SkillSource::Codex,
                 root: PathBuf::from("/home/user/.codex/skills"),
                 hash: "abc123".to_string(),
+                description: None,
             },
             SkillMeta {
                 name: "another/SKILL.md".to_string(),
@@ -329,6 +330,7 @@ mod tests {
                 source: SkillSource::Claude,
                 root: PathBuf::from("/home/user/.claude/skills"),
                 hash: "def456".to_string(),
+                description: None,
             },
         ];
 

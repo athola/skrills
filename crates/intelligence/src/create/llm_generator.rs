@@ -7,7 +7,7 @@ use std::process::Command;
 use tracing::{debug, info};
 
 /// Prompt template for skill generation.
-const SKILL_GENERATION_PROMPT: &str = r#"Create a Claude Code / Codex CLI skill file (SKILL.md) for the following:
+const SKILL_GENERATION_PROMPT: &str = r"Create a Claude Code / Codex CLI skill file (SKILL.md) for the following:
 
 Name: {name}
 Description: {description}
@@ -24,7 +24,7 @@ Requirements:
 6. Follow Claude Code skill best practices
 
 Output ONLY the complete SKILL.md content, starting with the --- YAML frontmatter delimiter.
-Do not include any explanation before or after the skill content."#;
+Do not include any explanation before or after the skill content.";
 
 /// Validate CLI binary name to prevent command injection.
 /// Rejects paths, special characters, and suspiciously long names.
