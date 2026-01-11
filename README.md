@@ -159,7 +159,7 @@ A suite of sync tools (`sync-skills`, `sync-commands`, `sync-mcp-servers`, `sync
 `resolve-dependencies` finds direct or transitive relationships for a skill URI. `skill-loading-status` reports on root scanning and marker coverage. `enable-skill-trace` and `disable-skill-trace` manage debug skills for tracing, while `skill-loading-selftest` confirms loading via a probe.
 
 **Intelligence**
-`recommend-skills` suggests related skills based on dependencies. `recommend-skills-smart` adds usage patterns and project context to recommendations. `analyze-project-context` scans languages and frameworks to inform suggestions. `suggest-new-skills` identifies gaps, and `create-skill` generates new skills via GitHub search, LLM generation, or empirical patterns. `search-skills-github` and `search-skills-fuzzy` provide search capabilities.
+`recommend-skills` suggests related skills based on dependencies. `recommend-skills-smart` adds usage patterns and project context to recommendations. `analyze-project-context` scans languages and frameworks to inform suggestions. `suggest-new-skills` identifies gaps, and `create-skill` generates new skills via GitHub search, LLM generation, or empirical patterns. `search-skills-github` and `search-skills-fuzzy` provide search capabilities. Fuzzy search matches against both skill names and descriptions (0.4.8+).
 
 > **Testing**: Tool handler tests cover edge cases, dry-run modes, and target validation for Claude, Codex, and both targets.
 
@@ -169,7 +169,7 @@ A suite of sync tools (`sync-skills`, `sync-commands`, `sync-mcp-servers`, `sync
 - `suggest-new-skills` - Identify skill gaps based on context and usage
 - `create-skill` - Create a new skill via GitHub search, LLM generation, empirical patterns, or combinations
 - `search-skills-github` - Search GitHub for existing `SKILL.md` files
-- `search-skills-fuzzy` - Trigram-based fuzzy search for installed skills (typo-tolerant)
+- `search-skills-fuzzy` - Trigram-based fuzzy search for installed skills (typo-tolerant, matches names and descriptions)
 
 #### Empirical skill creation (0.4.4+)
 The `--method empirical` option mines Claude Code and Codex CLI session history to extract successful tool sequences and failure anti-patterns. It clusters similar sessions and generates skills grounded in observed behavior rather than LLM imagination.

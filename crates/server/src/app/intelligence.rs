@@ -860,15 +860,6 @@ impl SkillService {
             .map(|l| l.clamp(1, 1000) as usize)
             .unwrap_or(10);
 
-        // Note: include_description is accepted but currently unused since
-        // SkillMeta doesn't cache parsed descriptions. Future enhancement could
-        // cache frontmatter descriptions for richer matching.
-        if args.get("include_description").is_some() {
-            tracing::debug!(
-                "include_description parameter is not yet implemented; matching uses names only"
-            );
-        }
-
         tracing::debug!(
             query = %query,
             threshold = %threshold,
@@ -881,21 +872,21 @@ impl SkillService {
             .current_skills_with_dups()
             .context("Failed to load skills for fuzzy search")?;
 
-        // Build skill info for matching (name-only for now)
-        let skill_infos: Vec<(String, String)> = skills
+        // Build skill info for matching (includes cached descriptions)
+        let skill_infos: Vec<(String, String, Option<String>)> = skills
             .iter()
             .map(|meta| {
                 let uri = format!("skill://skrills/{}/{}", meta.source.label(), meta.name);
-                (uri, meta.name.clone())
+                (uri, meta.name.clone(), meta.description.clone())
             })
             .collect();
 
         let skill_info_refs: Vec<SkillInfo<'_>> = skill_infos
             .iter()
-            .map(|(uri, name)| SkillInfo {
+            .map(|(uri, name, desc)| SkillInfo {
                 uri: uri.as_str(),
                 name: name.as_str(),
-                description: None, // TODO: Cache descriptions for richer matching
+                description: desc.as_deref(),
             })
             .collect();
 

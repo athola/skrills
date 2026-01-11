@@ -478,13 +478,13 @@ pub(crate) fn render_skills_reference(skills: &[SkillMeta]) -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     format!(
-        r#"<!-- Skills discovered dynamically. Last sync: {} UTC. Total: {} skills. -->
+        r"<!-- Skills discovered dynamically. Last sync: {} UTC. Total: {} skills. -->
 <!-- Use CLI commands for current skill inventory:
      jq -r '.skills[].path' ~/.codex/skills-cache.json
      find ~/.codex/skills -name SKILL.md -type f
      skrills analyze           - Analyze skills (tokens/deps) to spot issues
      skrills doctor            - View discovery diagnostics
--->"#,
+-->",
         ts,
         skills.len()
     )
@@ -499,11 +499,11 @@ pub(crate) fn render_agents_reference(agents: &[AgentMeta]) -> String {
         return String::new();
     }
     format!(
-        r#"<!-- Agents discovered dynamically. Total: {} agents. -->
+        r"<!-- Agents discovered dynamically. Total: {} agents. -->
 <!-- Use CLI commands for current agent inventory:
      skrills sync-agents       - Sync agents from external sources
      skrills doctor            - View agent discovery diagnostics
--->"#,
+-->",
         agents.len()
     )
 }
@@ -676,6 +676,7 @@ mod tests {
             source: SkillSource::Codex,
             root: path.clone(),
             hash: hash_file(&skill_path).unwrap(),
+            description: None,
         }];
         let reference = render_skills_reference(&skills);
         assert!(reference.contains("Total: 1 skills"));
@@ -694,6 +695,7 @@ mod tests {
             source: SkillSource::Codex,
             root: tmp.path().join("codex/skills"),
             hash: "abc".into(),
+            description: None,
         }];
         sync_agents_with_assets(&agents, &skills, &[])?;
         let text = fs::read_to_string(&agents)?;
@@ -716,6 +718,7 @@ mod tests {
             source: SkillSource::Codex,
             root: tmp.path().join("codex/skills"),
             hash: "abc".into(),
+            description: None,
         }];
         let reference = render_skills_reference(&skills);
         assert!(reference.contains("skills-cache.json"));
