@@ -630,7 +630,7 @@ pub fn generate_skill_from_cluster(
 
     // Build frontmatter
     let frontmatter = format!(
-        r#"---
+        r"---
 name: {}
 description: {}
 triggers:
@@ -639,7 +639,7 @@ category: {}
 confidence: {:.2}
 source: empirical-analysis
 cluster_id: {}
----"#,
+---",
         name,
         description,
         cluster

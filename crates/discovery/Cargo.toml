@@ -1,6 +1,6 @@
 [package]
 name = "skrills-discovery"
-version = "0.4.7"
+version = "0.4.8"
 edition = "2021"
 description = "Filesystem discovery and hashing utilities used by the skrills MCP server."
 license = "MIT"

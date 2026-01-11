@@ -175,6 +175,38 @@ fn file_hash(path: &Path) -> Result<String> {
     Ok(format!("{:x}", digest))
 }
 
+/// Extracts the description from a skill file's YAML frontmatter.
+///
+/// Parses the frontmatter between `---` delimiters and extracts the `description` field.
+/// Returns `None` if no frontmatter or no description is present.
+fn extract_description(content: &str) -> Option<String> {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") {
+        return None;
+    }
+
+    // Find content after opening ---
+    let after_open = trimmed.get(3..)?.trim_start_matches(['\r', '\n']);
+
+    // Find closing ---
+    let end_pos = after_open
+        .find("\n---")
+        .or_else(|| after_open.find("\r\n---"))?;
+    let yaml = &after_open[..end_pos];
+
+    // Parse YAML to extract description field
+    // Use a minimal struct to avoid pulling in complex types
+    #[derive(serde::Deserialize)]
+    struct MinimalFrontmatter {
+        description: Option<String>,
+    }
+
+    serde_yaml::from_str::<MinimalFrontmatter>(yaml)
+        .ok()
+        .and_then(|fm| fm.description)
+        .filter(|d| !d.is_empty())
+}
+
 /// Collects skill metadata from the provided roots.
 fn collect_skills_from(
     roots: &[SkillRoot],
@@ -218,11 +250,15 @@ fn collect_skills_from(
                     .and_then(|p| p.to_str().map(|s| s.to_owned()))
                     .unwrap_or_else(|| path.to_string_lossy().into_owned());
                 let hash = file_hash(&path)?;
-                Ok((name, path, hash))
+                // Extract description from frontmatter (best-effort, ignore errors)
+                let description = fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|content| extract_description(&content));
+                Ok((name, path, hash, description))
             })
             .collect::<Result<Vec<_>>>()?;
 
-        for (name, path, hash) in metas {
+        for (name, path, hash, description) in metas {
             if let Some((seen_src, seen_root)) = seen.get(&name) {
                 if let Some(dup_log) = dup_log.as_mut() {
                     dup_log.push(DuplicateInfo {
@@ -242,6 +278,7 @@ fn collect_skills_from(
                 source: root_cfg.source.clone(),
                 root: root.clone(),
                 hash,
+                description,
             });
             seen.insert(name, (root_cfg.source.label(), root.display().to_string()));
         }
@@ -829,5 +866,112 @@ mod tests {
     fn test_discovery_config_with_custom_max_depth() {
         let config = DiscoveryConfig::with_max_depth(vec![], Duration::from_millis(1000), None, 5);
         assert_eq!(config.max_depth, 5);
+    }
+
+    // ============================================================
+    // Description extraction tests
+    // ============================================================
+
+    #[test]
+    fn extract_description_from_valid_frontmatter() {
+        let content = r#"---
+name: test-skill
+description: This is a test skill description
+version: 1.0.0
+---
+
+# Test Skill Content
+"#;
+        let desc = extract_description(content);
+        assert_eq!(desc, Some("This is a test skill description".to_string()));
+    }
+
+    #[test]
+    fn extract_description_returns_none_for_missing_description() {
+        let content = r#"---
+name: test-skill
+version: 1.0.0
+---
+
+# Test Skill Content
+"#;
+        let desc = extract_description(content);
+        assert!(desc.is_none());
+    }
+
+    #[test]
+    fn extract_description_returns_none_for_empty_description() {
+        let content = r#"---
+name: test-skill
+description: ""
+---
+
+# Test Skill Content
+"#;
+        let desc = extract_description(content);
+        assert!(desc.is_none());
+    }
+
+    #[test]
+    fn extract_description_returns_none_for_no_frontmatter() {
+        let content = "# Just Markdown\n\nNo frontmatter here.";
+        let desc = extract_description(content);
+        assert!(desc.is_none());
+    }
+
+    #[test]
+    fn extract_description_returns_none_for_unclosed_frontmatter() {
+        let content = r#"---
+name: test-skill
+description: This will not be extracted
+"#;
+        let desc = extract_description(content);
+        assert!(desc.is_none());
+    }
+
+    #[test]
+    fn extract_description_handles_leading_whitespace() {
+        let content = r#"
+---
+name: test-skill
+description: Description with leading whitespace
+---
+
+Content
+"#;
+        let desc = extract_description(content);
+        assert_eq!(
+            desc,
+            Some("Description with leading whitespace".to_string())
+        );
+    }
+
+    #[test]
+    fn discover_skills_includes_description() {
+        let tmp = tempdir().unwrap();
+        let skill_dir = tmp.path().join("test-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            r#"---
+name: test-skill
+description: A skill with a cached description
+---
+
+# Test Content
+"#,
+        )
+        .unwrap();
+
+        let roots = vec![SkillRoot {
+            root: tmp.path().to_path_buf(),
+            source: SkillSource::Codex,
+        }];
+        let skills = discover_skills(&roots, None).unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(
+            skills[0].description,
+            Some("A skill with a cached description".to_string())
+        );
     }
 }

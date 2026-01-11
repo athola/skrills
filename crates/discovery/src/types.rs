@@ -106,6 +106,9 @@ pub struct SkillMeta {
     pub root: PathBuf,
     /// Content hash for change detection.
     pub hash: String,
+    /// Optional description from frontmatter (cached for search).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// Metadata for a discovered agent definition.

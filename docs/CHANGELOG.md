@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.8 - 2026-01-10
+- **NEW: Skill Description Caching**: Added optional `description` field to `SkillMeta` for richer fuzzy skill search. Descriptions are extracted from YAML frontmatter during discovery.
+- **Improved: Fuzzy Search**: Enhanced `search-skills-fuzzy` MCP tool to match against skill descriptions in addition to names.
+- **Testing**: Added 7 new tests for description extraction covering various frontmatter formats and edge cases.
+- **Code Quality**: Applied pedantic clippy auto-fixes (raw string hashes, redundant closures).
+
 ## 0.4.7 - 2026-01-09
 - **Chore**: Version bump to republish after v0.4.6 tag protection issue.
 - All changes from 0.4.6 are included in this release.

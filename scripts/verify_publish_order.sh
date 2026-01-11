@@ -339,6 +339,11 @@ if (( ${#extras[@]} )); then
   errors+=("Publish order includes unknown crates: ${extras[*]}")
 fi
 
+# Warn if no internal dependencies were detected - could indicate a parser issue
+if (( ${#DEPS[@]} == 0 )); then
+  echo "[WARN] No internal dependencies detected - verify parser is working correctly" >&2
+fi
+
 for pair in "${DEPS[@]}"; do
   pkg="${pair%% *}"
   dep="${pair##* }"

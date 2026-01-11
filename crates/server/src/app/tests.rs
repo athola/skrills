@@ -1602,6 +1602,144 @@ description: Database operations
     );
 }
 
+/// Tests for search_skills_fuzzy_tool - description matching (0.4.8+)
+/// GIVEN a SkillService with skills that have descriptions
+/// WHEN search_skills_fuzzy is called with a query matching a description
+/// THEN it should find the skill via description and indicate matched_field is Description
+#[test]
+fn test_search_skills_fuzzy_description_match() {
+    use skrills_discovery::SkillRoot;
+
+    let temp = tempdir().unwrap();
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).unwrap();
+
+    // Create a skill with name that doesn't match query, but description does
+    let skill_dir = skills_dir.join("helper");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        r#"---
+name: helper
+description: PostgreSQL database management and operations
+---
+# Helper Skill
+A utility skill for database work.
+"#,
+    )
+    .unwrap();
+
+    let roots = vec![SkillRoot {
+        root: skills_dir.clone(),
+        source: skrills_discovery::SkillSource::Extra(0),
+    }];
+
+    let service = SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
+    service.invalidate_cache().unwrap();
+
+    // Search for "database" - name is "helper" but description contains "database"
+    let args = json!({
+        "query": "database",
+        "threshold": 0.3,
+        "limit": 10
+    })
+    .as_object()
+    .cloned()
+    .unwrap();
+
+    let result = service.search_skills_fuzzy_tool(args).unwrap();
+
+    // Should find the skill via description
+    assert!(!result.is_error.unwrap_or(true));
+    let structured = result.structured_content.unwrap();
+    let total = structured
+        .get("total_found")
+        .and_then(|v| v.as_u64())
+        .unwrap();
+    assert!(
+        total >= 1,
+        "Expected to find skill via description match, got {} results",
+        total
+    );
+
+    let results = structured.get("results").unwrap().as_array().unwrap();
+    let first = &results[0];
+
+    // Verify it matched via description, not name
+    let matched_field = first.get("matched_field").and_then(|v| v.as_str()).unwrap();
+    assert_eq!(
+        matched_field, "Description",
+        "Expected match via Description, got '{}'",
+        matched_field
+    );
+
+    // Verify the name is "helper" (not "database")
+    let name = first.get("name").and_then(|v| v.as_str()).unwrap();
+    assert!(
+        name.contains("helper"),
+        "Expected name to contain 'helper', got '{}'",
+        name
+    );
+}
+
+/// Tests for search_skills_fuzzy_tool - name priority over description
+/// GIVEN a SkillService with skills where name and description both could match
+/// WHEN search_skills_fuzzy is called with a query matching the name better
+/// THEN it should prefer the name match
+#[test]
+fn test_search_skills_fuzzy_name_priority_over_description() {
+    use skrills_discovery::SkillRoot;
+
+    let temp = tempdir().unwrap();
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).unwrap();
+
+    // Create a skill where name matches query exactly
+    let skill_dir = skills_dir.join("database");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        r#"---
+name: database
+description: Code analysis utilities
+---
+# Database Skill
+"#,
+    )
+    .unwrap();
+
+    let roots = vec![SkillRoot {
+        root: skills_dir.clone(),
+        source: skrills_discovery::SkillSource::Extra(0),
+    }];
+
+    let service = SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
+    service.invalidate_cache().unwrap();
+
+    // Search for "database" - should match name not description
+    let args = json!({
+        "query": "database",
+        "threshold": 0.3,
+        "limit": 10
+    })
+    .as_object()
+    .cloned()
+    .unwrap();
+
+    let result = service.search_skills_fuzzy_tool(args).unwrap();
+    let structured = result.structured_content.unwrap();
+    let results = structured.get("results").unwrap().as_array().unwrap();
+    let first = &results[0];
+
+    // Verify it matched via name (name match should take priority)
+    let matched_field = first.get("matched_field").and_then(|v| v.as_str()).unwrap();
+    assert_eq!(
+        matched_field, "Name",
+        "Expected match via Name, got '{}'",
+        matched_field
+    );
+}
+
 // -------------------------------------------------------------------------
 // Tool Handler Tests (tools.rs)
 // -------------------------------------------------------------------------
