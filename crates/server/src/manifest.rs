@@ -135,7 +135,7 @@ pub fn generate_manifest(skills: &[SkillMeta]) -> SkillsManifest {
         .iter()
         .map(|s| SkillManifestEntry {
             name: s.name.clone(),
-            description: None, // Could parse from skill frontmatter in the future
+            description: s.description.clone(),
             path: s.path.clone(),
             source: s.source.label(),
         })

@@ -860,15 +860,6 @@ impl SkillService {
             .map(|l| l.clamp(1, 1000) as usize)
             .unwrap_or(10);
 
-        // Note: include_description is accepted but currently unused since
-        // SkillMeta doesn't cache parsed descriptions. Future enhancement could
-        // cache frontmatter descriptions for richer matching.
-        if args.get("include_description").is_some() {
-            tracing::debug!(
-                "include_description parameter is not yet implemented; matching uses names only"
-            );
-        }
-
         tracing::debug!(
             query = %query,
             threshold = %threshold,

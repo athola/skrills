@@ -201,10 +201,13 @@ fn extract_description(content: &str) -> Option<String> {
         description: Option<String>,
     }
 
-    serde_yaml::from_str::<MinimalFrontmatter>(yaml)
-        .ok()
-        .and_then(|fm| fm.description)
-        .filter(|d| !d.is_empty())
+    match serde_yaml::from_str::<MinimalFrontmatter>(yaml) {
+        Ok(fm) => fm.description.filter(|d| !d.is_empty()),
+        Err(e) => {
+            tracing::debug!(error = %e, "Failed to parse skill frontmatter for description");
+            None
+        }
+    }
 }
 
 /// Collects skill metadata from the provided roots.
@@ -250,10 +253,14 @@ fn collect_skills_from(
                     .and_then(|p| p.to_str().map(|s| s.to_owned()))
                     .unwrap_or_else(|| path.to_string_lossy().into_owned());
                 let hash = file_hash(&path)?;
-                // Extract description from frontmatter (best-effort, ignore errors)
-                let description = fs::read_to_string(&path)
-                    .ok()
-                    .and_then(|content| extract_description(&content));
+                // Extract description from frontmatter (best-effort, log errors)
+                let description = match fs::read_to_string(&path) {
+                    Ok(content) => extract_description(&content),
+                    Err(e) => {
+                        tracing::trace!(path = %path.display(), error = %e, "Failed to read skill file for description");
+                        None
+                    }
+                };
                 Ok((name, path, hash, description))
             })
             .collect::<Result<Vec<_>>>()?;
