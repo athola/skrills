@@ -2324,6 +2324,7 @@ dependencies = [
  "skrills-subagents",
  "skrills-validate",
  "skrills_sync",
+ "subtle",
  "tempfile",
  "tokio",
  "tokio-util",

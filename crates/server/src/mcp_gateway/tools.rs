@@ -325,6 +325,38 @@ mod tests {
     }
 
     #[test]
+    fn test_describe_mcp_tool_missing_tool_name() {
+        let finder = |_: &str| -> Option<Tool> { None };
+
+        // No args at all
+        let result = describe_mcp_tool(None, finder);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("tool_name is required"));
+
+        // Empty args
+        let args = JsonMap::new();
+        let result = describe_mcp_tool(Some(&args), finder);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("tool_name is required"));
+
+        // Wrong type for tool_name (number instead of string)
+        let mut args = JsonMap::new();
+        args.insert("tool_name".into(), json!(123));
+        let result = describe_mcp_tool(Some(&args), finder);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("tool_name is required"));
+    }
+
+    #[test]
     fn test_get_context_stats() {
         let stats = ContextStatsSnapshot {
             tokens_saved: 5000,

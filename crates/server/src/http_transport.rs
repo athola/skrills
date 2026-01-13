@@ -3,9 +3,9 @@
 //! This module provides Streamable HTTP transport as an alternative to stdio,
 //! allowing remote clients to connect to the MCP server over HTTP.
 //!
-//! ## Security Features (Phase 2)
+//! ## Security Features
 //!
-//! - **Bearer Token Auth**: Validates `Authorization: Bearer <token>` header
+//! - **Bearer Token Auth**: Validates `Authorization: Bearer <token>` header with constant-time comparison
 //! - **TLS/HTTPS**: Supports TLS with custom certificates
 //! - **CORS**: Configurable Cross-Origin Resource Sharing for browser clients
 
@@ -19,10 +19,13 @@ use rmcp::transport::streamable_http_server::{
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 use tower_http::cors::{Any, CorsLayer};
 
 /// Configuration for HTTP transport security.
-#[derive(Debug, Clone, Default)]
+///
+/// Note: `Debug` is manually implemented to prevent auth_token from being logged.
+#[derive(Clone, Default)]
 pub struct HttpSecurityConfig {
     /// Bearer token for authentication (None = no auth).
     pub auth_token: Option<String>,
@@ -32,6 +35,21 @@ pub struct HttpSecurityConfig {
     pub tls_key: Option<std::path::PathBuf>,
     /// Allowed CORS origins (empty = no CORS).
     pub cors_origins: Vec<String>,
+}
+
+// Custom Debug implementation that redacts auth_token to prevent credential leakage in logs.
+impl std::fmt::Debug for HttpSecurityConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpSecurityConfig")
+            .field(
+                "auth_token",
+                &self.auth_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("tls_cert", &self.tls_cert)
+            .field("tls_key", &self.tls_key)
+            .field("cors_origins", &self.cors_origins)
+            .finish()
+    }
 }
 
 impl HttpSecurityConfig {
@@ -47,23 +65,61 @@ impl HttpSecurityConfig {
 }
 
 /// Bearer token authentication middleware.
+///
+/// Uses constant-time comparison to prevent timing attacks on the auth token.
 async fn auth_middleware(
     expected_token: Arc<String>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> impl IntoResponse {
+    let uri = req.uri().path();
+
     // Check Authorization header
     if let Some(auth_header) = req.headers().get(header::AUTHORIZATION) {
         if let Ok(auth_str) = auth_header.to_str() {
             if let Some(token) = auth_str.strip_prefix("Bearer ") {
-                if token == expected_token.as_str() {
+                // Constant-time comparison to prevent timing attacks.
+                // Both tokens are converted to bytes and compared in constant time.
+                let provided = token.as_bytes();
+                let expected = expected_token.as_bytes();
+
+                // Length check must also be constant-time to avoid leaking length info
+                if provided.len() == expected.len() && provided.ct_eq(expected).into() {
+                    tracing::debug!(
+                        target: "skrills::http::auth",
+                        uri,
+                        "Auth successful"
+                    );
                     return next.run(req).await;
                 }
+                tracing::debug!(
+                    target: "skrills::http::auth",
+                    uri,
+                    "Auth failed: invalid token"
+                );
+            } else {
+                tracing::debug!(
+                    target: "skrills::http::auth",
+                    uri,
+                    "Auth failed: malformed Authorization header (expected 'Bearer <token>')"
+                );
             }
+        } else {
+            tracing::debug!(
+                target: "skrills::http::auth",
+                uri,
+                "Auth failed: Authorization header not valid UTF-8"
+            );
         }
+    } else {
+        tracing::debug!(
+            target: "skrills::http::auth",
+            uri,
+            "Auth failed: missing Authorization header"
+        );
     }
 
-    // Auth failed
+    // Auth failed - return generic message to avoid information leakage
     (
         StatusCode::UNAUTHORIZED,
         "Invalid or missing authorization token",
@@ -72,21 +128,55 @@ async fn auth_middleware(
 }
 
 /// Builds CORS layer from allowed origins.
-fn build_cors_layer(origins: &[String]) -> CorsLayer {
+///
+/// Invalid origins are logged as warnings and skipped. An empty result after
+/// filtering invalid origins will disable CORS.
+fn build_cors_layer(origins: &[String], has_auth: bool) -> CorsLayer {
     if origins.is_empty() {
         // No CORS - server-to-server only
         CorsLayer::new()
     } else if origins.iter().any(|o| o == "*") {
+        // Security: Warn about wildcard CORS with auth enabled
+        if has_auth {
+            tracing::warn!(
+                target: "skrills::http::cors",
+                "Using wildcard CORS ('*') with authentication enabled. \
+                 This may expose auth tokens to malicious sites. \
+                 Consider specifying explicit origins instead."
+            );
+        }
         // Allow any origin
         CorsLayer::new()
             .allow_origin(Any)
             .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
             .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
     } else {
-        // Specific origins
-        let origins: Vec<HeaderValue> = origins.iter().filter_map(|o| o.parse().ok()).collect();
+        // Parse origins and log any failures
+        let mut valid_origins = Vec::with_capacity(origins.len());
+        for origin in origins {
+            match origin.parse::<HeaderValue>() {
+                Ok(header) => valid_origins.push(header),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "skrills::http::cors",
+                        origin,
+                        error = %e,
+                        "Failed to parse CORS origin - it will be ignored. \
+                         Browser requests from this origin will be rejected."
+                    );
+                }
+            }
+        }
+
+        if valid_origins.is_empty() && !origins.is_empty() {
+            tracing::warn!(
+                target: "skrills::http::cors",
+                "All CORS origins failed to parse. CORS will be disabled."
+            );
+        }
+
         CorsLayer::new()
-            .allow_origin(origins)
+            .allow_origin(valid_origins)
             .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
             .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
     }
@@ -99,7 +189,7 @@ fn build_cors_layer(origins: &[String]) -> CorsLayer {
 /// * `bind_addr` - Socket address to bind (e.g., "127.0.0.1:3000")
 ///
 /// # Security
-/// This endpoint has NO authentication in Phase 1.
+/// This endpoint has NO authentication by default.
 /// Only bind to localhost or trusted network interfaces.
 #[allow(dead_code)]
 pub async fn serve_http<F>(service_factory: F, bind_addr: &str) -> Result<()>
@@ -159,8 +249,8 @@ where
     // Create the streamable HTTP service
     let http_service = StreamableHttpService::new(service_factory, session_manager, config);
 
-    // Build CORS layer
-    let cors_layer = build_cors_layer(&security.cors_origins);
+    // Build CORS layer (passes auth status for security warnings)
+    let cors_layer = build_cors_layer(&security.cors_origins, security.has_auth());
 
     // Extract TLS config before potential move of auth_token
     let tls_config = if security.has_tls() {
@@ -307,23 +397,192 @@ mod tests {
 
     #[test]
     fn cors_layer_empty_origins() {
-        let layer = build_cors_layer(&[]);
+        let layer = build_cors_layer(&[], false);
         // Should create a layer (no panic)
         let _ = layer;
     }
 
     #[test]
     fn cors_layer_wildcard_origin() {
-        let layer = build_cors_layer(&["*".to_string()]);
+        let layer = build_cors_layer(&["*".to_string()], false);
         let _ = layer;
     }
 
     #[test]
     fn cors_layer_specific_origins() {
-        let layer = build_cors_layer(&[
-            "http://localhost:3000".to_string(),
-            "https://app.example.com".to_string(),
-        ]);
+        let layer = build_cors_layer(
+            &[
+                "http://localhost:3000".to_string(),
+                "https://app.example.com".to_string(),
+            ],
+            false,
+        );
         let _ = layer;
+    }
+
+    #[test]
+    fn security_config_debug_redacts_token() {
+        let config = HttpSecurityConfig {
+            auth_token: Some("super-secret-token".to_string()),
+            ..Default::default()
+        };
+        let debug_output = format!("{:?}", config);
+        assert!(!debug_output.contains("super-secret"));
+        assert!(debug_output.contains("[REDACTED]"));
+    }
+
+    // Auth middleware integration tests using axum's test utilities
+    mod auth_middleware_tests {
+        use super::*;
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        fn test_app(token: &str) -> axum::Router {
+            let token = Arc::new(token.to_string());
+            axum::Router::new()
+                .route("/test", axum::routing::get(|| async { "OK" }))
+                .layer(axum::middleware::from_fn(move |req, next| {
+                    let token = token.clone();
+                    auth_middleware(token, req, next)
+                }))
+        }
+
+        #[tokio::test]
+        async fn auth_success_with_valid_token() {
+            let app = test_app("secret-token");
+            let req = Request::builder()
+                .uri("/test")
+                .header("Authorization", "Bearer secret-token")
+                .body(Body::empty())
+                .unwrap();
+
+            let response = app.oneshot(req).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        #[tokio::test]
+        async fn auth_fails_with_missing_header() {
+            let app = test_app("secret-token");
+            let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
+
+            let response = app.oneshot(req).await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        #[tokio::test]
+        async fn auth_fails_with_invalid_token() {
+            let app = test_app("secret-token");
+            let req = Request::builder()
+                .uri("/test")
+                .header("Authorization", "Bearer wrong-token")
+                .body(Body::empty())
+                .unwrap();
+
+            let response = app.oneshot(req).await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        #[tokio::test]
+        async fn auth_fails_with_malformed_header() {
+            let app = test_app("secret-token");
+            // Missing "Bearer " prefix
+            let req = Request::builder()
+                .uri("/test")
+                .header("Authorization", "secret-token")
+                .body(Body::empty())
+                .unwrap();
+
+            let response = app.oneshot(req).await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        #[tokio::test]
+        async fn auth_fails_with_basic_auth() {
+            let app = test_app("secret-token");
+            // Basic auth instead of Bearer
+            let req = Request::builder()
+                .uri("/test")
+                .header("Authorization", "Basic dXNlcjpwYXNz")
+                .body(Body::empty())
+                .unwrap();
+
+            let response = app.oneshot(req).await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        #[tokio::test]
+        async fn auth_is_case_sensitive() {
+            let app = test_app("Secret-Token");
+            // Same token but different case
+            let req = Request::builder()
+                .uri("/test")
+                .header("Authorization", "Bearer secret-token")
+                .body(Body::empty())
+                .unwrap();
+
+            let response = app.oneshot(req).await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+    }
+
+    // TLS configuration tests
+    mod tls_tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn tls_config_with_nonexistent_cert() {
+            use axum_server::tls_rustls::RustlsConfig;
+            use std::path::PathBuf;
+
+            let cert_path = PathBuf::from("/nonexistent/cert.pem");
+            let key_path = PathBuf::from("/nonexistent/key.pem");
+
+            let result = RustlsConfig::from_pem_file(&cert_path, &key_path).await;
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn tls_config_with_invalid_pem() {
+            use axum_server::tls_rustls::RustlsConfig;
+            use std::io::Write;
+
+            // Create temp files with invalid PEM content
+            let mut cert_file = tempfile::NamedTempFile::new().unwrap();
+            let mut key_file = tempfile::NamedTempFile::new().unwrap();
+
+            writeln!(cert_file, "not a valid certificate").unwrap();
+            writeln!(key_file, "not a valid key").unwrap();
+
+            let result = RustlsConfig::from_pem_file(cert_file.path(), key_file.path()).await;
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn security_config_requires_both_cert_and_key() {
+            // Only cert, no key
+            let config = HttpSecurityConfig {
+                tls_cert: Some("/path/to/cert.pem".into()),
+                tls_key: None,
+                ..Default::default()
+            };
+            assert!(!config.has_tls());
+
+            // Only key, no cert
+            let config = HttpSecurityConfig {
+                tls_cert: None,
+                tls_key: Some("/path/to/key.pem".into()),
+                ..Default::default()
+            };
+            assert!(!config.has_tls());
+
+            // Both present
+            let config = HttpSecurityConfig {
+                tls_cert: Some("/path/to/cert.pem".into()),
+                tls_key: Some("/path/to/key.pem".into()),
+                ..Default::default()
+            };
+            assert!(config.has_tls());
+        }
     }
 }
