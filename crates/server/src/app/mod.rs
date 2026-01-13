@@ -119,6 +119,48 @@ pub(crate) fn start_fs_watcher(_service: &SkillService) -> Result<()> {
     ))
 }
 
+/// Category classification for MCP tools.
+///
+/// Used for organizing and filtering tools by their primary purpose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolCategory {
+    Sync,
+    Validation,
+    Trace,
+    Intelligence,
+    Metrics,
+    Dependency,
+    Gateway,
+}
+
+impl ToolCategory {
+    /// Infer category from a tool name using prefix/substring matching.
+    fn from_tool_name(name: &str) -> Option<Self> {
+        match name {
+            n if n.starts_with("sync") => Some(Self::Sync),
+            n if n.starts_with("validate") || n.starts_with("analyze") => Some(Self::Validation),
+            n if n.contains("trace") || n.contains("instrument") => Some(Self::Trace),
+            n if n.contains("recommend") || n.contains("suggest") => Some(Self::Intelligence),
+            n if n.contains("metric") => Some(Self::Metrics),
+            n if n.contains("depend") => Some(Self::Dependency),
+            _ => None,
+        }
+    }
+
+    /// Convert to a string representation for serialization.
+    const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Sync => "sync",
+            Self::Validation => "validation",
+            Self::Trace => "trace",
+            Self::Intelligence => "intelligence",
+            Self::Metrics => "metrics",
+            Self::Dependency => "dependency",
+            Self::Gateway => "gateway",
+        }
+    }
+}
+
 /// Build the MCP tool registry from all available tool definitions.
 fn build_mcp_registry() -> McpToolRegistry {
     use crate::mcp_gateway::estimate_tokens;
@@ -130,22 +172,8 @@ fn build_mcp_registry() -> McpToolRegistry {
         let schema_json = serde_json::to_string(&tool.input_schema).unwrap_or_default();
         let estimated_tokens = estimate_tokens(&schema_json);
 
-        // Infer category from tool name
-        let category = if tool.name.starts_with("sync") {
-            Some("sync".to_string())
-        } else if tool.name.starts_with("validate") || tool.name.starts_with("analyze") {
-            Some("validation".to_string())
-        } else if tool.name.contains("trace") || tool.name.contains("instrument") {
-            Some("trace".to_string())
-        } else if tool.name.contains("recommend") || tool.name.contains("suggest") {
-            Some("intelligence".to_string())
-        } else if tool.name.contains("metric") {
-            Some("metrics".to_string())
-        } else if tool.name.contains("depend") {
-            Some("dependency".to_string())
-        } else {
-            None
-        };
+        // Infer category from tool name using enum matching
+        let category = ToolCategory::from_tool_name(&tool.name).map(|c| c.as_str().to_string());
 
         registry.register(McpToolEntry {
             name: tool.name.to_string(),
@@ -165,7 +193,7 @@ fn build_mcp_registry() -> McpToolRegistry {
             description: tool.description.clone().unwrap_or_default().to_string(),
             source: "gateway".to_string(),
             estimated_tokens,
-            category: Some("gateway".to_string()),
+            category: Some(ToolCategory::Gateway.as_str().to_string()),
         });
     }
 

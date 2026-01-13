@@ -1,16 +1,16 @@
 #!/usr/bin/env sh
-# Install codex-mcp-skills and wire it into Codex (uv-style installer).
+# Install skrills and wire it into Claude Code (uv-style installer).
 # Usage:
-#   curl -LsSf https://raw.githubusercontent.com/${CODEX_SKILLS_GH_REPO:-athola/codex-mcp-skills}/HEAD/scripts/install.sh | sh
+#   curl -LsSf https://raw.githubusercontent.com/${SKRILLS_GH_REPO:-athola/skrills}/HEAD/scripts/install.sh | sh
 # Env overrides:
-#   CODEX_SKILLS_GH_REPO   owner/repo (default: athola/codex-mcp-skills)
-#   CODEX_SKILLS_VERSION   release tag without leading v (default: latest)
-#   CODEX_SKILLS_BIN_DIR   install directory (default: $HOME/.codex/bin)
-#   CODEX_SKILLS_BIN_NAME  binary name (default: codex-mcp-skills)
-#   CODEX_SKILLS_TARGET    explicit target triple override
-#   CODEX_SKILLS_SKIP_PATH_MESSAGE  set to 1 to silence PATH reminder
-#   CODEX_SKILLS_NO_HOOK   set to 1 to skip hook/MCP registration
-#   CODEX_SKILLS_UNIVERSAL set to 1 to also sync ~/.agent/skills
+#   SKRILLS_GH_REPO   owner/repo (default: athola/skrills)
+#   SKRILLS_VERSION   release tag without leading v (default: latest)
+#   SKRILLS_BIN_DIR   install directory (default: $HOME/.skrills/bin)
+#   SKRILLS_BIN_NAME  binary name (default: skrills)
+#   SKRILLS_TARGET    explicit target triple override
+#   SKRILLS_SKIP_PATH_MESSAGE  set to 1 to silence PATH reminder
+#   SKRILLS_NO_HOOK   set to 1 to skip hook/MCP registration
+#   SKRILLS_UNIVERSAL set to 1 to also sync ~/.agent/skills
 set -eu
 # dash (sh) on some systems doesn't support pipefail; guard it.
 if (set -o | grep -q pipefail 2>/dev/null); then
@@ -41,8 +41,8 @@ ARCH()
 
 TARGET()
 {
-  if [ -n "${CODEX_SKILLS_TARGET:-}" ]; then
-    echo "$CODEX_SKILLS_TARGET"; return
+  if [ -n "${SKRILLS_TARGET:-}" ]; then
+    echo "$SKRILLS_TARGET"; return
   fi
   os="$(OS)"; arch="$(ARCH)"
   case "$os" in
@@ -56,19 +56,19 @@ TARGET()
 
 REPO()
 {
-  echo "${CODEX_SKILLS_GH_REPO:-athola/codex-mcp-skills}";
+  echo "${SKRILLS_GH_REPO:-athola/skrills}";
 }
 
 BIN_NAME()
 {
-  echo "${CODEX_SKILLS_BIN_NAME:-codex-mcp-skills}";
+  echo "${SKRILLS_BIN_NAME:-skrills}";
 }
 
 API_URL()
 {
   repo="$(REPO)"
-  if [ -n "${CODEX_SKILLS_VERSION:-}" ]; then
-    echo "https://api.github.com/repos/${repo}/releases/tags/v${CODEX_SKILLS_VERSION}";
+  if [ -n "${SKRILLS_VERSION:-}" ]; then
+    echo "https://api.github.com/repos/${repo}/releases/tags/v${SKRILLS_VERSION}";
   else
     echo "https://api.github.com/repos/${repo}/releases/latest";
   fi
@@ -126,21 +126,21 @@ DOWNLOAD_AND_EXTRACT()
 
 install_hook_and_mcp()
 {
-  if [ "${CODEX_SKILLS_NO_HOOK:-0}" = 1 ]; then
-    echo "Skipping hook/MCP registration (CODEX_SKILLS_NO_HOOK=1)"
+  if [ "${SKRILLS_NO_HOOK:-0}" = 1 ]; then
+    echo "Skipping hook/MCP registration (SKRILLS_NO_HOOK=1)"
     return
   fi
   if [ ! -x "$bin_dir/$bin_name" ]; then
     echo "Warning: binary not found at $bin_dir/$bin_name; skipping hook." >&2
     return
   fi
-  CODEX_SKILLS_BIN="$bin_dir/$bin_name" CODEX_SKILLS_UNIVERSAL="${CODEX_SKILLS_UNIVERSAL:-0}" \
-    "$PWD/scripts/install-codex-skills.sh"
+  SKRILLS_BIN="$bin_dir/$bin_name" SKRILLS_UNIVERSAL="${SKRILLS_UNIVERSAL:-0}" \
+    "$PWD/scripts/install-skrills.sh"
 }
 
 ensure_path_hint()
 {
-  [ "${CODEX_SKILLS_SKIP_PATH_MESSAGE:-0}" = 1 ] && return
+  [ "${SKRILLS_SKIP_PATH_MESSAGE:-0}" = 1 ] && return
   case ":$PATH:" in
     *:"${1}":*) ;; # already in PATH
     *) echo "Add $1 to your PATH (e.g., export PATH=\"$1:\$PATH\")" ;; esac
@@ -148,9 +148,9 @@ ensure_path_hint()
 
 # --- main ------------------------------------------------------------------
 bin_name="$(BIN_NAME)"
-bin_dir="${CODEX_SKILLS_BIN_DIR:-$HOME/.codex/bin}"
+bin_dir="${SKRILLS_BIN_DIR:-$HOME/.skrills/bin}"
 asset_url=$(SELECT_ASSET_URL)
-[ -n "$asset_url" ] || fail "no release asset found matching target $(TARGET); check releases or specify CODEX_SKILLS_TARGET/CODEX_SKILLS_GH_REPO"
+[ -n "$asset_url" ] || fail "no release asset found matching target $(TARGET); check releases or specify SKRILLS_TARGET/SKRILLS_GH_REPO"
 DOWNLOAD_AND_EXTRACT "$asset_url" "$bin_dir" "$bin_name"
 ensure_path_hint "$bin_dir"
 install_hook_and_mcp
