@@ -1,6 +1,6 @@
 [package]
 name = "skrills_sync"
-version = "0.4.8"
+version = "0.4.9"
 edition.workspace = true
 description = "Preference synchronization and validation sync utilities for skrills"
 license = "MIT"
@@ -20,7 +20,7 @@ walkdir.workspace = true
 dirs.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-skrills-validate = { path = "../validate", version = "0.4.8" }
+skrills-validate = { path = "../validate", version = "0.4.9" }
 
 [dev-dependencies]
 tempfile.workspace = true

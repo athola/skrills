@@ -12,6 +12,7 @@ use std::time::Duration;
 use tokio::runtime::Runtime;
 
 /// Handle the `serve` command.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_serve_command(
     skill_dirs: Vec<PathBuf>,
     cache_ttl_ms: Option<u64>,
@@ -19,6 +20,11 @@ pub(crate) fn handle_serve_command(
     #[cfg(feature = "watch")] watch: bool,
     http: Option<String>,
     list_tools: bool,
+    // Phase 2 security options
+    auth_token: Option<String>,
+    tls_cert: Option<PathBuf>,
+    tls_key: Option<PathBuf>,
+    cors_origins: Vec<String>,
 ) -> Result<()> {
     // Handle --list-tools: print tool names and exit
     if list_tools {
@@ -51,15 +57,27 @@ pub(crate) fn handle_serve_command(
     if let Some(bind_addr) = http {
         #[cfg(feature = "http-transport")]
         {
+            use crate::http_transport::HttpSecurityConfig;
+
             // Clone values needed for the factory closure
             let skill_dirs_clone = skill_dirs.clone();
+
+            // Build security config from CLI arguments
+            let security = HttpSecurityConfig {
+                auth_token,
+                tls_cert,
+                tls_key,
+                cors_origins,
+            };
+
             return rt.block_on(async move {
-                crate::http_transport::serve_http(
+                crate::http_transport::serve_http_with_security(
                     move || {
                         SkillService::new_with_ttl(merge_extra_dirs(&skill_dirs_clone), ttl)
                             .map_err(std::io::Error::other)
                     },
                     &bind_addr,
+                    security,
                 )
                 .await
             });
@@ -68,6 +86,7 @@ pub(crate) fn handle_serve_command(
         #[cfg(not(feature = "http-transport"))]
         {
             let _ = bind_addr; // suppress unused warning
+            let _ = (auth_token, tls_cert, tls_key, cors_origins); // suppress unused warnings
             return Err(anyhow!(
                 "HTTP transport requested but not available (built without 'http-transport' feature)"
             ));

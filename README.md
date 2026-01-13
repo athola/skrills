@@ -38,10 +38,11 @@ Skrills addresses differences in validation, safety, and efficiency between the 
 - **Efficiency**: It reports token usage and suggests optimizations to help manage context window limits.
 
 ## Architecture (workspace crates)
-- `crates/server`: MCP server runtime and CLI.
+- `crates/server`: MCP server runtime, CLI, and HTTP transport with security middleware.
+  - `mcp_gateway/`: Context-optimized tool loading with lazy schema retrieval (0.4.9+).
 - `crates/validate`: Validation logic for Claude Code and Codex CLI compatibility.
 - `crates/analyze`: Token counting, dependency analysis, and optimization.
-- `crates/intelligence`: Recommendations, project analysis, and skill generation based on session history and patterns.
+- `crates/intelligence`: Recommendations, project analysis, skill generation, and usage analytics persistence.
 - `crates/sync`: Bidirectional sync logic (skills, commands, prefs, MCP servers).
 - `crates/discovery`: Skill discovery and ranking.
 - `crates/state`: Persistent store for manifests and mirrors.
@@ -125,11 +126,31 @@ Configure your MCP client to connect:
 }
 ```
 
-### Security Warning
+### Security Options (0.4.9+)
 
-The current release has **no authentication**. Only use on trusted networks or behind a reverse proxy with authentication.
+The `serve` command supports authentication and TLS for production deployments:
 
-For untrusted networks, use SSH tunneling:
+```bash
+# Bearer token authentication
+skrills serve --http 0.0.0.0:3000 --auth-token "your-secret-token"
+
+# TLS encryption
+skrills serve --http 0.0.0.0:3000 --tls-cert /path/to/cert.pem --tls-key /path/to/key.pem
+
+# CORS for browser clients
+skrills serve --http 0.0.0.0:3000 --cors-origins "http://localhost:3000,https://app.example.com"
+
+# Full production setup (all options combined)
+skrills serve --http 0.0.0.0:3000 \
+  --auth-token "$SKRILLS_AUTH_TOKEN" \
+  --tls-cert /etc/ssl/certs/skrills.pem \
+  --tls-key /etc/ssl/private/skrills.key \
+  --cors-origins "https://app.example.com"
+```
+
+The `--auth-token` flag also reads from `SKRILLS_AUTH_TOKEN` environment variable.
+
+For deployments without these options, use SSH tunneling:
 
 ```bash
 ssh -L 3000:localhost:3000 your-server
@@ -160,6 +181,9 @@ A suite of sync tools (`sync-skills`, `sync-commands`, `sync-mcp-servers`, `sync
 
 **Intelligence**
 `recommend-skills` suggests related skills based on dependencies. `recommend-skills-smart` adds usage patterns and project context to recommendations. `analyze-project-context` scans languages and frameworks to inform suggestions. `suggest-new-skills` identifies gaps, and `create-skill` generates new skills via GitHub search, LLM generation, or empirical patterns. `search-skills-github` and `search-skills-fuzzy` provide search capabilities. Fuzzy search matches against both skill names and descriptions (0.4.8+).
+
+**Context Optimization (0.4.9+)**
+`list-mcp-tools` returns tool names and descriptions without full schemas. `describe-mcp-tool` loads the full schema for a specific tool. `get-context-stats` reports estimated tokens saved and schema load efficiency.
 
 > **Testing**: Tool handler tests cover edge cases, dry-run modes, and target validation for Claude, Codex, and both targets.
 
@@ -222,6 +246,8 @@ Deviation scoring compares actual skill-assisted outcomes against category basel
 - `skrills tui` — interactive sync and diagnostics.
 - `skrills doctor` — verify Codex MCP wiring.
 - `skrills agent <name>` — launch a mirrored agent spec.
+- `skrills export-analytics [--output PATH] [--force-rebuild]` — export usage analytics to file.
+- `skrills import-analytics <input> [--overwrite]` — import analytics from exported file.
 
 ## Configuration
 - `SKRILLS_MIRROR_SOURCE` — mirror source root (default `~/.claude`).

@@ -15,6 +15,7 @@ pub(crate) mod cache;
 mod commands;
 mod doctor;
 mod handler;
+pub mod mcp_gateway;
 pub(crate) mod metrics_types;
 mod setup;
 mod skill_trace;

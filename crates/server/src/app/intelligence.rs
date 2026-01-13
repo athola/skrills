@@ -860,10 +860,17 @@ impl SkillService {
             .map(|l| l.clamp(1, 1000) as usize)
             .unwrap_or(10);
 
+        // Whether to include description matching (default: true for richer results)
+        let include_description = args
+            .get("include_description")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
         tracing::debug!(
             query = %query,
             threshold = %threshold,
             limit = %limit,
+            include_description = %include_description,
             "Starting fuzzy skill search"
         );
 
@@ -872,12 +879,18 @@ impl SkillService {
             .current_skills_with_dups()
             .context("Failed to load skills for fuzzy search")?;
 
-        // Build skill info for matching (includes cached descriptions)
+        // Build skill info for matching
+        // Only include descriptions if include_description is true
         let skill_infos: Vec<(String, String, Option<String>)> = skills
             .iter()
             .map(|meta| {
                 let uri = format!("skill://skrills/{}/{}", meta.source.label(), meta.name);
-                (uri, meta.name.clone(), meta.description.clone())
+                let desc = if include_description {
+                    meta.description.clone()
+                } else {
+                    None
+                };
+                (uri, meta.name.clone(), desc)
             })
             .collect();
 

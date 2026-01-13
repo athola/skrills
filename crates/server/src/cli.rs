@@ -103,6 +103,23 @@ pub enum Commands {
         /// Requires the `http-transport` feature (enabled by default).
         #[arg(long, value_name = "BIND_ADDR")]
         http: Option<String>,
+
+        // --- Phase 2 Security Options ---
+        /// Bearer token for HTTP authentication. Validates `Authorization: Bearer <token>`.
+        /// If not specified, auth is disabled (Phase 1 behavior).
+        #[arg(long, value_name = "TOKEN", env = "SKRILLS_AUTH_TOKEN")]
+        auth_token: Option<String>,
+        /// Path to TLS certificate file (PEM format). Requires --tls-key.
+        #[arg(long, value_name = "PATH", requires = "tls_key")]
+        tls_cert: Option<std::path::PathBuf>,
+        /// Path to TLS private key file (PEM format). Requires --tls-cert.
+        #[arg(long, value_name = "PATH", requires = "tls_cert")]
+        tls_key: Option<std::path::PathBuf>,
+        /// Comma-separated list of allowed CORS origins (e.g., "http://localhost:3000,https://app.example.com").
+        /// Default: no CORS (server-to-server only).
+        #[arg(long, value_name = "ORIGINS", value_delimiter = ',')]
+        cors_origins: Vec<String>,
+
         /// List all available MCP tools and exit.
         #[arg(long, default_value_t = false)]
         list_tools: bool,
@@ -386,6 +403,27 @@ pub enum Commands {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
+    /// Export usage analytics to a file for persistence or backup.
+    ExportAnalytics {
+        /// Output file path (defaults to ~/.skrills/analytics_cache.json).
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Rebuild analytics from session data even if cache exists.
+        #[arg(long)]
+        force_rebuild: bool,
+        /// Output format: text or json.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+    /// Import usage analytics from a previously exported file.
+    ImportAnalytics {
+        /// Input file path (required).
+        #[arg(required = true)]
+        input: PathBuf,
+        /// Overwrite existing cache file.
+        #[arg(long)]
+        overwrite: bool,
+    },
     /// Interactive TUI for sync and pin management.
     Tui {
         /// Additional skill directories (repeatable).
@@ -483,6 +521,10 @@ mod tests {
                 watch,
                 http,
                 list_tools,
+                auth_token,
+                tls_cert,
+                tls_key,
+                cors_origins,
             }) => {
                 assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/skills")]);
                 assert_eq!(cache_ttl_ms, Some(1500));
@@ -491,6 +533,69 @@ mod tests {
                 assert!(!watch);
                 assert!(http.is_none());
                 assert!(!list_tools);
+                assert!(auth_token.is_none());
+                assert!(tls_cert.is_none());
+                assert!(tls_key.is_none());
+                assert!(cors_origins.is_empty());
+            }
+            _ => panic!("expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn parse_serve_with_security_arguments() {
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "serve",
+            "--http",
+            "127.0.0.1:3000",
+            "--auth-token",
+            "secret-token",
+            "--tls-cert",
+            "/path/to/cert.pem",
+            "--tls-key",
+            "/path/to/key.pem",
+            "--cors-origins",
+            "http://localhost:3000,https://app.example.com",
+        ])
+        .expect("serve with security args should parse");
+
+        match cli.command {
+            Some(Commands::Serve {
+                http,
+                auth_token,
+                tls_cert,
+                tls_key,
+                cors_origins,
+                ..
+            }) => {
+                assert_eq!(http, Some("127.0.0.1:3000".to_string()));
+                assert_eq!(auth_token, Some("secret-token".to_string()));
+                assert_eq!(tls_cert, Some(PathBuf::from("/path/to/cert.pem")));
+                assert_eq!(tls_key, Some(PathBuf::from("/path/to/key.pem")));
+                assert_eq!(
+                    cors_origins,
+                    vec![
+                        "http://localhost:3000".to_string(),
+                        "https://app.example.com".to_string()
+                    ]
+                );
+            }
+            _ => panic!("expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn parse_serve_auth_token_from_env() {
+        let _guard = env_guard();
+        let _env = set_env_var("SKRILLS_AUTH_TOKEN", Some("env-secret-token"));
+
+        let cli = Cli::try_parse_from(["skrills", "serve", "--http", "0.0.0.0:8080"])
+            .expect("serve with env auth token should parse");
+
+        match cli.command {
+            Some(Commands::Serve { auth_token, .. }) => {
+                assert_eq!(auth_token, Some("env-secret-token".to_string()));
             }
             _ => panic!("expected Serve command"),
         }

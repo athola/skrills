@@ -15,6 +15,7 @@ pub(crate) use agent::handle_agent_command;
 pub(crate) use analyze::handle_analyze_command;
 pub(crate) use intelligence::{
     handle_analyze_project_context_command, handle_create_skill_command,
+    handle_export_analytics_command, handle_import_analytics_command,
     handle_recommend_skills_smart_command, handle_search_skills_github_command,
     handle_suggest_new_skills_command,
 };

@@ -26,6 +26,7 @@ pub use recommend::{
     SkillGapAnalysis, SkillInfo, SkillMatch, SmartRecommendation, DEFAULT_THRESHOLD,
 };
 pub use usage::{
-    build_analytics, get_cooccurring_skills, parse_claude_command_history, parse_claude_sessions,
-    recency_score, CommandEntry, PromptAffinity, SkillUsageEvent, TimeRange, UsageAnalytics,
+    build_analytics, default_analytics_cache_path, get_cooccurring_skills, load_analytics,
+    load_or_build_analytics, parse_claude_command_history, parse_claude_sessions, recency_score,
+    save_analytics, CommandEntry, PromptAffinity, SkillUsageEvent, TimeRange, UsageAnalytics,
 };
