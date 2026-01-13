@@ -131,11 +131,16 @@ install_hook_and_mcp()
     return
   fi
   if [ ! -x "$bin_dir/$bin_name" ]; then
-    echo "Warning: binary not found at $bin_dir/$bin_name; skipping hook." >&2
+    echo "Warning: binary not found at $bin_dir/$bin_name; skipping setup." >&2
     return
   fi
-  SKRILLS_BIN="$bin_dir/$bin_name" SKRILLS_UNIVERSAL="${SKRILLS_UNIVERSAL:-0}" \
-    "$PWD/scripts/install-skrills.sh"
+  # Use the installed binary's setup command
+  setup_args="--yes"
+  if [ "${SKRILLS_UNIVERSAL:-0}" != "0" ]; then
+    setup_args="$setup_args --universal"
+  fi
+  echo "Running skrills setup..."
+  "$bin_dir/$bin_name" setup $setup_args
 }
 
 ensure_path_hint()
