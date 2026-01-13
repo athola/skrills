@@ -115,7 +115,7 @@ pub enum Commands {
         /// Path to TLS private key file (PEM format). Requires --tls-cert.
         #[arg(long, value_name = "PATH", requires = "tls_cert")]
         tls_key: Option<std::path::PathBuf>,
-        /// Comma-separated list of allowed CORS origins (e.g., "http://localhost:3000,https://app.example.com").
+        /// Comma-separated list of allowed CORS origins (e.g., `http://localhost:3000,https://app.example.com`).
         /// Default: no CORS (server-to-server only).
         #[arg(long, value_name = "ORIGINS", value_delimiter = ',')]
         cors_origins: Vec<String>,
