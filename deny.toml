@@ -45,6 +45,8 @@ allow = [
     "BSL-1.0",
     # Used by webpki-roots (root certificate data)
     "CDLA-Permissive-2.0",
+    # Used by crypto libraries (ring, aws-lc-sys)
+    "OpenSSL",
 ]
 
 # Crate-specific license exceptions

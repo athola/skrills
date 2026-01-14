@@ -86,6 +86,9 @@ impl ServerHandler for SkillService {
             tools.extend(subagents.tools());
         }
 
+        // Add MCP gateway tools for context optimization
+        tools.extend(crate::mcp_gateway::mcp_gateway_tools());
+
         std::future::ready(Ok(ListToolsResult {
             tools,
             next_cursor: None,
@@ -780,6 +783,32 @@ impl ServerHandler for SkillService {
                     "search-skills-fuzzy" => {
                         let args = request.arguments.clone().unwrap_or_default();
                         self.search_skills_fuzzy_tool(args)
+                    }
+                    // MCP Gateway tools for context optimization
+                    "list-mcp-tools" | "list_mcp_tools" => {
+                        // Get tool entries from the real registry
+                        let registry = self.mcp_registry.lock();
+                        let entries: Vec<_> = registry.list_all();
+                        crate::mcp_gateway::list_mcp_tools(request.arguments.as_ref(), entries)
+                    }
+                    "describe-mcp-tool" | "describe_mcp_tool" => {
+                        // Track schema load for context stats
+                        self.context_stats.record_schema_load();
+
+                        // Lookup tool in all_tools by name
+                        let all = tool_schemas::all_tools();
+                        let gateway_tools = crate::mcp_gateway::mcp_gateway_tools();
+                        crate::mcp_gateway::describe_mcp_tool(request.arguments.as_ref(), |name| {
+                            all.iter()
+                                .find(|t| t.name.as_ref() == name)
+                                .cloned()
+                                .or_else(|| gateway_tools.iter().find(|t| t.name.as_ref() == name).cloned())
+                        })
+                    }
+                    "get-context-stats" | "get_context_stats" => {
+                        // Return current context stats from the real tracker
+                        let stats = self.context_stats.snapshot();
+                        crate::mcp_gateway::get_context_stats(stats)
                     }
                     other => Err(anyhow!("unknown tool {other}")),
                 }

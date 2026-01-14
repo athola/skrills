@@ -3,6 +3,22 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Validate crate name before using as associative array key
+# Valid crate names: non-empty, contain only alphanumeric, underscore, or hyphen
+validate_crate_name() {
+  local name="$1"
+  local context="${2:-crate}"
+  if [[ -z "${name}" ]]; then
+    echo "[ERROR] Empty ${context} name detected" >&2
+    return 1
+  fi
+  if [[ "${name}" =~ [^a-zA-Z0-9_-] ]]; then
+    echo "[ERROR] Invalid ${context} name '${name}': contains invalid characters" >&2
+    return 1
+  fi
+  return 0
+}
 PUBLISH_SCRIPT="${ROOT}/scripts/publish_crates.sh"
 
 if [[ ! -f "${PUBLISH_SCRIPT}" ]]; then
@@ -311,10 +327,15 @@ done
 
 declare -A ORDER_INDEX=()
 declare -A WORKSPACE_SET=()
+
+# Validate crate names before using as associative array keys
 for idx in "${!ORDER[@]}"; do
-  ORDER_INDEX["${ORDER[$idx]}"]="${idx}"
+  crate_name="${ORDER[$idx]}"
+  validate_crate_name "${crate_name}" "publish order" || exit 1
+  ORDER_INDEX["${crate_name}"]="${idx}"
 done
 for name in "${WORKSPACE_NAMES[@]}"; do
+  validate_crate_name "${name}" "workspace" || exit 1
   WORKSPACE_SET["${name}"]=1
 done
 

@@ -176,6 +176,79 @@ pub(crate) fn handle_search_skills_github_command(
     print_tool_result(result, format)
 }
 
+/// Handle the `export-analytics` command.
+pub(crate) fn handle_export_analytics_command(
+    output: Option<PathBuf>,
+    force_rebuild: bool,
+    format: OutputFormat,
+) -> Result<()> {
+    use skrills_intelligence::{
+        default_analytics_cache_path, load_or_build_analytics, save_analytics,
+    };
+
+    // Load or build analytics
+    let analytics = load_or_build_analytics(force_rebuild, false)?;
+
+    // Determine output path
+    let output_path = output
+        .or_else(default_analytics_cache_path)
+        .ok_or_else(|| {
+            anyhow::anyhow!("Cannot determine output path. Provide --output or ensure HOME is set.")
+        })?;
+
+    // Save to file
+    save_analytics(&analytics, &output_path)?;
+
+    if format.is_json() {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "status": "success",
+                "output": output_path.display().to_string(),
+                "sessions_analyzed": analytics.sessions_analyzed,
+                "skills_tracked": analytics.frequency.len(),
+            }))?
+        );
+    } else {
+        println!("Analytics exported to: {}", output_path.display());
+        println!("  Sessions analyzed: {}", analytics.sessions_analyzed);
+        println!("  Skills tracked: {}", analytics.frequency.len());
+    }
+
+    Ok(())
+}
+
+/// Handle the `import-analytics` command.
+pub(crate) fn handle_import_analytics_command(input: PathBuf, overwrite: bool) -> Result<()> {
+    use skrills_intelligence::{default_analytics_cache_path, load_analytics, save_analytics};
+
+    // Load from input file
+    let analytics = load_analytics(&input)?
+        .ok_or_else(|| anyhow::anyhow!("Input file not found: {}", input.display()))?;
+
+    // Determine target cache path
+    let cache_path = default_analytics_cache_path()
+        .ok_or_else(|| anyhow::anyhow!("Cannot determine cache path. Ensure HOME is set."))?;
+
+    // Check if cache exists and overwrite flag
+    if cache_path.exists() && !overwrite {
+        anyhow::bail!(
+            "Cache file already exists: {}. Use --overwrite to replace.",
+            cache_path.display()
+        );
+    }
+
+    // Save to cache location
+    save_analytics(&analytics, &cache_path)?;
+
+    println!("Analytics imported from: {}", input.display());
+    println!("Saved to cache: {}", cache_path.display());
+    println!("  Sessions analyzed: {}", analytics.sessions_analyzed);
+    println!("  Skills tracked: {}", analytics.frequency.len());
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,5 +376,39 @@ A test skill.
         );
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_handle_export_import_analytics_roundtrip() {
+        let _guard = crate::test_support::env_guard();
+        let home_dir = tempdir().unwrap();
+        let _home = set_env_var("HOME", Some(home_dir.path().to_str().unwrap()));
+
+        // Create .skrills directory for analytics cache
+        let skrills_dir = home_dir.path().join(".skrills");
+        fs::create_dir_all(&skrills_dir).unwrap();
+
+        // Export analytics (will build empty analytics since no sessions exist)
+        let export_path = skrills_dir.join("test_export.json");
+        let result = handle_export_analytics_command(
+            Some(export_path.clone()),
+            true, // force_rebuild
+            OutputFormat::Text,
+        );
+        assert!(result.is_ok(), "Export should succeed");
+        assert!(export_path.exists(), "Export file should exist");
+
+        // Read exported file to verify JSON structure
+        let content = fs::read_to_string(&export_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(parsed.is_object(), "Export should be valid JSON object");
+
+        // Import the exported analytics
+        let result = handle_import_analytics_command(export_path.clone(), true);
+        assert!(result.is_ok(), "Import should succeed");
+
+        // Verify cache was created
+        let cache_path = skrills_dir.join("analytics_cache.json");
+        assert!(cache_path.exists(), "Cache should exist after import");
     }
 }

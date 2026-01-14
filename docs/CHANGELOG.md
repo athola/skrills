@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.9 - 2026-01-12
+- **NEW: MCP Gateway**: Added context-optimized tool loading via lazy schema loading. Tools `list-mcp-tools`, `describe-mcp-tool`, and `get-context-stats` enable on-demand schema retrieval to reduce context window pressure.
+- **NEW: Analytics Persistence**: Export and import usage analytics via `export-analytics` and `import-analytics` CLI commands. Analytics cache persists to `~/.skrills/analytics_cache.json`.
+- **NEW: HTTP Security Options**: Added `--auth-token`, `--tls-cert`, `--tls-key`, and `--cors-origins` flags to `serve` command for production deployments.
+- **Testing**: Added 11 new tests for analytics persistence functions and MCP gateway handlers.
+
 ## 0.4.8 - 2026-01-10
 - **NEW: Skill Description Caching**: Added optional `description` field to `SkillMeta` for richer fuzzy skill search. Descriptions are extracted from YAML frontmatter during discovery.
 - **Improved: Fuzzy Search**: Enhanced `search-skills-fuzzy` MCP tool to match against skill descriptions in addition to names.

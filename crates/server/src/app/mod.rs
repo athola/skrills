@@ -24,11 +24,12 @@ use crate::cache::SkillCache;
 use crate::cli::{Cli, Commands};
 use crate::commands::{
     handle_agent_command, handle_analyze_command, handle_analyze_project_context_command,
-    handle_create_skill_command, handle_metrics_command, handle_mirror_command,
-    handle_recommend_command, handle_recommend_skills_smart_command,
-    handle_resolve_dependencies_command, handle_search_skills_github_command, handle_serve_command,
-    handle_setup_command, handle_suggest_new_skills_command, handle_sync_agents_command,
-    handle_sync_command, handle_validate_command,
+    handle_create_skill_command, handle_export_analytics_command, handle_import_analytics_command,
+    handle_metrics_command, handle_mirror_command, handle_recommend_command,
+    handle_recommend_skills_smart_command, handle_resolve_dependencies_command,
+    handle_search_skills_github_command, handle_serve_command, handle_setup_command,
+    handle_suggest_new_skills_command, handle_sync_agents_command, handle_sync_command,
+    handle_validate_command,
 };
 use crate::discovery::{
     merge_extra_dirs, priority_labels, read_skill, skill_roots, AGENTS_DESCRIPTION, AGENTS_NAME,
@@ -37,7 +38,9 @@ use crate::discovery::{
 use crate::doctor::doctor_report;
 use crate::signals::ignore_sigchld;
 // Note: skill_trace imports moved to tools.rs
+use crate::mcp_gateway::{ContextStats, McpToolEntry, McpToolRegistry};
 use crate::sync::mirror_source_root;
+use crate::tool_schemas;
 use crate::tui::tui_flow;
 use anyhow::{anyhow, Result};
 use clap::Parser;
@@ -73,6 +76,10 @@ pub struct SkillService {
     /// Optional subagent service (enabled via `subagents` feature).
     #[cfg(feature = "subagents")]
     pub(crate) subagents: Option<skrills_subagents::SubagentService>,
+    /// Registry of MCP tools for context-optimized lazy loading.
+    pub(crate) mcp_registry: Arc<Mutex<McpToolRegistry>>,
+    /// Context usage statistics for tracking token savings.
+    pub(crate) context_stats: Arc<ContextStats>,
 }
 
 /// Start a filesystem watcher to invalidate caches when skill files change.
@@ -112,6 +119,87 @@ pub(crate) fn start_fs_watcher(_service: &SkillService) -> Result<()> {
     ))
 }
 
+/// Category classification for MCP tools.
+///
+/// Used for organizing and filtering tools by their primary purpose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolCategory {
+    Sync,
+    Validation,
+    Trace,
+    Intelligence,
+    Metrics,
+    Dependency,
+    Gateway,
+}
+
+impl ToolCategory {
+    /// Infer category from a tool name using prefix/substring matching.
+    fn from_tool_name(name: &str) -> Option<Self> {
+        match name {
+            n if n.starts_with("sync") => Some(Self::Sync),
+            n if n.starts_with("validate") || n.starts_with("analyze") => Some(Self::Validation),
+            n if n.contains("trace") || n.contains("instrument") => Some(Self::Trace),
+            n if n.contains("recommend") || n.contains("suggest") => Some(Self::Intelligence),
+            n if n.contains("metric") => Some(Self::Metrics),
+            n if n.contains("depend") => Some(Self::Dependency),
+            _ => None,
+        }
+    }
+
+    /// Convert to a string representation for serialization.
+    const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Sync => "sync",
+            Self::Validation => "validation",
+            Self::Trace => "trace",
+            Self::Intelligence => "intelligence",
+            Self::Metrics => "metrics",
+            Self::Dependency => "dependency",
+            Self::Gateway => "gateway",
+        }
+    }
+}
+
+/// Build the MCP tool registry from all available tool definitions.
+fn build_mcp_registry() -> McpToolRegistry {
+    use crate::mcp_gateway::estimate_tokens;
+
+    let mut registry = McpToolRegistry::new();
+
+    // Register all internal tools from tool_schemas
+    for tool in tool_schemas::all_tools() {
+        let schema_json = serde_json::to_string(&tool.input_schema).unwrap_or_default();
+        let estimated_tokens = estimate_tokens(&schema_json);
+
+        // Infer category from tool name using enum matching
+        let category = ToolCategory::from_tool_name(&tool.name).map(|c| c.as_str().to_string());
+
+        registry.register(McpToolEntry {
+            name: tool.name.to_string(),
+            description: tool.description.clone().unwrap_or_default().to_string(),
+            source: "skrills".to_string(),
+            estimated_tokens,
+            category,
+        });
+    }
+
+    // Register gateway tools themselves
+    for tool in crate::mcp_gateway::mcp_gateway_tools() {
+        let schema_json = serde_json::to_string(&tool.input_schema).unwrap_or_default();
+        let estimated_tokens = estimate_tokens(&schema_json);
+        registry.register(McpToolEntry {
+            name: tool.name.to_string(),
+            description: tool.description.clone().unwrap_or_default().to_string(),
+            source: "gateway".to_string(),
+            estimated_tokens,
+            category: Some(ToolCategory::Gateway.as_str().to_string()),
+        });
+    }
+
+    registry
+}
+
 impl SkillService {
     /// Create a new `SkillService` with the default search roots.
     #[allow(dead_code)]
@@ -123,11 +211,17 @@ impl SkillService {
     pub fn new_with_ttl(extra_dirs: Vec<PathBuf>, ttl: Duration) -> Result<Self> {
         let build_started = Instant::now();
         let roots = skill_roots(&extra_dirs)?;
+
+        // Build MCP registry with all available tools
+        let mcp_registry = Arc::new(Mutex::new(build_mcp_registry()));
+        let context_stats = ContextStats::new();
+
         let elapsed_ms = build_started.elapsed().as_millis();
         tracing::info!(
             target: "skrills::startup",
             elapsed_ms,
             roots = roots.len(),
+            mcp_tools = mcp_registry.lock().len(),
             skills = "deferred", // Skill discovery is deferred until after initialize to keep initial response fast.
             "SkillService constructed"
         );
@@ -135,6 +229,8 @@ impl SkillService {
             cache: Arc::new(Mutex::new(SkillCache::new_with_ttl(roots, ttl))),
             #[cfg(feature = "subagents")]
             subagents: Some(SubagentService::new()?),
+            mcp_registry,
+            context_stats,
         })
     }
 
@@ -146,6 +242,8 @@ impl SkillService {
     #[allow(dead_code)]
     fn new_with_roots_for_test(roots: Vec<SkillRoot>, ttl: Duration) -> Result<Self> {
         let build_started = Instant::now();
+        let mcp_registry = Arc::new(Mutex::new(build_mcp_registry()));
+        let context_stats = ContextStats::new();
         let elapsed_ms = build_started.elapsed().as_millis();
         tracing::info!(
             target: "skrills::startup",
@@ -158,6 +256,8 @@ impl SkillService {
             cache: Arc::new(Mutex::new(SkillCache::new_with_ttl(roots, ttl))),
             #[cfg(feature = "subagents")]
             subagents: Some(SubagentService::new()?),
+            mcp_registry,
+            context_stats,
         })
     }
 
@@ -768,6 +868,10 @@ pub fn run() -> Result<()> {
         watch: false,
         http: None,
         list_tools: false,
+        auth_token: None,
+        tls_cert: None,
+        tls_key: None,
+        cors_origins: Vec::new(),
     }) {
         Commands::Serve {
             skill_dirs,
@@ -777,6 +881,10 @@ pub fn run() -> Result<()> {
             watch,
             http,
             list_tools,
+            auth_token,
+            tls_cert,
+            tls_key,
+            cors_origins,
         } => handle_serve_command(
             skill_dirs,
             cache_ttl_ms,
@@ -785,6 +893,10 @@ pub fn run() -> Result<()> {
             watch,
             http,
             list_tools,
+            auth_token,
+            tls_cert,
+            tls_key,
+            cors_origins,
         ),
         Commands::Mirror {
             dry_run,
@@ -1159,6 +1271,14 @@ pub fn run() -> Result<()> {
             limit,
             format,
         } => handle_search_skills_github_command(query, limit, format),
+        Commands::ExportAnalytics {
+            output,
+            force_rebuild,
+            format,
+        } => handle_export_analytics_command(output, force_rebuild, format),
+        Commands::ImportAnalytics { input, overwrite } => {
+            handle_import_analytics_command(input, overwrite)
+        }
     }
 }
 
