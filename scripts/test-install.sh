@@ -125,6 +125,47 @@ assert_contains "$API_LATEST" "athola/skrills" "API_URL contains repo"
 API_VERSIONED=$(SKRILLS_VERSION=1.2.3 API_URL)
 assert_contains "$API_VERSIONED" "releases/tags/v1.2.3" "API_URL with version"
 
+# Test 8: awk JSON parser (used when jq unavailable)
+echo ""
+echo "--- awk JSON Parser Test ---"
+# Simulate GitHub releases API response
+MOCK_RELEASE_JSON='{
+  "assets": [
+    {
+      "name": "skrills-aarch64-apple-darwin.tar.gz",
+      "browser_download_url": "https://example.com/darwin-arm64.tar.gz"
+    },
+    {
+      "name": "skrills-x86_64-unknown-linux-gnu.tar.gz",
+      "browser_download_url": "https://example.com/linux-x64.tar.gz"
+    }
+  ]
+}'
+
+# Test awk parser directly
+awk_parse_url() {
+    local json="$1"
+    local target="$2"
+    echo "$json" | awk -v target="$target" '
+      /"name":/ && index($0, target) { found=1 }
+      found && /"browser_download_url":/ {
+        gsub(/.*"browser_download_url": *"/, "")
+        gsub(/".*/, "")
+        print
+        exit
+      }
+    '
+}
+
+AWK_RESULT=$(awk_parse_url "$MOCK_RELEASE_JSON" "x86_64-unknown-linux-gnu")
+assert_eq "$AWK_RESULT" "https://example.com/linux-x64.tar.gz" "awk parses linux target URL"
+
+AWK_RESULT2=$(awk_parse_url "$MOCK_RELEASE_JSON" "aarch64-apple-darwin")
+assert_eq "$AWK_RESULT2" "https://example.com/darwin-arm64.tar.gz" "awk parses darwin target URL"
+
+AWK_NOMATCH=$(awk_parse_url "$MOCK_RELEASE_JSON" "nonexistent-target")
+assert_eq "$AWK_NOMATCH" "" "awk returns empty for no match"
+
 # Summary
 echo ""
 echo "========================================"

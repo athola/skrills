@@ -81,21 +81,20 @@ SELECT_ASSET_URL()
   need_cmd curl
   release_json=$(curl -fsSL "$url_json") || fail "failed to fetch release metadata from $url_json"
   target="$(TARGET)"
-  if command -v python3 >/dev/null 2>&1; then
-    python3 - "$target" <<'PY'
-import json,sys,sys
-j=json.loads(sys.stdin.read())
-needle=sys.argv[1]
-for asset in j.get("assets", []):
-    name=asset.get("name","")
-    if needle in name:
-        print(asset.get("browser_download_url",""))
-        sys.exit(0)
-print("")
-PY
-  else
-    need_cmd jq
+  # Try jq first (cleanest), fall back to awk for pure POSIX shell
+  if command -v jq >/dev/null 2>&1; then
     echo "$release_json" | jq -r --arg target "$target" '.assets[] | select(.name | contains($target)) | .browser_download_url' | head -n1
+  else
+    # Pure awk fallback: find asset block with matching name, extract URL
+    echo "$release_json" | awk -v target="$target" '
+      /"name":/ && index($0, target) { found=1 }
+      found && /"browser_download_url":/ {
+        gsub(/.*"browser_download_url": *"/, "")
+        gsub(/".*/, "")
+        print
+        exit
+      }
+    '
   fi
 }
 
