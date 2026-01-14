@@ -56,7 +56,7 @@ define verify_setup
 endef
 
 # Phony targets: core developer flow
-.PHONY: help fmt fmt-check lint lint-md check test test-unit test-integration test-setup \
+.PHONY: help fmt fmt-check lint lint-md check test test-unit test-integration test-setup test-install \
 	build build-min serve-help install status coverage test-coverage dogfood ci precommit \
 	clean clean-demo githooks hooks require-cargo security deny deps-update check-deps \
 	quick watch bench release
@@ -65,7 +65,8 @@ endef
 # Phony targets: demos
 .PHONY: demo-fixtures demo-doctor demo-empirical demo-http demo-cli demo-all demo-setup-claude demo-setup-codex \
 	demo-setup-both demo-setup-uninstall demo-setup-reinstall \
-	demo-setup-universal demo-setup-first-run demo-setup-all
+	demo-setup-universal demo-setup-first-run demo-setup-all \
+	demo-analytics demo-gateway
 .NOTPARALLEL: demo-all demo-setup-all
 .SILENT: demo-doctor demo-empirical demo-cli demo-all demo-setup-claude demo-setup-codex demo-setup-both \
 	demo-setup-uninstall demo-setup-reinstall demo-setup-universal demo-setup-first-run \
@@ -82,6 +83,7 @@ help:
 	@printf "  %-23s %s\n" "check" "cargo check all targets"
 	@printf "  %-23s %s\n" "test | test-unit | test-integration" "run tests"
 	@printf "  %-23s %s\n" "test-setup" "run setup module tests"
+	@printf "  %-23s %s\n" "test-install" "test install.sh helper functions"
 	@printf "  %-23s %s\n" "test-coverage" "run tests with coverage report"
 	@printf "  %-23s %s\n" "build | build-min" "release builds"
 	@printf "  %-23s %s\n" "install" "install skrills to $(CARGO_HOME)/bin"
@@ -110,6 +112,8 @@ help:
 	@printf "  %-23s %s\n" "demo-cli" "test all CLI commands"
 	@printf "  %-23s %s\n" "demo-doctor | demo-empirical" "individual command demos"
 	@printf "  %-23s %s\n" "demo-http" "start HTTP MCP server (127.0.0.1:3000)"
+	@printf "  %-23s %s\n" "demo-analytics" "test analytics export/import"
+	@printf "  %-23s %s\n" "demo-gateway" "test MCP gateway tools"
 	@printf "  %-23s %s\n" "demo-setup-all" "run all setup flow demos"
 	@printf "  %-23s %s\n" "demo-setup-{claude,codex,both}" "client setup demos"
 	@printf "  %-23s %s\n" "demo-setup-{uninstall,reinstall}" "lifecycle demos"
@@ -146,6 +150,10 @@ test-integration:
 
 test-setup:
 	$(CARGO_CMD) test --package skrills-server --lib setup --all-features
+
+test-install:
+	@echo "==> Testing install.sh helper functions"
+	./scripts/test-install.sh
 
 test-coverage:
 	@if command -v cargo-llvm-cov >/dev/null 2>&1; then \
@@ -209,6 +217,25 @@ demo-http: build
 	@echo "==> Demo: HTTP Transport (starts server, ctrl-c to stop)"
 	@echo "    Connect to http://127.0.0.1:3000/mcp"
 	$(BIN_PATH) serve --http 127.0.0.1:3000
+
+demo-analytics: demo-fixtures build
+	@echo "==> Demo: Analytics Export/Import"
+	@echo "--- export-analytics"
+	$(DEMO_RUN) export-analytics --output $(HOME_DIR)/analytics-test.json
+	@test -f $(HOME_DIR)/analytics-test.json || (echo "ERROR: Export failed" && exit 1)
+	@echo "--- import-analytics"
+	$(DEMO_RUN) import-analytics $(HOME_DIR)/analytics-test.json --overwrite
+	@echo "--- Verify round-trip"
+	@test -f $(HOME_DIR)/.skrills/analytics_cache.json || (echo "ERROR: Import failed" && exit 1)
+	@echo "==> Analytics demo complete"
+
+demo-gateway: build
+	@echo "==> Demo: MCP Gateway Tools (unit tests)"
+	$(CARGO_CMD) test --package skrills-server --lib -- mcp_gateway --test-threads=1
+	$(CARGO_CMD) test --package skrills-server --lib -- list_mcp_tools --test-threads=1
+	$(CARGO_CMD) test --package skrills-server --lib -- describe_mcp_tool --test-threads=1
+	$(CARGO_CMD) test --package skrills-server --lib -- get_context_stats --test-threads=1
+	@echo "==> Gateway demo complete"
 
 demo-fixtures:
 	@mkdir -p $(HOME_DIR)/.codex/skills/demo
@@ -285,6 +312,11 @@ demo-cli: demo-fixtures build
 	$(DEMO_RUN) create-skill test-skill --description "Test" --method github --dry-run || true
 	@echo "--- search-skills-github"
 	$(DEMO_RUN) search-skills-github "commit" || true
+	@echo "--- export-analytics"
+	$(DEMO_RUN) export-analytics --output $(HOME_DIR)/analytics-cli-test.json
+	@test -f $(HOME_DIR)/analytics-cli-test.json && echo "    Export succeeded" || echo "    Export failed (expected on fresh install)"
+	@echo "--- import-analytics (if export exists)"
+	@test -f $(HOME_DIR)/analytics-cli-test.json && $(DEMO_RUN) import-analytics $(HOME_DIR)/analytics-cli-test.json --overwrite || true
 	@echo "--- setup --help"
 	$(DEMO_RUN) setup --help >/dev/null
 	@echo "==> All CLI commands tested successfully"
@@ -372,7 +404,7 @@ clean-demo:
 
 ci: fmt lint test
 
-precommit: fmt-check lint lint-md test
+precommit: fmt-check lint lint-md test test-install
 
 hooks:
 	@git config core.hooksPath githooks
