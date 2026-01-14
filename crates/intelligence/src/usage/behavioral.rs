@@ -6,8 +6,10 @@
 //! - Session outcome detection (success/failure/partial)
 
 use super::{SkillUsageEvent, UsageAnalytics};
+use crate::types::Confidence;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use tracing::trace;
 
 // ============================================================================
 // Helper Functions
@@ -106,7 +108,7 @@ pub struct SessionOutcome {
     /// Detected outcome status.
     pub status: OutcomeStatus,
     /// Confidence in the outcome detection (0.0 - 1.0).
-    pub confidence: f64,
+    pub confidence: Confidence,
     /// Evidence supporting the outcome determination.
     pub evidence: Vec<String>,
     /// Session duration in seconds.
@@ -317,10 +319,14 @@ pub fn detect_session_outcome(
     prompt_contexts: &[Option<String>],
 ) -> SessionOutcome {
     if tool_calls.is_empty() {
+        trace!(
+            session_id,
+            "No tool calls in session, returning Inconclusive outcome"
+        );
         return SessionOutcome {
             session_id: session_id.to_string(),
             status: OutcomeStatus::Inconclusive,
-            confidence: 0.0,
+            confidence: Confidence::zero(),
             evidence: vec!["No tool calls in session".to_string()],
             duration_seconds: 0,
         };
@@ -412,17 +418,17 @@ pub fn detect_session_outcome(
     // Determine outcome
     let total_signals = success_signals + failure_signals;
     let (status, confidence) = if total_signals == 0 {
-        (OutcomeStatus::Inconclusive, 0.3)
+        (OutcomeStatus::Inconclusive, Confidence::new(0.3))
     } else {
         let success_ratio = success_signals as f64 / total_signals as f64;
-        let confidence = (total_signals as f64 / 10.0).min(1.0);
+        let conf_value = (total_signals as f64 / 10.0).min(1.0);
 
         if success_ratio > 0.7 {
-            (OutcomeStatus::Success, confidence)
+            (OutcomeStatus::Success, Confidence::new(conf_value))
         } else if success_ratio < 0.3 {
-            (OutcomeStatus::Failure, confidence)
+            (OutcomeStatus::Failure, Confidence::new(conf_value))
         } else {
-            (OutcomeStatus::Partial, confidence * 0.8)
+            (OutcomeStatus::Partial, Confidence::new(conf_value * 0.8))
         }
     };
 
@@ -632,7 +638,7 @@ mod tests {
     fn test_detect_session_outcome_empty() {
         let outcome = detect_session_outcome("test-session", &[], &[]);
         assert_eq!(outcome.status, OutcomeStatus::Inconclusive);
-        assert_eq!(outcome.confidence, 0.0);
+        assert_eq!(outcome.confidence, Confidence::zero());
     }
 
     #[test]
@@ -662,7 +668,7 @@ mod tests {
         let outcome = detect_session_outcome("test-session", &calls, &contexts);
 
         assert_eq!(outcome.status, OutcomeStatus::Success);
-        assert!(outcome.confidence > 0.3);
+        assert!(outcome.confidence.value() > 0.3);
     }
 
     #[test]

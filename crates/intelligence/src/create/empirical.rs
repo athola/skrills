@@ -4,6 +4,7 @@
 //! with guardrails derived from observed failures. Rather than generating skills
 //! purely from LLM imagination, it mines real usage patterns for grounded guidance.
 
+use crate::types::Confidence;
 use crate::usage::behavioral::{extract_common_ngrams, BehavioralEvent, OutcomeStatus, ToolStatus};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -23,7 +24,7 @@ pub struct SuccessPattern {
     /// Keywords that commonly trigger this pattern.
     pub trigger_keywords: Vec<String>,
     /// Confidence score based on frequency (0.0 - 1.0).
-    pub confidence: f64,
+    pub confidence: Confidence,
     /// Number of sessions where this pattern appeared.
     pub occurrence_count: usize,
     /// Example prompt contexts where this pattern succeeded.
@@ -60,8 +61,13 @@ pub struct ClusteredBehavior {
     pub common_file_types: Vec<String>,
     /// Dominant skill category inferred from patterns.
     pub inferred_category: String,
-    /// Size of the cluster.
-    pub size: usize,
+}
+
+impl ClusteredBehavior {
+    /// Returns the number of sessions in this cluster.
+    pub fn size(&self) -> usize {
+        self.session_ids.len()
+    }
 }
 
 /// Result of clustering analysis.
@@ -91,7 +97,7 @@ pub struct EmpiricalSkillContent {
     /// Guardrails section (warnings based on failure patterns).
     pub guardrails: String,
     /// Confidence in this skill (based on pattern strength).
-    pub confidence: f64,
+    pub confidence: Confidence,
     /// Source cluster ID.
     pub source_cluster_id: String,
 }
@@ -338,7 +344,6 @@ pub fn cluster_sessions(
         result_clusters.push(ClusteredBehavior {
             cluster_id: format!("cluster-{}", result_clusters.len()),
             label: cluster_key,
-            size: cluster_features.len(),
             session_ids,
             success_patterns,
             failure_patterns,
@@ -348,11 +353,11 @@ pub fn cluster_sessions(
     }
 
     // Limit to requested number of clusters (keep largest)
-    result_clusters.sort_by(|a, b| b.size.cmp(&a.size));
+    result_clusters.sort_by_key(|c| std::cmp::Reverse(c.size()));
     result_clusters.truncate(num_clusters);
 
     // Calculate quality score
-    let clustered_sessions: usize = result_clusters.iter().map(|c| c.size).sum();
+    let clustered_sessions: usize = result_clusters.iter().map(|c| c.size()).sum();
     let quality_score = if !features.is_empty() {
         clustered_sessions as f64 / features.len() as f64
     } else {
@@ -447,7 +452,7 @@ fn extract_success_patterns(events: &[&BehavioralEvent]) -> Vec<SuccessPattern> 
         patterns.push(SuccessPattern {
             action_sequence: sequence,
             trigger_keywords: keywords,
-            confidence: confidence.min(1.0),
+            confidence: Confidence::new(confidence),
             occurrence_count: count,
             example_contexts: successful_events
                 .iter()
@@ -464,7 +469,7 @@ fn extract_success_patterns(events: &[&BehavioralEvent]) -> Vec<SuccessPattern> 
         patterns.push(SuccessPattern {
             action_sequence: sequence,
             trigger_keywords: keywords,
-            confidence: confidence.min(1.0),
+            confidence: Confidence::new(confidence),
             occurrence_count: count,
             example_contexts: successful_events
                 .iter()
@@ -625,7 +630,8 @@ pub fn generate_skill_from_cluster(
 
     let description = format!(
         "Empirically-derived skill for {} workflows, based on {} analyzed sessions.",
-        cluster.inferred_category, cluster.size
+        cluster.inferred_category,
+        cluster.size()
     );
 
     // Build frontmatter
@@ -654,7 +660,7 @@ cluster_id: {}
         cluster
             .success_patterns
             .first()
-            .map(|p| p.confidence)
+            .map(|p| p.confidence.value())
             .unwrap_or(0.5),
         cluster.cluster_id,
     );
@@ -675,7 +681,7 @@ cluster_id: {}
         ));
         body.push_str(&format!(
             "**Confidence:** {:.0}% ({} occurrences)\n\n",
-            pattern.confidence * 100.0,
+            pattern.confidence.value() * 100.0,
             pattern.occurrence_count
         ));
 
@@ -729,10 +735,10 @@ cluster_id: {}
         }
     }
 
-    let confidence = cluster
+    let confidence_value = cluster
         .success_patterns
         .iter()
-        .map(|p| p.confidence)
+        .map(|p| p.confidence.value())
         .sum::<f64>()
         / cluster.success_patterns.len().max(1) as f64;
 
@@ -742,7 +748,7 @@ cluster_id: {}
         frontmatter,
         body,
         guardrails,
-        confidence,
+        confidence: Confidence::new(confidence_value),
         source_cluster_id: cluster.cluster_id.clone(),
     }
 }
@@ -795,7 +801,7 @@ mod tests {
             session_outcome: Some(SessionOutcome {
                 session_id: session_id.to_string(),
                 status: outcome,
-                confidence: 0.8,
+                confidence: Confidence::new(0.8),
                 evidence: vec![],
                 duration_seconds: 60,
             }),
@@ -859,14 +865,13 @@ mod tests {
             success_patterns: vec![SuccessPattern {
                 action_sequence: vec!["Read".to_string(), "Edit".to_string()],
                 trigger_keywords: vec!["fix".to_string(), "update".to_string()],
-                confidence: 0.8,
+                confidence: Confidence::new(0.8),
                 occurrence_count: 5,
                 example_contexts: vec!["Fix the bug".to_string()],
             }],
             failure_patterns: vec![],
             common_file_types: vec!["rs".to_string()],
             inferred_category: "rust-development".to_string(),
-            size: 2,
         };
 
         let skill = generate_skill_from_cluster(&cluster, None);
@@ -874,7 +879,7 @@ mod tests {
         assert!(skill.name.contains("rust-development"));
         assert!(skill.body.contains("Recommended Workflow"));
         assert!(skill.body.contains("Read → Edit"));
-        assert!(skill.confidence > 0.0);
+        assert!(skill.confidence.value() > 0.0);
     }
 
     #[test]
@@ -885,7 +890,7 @@ mod tests {
             frontmatter: "---\nname: test-skill\n---".to_string(),
             body: "# Test Skill\n\nContent here.".to_string(),
             guardrails: "## Guardrails\n\nWarning here.".to_string(),
-            confidence: 0.9,
+            confidence: Confidence::new(0.9),
             source_cluster_id: "cluster-1".to_string(),
         };
 

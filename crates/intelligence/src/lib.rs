@@ -9,7 +9,10 @@
 pub mod context;
 pub mod create;
 pub mod recommend;
+pub mod types;
 pub mod usage;
+
+pub use types::Confidence;
 
 pub use context::{
     analyze_project, analyze_project_with_options, AnalyzeProjectOptions, DependencyInfo,

@@ -16,6 +16,7 @@ pub use codex_parser::{
     parse_codex_command_history, parse_codex_sessions, parse_codex_skills_history,
 };
 
+use crate::types::Confidence;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -46,7 +47,7 @@ pub struct PromptAffinity {
     /// Skills invoked after this prompt type.
     pub associated_skills: Vec<String>,
     /// Confidence score (0.0 - 1.0).
-    pub confidence: f64,
+    pub confidence: Confidence,
 }
 
 /// A user command entered in the CLI.
