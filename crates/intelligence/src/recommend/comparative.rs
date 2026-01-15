@@ -3,9 +3,11 @@
 //! This module compares actual skill-assisted work against expected outcomes
 //! to identify underperforming skills and highlight proven effective ones.
 
+use crate::types::Confidence;
 use crate::usage::{SkillUsageEvent, UsageAnalytics};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tracing::{debug, trace};
 
 // ============================================================================
 // Skill Categories and Expected Outcomes
@@ -80,7 +82,7 @@ pub struct DeviationScore {
     /// Deviation value (-1.0 to 1.0, negative = worse than expected).
     pub deviation: f64,
     /// Confidence in the measurement (0.0 - 1.0).
-    pub confidence: f64,
+    pub confidence: Confidence,
     /// Evidence supporting this score.
     pub evidence: DeviationEvidence,
 }
@@ -325,7 +327,13 @@ pub fn compute_deviation_score(
         .collect();
 
     if skill_events.len() < MIN_SESSIONS_FOR_DEVIATION {
-        return None; // Insufficient data
+        debug!(
+            skill_uri,
+            events = skill_events.len(),
+            min_required = MIN_SESSIONS_FOR_DEVIATION,
+            "Insufficient data for deviation scoring"
+        );
+        return None;
     }
 
     // Infer category and get baseline
@@ -407,7 +415,7 @@ pub fn compute_deviation_score(
     };
 
     // Calculate confidence based on sample size
-    let confidence = (skill_events.len() as f64 / 20.0).min(1.0);
+    let confidence = Confidence::new((skill_events.len() as f64 / 20.0).min(1.0));
 
     Some(DeviationScore {
         skill_uri: skill_uri.to_string(),
@@ -428,6 +436,7 @@ fn compute_actual_metrics(
     _analytics: &UsageAnalytics, // Reserved for future behavioral analysis integration
 ) -> OutcomeMetrics {
     if events.is_empty() {
+        trace!("No events provided for metrics computation");
         return OutcomeMetrics::default();
     }
 
@@ -540,6 +549,13 @@ pub fn compute_effectiveness(
     if skill_sessions.len() < MIN_SESSIONS_FOR_EFFECTIVENESS
         || without_skill_sessions.len() < MIN_SESSIONS_FOR_EFFECTIVENESS
     {
+        debug!(
+            skill_uri,
+            with_skill = skill_sessions.len(),
+            without_skill = without_skill_sessions.len(),
+            min_required = MIN_SESSIONS_FOR_EFFECTIVENESS,
+            "Insufficient sessions for effectiveness comparison"
+        );
         return None;
     }
 
@@ -575,6 +591,10 @@ pub fn compute_effectiveness(
             1.5
         }
     } else {
+        trace!(
+            skill_uri,
+            "No retry rate data available, using neutral improvement factor"
+        );
         1.0 // No data, assume neutral
     };
 
@@ -705,7 +725,7 @@ mod tests {
 
         let score = result.unwrap();
         assert_eq!(score.skill_uri, "pytest-helper");
-        assert!(score.confidence > 0.0);
+        assert!(score.confidence.value() > 0.0);
         assert!(score.deviation >= -1.0 && score.deviation <= 1.0);
     }
 

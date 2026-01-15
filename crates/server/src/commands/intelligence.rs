@@ -48,9 +48,29 @@ pub(crate) fn handle_recommend_skills_smart_command(
     limit: usize,
     include_usage: bool,
     include_context: bool,
+    auto_persist: bool,
     format: OutputFormat,
     skill_dirs: Vec<PathBuf>,
 ) -> Result<()> {
+    use skrills_intelligence::{
+        default_analytics_cache_path, load_or_build_analytics, save_analytics,
+    };
+    use skrills_state::env_auto_persist;
+
+    // Auto-persist analytics if requested via flag or env var
+    let should_persist = auto_persist || env_auto_persist();
+    if should_persist && include_usage {
+        // Build and persist analytics before making recommendations
+        let analytics = load_or_build_analytics(false, true)?;
+        if let Some(cache_path) = default_analytics_cache_path() {
+            if let Err(e) = save_analytics(&analytics, &cache_path) {
+                tracing::warn!(path = %cache_path.display(), error = %e, "Failed to auto-persist analytics");
+            } else {
+                tracing::debug!(path = %cache_path.display(), "Auto-persisted analytics");
+            }
+        }
+    }
+
     let service = build_service(skill_dirs)?;
     let mut args: JsonMap<String, Value> = JsonMap::new();
 
@@ -336,6 +356,7 @@ A test skill.
             5,
             false,
             false,
+            false, // auto_persist
             OutputFormat::Json,
             vec![skill_dir],
         );
@@ -410,5 +431,94 @@ A test skill.
         // Verify cache was created
         let cache_path = skrills_dir.join("analytics_cache.json");
         assert!(cache_path.exists(), "Cache should exist after import");
+    }
+
+    #[test]
+    fn test_auto_persist_flag_creates_cache() {
+        let _guard = crate::test_support::env_guard();
+        let home_dir = tempdir().unwrap();
+        let _home = set_env_var("HOME", Some(home_dir.path().to_str().unwrap()));
+
+        // Create .skrills directory
+        let skrills_dir = home_dir.path().join(".skrills");
+        fs::create_dir_all(&skrills_dir).unwrap();
+
+        // Create a skill directory with a test skill
+        let tmp = tempdir().unwrap();
+        let skill_dir = tmp.path().join("skills");
+        fs::create_dir_all(&skill_dir).unwrap();
+        create_skill(
+            &skill_dir,
+            "test-skill",
+            &skill_with_deps("test-skill", &[]),
+        );
+
+        let cache_path = skrills_dir.join("analytics_cache.json");
+        assert!(!cache_path.exists(), "Cache should not exist before test");
+
+        // Run with auto_persist=true
+        let result = handle_recommend_skills_smart_command(
+            None,
+            Some("test query".into()),
+            None,
+            5,
+            true,  // include_usage
+            false, // include_context
+            true,  // auto_persist enabled
+            OutputFormat::Json,
+            vec![skill_dir],
+        );
+
+        assert!(result.is_ok(), "Command should succeed");
+        assert!(cache_path.exists(), "Cache should exist after auto-persist");
+
+        // Verify cache contains valid JSON
+        let content = fs::read_to_string(&cache_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(parsed.is_object(), "Cache should be valid JSON object");
+    }
+
+    #[test]
+    fn test_auto_persist_env_var_creates_cache() {
+        let _guard = crate::test_support::env_guard();
+        let home_dir = tempdir().unwrap();
+        let _home = set_env_var("HOME", Some(home_dir.path().to_str().unwrap()));
+        let _auto_persist = set_env_var("SKRILLS_AUTO_PERSIST", Some("1"));
+
+        // Create .skrills directory
+        let skrills_dir = home_dir.path().join(".skrills");
+        fs::create_dir_all(&skrills_dir).unwrap();
+
+        // Create a skill directory with a test skill
+        let tmp = tempdir().unwrap();
+        let skill_dir = tmp.path().join("skills");
+        fs::create_dir_all(&skill_dir).unwrap();
+        create_skill(
+            &skill_dir,
+            "test-skill",
+            &skill_with_deps("test-skill", &[]),
+        );
+
+        let cache_path = skrills_dir.join("analytics_cache.json");
+        assert!(!cache_path.exists(), "Cache should not exist before test");
+
+        // Run with auto_persist=false (env var should override)
+        let result = handle_recommend_skills_smart_command(
+            None,
+            Some("test query".into()),
+            None,
+            5,
+            true,  // include_usage
+            false, // include_context
+            false, // auto_persist flag off, but env var is set
+            OutputFormat::Json,
+            vec![skill_dir],
+        );
+
+        assert!(result.is_ok(), "Command should succeed");
+        assert!(
+            cache_path.exists(),
+            "Cache should exist after env var auto-persist"
+        );
     }
 }

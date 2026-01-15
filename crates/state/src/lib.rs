@@ -30,6 +30,7 @@ pub mod env;
 pub mod persistence;
 
 pub use env::{
-    cache_ttl, env_diag, env_include_claude, env_include_marketplace, extra_dirs_from_env,
-    home_dir, load_manifest_settings, manifest_file, runtime_overrides_path, ManifestSettings,
+    cache_ttl, env_auto_persist, env_diag, env_include_claude, env_include_marketplace,
+    extra_dirs_from_env, home_dir, load_manifest_settings, manifest_file, runtime_overrides_path,
+    ManifestSettings,
 };

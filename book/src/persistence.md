@@ -53,6 +53,22 @@ The manifest controls which directories skrills searches and in what order:
 | `expose_agents` | Include agent definitions in discovery |
 | `cache_ttl_ms` | How long to cache results (milliseconds) |
 
+### Analytics Cache
+
+Usage analytics are stored when you run analytics-building commands with persistence enabled:
+
+**Location:** `~/.skrills/analytics_cache.json`
+
+Enable automatic persistence with:
+- `--auto-persist` flag on `recommend-skills-smart`
+- `SKRILLS_AUTO_PERSIST=1` environment variable
+
+Manual persistence:
+```bash
+skrills export-analytics --output analytics.json
+skrills import-analytics analytics.json
+```
+
 ### Subagent Configuration
 
 Settings for launching subagents:
@@ -128,6 +144,7 @@ rm ~/.codex/skills-cache.json
 rm ~/.codex/skills-manifest.json
 rm ~/.codex/subagents.toml
 rm ~/.claude/subagents.toml
+rm ~/.skrills/analytics_cache.json
 ```
 
 After a full reset, run `skrills setup` to reconfigure.

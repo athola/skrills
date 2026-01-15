@@ -234,6 +234,7 @@ skrills recommend-skills-smart --prompt "deployment pipeline" --include-usage fa
 | `--limit <N>` | Maximum recommendations (default: 10) |
 | `--include-usage` | Include usage pattern analysis (default: true) |
 | `--include-context` | Include project context analysis (default: true) |
+| `--auto-persist` | Save analytics to cache after building |
 | `--format <FORMAT>` | `text` or `json` (default: `text`) |
 
 ### suggest-new-skills

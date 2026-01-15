@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+## 0.4.10 - 2026-01-15
+- **NEW: Confidence Type**: Added `Confidence` newtype with clamping constructor (0.0-1.0) for type-safe confidence scores in recommendations. (#73)
+- **Improved: Type Safety**: Removed redundant `ClusteredBehavior::size` field in favor of computed method. (#74)
+- **Improved: Observability**: Added tracing for silent early returns in behavioral and comparative recommendation modules. (#75)
+- **NEW: Analytics Auto-Persistence**: Added `--auto-persist` flag to `recommend-skills-smart` command and `SKRILLS_AUTO_PERSIST` environment variable for automatic analytics caching after operations that build analytics. (#62)
+
 ## 0.4.9 - 2026-01-12
 - **NEW: MCP Gateway**: Added context-optimized tool loading via lazy schema loading. Tools `list-mcp-tools`, `describe-mcp-tool`, and `get-context-stats` enable on-demand schema retrieval to reduce context window pressure.
 - **NEW: Analytics Persistence**: Export and import usage analytics via `export-analytics` and `import-analytics` CLI commands. Analytics cache persists to `~/.skrills/analytics_cache.json`.

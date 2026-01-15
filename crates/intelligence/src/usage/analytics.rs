@@ -1,6 +1,7 @@
 //! Build usage analytics from skill usage events.
 
 use super::{PromptAffinity, SkillUsageEvent, TimeRange, UsageAnalytics};
+use crate::types::Confidence;
 use std::collections::{HashMap, HashSet};
 
 /// Tracks keyword statistics for confidence calculation.
@@ -96,7 +97,7 @@ pub fn build_analytics(events: Vec<SkillUsageEvent>) -> UsageAnalytics {
                 keywords: vec![keyword],
                 associated_skills: stats.skills.into_iter().collect(),
                 // Confidence based on keyword occurrence frequency, not unique skill count
-                confidence: (stats.occurrence_count as f64 / events.len() as f64).min(1.0),
+                confidence: Confidence::new(stats.occurrence_count as f64 / events.len() as f64),
             }
         })
         .collect();
@@ -319,9 +320,9 @@ mod tests {
         // "rust" appears in 2 of 3 events, so confidence should be 2/3 ≈ 0.667
         // NOT 1/3 (which would be if we used unique skill count = 1)
         assert!(
-            affinity.confidence > 0.6 && affinity.confidence < 0.7,
+            affinity.confidence.value() > 0.6 && affinity.confidence.value() < 0.7,
             "Confidence should be ~0.667 (2/3 events), got {}",
-            affinity.confidence
+            affinity.confidence.value()
         );
 
         // Should have 1 unique skill associated (skill-a used twice with "rust")

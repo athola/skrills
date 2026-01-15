@@ -1225,6 +1225,7 @@ pub fn run() -> Result<()> {
             limit,
             include_usage,
             include_context,
+            auto_persist,
             format,
             skill_dirs,
         } => handle_recommend_skills_smart_command(
@@ -1234,6 +1235,7 @@ pub fn run() -> Result<()> {
             limit,
             include_usage,
             include_context,
+            auto_persist,
             format,
             skill_dirs,
         ),
