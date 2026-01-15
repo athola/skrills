@@ -8,6 +8,7 @@ use crate::types::Confidence;
 use crate::usage::behavioral::{extract_common_ngrams, BehavioralEvent, OutcomeStatus, ToolStatus};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use tracing::debug;
 
 #[cfg(test)]
 use crate::usage::behavioral::{SessionOutcome, ToolCall};
@@ -661,7 +662,10 @@ cluster_id: {}
             .success_patterns
             .first()
             .map(|p| p.confidence.value())
-            .unwrap_or(0.5),
+            .unwrap_or_else(|| {
+                debug!(cluster_id = %cluster.cluster_id, "no success patterns for confidence, defaulting to 0.5");
+                0.5
+            }),
         cluster.cluster_id,
     );
 
@@ -899,5 +903,169 @@ mod tests {
         assert!(md.contains("---\nname: test-skill"));
         assert!(md.contains("# Test Skill"));
         assert!(md.contains("## Guardrails"));
+    }
+
+    // ========================================================================
+    // TC-7: compute_feature_distance tests
+    // ========================================================================
+
+    #[test]
+    fn test_compute_feature_distance_identical_features() {
+        let features = SessionFeatures {
+            session_id: "s1".to_string(),
+            tool_frequency: [("Read".to_string(), 5), ("Write".to_string(), 3)]
+                .into_iter()
+                .collect(),
+            file_extensions: [("rs".to_string(), 3), ("toml".to_string(), 1)]
+                .into_iter()
+                .collect(),
+            avg_tool_interval_ms: 500.0,
+            error_rate: 0.1,
+            duration_ms: 60000,
+            outcome: Some(OutcomeStatus::Success),
+        };
+
+        let distance = compute_feature_distance(&features, &features);
+        // Identical features should have distance close to 0 (negative due to outcome bonus)
+        assert!(
+            distance <= 0.0,
+            "Identical features should have distance <= 0, got {}",
+            distance
+        );
+    }
+
+    #[test]
+    fn test_compute_feature_distance_completely_different() {
+        let a = SessionFeatures {
+            session_id: "s1".to_string(),
+            tool_frequency: [("Read".to_string(), 5)].into_iter().collect(),
+            file_extensions: [("rs".to_string(), 3)].into_iter().collect(),
+            avg_tool_interval_ms: 500.0,
+            error_rate: 0.0,
+            duration_ms: 60000,
+            outcome: Some(OutcomeStatus::Success),
+        };
+
+        let b = SessionFeatures {
+            session_id: "s2".to_string(),
+            tool_frequency: [("Bash".to_string(), 10)].into_iter().collect(),
+            file_extensions: [("py".to_string(), 5)].into_iter().collect(),
+            avg_tool_interval_ms: 1000.0,
+            error_rate: 1.0,
+            duration_ms: 120000,
+            outcome: Some(OutcomeStatus::Failure),
+        };
+
+        let distance = compute_feature_distance(&a, &b);
+        // Very different features should have high distance
+        assert!(
+            distance > 1.0,
+            "Different features should have distance > 1, got {}",
+            distance
+        );
+    }
+
+    #[test]
+    fn test_compute_feature_distance_same_outcome_reduces_distance() {
+        let a = SessionFeatures {
+            session_id: "s1".to_string(),
+            tool_frequency: [("Read".to_string(), 5)].into_iter().collect(),
+            file_extensions: [("rs".to_string(), 3)].into_iter().collect(),
+            avg_tool_interval_ms: 500.0,
+            error_rate: 0.1,
+            duration_ms: 60000,
+            outcome: Some(OutcomeStatus::Success),
+        };
+
+        let b_same_outcome = SessionFeatures {
+            session_id: "s2".to_string(),
+            tool_frequency: [("Read".to_string(), 3), ("Write".to_string(), 2)]
+                .into_iter()
+                .collect(),
+            file_extensions: [("rs".to_string(), 2), ("toml".to_string(), 1)]
+                .into_iter()
+                .collect(),
+            avg_tool_interval_ms: 600.0,
+            error_rate: 0.2,
+            duration_ms: 70000,
+            outcome: Some(OutcomeStatus::Success), // Same outcome
+        };
+
+        let b_diff_outcome = SessionFeatures {
+            session_id: "s3".to_string(),
+            tool_frequency: [("Read".to_string(), 3), ("Write".to_string(), 2)]
+                .into_iter()
+                .collect(),
+            file_extensions: [("rs".to_string(), 2), ("toml".to_string(), 1)]
+                .into_iter()
+                .collect(),
+            avg_tool_interval_ms: 600.0,
+            error_rate: 0.2,
+            duration_ms: 70000,
+            outcome: Some(OutcomeStatus::Failure), // Different outcome
+        };
+
+        let distance_same = compute_feature_distance(&a, &b_same_outcome);
+        let distance_diff = compute_feature_distance(&a, &b_diff_outcome);
+
+        assert!(
+            distance_same < distance_diff,
+            "Same outcome should reduce distance: {} < {}",
+            distance_same,
+            distance_diff
+        );
+    }
+
+    #[test]
+    fn test_compute_feature_distance_empty_features() {
+        let empty = SessionFeatures {
+            session_id: "s1".to_string(),
+            tool_frequency: HashMap::new(),
+            file_extensions: HashMap::new(),
+            avg_tool_interval_ms: 0.0,
+            error_rate: 0.0,
+            duration_ms: 0,
+            outcome: None,
+        };
+
+        let distance = compute_feature_distance(&empty, &empty);
+        // Empty features: 0 union = 0 similarity, distance includes error rate diff (0)
+        // Should be 2.0 (tool dissimilarity 1.0 + ext dissimilarity 1.0)
+        assert!(
+            distance >= 0.0,
+            "Distance should be non-negative, got {}",
+            distance
+        );
+    }
+
+    #[test]
+    fn test_compute_feature_distance_error_rate_contribution() {
+        let low_error = SessionFeatures {
+            session_id: "s1".to_string(),
+            tool_frequency: HashMap::new(),
+            file_extensions: HashMap::new(),
+            avg_tool_interval_ms: 0.0,
+            error_rate: 0.0,
+            duration_ms: 0,
+            outcome: None,
+        };
+
+        let high_error = SessionFeatures {
+            session_id: "s2".to_string(),
+            tool_frequency: HashMap::new(),
+            file_extensions: HashMap::new(),
+            avg_tool_interval_ms: 0.0,
+            error_rate: 1.0,
+            duration_ms: 0,
+            outcome: None,
+        };
+
+        let distance = compute_feature_distance(&low_error, &high_error);
+        // Error rate difference is |0.0 - 1.0| = 1.0, plus 2.0 from empty sets
+        assert!(
+            distance >= 1.0,
+            "Error rate difference should contribute to distance, got {}",
+            distance
+        );
     }
 }

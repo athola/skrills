@@ -452,4 +452,37 @@ mod tests {
         let json = serde_json::to_string(&entry_with_desc).unwrap();
         assert!(json.contains("description"));
     }
+
+    /// Tests that manifest save fails gracefully on read-only parent directory.
+    /// This documents the error propagation behavior of create_dir_all failures.
+    #[cfg(unix)]
+    #[test]
+    fn test_manifest_save_fails_on_readonly_parent() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempdir().unwrap();
+        let readonly_dir = tmp.path().join("readonly");
+        std::fs::create_dir(&readonly_dir).unwrap();
+
+        // Make directory read-only (no write permission)
+        std::fs::set_permissions(&readonly_dir, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        let manifest = SkillsManifest::new();
+        // Try to save to a subdirectory that can't be created
+        let path = readonly_dir.join("subdir/manifest.json");
+
+        let result = manifest.save(&path);
+        assert!(result.is_err(), "Expected error when parent is read-only");
+
+        // Verify error message contains useful context
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Permission denied") || err_msg.contains("permission"),
+            "Error should mention permission issue: {}",
+            err_msg
+        );
+
+        // Cleanup: restore permissions for tempdir cleanup
+        std::fs::set_permissions(&readonly_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
 }

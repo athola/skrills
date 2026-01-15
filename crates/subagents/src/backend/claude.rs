@@ -69,17 +69,18 @@ impl ClaudeAdapter {
             .await?;
 
         if self.config.api_key.is_empty() {
+            let error_msg = "Claude API key not set. Set SKRILLS_CLAUDE_API_KEY environment variable with your Anthropic API key. Get one at https://console.anthropic.com/settings/keys";
             store
                 .update_status(
                     run_id,
                     RunStatus {
                         state: RunState::Failed,
-                        message: Some("missing SKRILLS_CLAUDE_API_KEY".into()),
+                        message: Some(error_msg.into()),
                         updated_at: OffsetDateTime::now_utc(),
                     },
                 )
                 .await?;
-            return Err(anyhow!("missing SKRILLS_CLAUDE_API_KEY"));
+            return Err(anyhow!(error_msg));
         }
 
         let url = self

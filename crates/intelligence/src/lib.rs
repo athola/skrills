@@ -9,6 +9,8 @@
 pub mod context;
 pub mod create;
 pub mod recommend;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod types;
 pub mod usage;
 

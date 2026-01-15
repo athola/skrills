@@ -67,17 +67,18 @@ impl CodexAdapter {
             .await?;
 
         if self.config.api_key.is_empty() {
+            let error_msg = "Codex API key not set. Set SKRILLS_CODEX_API_KEY environment variable with your OpenAI API key. Get one at https://platform.openai.com/api-keys";
             store
                 .update_status(
                     run_id,
                     RunStatus {
                         state: RunState::Failed,
-                        message: Some("missing SKRILLS_CODEX_API_KEY".into()),
+                        message: Some(error_msg.into()),
                         updated_at: OffsetDateTime::now_utc(),
                     },
                 )
                 .await?;
-            return Err(anyhow!("missing SKRILLS_CODEX_API_KEY"));
+            return Err(anyhow!(error_msg));
         }
 
         let body = build_openai_body(&self.config.model, &request);
