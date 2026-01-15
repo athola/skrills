@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 /// Confidence score clamped to [0.0, 1.0] range.
 ///
 /// This newtype ensures confidence values are always valid by clamping
-/// any input to the valid range during construction.
+/// any input to the valid range during construction. NaN and infinity
+/// values are treated as zero confidence.
 ///
 /// # Examples
 ///
@@ -22,6 +23,10 @@ use serde::{Deserialize, Serialize};
 ///
 /// let low = Confidence::new(-0.5);
 /// assert_eq!(low.value(), 0.0);
+///
+/// // NaN and infinity become zero
+/// let nan = Confidence::new(f64::NAN);
+/// assert_eq!(nan.value(), 0.0);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -29,9 +34,15 @@ pub struct Confidence(f64);
 
 impl Confidence {
     /// Create a new Confidence, clamping the value to [0.0, 1.0].
+    ///
+    /// NaN and infinity values are treated as zero confidence.
     #[must_use]
     pub fn new(value: f64) -> Self {
-        Self(value.clamp(0.0, 1.0))
+        if value.is_nan() || value.is_infinite() {
+            Self(0.0)
+        } else {
+            Self(value.clamp(0.0, 1.0))
+        }
     }
 
     /// Get the inner confidence value.
@@ -144,5 +155,24 @@ mod tests {
         let low = Confidence::new(0.2);
         let high = Confidence::new(0.8);
         assert!(low < high);
+    }
+
+    #[test]
+    fn test_confidence_handles_nan_and_infinity() {
+        // NaN becomes zero
+        let nan = Confidence::new(f64::NAN);
+        assert_eq!(nan.value(), 0.0);
+
+        // Positive infinity becomes zero
+        let pos_inf = Confidence::new(f64::INFINITY);
+        assert_eq!(pos_inf.value(), 0.0);
+
+        // Negative infinity becomes zero
+        let neg_inf = Confidence::new(f64::NEG_INFINITY);
+        assert_eq!(neg_inf.value(), 0.0);
+
+        // From trait also handles NaN
+        let from_nan: Confidence = f64::NAN.into();
+        assert_eq!(from_nan.value(), 0.0);
     }
 }
