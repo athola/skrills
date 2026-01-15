@@ -330,6 +330,10 @@ pub enum Commands {
         /// Include project context analysis.
         #[arg(long, default_value_t = true, value_parser = clap::builder::BoolishValueParser::new(), action = ArgAction::Set)]
         include_context: bool,
+        /// Auto-persist analytics to cache after building.
+        /// Can also be enabled via SKRILLS_AUTO_PERSIST=1 environment variable.
+        #[arg(long)]
+        auto_persist: bool,
         /// Output format: text or json.
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
@@ -710,6 +714,7 @@ mod tests {
                 limit,
                 include_usage,
                 include_context,
+                auto_persist,
                 format,
                 skill_dirs,
             }) => {
@@ -719,8 +724,28 @@ mod tests {
                 assert_eq!(limit, 5);
                 assert!(!include_usage);
                 assert!(include_context);
+                assert!(!auto_persist); // Default is false
                 assert_eq!(format, OutputFormat::Json);
                 assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/skills")]);
+            }
+            _ => panic!("expected RecommendSkillsSmart command"),
+        }
+    }
+
+    #[test]
+    fn parse_recommend_skills_smart_with_auto_persist() {
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "recommend-skills-smart",
+            "--auto-persist",
+            "--prompt",
+            "test query",
+        ])
+        .expect("recommend-skills-smart with --auto-persist should parse");
+
+        match cli.command {
+            Some(Commands::RecommendSkillsSmart { auto_persist, .. }) => {
+                assert!(auto_persist, "--auto-persist flag should be true");
             }
             _ => panic!("expected RecommendSkillsSmart command"),
         }

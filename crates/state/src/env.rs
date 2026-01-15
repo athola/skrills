@@ -43,6 +43,16 @@ pub fn env_diag() -> bool {
         .unwrap_or(false)
 }
 
+/// Checks if `SKRILLS_AUTO_PERSIST` environment variable is set to true.
+///
+/// When enabled, analytics are automatically saved to cache after operations
+/// that build or rebuild analytics data (e.g., `recommend-skills-smart`).
+pub fn env_auto_persist() -> bool {
+    std::env::var("SKRILLS_AUTO_PERSIST")
+        .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 /// Returns the path to the skills manifest file.
 pub fn manifest_file() -> Option<PathBuf> {
     if let Ok(custom) = std::env::var("SKRILLS_MANIFEST") {
@@ -178,10 +188,12 @@ mod tests {
         let _prev_claude = set_env_var("SKRILLS_INCLUDE_CLAUDE", Some("true"));
         let _prev_market = set_env_var("SKRILLS_INCLUDE_MARKETPLACE", Some("1"));
         let _prev_diag = set_env_var("SKRILLS_DIAGNOSE", Some("TRUE"));
+        let _prev_persist = set_env_var("SKRILLS_AUTO_PERSIST", Some("1"));
 
         assert!(env_include_claude());
         assert!(env_include_marketplace());
         assert!(env_diag());
+        assert!(env_auto_persist());
     }
 
     #[test]
@@ -237,5 +249,50 @@ mod tests {
         let _prev = set_env_var("SKRILLS_CACHE_TTL_MS", None);
 
         let _ = cache_ttl(&|| panic!("forced panic during settings load"));
+    }
+
+    #[test]
+    fn env_auto_persist_accepts_true_string_variants() {
+        let _guard = env_guard();
+
+        // Test "true" lowercase
+        let _persist = set_env_var("SKRILLS_AUTO_PERSIST", Some("true"));
+        assert!(env_auto_persist(), "'true' should enable auto-persist");
+
+        // Test "TRUE" uppercase
+        let _persist = set_env_var("SKRILLS_AUTO_PERSIST", Some("TRUE"));
+        assert!(env_auto_persist(), "'TRUE' should enable auto-persist");
+
+        // Test "True" mixed case
+        let _persist = set_env_var("SKRILLS_AUTO_PERSIST", Some("True"));
+        assert!(env_auto_persist(), "'True' should enable auto-persist");
+    }
+
+    #[test]
+    fn env_auto_persist_defaults_to_false() {
+        let _guard = env_guard();
+
+        // Unset env var
+        let _persist = set_env_var("SKRILLS_AUTO_PERSIST", None);
+        assert!(!env_auto_persist(), "unset should default to false");
+
+        // Empty string
+        let _persist = set_env_var("SKRILLS_AUTO_PERSIST", Some(""));
+        assert!(!env_auto_persist(), "empty string should be false");
+
+        // "0" value
+        let _persist = set_env_var("SKRILLS_AUTO_PERSIST", Some("0"));
+        assert!(!env_auto_persist(), "'0' should be false");
+
+        // "false" value
+        let _persist = set_env_var("SKRILLS_AUTO_PERSIST", Some("false"));
+        assert!(!env_auto_persist(), "'false' should be false");
+
+        // Random string
+        let _persist = set_env_var("SKRILLS_AUTO_PERSIST", Some("yes"));
+        assert!(
+            !env_auto_persist(),
+            "'yes' should be false (only '1' or 'true')"
+        );
     }
 }

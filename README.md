@@ -235,7 +235,7 @@ Deviation scoring compares actual skill-assisted outcomes against category basel
 - `skrills metrics [--format text|json] [--include-validation]` — aggregate statistics and quality distribution.
 - `skrills recommend <uri> [--limit N] [--include-quality]` — suggest related skills based on dependencies.
 - `skrills resolve-dependencies <uri> [--direction dependencies|dependents] [--transitive] [--format text|json]` — resolve dependencies or dependents.
-- `skrills recommend-skills-smart [--uri URI] [--prompt TEXT] [--project-dir DIR]` — smart recommendations using usage and context.
+- `skrills recommend-skills-smart [--uri URI] [--prompt TEXT] [--project-dir DIR] [--auto-persist]` — smart recommendations using usage and context (auto-persist saves analytics to cache).
 - `skrills analyze-project-context [--project-dir DIR] [--include-git true|false] [--commit-limit N] [--format text|json]` — analyze project context for recommendations.
 - `skrills suggest-new-skills [--project-dir DIR] [--focus-area AREA]` — identify gaps and suggestions.
 - `skrills create-skill <name> --description TEXT [--method github|llm|empirical|both] [--target-dir DIR]` — create skills via GitHub search, LLM generation, or empirical session patterns (target dir defaults to installed client, Claude preferred).
@@ -253,6 +253,7 @@ Deviation scoring compares actual skill-assisted outcomes against category basel
 - `SKRILLS_MIRROR_SOURCE` — mirror source root (default `~/.claude`).
 - `SKRILLS_CACHE_TTL_MS` — discovery cache TTL.
 - `SKRILLS_CLIENT` — force installer target (`codex` or `claude`).
+- `SKRILLS_AUTO_PERSIST` — auto-save analytics to cache after operations that build analytics (`1` or `true`).
 - `SKRILLS_NO_MIRROR=1` — skip post-install mirror on Codex.
 - `GITHUB_TOKEN` — optional GitHub API token for `search-skills-github` and GitHub-backed `create-skill` to avoid rate limits.
 - Subagents ship **on by default**: binaries are built with the `subagents` feature.

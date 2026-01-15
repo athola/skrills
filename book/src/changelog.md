@@ -1,5 +1,36 @@
 # Changelog Highlights
 
+## 0.4.10 (2026-01-15)
+
+- **NEW: Confidence Type**: Type-safe `Confidence` newtype with clamping (0.0-1.0) for recommendations.
+- **Improved: Observability**: Added tracing for behavioral and comparative recommendation modules.
+- **NEW: Auto-Persist**: `--auto-persist` flag and `SKRILLS_AUTO_PERSIST` env var for automatic analytics caching.
+
+## 0.4.9 (2026-01-12)
+
+- **NEW: MCP Gateway**: Context-optimized tool loading via lazy schema loading.
+- **NEW: Analytics Persistence**: Export/import analytics via `export-analytics` and `import-analytics`.
+- **NEW: HTTP Security Options**: Added `--auth-token`, `--tls-cert`, `--tls-key`, `--cors-origins` flags.
+
+## 0.4.8 (2026-01-10)
+
+- **NEW: Skill Description Caching**: Optional `description` field in `SkillMeta` for richer fuzzy search.
+- **Improved: Fuzzy Search**: Matches against descriptions in addition to names.
+
+## 0.4.7 (2026-01-09)
+
+- Version bump to republish after v0.4.6 tag protection issue.
+
+## 0.4.6 (2026-01-08)
+
+- **Bug Fixes**: Address 14 issues including warnings for skipped deps, YAML line/column info, SAFETY comments.
+- **Testing**: Add 282 new tests across multiple modules.
+- **Documentation**: Add audit-logging.md covering security events and SIEM integration.
+
+## 0.4.5 (2026-01-03)
+
+- **Testing**: Added comprehensive test coverage for tool handler functions.
+
 ## 0.4.4 (2026-01-02)
 
 - **NEW: Empirical Skill Creation**: Generate skills from session patterns via `--method empirical`. Mines Claude Code/Codex CLI history for successful tool sequences and failure anti-patterns.
