@@ -1,6 +1,6 @@
 [package]
 name = "skrills-analyze"
-version = "0.4.10"
+version = "0.4.11"
 edition.workspace = true
 description = "Skill analysis: token counting, dependencies, and optimization"
 license = "MIT"
@@ -19,8 +19,8 @@ anyhow = { workspace = true }
 walkdir = { workspace = true }
 thiserror = { workspace = true }
 semver = { workspace = true }
-skrills-validate = { path = "../validate", version = "0.4.10" }
-skrills-discovery = { path = "../discovery", version = "0.4.10" }
+skrills-validate = { path = "../validate", version = "0.4.11" }
+skrills-discovery = { path = "../discovery", version = "0.4.11" }
 parking_lot = { workspace = true }
 
 [dev-dependencies]

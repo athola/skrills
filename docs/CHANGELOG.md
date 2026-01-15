@@ -2,7 +2,14 @@
 
 ## Unreleased
 
-- **Testing**: Added 2 cluster formation tests for empirical skill creation covering session clustering by tool patterns and meaningful label assignment.
+## 0.4.11 - 2026-01-15
+- **Refactor**: Improved test infrastructure with RAII guards (`EnvVarGuard`, `TestFixture`) for reliable parallel test execution.
+- **Refactor**: Extracted API key error messages to constants in subagent backends.
+- **Bug Fix**: Added logging for silent failure path in skill validation invariant checks.
+- **Bug Fix**: Changed timestamp duration calculation to use `saturating_mul` to prevent integer overflow.
+- **Docs**: Consolidated 14 documentation files from bulleted lists to flowing prose, reducing visual noise while preserving technical content.
+- **Docs**: Added missing `skip_existing_commands` parameter to `sync_all_tool` documentation.
+- **Testing**: Added 27 new tests covering cluster formation, deviation score boundaries, n-gram edge cases, behavioral patterns, and parse_trace_target case sensitivity.
 
 ## 0.4.10 - 2026-01-15
 - **NEW: Confidence Type**: Added `Confidence` newtype with clamping constructor (0.0-1.0) for type-safe confidence scores in recommendations. (#73)
