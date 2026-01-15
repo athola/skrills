@@ -750,4 +750,160 @@ mod tests {
         let result = compute_effectiveness("my-skill", &analytics, &events);
         assert!(result.is_none()); // Not enough sessions in either group
     }
+
+    // ========================================================================
+    // TC-5: Deviation score boundary conditions
+    // ========================================================================
+
+    #[test]
+    fn test_deviation_score_clamps_to_valid_range() {
+        let analytics = UsageAnalytics::default();
+        // Create many events with extreme failure indicators
+        let events: Vec<_> = (0..10)
+            .map(|i| SkillUsageEvent {
+                timestamp: 1000 + i * 100,
+                skill_path: "pytest-helper".to_string(),
+                session_id: format!("s{}", i),
+                prompt_context: Some("error error error fail crash broken".to_string()),
+            })
+            .collect();
+
+        let result = compute_deviation_score("pytest-helper", &analytics, &events);
+        assert!(result.is_some());
+
+        let score = result.unwrap();
+        // Deviation must be clamped to [-1.0, 1.0]
+        assert!(
+            score.deviation >= -1.0 && score.deviation <= 1.0,
+            "Deviation {} should be in [-1.0, 1.0]",
+            score.deviation
+        );
+    }
+
+    #[test]
+    fn test_deviation_score_positive_for_success() {
+        let analytics = UsageAnalytics::default();
+        // Create events with success indicators
+        let events: Vec<_> = (0..5)
+            .map(|i| SkillUsageEvent {
+                timestamp: 1000 + i * 100,
+                skill_path: "pytest-helper".to_string(),
+                session_id: format!("s{}", i),
+                prompt_context: Some("tests pass! all working correctly".to_string()),
+            })
+            .collect();
+
+        let result = compute_deviation_score("pytest-helper", &analytics, &events);
+        assert!(result.is_some());
+
+        let score = result.unwrap();
+        // Should have some success keywords matching
+        assert!(
+            !score.evidence.actual_metrics.success_indicators.is_empty(),
+            "Should detect success indicators"
+        );
+    }
+
+    #[test]
+    fn test_deviation_score_confidence_scales_with_samples() {
+        let analytics = UsageAnalytics::default();
+
+        // Small sample (just above minimum)
+        let small_events: Vec<_> = (0..3)
+            .map(|i| SkillUsageEvent {
+                timestamp: 1000 + i * 100,
+                skill_path: "test-skill".to_string(),
+                session_id: format!("s{}", i),
+                prompt_context: None,
+            })
+            .collect();
+
+        let small_result = compute_deviation_score("test-skill", &analytics, &small_events);
+        assert!(small_result.is_some());
+        let small_confidence = small_result.unwrap().confidence.value();
+
+        // Larger sample
+        let large_events: Vec<_> = (0..20)
+            .map(|i| SkillUsageEvent {
+                timestamp: 1000 + i * 100,
+                skill_path: "test-skill".to_string(),
+                session_id: format!("s{}", i),
+                prompt_context: None,
+            })
+            .collect();
+
+        let large_result = compute_deviation_score("test-skill", &analytics, &large_events);
+        assert!(large_result.is_some());
+        let large_confidence = large_result.unwrap().confidence.value();
+
+        // Larger sample should have higher confidence
+        assert!(
+            large_confidence >= small_confidence,
+            "Larger sample ({}) should have >= confidence than smaller sample ({})",
+            large_confidence,
+            small_confidence
+        );
+    }
+
+    #[test]
+    fn test_deviation_score_at_minimum_sessions() {
+        let analytics = UsageAnalytics::default();
+        // Exactly MIN_SESSIONS_FOR_DEVIATION (3) events
+        let events: Vec<_> = (0..MIN_SESSIONS_FOR_DEVIATION)
+            .map(|i| SkillUsageEvent {
+                timestamp: 1000 + i as u64 * 100,
+                skill_path: "edge-skill".to_string(),
+                session_id: format!("s{}", i),
+                prompt_context: None,
+            })
+            .collect();
+
+        let result = compute_deviation_score("edge-skill", &analytics, &events);
+        assert!(
+            result.is_some(),
+            "Should compute score at exactly minimum sessions"
+        );
+    }
+
+    #[test]
+    fn test_deviation_score_below_minimum_sessions() {
+        let analytics = UsageAnalytics::default();
+        // Exactly MIN_SESSIONS_FOR_DEVIATION - 1 events
+        let events: Vec<_> = (0..MIN_SESSIONS_FOR_DEVIATION - 1)
+            .map(|i| SkillUsageEvent {
+                timestamp: 1000 + i as u64 * 100,
+                skill_path: "edge-skill".to_string(),
+                session_id: format!("s{}", i),
+                prompt_context: None,
+            })
+            .collect();
+
+        let result = compute_deviation_score("edge-skill", &analytics, &events);
+        assert!(
+            result.is_none(),
+            "Should return None below minimum sessions"
+        );
+    }
+
+    #[test]
+    fn test_deviation_with_general_category_no_expectations() {
+        let analytics = UsageAnalytics::default();
+        // Use a skill name that maps to General category (no baseline expectations)
+        let events: Vec<_> = (0..5)
+            .map(|i| SkillUsageEvent {
+                timestamp: 1000 + i * 100,
+                skill_path: "random-helper-tool".to_string(),
+                session_id: format!("s{}", i),
+                prompt_context: Some("working on task".to_string()),
+            })
+            .collect();
+
+        let result = compute_deviation_score("random-helper-tool", &analytics, &events);
+        assert!(result.is_some());
+
+        let score = result.unwrap();
+        // General category has no success/failure indicators, so keyword deviation should be 0
+        // Deviation should still be in valid range
+        assert!(score.deviation >= -1.0 && score.deviation <= 1.0);
+    }
 }

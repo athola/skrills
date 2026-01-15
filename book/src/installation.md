@@ -79,18 +79,13 @@ SKRILLS_NO_MIRROR=1 \
 ## What the Installer Configures
 
 ### MCP Server Registration
-
-The installer registers skrills as an MCP server so your AI assistant can use it directly. Configuration appears in:
-- `~/.codex/mcp_servers.json` — Codex MCP registry
-- `~/.codex/config.toml` — Codex configuration
+The installer registers Skrills as an MCP server so your AI assistant can use it directly. This configuration is stored in `~/.codex/mcp_servers.json` for the Codex MCP registry and `~/.codex/config.toml` for Codex configuration.
 
 ### Hooks (Claude Code only)
-
-For Claude Code, the installer creates a hook at `~/.claude/hooks/prompt.on_user_prompt_submit` to integrate skrills features.
+For Claude Code, the installer creates a hook at `~/.claude/hooks/prompt.on_user_prompt_submit`. This hook integrates Skrills features into the Claude Code workflow.
 
 ### Skill Mirroring
-
-By default, the installer copies your Claude skills to `~/.codex/skills/` so Codex can discover them. Skip this with `SKRILLS_NO_MIRROR=1`.
+By default, the installer copies your Claude skills to `~/.codex/skills/` so Codex can discover them. You can skip this step by setting `SKRILLS_NO_MIRROR=1`.
 
 ## Troubleshooting
 

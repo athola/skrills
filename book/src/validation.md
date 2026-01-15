@@ -1,6 +1,6 @@
 # Skill Validation
 
-Skrills validates skills for compatibility with Claude Code and Codex CLI. The two CLIs have different requirements for skill frontmatter, and skrills helps ensure your skills work across both.
+Skrills validates skills for compatibility with Claude Code and Codex CLI. The two CLIs have different requirements for skill frontmatter, and Skrills checks that your skills work across both environments.
 
 ## Validation Targets
 
@@ -88,17 +88,8 @@ When running as an MCP server (`skrills serve`), the `validate-skills` tool prov
 
 ## Common Validation Issues
 
-| Issue | Cause | Fix |
-|-------|-------|-----|
-| Missing frontmatter | No YAML block at start | Use `--autofix` or add manually |
-| Missing `name` | Frontmatter lacks name field | Add `name:` to frontmatter |
-| Missing `description` | Frontmatter lacks description | Add `description:` to frontmatter |
-| Name too long | Exceeds 100 characters | Shorten the name |
-| Description too long | Exceeds 500 characters | Condense the description |
+Common validation failures often stem from missing YAML frontmatter, specifically the `name` or `description` fields required by Codex. Other issues include names exceeding 100 characters or descriptions longer than 500 characters. You can resolve most of these automatically with the `--autofix` flag, or by manually adding the required fields.
 
 ## Best Practices
 
-1. **Write for Codex first**: If you follow Codex requirements, your skills work everywhere.
-2. **Run validation in CI**: Add `skrills validate --target both --errors-only` to your pipeline.
-3. **Use autofix carefully**: Review changes before committing, especially for description generation.
-4. **Validate after sync**: Run validation after `skrills sync` to catch issues early.
+Write skills with Codex requirements in mind; if they pass Codex validation, they will work everywhere. Integrate validation into your CI pipeline using `skrills validate --target both --errors-only` to catch issues early. When using `--autofix`, review the changes before committing, especially since generated descriptions might need manual refinement. Finally, run validation after syncing to verify that no incompatible changes were introduced.

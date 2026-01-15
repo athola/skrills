@@ -77,8 +77,8 @@ fn validate_skills_tool_autofix_adds_frontmatter() {
     let skill_path = skill_dir.join("SKILL.md");
     std::fs::write(&skill_path, "A skill without frontmatter").unwrap();
 
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp.path());
+    // Use RAII guard for HOME env var - automatic cleanup on drop
+    let _home_guard = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
 
     let service =
         SkillService::new_with_ttl(vec![skill_dir.clone()], Duration::from_secs(1)).unwrap();
@@ -90,11 +90,6 @@ fn validate_skills_tool_autofix_adds_frontmatter() {
                 .unwrap(),
         )
         .unwrap();
-
-    match original_home {
-        Some(val) => std::env::set_var("HOME", val),
-        None => std::env::remove_var("HOME"),
-    }
 
     let content = std::fs::read_to_string(&skill_path).unwrap();
     assert!(
@@ -670,8 +665,8 @@ This skill references:
     )
     .unwrap();
 
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp.path());
+    // Use RAII guard for HOME env var - automatic cleanup on drop
+    let _home_guard = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
 
     let service =
         SkillService::new_with_ttl(vec![skill_dir.clone()], Duration::from_secs(1)).unwrap();
@@ -759,11 +754,6 @@ This skill references:
         total_dep_issues >= 2,
         "Expected at least 2 total dependency issues"
     );
-
-    match original_home {
-        Some(val) => std::env::set_var("HOME", val),
-        None => std::env::remove_var("HOME"),
-    }
 }
 
 /// Tests for recommend_skills method - URI validation
@@ -1066,8 +1056,8 @@ async fn sync_all_tool_syncs_skills_into_codex_skills_root() {
     std::fs::create_dir_all(claude_skill.parent().unwrap()).unwrap();
     std::fs::write(&claude_skill, "example skill").unwrap();
 
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp.path());
+    // Use RAII guard for HOME env var - automatic cleanup on drop
+    let _home_guard = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
 
     let service = SkillService::new_with_ttl(vec![], Duration::from_secs(1)).unwrap();
     let _ = service
@@ -1082,11 +1072,6 @@ async fn sync_all_tool_syncs_skills_into_codex_skills_root() {
             .unwrap(),
         )
         .unwrap();
-
-    match original_home {
-        Some(val) => std::env::set_var("HOME", val),
-        None => std::env::remove_var("HOME"),
-    }
 
     // `sync_skills_only_from_claude` preserves paths relative to ~/.claude.
     let expected = temp
@@ -1863,6 +1848,50 @@ fn test_parse_trace_target_both_or_invalid_returns_both_target() {
     assert_eq!(format!("{:?}", target), "Both");
 }
 
+/// Tests for parse_trace_target case sensitivity
+/// GIVEN uppercase and mixed-case target values
+/// WHEN parse_trace_target is called
+/// THEN it should treat them as invalid and default to Both
+/// NOTE: This documents intentional case-sensitive matching behavior
+#[test]
+fn test_parse_trace_target_case_sensitivity() {
+    // Uppercase "CLAUDE" should NOT match "claude"
+    let args = json!({"target": "CLAUDE"}).as_object().cloned().unwrap();
+    let target = SkillService::parse_trace_target(&args);
+    assert_eq!(
+        format!("{:?}", target),
+        "Both",
+        "Uppercase CLAUDE should default to Both (case-sensitive matching)"
+    );
+
+    // Mixed case "Claude" should NOT match "claude"
+    let args = json!({"target": "Claude"}).as_object().cloned().unwrap();
+    let target = SkillService::parse_trace_target(&args);
+    assert_eq!(
+        format!("{:?}", target),
+        "Both",
+        "Mixed case Claude should default to Both (case-sensitive matching)"
+    );
+
+    // Uppercase "CODEX" should NOT match "codex"
+    let args = json!({"target": "CODEX"}).as_object().cloned().unwrap();
+    let target = SkillService::parse_trace_target(&args);
+    assert_eq!(
+        format!("{:?}", target),
+        "Both",
+        "Uppercase CODEX should default to Both (case-sensitive matching)"
+    );
+
+    // Uppercase "BOTH" should NOT match "both" but still default to Both
+    let args = json!({"target": "BOTH"}).as_object().cloned().unwrap();
+    let target = SkillService::parse_trace_target(&args);
+    assert_eq!(
+        format!("{:?}", target),
+        "Both",
+        "Uppercase BOTH should default to Both (wildcard default)"
+    );
+}
+
 /// Tests for skill_loading_status_tool
 /// GIVEN a SkillService
 /// WHEN skill_loading_status_tool is called
@@ -1872,18 +1901,13 @@ fn test_skill_loading_status_tool_returns_status() {
     let _guard = crate::test_support::env_guard();
     let temp = tempdir().unwrap();
 
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp.path());
+    // Use RAII guard for HOME env var - automatic cleanup on drop
+    let _home_guard = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
 
     let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
 
     let args = json!({"target": "both"}).as_object().cloned().unwrap();
     let result = service.skill_loading_status_tool(args).unwrap();
-
-    match original_home {
-        Some(val) => std::env::set_var("HOME", val),
-        None => std::env::remove_var("HOME"),
-    }
 
     // Should not error and should have structured content
     assert!(!result.is_error.unwrap_or(true));
@@ -1903,8 +1927,8 @@ fn test_skill_loading_status_tool_accepts_optional_flags() {
     let _guard = crate::test_support::env_guard();
     let temp = tempdir().unwrap();
 
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp.path());
+    // Use RAII guard for HOME env var - automatic cleanup on drop
+    let _home_guard = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
 
     let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
 
@@ -1922,11 +1946,6 @@ fn test_skill_loading_status_tool_accepts_optional_flags() {
 
     let result = service.skill_loading_status_tool(args);
 
-    match original_home {
-        Some(val) => std::env::set_var("HOME", val),
-        None => std::env::remove_var("HOME"),
-    }
-
     // Should not error when processing flags
     assert!(
         result.is_ok(),
@@ -1943,8 +1962,8 @@ fn test_skill_loading_selftest_tool_returns_probe_config() {
     let _guard = crate::test_support::env_guard();
     let temp = tempdir().unwrap();
 
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp.path());
+    // Use RAII guard for HOME env var - automatic cleanup on drop
+    let _home_guard = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
 
     let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
 
@@ -1954,11 +1973,6 @@ fn test_skill_loading_selftest_tool_returns_probe_config() {
         .unwrap();
 
     let result = service.skill_loading_selftest_tool(args).unwrap();
-
-    match original_home {
-        Some(val) => std::env::set_var("HOME", val),
-        None => std::env::remove_var("HOME"),
-    }
 
     assert!(!result.is_error.unwrap_or(true));
     let structured = result.structured_content.unwrap();
@@ -1982,8 +1996,8 @@ fn test_skill_loading_selftest_tool_dry_run_returns_config() {
     let _guard = crate::test_support::env_guard();
     let temp = tempdir().unwrap();
 
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp.path());
+    // Use RAII guard for HOME env var - automatic cleanup on drop
+    let _home_guard = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
 
     let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
 
@@ -1993,11 +2007,6 @@ fn test_skill_loading_selftest_tool_dry_run_returns_config() {
         .unwrap();
 
     let result = service.skill_loading_selftest_tool(args).unwrap();
-
-    match original_home {
-        Some(val) => std::env::set_var("HOME", val),
-        None => std::env::remove_var("HOME"),
-    }
 
     assert!(!result.is_error.unwrap_or(true));
     let structured = result.structured_content.unwrap();
@@ -2023,8 +2032,8 @@ fn test_disable_skill_trace_tool_dry_run_returns_info() {
     let _guard = crate::test_support::env_guard();
     let temp = tempdir().unwrap();
 
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp.path());
+    // Use RAII guard for HOME env var - automatic cleanup on drop
+    let _home_guard = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
 
     let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
 
@@ -2034,11 +2043,6 @@ fn test_disable_skill_trace_tool_dry_run_returns_info() {
         .unwrap();
 
     let result = service.disable_skill_trace_tool(args).unwrap();
-
-    match original_home {
-        Some(val) => std::env::set_var("HOME", val),
-        None => std::env::remove_var("HOME"),
-    }
 
     assert!(!result.is_error.unwrap_or(true));
 
@@ -2058,8 +2062,8 @@ fn test_disable_skill_trace_tool_accepts_all_targets() {
     let _guard = crate::test_support::env_guard();
     let temp = tempdir().unwrap();
 
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp.path());
+    // Use RAII guard for HOME env var - automatic cleanup on drop
+    let _home_guard = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
 
     let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
 
@@ -2071,21 +2075,11 @@ fn test_disable_skill_trace_tool_accepts_all_targets() {
 
         let result = service.disable_skill_trace_tool(args);
 
-        match original_home {
-            Some(ref val) => std::env::set_var("HOME", val),
-            None => std::env::remove_var("HOME"),
-        }
-
         assert!(
             result.is_ok(),
             "disable_skill_trace_tool should accept target '{}'",
             target
         );
-    }
-
-    match original_home {
-        Some(val) => std::env::set_var("HOME", val),
-        None => std::env::remove_var("HOME"),
     }
 }
 
@@ -2095,33 +2089,26 @@ fn test_disable_skill_trace_tool_accepts_all_targets() {
 /// THEN it should create trace skill files and instrument skill files
 #[test]
 fn test_enable_skill_trace_tool_creates_trace_files() {
-    let _guard = crate::test_support::env_guard();
-    let temp = tempdir().unwrap();
+    use crate::test_support::TestFixture;
 
-    // Create the Claude skills directory structure
-    let claude_skills = temp.path().join(".claude/skills");
-    fs::create_dir_all(&claude_skills).unwrap();
+    let _guard = crate::test_support::env_guard();
+    let fixture = TestFixture::new().unwrap();
 
     // Create a sample skill to be instrumented
-    let skill_dir = claude_skills.join("test-skill");
-    fs::create_dir_all(&skill_dir).unwrap();
-    fs::write(
-        skill_dir.join("SKILL.md"),
-        r#"---
-name: test-skill
-description: A test skill
----
-# Test Skill
-This is a test skill content.
-"#,
-    )
-    .unwrap();
+    fixture
+        .create_skill_with_frontmatter(
+            "test-skill",
+            "A test skill",
+            "# Test Skill\nThis is a test skill content.\n",
+        )
+        .unwrap();
 
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp.path());
+    // Set HOME to fixture's temp directory
+    let _home_guard = fixture.home_guard();
 
     let service =
-        SkillService::new_with_ttl(vec![claude_skills.clone()], Duration::from_secs(1)).unwrap();
+        SkillService::new_with_ttl(vec![fixture.claude_skills.clone()], Duration::from_secs(1))
+            .unwrap();
 
     let args = json!({
         "target": "claude",
@@ -2136,11 +2123,6 @@ This is a test skill content.
     .unwrap();
 
     let result = service.enable_skill_trace_tool(args).unwrap();
-
-    match original_home {
-        Some(val) => std::env::set_var("HOME", val),
-        None => std::env::remove_var("HOME"),
-    }
 
     // Verify the result
     assert!(!result.is_error.unwrap_or(true));
@@ -2162,7 +2144,7 @@ This is a test skill content.
 
     // Verify the trace skill file exists
     // Uses constant from skill_trace.rs: TRACE_SKILL_DIR = "skrills-skill-trace"
-    let trace_skill_path = claude_skills.join("skrills-skill-trace/SKILL.md");
+    let trace_skill_path = fixture.claude_skills.join("skrills-skill-trace/SKILL.md");
     assert!(
         trace_skill_path.exists(),
         "Expected trace skill file to be created at {:?}",
@@ -2171,7 +2153,7 @@ This is a test skill content.
 
     // Verify the probe skill file exists
     // Uses constant from skill_trace.rs: PROBE_SKILL_DIR = "skrills-skill-probe"
-    let probe_skill_path = claude_skills.join("skrills-skill-probe/SKILL.md");
+    let probe_skill_path = fixture.claude_skills.join("skrills-skill-probe/SKILL.md");
     assert!(
         probe_skill_path.exists(),
         "Expected probe skill file to be created at {:?}",
@@ -2195,25 +2177,20 @@ This is a test skill content.
 /// THEN it should return report without creating files
 #[test]
 fn test_enable_skill_trace_tool_dry_run_no_file_creation() {
+    use crate::test_support::TestFixture;
+
     let _guard = crate::test_support::env_guard();
-    let temp = tempdir().unwrap();
+    let fixture = TestFixture::new().unwrap();
 
-    let claude_skills = temp.path().join(".claude/skills");
-    fs::create_dir_all(&claude_skills).unwrap();
+    fixture
+        .create_skill("test-skill", "---\nname: test-skill\n---\n# Test\n")
+        .unwrap();
 
-    let skill_dir = claude_skills.join("test-skill");
-    fs::create_dir_all(&skill_dir).unwrap();
-    fs::write(
-        skill_dir.join("SKILL.md"),
-        "---\nname: test-skill\n---\n# Test\n",
-    )
-    .unwrap();
-
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp.path());
+    let _home_guard = fixture.home_guard();
 
     let service =
-        SkillService::new_with_ttl(vec![claude_skills.clone()], Duration::from_secs(1)).unwrap();
+        SkillService::new_with_ttl(vec![fixture.claude_skills.clone()], Duration::from_secs(1))
+            .unwrap();
 
     let args = json!({
         "target": "claude",
@@ -2225,15 +2202,10 @@ fn test_enable_skill_trace_tool_dry_run_no_file_creation() {
 
     let result = service.enable_skill_trace_tool(args).unwrap();
 
-    match original_home {
-        Some(val) => std::env::set_var("HOME", val),
-        None => std::env::remove_var("HOME"),
-    }
-
     assert!(!result.is_error.unwrap_or(true));
 
     // In dry_run mode, trace skill files should NOT be created
-    let trace_skill_path = claude_skills.join("skill-loading-trace/SKILL.md");
+    let trace_skill_path = fixture.claude_skills.join("skill-loading-trace/SKILL.md");
     assert!(
         !trace_skill_path.exists(),
         "dry_run should NOT create trace skill file"
@@ -2249,26 +2221,14 @@ fn test_enable_skill_trace_tool_dry_run_no_file_creation() {
 fn test_skill_loading_status_tool_handles_missing_home() {
     let _guard = crate::test_support::env_guard();
 
-    // Temporarily unset HOME to simulate home_dir() failing
-    let original_home = std::env::var("HOME").ok();
-    std::env::remove_var("HOME");
-
-    // Also remove alternate home env vars that home_dir() might check
-    let original_user_profile = std::env::var("USERPROFILE").ok();
-    std::env::remove_var("USERPROFILE");
+    // Use RAII guards to unset env vars - automatic cleanup on drop
+    let _home_guard = crate::test_support::set_env_var("HOME", None);
+    let _user_profile_guard = crate::test_support::set_env_var("USERPROFILE", None);
 
     let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
 
     let args = json!({"target": "both"}).as_object().cloned().unwrap();
     let result = service.skill_loading_status_tool(args);
-
-    // Restore environment
-    if let Some(val) = original_home {
-        std::env::set_var("HOME", val);
-    }
-    if let Some(val) = original_user_profile {
-        std::env::set_var("USERPROFILE", val);
-    }
 
     // The result should either be an error or return gracefully with status
     // Either is acceptable - we're testing it doesn't panic
@@ -2449,8 +2409,8 @@ fn test_recommend_skills_smart_tool_defaults() {
     let _guard = crate::test_support::env_guard();
     let temp = tempdir().unwrap();
 
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp.path());
+    // Use RAII guard for HOME env var - automatic cleanup on drop
+    let _home_guard = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
 
     let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
 
@@ -2458,11 +2418,6 @@ fn test_recommend_skills_smart_tool_defaults() {
     let args = json!({}).as_object().cloned().unwrap();
 
     let result = service.recommend_skills_smart_tool(args);
-
-    match original_home {
-        Some(val) => std::env::set_var("HOME", val),
-        None => std::env::remove_var("HOME"),
-    }
 
     // Should not error even with no skills
     assert!(result.is_ok());
@@ -3000,8 +2955,8 @@ fn test_intelligence_tools_handle_empty_skills() {
     let _guard = crate::test_support::env_guard();
     let temp = tempdir().unwrap();
 
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp.path());
+    // Use RAII guard for HOME env var - automatic cleanup on drop
+    let _home_guard = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
 
     let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
 
@@ -3034,11 +2989,6 @@ fn test_intelligence_tools_handle_empty_skills() {
         structured.get("total_found").and_then(|v| v.as_u64()),
         Some(0)
     );
-
-    match original_home {
-        Some(val) => std::env::set_var("HOME", val),
-        None => std::env::remove_var("HOME"),
-    }
 }
 
 /// Tests that create_skill handles empirical method gracefully
@@ -3050,8 +3000,8 @@ fn test_create_skill_empirical_without_sessions() {
     let _guard = crate::test_support::env_guard();
     let temp = tempdir().unwrap();
 
-    let original_home = std::env::var("HOME").ok();
-    std::env::set_var("HOME", temp.path());
+    // Use RAII guard for HOME env var - automatic cleanup on drop
+    let _home_guard = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
 
     let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
 
@@ -3077,11 +3027,6 @@ fn test_create_skill_empirical_without_sessions() {
         (errors.is_some() && !errors.unwrap().is_empty()) || preview == Some(true),
         "Expected errors or preview mode for empirical without sessions"
     );
-
-    match original_home {
-        Some(val) => std::env::set_var("HOME", val),
-        None => std::env::remove_var("HOME"),
-    }
 }
 
 #[test]

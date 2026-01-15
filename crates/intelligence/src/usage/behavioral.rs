@@ -192,7 +192,10 @@ pub fn extract_tool_calls(session_content: &str) -> Vec<ToolCall> {
                                 .unwrap_or_default();
 
                             let timestamp =
-                                json.get("timestamp").and_then(|t| t.as_u64()).unwrap_or(0);
+                                json.get("timestamp").and_then(|t| t.as_u64()).unwrap_or_else(|| {
+                                    trace!("timestamp missing or invalid in tool_use block, defaulting to 0");
+                                    0
+                                });
 
                             tool_calls.push(ToolCall {
                                 name: name.to_string(),
@@ -744,5 +747,285 @@ mod tests {
         assert_eq!(accesses[0].operation, FileOperation::Read);
         assert_eq!(accesses[1].path, "/src/lib.rs");
         assert_eq!(accesses[1].operation, FileOperation::Write);
+    }
+
+    // ========================================================================
+    // TC-4: N-gram edge cases
+    // ========================================================================
+
+    #[test]
+    fn test_extract_common_ngrams_empty_sequences() {
+        let sequences: Vec<Vec<String>> = vec![];
+        let result = extract_common_ngrams(&sequences, 2, 1);
+        assert!(result.is_empty(), "Empty input should produce empty output");
+    }
+
+    #[test]
+    fn test_extract_common_ngrams_single_empty_sequence() {
+        let sequences = vec![vec![]];
+        let result = extract_common_ngrams(&sequences, 2, 1);
+        assert!(
+            result.is_empty(),
+            "Empty sequence should produce no n-grams"
+        );
+    }
+
+    #[test]
+    fn test_extract_common_ngrams_n_greater_than_length() {
+        let sequences = vec![vec!["Read".to_string(), "Write".to_string()]];
+        // Request 3-grams from a 2-element sequence
+        let result = extract_common_ngrams(&sequences, 3, 1);
+        assert!(
+            result.is_empty(),
+            "n > sequence length should produce no n-grams"
+        );
+    }
+
+    #[test]
+    fn test_extract_common_ngrams_n_equals_length() {
+        let sequences = vec![
+            vec!["Read".to_string(), "Write".to_string()],
+            vec!["Read".to_string(), "Write".to_string()],
+        ];
+        // Request 2-grams from 2-element sequences
+        let result = extract_common_ngrams(&sequences, 2, 1);
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0],
+            (vec!["Read".to_string(), "Write".to_string()], 2)
+        );
+    }
+
+    #[test]
+    fn test_extract_common_ngrams_min_count_filters() {
+        let sequences = vec![
+            vec!["A".to_string(), "B".to_string(), "C".to_string()],
+            vec!["A".to_string(), "B".to_string(), "D".to_string()],
+            vec!["X".to_string(), "Y".to_string(), "Z".to_string()],
+        ];
+        // min_count=2 should only return "A","B" which appears twice
+        let result = extract_common_ngrams(&sequences, 2, 2);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, vec!["A".to_string(), "B".to_string()]);
+        assert_eq!(result[0].1, 2);
+    }
+
+    // ========================================================================
+    // TC-6: build_behavioral_patterns tests
+    // ========================================================================
+
+    fn make_behavioral_event(
+        skill_path: &str,
+        session_id: &str,
+        tools: Vec<&str>,
+        files: Vec<(&str, FileOperation)>,
+        outcome_status: OutcomeStatus,
+        evidence: Vec<&str>,
+    ) -> BehavioralEvent {
+        BehavioralEvent {
+            skill_usage: SkillUsageEventData {
+                timestamp: 1000,
+                skill_path: skill_path.to_string(),
+                session_id: session_id.to_string(),
+                prompt_context: Some("test context".to_string()),
+            },
+            tool_sequence: tools
+                .into_iter()
+                .enumerate()
+                .map(|(i, name)| ToolCall {
+                    name: name.to_string(),
+                    timestamp: 1000 + i as u64 * 100,
+                    input_summary: "{}".to_string(),
+                    status: ToolStatus::Success,
+                })
+                .collect(),
+            files_accessed: files
+                .into_iter()
+                .map(|(path, op)| FileAccess {
+                    path: path.to_string(),
+                    operation: op,
+                    timestamp: 1000,
+                    context: None,
+                })
+                .collect(),
+            session_outcome: Some(SessionOutcome {
+                session_id: session_id.to_string(),
+                status: outcome_status,
+                confidence: Confidence::new(0.8),
+                evidence: evidence.into_iter().map(|s| s.to_string()).collect(),
+                duration_seconds: 60,
+            }),
+        }
+    }
+
+    #[test]
+    fn test_build_behavioral_patterns_empty_events() {
+        let analytics = UsageAnalytics {
+            sessions_analyzed: 0,
+            ..Default::default()
+        };
+        let patterns = build_behavioral_patterns(&[], &analytics);
+
+        assert!(patterns.common_tool_sequences.is_empty());
+        assert!(patterns.file_access_patterns.is_empty());
+        assert!(patterns.success_indicators.is_empty());
+        assert!(patterns.failure_indicators.is_empty());
+        assert_eq!(patterns.sessions_analyzed, 0);
+    }
+
+    #[test]
+    fn test_build_behavioral_patterns_collects_tool_sequences() {
+        let events = vec![
+            make_behavioral_event(
+                "skill-a",
+                "s1",
+                vec!["Read", "Edit", "Write"],
+                vec![],
+                OutcomeStatus::Success,
+                vec![],
+            ),
+            make_behavioral_event(
+                "skill-a",
+                "s2",
+                vec!["Bash", "Read"],
+                vec![],
+                OutcomeStatus::Success,
+                vec![],
+            ),
+        ];
+        let analytics = UsageAnalytics {
+            sessions_analyzed: 2,
+            ..Default::default()
+        };
+
+        let patterns = build_behavioral_patterns(&events, &analytics);
+
+        assert!(patterns.common_tool_sequences.contains_key("skill-a"));
+        let sequences = &patterns.common_tool_sequences["skill-a"];
+        assert_eq!(sequences.len(), 2);
+    }
+
+    #[test]
+    fn test_build_behavioral_patterns_collects_file_patterns() {
+        let events = vec![make_behavioral_event(
+            "skill-b",
+            "s1",
+            vec!["Read"],
+            vec![
+                ("/src/main.rs", FileOperation::Read),
+                ("/src/lib.rs", FileOperation::Write),
+            ],
+            OutcomeStatus::Success,
+            vec![],
+        )];
+        let analytics = UsageAnalytics::default();
+
+        let patterns = build_behavioral_patterns(&events, &analytics);
+
+        assert!(patterns.file_access_patterns.contains_key("skill-b"));
+        let files = &patterns.file_access_patterns["skill-b"];
+        assert_eq!(files.len(), 2);
+        assert!(files.contains(&"/src/main.rs".to_string()));
+        assert!(files.contains(&"/src/lib.rs".to_string()));
+    }
+
+    #[test]
+    fn test_build_behavioral_patterns_deduplicates_files() {
+        let events = vec![
+            make_behavioral_event(
+                "skill-c",
+                "s1",
+                vec!["Read"],
+                vec![("/src/main.rs", FileOperation::Read)],
+                OutcomeStatus::Success,
+                vec![],
+            ),
+            make_behavioral_event(
+                "skill-c",
+                "s2",
+                vec!["Read"],
+                vec![("/src/main.rs", FileOperation::Read)], // Same file
+                OutcomeStatus::Success,
+                vec![],
+            ),
+        ];
+        let analytics = UsageAnalytics::default();
+
+        let patterns = build_behavioral_patterns(&events, &analytics);
+
+        let files = &patterns.file_access_patterns["skill-c"];
+        // Should be deduplicated to 1
+        assert_eq!(files.len(), 1);
+    }
+
+    #[test]
+    fn test_build_behavioral_patterns_collects_success_indicators() {
+        let events = vec![make_behavioral_event(
+            "skill-d",
+            "s1",
+            vec!["Bash"],
+            vec![],
+            OutcomeStatus::Success,
+            vec!["Success keyword: tests pass", "No errors detected"],
+        )];
+        let analytics = UsageAnalytics::default();
+
+        let patterns = build_behavioral_patterns(&events, &analytics);
+
+        assert!(!patterns.success_indicators.is_empty());
+        assert!(patterns
+            .success_indicators
+            .iter()
+            .any(|s| s.contains("Success keyword")));
+    }
+
+    #[test]
+    fn test_build_behavioral_patterns_collects_failure_indicators() {
+        let events = vec![make_behavioral_event(
+            "skill-e",
+            "s1",
+            vec!["Bash"],
+            vec![],
+            OutcomeStatus::Failure,
+            vec!["Failure keyword: build failed", "error: compilation failed"],
+        )];
+        let analytics = UsageAnalytics::default();
+
+        let patterns = build_behavioral_patterns(&events, &analytics);
+
+        assert!(!patterns.failure_indicators.is_empty());
+        assert!(patterns
+            .failure_indicators
+            .iter()
+            .any(|s| s.contains("error")));
+    }
+
+    #[test]
+    fn test_build_behavioral_patterns_tracks_tool_frequency() {
+        let events = vec![
+            make_behavioral_event(
+                "skill-f",
+                "s1",
+                vec!["Read", "Read", "Write"],
+                vec![],
+                OutcomeStatus::Success,
+                vec![],
+            ),
+            make_behavioral_event(
+                "skill-f",
+                "s2",
+                vec!["Read", "Bash"],
+                vec![],
+                OutcomeStatus::Success,
+                vec![],
+            ),
+        ];
+        let analytics = UsageAnalytics::default();
+
+        let patterns = build_behavioral_patterns(&events, &analytics);
+
+        assert_eq!(patterns.tool_frequency.get("Read"), Some(&3));
+        assert_eq!(patterns.tool_frequency.get("Write"), Some(&1));
+        assert_eq!(patterns.tool_frequency.get("Bash"), Some(&1));
     }
 }

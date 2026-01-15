@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Testing**: Added 2 cluster formation tests for empirical skill creation covering session clustering by tool patterns and meaningful label assignment.
+
 ## 0.4.10 - 2026-01-15
 - **NEW: Confidence Type**: Added `Confidence` newtype with clamping constructor (0.0-1.0) for type-safe confidence scores in recommendations. (#73)
 - **Improved: Type Safety**: Removed redundant `ClusteredBehavior::size` field in favor of computed method. (#74)

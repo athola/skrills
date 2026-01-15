@@ -29,36 +29,13 @@ When the `subagents` feature is enabled:
 ## Best Practices
 
 ### Prefer CLI for Batch Operations
-
-For operations involving many skills, the CLI is more efficient than repeated MCP tool calls:
-
-```bash
-# Validate all skills (single operation)
-skrills validate --format json
-
-# Analyze skills exceeding threshold
-skrills analyze --min-tokens 1000 --format json
-```
+For operations involving many skills, the CLI is more efficient than repeated MCP tool calls. A single CLI command like `skrills validate --format json` can replace hundreds of individual tool invocations.
 
 ### Filter Output
-
-Use filtering options to reduce payload size:
-
-```bash
-# Only show errors
-skrills validate --errors-only
-
-# Only show large skills
-skrills analyze --min-tokens 2000
-```
+You can significantly reduce payload size by using filtering options. For example, `skrills validate --errors-only` returns only the skills that failed validation, and `skrills analyze --min-tokens 2000` limits the output to only the largest skills.
 
 ### Preview Before Sync
-
-Use `sync-status` to preview changes:
-
-```bash
-skrills sync-status --from claude
-```
+Always use `skrills sync-status --from claude` to preview changes before running a full sync. This helps you understand the scope of changes without the overhead of a full write operation.
 
 ## Efficient Workflows
 

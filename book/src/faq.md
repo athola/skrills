@@ -22,12 +22,7 @@ If the error persists with a third-party MCP server, consider proxying problemat
 
 ### How does `skrills` compare to other skill management tools?
 
-`skrills` focuses on skill quality and portability:
-- **Validation**: Ensures skills work across both Claude Code and Codex CLI
-- **Analysis**: Identifies optimization opportunities based on token usage
-- **Bidirectional sync**: Keeps configurations in sync between CLIs
-
-For a detailed comparison, see the [Project Comparison](./comparison.md).
+`skrills` focuses on skill quality and portability. It checks skills for compatibility across both Claude Code and Codex CLI, analyzes token usage to identify optimization opportunities, and keeps configurations in sync between the two environments. For a detailed comparison, see the [Project Comparison](./comparison.md).
 
 ### Is it possible to automatically synchronize skills between Claude and Codex?
 
@@ -54,10 +49,7 @@ No. The MCP server only reads from configured directories, set either via `--ski
 
 ### What is the process for contributing new skills?
 
-To contribute new skills:
-1. Add them to your skills directory (`~/.claude/skills/` or `~/.codex/skills/`)
-2. Run `skrills validate --target both` to verify compatibility
-3. For upstream contributions, follow the repository's PR process
+To contribute, add your new skills to your directory (`~/.claude/skills/` or `~/.codex/skills/`) and run `skrills validate --target both` to verify compatibility. For upstream contributions, follow the repository's PR process.
 
 ### Does the system work offline?
 
@@ -65,10 +57,4 @@ Yes. As long as you have the `skrills` binary and your skills stored locally, bo
 
 ### What are the security considerations?
 
-Skrills is designed with security in mind:
-- The server communicates over standard I/O
-- It operates with minimal file access privileges
-- No secrets are bundled
-- You control which skill directories are exposed
-
-Always review third-party skills before using them.
+Skrills is designed with security in mind. The server communicates over standard I/O and operates with minimal file access privileges. It does not bundle any secrets, and you retain control over which skill directories are exposed. Always review third-party skills before using them.

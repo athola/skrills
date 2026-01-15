@@ -220,6 +220,7 @@ pub fn generate_skill_sync(request: &CreateSkillRequest) -> Result<CreateSkillRe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{env_guard, set_env_var};
 
     #[test]
     fn test_extract_skill_content_code_block() {
@@ -280,19 +281,15 @@ This is a test."#;
 
     #[test]
     fn test_cli_binary_override() {
-        let previous = std::env::var("SKRILLS_CLI_BINARY").ok();
+        let _guard = env_guard(); // Serialize env var tests
 
-        std::env::set_var("SKRILLS_CLI_BINARY", "codex");
+        let _env = set_env_var("SKRILLS_CLI_BINARY", Some("codex"));
         assert_eq!(cli_binary_override().as_deref(), Some("codex"));
+        drop(_env);
 
-        std::env::set_var("SKRILLS_CLI_BINARY", "auto");
+        let _env = set_env_var("SKRILLS_CLI_BINARY", Some("auto"));
         assert!(cli_binary_override().is_none());
-
-        if let Some(value) = previous {
-            std::env::set_var("SKRILLS_CLI_BINARY", value);
-        } else {
-            std::env::remove_var("SKRILLS_CLI_BINARY");
-        }
+        // _env drops here, restoring previous value
     }
 
     #[test]
@@ -615,92 +612,56 @@ description: Code block never closed
 
     #[test]
     fn test_cli_binary_override_empty_string() {
-        let previous = std::env::var("SKRILLS_CLI_BINARY").ok();
-
-        std::env::set_var("SKRILLS_CLI_BINARY", "");
+        let _guard = env_guard();
+        let _env = set_env_var("SKRILLS_CLI_BINARY", Some(""));
         assert!(cli_binary_override().is_none());
-
-        if let Some(value) = previous {
-            std::env::set_var("SKRILLS_CLI_BINARY", value);
-        } else {
-            std::env::remove_var("SKRILLS_CLI_BINARY");
-        }
     }
 
     #[test]
     fn test_cli_binary_override_whitespace_only() {
-        let previous = std::env::var("SKRILLS_CLI_BINARY").ok();
-
-        std::env::set_var("SKRILLS_CLI_BINARY", "   ");
+        let _guard = env_guard();
+        let _env = set_env_var("SKRILLS_CLI_BINARY", Some("   "));
         assert!(cli_binary_override().is_none());
-
-        if let Some(value) = previous {
-            std::env::set_var("SKRILLS_CLI_BINARY", value);
-        } else {
-            std::env::remove_var("SKRILLS_CLI_BINARY");
-        }
     }
 
     #[test]
     fn test_cli_binary_override_auto_case_insensitive() {
-        let previous = std::env::var("SKRILLS_CLI_BINARY").ok();
+        let _guard = env_guard();
 
-        std::env::set_var("SKRILLS_CLI_BINARY", "AUTO");
+        let _env = set_env_var("SKRILLS_CLI_BINARY", Some("AUTO"));
         assert!(cli_binary_override().is_none());
+        drop(_env);
 
-        std::env::set_var("SKRILLS_CLI_BINARY", "Auto");
+        let _env = set_env_var("SKRILLS_CLI_BINARY", Some("Auto"));
         assert!(cli_binary_override().is_none());
-
-        if let Some(value) = previous {
-            std::env::set_var("SKRILLS_CLI_BINARY", value);
-        } else {
-            std::env::remove_var("SKRILLS_CLI_BINARY");
-        }
     }
 
     #[test]
     fn test_cli_binary_override_with_whitespace_trim() {
-        let previous = std::env::var("SKRILLS_CLI_BINARY").ok();
-
-        std::env::set_var("SKRILLS_CLI_BINARY", "  claude  ");
+        let _guard = env_guard();
+        let _env = set_env_var("SKRILLS_CLI_BINARY", Some("  claude  "));
         assert_eq!(cli_binary_override().as_deref(), Some("claude"));
-
-        if let Some(value) = previous {
-            std::env::set_var("SKRILLS_CLI_BINARY", value);
-        } else {
-            std::env::remove_var("SKRILLS_CLI_BINARY");
-        }
     }
 
     #[test]
     fn test_cli_binary_override_invalid_value_returns_none() {
-        let previous = std::env::var("SKRILLS_CLI_BINARY").ok();
+        let _guard = env_guard();
 
         // Invalid binary name with shell characters should be rejected
-        std::env::set_var("SKRILLS_CLI_BINARY", "cmd; echo pwned");
+        let _env = set_env_var("SKRILLS_CLI_BINARY", Some("cmd; echo pwned"));
         assert!(cli_binary_override().is_none());
+        drop(_env);
 
         // Path traversal attempt should be rejected
-        std::env::set_var("SKRILLS_CLI_BINARY", "/bin/sh");
+        let _env = set_env_var("SKRILLS_CLI_BINARY", Some("/bin/sh"));
         assert!(cli_binary_override().is_none());
-
-        if let Some(value) = previous {
-            std::env::set_var("SKRILLS_CLI_BINARY", value);
-        } else {
-            std::env::remove_var("SKRILLS_CLI_BINARY");
-        }
     }
 
     #[test]
     fn test_cli_binary_override_unset() {
-        let previous = std::env::var("SKRILLS_CLI_BINARY").ok();
-
-        std::env::remove_var("SKRILLS_CLI_BINARY");
+        let _guard = env_guard();
+        let _env = set_env_var("SKRILLS_CLI_BINARY", None);
         assert!(cli_binary_override().is_none());
-
-        if let Some(value) = previous {
-            std::env::set_var("SKRILLS_CLI_BINARY", value);
-        }
     }
 
     // =========================================================================

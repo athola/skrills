@@ -26,7 +26,21 @@ impl SkillService {
         }
     }
 
-    /// Validate all discovered skills and optionally autofix issues.
+    /// Validates all discovered skills and optionally autofixes issues.
+    ///
+    /// # Arguments
+    ///
+    /// The `args` map accepts the following JSON keys:
+    /// - `target`: `"claude"`, `"codex"`, or `"both"` (default: `"both"`) - which clients to validate for
+    /// - `errors_only`: `bool` (default: `false`) - only return skills with errors
+    /// - `autofix`: `bool` (default: `false`) - attempt to autofix frontmatter issues
+    /// - `check_dependencies`: `bool` (default: `false`) - validate skill dependencies exist
+    ///
+    /// # Returns
+    ///
+    /// A `CallToolResult` containing:
+    /// - Summary text with validation counts
+    /// - Structured JSON array of validation results per skill
     pub(crate) fn validate_skills_tool(
         &self,
         args: JsonMap<String, Value>,
@@ -170,14 +184,23 @@ impl SkillService {
                 });
 
                 if check_dependencies {
-                    // RATIONALE: json!({...}) with braces always produces Value::Object,
-                    // so as_object_mut() cannot fail here.
-                    let skill_object = skill_json
-                        .as_object_mut()
-                        .expect("skill_json is an object constructed inline");
-                    skill_object.insert("dependency_issues".to_string(), json!(dependency_issues));
-                    skill_object.insert("dependency_count".to_string(), json!(dependency_count));
-                    skill_object.insert("missing_count".to_string(), json!(missing_count));
+                    // Defensive pattern: while json!({}) always produces Value::Object,
+                    // using match with logging handles invariant violations gracefully.
+                    match skill_json.as_object_mut() {
+                        Some(skill_object) => {
+                            skill_object
+                                .insert("dependency_issues".to_string(), json!(dependency_issues));
+                            skill_object
+                                .insert("dependency_count".to_string(), json!(dependency_count));
+                            skill_object.insert("missing_count".to_string(), json!(missing_count));
+                        }
+                        None => {
+                            tracing::error!(
+                                skill_name = %meta.name,
+                                "INVARIANT VIOLATION: skill_json not an object"
+                            );
+                        }
+                    }
                 }
 
                 results.push(skill_json);
@@ -238,7 +261,20 @@ impl SkillService {
         })
     }
 
-    /// Sync all configuration between Claude and Codex.
+    /// Syncs configuration (commands, skills, MCP servers, preferences) between Claude and Codex.
+    ///
+    /// # Arguments
+    ///
+    /// The `args` map accepts the following JSON keys:
+    /// - `from`: `"claude"` or `"codex"` (default: `"claude"`) - source of truth
+    /// - `dry_run`: `bool` (default: `false`) - preview changes without writing
+    /// - `include_marketplace`: `bool` (default: `false`) - include marketplace skills in sync
+    /// - `skip_existing_commands`: `bool` (default: `false`) - skip commands that already exist at destination
+    ///
+    /// # Returns
+    ///
+    /// A `CallToolResult` with sync summary text and structured report including
+    /// commands, skills, MCP servers, and preferences copied.
     pub(crate) fn sync_all_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
         use crate::sync::mirror_source_root;
         use skrills_sync::{
@@ -328,7 +364,22 @@ impl SkillService {
         })
     }
 
-    /// Get skill loading status for tracing.
+    /// Gets skill loading status for observability and debugging.
+    ///
+    /// Reports on discovered skill files, instrumentation markers, and trace installation state.
+    ///
+    /// # Arguments
+    ///
+    /// The `args` map accepts the following JSON keys:
+    /// - `target`: `"claude"`, `"codex"`, or `"both"` (default: `"both"`)
+    /// - `include_cache`: `bool` (default: `false`) - include cached skills in status
+    /// - `include_marketplace`: `bool` (default: `false`) - include marketplace skills
+    /// - `include_mirror`: `bool` (default: `true`) - include mirrored skills
+    /// - `include_agent`: `bool` (default: `true`) - include agent-specific skills
+    ///
+    /// # Returns
+    ///
+    /// A `CallToolResult` with skill file counts and structured status JSON.
     pub(crate) fn skill_loading_status_tool(
         &self,
         args: JsonMap<String, Value>,
@@ -368,7 +419,22 @@ impl SkillService {
         })
     }
 
-    /// Enable skill tracing for debugging.
+    /// Enables skill tracing for debugging and observability.
+    ///
+    /// Installs trace skills and instruments existing skills to emit loading events.
+    ///
+    /// # Arguments
+    ///
+    /// The `args` map accepts the following JSON keys:
+    /// - `target`: `"claude"`, `"codex"`, or `"both"` (default: `"both"`)
+    /// - `instrument`: `bool` (default: `true`) - add trace markers to skills
+    /// - `backup`: `bool` (default: `true`) - backup files before modification
+    /// - `dry_run`: `bool` (default: `false`) - preview changes without writing
+    /// - `include_cache`, `include_marketplace`, `include_mirror`, `include_agent`: `bool` - scope filters
+    ///
+    /// # Returns
+    ///
+    /// A `CallToolResult` with trace installation summary and structured report.
     pub(crate) fn enable_skill_trace_tool(
         &self,
         args: JsonMap<String, Value>,
@@ -424,7 +490,17 @@ impl SkillService {
         })
     }
 
-    /// Disable skill tracing.
+    /// Disables skill tracing by removing trace skills and instrumentation.
+    ///
+    /// # Arguments
+    ///
+    /// The `args` map accepts the following JSON keys:
+    /// - `target`: `"claude"`, `"codex"`, or `"both"` (default: `"both"`)
+    /// - `dry_run`: `bool` (default: `false`) - preview removals without deleting
+    ///
+    /// # Returns
+    ///
+    /// A `CallToolResult` with removal summary and list of removed directories.
     pub(crate) fn disable_skill_trace_tool(
         &self,
         args: JsonMap<String, Value>,
@@ -448,7 +524,20 @@ impl SkillService {
         })
     }
 
-    /// Run a self-test for skill loading.
+    /// Runs a self-test to verify skill loading is working correctly.
+    ///
+    /// Installs a probe skill that responds to a unique token, allowing verification
+    /// that skills are being loaded and processed by the agent.
+    ///
+    /// # Arguments
+    ///
+    /// The `args` map accepts the following JSON keys:
+    /// - `target`: `"claude"`, `"codex"`, or `"both"` (default: `"both"`)
+    /// - `dry_run`: `bool` (default: `false`) - preview without installing probe
+    ///
+    /// # Returns
+    ///
+    /// A `CallToolResult` with probe details: the line to send and expected response.
     pub(crate) fn skill_loading_selftest_tool(
         &self,
         args: JsonMap<String, Value>,

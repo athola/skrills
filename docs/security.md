@@ -110,21 +110,16 @@ EOF
 ### Current Implementation
 
 #### Authentication & Authorization
-- **Process Isolation (stdio mode)**: In local deployments using standard I/O (stdio) mode, security relies on process isolation and filesystem permissions. The MCP server runs as the user's process.
-- **Future: mTLS Support**: For network-exposed deployments, mTLS client authentication with X.509 certificate verification is planned.
+In local deployments using standard I/O (stdio) mode, security relies on process isolation and filesystem permissions, where the MCP server runs as the user's process. For network-exposed deployments, we plan to implement mTLS client authentication with X.509 certificate verification.
 
 #### Network Security
-- **TLS 1.3 Support**: The system supports TLS 1.3, using only modern cipher suites (e.g., AES-256-GCM, ChaCha20-Poly1305) and enforcing forward secrecy.
-- **Certificate Validation**: Includes CA certificate verification, hostname validation, and expiration checks for all certificates.
+The system supports TLS 1.3, prioritizing modern cipher suites like AES-256-GCM and ChaCha20-Poly1305 to enforce forward secrecy. It validates CA certificates, hostnames, and expiration dates for all connections.
 
 #### Input Validation
-- **Path Canonicalization**: Prevents directory traversal attacks by validating skill file paths and restricting access to designated skill directories.
-- **MCP Message Validation**: Involves JSON schema validation, type checking, and enforcing size limits for all MCP messages.
-- **File Size Limits**: Implements configurable maximum file sizes to prevent memory exhaustion and gracefully handles excessively large files.
+We prevent directory traversal attacks by validating skill file paths and restricting access to designated skill directories. All MCP messages undergo JSON schema validation, type checking, and size limit enforcement. Configurable file size limits further prevent memory exhaustion and handle large files gracefully.
 
 #### Data Protection
-- **No Persistent Prompt Storage**: User prompts are processed ephemerally and are never written to disk, ensuring data privacy.
-- **Cache TTL**: The cache expires automatically and is memory-bounded, to prevent the use of stale data.
+User prompts are processed ephemerally and never written to disk. The cache is memory-bounded and expires automatically to prevent the use of stale data.
 
 ---
 
@@ -165,22 +160,13 @@ EOF
 ## Security Model
 
 ### Trust Boundaries
-The defined trust boundaries are:
-- User Account (Trusted)
-- Skrills Process (runs as user)
-- Skill Files (user-controlled, e.g., [`~/.codex/skills/`](~/.codex/skills/), [`~/.claude/`](~/.claude/))
-
-Communication between components occurs via standard I/O (stdio) or network, interacting with the Claude Code Client (which can be either trusted or untrusted depending on configuration).
+The primary trust boundaries lie between the user account (trusted), the Skrills process running as that user, and the skill files they control. Communication channels like standard I/O or the network, as well as the MCP clients themselves (especially remote ones), are treated as untrusted boundaries.
 
 ### Security Assumptions
-- **Trusted Components**: The user account, the `skrills` process, and local skill files are trusted.
-- **Untrusted Components**: Network traffic (if exposed), MCP clients (especially remote ones), and external skill content are treated as untrusted.
+We assume the user account, the `skrills` process, and local skill files are trusted entities. Conversely, we treat all network traffic and external skill content as untrusted, requiring strict validation.
 
 ### Defense Strategy
-- Rigorous input validation is applied at all trust boundaries.
-- Strict path sanitization is used for all filesystem access operations.
-- Authentication and encryption mechanisms secure all network traffic.
-- Skill content is never executed on the server-side, to mitigate execution-based vulnerabilities.
+We apply rigorous input validation at all trust boundaries and strict path sanitization for filesystem access. Network traffic is secured via authentication and encryption, and skill content is never executed on the server-side to mitigate execution-based vulnerabilities.
 
 ---
 

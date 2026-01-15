@@ -4,10 +4,7 @@ The `skrills` MCP server has minimal overhead. Validation, analysis, and sync op
 
 ## Expected Performance
 
-- **Skill discovery**: Initial skill directory scan is cached to avoid repeated filesystem access
-- **Validation**: Processes skills in parallel where possible
-- **Analysis**: Token counting is approximate but fast
-- **Sync**: Byte-for-byte file copy is efficient; uses content hashing to skip unchanged files
+The initial skill directory scan is cached to avoid repeated filesystem access. Validation processes skills in parallel where possible, and analysis uses approximate but fast token counting. Sync operations use content hashing to skip unchanged files and perform efficient byte-for-byte copies.
 
 These figures are from measurements on an M1 Pro system with a typical skill set.
 
@@ -45,6 +42,4 @@ skrills analyze --min-tokens 1000
 
 ## When to Investigate
 
-- If validation is slow, check if skill directories contain many files
-- If sync is slow, use `sync-status` to identify large change sets
-- If startup is slow, increase cache TTL or reduce number of skill directories
+Investigate performance if validation feels slow, which often indicates skill directories containing many files. If sync is slow, use `sync-status` to identify large change sets. Slow startup times might require increasing the cache TTL or reducing the number of monitored skill directories.

@@ -8,6 +8,7 @@ use crate::types::Confidence;
 use crate::usage::behavioral::{extract_common_ngrams, BehavioralEvent, OutcomeStatus, ToolStatus};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use tracing::debug;
 
 #[cfg(test)]
 use crate::usage::behavioral::{SessionOutcome, ToolCall};
@@ -194,7 +195,7 @@ fn extract_session_features(events: &[BehavioralEvent]) -> Vec<SessionFeatures> 
             if timestamps.len() > 1 {
                 let min_ts = *timestamps.iter().min().unwrap_or(&0);
                 let max_ts = *timestamps.iter().max().unwrap_or(&0);
-                features.duration_ms = max_ts.saturating_sub(min_ts) * 1000;
+                features.duration_ms = max_ts.saturating_sub(min_ts).saturating_mul(1000);
 
                 let intervals: Vec<u64> = timestamps
                     .windows(2)
@@ -661,7 +662,10 @@ cluster_id: {}
             .success_patterns
             .first()
             .map(|p| p.confidence.value())
-            .unwrap_or(0.5),
+            .unwrap_or_else(|| {
+                debug!(cluster_id = %cluster.cluster_id, "no success patterns for confidence, defaulting to 0.5");
+                0.5
+            }),
         cluster.cluster_id,
     );
 
@@ -899,5 +903,240 @@ mod tests {
         assert!(md.contains("---\nname: test-skill"));
         assert!(md.contains("# Test Skill"));
         assert!(md.contains("## Guardrails"));
+    }
+
+    // ========================================================================
+    // TC-7: compute_feature_distance tests
+    // ========================================================================
+
+    #[test]
+    fn test_compute_feature_distance_identical_features() {
+        let features = SessionFeatures {
+            session_id: "s1".to_string(),
+            tool_frequency: [("Read".to_string(), 5), ("Write".to_string(), 3)]
+                .into_iter()
+                .collect(),
+            file_extensions: [("rs".to_string(), 3), ("toml".to_string(), 1)]
+                .into_iter()
+                .collect(),
+            avg_tool_interval_ms: 500.0,
+            error_rate: 0.1,
+            duration_ms: 60000,
+            outcome: Some(OutcomeStatus::Success),
+        };
+
+        let distance = compute_feature_distance(&features, &features);
+        // Identical features should have distance close to 0 (negative due to outcome bonus)
+        assert!(
+            distance <= 0.0,
+            "Identical features should have distance <= 0, got {}",
+            distance
+        );
+    }
+
+    #[test]
+    fn test_compute_feature_distance_completely_different() {
+        let a = SessionFeatures {
+            session_id: "s1".to_string(),
+            tool_frequency: [("Read".to_string(), 5)].into_iter().collect(),
+            file_extensions: [("rs".to_string(), 3)].into_iter().collect(),
+            avg_tool_interval_ms: 500.0,
+            error_rate: 0.0,
+            duration_ms: 60000,
+            outcome: Some(OutcomeStatus::Success),
+        };
+
+        let b = SessionFeatures {
+            session_id: "s2".to_string(),
+            tool_frequency: [("Bash".to_string(), 10)].into_iter().collect(),
+            file_extensions: [("py".to_string(), 5)].into_iter().collect(),
+            avg_tool_interval_ms: 1000.0,
+            error_rate: 1.0,
+            duration_ms: 120000,
+            outcome: Some(OutcomeStatus::Failure),
+        };
+
+        let distance = compute_feature_distance(&a, &b);
+        // Very different features should have high distance
+        assert!(
+            distance > 1.0,
+            "Different features should have distance > 1, got {}",
+            distance
+        );
+    }
+
+    #[test]
+    fn test_compute_feature_distance_same_outcome_reduces_distance() {
+        let a = SessionFeatures {
+            session_id: "s1".to_string(),
+            tool_frequency: [("Read".to_string(), 5)].into_iter().collect(),
+            file_extensions: [("rs".to_string(), 3)].into_iter().collect(),
+            avg_tool_interval_ms: 500.0,
+            error_rate: 0.1,
+            duration_ms: 60000,
+            outcome: Some(OutcomeStatus::Success),
+        };
+
+        let b_same_outcome = SessionFeatures {
+            session_id: "s2".to_string(),
+            tool_frequency: [("Read".to_string(), 3), ("Write".to_string(), 2)]
+                .into_iter()
+                .collect(),
+            file_extensions: [("rs".to_string(), 2), ("toml".to_string(), 1)]
+                .into_iter()
+                .collect(),
+            avg_tool_interval_ms: 600.0,
+            error_rate: 0.2,
+            duration_ms: 70000,
+            outcome: Some(OutcomeStatus::Success), // Same outcome
+        };
+
+        let b_diff_outcome = SessionFeatures {
+            session_id: "s3".to_string(),
+            tool_frequency: [("Read".to_string(), 3), ("Write".to_string(), 2)]
+                .into_iter()
+                .collect(),
+            file_extensions: [("rs".to_string(), 2), ("toml".to_string(), 1)]
+                .into_iter()
+                .collect(),
+            avg_tool_interval_ms: 600.0,
+            error_rate: 0.2,
+            duration_ms: 70000,
+            outcome: Some(OutcomeStatus::Failure), // Different outcome
+        };
+
+        let distance_same = compute_feature_distance(&a, &b_same_outcome);
+        let distance_diff = compute_feature_distance(&a, &b_diff_outcome);
+
+        assert!(
+            distance_same < distance_diff,
+            "Same outcome should reduce distance: {} < {}",
+            distance_same,
+            distance_diff
+        );
+    }
+
+    #[test]
+    fn test_compute_feature_distance_empty_features() {
+        let empty = SessionFeatures {
+            session_id: "s1".to_string(),
+            tool_frequency: HashMap::new(),
+            file_extensions: HashMap::new(),
+            avg_tool_interval_ms: 0.0,
+            error_rate: 0.0,
+            duration_ms: 0,
+            outcome: None,
+        };
+
+        let distance = compute_feature_distance(&empty, &empty);
+        // Empty features: 0 union = 0 similarity, distance includes error rate diff (0)
+        // Should be 2.0 (tool dissimilarity 1.0 + ext dissimilarity 1.0)
+        assert!(
+            distance >= 0.0,
+            "Distance should be non-negative, got {}",
+            distance
+        );
+    }
+
+    #[test]
+    fn test_compute_feature_distance_error_rate_contribution() {
+        let low_error = SessionFeatures {
+            session_id: "s1".to_string(),
+            tool_frequency: HashMap::new(),
+            file_extensions: HashMap::new(),
+            avg_tool_interval_ms: 0.0,
+            error_rate: 0.0,
+            duration_ms: 0,
+            outcome: None,
+        };
+
+        let high_error = SessionFeatures {
+            session_id: "s2".to_string(),
+            tool_frequency: HashMap::new(),
+            file_extensions: HashMap::new(),
+            avg_tool_interval_ms: 0.0,
+            error_rate: 1.0,
+            duration_ms: 0,
+            outcome: None,
+        };
+
+        let distance = compute_feature_distance(&low_error, &high_error);
+        // Error rate difference is |0.0 - 1.0| = 1.0, plus 2.0 from empty sets
+        assert!(
+            distance >= 1.0,
+            "Error rate difference should contribute to distance, got {}",
+            distance
+        );
+    }
+
+    // ========================================================================
+    // TC-2: Cluster Formation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_cluster_sessions_forms_clusters_from_similar_sessions() {
+        // Create multiple sessions with similar tool patterns
+        // These should cluster together
+        let events = vec![
+            // Group 1: Read-heavy sessions (should cluster together)
+            make_test_event("s1", vec!["Read", "Read", "Write"], OutcomeStatus::Success),
+            make_test_event("s2", vec!["Read", "Read", "Edit"], OutcomeStatus::Success),
+            make_test_event("s3", vec!["Read", "Write", "Read"], OutcomeStatus::Success),
+            // Group 2: Bash-heavy sessions (should cluster separately)
+            make_test_event("s4", vec!["Bash", "Bash", "Grep"], OutcomeStatus::Success),
+            make_test_event("s5", vec!["Bash", "Grep", "Bash"], OutcomeStatus::Success),
+            make_test_event("s6", vec!["Bash", "Bash", "Read"], OutcomeStatus::Success),
+        ];
+
+        let result = cluster_sessions(&events, 3, 2);
+
+        // Should have formed at least one cluster with the similar sessions
+        assert!(
+            !result.clusters.is_empty(),
+            "Expected at least one cluster from similar sessions"
+        );
+
+        // Verify clusters contain sessions
+        let total_clustered: usize = result.clusters.iter().map(|c| c.session_ids.len()).sum();
+        assert!(
+            total_clustered > 0,
+            "Clusters should contain at least some sessions"
+        );
+
+        // Verify success_patterns are extracted for clusters
+        let has_patterns = result
+            .clusters
+            .iter()
+            .any(|c| !c.success_patterns.is_empty());
+        assert!(
+            has_patterns,
+            "At least one cluster should have success patterns extracted"
+        );
+    }
+
+    #[test]
+    fn test_cluster_sessions_assigns_meaningful_labels() {
+        let events = vec![
+            make_test_event("s1", vec!["Read", "Read", "Write"], OutcomeStatus::Success),
+            make_test_event("s2", vec!["Read", "Read", "Edit"], OutcomeStatus::Success),
+            make_test_event("s3", vec!["Read", "Write", "Read"], OutcomeStatus::Success),
+        ];
+
+        let result = cluster_sessions(&events, 3, 2);
+
+        if !result.clusters.is_empty() {
+            // Labels should be derived from tool usage patterns
+            let cluster = &result.clusters[0];
+            assert!(
+                !cluster.label.is_empty(),
+                "Cluster should have a non-empty label"
+            );
+            // Label typically includes tool:extension format
+            assert!(
+                cluster.label.contains(':') || cluster.label.contains('-'),
+                "Label should indicate tool or file pattern: {}",
+                cluster.label
+            );
+        }
     }
 }

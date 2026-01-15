@@ -14,32 +14,16 @@ This table compares `skrills` against alternative approaches for managing and de
 ## Core Differentiators
 
 ### Validation Engine
-
-Skrills validates skills against two targets:
-- **Claude Code**: Permissive - accepts any markdown with optional frontmatter
-- **Codex CLI**: Strict - requires YAML frontmatter with `name` and `description`
-
-The `--autofix` flag automatically adds missing frontmatter.
+Skrills validates skills against two targets with distinct requirements. Claude Code is permissive, accepting any markdown with optional frontmatter. Codex CLI is strict, requiring YAML frontmatter with `name` and `description` fields. To bridge this gap, the `--autofix` flag automatically derives and adds missing frontmatter from the file path and content.
 
 ### Token Analysis
-
-Skrills analyzes skills for:
-- Token count estimation
-- Dependency tracking
-- Optimization suggestions for large skills
+Beyond simple counting, Skrills analyzes skills to estimate token usage and track dependencies. It provides optimization suggestions for large skills, helping you keep your context window efficient.
 
 ### Bidirectional Sync
+Unlike tools that only copy files one way, Skrills supports full bidirectional sync for skills, commands, MCP servers, and preferences. It uses byte-for-byte command sync to preserve non-UTF-8 content and includes a `--skip-existing-commands` flag to protect your local customizations from being overwritten.
 
-Unlike tools that only copy files one way, skrills supports full bidirectional sync:
-- Skills, commands, MCP servers, and preferences
-- Byte-for-byte command sync preserves non-UTF-8 content
-- `--skip-existing-commands` protects local customizations
-
-## Areas for Improvement
-
-- Add signed artifacts and version pinning for synced skills
-- Improve Windows path detection and default configurations
-- Add skill dependency resolution
+## Planned Improvements
+We plan to add signed artifacts and version pinning for synced skills to improve security and reproducibility. We also aim to improve Windows path detection and default configurations, as well as implement skill dependency resolution to better manage complex skill sets.
 
 ## Summary
 
