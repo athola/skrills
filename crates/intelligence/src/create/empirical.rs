@@ -195,7 +195,7 @@ fn extract_session_features(events: &[BehavioralEvent]) -> Vec<SessionFeatures> 
             if timestamps.len() > 1 {
                 let min_ts = *timestamps.iter().min().unwrap_or(&0);
                 let max_ts = *timestamps.iter().max().unwrap_or(&0);
-                features.duration_ms = max_ts.saturating_sub(min_ts) * 1000;
+                features.duration_ms = max_ts.saturating_sub(min_ts).saturating_mul(1000);
 
                 let intervals: Vec<u64> = timestamps
                     .windows(2)

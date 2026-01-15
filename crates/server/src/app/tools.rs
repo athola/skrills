@@ -185,13 +185,21 @@ impl SkillService {
 
                 if check_dependencies {
                     // Defensive pattern: while json!({}) always produces Value::Object,
-                    // using if-let is more resilient to future code changes.
-                    if let Some(skill_object) = skill_json.as_object_mut() {
-                        skill_object
-                            .insert("dependency_issues".to_string(), json!(dependency_issues));
-                        skill_object
-                            .insert("dependency_count".to_string(), json!(dependency_count));
-                        skill_object.insert("missing_count".to_string(), json!(missing_count));
+                    // using match with logging handles invariant violations gracefully.
+                    match skill_json.as_object_mut() {
+                        Some(skill_object) => {
+                            skill_object
+                                .insert("dependency_issues".to_string(), json!(dependency_issues));
+                            skill_object
+                                .insert("dependency_count".to_string(), json!(dependency_count));
+                            skill_object.insert("missing_count".to_string(), json!(missing_count));
+                        }
+                        None => {
+                            tracing::error!(
+                                skill_name = %meta.name,
+                                "INVARIANT VIOLATION: skill_json not an object"
+                            );
+                        }
                     }
                 }
 
@@ -261,6 +269,7 @@ impl SkillService {
     /// - `from`: `"claude"` or `"codex"` (default: `"claude"`) - source of truth
     /// - `dry_run`: `bool` (default: `false`) - preview changes without writing
     /// - `include_marketplace`: `bool` (default: `false`) - include marketplace skills in sync
+    /// - `skip_existing_commands`: `bool` (default: `false`) - skip commands that already exist at destination
     ///
     /// # Returns
     ///
