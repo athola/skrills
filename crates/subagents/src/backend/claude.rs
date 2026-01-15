@@ -17,6 +17,7 @@ use crate::store::{
 const DEFAULT_BASE: &str = "https://api.anthropic.com/v1/";
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+const API_KEY_ERROR: &str = "Claude API key not set. Set SKRILLS_CLAUDE_API_KEY environment variable with your Anthropic API key. Get one at https://console.anthropic.com/settings/keys";
 
 #[derive(Debug, Clone)]
 pub struct ClaudeAdapter {
@@ -69,7 +70,7 @@ impl ClaudeAdapter {
             .await?;
 
         if self.config.api_key.is_empty() {
-            let error_msg = "Claude API key not set. Set SKRILLS_CLAUDE_API_KEY environment variable with your Anthropic API key. Get one at https://console.anthropic.com/settings/keys";
+            let error_msg = API_KEY_ERROR;
             store
                 .update_status(
                     run_id,

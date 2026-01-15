@@ -15,6 +15,7 @@ use time::OffsetDateTime;
 
 const DEFAULT_BASE: &str = "https://api.openai.com/v1";
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
+const API_KEY_ERROR: &str = "Codex API key not set. Set SKRILLS_CODEX_API_KEY environment variable with your OpenAI API key. Get one at https://platform.openai.com/api-keys";
 
 #[derive(Debug, Clone)]
 pub struct CodexAdapter {
@@ -67,7 +68,7 @@ impl CodexAdapter {
             .await?;
 
         if self.config.api_key.is_empty() {
-            let error_msg = "Codex API key not set. Set SKRILLS_CODEX_API_KEY environment variable with your OpenAI API key. Get one at https://platform.openai.com/api-keys";
+            let error_msg = API_KEY_ERROR;
             store
                 .update_status(
                     run_id,
