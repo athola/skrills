@@ -123,8 +123,4 @@ When running as an MCP server, these sync tools are available:
 
 ## Best Practices
 
-1. **Use dry-run first**: Always preview changes before syncing.
-2. **Sync regularly**: Keep configurations in sync to avoid drift.
-3. **Validate after sync**: Run `skrills validate` after syncing to catch issues.
-4. **Protect local commands**: Use `--skip-existing-commands` to preserve customizations.
-5. **One direction**: Pick a primary CLI and always sync from it to maintain consistency.
+Always preview changes with a dry run before syncing to avoid unexpected overwrites. Sync regularly to keep configurations aligned and prevent drift. After syncing, run `skrills validate` to catch any compatibility issues immediately. To protect your local customizations, use the `--skip-existing-commands` flag. Finally, choose a primary CLI environment and consistently sync from it to maintain a clear source of truth.

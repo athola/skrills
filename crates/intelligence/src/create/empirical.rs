@@ -1068,4 +1068,75 @@ mod tests {
             distance
         );
     }
+
+    // ========================================================================
+    // TC-2: Cluster Formation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_cluster_sessions_forms_clusters_from_similar_sessions() {
+        // Create multiple sessions with similar tool patterns
+        // These should cluster together
+        let events = vec![
+            // Group 1: Read-heavy sessions (should cluster together)
+            make_test_event("s1", vec!["Read", "Read", "Write"], OutcomeStatus::Success),
+            make_test_event("s2", vec!["Read", "Read", "Edit"], OutcomeStatus::Success),
+            make_test_event("s3", vec!["Read", "Write", "Read"], OutcomeStatus::Success),
+            // Group 2: Bash-heavy sessions (should cluster separately)
+            make_test_event("s4", vec!["Bash", "Bash", "Grep"], OutcomeStatus::Success),
+            make_test_event("s5", vec!["Bash", "Grep", "Bash"], OutcomeStatus::Success),
+            make_test_event("s6", vec!["Bash", "Bash", "Read"], OutcomeStatus::Success),
+        ];
+
+        let result = cluster_sessions(&events, 3, 2);
+
+        // Should have formed at least one cluster with the similar sessions
+        assert!(
+            !result.clusters.is_empty(),
+            "Expected at least one cluster from similar sessions"
+        );
+
+        // Verify clusters contain sessions
+        let total_clustered: usize = result.clusters.iter().map(|c| c.session_ids.len()).sum();
+        assert!(
+            total_clustered > 0,
+            "Clusters should contain at least some sessions"
+        );
+
+        // Verify success_patterns are extracted for clusters
+        let has_patterns = result
+            .clusters
+            .iter()
+            .any(|c| !c.success_patterns.is_empty());
+        assert!(
+            has_patterns,
+            "At least one cluster should have success patterns extracted"
+        );
+    }
+
+    #[test]
+    fn test_cluster_sessions_assigns_meaningful_labels() {
+        let events = vec![
+            make_test_event("s1", vec!["Read", "Read", "Write"], OutcomeStatus::Success),
+            make_test_event("s2", vec!["Read", "Read", "Edit"], OutcomeStatus::Success),
+            make_test_event("s3", vec!["Read", "Write", "Read"], OutcomeStatus::Success),
+        ];
+
+        let result = cluster_sessions(&events, 3, 2);
+
+        if !result.clusters.is_empty() {
+            // Labels should be derived from tool usage patterns
+            let cluster = &result.clusters[0];
+            assert!(
+                !cluster.label.is_empty(),
+                "Cluster should have a non-empty label"
+            );
+            // Label typically includes tool:extension format
+            assert!(
+                cluster.label.contains(':') || cluster.label.contains('-'),
+                "Label should indicate tool or file pattern: {}",
+                cluster.label
+            );
+        }
+    }
 }

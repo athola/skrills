@@ -46,18 +46,11 @@ skrills analyze --skill-dir ~/my-skills
 
 ## Understanding Token Counts
 
-Token counts estimate context impact, helping you:
-1. **Budget context**: Large skills consume available context.
-2. **Target optimization**: Identify candidates for refactoring.
-3. **Compare alternatives**: Select efficient skill variants.
+Token counts provide an estimate of a skill's impact on your context window. This helps you budget available context, identify candidates for refactoring, and compare efficient alternatives. Large skills can displace other important context, so keeping them lean is critical for performance.
 
 ## Optimization Suggestions
 
-The `--suggestions` flag flags potential issues:
-- **Split large skills**: Skills over 2000 tokens may benefit from modular decomposition.
-- **Remove redundant content**: Eliminate duplication.
-- **Simplify examples**: Condense verbose examples.
-- **Use references**: Link to external docs instead of embedding content.
+The `--suggestions` flag identifies potential issues that bloat your context usage. It looks for skills exceeding 2000 tokens that might benefit from modular decomposition or removal of redundant content. It also flags verbose examples that could be simplified and suggests linking to external documentation instead of embedding large blocks of text.
 
 ## MCP Tool
 
@@ -75,7 +68,4 @@ When running as an MCP server (`skrills serve`), the `analyze-skills` tool provi
 
 ## Best Practices
 
-1. **Set budgets**: Establish guidelines for maximum skill token counts.
-2. **Review regularly**: Run analysis after adding or updating skills.
-3. **Prioritize**: Focus optimization on frequently used skills.
-4. **Test**: Verify skills function correctly after refactoring.
+Establish a budget for maximum skill token counts and review them regularly, especially after major updates. Focus your optimization efforts on frequently used skills where the savings will have the most impact. Always verify that skills still function correctly after any refactoring to reduce size.

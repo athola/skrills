@@ -30,12 +30,9 @@ Use skrills as an MCP server for dynamic skill loading in both Claude Code and C
 *See the [MCP tutorial](docs/tutorials/mcp.md) for setup instructions.*
 
 ## Why Skrills
-Skrills manages skills and configurations for Claude Code and Codex CLI. It validates markdown files against Codex's strict YAML frontmatter requirements, analyzes token usage to manage context limits, and syncs configurations between tools. A single binary provides mirroring, diagnostics, and an MCP server.
+Skrills manages skills and configurations for Claude Code and Codex CLI. It bridges the gap between these tools by validating markdown files against Codex's strict YAML frontmatter requirements and analyzing token usage to help manage context limits. A single binary provides mirroring, diagnostics, and an MCP server.
 
-Skrills addresses differences in validation, safety, and efficiency between the two CLIs:
-- **Validation**: Claude Code accepts raw markdown, while Codex enforces strict YAML frontmatter. Skrills validates against these rules.
-- **Safety**: The `sync-commands` tool checks file hashes before writing to prevent overwriting local customizations.
-- **Efficiency**: It reports token usage and suggests optimizations to help manage context window limits.
+Claude Code accepts raw markdown, while Codex enforces strict YAML frontmatter. Skrills validates against these rules to prevent compatibility errors. The `sync-commands` tool checks file hashes before writing to avoid overwriting local customizations, and the analytics tools report token usage to suggest optimizations for context window limits.
 
 ## Architecture (workspace crates)
 - `crates/server`: MCP server runtime, CLI, and HTTP transport with security middleware.
@@ -168,19 +165,19 @@ The `--autofix` flag derives missing frontmatter from the file path and content.
 
 ## MCP Tools
 
-When running as an MCP server (`skrills serve`), several categories of tools become available:
+When running as an MCP server (`skrills serve`), several categories of tools become available.
 
 **Validation & Analysis**
 `validate-skills` checks CLI compatibility, while `analyze-skills` reports token usage and dependencies. `skill-metrics` aggregates quality and dependency statistics.
 
 **Synchronization**
-A suite of sync tools (`sync-skills`, `sync-commands`, `sync-mcp-servers`, `sync-preferences`, `sync-all`) handles data transfer between Claude and Codex. `sync-from-claude` is a dedicated alias for copying Claude skills to the Codex mirror. `sync-status` provides a dry-run preview of changes.
+A suite of tools handles data transfer between Claude and Codex. `sync-skills`, `sync-commands`, `sync-mcp-servers`, `sync-preferences`, and `sync-all` cover various configuration aspects. `sync-from-claude` copies Claude skills to the Codex mirror. `sync-status` provides a dry-run preview of changes.
 
 **Dependencies & Loading**
 `resolve-dependencies` finds direct or transitive relationships for a skill URI. `skill-loading-status` reports on root scanning and marker coverage. `enable-skill-trace` and `disable-skill-trace` manage debug skills for tracing, while `skill-loading-selftest` confirms loading via a probe.
 
 **Intelligence**
-`recommend-skills` suggests related skills based on dependencies. `recommend-skills-smart` adds usage patterns and project context to recommendations. `analyze-project-context` scans languages and frameworks to inform suggestions. `suggest-new-skills` identifies gaps, and `create-skill` generates new skills via GitHub search, LLM generation, or empirical patterns. `search-skills-github` and `search-skills-fuzzy` provide search capabilities. Fuzzy search matches against both skill names and descriptions (0.4.8+).
+`recommend-skills` suggests related skills based on dependencies, and `recommend-skills-smart` adds usage patterns and project context to these recommendations. `analyze-project-context` scans languages and frameworks to inform suggestions. `suggest-new-skills` identifies gaps, and `create-skill` generates new skills via GitHub search, LLM generation, or empirical patterns. `search-skills-github` and `search-skills-fuzzy` provide search capabilities. Fuzzy search matches against both skill names and descriptions (0.4.8+).
 
 **Context Optimization (0.4.9+)**
 `list-mcp-tools` returns tool names and descriptions without full schemas. `describe-mcp-tool` loads the full schema for a specific tool. `get-context-stats` reports estimated tokens saved and schema load efficiency.

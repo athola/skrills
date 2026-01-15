@@ -56,11 +56,7 @@ graph TD
 
 ## Design Principles
 
-- **Leaf crates**: `validate`, `discovery`, `state` have no internal dependencies.
-- **Near-leaf crates**: `analyze` depends on `validate` (frontmatter types) and `discovery` (path resolution).
-- **Trait-based abstraction**: `AgentAdapter` enables pluggable source/target adapters.
-- **Feature flags**: `subagents` and `watch` are optional features.
-- **Composition**: `SyncOrchestrator<S, T>` uses compile-time dispatch for performance and type safety.
+The architecture enforces strict separation of concerns. Leaf crates like `validate`, `discovery`, and `state` have no internal dependencies, while near-leaf crates like `analyze` only depend on those specific types. We use trait-based abstraction via `AgentAdapter` to support pluggable source and target adapters, and compile-time dispatch through `SyncOrchestrator<S, T>` to ensure performance and type safety. Features like `subagents` and `watch` are gated behind feature flags to keep the core binary small.
 
 ## Module Organization
 
@@ -73,15 +69,9 @@ The `app` module is split to stay under the 2500 LOC threshold (ADR-0001):
 
 **LOC Monitoring**: When `app/mod.rs` approaches 2000 lines, extract the next logical group (e.g., subagent tool handlers or resource-serving methods).
 
-## Future Considerations
+## Roadmap
 
-- Document architectural changes in ADRs.
-- Extract command handlers to `commands/` submodules as functionality expands.
-- Align CLI and MCP tool lists as new tools ship.
-- Evaluate consolidating `sync-from-claude` with `sync-all`.
-- Version intelligence tool inputs/outputs as the API grows.
-- Consider extracting `SkillFrontmatter` / `DeclaredDependency` into `skrills-types`.
-- Add `--check-deps` flag to the `validate` CLI.
+Future development will focus on extracting command handlers to submodules as the CLI expands and aligning the CLI and MCP tool lists. We plan to evaluate consolidating `sync-from-claude` with `sync-all` and versioning intelligence tool inputs/outputs. Architectural changes will continue to be documented in ADRs, and we will monitor the `app` module size to trigger further refactoring when needed.
 
 ## Related Documents
 
