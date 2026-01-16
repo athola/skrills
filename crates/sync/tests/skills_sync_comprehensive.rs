@@ -1,4 +1,4 @@
-//! Comprehensive integration tests for skill synchronization between Claude and Codex.
+//! Integration tests for skill synchronization between Claude and Codex.
 //!
 //! These tests validate the CORE VALUE PROPOSITION of skrills:
 //! - Bidirectional skill sync between Claude Code and Codex CLI
@@ -35,7 +35,7 @@ use tempfile::TempDir;
 // Test Fixtures and Helpers
 // =============================================================================
 
-/// Comprehensive test context for skill sync operations.
+/// Test context for skill sync operations.
 struct SkillSyncTestContext {
     #[allow(dead_code)]
     temp_dir: TempDir,

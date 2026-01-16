@@ -248,3 +248,277 @@ pub fn all_tools() -> Vec<Tool> {
 
     tools
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==========================================
+    // Schema Generation Tests (BDD style)
+    // ==========================================
+
+    mod schema_generation {
+        use super::*;
+
+        #[test]
+        fn given_run_schema_when_generated_then_has_required_prompt() {
+            let schema = run_schema();
+
+            // Schema should require "prompt" field
+            let schema_json = serde_json::to_value(&*schema).unwrap();
+            let required = schema_json.get("required").unwrap().as_array().unwrap();
+            assert!(required.iter().any(|v| v.as_str() == Some("prompt")));
+        }
+
+        #[test]
+        fn given_run_schema_when_generated_then_has_expected_properties() {
+            let schema = run_schema();
+
+            let schema_json = serde_json::to_value(&*schema).unwrap();
+            let props = schema_json.get("properties").unwrap().as_object().unwrap();
+
+            // Verify key properties exist
+            assert!(props.contains_key("prompt"));
+            assert!(props.contains_key("agent_id"));
+            assert!(props.contains_key("backend"));
+            assert!(props.contains_key("execution_mode"));
+            assert!(props.contains_key("timeout_ms"));
+        }
+
+        #[test]
+        fn given_run_id_schema_when_generated_then_requires_run_id() {
+            let schema = run_id_schema();
+
+            let schema_json = serde_json::to_value(&*schema).unwrap();
+            let required = schema_json.get("required").unwrap().as_array().unwrap();
+            assert!(required.iter().any(|v| v.as_str() == Some("run_id")));
+        }
+
+        #[test]
+        fn given_history_schema_when_generated_then_has_limit_property() {
+            let schema = history_schema();
+
+            let schema_json = serde_json::to_value(&*schema).unwrap();
+            let props = schema_json.get("properties").unwrap().as_object().unwrap();
+            assert!(props.contains_key("limit"));
+
+            // Verify limit constraints
+            let limit = props.get("limit").unwrap();
+            assert_eq!(limit.get("minimum"), Some(&serde_json::json!(1)));
+            assert_eq!(limit.get("maximum"), Some(&serde_json::json!(50)));
+        }
+
+        #[test]
+        fn given_events_schema_when_generated_then_has_required_run_id() {
+            let schema = events_schema();
+
+            let schema_json = serde_json::to_value(&*schema).unwrap();
+            let required = schema_json.get("required").unwrap().as_array().unwrap();
+            assert!(required.iter().any(|v| v.as_str() == Some("run_id")));
+
+            let props = schema_json.get("properties").unwrap().as_object().unwrap();
+            assert!(props.contains_key("since_index"));
+        }
+
+        #[test]
+        fn given_events_output_schema_when_generated_then_has_events_array() {
+            let schema = events_output_schema();
+
+            let schema_json = serde_json::to_value(&*schema).unwrap();
+            let props = schema_json.get("properties").unwrap().as_object().unwrap();
+            assert!(props.contains_key("events"));
+            assert!(props.contains_key("total_count"));
+            assert!(props.contains_key("has_more"));
+        }
+
+        #[test]
+        fn given_run_output_schema_when_generated_then_requires_run_id() {
+            let schema = run_output_schema();
+
+            let schema_json = serde_json::to_value(&*schema).unwrap();
+            let required = schema_json.get("required").unwrap().as_array().unwrap();
+            assert!(required.iter().any(|v| v.as_str() == Some("run_id")));
+        }
+
+        #[test]
+        fn given_list_output_schema_when_generated_then_has_templates_array() {
+            let schema = list_output_schema();
+
+            let schema_json = serde_json::to_value(&*schema).unwrap();
+            let props = schema_json.get("properties").unwrap().as_object().unwrap();
+            assert!(props.contains_key("templates"));
+        }
+
+        #[test]
+        fn given_agents_output_schema_when_generated_then_has_agents_array_with_structure() {
+            let schema = agents_output_schema();
+
+            let schema_json = serde_json::to_value(&*schema).unwrap();
+            let props = schema_json.get("properties").unwrap().as_object().unwrap();
+            assert!(props.contains_key("agents"));
+
+            // Verify agents array item structure
+            let agents = props.get("agents").unwrap();
+            let items = agents.get("items").unwrap();
+            let item_props = items.get("properties").unwrap().as_object().unwrap();
+            assert!(item_props.contains_key("name"));
+            assert!(item_props.contains_key("description"));
+            assert!(item_props.contains_key("tools"));
+            assert!(item_props.contains_key("requires_cli"));
+        }
+    }
+
+    // ==========================================
+    // Tool Generation Tests
+    // ==========================================
+
+    mod tool_generation {
+        use super::*;
+
+        #[test]
+        fn given_all_tools_when_generated_then_contains_expected_count() {
+            let tools = all_tools();
+
+            // Should have 10 tools total
+            assert_eq!(tools.len(), 10);
+        }
+
+        #[test]
+        fn given_all_tools_when_generated_then_all_have_names() {
+            let tools = all_tools();
+
+            for tool in &tools {
+                assert!(!tool.name.is_empty(), "Tool should have a name");
+            }
+        }
+
+        #[test]
+        fn given_all_tools_when_generated_then_all_have_descriptions() {
+            let tools = all_tools();
+
+            for tool in &tools {
+                assert!(
+                    tool.description.is_some(),
+                    "Tool {} should have description",
+                    tool.name
+                );
+            }
+        }
+
+        #[test]
+        fn given_all_tools_when_generated_then_contains_core_tools() {
+            let tools = all_tools();
+            let names: Vec<_> = tools.iter().map(|t| t.name.as_ref()).collect();
+
+            assert!(names.contains(&"list-subagents"));
+            assert!(names.contains(&"list-agents"));
+            assert!(names.contains(&"run-subagent"));
+            assert!(names.contains(&"get-run-status"));
+            assert!(names.contains(&"stop-run"));
+            assert!(names.contains(&"get-run-history"));
+            assert!(names.contains(&"get-run-events"));
+        }
+
+        #[test]
+        fn given_all_tools_when_generated_then_contains_codex_extended_tools() {
+            let tools = all_tools();
+            let names: Vec<_> = tools.iter().map(|t| t.name.as_ref()).collect();
+
+            assert!(names.contains(&"run-subagent-async"));
+            assert!(names.contains(&"get-async-status"));
+            assert!(names.contains(&"download-transcript-secure"));
+        }
+
+        #[test]
+        fn given_list_subagents_tool_when_generated_then_has_empty_input_schema() {
+            let tools = all_tools();
+            let list_tool = tools
+                .iter()
+                .find(|t| t.name.as_ref() == "list-subagents")
+                .unwrap();
+
+            // list-subagents takes no parameters
+            let schema_json = serde_json::to_value(&*list_tool.input_schema).unwrap();
+            assert!(
+                schema_json.as_object().unwrap().is_empty()
+                    || !schema_json.as_object().unwrap().contains_key("required")
+            );
+        }
+
+        #[test]
+        fn given_run_subagent_tool_when_generated_then_has_input_and_output_schemas() {
+            let tools = all_tools();
+            let run_tool = tools
+                .iter()
+                .find(|t| t.name.as_ref() == "run-subagent")
+                .unwrap();
+
+            // Should have both input and output schemas
+            assert!(!run_tool.input_schema.is_empty());
+            assert!(run_tool.output_schema.is_some());
+        }
+
+        #[test]
+        fn given_download_transcript_tool_when_generated_then_has_no_output_schema() {
+            let tools = all_tools();
+            let transcript_tool = tools
+                .iter()
+                .find(|t| t.name.as_ref() == "download-transcript-secure")
+                .unwrap();
+
+            // download-transcript-secure has no output schema
+            assert!(transcript_tool.output_schema.is_none());
+        }
+    }
+
+    // ==========================================
+    // Schema Validation Tests
+    // ==========================================
+
+    mod schema_validation {
+        use super::*;
+
+        #[test]
+        fn given_timeout_ms_in_run_schema_when_validated_then_has_bounds() {
+            let schema = run_schema();
+
+            let schema_json = serde_json::to_value(&*schema).unwrap();
+            let props = schema_json.get("properties").unwrap();
+            let timeout = props.get("timeout_ms").unwrap();
+
+            assert_eq!(timeout.get("minimum"), Some(&serde_json::json!(1)));
+            assert_eq!(timeout.get("maximum"), Some(&serde_json::json!(300000)));
+        }
+
+        #[test]
+        fn given_since_index_in_events_schema_when_validated_then_has_minimum() {
+            let schema = events_schema();
+
+            let schema_json = serde_json::to_value(&*schema).unwrap();
+            let props = schema_json.get("properties").unwrap();
+            let since_index = props.get("since_index").unwrap();
+
+            assert_eq!(since_index.get("minimum"), Some(&serde_json::json!(0)));
+        }
+
+        #[test]
+        fn given_all_schemas_when_serialized_then_valid_json() {
+            // Verify all schemas can be serialized to valid JSON
+            let schemas: Vec<Arc<JsonObject>> = vec![
+                run_schema(),
+                run_id_schema(),
+                history_schema(),
+                events_schema(),
+                events_output_schema(),
+                run_output_schema(),
+                list_output_schema(),
+                agents_output_schema(),
+            ];
+
+            for schema in schemas {
+                let json = serde_json::to_string(&*schema);
+                assert!(json.is_ok(), "Schema should serialize to valid JSON");
+            }
+        }
+    }
+}

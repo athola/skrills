@@ -162,3 +162,284 @@ impl SyncReport {
         out
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==========================================
+    // SkipReason Tests (BDD style)
+    // ==========================================
+
+    mod skip_reason {
+        use super::*;
+
+        #[test]
+        fn given_unsupported_field_when_description_then_includes_field_and_source() {
+            let reason = SkipReason::UnsupportedField {
+                field: "hooks".to_string(),
+                source_agent: "codex".to_string(),
+                suggestion: "Remove hooks field".to_string(),
+            };
+
+            let desc = reason.description();
+            assert!(desc.contains("hooks"));
+            assert!(desc.contains("codex"));
+        }
+
+        #[test]
+        fn given_path_not_found_when_description_then_includes_path() {
+            let reason = SkipReason::PathNotFound {
+                path: PathBuf::from("/some/missing/path.md"),
+                context: "skill reference".to_string(),
+            };
+
+            let desc = reason.description();
+            assert!(desc.contains("/some/missing/path.md"));
+        }
+
+        #[test]
+        fn given_agent_specific_when_description_then_includes_item_and_feature() {
+            let reason = SkipReason::AgentSpecificFeature {
+                item: "my-skill".to_string(),
+                feature: "codex-only-field".to_string(),
+                suggestion: "Remove or adapt".to_string(),
+            };
+
+            let desc = reason.description();
+            assert!(desc.contains("my-skill"));
+            assert!(desc.contains("codex-only-field"));
+        }
+
+        #[test]
+        fn given_excluded_by_config_when_description_then_includes_pattern() {
+            let reason = SkipReason::ExcludedByConfig {
+                item: "test-skill".to_string(),
+                pattern: "*.test".to_string(),
+            };
+
+            let desc = reason.description();
+            assert!(desc.contains("test-skill"));
+            assert!(desc.contains("*.test"));
+        }
+
+        #[test]
+        fn given_unchanged_when_description_then_includes_item() {
+            let reason = SkipReason::Unchanged {
+                item: "stable-skill".to_string(),
+            };
+
+            let desc = reason.description();
+            assert!(desc.contains("stable-skill"));
+            assert!(desc.contains("unchanged") || desc.contains("hash"));
+        }
+
+        #[test]
+        fn given_parse_error_when_description_then_includes_item_and_error() {
+            let reason = SkipReason::ParseError {
+                item: "broken-skill".to_string(),
+                error: "invalid YAML".to_string(),
+            };
+
+            let desc = reason.description();
+            assert!(desc.contains("broken-skill"));
+            assert!(desc.contains("invalid YAML"));
+        }
+
+        #[test]
+        fn given_would_overwrite_when_description_then_includes_item() {
+            let reason = SkipReason::WouldOverwrite {
+                item: "existing-cmd".to_string(),
+            };
+
+            let desc = reason.description();
+            assert!(desc.contains("existing-cmd"));
+            assert!(desc.contains("exists") || desc.contains("overwrite"));
+        }
+
+        #[test]
+        fn given_unsupported_field_when_guidance_then_returns_suggestion() {
+            let reason = SkipReason::UnsupportedField {
+                field: "hooks".to_string(),
+                source_agent: "codex".to_string(),
+                suggestion: "Remove hooks".to_string(),
+            };
+
+            assert_eq!(reason.guidance(), Some("Remove hooks"));
+        }
+
+        #[test]
+        fn given_unchanged_when_guidance_then_returns_none() {
+            let reason = SkipReason::Unchanged {
+                item: "skill".to_string(),
+            };
+
+            assert!(reason.guidance().is_none());
+        }
+
+        #[test]
+        fn given_would_overwrite_when_guidance_then_returns_skip_flag_hint() {
+            let reason = SkipReason::WouldOverwrite {
+                item: "cmd".to_string(),
+            };
+
+            let guidance = reason.guidance().unwrap();
+            assert!(guidance.contains("skip-existing"));
+        }
+    }
+
+    // ==========================================
+    // WriteReport Tests
+    // ==========================================
+
+    mod write_report {
+        use super::*;
+
+        #[test]
+        fn given_default_when_created_then_empty() {
+            let report = WriteReport::default();
+
+            assert_eq!(report.written, 0);
+            assert!(report.skipped.is_empty());
+            assert!(report.warnings.is_empty());
+        }
+
+        #[test]
+        fn when_fields_set_then_values_retained() {
+            let report = WriteReport {
+                written: 5,
+                skipped: vec![SkipReason::Unchanged {
+                    item: "x".to_string(),
+                }],
+                warnings: vec!["Warning 1".to_string()],
+            };
+
+            assert_eq!(report.written, 5);
+            assert_eq!(report.skipped.len(), 1);
+            assert_eq!(report.warnings.len(), 1);
+        }
+    }
+
+    // ==========================================
+    // SyncReport Tests
+    // ==========================================
+
+    mod sync_report {
+        use super::*;
+
+        #[test]
+        fn given_new_when_created_then_success_and_empty() {
+            let report = SyncReport::new();
+
+            assert!(report.success);
+            assert_eq!(report.total_synced(), 0);
+            assert_eq!(report.total_skipped(), 0);
+        }
+
+        #[test]
+        fn given_report_with_synced_items_when_total_synced_then_sums_all() {
+            let mut report = SyncReport::new();
+            report.skills.written = 3;
+            report.commands.written = 2;
+            report.mcp_servers.written = 1;
+            report.preferences.written = 4;
+
+            assert_eq!(report.total_synced(), 10);
+        }
+
+        #[test]
+        fn given_report_with_skipped_items_when_total_skipped_then_sums_all() {
+            let mut report = SyncReport::new();
+            report.skills.skipped = vec![
+                SkipReason::Unchanged {
+                    item: "a".to_string(),
+                },
+                SkipReason::Unchanged {
+                    item: "b".to_string(),
+                },
+            ];
+            report.commands.skipped = vec![SkipReason::WouldOverwrite {
+                item: "c".to_string(),
+            }];
+
+            assert_eq!(report.total_skipped(), 3);
+        }
+
+        #[test]
+        fn given_report_when_format_summary_then_includes_all_sections() {
+            let mut report = SyncReport::new();
+            report.skills.written = 5;
+            report.commands.written = 3;
+            report.mcp_servers.written = 1;
+            report.preferences.written = 2;
+            report.skills.skipped = vec![SkipReason::Unchanged {
+                item: "x".to_string(),
+            }];
+
+            let summary = report.format_summary("codex", "claude");
+
+            assert!(summary.contains("codex"));
+            assert!(summary.contains("claude"));
+            assert!(summary.contains("Skills"));
+            assert!(summary.contains("Commands"));
+            assert!(summary.contains("MCP Servers"));
+            assert!(summary.contains("Preferences"));
+            assert!(summary.contains("5 synced"));
+            assert!(summary.contains("1 skipped"));
+        }
+
+        #[test]
+        fn given_empty_report_when_format_summary_then_shows_zeros() {
+            let report = SyncReport::new();
+            let summary = report.format_summary("src", "dest");
+
+            assert!(summary.contains("0 synced"));
+            assert!(summary.contains("0 skipped"));
+        }
+    }
+
+    // ==========================================
+    // Serialization Tests (ensure serde works)
+    // ==========================================
+
+    mod serialization {
+        use super::*;
+
+        #[test]
+        fn skip_reason_serializes_with_type_tag() {
+            let reason = SkipReason::Unchanged {
+                item: "test".to_string(),
+            };
+
+            let json = serde_json::to_string(&reason).unwrap();
+            assert!(json.contains("\"type\":\"Unchanged\""));
+            assert!(json.contains("\"item\":\"test\""));
+        }
+
+        #[test]
+        fn skip_reason_deserializes_from_json() {
+            let json = r#"{"type":"Unchanged","item":"test"}"#;
+            let reason: SkipReason = serde_json::from_str(json).unwrap();
+
+            match reason {
+                SkipReason::Unchanged { item } => assert_eq!(item, "test"),
+                _ => panic!("Wrong variant"),
+            }
+        }
+
+        #[test]
+        fn sync_report_roundtrips_through_json() {
+            let mut report = SyncReport::new();
+            report.skills.written = 5;
+            report.success = true;
+            report.summary = "Test summary".to_string();
+
+            let json = serde_json::to_string(&report).unwrap();
+            let restored: SyncReport = serde_json::from_str(&json).unwrap();
+
+            assert_eq!(restored.skills.written, 5);
+            assert!(restored.success);
+            assert_eq!(restored.summary, "Test summary");
+        }
+    }
+}

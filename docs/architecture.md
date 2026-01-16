@@ -56,7 +56,7 @@ graph TD
 
 ## Design Principles
 
-The architecture enforces strict separation of concerns. Leaf crates like `validate`, `discovery`, and `state` have no internal dependencies, while near-leaf crates like `analyze` only depend on those specific types. We use trait-based abstraction via `AgentAdapter` to support pluggable source and target adapters, and compile-time dispatch through `SyncOrchestrator<S, T>` to ensure performance and type safety. Features like `subagents` and `watch` are gated behind feature flags to keep the core binary small.
+The architecture separates concerns strictly. Leaf crates like `validate`, `discovery`, and `state` have no internal dependencies, while near-leaf crates like `analyze` only depend on those specific types. We use trait-based abstraction via `AgentAdapter` to support pluggable source and target adapters, and compile-time dispatch through `SyncOrchestrator<S, T>` to maintain performance and type safety. Features like `subagents` and `watch` are gated behind feature flags to keep the core binary small.
 
 ## Module Organization
 

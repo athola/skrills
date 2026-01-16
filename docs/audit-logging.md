@@ -245,7 +245,7 @@ The General Data Protection Regulation (GDPR) requires specific considerations f
 4. **Data Subject Rights**
    - Document what personal data appears in logs
    - Establish procedures for data subject access requests
-   - Ensure logs can be included in data erasure processes if required
+   - Include logs in data erasure processes if required
 
 ### SOC 2 Requirements
 

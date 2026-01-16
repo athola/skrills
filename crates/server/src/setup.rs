@@ -475,7 +475,7 @@ args = ["serve"]
     Ok(())
 }
 
-/// Ensures the experimental Codex skills feature flag is enabled in `config.toml`.
+/// Ensure the experimental Codex skills feature flag is enabled in `config.toml`.
 ///
 /// Codex loads skills only when `[features] skills = true` is set.
 pub(crate) fn ensure_codex_skills_feature_enabled(config_path: &Path) -> Result<()> {

@@ -30,9 +30,9 @@ Use skrills as an MCP server for dynamic skill loading in both Claude Code and C
 *See the [MCP tutorial](docs/tutorials/mcp.md) for setup instructions.*
 
 ## Why Skrills
-Skrills manages skills and configurations for Claude Code and Codex CLI. It bridges the gap between these tools by validating markdown files against Codex's strict YAML frontmatter requirements and analyzing token usage to help manage context limits. A single binary provides mirroring, diagnostics, and an MCP server.
+Skrills manages skills and configurations for Claude Code and Codex CLI. Claude Code accepts raw markdown, but Codex requires strict YAML frontmatter. Skrills validates these files against Codex's rules, preventing compatibility errors. It also mirrors skills, provides diagnostics, and runs an MCP server from a single binary.
 
-Claude Code accepts raw markdown, while Codex enforces strict YAML frontmatter. Skrills validates against these rules to prevent compatibility errors. The `sync-commands` tool checks file hashes before writing to avoid overwriting local customizations, and the analytics tools report token usage to suggest optimizations for context window limits.
+The `sync-commands` tool checks file hashes before writing to preserve local customizations. Analytics tools report token usage to suggest optimizations for context window limits.
 
 ## Architecture (workspace crates)
 - `crates/server`: MCP server runtime, CLI, and HTTP transport with security middleware.
@@ -156,10 +156,7 @@ ssh -L 3000:localhost:3000 your-server
 
 ## Validation
 
-Skrills validates skills against two targets:
-
-- **Claude Code**: Permissive. Accepts any markdown with optional frontmatter.
-- **Codex CLI**: Strict. Requires YAML frontmatter with `name` (max 100 chars) and `description` (max 500 chars).
+Skrills validates skills against two targets. **Claude Code** is permissive, accepting any markdown with optional frontmatter. **Codex CLI** is strict, requiring YAML frontmatter with a `name` (max 100 chars) and `description` (max 500 chars).
 
 The `--autofix` flag derives missing frontmatter from the file path and content.
 
@@ -277,6 +274,7 @@ make fmt lint test --quiet
 - Rust toolchain ≥ 1.75 recommended.
 - End-to-end MCP tests are in `crates/server/tests/`; sample agents in `crates/subagents/`.
 - Tool handler tests cover edge cases, dry-run modes, and target validation for all MCP tools (see `crates/server/src/app/tests.rs`).
+- BDD-style unit tests cover schema generation (`crates/subagents/src/tool_schemas.rs`), sync reporting (`crates/sync/src/report.rs`), and validation issues (`crates/validate/src/common.rs`).
 
 ## Skill loading validation (Claude Code and Codex)
 

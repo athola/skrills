@@ -35,7 +35,7 @@ Primary Mitigations:
 ## Deployment Patterns
 
 - **Stdio/Local Mode**: Relies on process isolation and filesystem permissions. Store secrets in environment files, not directly within manifests.
-- **Claude Code Integration**: The hook-based integration inherits Claude Code's security model. Ensure Claude Code itself is properly configured.
+- **Claude Code Integration**: The hook-based integration inherits Claude Code's security model. Verify Claude Code itself is properly configured.
 
 ## Future Security Enhancements
 

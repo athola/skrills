@@ -142,16 +142,16 @@ flowchart TD
 - **Future: Network Authentication**: For future network-exposed deployments, mTLS and API key authentication are planned.
 
 #### Network Security
-- **TLS 1.3 Enforcement**: Strict enforcement of TLS 1.3 protocols, ensuring the use of modern cryptographic standards.
+- **TLS 1.3 Enforcement**: Strict enforcement of TLS 1.3 protocols, using modern cryptographic standards.
 - **Strong Cipher Suites**: Uses robust cipher suites, such as AES-256-GCM and ChaCha20-Poly1305, to maintain strong encryption.
-- **Certificate Validation**: Implements comprehensive certificate validation, including chain-of-trust and expiration checks.
+- **Certificate Validation**: Validates certificates, including chain-of-trust and expiration checks.
 - **Configurable Bind Addresses**: Allows for flexible configuration of network bind addresses for enhanced security and deployment options.
 
 #### Input Validation
 - **Path Canonicalization and Validation**: Prevents path traversal vulnerabilities through strict canonicalization and validation of all incoming paths.
 - **File Size Limits**: Enforces configurable file size limits to prevent resource exhaustion attacks.
 - **JSON Schema Validation for MCP Messages**: Validates all Machine-Readable Context Protocol (MCP) messages against predefined JSON schemas.
-- **Skill Metadata Validation**: Ensures the integrity and correctness of skill metadata through rigorous validation processes.
+- **Skill Metadata Validation**: Verifies the integrity and correctness of skill metadata through rigorous validation processes.
 
 #### Data Protection
 - **No Persistent User Prompt Storage**: User prompts are processed ephemerally and are never persistently stored, preserving user privacy.
@@ -168,7 +168,7 @@ flowchart TD
 ### Recommended Controls (TODO)
 
 #### Rate Limiting
-- Per-client request rate limits to ensure fair usage.
+- Per-client request rate limits for fair usage.
 - Global concurrent connection limits to protect overall service capacity.
 - Throttling of embedding generation for resource optimization.
 - Configurable burst allowances for legitimate traffic spikes.
