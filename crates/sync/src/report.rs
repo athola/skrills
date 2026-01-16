@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Reasons why an item was skipped during sync.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum SkipReason {
@@ -32,7 +31,6 @@ pub enum SkipReason {
     WouldOverwrite { item: String },
 }
 
-#[allow(dead_code)]
 impl SkipReason {
     /// Returns a human-readable description of the skip reason.
     pub fn description(&self) -> String {
@@ -83,7 +81,6 @@ impl SkipReason {
 }
 
 /// Report for a write operation on a single artifact type.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WriteReport {
     /// Number of items successfully written
@@ -95,7 +92,6 @@ pub struct WriteReport {
 }
 
 /// Complete sync report across all artifact types.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[must_use]
 pub struct SyncReport {
@@ -109,7 +105,6 @@ pub struct SyncReport {
     pub summary: String,
 }
 
-#[allow(dead_code)]
 impl SyncReport {
     /// Creates a new empty report.
     pub fn new() -> Self {
