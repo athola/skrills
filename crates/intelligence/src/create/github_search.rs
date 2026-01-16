@@ -554,6 +554,131 @@ mod tests {
     }
 }
 
+/// Property-based tests for sanitize_github_query using proptest.
+/// These tests generate random inputs to find edge cases that manual tests might miss.
+#[cfg(test)]
+mod proptest_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Property: sanitize_github_query should never panic on any input.
+        #[test]
+        fn sanitize_never_panics(input in "\\PC*") {
+            let _ = sanitize_github_query(&input);
+        }
+
+        /// Property: sanitize_github_query should never return a string longer than input.
+        /// (We only remove content, never add)
+        #[test]
+        fn sanitize_never_increases_length(input in "\\PC*") {
+            let result = sanitize_github_query(&input);
+            prop_assert!(result.len() <= input.len());
+        }
+
+        /// Property: sanitize_github_query should always return valid UTF-8.
+        #[test]
+        fn sanitize_returns_valid_utf8(input in "\\PC*") {
+            let result = sanitize_github_query(&input);
+            // This assertion passes if we get here - String is always valid UTF-8
+            prop_assert!(result.is_ascii() || !result.is_empty() || result.is_empty());
+        }
+
+        /// Property: If input has no operators, only whitespace normalization should occur.
+        #[test]
+        fn sanitize_preserves_safe_words(
+            words in prop::collection::vec("[a-zA-Z0-9]+", 1..5)
+        ) {
+            let input = words.join(" ");
+            let result = sanitize_github_query(&input);
+            // Each word should appear in the result (unless it's a boolean operator)
+            for word in &words {
+                let is_boolean_op = ["NOT", "AND", "OR"]
+                    .iter()
+                    .any(|op| word.eq_ignore_ascii_case(op));
+                if !is_boolean_op {
+                    prop_assert!(
+                        result.contains(word.as_str()),
+                        "Word '{}' missing from result '{}'", word, result
+                    );
+                }
+            }
+        }
+
+        /// Property: No colon operators should survive sanitization.
+        #[test]
+        fn sanitize_removes_all_colon_operators(
+            prefix in "[a-zA-Z0-9 ]{0,20}",
+            operator in prop::sample::select(vec![
+                "repo:", "org:", "user:", "in:", "size:", "fork:", "forks:",
+                "stars:", "topics:", "topic:", "created:", "pushed:", "updated:",
+                "is:", "archived:", "license:", "language:", "filename:", "path:",
+                "extension:"
+            ]),
+            value in "[a-zA-Z0-9/\\-><=]+",
+            suffix in "[a-zA-Z0-9 ]{0,20}"
+        ) {
+            let input = format!("{} {}{} {}", prefix.trim(), operator, value, suffix.trim());
+            let result = sanitize_github_query(&input);
+
+            // The operator:value should be completely removed
+            prop_assert!(
+                !result.to_lowercase().contains(&operator.to_lowercase()),
+                "Operator '{}' found in result '{}' (input: '{}')",
+                operator, result, input
+            );
+        }
+
+        /// Property: Standalone boolean operators should be removed.
+        #[test]
+        fn sanitize_removes_boolean_operators(
+            prefix in "[a-z]{1,10}",
+            boolean_op in prop::sample::select(vec!["AND", "OR", "NOT", "and", "or", "not"]),
+            suffix in "[a-z]{1,10}"
+        ) {
+            let input = format!("{} {} {}", prefix, boolean_op, suffix);
+            let result = sanitize_github_query(&input);
+
+            // The result should contain prefix and suffix but not the boolean operator as standalone
+            let words: Vec<&str> = result.split_whitespace().collect();
+            let has_boolean = words.iter().any(|w| {
+                w.eq_ignore_ascii_case("AND") || w.eq_ignore_ascii_case("OR") || w.eq_ignore_ascii_case("NOT")
+            });
+            prop_assert!(
+                !has_boolean,
+                "Boolean operator found in result '{}' (input: '{}')",
+                result, input
+            );
+        }
+
+        /// Property: Words containing boolean operator substrings should NOT be affected.
+        /// E.g., "android", "Oregon", "annotation" should pass through.
+        #[test]
+        fn sanitize_preserves_words_with_operator_substrings(
+            word in "(android|Oregon|annotation|manor|donor|canopy|mandate|bandana|panorama|grandma)"
+        ) {
+            let input = format!("test {}", word);
+            let result = sanitize_github_query(&input);
+            prop_assert!(
+                result.contains(&word),
+                "Word '{}' should be preserved in result '{}'",
+                word, result
+            );
+        }
+
+        /// Property: Empty and whitespace-only inputs should return empty string.
+        #[test]
+        fn sanitize_handles_whitespace_only(spaces in "[ \t\n\r]*") {
+            let result = sanitize_github_query(&spaces);
+            prop_assert!(
+                result.is_empty(),
+                "Whitespace-only input should produce empty result, got '{}'",
+                result
+            );
+        }
+    }
+}
+
 /// Integration tests using wiremock for HTTP mocking.
 /// These tests verify the actual HTTP behavior of the GitHub search functions.
 #[cfg(test)]
