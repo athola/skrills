@@ -577,11 +577,13 @@ mod proptest_tests {
         }
 
         /// Property: sanitize_github_query should always return valid UTF-8.
+        /// In Rust, String is guaranteed valid UTF-8, so reaching here without panic proves validity.
         #[test]
         fn sanitize_returns_valid_utf8(input in "\\PC*") {
             let result = sanitize_github_query(&input);
-            // This assertion passes if we get here - String is always valid UTF-8
-            prop_assert!(result.is_ascii() || !result.is_empty() || result.is_empty());
+            // Verify we can iterate chars (would panic on invalid UTF-8 if String were somehow corrupted)
+            let char_count = result.chars().count();
+            prop_assert!(char_count <= input.chars().count());
         }
 
         /// Property: If input has no operators, only whitespace normalization should occur.

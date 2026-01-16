@@ -283,8 +283,72 @@ mod tests {
                 item: "cmd".to_string(),
             };
 
-            let guidance = reason.guidance().unwrap();
+            let guidance = reason
+                .guidance()
+                .expect("WouldOverwrite should have guidance");
             assert!(guidance.contains("skip-existing"));
+        }
+
+        #[test]
+        fn given_path_not_found_when_guidance_then_returns_path_update_suggestion() {
+            let reason = SkipReason::PathNotFound {
+                path: std::path::PathBuf::from("/missing/skill.md"),
+                context: "skill definition".to_string(),
+            };
+
+            let guidance = reason
+                .guidance()
+                .expect("PathNotFound should have guidance");
+            assert!(
+                guidance.contains("path") || guidance.contains("exclude"),
+                "guidance should suggest path update or exclusion"
+            );
+        }
+
+        #[test]
+        fn given_agent_specific_feature_when_guidance_then_returns_custom_suggestion() {
+            let reason = SkipReason::AgentSpecificFeature {
+                item: "mcp-server".to_string(),
+                feature: "stdio transport".to_string(),
+                suggestion: "Use HTTP transport instead".to_string(),
+            };
+
+            let guidance = reason
+                .guidance()
+                .expect("AgentSpecificFeature should have guidance");
+            assert_eq!(guidance, "Use HTTP transport instead");
+        }
+
+        #[test]
+        fn given_excluded_by_config_when_guidance_then_returns_intentional_message() {
+            let reason = SkipReason::ExcludedByConfig {
+                item: "deprecated-skill".to_string(),
+                pattern: "deprecated-*".to_string(),
+            };
+
+            let guidance = reason
+                .guidance()
+                .expect("ExcludedByConfig should have guidance");
+            assert!(
+                guidance.to_lowercase().contains("intentional")
+                    || guidance.to_lowercase().contains("no action"),
+                "guidance should indicate intentional exclusion"
+            );
+        }
+
+        #[test]
+        fn given_parse_error_when_guidance_then_returns_fix_syntax_suggestion() {
+            let reason = SkipReason::ParseError {
+                item: "broken-skill.md".to_string(),
+                error: "invalid YAML frontmatter".to_string(),
+            };
+
+            let guidance = reason.guidance().expect("ParseError should have guidance");
+            assert!(
+                guidance.to_lowercase().contains("fix")
+                    || guidance.to_lowercase().contains("syntax"),
+                "guidance should suggest fixing syntax"
+            );
         }
     }
 
