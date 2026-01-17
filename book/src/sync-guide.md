@@ -91,7 +91,7 @@ This shows:
 
 ## Mirror Command
 
-The `mirror` command is a comprehensive sync that also updates `AGENTS.md`:
+The `mirror` command syncs files and updates `AGENTS.md`:
 
 ```bash
 skrills mirror --skip-existing-commands

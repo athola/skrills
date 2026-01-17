@@ -72,7 +72,7 @@ make fmt lint test --quiet build
 A structured prompt increases the chance of high-quality results. Request detailed comparisons, implementation outlines, trade-offs, and complexity assessments.
 
 ### Role Prompting
-Assigning a specific role to an agent can enhance its performance by providing a focused perspective (e.g., a security expert or a senior developer). The precision of the role definition directly correlates with the quality of the agent's output.
+Assigning a specific role (e.g., security expert, senior developer) focuses the agent's perspective. Precise role definitions improve output quality.
 
 Using XML tags can also help structure prompts and responses:
 ```xml
@@ -90,12 +90,12 @@ Review the authentication implementation for OWASP Top 10 vulnerabilities.
 </output_format>
 ```
 
-**Role Prompting Best Practices:**
-- Position role definitions prominently at the top of relevant project configuration files.
-- Ensure the assigned role aligns accurately with the specific domain of the task.
-- For optimal results, integrate role definitions with structured XML and provide concrete examples.
-- Experiment with varying levels of role specificity to fine-tune agent behavior.
-- Maintain consistency in XML tag names across all prompts for clarity and parseability.
+**Best Practices:**
+- Place role definitions at the top of configuration files.
+- Align the role with the task's domain.
+- Integrate role definitions with structured XML and concrete examples.
+- Experiment with specificity to fine-tune behavior.
+- Use consistent XML tag names.
 
 ### Creative Problem-Solving
 1. **Diverge**: Generate a minimum of five distinct approaches to the problem, deliberately withholding initial judgment.
@@ -107,39 +107,37 @@ Review the authentication implementation for OWASP Top 10 vulnerabilities.
 
 ## Architecture
 
-Robust architecture facilitates long-term manageability and adaptability.
-
 ### Design
-- **Favor Composition Over Inheritance**: Prioritize composition and delegation over deep class hierarchies to enhance flexibility and reduce tight coupling.
-- **Promote Explicitness**: Write code that is unambiguously clear and easy to understand, actively avoiding 'clever' tricks or implicit behaviors.
-- **Utilize Dependency Injection**: Employ dependency injection to pass required dependencies into components, thereby simplifying testing and promoting reusability, rather than relying on singletons.
-- **Design for API Stability**: Design public APIs to be stable, minimizing breaking changes. Internal refactoring efforts should not impact external users of the API.
-- **Handle Errors Gracefully**: Implement precise error handling, avoiding broad `except:` clauses that can inadvertently mask bugs. Be specific about the types of errors being caught.
+- **Favor Composition**: Use composition and delegation instead of deep class hierarchies to reduce coupling.
+- **Be Explicit**: Write clear code. Avoid "clever" tricks or implicit behaviors.
+- **Use Dependency Injection**: Pass dependencies into components to simplify testing and reuse. Avoid singletons.
+- **Design for API Stability**: Minimize breaking changes in public APIs. Internal refactoring should not affect external users.
+- **Handle Errors Gracefully**: Catch specific errors. Avoid broad `except:` clauses that mask bugs.
 
 ### Decision-Making
-When evaluating and selecting between different approaches, the following factors should be carefully considered:
-- **Testability**: Assess the ease with which the proposed solution can be thoroughly tested.
-- **Readability**: Consider whether a new developer joining the project would easily comprehend the code within a reasonable timeframe (e.g., six months).
-- **Consistency**: Evaluate how well the solution integrates with existing patterns and conventions within the codebase.
-- **Simplicity**: Prioritize the simplest effective solution that addresses the problem.
-- **Reversibility**: Assess the complexity and effort required to revert the decision if it proves suboptimal.
-- **Maintainability**: Consider the ease with which other developers can understand, modify, and extend the code.
+Consider these factors when selecting an approach:
+- **Testability**: Can the solution be thoroughly tested?
+- **Readability**: Will a new developer understand the code quickly?
+- **Consistency**: Does it fit existing patterns?
+- **Simplicity**: Is it the simplest effective solution?
+- **Reversibility**: How hard is it to revert if wrong?
+- **Maintainability**: Can others modify and extend the code easily?
 
 ### Security
-- **Integrate Security Early**: Incorporate security considerations from the outset of the development lifecycle, rather than treating it as an afterthought.
-- **Multi-Layered Defense**: Implement a "defense in depth" strategy by deploying multiple layers of security controls.
-- **Principle of Least Privilege**: Adhere to the principle of least privilege by granting only the minimum necessary permissions.
-- **Separate Secrets from Code**: Strictly avoid committing secrets to version control systems.
-- **Validate All Inputs**: Treat all data originating from external sources as inherently untrusted and subject to rigorous validation.
-- **Use Parameterized Queries**: Employ parameterized queries for database interactions, specifically avoiding string concatenation to construct SQL queries.
-- **Monitor System Behavior**: Continuously monitor system behavior in real-time to proactively detect anomalies and potential threats.
-- **Scan for Covert Threats**: Implement scanning mechanisms to detect malicious content potentially hidden within file uploads or other data streams.
+- **Integrate Security Early**: Consider security from the start.
+- **Multi-Layered Defense**: Use defense in depth.
+- **Least Privilege**: Grant only minimum necessary permissions.
+- **Separate Secrets**: Keep secrets out of version control.
+- **Validate Inputs**: Validate all external data.
+- **Use Parameterized Queries**: Prevent SQL injection by using parameterized queries.
+- **Monitor Behavior**: Monitor for anomalies.
+- **Scan for Threats**: Scan file uploads and data streams.
 
 ### Performance
-- **Measure Before Optimizing**: Avoid premature optimization; first, identify performance bottlenecks through profiling tools before attempting to optimize code.
-- **Prioritize Macro-Optimizations**: Recognize that algorithmic and architectural improvements yield significantly greater performance impacts compared to micro-optimizations.
-- **Document Performance Trade-offs**: If a security measure introduces a performance impact, document this trade-off and provide a clear explanation of its necessity.
-- **Strategize Cache Invalidation**: Develop a reliable strategy for invalidating caches whenever underlying data undergoes modification.
+- **Measure First**: Profile before optimizing. Avoid premature optimization.
+- **Macro-Optimizations**: Focus on algorithms and architecture over micro-optimizations.
+- **Document Trade-offs**: Explain performance costs of security measures.
+- **Cache Invalidation**: Plan for cache invalidation when data changes.
 
 ---
 
@@ -191,26 +189,26 @@ To maintain clear context and avoid overwhelming output, avoid executing command
 ## Common Anti-Patterns
 
 ### Code Quality
-- **Over-engineering**: Constructing overly complex systems to address straightforward problems.
-- **Hidden Fragility**: Overlooking edge cases and intricate system interactions.
-- **Library Misuse**: Employing libraries without a clear understanding of their functionality or implications.
-- **"AI Slop"**: Characterized by the use of generic identifiers (e.g., `data`) or an excessive focus on rigid, "machine-perfect" formatting.
+- **Over-engineering**: Building complex systems for simple problems.
+- **Hidden Fragility**: Ignoring edge cases and system interactions.
+- **Library Misuse**: Using libraries without understanding them.
+- **"AI Slop"**: Using generic identifiers (e.g., `data`) or rigid, "machine-perfect" formatting.
 
 ### Security
-- **"Eyeball Test"**: Assuming code security based solely on superficial review.
-- **Static Defense**: Relying exclusively on input filtering rather than a dynamic approach that includes monitoring system behavior.
-- **Ignoring Invisible Content**: Failing to scan for threats within metadata or other non-visible data components.
-- **Input-Centric Governance**: Focusing exclusively on preventing malicious inputs, without ensuring the safety and integrity of outputs.
+- **"Eyeball Test"**: Assuming security based on a quick review.
+- **Static Defense**: Relying only on input filtering, ignoring runtime behavior.
+- **Ignoring Invisible Content**: Failing to scan metadata or hidden data.
+- **Input-Centric Governance**: Focusing only on inputs, neglecting output safety.
 
 ### Workflow
-- **"Big Bang" Changes**: Implementing large, untested commits that introduce significant risk.
-- **Premature Abstraction**: Introducing complex abstractions for inherently simple problems.
-- **Documentation Debt**: Neglecting to update documentation concurrently with code changes.
-- **Commits Lacking Context**: Commit messages that fail to adequately explain the rationale behind the change.
-- **Skipping Tests**: Deferring the creation of necessary test cases.
-- **Ignoring Linting**: Disregarding linter warnings, which often highlight genuine issues or potential bugs.
-- **"Cargo Culting"**: Blindly copying code or patterns without a fundamental understanding of their underlying principles.
-- **Analysis Paralysis**: Excessive planning and deliberation that hinders decisive action.
+- **"Big Bang" Changes**: Large, untested commits.
+- **Premature Abstraction**: Abstracting simple problems too early.
+- **Documentation Debt**: Changing code without updating docs.
+- **Commits Lacking Context**: Unclear commit messages.
+- **Skipping Tests**: Not writing tests.
+- **Ignoring Linting**: Ignoring linter warnings.
+- **"Cargo Culting"**: Copying code without understanding.
+- **Analysis Paralysis**: Over-planning.
 
 ---
 
@@ -236,12 +234,12 @@ find . -name "*.py" | head -10
 ```
 
 ### Decision Checklist
-Before proceeding with the implementation of a solution, consider the following questions:
-- Is the problem thoroughly understood?
-- Have multiple distinct approaches been generated?
-- Has the simplest effective solution been selected?
-- Have tests been written prior to implementation?
-- Do the changes adhere to the project's existing patterns?
+Before implementing, ask:
+- Do you understand the problem?
+- Did you consider multiple approaches?
+- Is this the simplest effective solution?
+- Did you write tests first?
+- Do the changes follow project patterns?
 
 ### Commit Checklist
 Prior to committing changes, ensure the following:

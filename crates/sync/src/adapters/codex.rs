@@ -59,7 +59,7 @@ impl CodexAdapter {
         self.root.join("config.toml")
     }
 
-    /// Ensures Codex's experimental skills feature flag is enabled in `config.toml`.
+    /// Ensure Codex's experimental skills feature flag is enabled in `config.toml`.
     ///
     /// Codex loads skills only when `[features] skills = true` is set.
     fn ensure_skills_feature_flag_enabled(&self) -> Result<bool> {

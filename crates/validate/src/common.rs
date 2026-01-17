@@ -151,3 +151,235 @@ impl ValidationResult {
             .count()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==========================================
+    // ValidationIssue Tests (BDD style)
+    // ==========================================
+
+    mod validation_issue {
+        use super::*;
+
+        #[test]
+        fn given_error_level_when_created_then_severity_is_error() {
+            // Given/When
+            let issue = ValidationIssue::error(ValidationTarget::Claude, "test error");
+
+            // Then
+            assert_eq!(issue.severity, Severity::Error);
+            assert_eq!(issue.target, ValidationTarget::Claude);
+            assert_eq!(issue.message, "test error");
+            assert!(issue.line.is_none());
+            assert!(issue.suggestion.is_none());
+        }
+
+        #[test]
+        fn given_warning_level_when_created_then_severity_is_warning() {
+            let issue = ValidationIssue::warning(ValidationTarget::Codex, "test warning");
+
+            assert_eq!(issue.severity, Severity::Warning);
+            assert_eq!(issue.target, ValidationTarget::Codex);
+            assert_eq!(issue.message, "test warning");
+        }
+
+        #[test]
+        fn given_info_level_when_created_then_severity_is_info() {
+            let issue = ValidationIssue::info(ValidationTarget::Both, "test info");
+
+            assert_eq!(issue.severity, Severity::Info);
+            assert_eq!(issue.target, ValidationTarget::Both);
+            assert_eq!(issue.message, "test info");
+        }
+
+        #[test]
+        fn when_with_line_called_then_line_is_set() {
+            let issue = ValidationIssue::error(ValidationTarget::Claude, "msg").with_line(42);
+
+            assert_eq!(issue.line, Some(42));
+        }
+
+        #[test]
+        fn when_with_suggestion_called_then_suggestion_is_set() {
+            let issue =
+                ValidationIssue::error(ValidationTarget::Claude, "msg").with_suggestion("fix it");
+
+            assert_eq!(issue.suggestion, Some("fix it".to_string()));
+        }
+
+        #[test]
+        fn when_chained_builders_then_all_fields_set() {
+            let issue = ValidationIssue::warning(ValidationTarget::Both, "chained")
+                .with_line(10)
+                .with_suggestion("do this");
+
+            assert_eq!(issue.severity, Severity::Warning);
+            assert_eq!(issue.line, Some(10));
+            assert_eq!(issue.suggestion, Some("do this".to_string()));
+        }
+    }
+
+    // ==========================================
+    // ValidationResult Tests (BDD style)
+    // ==========================================
+
+    mod validation_result {
+        use super::*;
+
+        #[test]
+        fn given_new_result_when_created_then_valid_for_both_targets() {
+            let result = ValidationResult::new("test.md".into(), "test".to_string());
+
+            assert!(result.claude_valid);
+            assert!(result.codex_valid);
+            assert!(result.issues.is_empty());
+            assert_eq!(result.name, "test");
+        }
+
+        #[test]
+        fn given_result_when_claude_error_added_then_claude_invalid() {
+            let mut result = ValidationResult::new("test.md".into(), "test".to_string());
+
+            result.add_issue(ValidationIssue::error(
+                ValidationTarget::Claude,
+                "claude issue",
+            ));
+
+            assert!(!result.claude_valid);
+            assert!(result.codex_valid);
+        }
+
+        #[test]
+        fn given_result_when_codex_error_added_then_codex_invalid() {
+            let mut result = ValidationResult::new("test.md".into(), "test".to_string());
+
+            result.add_issue(ValidationIssue::error(
+                ValidationTarget::Codex,
+                "codex issue",
+            ));
+
+            assert!(result.claude_valid);
+            assert!(!result.codex_valid);
+        }
+
+        #[test]
+        fn given_result_when_both_error_added_then_both_invalid() {
+            let mut result = ValidationResult::new("test.md".into(), "test".to_string());
+
+            result.add_issue(ValidationIssue::error(ValidationTarget::Both, "both issue"));
+
+            assert!(!result.claude_valid);
+            assert!(!result.codex_valid);
+        }
+
+        #[test]
+        fn given_result_when_warning_added_then_still_valid() {
+            let mut result = ValidationResult::new("test.md".into(), "test".to_string());
+
+            result.add_issue(ValidationIssue::warning(
+                ValidationTarget::Both,
+                "just a warning",
+            ));
+
+            assert!(result.claude_valid);
+            assert!(result.codex_valid);
+        }
+
+        #[test]
+        fn given_result_when_info_added_then_still_valid() {
+            let mut result = ValidationResult::new("test.md".into(), "test".to_string());
+
+            result.add_issue(ValidationIssue::info(ValidationTarget::Both, "just info"));
+
+            assert!(result.claude_valid);
+            assert!(result.codex_valid);
+        }
+
+        #[test]
+        fn given_result_with_errors_when_has_errors_then_true() {
+            let mut result = ValidationResult::new("test.md".into(), "test".to_string());
+            result.add_issue(ValidationIssue::error(ValidationTarget::Claude, "an error"));
+
+            assert!(result.has_errors());
+        }
+
+        #[test]
+        fn given_result_with_no_errors_when_has_errors_then_false() {
+            let mut result = ValidationResult::new("test.md".into(), "test".to_string());
+            result.add_issue(ValidationIssue::warning(
+                ValidationTarget::Claude,
+                "a warning",
+            ));
+
+            assert!(!result.has_errors());
+        }
+
+        #[test]
+        fn given_mixed_issues_when_error_count_then_counts_only_errors() {
+            let mut result = ValidationResult::new("test.md".into(), "test".to_string());
+            result.add_issue(ValidationIssue::error(ValidationTarget::Claude, "error 1"));
+            result.add_issue(ValidationIssue::warning(
+                ValidationTarget::Claude,
+                "warning",
+            ));
+            result.add_issue(ValidationIssue::error(ValidationTarget::Codex, "error 2"));
+            result.add_issue(ValidationIssue::info(ValidationTarget::Both, "info"));
+
+            assert_eq!(result.error_count(), 2);
+        }
+
+        #[test]
+        fn given_mixed_issues_when_warning_count_then_counts_only_warnings() {
+            let mut result = ValidationResult::new("test.md".into(), "test".to_string());
+            result.add_issue(ValidationIssue::error(ValidationTarget::Claude, "error"));
+            result.add_issue(ValidationIssue::warning(
+                ValidationTarget::Claude,
+                "warning 1",
+            ));
+            result.add_issue(ValidationIssue::warning(
+                ValidationTarget::Codex,
+                "warning 2",
+            ));
+            result.add_issue(ValidationIssue::warning(
+                ValidationTarget::Both,
+                "warning 3",
+            ));
+            result.add_issue(ValidationIssue::info(ValidationTarget::Both, "info"));
+
+            assert_eq!(result.warning_count(), 3);
+        }
+
+        #[test]
+        fn given_empty_result_when_counts_then_zero() {
+            let result = ValidationResult::new("test.md".into(), "test".to_string());
+
+            assert_eq!(result.error_count(), 0);
+            assert_eq!(result.warning_count(), 0);
+            assert!(!result.has_errors());
+        }
+    }
+
+    // ==========================================
+    // Severity and ValidationTarget Tests
+    // ==========================================
+
+    mod severity_and_target {
+        use super::*;
+
+        #[test]
+        fn severity_equality_works() {
+            assert_eq!(Severity::Error, Severity::Error);
+            assert_ne!(Severity::Error, Severity::Warning);
+            assert_ne!(Severity::Warning, Severity::Info);
+        }
+
+        #[test]
+        fn validation_target_equality_works() {
+            assert_eq!(ValidationTarget::Claude, ValidationTarget::Claude);
+            assert_ne!(ValidationTarget::Claude, ValidationTarget::Codex);
+            assert_ne!(ValidationTarget::Codex, ValidationTarget::Both);
+        }
+    }
+}

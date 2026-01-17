@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Comprehensive project context profile.
+/// Project context profile.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProjectProfile {
     /// Detected programming languages with file counts.

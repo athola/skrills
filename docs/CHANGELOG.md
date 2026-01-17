@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.4.12 - 2026-01-16
+- **Testing**: Added 59 new tests across tool_schemas (20), sync report (20), and validation common (19) modules covering schema generation, report formatting, and validation issue handling.
+
 ## 0.4.11 - 2026-01-15
 - **Refactor**: Improved test infrastructure with RAII guards (`EnvVarGuard`, `TestFixture`) for reliable parallel test execution.
 - **Refactor**: Extracted API key error messages to constants in subagent backends.

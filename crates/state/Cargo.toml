@@ -1,6 +1,6 @@
 [package]
 name = "skrills-state"
-version = "0.4.11"
+version = "0.4.12"
 edition = "2021"
 description = "State management for skrills runtime options, pins, and persisted overrides."
 license = "MIT"

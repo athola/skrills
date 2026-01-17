@@ -31,7 +31,7 @@ fn default_skill_root_uses_codex_when_only_codex_installed() {
 #[test]
 fn resolve_project_dir_prefers_explicit_path() {
     let _guard = crate::test_support::env_guard();
-    let temp = tempdir().unwrap();
+    let temp = tempdir().expect("create temp directory");
     let path = temp.path().join("project");
     let resolved = resolve_project_dir(path.to_str(), "test");
 
@@ -41,13 +41,13 @@ fn resolve_project_dir_prefers_explicit_path() {
 #[test]
 fn resolve_project_dir_uses_current_dir() {
     let _guard = crate::test_support::env_guard();
-    let temp = tempdir().unwrap();
-    let original = std::env::current_dir().unwrap();
-    std::env::set_current_dir(temp.path()).unwrap();
+    let temp = tempdir().expect("create temp directory");
+    let original = std::env::current_dir().expect("get current directory");
+    std::env::set_current_dir(temp.path()).expect("change to temp directory");
 
     let resolved = resolve_project_dir(None, "test");
 
-    std::env::set_current_dir(original).unwrap();
+    std::env::set_current_dir(original).expect("restore original directory");
     assert_eq!(resolved, Some(temp.path().to_path_buf()));
 }
 
@@ -55,48 +55,49 @@ fn resolve_project_dir_uses_current_dir() {
 #[test]
 fn resolve_project_dir_returns_none_when_cwd_missing() {
     let _guard = crate::test_support::env_guard();
-    let original = std::env::current_dir().unwrap();
-    let temp = tempdir().unwrap();
+    let original = std::env::current_dir().expect("get current directory");
+    let temp = tempdir().expect("create temp directory");
     let gone = temp.path().join("gone");
-    std::fs::create_dir_all(&gone).unwrap();
-    std::env::set_current_dir(&gone).unwrap();
-    std::fs::remove_dir_all(&gone).unwrap();
+    std::fs::create_dir_all(&gone).expect("create gone directory");
+    std::env::set_current_dir(&gone).expect("change to gone directory");
+    std::fs::remove_dir_all(&gone).expect("remove gone directory");
 
     let resolved = resolve_project_dir(None, "test");
 
-    std::env::set_current_dir(original).unwrap();
+    std::env::set_current_dir(original).expect("restore original directory");
     assert!(resolved.is_none());
 }
 
 #[test]
 fn validate_skills_tool_autofix_adds_frontmatter() {
     let _guard = crate::test_support::env_guard();
-    let temp = tempdir().unwrap();
+    let temp = tempdir().expect("create temp directory");
     let skill_dir = temp.path().join("skills");
-    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::create_dir_all(&skill_dir).expect("create skill directory");
     let skill_path = skill_dir.join("SKILL.md");
-    std::fs::write(&skill_path, "A skill without frontmatter").unwrap();
+    std::fs::write(&skill_path, "A skill without frontmatter").expect("write test skill file");
 
     // Use RAII guard for HOME env var - automatic cleanup on drop
-    let _home_guard = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+    let _home_guard =
+        crate::test_support::set_env_var("HOME", Some(temp.path().to_str().expect("temp path")));
 
-    let service =
-        SkillService::new_with_ttl(vec![skill_dir.clone()], Duration::from_secs(1)).unwrap();
+    let service = SkillService::new_with_ttl(vec![skill_dir.clone()], Duration::from_secs(1))
+        .expect("create skill service");
     let result = service
         .validate_skills_tool(
             json!({"target": "codex", "autofix": true})
                 .as_object()
                 .cloned()
-                .unwrap(),
+                .expect("create json args"),
         )
-        .unwrap();
+        .expect("validate skills");
 
-    let content = std::fs::read_to_string(&skill_path).unwrap();
+    let content = std::fs::read_to_string(&skill_path).expect("read skill file");
     assert!(
         content.starts_with("---"),
         "autofix should add frontmatter to skill files"
     );
-    let structured = result.structured_content.unwrap();
+    let structured = result.structured_content.expect("structured content");
     assert_eq!(
         structured.get("autofixed").and_then(|v| v.as_u64()),
         Some(1)
@@ -105,7 +106,8 @@ fn validate_skills_tool_autofix_adds_frontmatter() {
 
 #[test]
 fn create_skill_rejects_path_like_names() {
-    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
+    let service =
+        SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).expect("create service");
     let args = json!({
         "name": "../escape",
         "description": "invalid",
@@ -114,9 +116,11 @@ fn create_skill_rejects_path_like_names() {
     })
     .as_object()
     .cloned()
-    .unwrap();
+    .expect("create json args");
 
-    let err = service.create_skill_tool_sync(args).unwrap_err();
+    let err = service
+        .create_skill_tool_sync(args)
+        .expect_err("should reject path-like name");
     assert!(err.to_string().contains("Invalid name"));
 }
 
@@ -129,13 +133,13 @@ fn test_dependency_graph_integration() {
         .with_env_filter("skrills::deps=debug")
         .try_init();
 
-    let temp = tempdir().unwrap();
+    let temp = tempdir().expect("create temp directory");
     let skills_dir = temp.path().join("skills");
-    fs::create_dir_all(&skills_dir).unwrap();
+    fs::create_dir_all(&skills_dir).expect("create skills directory");
 
     // Create skill A (depends on B and C)
     let skill_a_dir = skills_dir.join("skill-a");
-    fs::create_dir_all(&skill_a_dir).unwrap();
+    fs::create_dir_all(&skill_a_dir).expect("create skill-a directory");
     fs::write(
         skill_a_dir.join("SKILL.md"),
         r#"---
@@ -146,11 +150,11 @@ description: Skill A depends on B and C
 See [skill-b](../skill-b/SKILL.md) and [skill-c](../skill-c/SKILL.md) for details.
 "#,
     )
-    .unwrap();
+    .expect("write skill-a");
 
     // Create skill B (depends on D)
     let skill_b_dir = skills_dir.join("skill-b");
-    fs::create_dir_all(&skill_b_dir).unwrap();
+    fs::create_dir_all(&skill_b_dir).expect("create skill-b directory");
     fs::write(
         skill_b_dir.join("SKILL.md"),
         r#"---
@@ -161,11 +165,11 @@ description: Skill B depends on D
 Uses [skill-d](../skill-d/SKILL.md).
 "#,
     )
-    .unwrap();
+    .expect("write skill-b");
 
     // Create skill C (depends on D)
     let skill_c_dir = skills_dir.join("skill-c");
-    fs::create_dir_all(&skill_c_dir).unwrap();
+    fs::create_dir_all(&skill_c_dir).expect("create skill-c directory");
     fs::write(
         skill_c_dir.join("SKILL.md"),
         r#"---
@@ -176,11 +180,11 @@ description: Skill C depends on D
 Also uses [skill-d](../skill-d/SKILL.md).
 "#,
     )
-    .unwrap();
+    .expect("write skill-c");
 
     // Create skill D (no dependencies)
     let skill_d_dir = skills_dir.join("skill-d");
-    fs::create_dir_all(&skill_d_dir).unwrap();
+    fs::create_dir_all(&skill_d_dir).expect("create skill-d directory");
     fs::write(
         skill_d_dir.join("SKILL.md"),
         r#"---
@@ -191,25 +195,28 @@ description: Skill D has no dependencies
 Base skill with no dependencies.
 "#,
     )
-    .unwrap();
+    .expect("write skill-d");
 
     let roots = vec![SkillRoot {
         root: skills_dir.clone(),
         source: skrills_discovery::SkillSource::Extra(0),
     }];
 
-    let service = SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
+    let service = SkillService::new_with_roots_for_test(roots, Duration::from_secs(60))
+        .expect("create skill service");
 
     // Force refresh to build the graph
-    service.invalidate_cache().unwrap();
-    let skills = service.current_skills_with_dups().unwrap().0;
+    service.invalidate_cache().expect("invalidate cache");
+    let skills = service.current_skills_with_dups().expect("get skills").0;
 
     // Verify skills were discovered
     assert_eq!(skills.len(), 4);
 
     // Test dependency resolution
     let skill_a_uri = "skill://skrills/extra0/skill-a/SKILL.md";
-    let deps = service.resolve_dependencies(skill_a_uri).unwrap();
+    let deps = service
+        .resolve_dependencies(skill_a_uri)
+        .expect("resolve skill-a dependencies");
 
     // Debug output
     eprintln!("skill-a dependencies: {:?}", deps);
@@ -234,14 +241,18 @@ Base skill with no dependencies.
 
     // Test reverse dependencies
     let skill_d_uri = "skill://skrills/extra0/skill-d/SKILL.md";
-    let dependents = service.get_dependents(skill_d_uri).unwrap();
+    let dependents = service
+        .get_dependents(skill_d_uri)
+        .expect("get skill-d dependents");
 
     // skill-d should be used by skill-b and skill-c
     assert!(dependents.contains(&"skill://skrills/extra0/skill-b/SKILL.md".to_string()));
     assert!(dependents.contains(&"skill://skrills/extra0/skill-c/SKILL.md".to_string()));
 
     // Test transitive dependents
-    let trans_deps = service.get_transitive_dependents(skill_d_uri).unwrap();
+    let trans_deps = service
+        .get_transitive_dependents(skill_d_uri)
+        .expect("get skill-d transitive dependents");
 
     // skill-d should transitively affect skill-a, skill-b, skill-c
     assert!(trans_deps.contains(&"skill://skrills/extra0/skill-a/SKILL.md".to_string()));
@@ -258,13 +269,13 @@ fn test_resolve_dependencies_tool() {
         .with_env_filter("skrills::deps=debug")
         .try_init();
 
-    let temp = tempdir().unwrap();
+    let temp = tempdir().expect("create temp directory");
     let skills_dir = temp.path().join("skills");
-    fs::create_dir_all(&skills_dir).unwrap();
+    fs::create_dir_all(&skills_dir).expect("create skills directory");
 
     // Create skill A (depends on B)
     let skill_a_dir = skills_dir.join("skill-a");
-    fs::create_dir_all(&skill_a_dir).unwrap();
+    fs::create_dir_all(&skill_a_dir).expect("create skill-a directory");
     fs::write(
         skill_a_dir.join("SKILL.md"),
         r#"---
@@ -275,11 +286,11 @@ description: Skill A depends on B
 See [skill-b](../skill-b/SKILL.md) for details.
 "#,
     )
-    .unwrap();
+    .expect("write skill-a");
 
     // Create skill B (depends on C)
     let skill_b_dir = skills_dir.join("skill-b");
-    fs::create_dir_all(&skill_b_dir).unwrap();
+    fs::create_dir_all(&skill_b_dir).expect("create skill-b directory");
     fs::write(
         skill_b_dir.join("SKILL.md"),
         r#"---
@@ -290,11 +301,11 @@ description: Skill B depends on C
 Uses [skill-c](../skill-c/SKILL.md).
 "#,
     )
-    .unwrap();
+    .expect("write skill-b");
 
     // Create skill C (no dependencies)
     let skill_c_dir = skills_dir.join("skill-c");
-    fs::create_dir_all(&skill_c_dir).unwrap();
+    fs::create_dir_all(&skill_c_dir).expect("create skill-c directory");
     fs::write(
         skill_c_dir.join("SKILL.md"),
         r#"---
@@ -305,22 +316,23 @@ description: Skill C has no dependencies
 Base skill.
 "#,
     )
-    .unwrap();
+    .expect("write skill-c");
 
     let roots = vec![SkillRoot {
         root: skills_dir.clone(),
         source: skrills_discovery::SkillSource::Extra(0),
     }];
 
-    let service = SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
+    let service = SkillService::new_with_roots_for_test(roots, Duration::from_secs(60))
+        .expect("create skill service");
 
     // Force refresh to build the graph
-    service.invalidate_cache().unwrap();
+    service.invalidate_cache().expect("invalidate cache");
 
     // Test 1: Transitive dependencies for A (should get B and C)
     let deps = service
         .resolve_dependencies("skill://skrills/extra0/skill-a/SKILL.md")
-        .unwrap();
+        .expect("resolve skill-a dependencies");
     assert_eq!(deps.len(), 2);
     assert!(deps.contains(&"skill://skrills/extra0/skill-b/SKILL.md".to_string()));
     assert!(deps.contains(&"skill://skrills/extra0/skill-c/SKILL.md".to_string()));
@@ -329,7 +341,7 @@ Base skill.
     let mut cache = service.cache.lock();
     let direct_deps = cache
         .get_direct_dependencies("skill://skrills/extra0/skill-a/SKILL.md")
-        .unwrap();
+        .expect("get direct dependencies");
     assert_eq!(direct_deps.len(), 1);
     assert!(direct_deps.contains(&"skill://skrills/extra0/skill-b/SKILL.md".to_string()));
     drop(cache);
@@ -337,14 +349,14 @@ Base skill.
     // Test 3: Direct dependents of C (should only get B)
     let dependents = service
         .get_dependents("skill://skrills/extra0/skill-c/SKILL.md")
-        .unwrap();
+        .expect("get skill-c dependents");
     assert_eq!(dependents.len(), 1);
     assert!(dependents.contains(&"skill://skrills/extra0/skill-b/SKILL.md".to_string()));
 
     // Test 4: Transitive dependents of C (should get A and B)
     let trans_dependents = service
         .get_transitive_dependents("skill://skrills/extra0/skill-c/SKILL.md")
-        .unwrap();
+        .expect("get transitive dependents");
     assert_eq!(trans_dependents.len(), 2);
     assert!(trans_dependents.contains(&"skill://skrills/extra0/skill-a/SKILL.md".to_string()));
     assert!(trans_dependents.contains(&"skill://skrills/extra0/skill-b/SKILL.md".to_string()));
@@ -354,13 +366,13 @@ Base skill.
 fn test_read_resource_without_resolve() {
     use skrills_discovery::SkillRoot;
 
-    let temp = tempdir().unwrap();
+    let temp = tempdir().expect("create temp directory");
     let skills_dir = temp.path().join("skills");
-    fs::create_dir_all(&skills_dir).unwrap();
+    fs::create_dir_all(&skills_dir).expect("create skills directory");
 
     // Create skill A (depends on B)
     let skill_a_dir = skills_dir.join("skill-a");
-    fs::create_dir_all(&skill_a_dir).unwrap();
+    fs::create_dir_all(&skill_a_dir).expect("create skill-a directory");
     fs::write(
         skill_a_dir.join("SKILL.md"),
         r#"---
@@ -371,11 +383,11 @@ description: Skill A depends on B
 See [skill-b](../skill-b/SKILL.md) for details.
 "#,
     )
-    .unwrap();
+    .expect("write skill-a");
 
     // Create skill B (no dependencies)
     let skill_b_dir = skills_dir.join("skill-b");
-    fs::create_dir_all(&skill_b_dir).unwrap();
+    fs::create_dir_all(&skill_b_dir).expect("create skill-b directory");
     fs::write(
         skill_b_dir.join("SKILL.md"),
         r#"---
@@ -386,18 +398,21 @@ description: Skill B
 Base skill.
 "#,
     )
-    .unwrap();
+    .expect("write skill-b");
 
     let roots = vec![SkillRoot {
         root: skills_dir.clone(),
         source: skrills_discovery::SkillSource::Extra(0),
     }];
 
-    let service = SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
+    let service = SkillService::new_with_roots_for_test(roots, Duration::from_secs(60))
+        .expect("create skill service");
 
     // Test reading without resolve param
     let skill_a_uri = "skill://skrills/extra0/skill-a/SKILL.md";
-    let result = service.read_resource_sync(skill_a_uri).unwrap();
+    let result = service
+        .read_resource_sync(skill_a_uri)
+        .expect("read resource");
 
     // Should return only the requested skill
     assert_eq!(result.contents.len(), 1);
@@ -410,7 +425,7 @@ Base skill.
         assert!(text.contains("Skill A"));
         assert!(text.contains("depends on B"));
         // Check metadata indicates this is the requested resource
-        let meta = meta.as_ref().unwrap();
+        let meta = meta.as_ref().expect("metadata should exist");
         assert_eq!(meta.get("role").and_then(|v| v.as_str()), Some("requested"));
     } else {
         panic!("Expected TextResourceContents");
@@ -421,13 +436,13 @@ Base skill.
 fn test_read_resource_with_resolve_true() {
     use skrills_discovery::SkillRoot;
 
-    let temp = tempdir().unwrap();
+    let temp = tempdir().expect("create temp directory");
     let skills_dir = temp.path().join("skills");
-    fs::create_dir_all(&skills_dir).unwrap();
+    fs::create_dir_all(&skills_dir).expect("create skills directory");
 
     // Create skill A (depends on B and C)
     let skill_a_dir = skills_dir.join("skill-a");
-    fs::create_dir_all(&skill_a_dir).unwrap();
+    fs::create_dir_all(&skill_a_dir).expect("create skill-a directory");
     fs::write(
         skill_a_dir.join("SKILL.md"),
         r#"---
@@ -438,11 +453,11 @@ description: Skill A depends on B and C
 See [skill-b](../skill-b/SKILL.md) and [skill-c](../skill-c/SKILL.md).
 "#,
     )
-    .unwrap();
+    .expect("write skill-a");
 
     // Create skill B (depends on D)
     let skill_b_dir = skills_dir.join("skill-b");
-    fs::create_dir_all(&skill_b_dir).unwrap();
+    fs::create_dir_all(&skill_b_dir).expect("create skill-b directory");
     fs::write(
         skill_b_dir.join("SKILL.md"),
         r#"---
@@ -453,11 +468,11 @@ description: Skill B depends on D
 Uses [skill-d](../skill-d/SKILL.md).
 "#,
     )
-    .unwrap();
+    .expect("write skill-b");
 
     // Create skill C (depends on D)
     let skill_c_dir = skills_dir.join("skill-c");
-    fs::create_dir_all(&skill_c_dir).unwrap();
+    fs::create_dir_all(&skill_c_dir).expect("create skill-c directory");
     fs::write(
         skill_c_dir.join("SKILL.md"),
         r#"---
@@ -468,11 +483,11 @@ description: Skill C depends on D
 Also uses [skill-d](../skill-d/SKILL.md).
 "#,
     )
-    .unwrap();
+    .expect("write skill-c");
 
     // Create skill D (no dependencies)
     let skill_d_dir = skills_dir.join("skill-d");
-    fs::create_dir_all(&skill_d_dir).unwrap();
+    fs::create_dir_all(&skill_d_dir).expect("create skill-d directory");
     fs::write(
         skill_d_dir.join("SKILL.md"),
         r#"---
@@ -483,18 +498,21 @@ description: Skill D
 Base skill.
 "#,
     )
-    .unwrap();
+    .expect("write skill-d");
 
     let roots = vec![SkillRoot {
         root: skills_dir.clone(),
         source: skrills_discovery::SkillSource::Extra(0),
     }];
 
-    let service = SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap();
+    let service = SkillService::new_with_roots_for_test(roots, Duration::from_secs(60))
+        .expect("create skill service");
 
     // Test reading with resolve=true
     let skill_a_uri = "skill://skrills/extra0/skill-a/SKILL.md?resolve=true";
-    let result = service.read_resource_sync(skill_a_uri).unwrap();
+    let result = service
+        .read_resource_sync(skill_a_uri)
+        .expect("read resource with resolve");
 
     // Should return requested skill + all transitive dependencies (B, C, D)
     assert_eq!(result.contents.len(), 4);
@@ -507,7 +525,7 @@ Base skill.
     {
         assert_eq!(uri, "skill://skrills/extra0/skill-a/SKILL.md");
         assert!(text.contains("Skill A"));
-        let meta = meta.as_ref().unwrap();
+        let meta = meta.as_ref().expect("metadata should exist");
         assert_eq!(meta.get("role").and_then(|v| v.as_str()), Some("requested"));
     } else {
         panic!("Expected TextResourceContents");
@@ -530,7 +548,7 @@ Base skill.
     // Check that dependencies have correct role metadata
     for content in &result.contents[1..] {
         if let ResourceContents::TextResourceContents { meta, .. } = content {
-            let meta = meta.as_ref().unwrap();
+            let meta = meta.as_ref().expect("dependency metadata should exist");
             assert_eq!(
                 meta.get("role").and_then(|v| v.as_str()),
                 Some("dependency")

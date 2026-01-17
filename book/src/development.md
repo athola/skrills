@@ -4,13 +4,13 @@ This guide provides development information for contributors.
 
 ## Toolchain
 
-- **Rust**: Ensure Rust 1.78+ is installed, preferably with `rustup`.
+- **Rust**: Install Rust 1.78+, preferably with `rustup`.
 - **Formatting and Linting**: Use `cargo fmt` for formatting and `clippy` for linting to maintain code quality.
 - **Documentation**: This project uses `mdbook` for documentation. Install it with `cargo install mdbook --locked`.
 
 ## Make Targets
 
-The project's [`Makefile`](Makefile) offers several convenient targets to streamline development workflows:
+The project's [`Makefile`](Makefile) provides targets for development workflows:
 
 ```bash
 # Code quality checks
@@ -28,7 +28,7 @@ make build-min
 # Documentation
 make docs         # Builds the rustdoc API documentation
 make book         # Compiles and automatically opens the mdBook
-make book-serve   # Serves the mdBook with live-reloading capabilities, typically accessible at localhost:3000
+make book-serve   # Serves the mdBook at localhost:3000 with live-reloading
 
 # Cleaning up
 make clean
@@ -50,7 +50,7 @@ This command is aliased by `make test` and is part of the Continuous Integration
 
 ### Public API Guardrails
 
-The `skrills-server` crate is currently in its pre-1.0 development phase. Refer to the SemVer guidance in [Public API and SemVer Policy](semver.md) and perform local public API checks before submitting changes. This ensures the API evolution policy is followed.
+The `skrills-server` crate is currently in its pre-1.0 development phase. Refer to the SemVer guidance in [Public API and SemVer Policy](semver.md) and perform local public API checks before submitting changes. This verifies compliance with the API evolution policy.
 
 ### Coverage
 

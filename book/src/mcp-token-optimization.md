@@ -32,10 +32,10 @@ When the `subagents` feature is enabled:
 For operations involving many skills, the CLI is more efficient than repeated MCP tool calls. A single CLI command like `skrills validate --format json` can replace hundreds of individual tool invocations.
 
 ### Filter Output
-You can significantly reduce payload size by using filtering options. For example, `skrills validate --errors-only` returns only the skills that failed validation, and `skrills analyze --min-tokens 2000` limits the output to only the largest skills.
+Use filtering options to reduce payload size. For example, `skrills validate --errors-only` returns only the skills that failed validation, and `skrills analyze --min-tokens 2000` limits the output to only the largest skills.
 
 ### Preview Before Sync
-Always use `skrills sync-status --from claude` to preview changes before running a full sync. This helps you understand the scope of changes without the overhead of a full write operation.
+Use `skrills sync-status --from claude` to preview changes before running a full sync. This shows the scope of changes without the overhead of a full write operation.
 
 ## Efficient Workflows
 

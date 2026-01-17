@@ -2,7 +2,7 @@
 
 ## Child Process Management
 
-Proper process management prevents resource leaks and zombie processes. On Unix-like systems, a `SIGCHLD` handler (`SA_NOCLDWAIT | SA_RESTART`) installs at startup to clean up subprocesses automatically. If you spawn new child processes, ensure compatibility by collecting exit status without blocking `waitpid`, or by overriding the signal disposition locally. Non-Unix systems currently use a no-op stub, so implementing equivalent safeguards is necessary if extending process management to those platforms.
+Proper process management prevents resource leaks and zombie processes. On Unix-like systems, a `SIGCHLD` handler (`SA_NOCLDWAIT | SA_RESTART`) installs at startup to clean up subprocesses automatically. If you spawn new child processes, maintain compatibility by collecting exit status without blocking `waitpid`, or by overriding the signal disposition locally. Non-Unix systems currently use a no-op stub, so implementing equivalent safeguards is necessary if extending process management to those platforms.
 
 ## Workflow Best Practices
 
@@ -10,4 +10,4 @@ Centralize shared logic in the appropriate library crates like `crates/server` o
 
 ## MCP Dependency Strategy
 
-We define `rmcp` as a workspace dependency in the root `Cargo.toml`, enabling only required features in individual crates. Note that `pastey` is a transitive dependency used by `rmcp` for procedural macros and should not be added directly. When updating, bump the workspace version of `rmcp` and run all MCP integration tests, ensuring `pastey` matches the version. Treat `rmcp` as supply-chain critical and monitor it for advisories.
+We define `rmcp` as a workspace dependency in the root `Cargo.toml`, enabling only required features in individual crates. Note that `pastey` is a transitive dependency used by `rmcp` for procedural macros and should not be added directly. When updating, bump the workspace version of `rmcp` and run all MCP integration tests, verifying `pastey` matches the version. Treat `rmcp` as supply-chain critical and monitor it for advisories.
