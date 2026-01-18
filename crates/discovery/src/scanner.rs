@@ -393,7 +393,7 @@ pub fn extract_refs_from_agents(md: &str) -> std::collections::HashSet<String> {
 
 /// Returns the default skill root directories.
 pub fn default_roots(home: &Path) -> Vec<SkillRoot> {
-    vec![
+    let mut roots = vec![
         SkillRoot {
             root: home.join(".codex/skills"),
             source: SkillSource::Codex,
@@ -406,10 +406,25 @@ pub fn default_roots(home: &Path) -> Vec<SkillRoot> {
             root: home.join(".claude/skills"),
             source: SkillSource::Claude,
         },
-        SkillRoot {
-            root: home.join(".copilot/skills"),
+    ];
+
+    // Copilot: Add both XDG and legacy paths for comprehensive discovery.
+    // XDG path: $XDG_CONFIG_HOME/copilot/skills or ~/.config/copilot/skills
+    // Legacy path: ~/.copilot/skills
+    if let Some(config_dir) = dirs::config_dir() {
+        let xdg_copilot_skills = config_dir.join("copilot/skills");
+        roots.push(SkillRoot {
+            root: xdg_copilot_skills,
             source: SkillSource::Copilot,
-        },
+        });
+    }
+    // Always include legacy path for backwards compatibility
+    roots.push(SkillRoot {
+        root: home.join(".copilot/skills"),
+        source: SkillSource::Copilot,
+    });
+
+    roots.extend([
         SkillRoot {
             root: home.join(".claude/plugins/marketplaces"),
             source: SkillSource::Marketplace,
@@ -422,7 +437,9 @@ pub fn default_roots(home: &Path) -> Vec<SkillRoot> {
             root: home.join(".agent/skills"),
             source: SkillSource::Agent,
         },
-    ]
+    ]);
+
+    roots
 }
 
 /// Builds skill roots from extra directories (project-provided).
@@ -478,13 +495,16 @@ mod tests {
         let tmp = tempdir().unwrap();
         let roots = default_roots(tmp.path());
         let labels: Vec<_> = roots.iter().map(|r| r.source.label()).collect();
+        // Note: "copilot" appears twice - once for XDG path (~/.config/copilot/skills)
+        // and once for legacy path (~/.copilot/skills) to ensure comprehensive discovery
         assert_eq!(
             labels,
             vec![
                 "codex",
                 "mirror",
                 "claude",
-                "copilot",
+                "copilot", // XDG path
+                "copilot", // Legacy path
                 "marketplace",
                 "cache",
                 "agent"

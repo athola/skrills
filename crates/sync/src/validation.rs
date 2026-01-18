@@ -8,6 +8,7 @@ use skrills_validate::{
     autofix_frontmatter, is_codex_compatible, is_copilot_compatible, validate_skill,
     AutofixOptions, AutofixResult, ValidationResult, ValidationTarget,
 };
+use tracing::warn;
 
 /// Options for validation during sync.
 #[derive(Debug, Clone, Default)]
@@ -111,11 +112,21 @@ pub fn validate_skill_for_sync(
             suggested_description: None,
         };
 
-        if let Ok(result) = autofix_frontmatter(&skill.source_path, &content, &autofix_opts) {
-            if result.modified {
-                can_sync = true;
+        match autofix_frontmatter(&skill.source_path, &content, &autofix_opts) {
+            Ok(result) => {
+                if result.modified {
+                    can_sync = true;
+                }
+                autofix_result = Some(result);
             }
-            autofix_result = Some(result);
+            Err(e) => {
+                warn!(
+                    skill = %skill.name,
+                    path = %skill.source_path.display(),
+                    error = %e,
+                    "Autofix failed for skill"
+                );
+            }
         }
     }
 

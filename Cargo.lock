@@ -2323,6 +2323,7 @@ version = "0.4.12"
 dependencies = [
  "anyhow",
  "blake2",
+ "dirs",
  "pathdiff",
  "rayon",
  "serde",

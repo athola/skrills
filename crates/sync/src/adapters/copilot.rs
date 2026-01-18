@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::time::SystemTime;
+use tracing::warn;
 use walkdir::WalkDir;
 
 /// Adapter for GitHub Copilot CLI configuration.
@@ -138,19 +139,32 @@ impl AgentAdapter for CopilotAdapter {
             return Ok(HashMap::new());
         }
 
-        let content = fs::read_to_string(&path)?;
-        let config: serde_json::Value = serde_json::from_str(&content)?;
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read MCP config: {}", path.display()))?;
+        let config: serde_json::Value = serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse MCP config as JSON: {}", path.display()))?;
 
         let mut servers = HashMap::new();
         if let Some(mcp) = config.get("mcpServers").and_then(|v| v.as_object()) {
             for (name, server_config) in mcp {
+                // Skip MCP servers with missing or empty command and log a warning
+                let command = server_config
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                if command.is_empty() {
+                    warn!(
+                        server = %name,
+                        path = %path.display(),
+                        "Skipping MCP server with missing or empty 'command' field"
+                    );
+                    continue;
+                }
+
                 let server = McpServer {
                     name: name.clone(),
-                    command: server_config
-                        .get("command")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
+                    command: command.to_string(),
                     args: server_config
                         .get("args")
                         .and_then(|v| v.as_array())
@@ -188,8 +202,10 @@ impl AgentAdapter for CopilotAdapter {
             return Ok(Preferences::default());
         }
 
-        let content = fs::read_to_string(&path)?;
-        let config: serde_json::Value = serde_json::from_str(&content)?;
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read preferences: {}", path.display()))?;
+        let config: serde_json::Value = serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse preferences as JSON: {}", path.display()))?;
 
         Ok(Preferences {
             model: config
@@ -267,8 +283,11 @@ impl AgentAdapter for CopilotAdapter {
 
         // Read existing config to preserve structure
         let mut config: serde_json::Value = if path.exists() {
-            let content = fs::read_to_string(&path)?;
-            serde_json::from_str(&content)?
+            let content = fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read MCP config: {}", path.display()))?;
+            serde_json::from_str(&content).with_context(|| {
+                format!("Failed to parse MCP config as JSON: {}", path.display())
+            })?
         } else {
             serde_json::json!({})
         };
@@ -295,9 +314,15 @@ impl AgentAdapter for CopilotAdapter {
         config["mcpServers"] = serde_json::Value::Object(mcp_obj);
 
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "Failed to create MCP config directory: {}",
+                    parent.display()
+                )
+            })?;
         }
-        fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+        fs::write(&path, serde_json::to_string_pretty(&config)?)
+            .with_context(|| format!("Failed to write MCP config: {}", path.display()))?;
 
         Ok(report)
     }
@@ -308,8 +333,11 @@ impl AgentAdapter for CopilotAdapter {
         // CRITICAL: Read existing config to preserve security fields
         // (trusted_folders, allowed_urls, denied_urls)
         let mut config: serde_json::Value = if path.exists() {
-            let content = fs::read_to_string(&path)?;
-            serde_json::from_str(&content)?
+            let content = fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read preferences: {}", path.display()))?;
+            serde_json::from_str(&content).with_context(|| {
+                format!("Failed to parse preferences as JSON: {}", path.display())
+            })?
         } else {
             serde_json::json!({})
         };
@@ -323,16 +351,20 @@ impl AgentAdapter for CopilotAdapter {
         }
 
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create config directory: {}", parent.display())
+            })?;
         }
-        fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+        fs::write(&path, serde_json::to_string_pretty(&config)?)
+            .with_context(|| format!("Failed to write preferences: {}", path.display()))?;
 
         Ok(report)
     }
 
     fn write_skills(&self, skills: &[Command]) -> Result<WriteReport> {
         let dir = self.skills_dir();
-        fs::create_dir_all(&dir)?;
+        fs::create_dir_all(&dir)
+            .with_context(|| format!("Failed to create skills directory: {}", dir.display()))?;
 
         let mut report = WriteReport::default();
 
@@ -356,11 +388,15 @@ impl AgentAdapter for CopilotAdapter {
             let safe_rel_dir = sanitize_name(&skill_rel_dir);
             let path = dir.join(&safe_rel_dir).join("SKILL.md");
             if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
+                fs::create_dir_all(parent).with_context(|| {
+                    format!("Failed to create skill directory: {}", parent.display())
+                })?;
             }
 
             if path.exists() {
-                let existing = fs::read(&path)?;
+                let existing = fs::read(&path).with_context(|| {
+                    format!("Failed to read existing skill: {}", path.display())
+                })?;
                 if Self::hash_content(&existing) == skill.hash {
                     report.skipped.push(SkipReason::Unchanged {
                         item: skill.name.clone(),
@@ -369,7 +405,8 @@ impl AgentAdapter for CopilotAdapter {
                 }
             }
 
-            fs::write(&path, &skill.content)?;
+            fs::write(&path, &skill.content)
+                .with_context(|| format!("Failed to write skill: {}", path.display()))?;
             report.written += 1;
         }
 
@@ -380,11 +417,24 @@ impl AgentAdapter for CopilotAdapter {
 }
 
 /// Sanitizes a skill name to prevent path traversal attacks.
-/// Only allows alphanumeric characters, hyphens, and underscores.
+///
+/// Preserves forward slashes for nested skill directories (e.g., `category/my-skill`)
+/// while preventing path traversal attacks (e.g., `../../../etc/passwd`).
+///
+/// Each path segment is sanitized to only allow alphanumeric characters, hyphens,
+/// and underscores. Empty segments and `.` or `..` are removed.
 fn sanitize_name(name: &str) -> String {
-    name.chars()
-        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-        .collect()
+    name.split('/')
+        .filter(|segment| !segment.is_empty() && *segment != "." && *segment != "..")
+        .map(|segment| {
+            segment
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                .collect::<String>()
+        })
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 #[cfg(test)]
@@ -866,12 +916,30 @@ mod tests {
 
     #[test]
     fn sanitize_name_removes_path_traversal() {
-        assert_eq!(sanitize_name("../../../etc/passwd"), "etcpasswd");
-        assert_eq!(sanitize_name("valid-name_123"), "valid-name_123");
+        // Path traversal attacks are blocked
+        assert_eq!(sanitize_name("../../../etc/passwd"), "etc/passwd");
         assert_eq!(sanitize_name("../../malicious"), "malicious");
+
+        // Valid names pass through unchanged
+        assert_eq!(sanitize_name("valid-name_123"), "valid-name_123");
         assert_eq!(sanitize_name("normal"), "normal");
+
+        // Spaces and special chars are removed within segments
         assert_eq!(sanitize_name("with spaces"), "withspaces");
-        assert_eq!(sanitize_name("has/slashes"), "hasslashes");
+
+        // Nested skill paths are preserved (key fix for review feedback)
+        assert_eq!(sanitize_name("category/my-skill"), "category/my-skill");
+        assert_eq!(sanitize_name("deep/nested/skill"), "deep/nested/skill");
+
+        // Mixed: nested paths with traversal attempts
+        assert_eq!(
+            sanitize_name("category/../other/skill"),
+            "category/other/skill"
+        );
+        assert_eq!(sanitize_name("./relative/./path"), "relative/path");
+
+        // Empty segments are collapsed
+        assert_eq!(sanitize_name("a//b///c"), "a/b/c");
     }
 
     // ==========================================

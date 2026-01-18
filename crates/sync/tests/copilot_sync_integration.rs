@@ -611,3 +611,120 @@ mod copilot_adapter_field_support_tests {
         assert!(support.preferences, "Copilot should support preferences");
     }
 }
+
+#[cfg(test)]
+mod copilot_security_tests {
+    use super::*;
+    use skrills_sync::common::Command;
+    use std::path::PathBuf;
+    use std::time::SystemTime;
+
+    #[test]
+    fn test_path_traversal_blocked_during_sync() {
+        /*
+        GIVEN a skill with a path traversal attack in its name
+        WHEN syncing to Copilot
+        THEN the traversal should be blocked
+        AND the skill should be written to a safe location
+        */
+        let tmp = TempDir::new().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+
+        // Create a malicious skill name with path traversal
+        let content = b"---\nname: malicious\ndescription: Malicious skill\n---\nContent".to_vec();
+        let malicious_skill = Command {
+            name: "../../../etc/passwd".to_string(),
+            content: content.clone(),
+            source_path: PathBuf::from("/fake/path/skill.md"),
+            modified: SystemTime::now(),
+            hash: "abc123".to_string(),
+        };
+
+        // Write the skill
+        let result = adapter.write_skills(&[malicious_skill]);
+        assert!(
+            result.is_ok(),
+            "Write should succeed (traversal is sanitized)"
+        );
+
+        // Verify the skill was written to a SAFE location, not /etc/passwd
+        // The sanitize_name function should have stripped the traversal
+        let skills_dir = tmp.path().join("skills");
+        assert!(skills_dir.exists(), "Skills directory should exist");
+
+        // The sanitized name should be "etc/passwd" (dots and slashes stripped from leading segments)
+        let safe_path = skills_dir.join("etc/passwd").join("SKILL.md");
+        assert!(
+            safe_path.exists(),
+            "Skill should be at safe path {:?}, not at system /etc/passwd",
+            safe_path
+        );
+
+        // Additional check: the skill should NOT have been written outside tmp
+        let written_content = fs::read_to_string(&safe_path).unwrap();
+        assert!(
+            written_content.contains("Malicious skill"),
+            "Skill content should be at safe location"
+        );
+    }
+
+    #[test]
+    fn test_nested_skill_paths_preserved() {
+        /*
+        GIVEN a skill with a legitimate nested path (category/skill-name)
+        WHEN syncing to Copilot
+        THEN the nested path structure should be preserved
+        */
+        let tmp = TempDir::new().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+
+        let nested_skill = Command {
+            name: "category/my-skill".to_string(),
+            content: b"---\nname: my-skill\ndescription: Nested skill\n---\nContent".to_vec(),
+            source_path: PathBuf::from("/fake/path/category/my-skill/skill.md"),
+            modified: SystemTime::now(),
+            hash: "def456".to_string(),
+        };
+
+        let result = adapter.write_skills(&[nested_skill]);
+        assert!(result.is_ok(), "Write should succeed");
+
+        // Verify nested structure is preserved
+        let nested_path = tmp.path().join("skills/category/my-skill/SKILL.md");
+        assert!(
+            nested_path.exists(),
+            "Nested skill should be at {:?}",
+            nested_path
+        );
+    }
+
+    #[test]
+    fn test_mixed_traversal_and_nested_paths() {
+        /*
+        GIVEN a skill with mixed traversal attempts and legitimate nesting
+        WHEN syncing to Copilot
+        THEN traversal segments should be removed but legitimate paths preserved
+        */
+        let tmp = TempDir::new().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+
+        let mixed_skill = Command {
+            name: "category/../other/./skill".to_string(),
+            content: b"---\nname: skill\ndescription: Mixed path skill\n---\nContent".to_vec(),
+            source_path: PathBuf::from("/fake/path/skill.md"),
+            modified: SystemTime::now(),
+            hash: "ghi789".to_string(),
+        };
+
+        let result = adapter.write_skills(&[mixed_skill]);
+        assert!(result.is_ok(), "Write should succeed");
+
+        // The sanitized path should be "category/other/skill" (traversal removed)
+        let safe_path = tmp.path().join("skills/category/other/skill/SKILL.md");
+        assert!(
+            safe_path.exists(),
+            "Mixed path skill should be at safe location {:?}",
+            safe_path
+        );
+    }
+}
