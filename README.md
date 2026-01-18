@@ -11,7 +11,7 @@
 [![Audit](https://img.shields.io/github/actions/workflow/status/athola/skrills/audit.yml?branch=master&label=audit)](https://github.com/athola/skrills/actions/workflows/audit.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Skills support engine for Claude Code and Codex CLI. Validates, analyzes, and syncs skills bidirectionally between both CLIs.
+Skills support engine for Claude Code, Codex CLI, and GitHub Copilot CLI. Validates, analyzes, and syncs skills bidirectionally between all three CLIs.
 
 ## Demos
 
@@ -30,17 +30,17 @@ Use skrills as an MCP server for dynamic skill loading in both Claude Code and C
 *See the [MCP tutorial](docs/tutorials/mcp.md) for setup instructions.*
 
 ## Why Skrills
-Skrills manages skills and configurations for Claude Code and Codex CLI. Claude Code accepts raw markdown, but Codex requires strict YAML frontmatter. Skrills validates these files against Codex's rules, preventing compatibility errors. It also mirrors skills, provides diagnostics, and runs an MCP server from a single binary.
+Skrills manages skills and configurations for Claude Code, Codex CLI, and GitHub Copilot CLI. Each CLI has different requirements: Claude Code accepts raw markdown, while Codex and Copilot require strict YAML frontmatter. Skrills validates these files against each CLI's rules, preventing compatibility errors. It also syncs skills bidirectionally, provides diagnostics, and runs an MCP server from a single binary.
 
 The `sync-commands` tool checks file hashes before writing to preserve local customizations. Analytics tools report token usage to suggest optimizations for context window limits.
 
 ## Architecture (workspace crates)
 - `crates/server`: MCP server runtime, CLI, and HTTP transport with security middleware.
   - `mcp_gateway/`: Context-optimized tool loading with lazy schema retrieval (0.4.9+).
-- `crates/validate`: Validation logic for Claude Code and Codex CLI compatibility.
+- `crates/validate`: Validation logic for Claude Code, Codex CLI, and Copilot CLI compatibility.
 - `crates/analyze`: Token counting, dependency analysis, and optimization.
 - `crates/intelligence`: Recommendations, project analysis, skill generation, and usage analytics persistence.
-- `crates/sync`: Bidirectional sync logic (skills, commands, prefs, MCP servers).
+- `crates/sync`: Bidirectional sync logic (skills, commands, prefs, MCP servers) with adapters for Claude, Codex, and Copilot.
 - `crates/discovery`: Skill discovery and ranking.
 - `crates/state`: Persistent store for manifests and mirrors.
 - `crates/subagents`: Shared subagent runtime and backends (including `StateRunStore::load_from_disk` for reloading persisted runs).
@@ -70,9 +70,13 @@ skrills validate --target codex --autofix  # Auto-add missing frontmatter
 skrills analyze --min-tokens 1000 --suggestions
 ```
 
-### Sync all configurations from Claude to Codex
+### Sync all configurations between CLIs
 ```bash
-skrills sync-all --from claude --skip-existing-commands
+# Claude to ALL other CLIs (Codex + Copilot) - no flags needed
+skrills sync-all
+
+# Claude to a specific CLI only
+skrills sync-all --to codex --skip-existing-commands
 ```
 
 > **Example plugins**: [claude-night-market](https://github.com/athola/claude-night-market) provides a collection of Claude Code plugins (skills, agents, commands, hooks) that can be synced to Codex using skrills.
@@ -156,7 +160,13 @@ ssh -L 3000:localhost:3000 your-server
 
 ## Validation
 
-Skrills validates skills against two targets. **Claude Code** is permissive, accepting any markdown with optional frontmatter. **Codex CLI** is strict, requiring YAML frontmatter with a `name` (max 100 chars) and `description` (max 500 chars).
+Skrills validates skills against three targets. **Claude Code** is permissive, accepting any markdown with optional frontmatter. **Codex CLI** and **GitHub Copilot CLI** are strict, requiring YAML frontmatter with a `name` (max 100 chars) and `description` (max 500 chars).
+
+```bash
+skrills validate --target codex      # Validate for Codex
+skrills validate --target copilot    # Validate for Copilot
+skrills validate --target all        # Validate for all CLIs
+```
 
 The `--autofix` flag derives missing frontmatter from the file path and content.
 
@@ -168,7 +178,7 @@ When running as an MCP server (`skrills serve`), several categories of tools bec
 `validate-skills` checks CLI compatibility, while `analyze-skills` reports token usage and dependencies. `skill-metrics` aggregates quality and dependency statistics.
 
 **Synchronization**
-A suite of tools handles data transfer between Claude and Codex. `sync-skills`, `sync-commands`, `sync-mcp-servers`, `sync-preferences`, and `sync-all` cover various configuration aspects. `sync-from-claude` copies Claude skills to the Codex mirror. `sync-status` provides a dry-run preview of changes.
+A suite of tools handles data transfer between Claude, Codex, and Copilot. `sync-skills`, `sync-commands`, `sync-mcp-servers`, `sync-preferences`, and `sync-all` cover various configuration aspects. `sync-from-claude`, `sync-from-copilot`, and `sync-to-copilot` handle direction-specific sync. `sync-status` provides a dry-run preview of changes. Note: Copilot does not support slash commands, so command sync is skipped when Copilot is the source or target.
 
 **Dependencies & Loading**
 `resolve-dependencies` finds direct or transitive relationships for a skill URI. `skill-loading-status` reports on root scanning and marker coverage. `enable-skill-trace` and `disable-skill-trace` manage debug skills for tracing, while `skill-loading-selftest` confirms loading via a probe.
@@ -179,7 +189,7 @@ A suite of tools handles data transfer between Claude and Codex. `sync-skills`, 
 **Context Optimization (0.4.9+)**
 `list-mcp-tools` returns tool names and descriptions without full schemas. `describe-mcp-tool` loads the full schema for a specific tool. `get-context-stats` reports estimated tokens saved and schema load efficiency.
 
-> **Testing**: Tool handler tests cover edge cases, dry-run modes, and target validation for Claude, Codex, and both targets.
+> **Testing**: Tool handler tests cover edge cases, dry-run modes, and target validation for Claude, Codex, Copilot, and all targets.
 
 ### Intelligence tools
 - `recommend-skills-smart` - Smart recommendations using dependencies, usage patterns, and project context
@@ -224,7 +234,7 @@ Deviation scoring compares actual skill-assisted outcomes against category basel
    - `search-skills-fuzzy` with query `"databas"` finds `"database"` skills
 
 ## CLI guide (selected)
-- `skrills validate [--target claude|codex|both] [--autofix]` — validate skills for CLI compatibility.
+- `skrills validate [--target claude|codex|copilot|both|all] [--autofix]` — validate skills for CLI compatibility.
 - `skrills analyze [--min-tokens N] [--suggestions]` — analyze token usage and dependencies.
 - `skrills metrics [--format text|json] [--include-validation]` — aggregate statistics and quality distribution.
 - `skrills recommend <uri> [--limit N] [--include-quality]` — suggest related skills based on dependencies.
@@ -234,8 +244,8 @@ Deviation scoring compares actual skill-assisted outcomes against category basel
 - `skrills suggest-new-skills [--project-dir DIR] [--focus-area AREA]` — identify gaps and suggestions.
 - `skrills create-skill <name> --description TEXT [--method github|llm|empirical|both] [--target-dir DIR]` — create skills via GitHub search, LLM generation, or empirical session patterns (target dir defaults to installed client, Claude preferred).
 - `skrills search-skills-github <query> [--limit N] [--format text|json]` — search GitHub for skills.
-- `skrills sync-all [--from claude|codex] [--skip-existing-commands]` — sync all configurations.
-- `skrills sync-commands [--from claude|codex] [--dry-run] [--skip-existing-commands]` — byte-for-byte command sync.
+- `skrills sync-all [--from claude|codex|copilot] [--to claude|codex|copilot] [--skip-existing-commands]` — sync all configurations.
+- `skrills sync-commands [--from claude|codex] [--dry-run] [--skip-existing-commands]` — byte-for-byte command sync (Copilot does not support commands).
 - `skrills mirror` — mirror skills/agents/commands/prefs from Claude to Codex.
 - `skrills tui` — interactive sync and diagnostics.
 - `skrills doctor` — verify Codex MCP wiring.

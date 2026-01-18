@@ -575,4 +575,238 @@ impl SkillService {
             meta: None,
         })
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Copilot sync tools
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Sync from GitHub Copilot CLI to Claude or Codex.
+    ///
+    /// # Arguments
+    ///
+    /// The `args` map accepts the following JSON keys:
+    /// - `to`: `"claude"` or `"codex"` (default: `"claude"`) - target CLI
+    /// - `dry_run`: `bool` (default: `false`) - preview changes without writing
+    ///
+    /// # Returns
+    ///
+    /// A `CallToolResult` with sync summary and structured report.
+    pub(crate) fn sync_from_copilot_tool(
+        &self,
+        args: JsonMap<String, Value>,
+    ) -> Result<CallToolResult> {
+        use skrills_sync::{ClaudeAdapter, CopilotAdapter, SyncOrchestrator, SyncParams};
+
+        let to = args.get("to").and_then(|v| v.as_str()).unwrap_or("claude");
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let params = SyncParams {
+            from: Some("copilot".to_string()),
+            dry_run,
+            sync_commands: true,
+            sync_mcp_servers: true,
+            sync_preferences: true,
+            sync_skills: true,
+            ..Default::default()
+        };
+
+        let source = CopilotAdapter::new()?;
+        let report = if to == "codex" {
+            use skrills_sync::CodexAdapter;
+            let target = CodexAdapter::new()?;
+            SyncOrchestrator::new(source, target).sync(&params)?
+        } else {
+            let target = ClaudeAdapter::new()?;
+            SyncOrchestrator::new(source, target).sync(&params)?
+        };
+
+        Ok(CallToolResult {
+            content: vec![Content::text(report.summary.clone())],
+            is_error: Some(!report.success),
+            structured_content: Some(json!({
+                "from": "copilot",
+                "to": to,
+                "dry_run": dry_run,
+                "report": report
+            })),
+            meta: None,
+        })
+    }
+
+    /// Sync to GitHub Copilot CLI from Claude or Codex.
+    ///
+    /// # Arguments
+    ///
+    /// The `args` map accepts the following JSON keys:
+    /// - `from`: `"claude"` or `"codex"` (default: `"claude"`) - source CLI
+    /// - `dry_run`: `bool` (default: `false`) - preview changes without writing
+    ///
+    /// # Returns
+    ///
+    /// A `CallToolResult` with sync summary and structured report.
+    pub(crate) fn sync_to_copilot_tool(
+        &self,
+        args: JsonMap<String, Value>,
+    ) -> Result<CallToolResult> {
+        use skrills_sync::{ClaudeAdapter, CopilotAdapter, SyncOrchestrator, SyncParams};
+
+        let from = args
+            .get("from")
+            .and_then(|v| v.as_str())
+            .unwrap_or("claude");
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let params = SyncParams {
+            from: Some(from.to_string()),
+            dry_run,
+            sync_commands: true,
+            sync_mcp_servers: true,
+            sync_preferences: true,
+            sync_skills: true,
+            ..Default::default()
+        };
+
+        let target = CopilotAdapter::new()?;
+        let report = if from == "codex" {
+            use skrills_sync::CodexAdapter;
+            let source = CodexAdapter::new()?;
+            SyncOrchestrator::new(source, target).sync(&params)?
+        } else {
+            let source = ClaudeAdapter::new()?;
+            SyncOrchestrator::new(source, target).sync(&params)?
+        };
+
+        Ok(CallToolResult {
+            content: vec![Content::text(report.summary.clone())],
+            is_error: Some(!report.success),
+            structured_content: Some(json!({
+                "from": from,
+                "to": "copilot",
+                "dry_run": dry_run,
+                "report": report
+            })),
+            meta: None,
+        })
+    }
+
+    /// Syncs skills between Claude, Codex, and Copilot.
+    ///
+    /// # Arguments
+    ///
+    /// The `args` map accepts the following JSON keys:
+    /// - `from`: `"claude"`, `"codex"`, or `"copilot"` (default: `"claude"`) - source CLI
+    /// - `to`: `"claude"`, `"codex"`, or `"copilot"` (default based on from) - target CLI
+    /// - `dry_run`: `bool` (default: `false`) - preview changes without writing
+    /// - `include_marketplace`: `bool` (default: `false`) - include marketplace skills
+    ///
+    /// # Returns
+    ///
+    /// A `CallToolResult` with sync summary and structured report.
+    pub(crate) fn sync_skills_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
+        use skrills_sync::{
+            ClaudeAdapter, CodexAdapter, CopilotAdapter, SyncOrchestrator, SyncParams,
+        };
+
+        let from = args
+            .get("from")
+            .and_then(|v| v.as_str())
+            .unwrap_or("claude");
+        // Default target: codex for claude source, claude for others
+        let default_to = if from == "claude" { "codex" } else { "claude" };
+        let to = args
+            .get("to")
+            .and_then(|v| v.as_str())
+            .unwrap_or(default_to);
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let include_marketplace = args
+            .get("include_marketplace")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        // Prevent syncing to self
+        if from == to {
+            return Err(anyhow::anyhow!(
+                "Source and target cannot be the same: {}",
+                from
+            ));
+        }
+
+        let params = SyncParams {
+            from: Some(from.to_string()),
+            dry_run,
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_skills: true,
+            include_marketplace,
+            ..Default::default()
+        };
+
+        // Create adapters and run sync based on from/to combination
+        let report = match (from, to) {
+            ("claude", "codex") => {
+                let source = ClaudeAdapter::new()?;
+                let target = CodexAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            }
+            ("claude", "copilot") => {
+                let source = ClaudeAdapter::new()?;
+                let target = CopilotAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            }
+            ("codex", "claude") => {
+                let source = CodexAdapter::new()?;
+                let target = ClaudeAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            }
+            ("codex", "copilot") => {
+                let source = CodexAdapter::new()?;
+                let target = CopilotAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            }
+            ("copilot", "claude") => {
+                let source = CopilotAdapter::new()?;
+                let target = ClaudeAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            }
+            ("copilot", "codex") => {
+                let source = CopilotAdapter::new()?;
+                let target = CodexAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            }
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Invalid sync direction: {} -> {}. Valid options are: claude, codex, copilot",
+                    from,
+                    to
+                ));
+            }
+        };
+
+        Ok(CallToolResult {
+            content: vec![Content::text(report.summary.clone())],
+            is_error: Some(!report.success),
+            structured_content: Some(json!({
+                "from": from,
+                "to": to,
+                "dry_run": dry_run,
+                "include_marketplace": include_marketplace,
+                "summary": report.summary,
+                "skills": {
+                    "written": report.skills.written,
+                    "skipped": report.skills.skipped.len(),
+                }
+            })),
+            meta: None,
+        })
+    }
 }

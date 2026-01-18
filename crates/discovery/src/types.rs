@@ -12,6 +12,8 @@ pub enum SkillSource {
     Codex,
     /// Claude Code skills directory (`~/.claude/skills`).
     Claude,
+    /// GitHub Copilot CLI skills directory (`~/.copilot/skills`).
+    Copilot,
     /// Claude Code marketplace plugins (`~/.claude/plugins/marketplaces`).
     Marketplace,
     /// Claude Code plugin cache (`~/.claude/plugins/cache`).
@@ -30,6 +32,7 @@ impl SkillSource {
         match self {
             SkillSource::Codex => "codex".into(),
             SkillSource::Claude => "claude".into(),
+            SkillSource::Copilot => "copilot".into(),
             SkillSource::Marketplace => "marketplace".into(),
             SkillSource::Cache => "cache".into(),
             SkillSource::Mirror => "mirror".into(),
@@ -40,13 +43,14 @@ impl SkillSource {
 
     /// Returns a human-friendly location tag for diagnostics.
     ///
-    /// - `global`: user-level shared skills (`~/.codex`, `~/.claude`, mirror).
+    /// - `global`: user-level shared skills (`~/.codex`, `~/.claude`, `~/.copilot`, mirror).
     /// - `universal`: cross-agent shared skills (`~/.agent`).
     /// - `project`: extra/user-specified directories.
     pub fn location(&self) -> &'static str {
         match self {
             SkillSource::Codex
             | SkillSource::Claude
+            | SkillSource::Copilot
             | SkillSource::Marketplace
             | SkillSource::Cache
             | SkillSource::Mirror => "global",
@@ -62,6 +66,7 @@ impl SkillSource {
 /// use skrills_discovery::{parse_source_key, SkillSource};
 ///
 /// assert_eq!(parse_source_key("mirror"), Some(SkillSource::Mirror));
+/// assert_eq!(parse_source_key("copilot"), Some(SkillSource::Copilot));
 /// assert_eq!(parse_source_key("unknown"), None);
 /// ```
 pub fn parse_source_key(key: &str) -> Option<SkillSource> {
@@ -69,6 +74,8 @@ pub fn parse_source_key(key: &str) -> Option<SkillSource> {
         Some(SkillSource::Codex)
     } else if key.eq_ignore_ascii_case("claude") {
         Some(SkillSource::Claude)
+    } else if key.eq_ignore_ascii_case("copilot") {
+        Some(SkillSource::Copilot)
     } else if key.eq_ignore_ascii_case("marketplace") {
         Some(SkillSource::Marketplace)
     } else if key.eq_ignore_ascii_case("cache") {

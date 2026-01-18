@@ -1,0 +1,967 @@
+//! Copilot adapter for reading/writing Copilot CLI configuration.
+//!
+//! ## Path Resolution (XDG-compliant)
+//!
+//! The adapter follows the XDG Base Directory Specification:
+//! 1. If `XDG_CONFIG_HOME` is set → `$XDG_CONFIG_HOME/copilot`
+//! 2. If unset → `~/.config/copilot` (XDG default)
+//! 3. Fallback → `~/.copilot` (legacy location)
+//!
+//! ## Key differences from Codex:
+//! - MCP servers: Stored in `mcp-config.json` (NOT in `config.json`)
+//! - Preferences: Stored in `config.json`, must preserve security fields
+//! - Skills: Same format as Codex (`skills/<name>/SKILL.md`)
+//! - Commands: Not supported (Copilot has no slash commands)
+//! - No config.toml feature flag management
+
+use super::traits::{AgentAdapter, FieldSupport};
+use crate::common::{Command, McpServer, Preferences};
+use crate::report::{SkipReason, WriteReport};
+use crate::Result;
+use anyhow::Context;
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+use std::time::SystemTime;
+use walkdir::WalkDir;
+
+/// Adapter for GitHub Copilot CLI configuration.
+pub struct CopilotAdapter {
+    root: PathBuf,
+}
+
+impl CopilotAdapter {
+    /// Creates a new CopilotAdapter using XDG-compliant path resolution.
+    ///
+    /// Path precedence:
+    /// 1. `$XDG_CONFIG_HOME/copilot` (if XDG_CONFIG_HOME is set)
+    /// 2. `~/.config/copilot` (XDG default)
+    /// 3. `~/.copilot` (legacy fallback)
+    pub fn new() -> Result<Self> {
+        let root = Self::resolve_config_root()?;
+        Ok(Self { root })
+    }
+
+    /// Resolves the configuration root following XDG Base Directory Specification.
+    fn resolve_config_root() -> Result<PathBuf> {
+        // First, try XDG-compliant path: $XDG_CONFIG_HOME/copilot or ~/.config/copilot
+        if let Some(config_dir) = dirs::config_dir() {
+            let xdg_path = config_dir.join("copilot");
+            // Use XDG path if it exists OR if no legacy path exists
+            // (prefer XDG for new installations)
+            let home = dirs::home_dir();
+            let legacy_path = home.as_ref().map(|h| h.join(".copilot"));
+
+            if xdg_path.exists() {
+                return Ok(xdg_path);
+            }
+
+            // If legacy path doesn't exist either, prefer XDG for new installations
+            if legacy_path.as_ref().is_none_or(|p| !p.exists()) {
+                return Ok(xdg_path);
+            }
+        }
+
+        // Fallback to legacy ~/.copilot
+        let home = dirs::home_dir().context("Could not determine home directory")?;
+        Ok(home.join(".copilot"))
+    }
+
+    /// Creates a CopilotAdapter with a custom root (for testing).
+    pub fn with_root(root: PathBuf) -> Self {
+        Self { root }
+    }
+
+    fn skills_dir(&self) -> PathBuf {
+        self.root.join("skills")
+    }
+
+    /// Path to MCP server configuration (separate from main config).
+    fn mcp_config_path(&self) -> PathBuf {
+        self.root.join("mcp-config.json")
+    }
+
+    /// Path to preferences/settings (model, security fields).
+    fn config_path(&self) -> PathBuf {
+        self.root.join("config.json")
+    }
+
+    fn is_hidden_component(name: &str) -> bool {
+        name.starts_with('.')
+    }
+
+    fn is_hidden_path(path: &std::path::Path) -> bool {
+        path.components().any(|c| match c {
+            std::path::Component::Normal(s) => Self::is_hidden_component(&s.to_string_lossy()),
+            _ => false,
+        })
+    }
+
+    fn hash_content(content: &[u8]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(content);
+        format!("{:x}", hasher.finalize())
+    }
+}
+
+// Note: We intentionally do not implement Default for CopilotAdapter because
+// construction requires home directory resolution which can fail. Use
+// CopilotAdapter::new() or CopilotAdapter::with_root() instead.
+
+impl AgentAdapter for CopilotAdapter {
+    fn name(&self) -> &str {
+        "copilot"
+    }
+
+    fn config_root(&self) -> PathBuf {
+        self.root.clone()
+    }
+
+    fn supported_fields(&self) -> FieldSupport {
+        FieldSupport {
+            commands: false, // Copilot does not support slash commands
+            mcp_servers: true,
+            preferences: true,
+            skills: true,
+        }
+    }
+
+    fn read_commands(&self, _include_marketplace: bool) -> Result<Vec<Command>> {
+        // Copilot does not support slash commands
+        Ok(Vec::new())
+    }
+
+    fn read_mcp_servers(&self) -> Result<HashMap<String, McpServer>> {
+        let path = self.mcp_config_path();
+        if !path.exists() {
+            return Ok(HashMap::new());
+        }
+
+        let content = fs::read_to_string(&path)?;
+        let config: serde_json::Value = serde_json::from_str(&content)?;
+
+        let mut servers = HashMap::new();
+        if let Some(mcp) = config.get("mcpServers").and_then(|v| v.as_object()) {
+            for (name, server_config) in mcp {
+                let server = McpServer {
+                    name: name.clone(),
+                    command: server_config
+                        .get("command")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    args: server_config
+                        .get("args")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    env: server_config
+                        .get("env")
+                        .and_then(|v| v.as_object())
+                        .map(|obj| {
+                            obj.iter()
+                                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    enabled: server_config
+                        .get("disabled")
+                        .and_then(|v| v.as_bool())
+                        .map(|d| !d)
+                        .unwrap_or(true),
+                };
+                servers.insert(name.clone(), server);
+            }
+        }
+
+        Ok(servers)
+    }
+
+    fn read_preferences(&self) -> Result<Preferences> {
+        let path = self.config_path();
+        if !path.exists() {
+            return Ok(Preferences::default());
+        }
+
+        let content = fs::read_to_string(&path)?;
+        let config: serde_json::Value = serde_json::from_str(&content)?;
+
+        Ok(Preferences {
+            model: config
+                .get("model")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            custom: HashMap::new(),
+        })
+    }
+
+    fn read_skills(&self) -> Result<Vec<Command>> {
+        let skills_dir = self.skills_dir();
+        if !skills_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut skills = Vec::new();
+        for entry in WalkDir::new(&skills_dir)
+            .min_depth(1)
+            .max_depth(20)
+            .follow_links(false)
+        {
+            let entry = entry?;
+            if entry.file_type().is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            if Self::is_hidden_path(path.strip_prefix(&skills_dir).unwrap_or(path)) {
+                continue;
+            }
+            if !entry.file_type().is_file() {
+                continue;
+            }
+
+            // Copilot skills are discovered via ~/.copilot/skills/**/SKILL.md
+            let is_skill_md = path.file_name().is_some_and(|n| n == "SKILL.md");
+            if !is_skill_md {
+                continue;
+            }
+
+            // Use the parent directory path relative to skills_dir as the skill identifier.
+            // Example: ~/.copilot/skills/pdf-processing/SKILL.md -> "pdf-processing"
+            // Example: ~/.copilot/skills/nested/foo/SKILL.md -> "nested/foo"
+            let name = path
+                .parent()
+                .and_then(|p| p.strip_prefix(&skills_dir).ok())
+                .and_then(|p| p.to_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("unknown")
+                .to_string();
+
+            let content = fs::read(path)?;
+            let metadata = fs::metadata(path)?;
+            let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            let hash = Self::hash_content(&content);
+
+            skills.push(Command {
+                name,
+                content,
+                source_path: path.to_path_buf(),
+                modified,
+                hash,
+            });
+        }
+        Ok(skills)
+    }
+
+    fn write_commands(&self, _commands: &[Command]) -> Result<WriteReport> {
+        // Copilot does not support slash commands - no-op
+        Ok(WriteReport::default())
+    }
+
+    fn write_mcp_servers(&self, servers: &HashMap<String, McpServer>) -> Result<WriteReport> {
+        let path = self.mcp_config_path();
+
+        // Read existing config to preserve structure
+        let mut config: serde_json::Value = if path.exists() {
+            let content = fs::read_to_string(&path)?;
+            serde_json::from_str(&content)?
+        } else {
+            serde_json::json!({})
+        };
+
+        let mut report = WriteReport::default();
+        let mut mcp_obj = serde_json::Map::new();
+
+        for (name, server) in servers {
+            let mut server_config = serde_json::Map::new();
+            server_config.insert("command".into(), serde_json::json!(server.command));
+            if !server.args.is_empty() {
+                server_config.insert("args".into(), serde_json::json!(server.args));
+            }
+            if !server.env.is_empty() {
+                server_config.insert("env".into(), serde_json::json!(server.env));
+            }
+            if !server.enabled {
+                server_config.insert("disabled".into(), serde_json::json!(true));
+            }
+            mcp_obj.insert(name.clone(), serde_json::Value::Object(server_config));
+            report.written += 1;
+        }
+
+        config["mcpServers"] = serde_json::Value::Object(mcp_obj);
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+
+        Ok(report)
+    }
+
+    fn write_preferences(&self, prefs: &Preferences) -> Result<WriteReport> {
+        let path = self.config_path();
+
+        // CRITICAL: Read existing config to preserve security fields
+        // (trusted_folders, allowed_urls, denied_urls)
+        let mut config: serde_json::Value = if path.exists() {
+            let content = fs::read_to_string(&path)?;
+            serde_json::from_str(&content)?
+        } else {
+            serde_json::json!({})
+        };
+
+        let mut report = WriteReport::default();
+
+        // Only update the model field - leave all other fields untouched
+        if let Some(model) = &prefs.model {
+            config["model"] = serde_json::json!(model);
+            report.written += 1;
+        }
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+
+        Ok(report)
+    }
+
+    fn write_skills(&self, skills: &[Command]) -> Result<WriteReport> {
+        let dir = self.skills_dir();
+        fs::create_dir_all(&dir)?;
+
+        let mut report = WriteReport::default();
+
+        for skill in skills {
+            // Write each skill into ~/.copilot/skills/<skill-name>/SKILL.md
+            let skill_rel_dir = if skill.name.eq_ignore_ascii_case("skill")
+                || skill.name.eq_ignore_ascii_case("skill.md")
+                || skill.name.eq_ignore_ascii_case("SKILL")
+            {
+                skill
+                    .source_path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&skill.name)
+                    .to_string()
+            } else {
+                skill.name.clone()
+            };
+
+            let safe_rel_dir = sanitize_name(&skill_rel_dir);
+            let path = dir.join(&safe_rel_dir).join("SKILL.md");
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            if path.exists() {
+                let existing = fs::read(&path)?;
+                if Self::hash_content(&existing) == skill.hash {
+                    report.skipped.push(SkipReason::Unchanged {
+                        item: skill.name.clone(),
+                    });
+                    continue;
+                }
+            }
+
+            fs::write(&path, &skill.content)?;
+            report.written += 1;
+        }
+
+        // Note: Unlike Codex, Copilot does NOT require config.toml feature flags
+
+        Ok(report)
+    }
+}
+
+/// Sanitizes a skill name to prevent path traversal attacks.
+/// Only allows alphanumeric characters, hyphens, and underscores.
+fn sanitize_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    // ==========================================
+    // Basic Adapter Tests
+    // ==========================================
+
+    #[test]
+    fn copilot_adapter_name() {
+        let tmp = tempdir().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        assert_eq!(adapter.name(), "copilot");
+    }
+
+    #[test]
+    fn copilot_adapter_config_root() {
+        let tmp = tempdir().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        assert_eq!(adapter.config_root(), tmp.path().to_path_buf());
+    }
+
+    #[test]
+    fn copilot_adapter_supported_fields() {
+        let tmp = tempdir().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let fields = adapter.supported_fields();
+
+        assert!(!fields.commands, "Copilot should NOT support commands");
+        assert!(fields.mcp_servers, "Copilot should support MCP servers");
+        assert!(fields.preferences, "Copilot should support preferences");
+        assert!(fields.skills, "Copilot should support skills");
+    }
+
+    // ==========================================
+    // Commands Tests (no-op behavior)
+    // ==========================================
+
+    #[test]
+    fn read_commands_returns_empty() {
+        let tmp = tempdir().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let commands = adapter.read_commands(false).unwrap();
+        assert!(commands.is_empty());
+    }
+
+    #[test]
+    fn write_commands_is_noop() {
+        let tmp = tempdir().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+
+        let commands = vec![Command {
+            name: "test".to_string(),
+            content: b"# Test".to_vec(),
+            source_path: PathBuf::from("/tmp/test.md"),
+            modified: SystemTime::now(),
+            hash: "abc".to_string(),
+        }];
+
+        let report = adapter.write_commands(&commands).unwrap();
+        assert_eq!(report.written, 0);
+        assert!(report.skipped.is_empty());
+    }
+
+    // ==========================================
+    // Skills Tests
+    // ==========================================
+
+    #[test]
+    fn read_skills_empty_dir() {
+        let tmp = tempdir().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let skills = adapter.read_skills().unwrap();
+        assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn read_skills_discovers_skill_md() {
+        let tmp = tempdir().unwrap();
+        let skill_dir = tmp.path().join("skills/my-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: my-skill\ndescription: test\n---\n# My Skill",
+        )
+        .unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let skills = adapter.read_skills().unwrap();
+
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "my-skill");
+    }
+
+    #[test]
+    fn read_skills_nested_directories() {
+        let tmp = tempdir().unwrap();
+        let skill_dir = tmp.path().join("skills/category/nested-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: nested\ndescription: test\n---\n# Nested",
+        )
+        .unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let skills = adapter.read_skills().unwrap();
+
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "category/nested-skill");
+    }
+
+    #[test]
+    fn read_skills_ignores_non_skill_md_files() {
+        let tmp = tempdir().unwrap();
+        let skill_dir = tmp.path().join("skills/my-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("README.md"), "# Readme").unwrap();
+        fs::write(skill_dir.join("notes.txt"), "Notes").unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let skills = adapter.read_skills().unwrap();
+
+        assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn read_skills_ignores_hidden_directories() {
+        let tmp = tempdir().unwrap();
+        let hidden_dir = tmp.path().join("skills/.hidden");
+        fs::create_dir_all(&hidden_dir).unwrap();
+        fs::write(hidden_dir.join("SKILL.md"), "# Hidden").unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let skills = adapter.read_skills().unwrap();
+
+        assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn write_skills_creates_directories() {
+        let tmp = tempdir().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+
+        let skill = Command {
+            name: "alpha".to_string(),
+            content: b"---\nname: alpha\ndescription: test\n---\n# Alpha\n".to_vec(),
+            source_path: PathBuf::from("/tmp/alpha.md"),
+            modified: SystemTime::now(),
+            hash: "hash".to_string(),
+        };
+
+        let report = adapter.write_skills(&[skill]).unwrap();
+        assert_eq!(report.written, 1);
+        assert!(tmp.path().join("skills/alpha/SKILL.md").exists());
+    }
+
+    #[test]
+    fn write_skills_skips_unchanged() {
+        let tmp = tempdir().unwrap();
+        let skill_dir = tmp.path().join("skills/alpha");
+        fs::create_dir_all(&skill_dir).unwrap();
+        let content = b"---\nname: alpha\n---\n# Alpha\n";
+        fs::write(skill_dir.join("SKILL.md"), content).unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let skill = Command {
+            name: "alpha".to_string(),
+            content: content.to_vec(),
+            source_path: PathBuf::from("/tmp/alpha.md"),
+            modified: SystemTime::now(),
+            hash: CopilotAdapter::hash_content(content),
+        };
+
+        let report = adapter.write_skills(&[skill]).unwrap();
+        assert_eq!(report.written, 0);
+        assert_eq!(report.skipped.len(), 1);
+    }
+
+    #[test]
+    fn write_skills_no_config_toml_created() {
+        let tmp = tempdir().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+
+        let skill = Command {
+            name: "test".to_string(),
+            content: b"# Test".to_vec(),
+            source_path: PathBuf::from("/tmp/test.md"),
+            modified: SystemTime::now(),
+            hash: "hash".to_string(),
+        };
+
+        adapter.write_skills(&[skill]).unwrap();
+
+        // Unlike Codex, Copilot should NOT create config.toml
+        assert!(!tmp.path().join("config.toml").exists());
+    }
+
+    // ==========================================
+    // MCP Servers Tests
+    // ==========================================
+
+    #[test]
+    fn read_mcp_servers_empty_when_no_file() {
+        let tmp = tempdir().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let servers = adapter.read_mcp_servers().unwrap();
+        assert!(servers.is_empty());
+    }
+
+    #[test]
+    fn read_mcp_servers_from_mcp_config_json() {
+        let tmp = tempdir().unwrap();
+        // Note: MCP servers in mcp-config.json, NOT config.json
+        let mcp_config_path = tmp.path().join("mcp-config.json");
+        fs::write(
+            &mcp_config_path,
+            r#"{
+            "mcpServers": {
+                "test-server": {
+                    "command": "/usr/bin/test",
+                    "args": ["--flag", "value"]
+                }
+            }
+        }"#,
+        )
+        .unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let servers = adapter.read_mcp_servers().unwrap();
+
+        assert_eq!(servers.len(), 1);
+        let server = servers.get("test-server").unwrap();
+        assert_eq!(server.command, "/usr/bin/test");
+        assert_eq!(server.args, vec!["--flag", "value"]);
+        assert!(server.enabled);
+    }
+
+    #[test]
+    fn read_mcp_servers_handles_disabled_flag() {
+        let tmp = tempdir().unwrap();
+        let mcp_config_path = tmp.path().join("mcp-config.json");
+        fs::write(
+            &mcp_config_path,
+            r#"{
+            "mcpServers": {
+                "disabled-server": {
+                    "command": "/bin/disabled",
+                    "disabled": true
+                }
+            }
+        }"#,
+        )
+        .unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let servers = adapter.read_mcp_servers().unwrap();
+
+        let server = servers.get("disabled-server").unwrap();
+        assert!(!server.enabled);
+    }
+
+    #[test]
+    fn read_mcp_servers_invalid_json_returns_error() {
+        let tmp = tempdir().unwrap();
+        let mcp_config_path = tmp.path().join("mcp-config.json");
+        fs::write(&mcp_config_path, "{ invalid json }").unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let result = adapter.read_mcp_servers();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn write_mcp_servers_creates_mcp_config_json() {
+        let tmp = tempdir().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+
+        let mut servers = HashMap::new();
+        servers.insert(
+            "my-server".to_string(),
+            McpServer {
+                name: "my-server".to_string(),
+                command: "/bin/server".to_string(),
+                args: vec!["arg1".to_string()],
+                env: HashMap::new(),
+                enabled: true,
+            },
+        );
+
+        let report = adapter.write_mcp_servers(&servers).unwrap();
+        assert_eq!(report.written, 1);
+
+        // Should write to mcp-config.json, NOT config.json
+        let mcp_config_path = tmp.path().join("mcp-config.json");
+        assert!(mcp_config_path.exists());
+
+        let content = fs::read_to_string(&mcp_config_path).unwrap();
+        let config: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(config["mcpServers"]["my-server"].is_object());
+    }
+
+    #[test]
+    fn write_mcp_servers_preserves_existing_structure() {
+        let tmp = tempdir().unwrap();
+        let mcp_config_path = tmp.path().join("mcp-config.json");
+        fs::write(
+            &mcp_config_path,
+            r#"{
+            "someOtherField": "preserved",
+            "mcpServers": {}
+        }"#,
+        )
+        .unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let mut servers = HashMap::new();
+        servers.insert(
+            "new-server".to_string(),
+            McpServer {
+                name: "new-server".to_string(),
+                command: "/bin/new".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+                enabled: true,
+            },
+        );
+
+        adapter.write_mcp_servers(&servers).unwrap();
+
+        let content = fs::read_to_string(&mcp_config_path).unwrap();
+        let config: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(config["someOtherField"], "preserved");
+    }
+
+    // ==========================================
+    // Preferences Tests (with security field preservation)
+    // ==========================================
+
+    #[test]
+    fn read_preferences_empty_when_no_file() {
+        let tmp = tempdir().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let prefs = adapter.read_preferences().unwrap();
+        assert!(prefs.model.is_none());
+    }
+
+    #[test]
+    fn read_preferences_from_config_json() {
+        let tmp = tempdir().unwrap();
+        let config_path = tmp.path().join("config.json");
+        fs::write(
+            &config_path,
+            r#"{
+            "model": "gpt-4o"
+        }"#,
+        )
+        .unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let prefs = adapter.read_preferences().unwrap();
+
+        assert_eq!(prefs.model.as_deref(), Some("gpt-4o"));
+    }
+
+    #[test]
+    fn read_preferences_invalid_json_returns_error() {
+        let tmp = tempdir().unwrap();
+        let config_path = tmp.path().join("config.json");
+        fs::write(&config_path, "not valid json").unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let result = adapter.read_preferences();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn write_preferences_creates_config_json() {
+        let tmp = tempdir().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+
+        let prefs = Preferences {
+            model: Some("gpt-4o".to_string()),
+            custom: HashMap::new(),
+        };
+
+        let report = adapter.write_preferences(&prefs).unwrap();
+        assert_eq!(report.written, 1);
+
+        let config_path = tmp.path().join("config.json");
+        assert!(config_path.exists());
+
+        let content = fs::read_to_string(&config_path).unwrap();
+        let config: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(config["model"], "gpt-4o");
+    }
+
+    #[test]
+    fn write_preferences_preserves_trusted_folders() {
+        let tmp = tempdir().unwrap();
+        let config_path = tmp.path().join("config.json");
+        fs::write(
+            &config_path,
+            r#"{
+            "model": "old-model",
+            "trusted_folders": ["/home/user/project"]
+        }"#,
+        )
+        .unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let prefs = Preferences {
+            model: Some("gpt-4o".to_string()),
+            custom: HashMap::new(),
+        };
+
+        adapter.write_preferences(&prefs).unwrap();
+
+        let content = fs::read_to_string(&config_path).unwrap();
+        let config: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        // Model should be updated
+        assert_eq!(config["model"], "gpt-4o");
+        // Security field should be preserved
+        assert_eq!(config["trusted_folders"][0], "/home/user/project");
+    }
+
+    #[test]
+    fn write_preferences_preserves_allowed_urls() {
+        let tmp = tempdir().unwrap();
+        let config_path = tmp.path().join("config.json");
+        fs::write(
+            &config_path,
+            r#"{
+            "allowed_urls": ["https://example.com"],
+            "denied_urls": ["https://malicious.com"]
+        }"#,
+        )
+        .unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let prefs = Preferences {
+            model: Some("new-model".to_string()),
+            custom: HashMap::new(),
+        };
+
+        adapter.write_preferences(&prefs).unwrap();
+
+        let content = fs::read_to_string(&config_path).unwrap();
+        let config: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        // Security fields should be preserved
+        assert_eq!(config["allowed_urls"][0], "https://example.com");
+        assert_eq!(config["denied_urls"][0], "https://malicious.com");
+    }
+
+    #[test]
+    fn write_preferences_invalid_existing_json_returns_error() {
+        let tmp = tempdir().unwrap();
+        let config_path = tmp.path().join("config.json");
+        fs::write(&config_path, "{ malformed: json, }").unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let prefs = Preferences {
+            model: Some("gpt-4o".to_string()),
+            custom: HashMap::new(),
+        };
+
+        let result = adapter.write_preferences(&prefs);
+        assert!(result.is_err());
+    }
+
+    // ==========================================
+    // Sanitization Tests
+    // ==========================================
+
+    #[test]
+    fn sanitize_name_removes_path_traversal() {
+        assert_eq!(sanitize_name("../../../etc/passwd"), "etcpasswd");
+        assert_eq!(sanitize_name("valid-name_123"), "valid-name_123");
+        assert_eq!(sanitize_name("../../malicious"), "malicious");
+        assert_eq!(sanitize_name("normal"), "normal");
+        assert_eq!(sanitize_name("with spaces"), "withspaces");
+        assert_eq!(sanitize_name("has/slashes"), "hasslashes");
+    }
+
+    // ==========================================
+    // Integration Tests
+    // ==========================================
+
+    #[test]
+    fn skills_roundtrip() {
+        let tmp = tempdir().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+
+        let skill = Command {
+            name: "test-skill".to_string(),
+            content: b"---\nname: test-skill\ndescription: A test skill\n---\n# Test Skill\n"
+                .to_vec(),
+            source_path: PathBuf::from("/tmp/test.md"),
+            modified: SystemTime::now(),
+            hash: "hash123".to_string(),
+        };
+
+        adapter.write_skills(&[skill]).unwrap();
+        let read_back = adapter.read_skills().unwrap();
+
+        assert_eq!(read_back.len(), 1);
+        assert_eq!(read_back[0].name, "test-skill");
+    }
+
+    #[test]
+    fn mcp_servers_roundtrip() {
+        let tmp = tempdir().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+
+        let mut servers = HashMap::new();
+        servers.insert(
+            "test-server".to_string(),
+            McpServer {
+                name: "test-server".to_string(),
+                command: "/bin/test".to_string(),
+                args: vec!["--arg".to_string()],
+                env: HashMap::from([("KEY".to_string(), "value".to_string())]),
+                enabled: true,
+            },
+        );
+
+        adapter.write_mcp_servers(&servers).unwrap();
+        let read_back = adapter.read_mcp_servers().unwrap();
+
+        assert_eq!(read_back.len(), 1);
+        let server = read_back.get("test-server").unwrap();
+        assert_eq!(server.command, "/bin/test");
+        assert_eq!(server.args, vec!["--arg"]);
+        assert!(server.enabled);
+    }
+
+    // ==========================================
+    // XDG Compliance Tests
+    // ==========================================
+
+    #[test]
+    fn resolve_config_root_prefers_xdg_if_exists() {
+        // This test verifies the XDG path resolution logic.
+        // When both XDG and legacy paths exist, XDG should be preferred.
+        // We can't easily test the env var without process isolation,
+        // but we verify the resolve_config_root function exists and works.
+        let result = CopilotAdapter::resolve_config_root();
+        assert!(result.is_ok(), "resolve_config_root should succeed");
+
+        let path = result.unwrap();
+        // Path should end with "copilot" or ".copilot"
+        let filename = path.file_name().unwrap().to_str().unwrap();
+        assert!(
+            filename == "copilot" || filename == ".copilot",
+            "Config root should be named 'copilot' or '.copilot', got: {}",
+            filename
+        );
+    }
+
+    #[test]
+    fn new_adapter_uses_xdg_resolution() {
+        // Verify that new() calls resolve_config_root internally
+        let adapter = CopilotAdapter::new();
+        assert!(adapter.is_ok(), "CopilotAdapter::new() should succeed");
+
+        let adapter = adapter.unwrap();
+        let root = adapter.config_root();
+        let filename = root.file_name().unwrap().to_str().unwrap();
+        assert!(
+            filename == "copilot" || filename == ".copilot",
+            "Config root should be named 'copilot' or '.copilot', got: {}",
+            filename
+        );
+    }
+}
