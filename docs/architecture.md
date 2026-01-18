@@ -46,8 +46,8 @@ graph TD
 |-------|---------|
 | `cli` | Thin binary wrapper |
 | `server` | MCP server, CLI commands, TUI |
-| `sync` | Bidirectional Claude/Codex sync |
-| `validate` | Skill validation (Claude/Codex) |
+| `sync` | Bidirectional Claude/Codex/Copilot sync |
+| `validate` | Skill validation (Claude/Codex/Copilot) |
 | `analyze` | Token counting, dependencies |
 | `intelligence` | Recommendations, project analysis, skill generation |
 | `discovery` | Skill/agent discovery, ranking |
@@ -56,7 +56,7 @@ graph TD
 
 ## Design Principles
 
-The architecture separates concerns strictly. Leaf crates like `validate`, `discovery`, and `state` have no internal dependencies, while near-leaf crates like `analyze` only depend on those specific types. We use trait-based abstraction via `AgentAdapter` to support pluggable source and target adapters, and compile-time dispatch through `SyncOrchestrator<S, T>` to maintain performance and type safety. Features like `subagents` and `watch` are gated behind feature flags to keep the core binary small.
+The architecture separates concerns strictly. Leaf crates like `validate`, `discovery`, and `state` have no internal dependencies, while near-leaf crates like `analyze` only depend on those specific types. We use trait-based abstraction via `AgentAdapter` to support pluggable source and target adapters for Claude, Codex, and Copilot, and compile-time dispatch through `SyncOrchestrator<S, T>` to maintain performance and type safety. Features like `subagents` and `watch` are gated behind feature flags to keep the core binary small.
 
 ## Module Organization
 

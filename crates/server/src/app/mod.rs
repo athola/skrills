@@ -21,7 +21,7 @@ mod tools;
 pub(crate) use intelligence::{resolve_project_dir, select_default_skill_root};
 
 use crate::cache::SkillCache;
-use crate::cli::{Cli, Commands};
+use crate::cli::{Cli, Commands, SyncSource};
 use crate::commands::{
     handle_agent_command, handle_analyze_command, handle_analyze_project_context_command,
     handle_create_skill_command, handle_export_analytics_command, handle_import_analytics_command,
@@ -826,6 +826,56 @@ fn text_with_location_and_role(
     }
 }
 
+/// Helper to run sync with the appropriate adapters based on source and target.
+fn run_sync_with_adapters(
+    from: SyncSource,
+    to: SyncSource,
+    params: &skrills_sync::SyncParams,
+) -> Result<skrills_sync::SyncReport> {
+    use skrills_sync::{ClaudeAdapter, CodexAdapter, CopilotAdapter, SyncOrchestrator};
+
+    // Create adapters based on source and target
+    match (from, to) {
+        (SyncSource::Claude, SyncSource::Codex) => {
+            let source = ClaudeAdapter::new()?;
+            let target = CodexAdapter::new()?;
+            Ok(SyncOrchestrator::new(source, target).sync(params)?)
+        }
+        (SyncSource::Claude, SyncSource::Copilot) => {
+            let source = ClaudeAdapter::new()?;
+            let target = CopilotAdapter::new()?;
+            Ok(SyncOrchestrator::new(source, target).sync(params)?)
+        }
+        (SyncSource::Codex, SyncSource::Claude) => {
+            let source = CodexAdapter::new()?;
+            let target = ClaudeAdapter::new()?;
+            Ok(SyncOrchestrator::new(source, target).sync(params)?)
+        }
+        (SyncSource::Codex, SyncSource::Copilot) => {
+            let source = CodexAdapter::new()?;
+            let target = CopilotAdapter::new()?;
+            Ok(SyncOrchestrator::new(source, target).sync(params)?)
+        }
+        (SyncSource::Copilot, SyncSource::Claude) => {
+            let source = CopilotAdapter::new()?;
+            let target = ClaudeAdapter::new()?;
+            Ok(SyncOrchestrator::new(source, target).sync(params)?)
+        }
+        (SyncSource::Copilot, SyncSource::Codex) => {
+            let source = CopilotAdapter::new()?;
+            let target = CodexAdapter::new()?;
+            Ok(SyncOrchestrator::new(source, target).sync(params)?)
+        }
+        // Same source and target - error
+        (SyncSource::Claude, SyncSource::Claude)
+        | (SyncSource::Codex, SyncSource::Codex)
+        | (SyncSource::Copilot, SyncSource::Copilot) => Err(anyhow!(
+            "Source and target cannot be the same: {}",
+            from.as_str()
+        )),
+    }
+}
+
 /// The main entry point for the `skrills` application.
 pub fn run() -> Result<()> {
     ignore_sigchld()?;
@@ -914,20 +964,23 @@ pub fn run() -> Result<()> {
         } => handle_sync_command(include_marketplace),
         Commands::SyncCommands {
             from,
+            to,
             dry_run,
             skip_existing_commands,
             include_marketplace,
         } => {
-            use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
+            use skrills_sync::SyncParams;
+
+            let target = to.unwrap_or_else(|| from.default_target());
 
             if !skip_existing_commands {
                 eprintln!(
-            "Warning: syncing commands will overwrite existing files under ~/.codex/prompts when names match. Use --skip-existing-commands to keep existing copies."
-        );
+                    "Warning: syncing commands will overwrite existing files. Use --skip-existing-commands to keep existing copies."
+                );
             }
 
             let params = SyncParams {
-                from: Some(from.clone()),
+                from: Some(from.as_str().to_string()),
                 dry_run,
                 sync_commands: true,
                 skip_existing_commands,
@@ -938,15 +991,7 @@ pub fn run() -> Result<()> {
                 ..Default::default()
             };
 
-            let report = if from == "claude" {
-                let source = ClaudeAdapter::new()?;
-                let target = CodexAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            } else {
-                let source = CodexAdapter::new()?;
-                let target = ClaudeAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            };
+            let report = run_sync_with_adapters(from, target, &params)?;
 
             println!(
                 "{}{}",
@@ -971,11 +1016,13 @@ pub fn run() -> Result<()> {
             }
             Ok(())
         }
-        Commands::SyncMcpServers { from, dry_run } => {
-            use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
+        Commands::SyncMcpServers { from, to, dry_run } => {
+            use skrills_sync::SyncParams;
+
+            let target = to.unwrap_or_else(|| from.default_target());
 
             let params = SyncParams {
-                from: Some(from.clone()),
+                from: Some(from.as_str().to_string()),
                 dry_run,
                 sync_commands: false,
                 sync_mcp_servers: true,
@@ -984,15 +1031,7 @@ pub fn run() -> Result<()> {
                 ..Default::default()
             };
 
-            let report = if from == "claude" {
-                let source = ClaudeAdapter::new()?;
-                let target = CodexAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            } else {
-                let source = CodexAdapter::new()?;
-                let target = ClaudeAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            };
+            let report = run_sync_with_adapters(from, target, &params)?;
 
             println!("{}", report.summary);
             if dry_run {
@@ -1000,11 +1039,13 @@ pub fn run() -> Result<()> {
             }
             Ok(())
         }
-        Commands::SyncPreferences { from, dry_run } => {
-            use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
+        Commands::SyncPreferences { from, to, dry_run } => {
+            use skrills_sync::SyncParams;
+
+            let target = to.unwrap_or_else(|| from.default_target());
 
             let params = SyncParams {
-                from: Some(from.clone()),
+                from: Some(from.as_str().to_string()),
                 dry_run,
                 sync_commands: false,
                 sync_mcp_servers: false,
@@ -1013,15 +1054,7 @@ pub fn run() -> Result<()> {
                 ..Default::default()
             };
 
-            let report = if from == "claude" {
-                let source = ClaudeAdapter::new()?;
-                let target = CodexAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            } else {
-                let source = CodexAdapter::new()?;
-                let target = ClaudeAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            };
+            let report = run_sync_with_adapters(from, target, &params)?;
 
             println!("{}", report.summary);
             if dry_run {
@@ -1031,86 +1064,96 @@ pub fn run() -> Result<()> {
         }
         Commands::SyncAll {
             from,
+            to,
             dry_run,
             skip_existing_commands,
             include_marketplace,
             validate: _validate,
             autofix: _autofix,
         } => {
-            use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
+            use skrills_sync::SyncParams;
 
-            // First sync skills using existing mechanism
-            if from == "claude" && !dry_run {
-                let home = home_dir()?;
-                let claude_root = mirror_source_root(&home);
-                let codex_skills_root = home.join(".codex/skills");
-                let skill_report = crate::sync::sync_skills_only_from_claude(
-                    &claude_root,
-                    &codex_skills_root,
+            // Determine targets: explicit --to or all other CLIs
+            let targets: Vec<SyncSource> = match to {
+                Some(t) => vec![t],
+                None => from.other_targets(),
+            };
+
+            let multi_target = targets.len() > 1;
+
+            for target in targets {
+                if multi_target {
+                    println!("\n=== Syncing {} → {} ===", from.as_str(), target.as_str());
+                }
+
+                // First sync skills using existing mechanism (only for claude→codex)
+                if from.is_claude() && target.is_codex() && !dry_run {
+                    let home = home_dir()?;
+                    let claude_root = mirror_source_root(&home);
+                    let codex_skills_root = home.join(".codex/skills");
+                    let skill_report = crate::sync::sync_skills_only_from_claude(
+                        &claude_root,
+                        &codex_skills_root,
+                        include_marketplace,
+                    )?;
+                    let _ = crate::setup::ensure_codex_skills_feature_enabled(
+                        &home.join(".codex/config.toml"),
+                    );
+                    println!(
+                        "Skills: {} synced, {} unchanged",
+                        skill_report.copied, skill_report.skipped
+                    );
+                }
+
+                // Then sync commands, MCP servers, preferences, and skills
+                let sync_skills = !from.is_claude(); // Claude source handled above
+                let params = SyncParams {
+                    from: Some(from.as_str().to_string()),
+                    dry_run,
+                    sync_commands: true,
+                    skip_existing_commands,
+                    sync_mcp_servers: true,
+                    sync_preferences: true,
+                    sync_skills,
                     include_marketplace,
-                )?;
-                let _ = crate::setup::ensure_codex_skills_feature_enabled(
-                    &home.join(".codex/config.toml"),
-                );
+                    ..Default::default()
+                };
+
+                let report = run_sync_with_adapters(from, target, &params)?;
+
                 println!(
-                    "Skills: {} synced, {} unchanged",
-                    skill_report.copied, skill_report.skipped
+                    "{}{}",
+                    report.summary,
+                    if skip_existing_commands && !report.commands.skipped.is_empty() {
+                        format!(
+                            "\nSkipped existing commands (kept target copy): {}",
+                            report
+                                .commands
+                                .skipped
+                                .iter()
+                                .map(|r| r.description())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    } else {
+                        String::new()
+                    }
                 );
             }
 
-            // Then sync commands, MCP servers, preferences, and skills (Codex source)
-            let sync_skills = from != "claude";
-            let params = SyncParams {
-                from: Some(from.clone()),
-                dry_run,
-                sync_commands: true,
-                skip_existing_commands,
-                sync_mcp_servers: true,
-                sync_preferences: true,
-                sync_skills, // Claude source handled above; enable for Codex→Claude
-                include_marketplace,
-                ..Default::default()
-            };
-
-            let report = if from == "claude" {
-                let source = ClaudeAdapter::new()?;
-                let target = CodexAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            } else {
-                let source = CodexAdapter::new()?;
-                let target = ClaudeAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            };
-
-            println!(
-                "{}{}",
-                report.summary,
-                if skip_existing_commands && !report.commands.skipped.is_empty() {
-                    format!(
-                        "\nSkipped existing commands (kept target copy): {}",
-                        report
-                            .commands
-                            .skipped
-                            .iter()
-                            .map(|r| r.description())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                } else {
-                    String::new()
-                }
-            );
             if dry_run {
-                println!("(dry run - no changes made)");
+                println!("\n(dry run - no changes made)");
             }
             Ok(())
         }
-        Commands::SyncStatus { from } => {
-            use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
+        Commands::SyncStatus { from, to } => {
+            use skrills_sync::SyncParams;
 
-            let sync_skills = from != "claude";
+            let target = to.unwrap_or_else(|| from.default_target());
+            let sync_skills = !from.is_claude();
+
             let params = SyncParams {
-                from: Some(from.clone()),
+                from: Some(from.as_str().to_string()),
                 dry_run: true,
                 sync_commands: true,
                 sync_mcp_servers: true,
@@ -1119,27 +1162,9 @@ pub fn run() -> Result<()> {
                 ..Default::default()
             };
 
-            let report = if from == "claude" {
-                let source = ClaudeAdapter::new()?;
-                let target = CodexAdapter::new()?;
-                let orch = SyncOrchestrator::new(source, target);
-                println!(
-                    "Sync direction: {} → {}",
-                    orch.source_name(),
-                    orch.target_name()
-                );
-                orch.sync(&params)?
-            } else {
-                let source = CodexAdapter::new()?;
-                let target = ClaudeAdapter::new()?;
-                let orch = SyncOrchestrator::new(source, target);
-                println!(
-                    "Sync direction: {} → {}",
-                    orch.source_name(),
-                    orch.target_name()
-                );
-                orch.sync(&params)?
-            };
+            println!("Sync direction: {} → {}", from.as_str(), target.as_str());
+
+            let report = run_sync_with_adapters(from, target, &params)?;
 
             println!("\nPending changes:");
             println!("  Commands: {} would sync", report.commands.written);
@@ -1148,19 +1173,30 @@ pub fn run() -> Result<()> {
 
             // Count skills
             let home = home_dir()?;
-            let source_root = if from == "claude" {
-                mirror_source_root(&home)
-            } else {
-                home.join(".codex/skills")
+            let source_root = match from {
+                SyncSource::Claude => mirror_source_root(&home),
+                SyncSource::Codex => home.join(".codex/skills"),
+                SyncSource::Copilot => {
+                    // Use CopilotAdapter to get the correct XDG-compliant path
+                    use skrills_sync::adapters::traits::AgentAdapter;
+                    use skrills_sync::CopilotAdapter;
+                    CopilotAdapter::new()
+                        .map(|a| a.config_root().join("skills"))
+                        .unwrap_or_else(|_| home.join(".copilot/skills"))
+                }
             };
-            let skill_count = walkdir::WalkDir::new(&source_root)
-                .min_depth(1)
-                .max_depth(6)
-                .into_iter()
-                .filter_map(|e| e.ok())
-                .filter(crate::discovery::is_skill_file)
-                .count();
-            println!("  Skills: {} found in source", skill_count);
+            if source_root.exists() {
+                let skill_count = walkdir::WalkDir::new(&source_root)
+                    .min_depth(1)
+                    .max_depth(6)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                    .filter(crate::discovery::is_skill_file)
+                    .count();
+                println!("  Skills: {} found in source", skill_count);
+            } else {
+                println!("  Skills: 0 (source directory not found)");
+            }
 
             Ok(())
         }

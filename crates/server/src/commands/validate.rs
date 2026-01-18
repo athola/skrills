@@ -19,6 +19,8 @@ pub(crate) fn handle_validate_command(
     let validation_target = match target {
         crate::cli::ValidationTarget::Claude => VT::Claude,
         crate::cli::ValidationTarget::Codex => VT::Codex,
+        crate::cli::ValidationTarget::Copilot => VT::Copilot,
+        crate::cli::ValidationTarget::All => VT::All,
         crate::cli::ValidationTarget::Both => VT::Both,
     };
 
@@ -79,8 +81,12 @@ pub(crate) fn handle_validate_command(
     } else {
         let summary = ValidationSummary::from_results(&results);
         println!(
-            "Validated {} skills: {} Claude-valid, {} Codex-valid, {} both-valid",
-            summary.total, summary.claude_valid, summary.codex_valid, summary.both_valid
+            "Validated {} skills: {} Claude-valid, {} Codex-valid, {} Copilot-valid, {} all-valid",
+            summary.total,
+            summary.claude_valid,
+            summary.codex_valid,
+            summary.copilot_valid,
+            summary.all_valid
         );
         if fixed_count > 0 {
             println!("Auto-fixed {} skills", fixed_count);
@@ -115,7 +121,9 @@ pub(crate) fn handle_validate_command(
                         let target = match issue.target {
                             VT::Claude => "Claude",
                             VT::Codex => "Codex",
+                            VT::Copilot => "Copilot",
                             VT::Both => "Claude & Codex",
+                            VT::All => "Claude, Codex & Copilot",
                         };
                         let suggestion = issue
                             .suggestion

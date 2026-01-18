@@ -1,7 +1,8 @@
 //! Setup and installation logic.
 //!
 //! Handles first-run detection, interactive setup, reinstallation, and uninstallation
-//! for Claude Code and Codex clients, and supports a universal `~/.agent/skills` directory.
+//! for Claude Code, Codex, and GitHub Copilot clients, and supports a universal
+//! `~/.agent/skills` directory.
 
 use anyhow::{anyhow, Context, Result};
 use inquire::{Confirm, Select, Text};
@@ -14,15 +15,31 @@ use std::process::Command;
 pub enum Client {
     Claude,
     Codex,
+    Copilot,
 }
 
 impl Client {
     /// Returns the default base directory for this client.
+    ///
+    /// For Copilot, follows XDG Base Directory Specification:
+    /// 1. If `~/.copilot` exists → use it (legacy compatibility)
+    /// 2. Otherwise → `$XDG_CONFIG_HOME/copilot` or `~/.config/copilot`
     pub fn base_dir(&self) -> Result<PathBuf> {
         let home = dirs::home_dir().ok_or_else(|| anyhow!("Cannot determine home directory"))?;
         Ok(match self {
             Client::Claude => home.join(".claude"),
             Client::Codex => home.join(".codex"),
+            Client::Copilot => {
+                // XDG-compliant path resolution for Copilot
+                let legacy_path = home.join(".copilot");
+                if legacy_path.exists() {
+                    legacy_path
+                } else if let Some(config_dir) = dirs::config_dir() {
+                    config_dir.join("copilot")
+                } else {
+                    legacy_path // Fallback to legacy if XDG unavailable
+                }
+            }
         })
     }
 
@@ -36,6 +53,7 @@ impl Client {
         match self {
             Client::Claude => "claude",
             Client::Codex => "codex",
+            Client::Copilot => "copilot",
         }
     }
 
@@ -44,8 +62,9 @@ impl Client {
         match s.to_lowercase().as_str() {
             "claude" => Ok(Client::Claude),
             "codex" => Ok(Client::Codex),
+            "copilot" => Ok(Client::Copilot),
             _ => Err(anyhow!(
-                "Invalid client: {}. Must be 'claude' or 'codex'",
+                "Invalid client: {}. Must be 'claude', 'codex', or 'copilot'",
                 s
             )),
         }
@@ -70,6 +89,7 @@ pub struct SetupConfig {
 /// Setup is detected by checking for MCP server registration:
 /// - Claude: .mcp.json containing "skrills" entry
 /// - Codex: config.toml containing [mcp_servers.skrills]
+/// - Copilot: mcp_servers.json containing "skrills" entry
 pub fn is_setup(client: Client) -> Result<bool> {
     let base_dir = client.base_dir()?;
 
@@ -98,6 +118,18 @@ pub fn is_setup(client: Client) -> Result<bool> {
             }
             Ok(false)
         }
+        Client::Copilot => {
+            // Check for MCP registration in mcp_servers.json (JSON format like Claude)
+            let mcp_path = base_dir.join("mcp_servers.json");
+            if mcp_path.exists() {
+                if let Ok(content) = fs::read_to_string(&mcp_path) {
+                    if content.contains("\"skrills\"") {
+                        return Ok(true);
+                    }
+                }
+            }
+            Ok(false)
+        }
     }
 }
 
@@ -105,8 +137,9 @@ pub fn is_setup(client: Client) -> Result<bool> {
 pub fn is_first_run() -> Result<bool> {
     let claude_setup = is_setup(Client::Claude).unwrap_or(false);
     let codex_setup = is_setup(Client::Codex).unwrap_or(false);
+    let copilot_setup = is_setup(Client::Copilot).unwrap_or(false);
 
-    Ok(!claude_setup && !codex_setup)
+    Ok(!claude_setup && !codex_setup && !copilot_setup)
 }
 
 /// Prompts the user to run setup on first run.
@@ -176,6 +209,7 @@ pub fn interactive_setup(
 fn parse_clients(s: &str) -> Result<Vec<Client>> {
     match s.to_lowercase().as_str() {
         "both" => Ok(vec![Client::Claude, Client::Codex]),
+        "all" => Ok(vec![Client::Claude, Client::Codex, Client::Copilot]),
         _ => Ok(vec![Client::from_str(s)?]),
     }
 }
@@ -186,6 +220,7 @@ fn prompt_clients(add_mode: bool) -> Result<Vec<Client>> {
         // In add mode, show only clients not already set up
         let claude_setup = is_setup(Client::Claude).unwrap_or(false);
         let codex_setup = is_setup(Client::Codex).unwrap_or(false);
+        let copilot_setup = is_setup(Client::Copilot).unwrap_or(false);
 
         let mut options = Vec::new();
         if !claude_setup {
@@ -194,10 +229,13 @@ fn prompt_clients(add_mode: bool) -> Result<Vec<Client>> {
         if !codex_setup {
             options.push("Codex");
         }
+        if !copilot_setup {
+            options.push("Copilot");
+        }
 
         if options.is_empty() {
             return Err(anyhow!(
-                "Both Claude Code and Codex are already set up. Use --reinstall to reconfigure."
+                "All clients (Claude Code, Codex, Copilot) are already set up. Use --reinstall to reconfigure."
             ));
         }
 
@@ -206,30 +244,33 @@ fn prompt_clients(add_mode: bool) -> Result<Vec<Client>> {
                 "Setting up for {} (the only client not yet configured)",
                 options[0]
             );
-            return Ok(vec![if options[0] == "Claude Code" {
-                Client::Claude
-            } else {
-                Client::Codex
+            return Ok(vec![match options[0] {
+                "Claude Code" => Client::Claude,
+                "Codex" => Client::Codex,
+                "Copilot" => Client::Copilot,
+                _ => unreachable!(),
             }]);
         }
 
         let selection =
             Select::new("Which client would you like to add?", options.clone()).prompt()?;
 
-        Ok(vec![if selection == "Claude Code" {
-            Client::Claude
-        } else {
-            Client::Codex
+        Ok(vec![match selection {
+            "Claude Code" => Client::Claude,
+            "Codex" => Client::Codex,
+            "Copilot" => Client::Copilot,
+            _ => unreachable!(),
         }])
     } else {
-        let options = vec!["Claude Code", "Codex", "Both"];
+        let options = vec!["Claude Code", "Codex", "Copilot", "All"];
         let selection =
             Select::new("Which client would you like to set up?", options.clone()).prompt()?;
 
         match selection {
             "Claude Code" => Ok(vec![Client::Claude]),
             "Codex" => Ok(vec![Client::Codex]),
-            "Both" => Ok(vec![Client::Claude, Client::Codex]),
+            "Copilot" => Ok(vec![Client::Copilot]),
+            "All" => Ok(vec![Client::Claude, Client::Codex, Client::Copilot]),
             _ => unreachable!(),
         }
     }
@@ -288,6 +329,7 @@ pub fn run_setup(config: SetupConfig) -> Result<()> {
         match client {
             Client::Claude => setup_claude(&config.bin_dir, &current_exe)?,
             Client::Codex => setup_codex(&config.bin_dir, &current_exe)?,
+            Client::Copilot => setup_copilot(&config.bin_dir, &current_exe)?,
         }
 
         println!("{} setup complete!", client.as_str());
@@ -471,6 +513,96 @@ args = ["serve"]
     println!("  Registered MCP server in {}", config_path.display());
 
     ensure_codex_skills_feature_enabled(&config_path)?;
+
+    Ok(())
+}
+
+/// Sets up GitHub Copilot integration.
+fn setup_copilot(bin_dir: &Path, current_exe: &Path) -> Result<()> {
+    let base_dir = Client::Copilot.base_dir()?;
+
+    // Create directories
+    fs::create_dir_all(bin_dir)
+        .context(format!("Failed to create directory: {}", bin_dir.display()))?;
+    fs::create_dir_all(&base_dir).context("Failed to create copilot directory")?;
+
+    // Copy/link binary
+    let target_bin = bin_dir.join("skrills");
+    if target_bin != current_exe {
+        fs::copy(current_exe, &target_bin)
+            .context(format!("Failed to copy binary to {}", target_bin.display()))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&target_bin)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&target_bin, perms)?;
+        }
+
+        println!("  Installed binary to {}", target_bin.display());
+    }
+
+    // Also copy to ~/.cargo/bin for consistency
+    copy_to_cargo_bin(&target_bin)?;
+
+    // Register MCP server in mcp_servers.json
+    register_copilot_mcp(&base_dir, &target_bin)?;
+
+    // Create skills directory if needed
+    let skills_dir = base_dir.join("skills");
+    if !skills_dir.exists() {
+        fs::create_dir_all(&skills_dir)?;
+        println!("  Created skills directory: {}", skills_dir.display());
+    }
+
+    Ok(())
+}
+
+/// Registers `skrills` MCP server in Copilot's mcp_servers.json.
+fn register_copilot_mcp(base_dir: &Path, skrills_bin: &Path) -> Result<()> {
+    let mcp_path = base_dir.join("mcp_servers.json");
+
+    // Read existing config or create new
+    let mut mcp_config: serde_json::Value = if mcp_path.exists() {
+        let content = fs::read_to_string(&mcp_path)?;
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // Check if already registered
+    if let Some(servers) = mcp_config.get("mcpServers") {
+        if servers.get("skrills").is_some() {
+            println!("  MCP server already registered in mcp_servers.json");
+            return Ok(());
+        }
+    }
+
+    // Add skrills server
+    if let Some(servers) = mcp_config.get_mut("mcpServers") {
+        if let Some(obj) = servers.as_object_mut() {
+            obj.insert(
+                "skrills".to_string(),
+                serde_json::json!({
+                    "type": "stdio",
+                    "command": skrills_bin.display().to_string(),
+                    "args": ["serve"]
+                }),
+            );
+        }
+    } else {
+        mcp_config["mcpServers"] = serde_json::json!({
+            "skrills": {
+                "type": "stdio",
+                "command": skrills_bin.display().to_string(),
+                "args": ["serve"]
+            }
+        });
+    }
+
+    fs::write(&mcp_path, serde_json::to_string_pretty(&mcp_config)?)?;
+    println!("  Registered MCP server in {}", mcp_path.display());
 
     Ok(())
 }
@@ -695,6 +827,9 @@ fn run_uninstall(config: &SetupConfig) -> Result<()> {
         if is_setup(Client::Codex)? {
             clients.push(Client::Codex);
         }
+        if is_setup(Client::Copilot)? {
+            clients.push(Client::Copilot);
+        }
 
         if clients.is_empty() {
             println!("No skrills configuration found to uninstall.");
@@ -723,6 +858,7 @@ fn run_uninstall(config: &SetupConfig) -> Result<()> {
         match client {
             Client::Claude => uninstall_claude()?,
             Client::Codex => uninstall_codex()?,
+            Client::Copilot => uninstall_copilot()?,
         }
 
         println!("{} uninstalled", client.as_str());
@@ -860,6 +996,45 @@ fn uninstall_codex() -> Result<()> {
     Ok(())
 }
 
+/// Uninstalls Copilot configuration.
+fn uninstall_copilot() -> Result<()> {
+    let base_dir = Client::Copilot.base_dir()?;
+
+    // Remove MCP registration from mcp_servers.json
+    let mcp_path = base_dir.join("mcp_servers.json");
+    if mcp_path.exists() {
+        let content = fs::read_to_string(&mcp_path)?;
+        if let Ok(mut mcp_config) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(servers) = mcp_config.get_mut("mcpServers") {
+                if let Some(obj) = servers.as_object_mut() {
+                    if obj.remove("skrills").is_some() {
+                        // Write back the config
+                        if obj.is_empty() {
+                            // If no servers left, remove the mcpServers key entirely
+                            if let Some(root) = mcp_config.as_object_mut() {
+                                root.remove("mcpServers");
+                            }
+                        }
+                        if mcp_config
+                            .as_object()
+                            .map(|o| o.is_empty())
+                            .unwrap_or(false)
+                        {
+                            fs::remove_file(&mcp_path)?;
+                            println!("  Removed mcp_servers.json: {}", mcp_path.display());
+                        } else {
+                            fs::write(&mcp_path, serde_json::to_string_pretty(&mcp_config)?)?;
+                            println!("  Removed MCP registration from {}", mcp_path.display());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Prints next steps after setup.
 fn print_next_steps(config: &SetupConfig) -> Result<()> {
     println!("\nNext steps:");
@@ -877,6 +1052,12 @@ fn print_next_steps(config: &SetupConfig) -> Result<()> {
                 println!("    - MCP server registered in ~/.codex/config.toml");
                 println!("    - Use 'skrills sync' to sync skills from Claude");
                 println!("    - Use 'skrills validate' to check skill structure");
+            }
+            Client::Copilot => {
+                println!("\n  GitHub Copilot:");
+                println!("    - MCP server registered in mcp_servers.json");
+                println!("    - Use 'skrills sync' to sync skills from Claude");
+                println!("    - Use 'skrills validate --target copilot' to check structure");
             }
         }
     }

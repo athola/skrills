@@ -21,7 +21,7 @@
 //! incoming names to support both conventions for compatibility.
 
 use crate::app::SkillService;
-use crate::discovery::{is_skill_file, priority_labels_and_rank_map};
+use crate::discovery::priority_labels_and_rank_map;
 use crate::sync::mirror_source_root;
 use crate::tool_schemas;
 use anyhow::{anyhow, Result};
@@ -203,109 +203,19 @@ impl ServerHandler for SkillService {
                             meta: None,
                         })
                     }
+                    // Copilot-specific sync tools
+                    "sync-from-copilot" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.sync_from_copilot_tool(args)
+                    }
+                    "sync-to-copilot" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.sync_to_copilot_tool(args)
+                    }
                     // Cross-agent sync tools
                     "sync-skills" => {
-                        let from = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("from"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("claude");
-                        let dry_run = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("dry_run"))
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-                        let include_marketplace = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("include_marketplace"))
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-
-                        if from == "claude" {
-                            let home = home_dir()?;
-                            let claude_root = mirror_source_root(&home);
-                            let codex_skills_root = home.join(".codex/skills");
-
-                            if dry_run {
-                                let count = walkdir::WalkDir::new(&claude_root)
-                                    .min_depth(1)
-                                    .max_depth(6)
-                                    .into_iter()
-                                    .filter_map(|e| e.ok())
-                                    .filter(is_skill_file)
-                                    .count();
-
-                                Ok(CallToolResult {
-                                    content: vec![Content::text(format!(
-                                        "Would sync {} skills from Claude to Codex",
-                                        count
-                                    ))],
-                                    is_error: Some(false),
-                                    structured_content: Some(json!({
-                                        "dry_run": true,
-                                        "skill_count": count
-                                    })),
-                                    meta: None,
-                                })
-                            } else {
-                                let report = crate::sync::sync_skills_only_from_claude(
-                                    &claude_root,
-                                    &codex_skills_root,
-                                    include_marketplace,
-                                )?;
-                                let _ = crate::setup::ensure_codex_skills_feature_enabled(
-                                    &home.join(".codex/config.toml"),
-                                );
-                                Ok(CallToolResult {
-                                    content: vec![Content::text(format!(
-                                        "Synced {} skills ({} unchanged)",
-                                        report.copied, report.skipped
-                                    ))],
-                                    is_error: Some(false),
-                                    structured_content: Some(json!({
-                                        "copied": report.copied,
-                                        "skipped": report.skipped,
-                                        "copied_names": report.copied_names
-                                    })),
-                                    meta: None,
-                                })
-                            }
-                        } else {
-                            use skrills_sync::{
-                                ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams,
-                            };
-
-                            let params = SyncParams {
-                                from: Some(from.to_string()),
-                                dry_run,
-                                sync_commands: false,
-                                sync_mcp_servers: false,
-                                sync_preferences: false,
-                                sync_skills: true,
-                                include_marketplace,
-                                ..Default::default()
-                            };
-                            let source = CodexAdapter::new()?;
-                            let target = ClaudeAdapter::new()?;
-                            let orch = SyncOrchestrator::new(source, target);
-                            let report = orch.sync(&params)?;
-
-                            Ok(CallToolResult {
-                                content: vec![Content::text(report.summary.clone())],
-                                is_error: Some(!report.success),
-                                structured_content: Some(json!({
-                                    "summary": report.summary,
-                                    "skills": {
-                                        "written": report.skills.written,
-                                        "skipped": report.skills.skipped.len(),
-                                    }
-                                })),
-                                meta: None,
-                            })
-                        }
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.sync_skills_tool(args)
                     }
                     "sync-commands" => {
                         use skrills_sync::{
@@ -474,7 +384,8 @@ impl ServerHandler for SkillService {
                     }
                     "sync-status" => {
                         use skrills_sync::{
-                            ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams,
+                            ClaudeAdapter, CodexAdapter, CopilotAdapter, SyncOrchestrator,
+                            SyncParams,
                         };
 
                         let from = request
@@ -483,6 +394,12 @@ impl ServerHandler for SkillService {
                             .and_then(|obj| obj.get("from"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("claude");
+
+                        let to = request
+                            .arguments
+                            .as_ref()
+                            .and_then(|obj| obj.get("to"))
+                            .and_then(|v| v.as_str());
 
                         let params = SyncParams {
                             from: Some(from.to_string()),
@@ -494,24 +411,63 @@ impl ServerHandler for SkillService {
                             ..Default::default()
                         };
 
-                        let report = if from == "claude" {
-                            let source = ClaudeAdapter::new()?;
-                            let target = CodexAdapter::new()?;
-                            SyncOrchestrator::new(source, target).sync(&params)?
-                        } else {
-                            let source = CodexAdapter::new()?;
-                            let target = ClaudeAdapter::new()?;
-                            SyncOrchestrator::new(source, target).sync(&params)?
+                        // Determine target based on from (if not specified)
+                        let target = to.unwrap_or(match from {
+                            "claude" => "codex",
+                            "codex" => "claude",
+                            "copilot" => "claude",
+                            _ => "codex",
+                        });
+
+                        let report = match (from, target) {
+                            ("claude", "codex") => {
+                                let source = ClaudeAdapter::new()?;
+                                let target = CodexAdapter::new()?;
+                                SyncOrchestrator::new(source, target).sync(&params)?
+                            }
+                            ("claude", "copilot") => {
+                                let source = ClaudeAdapter::new()?;
+                                let target = CopilotAdapter::new()?;
+                                SyncOrchestrator::new(source, target).sync(&params)?
+                            }
+                            ("codex", "claude") => {
+                                let source = CodexAdapter::new()?;
+                                let target = ClaudeAdapter::new()?;
+                                SyncOrchestrator::new(source, target).sync(&params)?
+                            }
+                            ("codex", "copilot") => {
+                                let source = CodexAdapter::new()?;
+                                let target = CopilotAdapter::new()?;
+                                SyncOrchestrator::new(source, target).sync(&params)?
+                            }
+                            ("copilot", "claude") => {
+                                let source = CopilotAdapter::new()?;
+                                let target = ClaudeAdapter::new()?;
+                                SyncOrchestrator::new(source, target).sync(&params)?
+                            }
+                            ("copilot", "codex") => {
+                                let source = CopilotAdapter::new()?;
+                                let target = CodexAdapter::new()?;
+                                SyncOrchestrator::new(source, target).sync(&params)?
+                            }
+                            _ => {
+                                // Default: claude → codex
+                                let source = ClaudeAdapter::new()?;
+                                let target = CodexAdapter::new()?;
+                                SyncOrchestrator::new(source, target).sync(&params)?
+                            }
                         };
 
                         Ok(CallToolResult {
                             content: vec![Content::text(format!(
-                                "Sync Preview ({})\n{}",
-                                from, report.summary
+                                "Sync Preview ({} → {})\n{}",
+                                from, target, report.summary
                             ))],
                             is_error: Some(false),
                             structured_content: Some(json!({
                                 "preview": true,
+                                "from": from,
+                                "to": target,
                                 "report": report
                             })),
                             meta: None,

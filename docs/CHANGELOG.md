@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### 0.5.0 (Planned)
+- **NEW: GitHub Copilot CLI Support**: Full bidirectional sync support for GitHub Copilot CLI (`~/.copilot`).
+  - Skills: Sync between Copilot and Claude/Codex (SKILL.md format)
+  - MCP Servers: Read from/write to `mcp-config.json` (Copilot's separate MCP config file)
+  - Preferences: Sync via `config.json` with security field preservation
+  - Commands: Skipped (Copilot does not support slash commands)
+- **NEW: CLI Flags**: Added `--from copilot` and `--to copilot` for sync-all and sync-* commands.
+- **NEW: MCP Tools**: `sync-from-copilot`, `sync-to-copilot`, and enhanced `sync-skills` with all 6 source→target combinations.
+- **NEW: Validation Target**: `--target copilot` for skill validation (same rules as Codex).
+- **Testing**: Added 10 Copilot sync integration tests covering all sync directions.
+
 ## 0.4.12 - 2026-01-16
 - **Testing**: Added 59 new tests across tool_schemas (20), sync report (20), and validation common (19) modules covering schema generation, report formatting, and validation issue handling.
 

@@ -26,7 +26,7 @@ pub(crate) fn empty_schema() -> Arc<JsonMap<String, serde_json::Value>> {
     Arc::new(schema)
 }
 
-/// Returns the schema for sync tools (from, dry_run, force parameters).
+/// Returns the schema for sync tools (from, to, dry_run, force parameters).
 fn sync_schema() -> Arc<JsonMap<String, serde_json::Value>> {
     let mut schema = JsonMap::new();
     schema.insert("type".into(), json!("object"));
@@ -35,7 +35,13 @@ fn sync_schema() -> Arc<JsonMap<String, serde_json::Value>> {
         json!({
             "from": {
                 "type": "string",
-                "description": "Source agent: 'claude' or 'codex'"
+                "enum": ["claude", "codex", "copilot"],
+                "description": "Source agent: 'claude', 'codex', or 'copilot'"
+            },
+            "to": {
+                "type": "string",
+                "enum": ["claude", "codex", "copilot"],
+                "description": "Target agent: 'claude', 'codex', or 'copilot'. Defaults to codex (for claude source) or claude (for codex/copilot source)"
             },
             "dry_run": {
                 "type": "boolean",
@@ -53,8 +59,8 @@ fn sync_schema() -> Arc<JsonMap<String, serde_json::Value>> {
 
 /// Returns sync-related tools.
 ///
-/// Tools: sync-from-claude, sync-skills, sync-commands, sync-mcp-servers,
-/// sync-preferences, sync-all, sync-status
+/// Tools: sync-from-claude, sync-from-copilot, sync-to-copilot, sync-skills,
+/// sync-commands, sync-mcp-servers, sync-preferences, sync-all, sync-status
 pub(crate) fn sync_tools() -> Vec<Tool> {
     let schema_empty = empty_schema();
     let sync_schema = sync_schema();
@@ -67,7 +73,33 @@ pub(crate) fn sync_tools() -> Vec<Tool> {
                 "Copy SKILL.md files from ~/.claude into ~/.codex/skills (Codex discovery root)"
                     .into(),
             ),
-            input_schema: schema_empty,
+            input_schema: schema_empty.clone(),
+            output_schema: None,
+            annotations: Some(ToolAnnotations::default()),
+            icons: None,
+            meta: None,
+        },
+        Tool {
+            name: "sync-from-copilot".into(),
+            title: Some("Sync from GitHub Copilot CLI".into()),
+            description: Some(
+                "Sync skills and instructions from GitHub Copilot CLI (~/.config/github-copilot) to Claude or Codex."
+                    .into(),
+            ),
+            input_schema: sync_schema.clone(),
+            output_schema: None,
+            annotations: Some(ToolAnnotations::default()),
+            icons: None,
+            meta: None,
+        },
+        Tool {
+            name: "sync-to-copilot".into(),
+            title: Some("Sync to GitHub Copilot CLI".into()),
+            description: Some(
+                "Sync skills and instructions from Claude or Codex to GitHub Copilot CLI (~/.config/github-copilot)."
+                    .into(),
+            ),
+            input_schema: sync_schema.clone(),
             output_schema: None,
             annotations: Some(ToolAnnotations::default()),
             icons: None,
@@ -77,7 +109,7 @@ pub(crate) fn sync_tools() -> Vec<Tool> {
             name: "sync-skills".into(),
             title: Some("Sync skills between agents".into()),
             description: Some(
-                "Sync SKILL.md files between Claude and Codex. Use --from to specify source."
+                "Sync SKILL.md files between Claude, Codex, and Copilot. Use --from and --to to specify source and target."
                     .into(),
             ),
             input_schema: sync_schema.clone(),
@@ -89,7 +121,7 @@ pub(crate) fn sync_tools() -> Vec<Tool> {
         Tool {
             name: "sync-commands".into(),
             title: Some("Sync slash commands between agents".into()),
-            description: Some("Sync slash command definitions between Claude and Codex.".into()),
+            description: Some("Sync slash command definitions between Claude, Codex, and Copilot.".into()),
             input_schema: sync_schema.clone(),
             output_schema: None,
             annotations: Some(ToolAnnotations::default()),
@@ -99,7 +131,7 @@ pub(crate) fn sync_tools() -> Vec<Tool> {
         Tool {
             name: "sync-mcp-servers".into(),
             title: Some("Sync MCP server configurations".into()),
-            description: Some("Sync MCP server configurations between Claude and Codex.".into()),
+            description: Some("Sync MCP server configurations between Claude, Codex, and Copilot.".into()),
             input_schema: sync_schema.clone(),
             output_schema: None,
             annotations: Some(ToolAnnotations::default()),
@@ -110,7 +142,7 @@ pub(crate) fn sync_tools() -> Vec<Tool> {
             name: "sync-preferences".into(),
             title: Some("Sync preferences between agents".into()),
             description: Some(
-                "Sync compatible settings/preferences between Claude and Codex.".into(),
+                "Sync compatible settings/preferences between Claude, Codex, and Copilot.".into(),
             ),
             input_schema: sync_schema.clone(),
             output_schema: None,
@@ -122,7 +154,7 @@ pub(crate) fn sync_tools() -> Vec<Tool> {
             name: "sync-all".into(),
             title: Some("Sync all configurations".into()),
             description: Some(
-                "Sync skills, commands, MCP servers, and preferences in one operation.".into(),
+                "Sync skills, commands, MCP servers, and preferences between Claude, Codex, and Copilot in one operation.".into(),
             ),
             input_schema: sync_schema.clone(),
             output_schema: None,
@@ -152,7 +184,7 @@ pub(crate) fn validation_tools() -> Vec<Tool> {
             name: "validate-skills".into(),
             title: Some("Validate skills for CLI compatibility".into()),
             description: Some(
-                "Validate skills for Claude Code and/or Codex CLI compatibility. Returns validation errors and warnings.".into(),
+                "Validate skills for Claude Code, Codex, and/or Copilot CLI compatibility. Returns validation errors and warnings.".into(),
             ),
             input_schema: Arc::new({
                 let mut schema = JsonMap::new();
@@ -162,9 +194,9 @@ pub(crate) fn validation_tools() -> Vec<Tool> {
                     json!({
                         "target": {
                             "type": "string",
-                            "enum": ["claude", "codex", "both"],
+                            "enum": ["claude", "codex", "copilot", "both", "all"],
                             "default": "both",
-                            "description": "Validation target"
+                            "description": "Validation target: 'claude', 'codex', 'copilot', 'both' (claude+codex), or 'all'"
                         },
                         "autofix": {
                             "type": "boolean",
@@ -730,8 +762,8 @@ mod tests {
     #[test]
     fn test_all_tools_returns_expected_count() {
         let tools = all_tools();
-        // 7 sync + 2 validation + 1 dependency + 1 recommend + 1 metrics + 4 trace + 6 intelligence = 22 tools
-        assert_eq!(tools.len(), 22);
+        // 9 sync + 2 validation + 1 dependency + 1 recommend + 1 metrics + 4 trace + 6 intelligence = 24 tools
+        assert_eq!(tools.len(), 24);
     }
 
     #[test]
@@ -746,7 +778,7 @@ mod tests {
 
     #[test]
     fn test_sync_tools_count() {
-        assert_eq!(sync_tools().len(), 7);
+        assert_eq!(sync_tools().len(), 9);
     }
 
     #[test]

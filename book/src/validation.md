@@ -1,6 +1,6 @@
 # Skill Validation
 
-Skrills validates skills for compatibility with Claude Code and Codex CLI. The two CLIs have different requirements for skill frontmatter, and Skrills checks that your skills work across both environments.
+Skrills validates skills for compatibility with Claude Code, Codex CLI, and GitHub Copilot CLI. The three CLIs have different requirements for skill frontmatter, and Skrills checks that your skills work across all environments.
 
 ## Validation Targets
 
@@ -18,6 +18,12 @@ Codex CLI also requires YAML frontmatter with specific fields:
 
 Skills without proper frontmatter will fail to load in Codex CLI.
 
+### GitHub Copilot CLI (Strict)
+
+Copilot CLI follows the same validation rules as Codex CLI. Skills must be named `SKILL.md` and placed under `~/.copilot/skills/**/`. The same YAML frontmatter requirements apply:
+- `name`: Required, max 100 characters
+- `description`: Required, max 500 characters
+
 ## Using the Validator
 
 ### Basic Validation
@@ -32,8 +38,10 @@ Validate for a specific target:
 
 ```bash
 skrills validate --target codex    # Strict Codex rules
+skrills validate --target copilot  # Strict Copilot rules (same as Codex)
 skrills validate --target claude   # Permissive Claude rules
-skrills validate --target both     # Both (default)
+skrills validate --target all      # All three targets
+skrills validate --target both     # Claude and Codex (default, legacy)
 ```
 
 ### Auto-Fix Missing Frontmatter
@@ -92,4 +100,4 @@ Common validation failures often stem from missing YAML frontmatter, specificall
 
 ## Best Practices
 
-Write skills with Codex requirements in mind; if they pass Codex validation, they will work everywhere. Integrate validation into your CI pipeline using `skrills validate --target both --errors-only` to catch issues early. When using `--autofix`, review the changes before committing, especially since generated descriptions might need manual refinement. Finally, run validation after syncing to verify that no incompatible changes were introduced.
+Write skills with Codex/Copilot requirements in mind; if they pass strict validation, they will work everywhere. Integrate validation into your CI pipeline using `skrills validate --target both --errors-only` to catch issues early. When using `--autofix`, review the changes before committing, especially since generated descriptions might need manual refinement. Finally, run validation after syncing to verify that no incompatible changes were introduced.
