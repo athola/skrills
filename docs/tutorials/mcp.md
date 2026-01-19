@@ -15,7 +15,31 @@ Skrills runs as an MCP (Model Context Protocol) server, providing 24 tools for s
 
 ## Setup
 
-### For Claude Code (User-Level)
+### Option 1: Claude Code Plugin (Recommended)
+
+Installing as a plugin gives you direct access to MCP tools as callable functions (e.g., `mcp__plugin_skrills_skrills__validate-skills`).
+
+**Step 1: Add skrills as a marketplace**
+
+```bash
+# From GitHub
+claude plugin marketplace add athola/skrills
+
+# Or from local clone
+claude plugin marketplace add /path/to/skrills
+```
+
+**Step 2: Install the plugin**
+
+```bash
+claude plugin install skrills@skrills-marketplace
+```
+
+**Step 3: Restart Claude Code** to load the new MCP server.
+
+After installation, tools appear as `mcp__plugin_skrills_skrills__<tool-name>`.
+
+### Option 2: MCP Server (User-Level)
 
 Add to `~/.claude/settings.local.json`:
 
@@ -30,7 +54,7 @@ Add to `~/.claude/settings.local.json`:
 }
 ```
 
-### For Claude Code (Project-Level)
+### Option 3: MCP Server (Project-Level)
 
 Add to `.mcp.json` in your project root:
 
@@ -63,13 +87,26 @@ Add to `~/.codex/mcp.json`:
 
 ## Using Skrills Tools
 
-### Method 1: CLI Commands (Recommended)
+### Method 1: Direct Tool Calls (Plugin Installation)
+
+When installed as a plugin, tools are directly callable functions:
+
+```
+# Tools appear as mcp__plugin_skrills_skrills__<tool-name>
+mcp__plugin_skrills_skrills__validate-skills
+mcp__plugin_skrills_skrills__sync-all
+mcp__plugin_skrills_skrills__skill-metrics
+```
+
+This provides the same experience as Notion, Sentry, and other plugin MCP servers.
+
+### Method 2: CLI Commands
 
 The most reliable way to use skrills functionality is via CLI commands. Each MCP tool has a corresponding CLI command:
 
 | MCP Tool | CLI Command | Example |
 |----------|-------------|---------|
-| `search-skills-fuzzy` | N/A (MCP only) | Use Method 2 |
+| `search-skills-fuzzy` | N/A (MCP only) | Use Method 1 or 3 |
 | `validate-skills` | `skrills validate` | `skrills validate --target all` |
 | `analyze-skills` | `skrills analyze` | `skrills analyze --min-tokens 500` |
 | `skill-metrics` | `skrills metrics` | `skrills metrics` |
@@ -93,7 +130,7 @@ skrills metrics --format json
 skrills sync-all --to copilot --dry-run
 ```
 
-### Method 2: Natural Language Prompts
+### Method 3: Natural Language Prompts
 
 When working in Claude Code, ask the model to use skrills tools with natural language:
 
@@ -104,7 +141,7 @@ When working in Claude Code, ask the model to use skrills tools with natural lan
 "Use skrills to validate my skills for Codex compatibility"
 ```
 
-### Method 3: MCP Resources
+### Method 4: MCP Resources
 
 Skills are exposed as MCP resources. Use the built-in tools to access them:
 
