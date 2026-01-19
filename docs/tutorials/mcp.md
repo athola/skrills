@@ -1,28 +1,44 @@
-# MCP Integration: Testing with Claude Code
+# MCP Integration: Using Skrills with Claude Code
 
-This tutorial shows how to use Skrills as an MCP server and **test MCP tool functionality inside Claude Code CLI**.
+This tutorial shows how to use Skrills as an MCP server with Claude Code CLI and other AI coding assistants.
 
 ![MCP Demo](../../assets/gifs/mcp.gif)
 
 ## Overview
 
-Skrills can run as an MCP (Model Context Protocol) server, providing:
-- **Skills as Resources**: Each discovered skill is exposed as an MCP resource
-- **search-skills-fuzzy**: Fuzzy search skills by name or content
-- **resolve-dependencies**: Find skill dependencies and dependents
-- **recommend-skills**: Get related skill recommendations
-- **skill-metrics**: View aggregate skill statistics
+Skrills runs as an MCP (Model Context Protocol) server, providing 24 tools for skill management:
+
+- **Sync Tools**: Bidirectional sync between Claude, Codex, and Copilot
+- **Validation Tools**: Validate skills for CLI compatibility
+- **Intelligence Tools**: Smart recommendations, project analysis, skill creation
+- **Trace Tools**: Skill loading instrumentation and debugging
 
 ## Setup
 
-### For Claude Code
+### For Claude Code (User-Level)
 
-Add to your `~/.claude/settings.local.json` (or `~/.claude/settings.json`):
+Add to `~/.claude/settings.local.json`:
 
 ```json
 {
   "mcpServers": {
     "skrills": {
+      "command": "skrills",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+### For Claude Code (Project-Level)
+
+Add to `.mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "skrills": {
+      "type": "stdio",
       "command": "skrills",
       "args": ["serve"]
     }
@@ -32,7 +48,7 @@ Add to your `~/.claude/settings.local.json` (or `~/.claude/settings.json`):
 
 ### For Codex
 
-Add to your `~/.codex/mcp.json`:
+Add to `~/.codex/mcp.json`:
 
 ```json
 {
@@ -45,114 +61,190 @@ Add to your `~/.codex/mcp.json`:
 }
 ```
 
-## Testing MCP Inside Claude Code
+## Using Skrills Tools
 
-### Step 1: Verify MCP Connection
+### Method 1: CLI Commands (Recommended)
 
-Check that the skrills MCP server is connected:
+The most reliable way to use skrills functionality is via CLI commands. Each MCP tool has a corresponding CLI command:
 
+| MCP Tool | CLI Command | Example |
+|----------|-------------|---------|
+| `search-skills-fuzzy` | N/A (MCP only) | Use Method 2 |
+| `validate-skills` | `skrills validate` | `skrills validate --target all` |
+| `analyze-skills` | `skrills analyze` | `skrills analyze --min-tokens 500` |
+| `skill-metrics` | `skrills metrics` | `skrills metrics` |
+| `recommend-skills-smart` | `skrills recommend-skills-smart` | `skrills recommend-skills-smart` |
+| `suggest-new-skills` | `skrills suggest-new-skills` | `skrills suggest-new-skills` |
+| `sync-all` | `skrills sync-all` | `skrills sync-all --to codex` |
+| `create-skill` | `skrills create-skill` | `skrills create-skill --name test` |
+
+**Example: Validate skills for all CLIs**
 ```bash
-claude mcp list
+skrills validate --target all --autofix
 ```
 
-You should see output like:
-
-```
-skrills: skrills serve - ✓ Connected
-```
-
-### Step 2: Test MCP Resources in Claude Code CLI
-
-Use `claude -p` (print mode) to test MCP features non-interactively:
-
+**Example: Get skill metrics**
 ```bash
-# List available skill resources
-claude -p "List all MCP resources from the skrills server" --model haiku
-
-# Search for skills
-claude -p "Use mcp__skrills__search-skills-fuzzy with query 'coding'" --model haiku
+skrills metrics --format json
 ```
 
-This command:
-- Starts Claude Code in non-interactive mode (`-p`)
-- Sends a prompt that invokes MCP resources/tools
-- Uses the haiku model for faster/cheaper testing
-- Returns discovered skills and their content
-
-### Step 3: Interactive Testing
-
-Start an interactive Claude Code session and ask it to use MCP tools:
-
+**Example: Sync to Copilot**
 ```bash
-claude
+skrills sync-all --to copilot --dry-run
 ```
 
-Then try prompts like:
-- "Search for skills related to testing"
-- "Load the debug-helper skill using MCP"
-- "Show me skill recommendations for API work"
+### Method 2: Natural Language Prompts
 
-## Available MCP Features
+When working in Claude Code, ask the model to use skrills tools with natural language:
 
-### Resources
+```
+# In an interactive Claude Code session:
+"Use the skrills MCP server to search for skills related to testing"
+"Ask skrills to recommend skills for this project"
+"Use skrills to validate my skills for Codex compatibility"
+```
 
-Skills are exposed as MCP resources with URIs like `skill://skrills/{source}/{name}`:
-- Use `ListMcpResourcesTool` to list available skills
-- Use `ReadMcpResourceTool` to read skill content
+### Method 3: MCP Resources
 
-### Tools
+Skills are exposed as MCP resources. Use the built-in tools to access them:
 
-When running as an MCP server, skrills provides these tools:
+```
+# List skrills resources
+Use ListMcpResourcesTool with server="skrills"
+
+# Read a specific skill
+Use ReadMcpResourceTool with server="skrills" and uri="skill://skrills/claude/my-skill"
+```
+
+## Available MCP Tools (24 Total)
+
+Run `skrills serve --list-tools` to see all available tools:
+
+### Sync Tools (9)
 
 | Tool | Description |
 |------|-------------|
-| `search-skills-fuzzy` | Fuzzy search skills by name or content |
-| `recommend-skills` | Get related skill recommendations based on dependencies |
-| `recommend-skills-smart` | AI-powered skill recommendations |
-| `resolve-dependencies` | Find dependencies or dependents for a skill |
-| `skill-metrics` | View aggregate statistics about discovered skills |
-| `validate-skills` | Validate skills for compatibility |
-| `analyze-skills` | Analyze skills for token usage and optimization |
+| `sync-from-claude` | Copy skills from ~/.claude to ~/.codex |
+| `sync-from-copilot` | Sync from GitHub Copilot CLI |
+| `sync-to-copilot` | Sync to GitHub Copilot CLI |
+| `sync-skills` | Sync SKILL.md files between agents |
+| `sync-commands` | Sync slash commands |
+| `sync-mcp-servers` | Sync MCP server configurations |
+| `sync-preferences` | Sync preferences |
+| `sync-all` | Sync everything |
+| `sync-status` | Preview sync changes (dry run) |
+
+### Validation Tools (2)
+
+| Tool | Description |
+|------|-------------|
+| `validate-skills` | Validate for Claude/Codex/Copilot compatibility |
+| `analyze-skills` | Analyze token usage and optimization |
+
+### Intelligence Tools (6)
+
+| Tool | Description |
+|------|-------------|
+| `recommend-skills` | Dependency-based recommendations |
+| `recommend-skills-smart` | AI-powered recommendations |
+| `analyze-project-context` | Analyze project languages/frameworks |
+| `suggest-new-skills` | Identify gaps in skill library |
+| `create-skill` | Create skill via GitHub/LLM |
+| `search-skills-fuzzy` | Typo-tolerant skill search |
+| `search-skills-github` | Search GitHub for skills |
+
+### Trace Tools (4)
+
+| Tool | Description |
+|------|-------------|
+| `skill-loading-status` | Check skill roots and instrumentation |
+| `enable-skill-trace` | Install trace/probe skills |
+| `disable-skill-trace` | Remove trace skills |
+| `skill-loading-selftest` | Confirm skills are loading |
+
+### Other Tools (2)
+
+| Tool | Description |
+|------|-------------|
+| `resolve-dependencies` | Get transitive dependencies/dependents |
+| `skill-metrics` | Aggregate skill statistics |
+
+## Verifying MCP Connection
+
+### Check Server Status
+
+```bash
+# Verify skrills is in PATH
+which skrills
+
+# List available MCP tools
+skrills serve --list-tools
+
+# Run diagnostics
+skrills doctor
+```
+
+### In Claude Code
+
+Use `/mcp` to see connected servers. You should see:
+```
+Reconnected to skrills.
+```
 
 ## Troubleshooting
 
 ### MCP Server Not Connecting
 
-1. Check if skrills is in PATH:
+1. **Check PATH**: Ensure `skrills` is in your PATH
    ```bash
    which skrills
    ```
 
-2. Verify the configuration:
+2. **Verify configuration**: Check your MCP settings
    ```bash
-   cat ~/.claude/settings.local.json | grep -A 5 'mcpServers'
+   cat ~/.claude/settings.local.json | jq '.mcpServers.skrills'
+   # or for project-level:
+   cat .mcp.json | jq '.mcpServers.skrills'
    ```
 
-3. Run the doctor command:
+3. **Run diagnostics**:
    ```bash
    skrills doctor
    ```
 
-### Tools Not Available
+4. **Restart Claude Code** to reload MCP configuration
 
-If Claude Code can't find the MCP tools:
+### Tools Not Working
 
-1. Restart Claude Code to reload MCP configuration
-2. Check server logs with `--mcp-debug`:
+If MCP tools don't respond:
+
+1. **Use CLI instead**: Most MCP tools have CLI equivalents
    ```bash
-   claude --debug
+   skrills validate --target codex
+   skrills metrics
+   ```
+
+2. **Check server logs**: Enable debug mode
+   ```bash
+   RUST_LOG=debug skrills serve
+   ```
+
+3. **Test server directly**: Verify tools are advertised
+   ```bash
+   skrills serve --list-tools
    ```
 
 ## Tips
 
-- Use `claude -p` for scripted testing of MCP tools
-- Add `--model haiku` for faster/cheaper test runs
-- Use `--max-budget-usd 0.10` to limit API costs during testing
-- Check `claude mcp list` to verify server connection status
-- Use `skrills serve --help` to see MCP server options
+- **CLI is most reliable**: Use `skrills <command>` for guaranteed functionality
+- **Natural language works**: Ask Claude to "use skrills to..." for MCP access
+- **Check connection**: Use `/mcp` in Claude Code to verify connection
+- **JSON output**: Add `--format json` to CLI commands for machine parsing
+- **Dry run first**: Use `--dry-run` before sync operations
 
 ## Requirements
 
 - Skrills installed and in PATH
-- Claude Code CLI installed
-- Valid Anthropic API key (for `claude -p` testing)
+- Claude Code CLI (for Claude integration)
+- Codex CLI (for Codex integration, optional)
+- GitHub Copilot CLI (for Copilot integration, optional)
