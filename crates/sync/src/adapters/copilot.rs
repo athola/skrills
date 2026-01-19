@@ -162,27 +162,51 @@ impl AgentAdapter for CopilotAdapter {
                     continue;
                 }
 
+                // Parse args with warnings for non-string values
+                let args = if let Some(arr) = server_config.get("args").and_then(|v| v.as_array()) {
+                    let mut result = Vec::new();
+                    for (i, v) in arr.iter().enumerate() {
+                        if let Some(s) = v.as_str() {
+                            result.push(s.to_string());
+                        } else {
+                            warn!(
+                                server = %name,
+                                index = i,
+                                value_type = ?v,
+                                "Skipping non-string value in MCP server args"
+                            );
+                        }
+                    }
+                    result
+                } else {
+                    Vec::new()
+                };
+
+                // Parse env with warnings for non-string values
+                let env = if let Some(obj) = server_config.get("env").and_then(|v| v.as_object()) {
+                    let mut result = HashMap::new();
+                    for (k, v) in obj {
+                        if let Some(s) = v.as_str() {
+                            result.insert(k.clone(), s.to_string());
+                        } else {
+                            warn!(
+                                server = %name,
+                                key = %k,
+                                value_type = ?v,
+                                "Skipping non-string value in MCP server env"
+                            );
+                        }
+                    }
+                    result
+                } else {
+                    HashMap::new()
+                };
+
                 let server = McpServer {
                     name: name.clone(),
                     command: command.to_string(),
-                    args: server_config
-                        .get("args")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_str().map(String::from))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                    env: server_config
-                        .get("env")
-                        .and_then(|v| v.as_object())
-                        .map(|obj| {
-                            obj.iter()
-                                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
+                    args,
+                    env,
                     enabled: server_config
                         .get("disabled")
                         .and_then(|v| v.as_bool())
@@ -228,7 +252,17 @@ impl AgentAdapter for CopilotAdapter {
             .max_depth(20)
             .follow_links(false)
         {
-            let entry = entry?;
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    warn!(
+                        path = ?e.path(),
+                        error = %e,
+                        "Failed to read directory entry while scanning skills"
+                    );
+                    continue;
+                }
+            };
             if entry.file_type().is_symlink() {
                 continue;
             }

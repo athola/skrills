@@ -91,13 +91,11 @@ pub fn validate_skill_for_sync(
     let validation = validate_skill(&skill.source_path, &content, target);
 
     let is_valid = match target {
-        ValidationTarget::Claude => validation.claude_valid,
-        ValidationTarget::Codex => validation.codex_valid,
-        ValidationTarget::Copilot => validation.copilot_valid,
-        ValidationTarget::Both => validation.claude_valid && validation.codex_valid,
-        ValidationTarget::All => {
-            validation.claude_valid && validation.codex_valid && validation.copilot_valid
-        }
+        ValidationTarget::Claude => validation.is_claude_valid(),
+        ValidationTarget::Codex => validation.is_codex_valid(),
+        ValidationTarget::Copilot => validation.is_copilot_valid(),
+        ValidationTarget::Both => validation.is_claude_valid() && validation.is_codex_valid(),
+        ValidationTarget::All => validation.is_valid_for_all(),
     };
 
     let mut autofix_result = None;
@@ -153,10 +151,7 @@ pub fn validate_skills_for_sync(
     for skill in skills {
         let result = validate_skill_for_sync(skill, target, options);
 
-        if result.validation.claude_valid
-            && result.validation.codex_valid
-            && result.validation.copilot_valid
-        {
+        if result.validation.is_valid_for_all() {
             report.passed += 1;
         } else if result.autofix.as_ref().map(|a| a.modified).unwrap_or(false) {
             report.autofixed += 1;
@@ -229,7 +224,7 @@ mod tests {
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
         assert!(result.can_sync);
-        assert!(result.validation.codex_valid);
+        assert!(result.validation.is_codex_valid());
     }
 
     #[test]
@@ -239,7 +234,7 @@ mod tests {
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
         assert!(!result.can_sync);
-        assert!(!result.validation.codex_valid);
+        assert!(!result.validation.is_codex_valid());
     }
 
     #[test]
@@ -252,8 +247,10 @@ mod tests {
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
         assert!(result.can_sync);
-        assert!(result.autofix.is_some());
-        assert!(result.autofix.unwrap().modified);
+        let autofix = result
+            .autofix
+            .expect("autofix should be Some when autofix option is enabled");
+        assert!(autofix.modified);
     }
 
     #[test]

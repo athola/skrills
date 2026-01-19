@@ -93,6 +93,9 @@ impl ValidationIssue {
 }
 
 /// Result of validating a single skill.
+///
+/// Validity flags are managed internally through `add_issue()` to ensure consistency.
+/// Use the getter methods (`is_claude_valid()`, etc.) to check validity status.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationResult {
     /// Path to the skill file.
@@ -102,10 +105,16 @@ pub struct ValidationResult {
     /// Issues found during validation.
     pub issues: Vec<ValidationIssue>,
     /// Whether the skill is valid for Claude Code.
+    /// Use `is_claude_valid()` for read access; modified only via `add_issue()`.
+    #[doc(hidden)]
     pub claude_valid: bool,
     /// Whether the skill is valid for Codex CLI.
+    /// Use `is_codex_valid()` for read access; modified only via `add_issue()`.
+    #[doc(hidden)]
     pub codex_valid: bool,
     /// Whether the skill is valid for GitHub Copilot CLI.
+    /// Use `is_copilot_valid()` for read access; modified only via `add_issue()`.
+    #[doc(hidden)]
     pub copilot_valid: bool,
 }
 
@@ -120,6 +129,30 @@ impl ValidationResult {
             codex_valid: true,
             copilot_valid: true,
         }
+    }
+
+    /// Returns whether the skill is valid for Claude Code.
+    #[inline]
+    pub fn is_claude_valid(&self) -> bool {
+        self.claude_valid
+    }
+
+    /// Returns whether the skill is valid for Codex CLI.
+    #[inline]
+    pub fn is_codex_valid(&self) -> bool {
+        self.codex_valid
+    }
+
+    /// Returns whether the skill is valid for GitHub Copilot CLI.
+    #[inline]
+    pub fn is_copilot_valid(&self) -> bool {
+        self.copilot_valid
+    }
+
+    /// Returns whether the skill is valid for all targets.
+    #[inline]
+    pub fn is_valid_for_all(&self) -> bool {
+        self.claude_valid && self.codex_valid && self.copilot_valid
     }
 
     /// Add an issue to the result, updating validity flags if it's an error.
