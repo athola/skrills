@@ -728,3 +728,73 @@ mod copilot_security_tests {
         );
     }
 }
+
+// ==========================================
+// Plugins Cache Sync Tests
+// ==========================================
+
+mod plugins_cache_sync_tests {
+    use super::*;
+
+    #[test]
+    fn test_sync_claude_plugins_cache_to_copilot() {
+        /*
+        GIVEN a Claude installation with a skill in plugins/cache/
+        WHEN syncing to Copilot
+        THEN the skill should be written to ~/.copilot/skills/<skill-name>/SKILL.md
+             without preserving the plugins/cache/ path structure
+        */
+        let claude_dir = TempDir::new().unwrap();
+        let copilot_dir = TempDir::new().unwrap();
+
+        // Create a skill in Claude's plugins cache
+        // ~/.claude/plugins/cache/claude-night-market/abstract/1.2.0/skills/hooks-eval/SKILL.md
+        let cache_skill_dir = claude_dir
+            .path()
+            .join("plugins/cache/claude-night-market/abstract/1.2.0/skills/hooks-eval");
+        fs::create_dir_all(&cache_skill_dir).unwrap();
+        fs::write(
+            cache_skill_dir.join("SKILL.md"),
+            r#"---
+name: hooks-eval
+description: Evaluate hooks for quality
+---
+# Hooks Eval
+
+This skill evaluates hook implementations.
+"#,
+        )
+        .unwrap();
+
+        // Sync from Claude to Copilot
+        let claude = ClaudeAdapter::with_root(claude_dir.path().to_path_buf());
+        let copilot = CopilotAdapter::with_root(copilot_dir.path().to_path_buf());
+        let orchestrator = SyncOrchestrator::new(claude, copilot);
+
+        let result = orchestrator.sync(&SyncParams::default());
+        assert!(result.is_ok(), "Sync should succeed: {:?}", result.err());
+
+        // Verify the skill was written to the correct location
+        // Should be ~/.copilot/skills/hooks-eval/SKILL.md
+        // NOT ~/.copilot/skills/plugins/cache/.../SKILL.md
+        let expected_path = copilot_dir.path().join("skills/hooks-eval/SKILL.md");
+        assert!(
+            expected_path.exists(),
+            "Skill should be at {:?}, not with plugins/cache/ prefix",
+            expected_path
+        );
+
+        // Verify NO plugins/cache directory was created
+        let wrong_path = copilot_dir.path().join("skills/plugins");
+        assert!(
+            !wrong_path.exists(),
+            "Should not create plugins/ directory in skills: {:?}",
+            wrong_path
+        );
+
+        // Verify content is correct
+        let content = fs::read_to_string(&expected_path).unwrap();
+        assert!(content.contains("hooks-eval"));
+        assert!(content.contains("Evaluate hooks for quality"));
+    }
+}

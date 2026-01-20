@@ -1085,6 +1085,30 @@ mod tests {
     }
 
     #[test]
+    fn read_skills_from_plugins_cache_extracts_skill_name() {
+        let tmp = tempdir().unwrap();
+
+        // Create a skill in plugins cache structure
+        // ~/.claude/plugins/cache/marketplace/plugin/1.0.0/skills/my-skill/SKILL.md
+        let cache_skill = tmp
+            .path()
+            .join("plugins/cache/marketplace/plugin/1.0.0/skills/my-skill");
+        fs::create_dir_all(&cache_skill).unwrap();
+        fs::write(
+            cache_skill.join("SKILL.md"),
+            "---\nname: my-skill\ndescription: A cached skill\n---\n# My Skill\n",
+        )
+        .unwrap();
+
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let skills = adapter.read_skills().unwrap();
+
+        // Should extract just "my-skill" as the name, not the full cache path
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "my-skill");
+    }
+
+    #[test]
     fn read_mcp_servers_invalid_json_returns_error() {
         let tmp = tempdir().unwrap();
         let settings_path = tmp.path().join("settings.json");
