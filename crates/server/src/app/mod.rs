@@ -27,9 +27,9 @@ use crate::commands::{
     handle_create_skill_command, handle_export_analytics_command, handle_import_analytics_command,
     handle_metrics_command, handle_mirror_command, handle_recommend_command,
     handle_recommend_skills_smart_command, handle_resolve_dependencies_command,
-    handle_search_skills_github_command, handle_serve_command, handle_setup_command,
-    handle_suggest_new_skills_command, handle_sync_agents_command, handle_sync_command,
-    handle_validate_command,
+    handle_search_skills_command, handle_search_skills_github_command, handle_serve_command,
+    handle_setup_command, handle_skill_diff_command, handle_suggest_new_skills_command,
+    handle_sync_agents_command, handle_sync_command, handle_validate_command,
 };
 use crate::discovery::{
     merge_extra_dirs, priority_labels, read_skill, skill_roots, AGENTS_DESCRIPTION, AGENTS_NAME,
@@ -1309,6 +1309,21 @@ pub fn run() -> Result<()> {
             limit,
             format,
         } => handle_search_skills_github_command(query, limit, format),
+        Commands::SearchSkills {
+            query,
+            threshold,
+            limit,
+            include_description,
+            skill_dirs,
+            format,
+        } => handle_search_skills_command(
+            query,
+            threshold,
+            limit,
+            include_description,
+            skill_dirs,
+            format,
+        ),
         Commands::ExportAnalytics {
             output,
             force_rebuild,
@@ -1317,6 +1332,11 @@ pub fn run() -> Result<()> {
         Commands::ImportAnalytics { input, overwrite } => {
             handle_import_analytics_command(input, overwrite)
         }
+        Commands::SkillDiff {
+            name,
+            format,
+            context,
+        } => handle_skill_diff_command(name, format, context),
     }
 }
 

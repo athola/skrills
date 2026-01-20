@@ -477,6 +477,10 @@ impl ServerHandler for SkillService {
                         let args = request.arguments.clone().unwrap_or_default();
                         self.validate_skills_tool(args)
                     }
+                    "skill-diff" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.skill_diff_tool(args)
+                    }
                     "analyze-skills" => {
                         use skrills_analyze::analyze_skill;
 

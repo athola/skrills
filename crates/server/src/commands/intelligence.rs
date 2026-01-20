@@ -196,6 +196,27 @@ pub(crate) fn handle_search_skills_github_command(
     print_tool_result(result, format)
 }
 
+/// Handle the `search-skills` command (fuzzy search installed skills).
+pub(crate) fn handle_search_skills_command(
+    query: String,
+    threshold: f64,
+    limit: usize,
+    include_description: bool,
+    skill_dirs: Vec<PathBuf>,
+    format: OutputFormat,
+) -> Result<()> {
+    let service = build_service(skill_dirs)?;
+    let mut args: JsonMap<String, Value> = JsonMap::new();
+
+    args.insert("query".into(), Value::String(query));
+    args.insert("threshold".into(), json!(threshold));
+    args.insert("limit".into(), json!(limit));
+    args.insert("include_description".into(), json!(include_description));
+
+    let result = service.search_skills_fuzzy_tool(args)?;
+    print_tool_result(result, format)
+}
+
 /// Handle the `export-analytics` command.
 pub(crate) fn handle_export_analytics_command(
     output: Option<PathBuf>,

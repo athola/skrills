@@ -261,6 +261,302 @@ impl SkillService {
         })
     }
 
+    /// Compares a skill across Claude, Codex, and Copilot to show differences.
+    ///
+    /// # Arguments
+    ///
+    /// The `args` map accepts the following JSON keys:
+    /// - `name`: skill name to compare (required)
+    /// - `context_lines`: number of context lines for diff (default: 3)
+    ///
+    /// # Returns
+    ///
+    /// A `CallToolResult` containing:
+    /// - Unified diff output
+    /// - Frontmatter comparison
+    /// - Token count differences
+    pub(crate) fn skill_diff_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
+        use skrills_discovery::SkillSource;
+
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("skill name is required"))?;
+        let context_lines = args
+            .get("context_lines")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(3) as usize;
+
+        // Get all discovered skills
+        let (skills, _) = self.current_skills_with_dups()?;
+
+        // Find matching skills across each source
+        let mut claude_skill: Option<(String, String)> = None;
+        let mut codex_skill: Option<(String, String)> = None;
+        let mut copilot_skill: Option<(String, String)> = None;
+
+        for meta in &skills {
+            if meta.name == name {
+                let content = fs::read_to_string(&meta.path).ok();
+                if let Some(c) = content {
+                    let path_str = meta.path.display().to_string();
+                    match meta.source {
+                        SkillSource::Claude | SkillSource::Marketplace | SkillSource::Cache => {
+                            if claude_skill.is_none() {
+                                claude_skill = Some((path_str, c));
+                            }
+                        }
+                        SkillSource::Codex | SkillSource::Mirror => {
+                            if codex_skill.is_none() {
+                                codex_skill = Some((path_str, c));
+                            }
+                        }
+                        SkillSource::Copilot => {
+                            if copilot_skill.is_none() {
+                                copilot_skill = Some((path_str, c));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Check if skill exists anywhere
+        if claude_skill.is_none() && codex_skill.is_none() && copilot_skill.is_none() {
+            return Ok(CallToolResult {
+                content: vec![Content::text(format!(
+                    "Skill '{}' not found in any location",
+                    name
+                ))],
+                is_error: Some(true),
+                structured_content: Some(json!({
+                    "error": "skill_not_found",
+                    "name": name
+                })),
+                meta: None,
+            });
+        }
+
+        // Generate diffs
+        let mut diffs = Vec::new();
+        let mut locations = Vec::new();
+
+        if let Some((path, _)) = &claude_skill {
+            locations.push(json!({"source": "claude", "path": path}));
+        }
+        if let Some((path, _)) = &codex_skill {
+            locations.push(json!({"source": "codex", "path": path}));
+        }
+        if let Some((path, _)) = &copilot_skill {
+            locations.push(json!({"source": "copilot", "path": path}));
+        }
+
+        // Helper to generate unified diff
+        fn unified_diff(a: &str, b: &str, label_a: &str, label_b: &str, context: usize) -> String {
+            let a_lines: Vec<&str> = a.lines().collect();
+            let b_lines: Vec<&str> = b.lines().collect();
+
+            if a_lines == b_lines {
+                return String::new();
+            }
+
+            let mut output = String::new();
+            output.push_str(&format!("--- {}\n", label_a));
+            output.push_str(&format!("+++ {}\n", label_b));
+
+            // Simple line-by-line diff with context
+            let max_len = a_lines.len().max(b_lines.len());
+            let mut in_hunk = false;
+            let mut hunk_start = 0;
+
+            for i in 0..max_len {
+                let a_line = a_lines.get(i).copied();
+                let b_line = b_lines.get(i).copied();
+
+                if a_line != b_line {
+                    if !in_hunk {
+                        // Start new hunk with context
+                        hunk_start = i.saturating_sub(context);
+                        output.push_str(&format!(
+                            "@@ -{},{} +{},{} @@\n",
+                            hunk_start + 1,
+                            context * 2 + 1,
+                            hunk_start + 1,
+                            context * 2 + 1
+                        ));
+
+                        // Add leading context
+                        for j in hunk_start..i {
+                            if let Some(line) = a_lines.get(j) {
+                                output.push_str(&format!(" {}\n", line));
+                            }
+                        }
+                        in_hunk = true;
+                    }
+
+                    if let Some(line) = a_line {
+                        output.push_str(&format!("-{}\n", line));
+                    }
+                    if let Some(line) = b_line {
+                        output.push_str(&format!("+{}\n", line));
+                    }
+                } else if in_hunk {
+                    // Trailing context
+                    if let Some(line) = a_line {
+                        output.push_str(&format!(" {}\n", line));
+                    }
+                    if i >= hunk_start + context * 2 {
+                        in_hunk = false;
+                    }
+                }
+            }
+
+            output
+        }
+
+        // Count tokens (simple word count approximation)
+        fn estimate_tokens(content: &str) -> usize {
+            content.split_whitespace().count()
+        }
+
+        let mut token_counts = json!({});
+
+        // Compare Claude vs Codex
+        if let (Some((_, claude_content)), Some((_, codex_content))) = (&claude_skill, &codex_skill)
+        {
+            let diff = unified_diff(
+                claude_content,
+                codex_content,
+                "claude",
+                "codex",
+                context_lines,
+            );
+            if !diff.is_empty() {
+                diffs.push(json!({
+                    "comparison": "claude_vs_codex",
+                    "diff": diff,
+                    "identical": false
+                }));
+            } else {
+                diffs.push(json!({
+                    "comparison": "claude_vs_codex",
+                    "identical": true
+                }));
+            }
+        }
+
+        // Compare Claude vs Copilot
+        if let (Some((_, claude_content)), Some((_, copilot_content))) =
+            (&claude_skill, &copilot_skill)
+        {
+            let diff = unified_diff(
+                claude_content,
+                copilot_content,
+                "claude",
+                "copilot",
+                context_lines,
+            );
+            if !diff.is_empty() {
+                diffs.push(json!({
+                    "comparison": "claude_vs_copilot",
+                    "diff": diff,
+                    "identical": false
+                }));
+            } else {
+                diffs.push(json!({
+                    "comparison": "claude_vs_copilot",
+                    "identical": true
+                }));
+            }
+        }
+
+        // Compare Codex vs Copilot
+        if let (Some((_, codex_content)), Some((_, copilot_content))) =
+            (&codex_skill, &copilot_skill)
+        {
+            let diff = unified_diff(
+                codex_content,
+                copilot_content,
+                "codex",
+                "copilot",
+                context_lines,
+            );
+            if !diff.is_empty() {
+                diffs.push(json!({
+                    "comparison": "codex_vs_copilot",
+                    "diff": diff,
+                    "identical": false
+                }));
+            } else {
+                diffs.push(json!({
+                    "comparison": "codex_vs_copilot",
+                    "identical": true
+                }));
+            }
+        }
+
+        // Calculate token counts
+        if let Some((_, content)) = &claude_skill {
+            token_counts["claude"] = json!(estimate_tokens(content));
+        }
+        if let Some((_, content)) = &codex_skill {
+            token_counts["codex"] = json!(estimate_tokens(content));
+        }
+        if let Some((_, content)) = &copilot_skill {
+            token_counts["copilot"] = json!(estimate_tokens(content));
+        }
+
+        // Generate summary text
+        let identical_count = diffs
+            .iter()
+            .filter(|d| d["identical"].as_bool().unwrap_or(false))
+            .count();
+        let diff_count = diffs.len() - identical_count;
+
+        let mut summary = format!("Skill '{}' comparison:\n", name);
+        summary.push_str(&format!("  Found in {} locations\n", locations.len()));
+        if diff_count > 0 {
+            summary.push_str(&format!("  {} differences found\n", diff_count));
+        } else if !diffs.is_empty() {
+            summary.push_str("  All versions are identical\n");
+        }
+
+        // Add token summary
+        summary.push_str("\nToken counts:\n");
+        if let Some(c) = token_counts.get("claude").and_then(|v| v.as_u64()) {
+            summary.push_str(&format!("  Claude: ~{} tokens\n", c));
+        }
+        if let Some(c) = token_counts.get("codex").and_then(|v| v.as_u64()) {
+            summary.push_str(&format!("  Codex: ~{} tokens\n", c));
+        }
+        if let Some(c) = token_counts.get("copilot").and_then(|v| v.as_u64()) {
+            summary.push_str(&format!("  Copilot: ~{} tokens\n", c));
+        }
+
+        // Add diff output
+        for diff_item in &diffs {
+            if let Some(diff_text) = diff_item.get("diff").and_then(|v| v.as_str()) {
+                if !diff_text.is_empty() {
+                    summary.push_str(&format!("\n{}\n", diff_text));
+                }
+            }
+        }
+
+        Ok(CallToolResult {
+            content: vec![Content::text(summary)],
+            is_error: Some(false),
+            structured_content: Some(json!({
+                "name": name,
+                "locations": locations,
+                "comparisons": diffs,
+                "token_counts": token_counts,
+                "context_lines": context_lines
+            })),
+            meta: None,
+        })
+    }
+
     /// Syncs configuration (commands, skills, MCP servers, preferences) between Claude and Codex.
     ///
     /// # Arguments

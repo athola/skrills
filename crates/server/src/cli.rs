@@ -433,6 +433,7 @@ pub enum Commands {
         format: OutputFormat,
     },
     /// Suggest new skills to create based on project context.
+    #[command(alias = "suggest-skills")]
     SuggestNewSkills {
         /// Project directory for context analysis.
         #[arg(long)]
@@ -483,6 +484,27 @@ pub enum Commands {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
+    /// Fuzzy search installed skills by name or description.
+    SearchSkills {
+        /// Search query for skills.
+        #[arg(required = true)]
+        query: String,
+        /// Similarity threshold (0.0-1.0, lower = more results).
+        #[arg(long, short = 't', default_value = "0.3")]
+        threshold: f64,
+        /// Maximum results to return.
+        #[arg(long, short = 'l', default_value = "10")]
+        limit: usize,
+        /// Also search descriptions, not just names.
+        #[arg(long, default_value = "true")]
+        include_description: bool,
+        /// Skills directory to search (default: all discovered skills).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+        /// Output format: text or json.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
     /// Export usage analytics to a file for persistence or backup.
     ExportAnalytics {
         /// Output file path (defaults to ~/.skrills/analytics_cache.json).
@@ -509,6 +531,18 @@ pub enum Commands {
         /// Additional skill directories (repeatable).
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
+    },
+    /// Compare a skill across Claude, Codex, and Copilot to show differences.
+    SkillDiff {
+        /// Skill name to compare (e.g., "commit", "review-pr").
+        #[arg(required = true)]
+        name: String,
+        /// Output format: text (unified diff), json, or summary.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+        /// Show context lines around differences.
+        #[arg(long, short = 'C', default_value = "3")]
+        context: usize,
     },
     /// Sets up skrills for Claude Code, Codex, or Copilot (hooks, MCP, directories).
     Setup {

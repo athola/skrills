@@ -254,6 +254,40 @@ pub(crate) fn validation_tools() -> Vec<Tool> {
             icons: None,
             meta: None,
         },
+        Tool {
+            name: "skill-diff".into(),
+            title: Some("Compare skill versions across CLIs".into()),
+            description: Some(
+                "Compare a skill across Claude, Codex, and Copilot to identify differences in content and frontmatter. \
+                 Shows unified diff, frontmatter variations, and token count differences."
+                    .into(),
+            ),
+            input_schema: Arc::new({
+                let mut schema = JsonMap::new();
+                schema.insert("type".into(), json!("object"));
+                schema.insert(
+                    "properties".into(),
+                    json!({
+                        "name": {
+                            "type": "string",
+                            "description": "Skill name to compare (e.g., 'commit', 'review-pr')"
+                        },
+                        "context_lines": {
+                            "type": "integer",
+                            "default": 3,
+                            "description": "Number of context lines to show around differences"
+                        }
+                    }),
+                );
+                schema.insert("required".into(), json!(["name"]));
+                schema.insert("additionalProperties".into(), json!(false));
+                schema
+            }),
+            output_schema: None,
+            annotations: Some(ToolAnnotations::default()),
+            icons: None,
+            meta: None,
+        },
     ]
 }
 
@@ -762,8 +796,8 @@ mod tests {
     #[test]
     fn test_all_tools_returns_expected_count() {
         let tools = all_tools();
-        // 9 sync + 2 validation + 1 dependency + 1 recommend + 1 metrics + 4 trace + 6 intelligence = 24 tools
-        assert_eq!(tools.len(), 24);
+        // 9 sync + 3 validation + 1 dependency + 1 recommend + 1 metrics + 4 trace + 6 intelligence = 25 tools
+        assert_eq!(tools.len(), 25);
     }
 
     #[test]
@@ -783,7 +817,7 @@ mod tests {
 
     #[test]
     fn test_validation_tools_count() {
-        assert_eq!(validation_tools().len(), 2);
+        assert_eq!(validation_tools().len(), 3);
     }
 
     #[test]
