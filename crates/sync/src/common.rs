@@ -61,6 +61,8 @@ pub struct CommonConfig {
     pub mcp_servers: HashMap<String, McpServer>,
     pub preferences: Preferences,
     pub skills: Vec<Command>,
+    pub hooks: Vec<Command>,
+    pub agents: Vec<Command>,
 }
 
 /// Metadata about a sync operation.

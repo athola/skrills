@@ -36,6 +36,8 @@
 //!             mcp_servers: true,
 //!             preferences: true,
 //!             skills: true,
+//!             hooks: false,
+//!             agents: false,
 //!         }
 //!     }
 //!
@@ -81,6 +83,22 @@
 //!             written: skills.len(),
 //!             ..WriteReport::default()
 //!         })
+//!     }
+//!
+//!     fn read_hooks(&self) -> Result<Vec<Command>> {
+//!         Ok(Vec::new())
+//!     }
+//!
+//!     fn read_agents(&self) -> Result<Vec<Command>> {
+//!         Ok(Vec::new())
+//!     }
+//!
+//!     fn write_hooks(&self, _hooks: &[Command]) -> Result<WriteReport> {
+//!         Ok(WriteReport::default())
+//!     }
+//!
+//!     fn write_agents(&self, _agents: &[Command]) -> Result<WriteReport> {
+//!         Ok(WriteReport::default())
 //!     }
 //! }
 //!

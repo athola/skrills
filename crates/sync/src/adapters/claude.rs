@@ -39,6 +39,14 @@ impl ClaudeAdapter {
         self.root.join("skills")
     }
 
+    fn hooks_dir(&self) -> PathBuf {
+        self.root.join("hooks")
+    }
+
+    fn agents_dir(&self) -> PathBuf {
+        self.root.join("agents")
+    }
+
     fn settings_path(&self) -> PathBuf {
         self.root.join("settings.json")
     }
@@ -129,6 +137,8 @@ impl AgentAdapter for ClaudeAdapter {
             mcp_servers: true,
             preferences: true,
             skills: true,
+            hooks: true,
+            agents: true,
         }
     }
 
@@ -267,68 +277,126 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     fn read_skills(&self) -> Result<Vec<Command>> {
-        let skills_dir = self.skills_dir();
-        if !skills_dir.exists() {
-            return Ok(Vec::new());
-        }
+        // Track skills by name, keeping the most recently modified version
+        let mut skills_map: HashMap<String, Command> = HashMap::new();
 
-        let mut skills = Vec::new();
-        let mut seen = HashSet::new();
-
-        for entry in WalkDir::new(&skills_dir)
-            .min_depth(1)
-            .max_depth(20)
-            .follow_links(false)
-        {
-            let entry = entry?;
-            if entry.file_type().is_symlink() {
-                continue;
-            }
-            let path = entry.path();
-            if Self::is_hidden_path(path.strip_prefix(&skills_dir).unwrap_or(path)) {
-                continue;
-            }
-            if !path.is_file() {
-                continue;
-            }
-            if path.extension().is_none_or(|ext| ext != "md") {
-                continue;
-            }
-
-            let is_skill_md = path.file_name().is_some_and(|n| n == "SKILL.md");
-            let name = if is_skill_md {
-                path.parent()
-                    .and_then(|p| p.strip_prefix(&skills_dir).ok())
-                    .and_then(|p| p.to_str())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("unknown")
-                    .to_string()
-            } else {
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("unknown")
-                    .to_string()
-            };
-
-            if !seen.insert(name.clone()) {
-                continue;
-            }
-
+        // Helper to process a skill and update the map if it's newer
+        let mut process_skill = |name: String, path: &std::path::Path| -> Result<()> {
             let content = fs::read(path)?;
             let metadata = fs::metadata(path)?;
             let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
             let hash = Self::hash_content(&content);
 
-            skills.push(Command {
-                name,
+            let skill = Command {
+                name: name.clone(),
                 content,
                 source_path: path.to_path_buf(),
                 modified,
                 hash,
-            });
+            };
+
+            // Keep the most recently modified version
+            match skills_map.get(&name) {
+                Some(existing) if existing.modified >= modified => {
+                    // Existing is newer or same, skip
+                }
+                _ => {
+                    skills_map.insert(name, skill);
+                }
+            }
+            Ok(())
+        };
+
+        // 1) Core ~/.claude/skills
+        let skills_dir = self.skills_dir();
+        if skills_dir.exists() {
+            for entry in WalkDir::new(&skills_dir)
+                .min_depth(1)
+                .max_depth(20)
+                .follow_links(false)
+            {
+                let entry = entry?;
+                if entry.file_type().is_symlink() {
+                    continue;
+                }
+                let path = entry.path();
+                if Self::is_hidden_path(path.strip_prefix(&skills_dir).unwrap_or(path)) {
+                    continue;
+                }
+                if !path.is_file() {
+                    continue;
+                }
+                if path.extension().is_none_or(|ext| ext != "md") {
+                    continue;
+                }
+
+                let is_skill_md = path.file_name().is_some_and(|n| n == "SKILL.md");
+                let name = if is_skill_md {
+                    path.parent()
+                        .and_then(|p| p.strip_prefix(&skills_dir).ok())
+                        .and_then(|p| p.to_str())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("unknown")
+                        .to_string()
+                } else {
+                    path.file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("unknown")
+                        .to_string()
+                };
+
+                process_skill(name, path)?;
+            }
         }
 
-        Ok(skills)
+        // 2) Plugins cache ~/.claude/plugins/cache/**/*
+        let cache_dir = self.root.join("plugins/cache");
+        if cache_dir.exists() {
+            for entry in WalkDir::new(&cache_dir).min_depth(1).max_depth(10) {
+                let entry = entry?;
+                let path = entry.path();
+
+                if !path.is_file() {
+                    continue;
+                }
+                if path.extension().is_none_or(|ext| ext != "md") {
+                    continue;
+                }
+
+                // Only include files under a skills directory
+                if !path
+                    .ancestors()
+                    .any(|p| p.file_name().is_some_and(|n| n == "skills"))
+                {
+                    continue;
+                }
+
+                // Extract skill name from path
+                let is_skill_md = path.file_name().is_some_and(|n| n == "SKILL.md");
+                let name = if is_skill_md {
+                    // Use parent directory name as skill name
+                    path.parent()
+                        .and_then(|p| p.file_name())
+                        .and_then(|s| s.to_str())
+                        .filter(|s| !s.is_empty() && *s != "skills")
+                        .unwrap_or("unknown")
+                        .to_string()
+                } else {
+                    path.file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("unknown")
+                        .to_string()
+                };
+
+                if name == "unknown" || name == "skills" {
+                    continue;
+                }
+
+                process_skill(name, path)?;
+            }
+        }
+
+        Ok(skills_map.into_values().collect())
     }
 
     fn write_commands(&self, commands: &[Command]) -> Result<WriteReport> {
@@ -465,6 +533,260 @@ impl AgentAdapter for ClaudeAdapter {
             }
 
             fs::write(&path, &skill.content)?;
+            report.written += 1;
+        }
+
+        Ok(report)
+    }
+
+    fn read_hooks(&self) -> Result<Vec<Command>> {
+        // Track hooks by name, keeping the most recently modified version
+        let mut hooks_map: HashMap<String, Command> = HashMap::new();
+
+        // Helper to process a hook and update the map if it's newer
+        let mut process_hook = |name: String, path: &std::path::Path| -> Result<()> {
+            let content = fs::read(path)?;
+            let metadata = fs::metadata(path)?;
+            let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            let hash = Self::hash_content(&content);
+
+            let hook = Command {
+                name: name.clone(),
+                content,
+                source_path: path.to_path_buf(),
+                modified,
+                hash,
+            };
+
+            match hooks_map.get(&name) {
+                Some(existing) if existing.modified >= modified => {}
+                _ => {
+                    hooks_map.insert(name, hook);
+                }
+            }
+            Ok(())
+        };
+
+        // 1) Core ~/.claude/hooks
+        let hooks_dir = self.hooks_dir();
+        if hooks_dir.exists() {
+            for entry in WalkDir::new(&hooks_dir)
+                .min_depth(1)
+                .max_depth(10)
+                .follow_links(false)
+            {
+                let entry = entry?;
+                if entry.file_type().is_symlink() {
+                    continue;
+                }
+                let path = entry.path();
+                if Self::is_hidden_path(path.strip_prefix(&hooks_dir).unwrap_or(path)) {
+                    continue;
+                }
+                if !path.is_file() {
+                    continue;
+                }
+                if path.extension().is_none_or(|ext| ext != "md") {
+                    continue;
+                }
+
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                process_hook(name, path)?;
+            }
+        }
+
+        // 2) Plugins cache ~/.claude/plugins/cache/**/hooks/
+        let cache_dir = self.root.join("plugins/cache");
+        if cache_dir.exists() {
+            for entry in WalkDir::new(&cache_dir).min_depth(1).max_depth(10) {
+                let entry = entry?;
+                let path = entry.path();
+
+                if !path.is_file() {
+                    continue;
+                }
+                if path.extension().is_none_or(|ext| ext != "md") {
+                    continue;
+                }
+
+                // Only include files under a hooks directory
+                if !path
+                    .ancestors()
+                    .any(|p| p.file_name().is_some_and(|n| n == "hooks"))
+                {
+                    continue;
+                }
+
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                if name == "unknown" || name == "hooks" {
+                    continue;
+                }
+
+                process_hook(name, path)?;
+            }
+        }
+
+        Ok(hooks_map.into_values().collect())
+    }
+
+    fn read_agents(&self) -> Result<Vec<Command>> {
+        // Track agents by name, keeping the most recently modified version
+        let mut agents_map: HashMap<String, Command> = HashMap::new();
+
+        // Helper to process an agent and update the map if it's newer
+        let mut process_agent = |name: String, path: &std::path::Path| -> Result<()> {
+            let content = fs::read(path)?;
+            let metadata = fs::metadata(path)?;
+            let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            let hash = Self::hash_content(&content);
+
+            let agent = Command {
+                name: name.clone(),
+                content,
+                source_path: path.to_path_buf(),
+                modified,
+                hash,
+            };
+
+            match agents_map.get(&name) {
+                Some(existing) if existing.modified >= modified => {}
+                _ => {
+                    agents_map.insert(name, agent);
+                }
+            }
+            Ok(())
+        };
+
+        // 1) Core ~/.claude/agents
+        let agents_dir = self.agents_dir();
+        if agents_dir.exists() {
+            for entry in WalkDir::new(&agents_dir)
+                .min_depth(1)
+                .max_depth(10)
+                .follow_links(false)
+            {
+                let entry = entry?;
+                if entry.file_type().is_symlink() {
+                    continue;
+                }
+                let path = entry.path();
+                if Self::is_hidden_path(path.strip_prefix(&agents_dir).unwrap_or(path)) {
+                    continue;
+                }
+                if !path.is_file() {
+                    continue;
+                }
+                if path.extension().is_none_or(|ext| ext != "md") {
+                    continue;
+                }
+
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                process_agent(name, path)?;
+            }
+        }
+
+        // 2) Plugins cache ~/.claude/plugins/cache/**/agents/
+        let cache_dir = self.root.join("plugins/cache");
+        if cache_dir.exists() {
+            for entry in WalkDir::new(&cache_dir).min_depth(1).max_depth(10) {
+                let entry = entry?;
+                let path = entry.path();
+
+                if !path.is_file() {
+                    continue;
+                }
+                if path.extension().is_none_or(|ext| ext != "md") {
+                    continue;
+                }
+
+                // Only include files under an agents directory
+                if !path
+                    .ancestors()
+                    .any(|p| p.file_name().is_some_and(|n| n == "agents"))
+                {
+                    continue;
+                }
+
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                if name == "unknown" || name == "agents" {
+                    continue;
+                }
+
+                process_agent(name, path)?;
+            }
+        }
+
+        Ok(agents_map.into_values().collect())
+    }
+
+    fn write_hooks(&self, hooks: &[Command]) -> Result<WriteReport> {
+        let dir = self.hooks_dir();
+        fs::create_dir_all(&dir)?;
+
+        let mut report = WriteReport::default();
+
+        for hook in hooks {
+            let safe_name = sanitize_name(&hook.name);
+            let path = dir.join(format!("{}.md", safe_name));
+
+            if path.exists() {
+                let existing = fs::read(&path)?;
+                if Self::hash_content(&existing) == hook.hash {
+                    report.skipped.push(SkipReason::Unchanged {
+                        item: hook.name.clone(),
+                    });
+                    continue;
+                }
+            }
+
+            fs::write(&path, &hook.content)?;
+            report.written += 1;
+        }
+
+        Ok(report)
+    }
+
+    fn write_agents(&self, agents: &[Command]) -> Result<WriteReport> {
+        let dir = self.agents_dir();
+        fs::create_dir_all(&dir)?;
+
+        let mut report = WriteReport::default();
+
+        for agent in agents {
+            let safe_name = sanitize_name(&agent.name);
+            let path = dir.join(format!("{}.md", safe_name));
+
+            if path.exists() {
+                let existing = fs::read(&path)?;
+                if Self::hash_content(&existing) == agent.hash {
+                    report.skipped.push(SkipReason::Unchanged {
+                        item: agent.name.clone(),
+                    });
+                    continue;
+                }
+            }
+
+            fs::write(&path, &agent.content)?;
             report.written += 1;
         }
 

@@ -180,6 +180,8 @@ impl AgentAdapter for CodexAdapter {
             mcp_servers: true,
             preferences: true,
             skills: true,
+            hooks: false,  // Codex doesn't support hooks
+            agents: false, // Codex doesn't support agents
         }
     }
 
@@ -495,6 +497,26 @@ impl AgentAdapter for CodexAdapter {
         let _ = self.ensure_skills_feature_flag_enabled()?;
 
         Ok(report)
+    }
+
+    fn read_hooks(&self) -> Result<Vec<Command>> {
+        // Codex does not support hooks
+        Ok(Vec::new())
+    }
+
+    fn read_agents(&self) -> Result<Vec<Command>> {
+        // Codex does not support agents
+        Ok(Vec::new())
+    }
+
+    fn write_hooks(&self, _hooks: &[Command]) -> Result<WriteReport> {
+        // Codex does not support hooks
+        Ok(WriteReport::default())
+    }
+
+    fn write_agents(&self, _agents: &[Command]) -> Result<WriteReport> {
+        // Codex does not support agents
+        Ok(WriteReport::default())
     }
 }
 

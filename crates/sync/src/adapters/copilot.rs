@@ -125,6 +125,8 @@ impl AgentAdapter for CopilotAdapter {
             mcp_servers: true,
             preferences: true,
             skills: true,
+            hooks: false,  // Copilot doesn't support hooks
+            agents: false, // Copilot doesn't support agents
         }
     }
 
@@ -447,6 +449,26 @@ impl AgentAdapter for CopilotAdapter {
         // Note: Unlike Codex, Copilot does NOT require config.toml feature flags
 
         Ok(report)
+    }
+
+    fn read_hooks(&self) -> Result<Vec<Command>> {
+        // Copilot does not support hooks
+        Ok(Vec::new())
+    }
+
+    fn read_agents(&self) -> Result<Vec<Command>> {
+        // Copilot does not support agents
+        Ok(Vec::new())
+    }
+
+    fn write_hooks(&self, _hooks: &[Command]) -> Result<WriteReport> {
+        // Copilot does not support hooks
+        Ok(WriteReport::default())
+    }
+
+    fn write_agents(&self, _agents: &[Command]) -> Result<WriteReport> {
+        // Copilot does not support agents
+        Ok(WriteReport::default())
     }
 }
 
