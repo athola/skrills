@@ -26,8 +26,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Environment and configuration utilities.
 pub mod env;
-/// Persistence utilities (currently minimal after 0.3.1 simplification).
-pub mod persistence;
 
 pub use env::{
     cache_ttl, env_auto_persist, env_diag, env_include_claude, env_include_marketplace,

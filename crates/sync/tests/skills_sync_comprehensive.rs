@@ -226,6 +226,7 @@ mod basic_sync_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             skip_existing_commands: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -260,6 +261,7 @@ mod basic_sync_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             skip_existing_commands: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -299,6 +301,7 @@ mod basic_sync_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             skip_existing_commands: false, // Only affects commands, not skills
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -335,6 +338,7 @@ mod basic_sync_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             skip_existing_commands: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -373,6 +377,7 @@ mod basic_sync_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             skip_existing_commands: true, // Should be ignored due to force
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -410,6 +415,7 @@ mod basic_sync_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             skip_existing_commands: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -1306,6 +1312,7 @@ mod case_sensitivity_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             skip_existing_commands: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 

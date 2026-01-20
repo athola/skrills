@@ -15,11 +15,11 @@
 //! - No config.toml feature flag management
 
 use super::traits::{AgentAdapter, FieldSupport};
+use super::utils::{hash_content, is_hidden_path};
 use crate::common::{Command, McpServer, Preferences};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use anyhow::Context;
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -78,6 +78,10 @@ impl CopilotAdapter {
         self.root.join("skills")
     }
 
+    fn agents_dir(&self) -> PathBuf {
+        self.root.join("agents")
+    }
+
     /// Path to MCP server configuration (separate from main config).
     fn mcp_config_path(&self) -> PathBuf {
         self.root.join("mcp-config.json")
@@ -86,23 +90,6 @@ impl CopilotAdapter {
     /// Path to preferences/settings (model, security fields).
     fn config_path(&self) -> PathBuf {
         self.root.join("config.json")
-    }
-
-    fn is_hidden_component(name: &str) -> bool {
-        name.starts_with('.')
-    }
-
-    fn is_hidden_path(path: &std::path::Path) -> bool {
-        path.components().any(|c| match c {
-            std::path::Component::Normal(s) => Self::is_hidden_component(&s.to_string_lossy()),
-            _ => false,
-        })
-    }
-
-    fn hash_content(content: &[u8]) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(content);
-        format!("{:x}", hasher.finalize())
     }
 }
 
@@ -125,8 +112,8 @@ impl AgentAdapter for CopilotAdapter {
             mcp_servers: true,
             preferences: true,
             skills: true,
-            hooks: false,  // Copilot doesn't support hooks
-            agents: false, // Copilot doesn't support agents
+            hooks: false, // Copilot doesn't support hooks
+            agents: true, // Copilot supports custom agents in ~/.copilot/agents/
         }
     }
 
@@ -269,7 +256,7 @@ impl AgentAdapter for CopilotAdapter {
                 continue;
             }
             let path = entry.path();
-            if Self::is_hidden_path(path.strip_prefix(&skills_dir).unwrap_or(path)) {
+            if is_hidden_path(path.strip_prefix(&skills_dir).unwrap_or(path)) {
                 continue;
             }
             if !entry.file_type().is_file() {
@@ -296,7 +283,7 @@ impl AgentAdapter for CopilotAdapter {
             let content = fs::read(path)?;
             let metadata = fs::metadata(path)?;
             let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-            let hash = Self::hash_content(&content);
+            let hash = hash_content(&content);
 
             skills.push(Command {
                 name,
@@ -433,7 +420,7 @@ impl AgentAdapter for CopilotAdapter {
                 let existing = fs::read(&path).with_context(|| {
                     format!("Failed to read existing skill: {}", path.display())
                 })?;
-                if Self::hash_content(&existing) == skill.hash {
+                if hash_content(&existing) == skill.hash {
                     report.skipped.push(SkipReason::Unchanged {
                         item: skill.name.clone(),
                     });
@@ -457,8 +444,60 @@ impl AgentAdapter for CopilotAdapter {
     }
 
     fn read_agents(&self) -> Result<Vec<Command>> {
-        // Copilot does not support agents
-        Ok(Vec::new())
+        let agents_dir = self.agents_dir();
+        if !agents_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut agents = Vec::new();
+
+        for entry in WalkDir::new(&agents_dir)
+            .min_depth(1)
+            .max_depth(1) // Flat directory structure for Copilot agents
+            .follow_links(false)
+        {
+            let entry = entry?;
+            let path = entry.path();
+
+            if !path.is_file() {
+                continue;
+            }
+
+            // Copilot agents are *.agent.md or *.md files
+            let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if !file_name.ends_with(".md") {
+                continue;
+            }
+
+            if is_hidden_path(path.strip_prefix(&agents_dir).unwrap_or(path)) {
+                continue;
+            }
+
+            // Extract name: strip .agent.md or .md suffix
+            let name = if file_name.ends_with(".agent.md") {
+                file_name.trim_end_matches(".agent.md").to_string()
+            } else {
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string()
+            };
+
+            let content = fs::read(path)?;
+            let metadata = fs::metadata(path)?;
+            let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            let hash = hash_content(&content);
+
+            agents.push(Command {
+                name,
+                content,
+                source_path: path.to_path_buf(),
+                modified,
+                hash,
+            });
+        }
+
+        Ok(agents)
     }
 
     fn write_hooks(&self, _hooks: &[Command]) -> Result<WriteReport> {
@@ -466,9 +505,38 @@ impl AgentAdapter for CopilotAdapter {
         Ok(WriteReport::default())
     }
 
-    fn write_agents(&self, _agents: &[Command]) -> Result<WriteReport> {
-        // Copilot does not support agents
-        Ok(WriteReport::default())
+    fn write_agents(&self, agents: &[Command]) -> Result<WriteReport> {
+        let dir = self.agents_dir();
+        fs::create_dir_all(&dir)
+            .with_context(|| format!("Failed to create agents directory: {}", dir.display()))?;
+
+        let mut report = WriteReport::default();
+
+        for agent in agents {
+            let safe_name = sanitize_name(&agent.name);
+            let path = dir.join(format!("{}.agent.md", safe_name));
+
+            // Transform the content: Claude format -> Copilot format
+            let transformed_content = transform_agent_for_copilot(&agent.content);
+
+            if path.exists() {
+                let existing = fs::read(&path).with_context(|| {
+                    format!("Failed to read existing agent: {}", path.display())
+                })?;
+                if hash_content(&existing) == hash_content(&transformed_content) {
+                    report.skipped.push(SkipReason::Unchanged {
+                        item: agent.name.clone(),
+                    });
+                    continue;
+                }
+            }
+
+            fs::write(&path, &transformed_content)
+                .with_context(|| format!("Failed to write agent: {}", path.display()))?;
+            report.written += 1;
+        }
+
+        Ok(report)
     }
 }
 
@@ -491,6 +559,60 @@ fn sanitize_name(name: &str) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+/// Transforms a Claude agent's content to Copilot agent format.
+///
+/// Transformations:
+/// - Replaces `model: xxx` with `target: github-copilot`
+/// - Removes `color: xxx` line (Copilot doesn't use this)
+/// - Keeps everything else intact
+fn transform_agent_for_copilot(content: &[u8]) -> Vec<u8> {
+    let content_str = match std::str::from_utf8(content) {
+        Ok(s) => s,
+        Err(_) => return content.to_vec(), // Binary content, return as-is
+    };
+
+    // Check if content has YAML frontmatter
+    if !content_str.starts_with("---") {
+        // No frontmatter, add minimal frontmatter with target
+        return format!("---\ntarget: github-copilot\n---\n\n{}", content_str).into_bytes();
+    }
+
+    // Find the end of frontmatter
+    let Some(end_idx) = content_str[3..].find("\n---").map(|i| i + 3) else {
+        // Malformed frontmatter, return as-is
+        return content.to_vec();
+    };
+
+    let frontmatter = &content_str[3..end_idx];
+    let body = &content_str[end_idx + 4..]; // Skip "\n---"
+
+    let mut new_lines = Vec::new();
+    let mut has_target = false;
+
+    for line in frontmatter.lines() {
+        let trimmed = line.trim();
+
+        // Skip model and color lines (Claude-specific)
+        if trimmed.starts_with("model:") || trimmed.starts_with("color:") {
+            continue;
+        }
+
+        // Check if target already exists
+        if trimmed.starts_with("target:") {
+            has_target = true;
+        }
+
+        new_lines.push(line);
+    }
+
+    // Add target if not already present
+    if !has_target {
+        new_lines.push("target: github-copilot");
+    }
+
+    format!("---\n{}\n---{}", new_lines.join("\n"), body).into_bytes()
 }
 
 #[cfg(test)]
@@ -665,7 +787,7 @@ mod tests {
             content: content.to_vec(),
             source_path: PathBuf::from("/tmp/alpha.md"),
             modified: SystemTime::now(),
-            hash: CopilotAdapter::hash_content(content),
+            hash: hash_content(content),
         };
 
         let report = adapter.write_skills(&[skill]).unwrap();
@@ -1048,6 +1170,147 @@ mod tests {
         assert_eq!(server.command, "/bin/test");
         assert_eq!(server.args, vec!["--arg"]);
         assert!(server.enabled);
+    }
+
+    // ==========================================
+    // Agents Tests
+    // ==========================================
+
+    #[test]
+    fn copilot_supports_agents() {
+        let tmp = tempdir().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let fields = adapter.supported_fields();
+        assert!(fields.agents, "Copilot should support agents");
+    }
+
+    #[test]
+    fn read_agents_empty_dir() {
+        let tmp = tempdir().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let agents = adapter.read_agents().unwrap();
+        assert!(agents.is_empty());
+    }
+
+    #[test]
+    fn read_agents_discovers_agent_md() {
+        let tmp = tempdir().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+        fs::write(
+            agents_dir.join("test-agent.agent.md"),
+            "---\nname: test-agent\ndescription: A test agent\ntarget: github-copilot\n---\n# Test Agent\n\nInstructions here.",
+        )
+        .unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let agents = adapter.read_agents().unwrap();
+
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].name, "test-agent");
+    }
+
+    #[test]
+    fn read_agents_handles_plain_md_files() {
+        let tmp = tempdir().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+        fs::write(
+            agents_dir.join("simple.md"),
+            "---\nname: simple\n---\n# Simple",
+        )
+        .unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let agents = adapter.read_agents().unwrap();
+
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].name, "simple");
+    }
+
+    #[test]
+    fn write_agents_creates_agent_files() {
+        let tmp = tempdir().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+
+        let agents = vec![Command {
+            name: "my-agent".to_string(),
+            content: b"---\nname: my-agent\ndescription: Test\nmodel: opus\n---\n# My Agent"
+                .to_vec(),
+            source_path: PathBuf::from("/tmp/test.md"),
+            modified: SystemTime::now(),
+            hash: "abc".to_string(),
+        }];
+
+        let report = adapter.write_agents(&agents).unwrap();
+        assert_eq!(report.written, 1);
+
+        // Verify file was created
+        let agent_path = tmp.path().join("agents/my-agent.agent.md");
+        assert!(agent_path.exists());
+
+        // Verify content was transformed
+        let content = fs::read_to_string(&agent_path).unwrap();
+        assert!(content.contains("target: github-copilot"));
+        assert!(!content.contains("model: opus"));
+    }
+
+    #[test]
+    fn write_agents_skips_unchanged() {
+        let tmp = tempdir().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+
+        let agents = vec![Command {
+            name: "unchanged".to_string(),
+            content: b"---\nname: unchanged\ndescription: Test\n---\n# Agent".to_vec(),
+            source_path: PathBuf::from("/tmp/test.md"),
+            modified: SystemTime::now(),
+            hash: "abc".to_string(),
+        }];
+
+        // Write once
+        let report1 = adapter.write_agents(&agents).unwrap();
+        assert_eq!(report1.written, 1);
+
+        // Write again - should be skipped
+        let report2 = adapter.write_agents(&agents).unwrap();
+        assert_eq!(report2.written, 0);
+        assert_eq!(report2.skipped.len(), 1);
+    }
+
+    #[test]
+    fn transform_agent_adds_target_to_claude_format() {
+        let claude_content = b"---\nname: test\ndescription: Test agent\nmodel: opus\ncolor: green\n---\n# Test\n\nContent here.";
+        let result = transform_agent_for_copilot(claude_content);
+        let result_str = std::str::from_utf8(&result).unwrap();
+
+        assert!(result_str.contains("target: github-copilot"));
+        assert!(!result_str.contains("model: opus"));
+        assert!(!result_str.contains("color: green"));
+        assert!(result_str.contains("name: test"));
+        assert!(result_str.contains("description: Test agent"));
+        assert!(result_str.contains("# Test\n\nContent here."));
+    }
+
+    #[test]
+    fn transform_agent_preserves_existing_target() {
+        let content = b"---\nname: test\ntarget: vscode\n---\n# Test";
+        let result = transform_agent_for_copilot(content);
+        let result_str = std::str::from_utf8(&result).unwrap();
+
+        // Should keep existing target, not add duplicate
+        assert!(result_str.contains("target: vscode"));
+        assert!(!result_str.contains("target: github-copilot"));
+    }
+
+    #[test]
+    fn transform_agent_handles_no_frontmatter() {
+        let content = b"# Just markdown\n\nNo frontmatter here.";
+        let result = transform_agent_for_copilot(content);
+        let result_str = std::str::from_utf8(&result).unwrap();
+
+        assert!(result_str.starts_with("---\ntarget: github-copilot\n---"));
+        assert!(result_str.contains("# Just markdown"));
     }
 
     // ==========================================

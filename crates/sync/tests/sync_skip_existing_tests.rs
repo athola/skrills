@@ -130,6 +130,7 @@ mod skip_existing_commands_tests {
             skip_existing_commands: false, // Disabled - should overwrite
             sync_mcp_servers: false,
             sync_preferences: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -174,6 +175,7 @@ mod skip_existing_commands_tests {
             skip_existing_commands: true, // Enabled - should skip existing
             sync_mcp_servers: false,
             sync_preferences: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -240,6 +242,7 @@ mod skip_existing_commands_tests {
             skip_existing_commands: true,
             sync_mcp_servers: false,
             sync_preferences: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -291,6 +294,7 @@ mod skip_existing_commands_tests {
             skip_existing_commands: true,
             sync_mcp_servers: false,
             sync_preferences: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -347,6 +351,7 @@ mod skip_existing_commands_tests {
             skip_existing_commands: true,
             sync_mcp_servers: false,
             sync_preferences: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -388,6 +393,7 @@ mod skip_existing_commands_tests {
             skip_existing_commands: true,
             sync_mcp_servers: false,
             sync_preferences: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -434,6 +440,7 @@ mod skip_existing_commands_tests {
             skip_existing_commands: true,
             sync_mcp_servers: false,
             sync_preferences: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -486,6 +493,7 @@ mod skip_existing_commands_tests {
             skip_existing_commands: true, // Should be ignored due to force
             sync_mcp_servers: false,
             sync_preferences: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -534,6 +542,7 @@ mod skip_existing_commands_tests {
             skip_existing_commands: true,
             sync_mcp_servers: false,
             sync_preferences: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 

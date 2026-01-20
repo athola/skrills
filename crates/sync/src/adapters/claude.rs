@@ -1,11 +1,11 @@
 //! Claude Code adapter for reading/writing ~/.claude configuration.
 
 use super::traits::{AgentAdapter, FieldSupport};
+use super::utils::{hash_content, is_hidden_path};
 use crate::common::{Command, McpServer, Preferences};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use anyhow::Context;
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
@@ -51,23 +51,6 @@ impl ClaudeAdapter {
         self.root.join("settings.json")
     }
 
-    fn is_hidden_component(name: &str) -> bool {
-        name.starts_with('.')
-    }
-
-    fn is_hidden_path(path: &std::path::Path) -> bool {
-        path.components().any(|c| match c {
-            std::path::Component::Normal(s) => Self::is_hidden_component(&s.to_string_lossy()),
-            _ => false,
-        })
-    }
-
-    fn hash_content(content: &[u8]) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(content);
-        format!("{:x}", hasher.finalize())
-    }
-
     fn collect_commands_from_dir(
         &self,
         dir: &PathBuf,
@@ -103,7 +86,7 @@ impl ClaudeAdapter {
             let content = fs::read(path)?;
             let metadata = fs::metadata(path)?;
             let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-            let hash = Self::hash_content(&content);
+            let hash = hash_content(&content);
 
             commands.push(Command {
                 name,
@@ -193,7 +176,7 @@ impl AgentAdapter for ClaudeAdapter {
                 let content = fs::read(path)?;
                 let metadata = fs::metadata(path)?;
                 let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                let hash = Self::hash_content(&content);
+                let hash = hash_content(&content);
 
                 commands.push(Command {
                     name,
@@ -285,7 +268,7 @@ impl AgentAdapter for ClaudeAdapter {
             let content = fs::read(path)?;
             let metadata = fs::metadata(path)?;
             let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-            let hash = Self::hash_content(&content);
+            let hash = hash_content(&content);
 
             let skill = Command {
                 name: name.clone(),
@@ -320,7 +303,7 @@ impl AgentAdapter for ClaudeAdapter {
                     continue;
                 }
                 let path = entry.path();
-                if Self::is_hidden_path(path.strip_prefix(&skills_dir).unwrap_or(path)) {
+                if is_hidden_path(path.strip_prefix(&skills_dir).unwrap_or(path)) {
                     continue;
                 }
                 if !path.is_file() {
@@ -412,7 +395,7 @@ impl AgentAdapter for ClaudeAdapter {
             // Check if unchanged
             if path.exists() {
                 let existing = fs::read(&path)?;
-                if Self::hash_content(&existing) == cmd.hash {
+                if hash_content(&existing) == cmd.hash {
                     report.skipped.push(SkipReason::Unchanged {
                         item: cmd.name.clone(),
                     });
@@ -524,7 +507,7 @@ impl AgentAdapter for ClaudeAdapter {
             // Check if unchanged
             if path.exists() {
                 let existing = fs::read(&path)?;
-                if Self::hash_content(&existing) == skill.hash {
+                if hash_content(&existing) == skill.hash {
                     report.skipped.push(SkipReason::Unchanged {
                         item: skill.name.clone(),
                     });
@@ -548,7 +531,7 @@ impl AgentAdapter for ClaudeAdapter {
             let content = fs::read(path)?;
             let metadata = fs::metadata(path)?;
             let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-            let hash = Self::hash_content(&content);
+            let hash = hash_content(&content);
 
             let hook = Command {
                 name: name.clone(),
@@ -580,7 +563,7 @@ impl AgentAdapter for ClaudeAdapter {
                     continue;
                 }
                 let path = entry.path();
-                if Self::is_hidden_path(path.strip_prefix(&hooks_dir).unwrap_or(path)) {
+                if is_hidden_path(path.strip_prefix(&hooks_dir).unwrap_or(path)) {
                     continue;
                 }
                 if !path.is_file() {
@@ -648,7 +631,7 @@ impl AgentAdapter for ClaudeAdapter {
             let content = fs::read(path)?;
             let metadata = fs::metadata(path)?;
             let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-            let hash = Self::hash_content(&content);
+            let hash = hash_content(&content);
 
             let agent = Command {
                 name: name.clone(),
@@ -680,7 +663,7 @@ impl AgentAdapter for ClaudeAdapter {
                     continue;
                 }
                 let path = entry.path();
-                if Self::is_hidden_path(path.strip_prefix(&agents_dir).unwrap_or(path)) {
+                if is_hidden_path(path.strip_prefix(&agents_dir).unwrap_or(path)) {
                     continue;
                 }
                 if !path.is_file() {
@@ -751,7 +734,7 @@ impl AgentAdapter for ClaudeAdapter {
 
             if path.exists() {
                 let existing = fs::read(&path)?;
-                if Self::hash_content(&existing) == hook.hash {
+                if hash_content(&existing) == hook.hash {
                     report.skipped.push(SkipReason::Unchanged {
                         item: hook.name.clone(),
                     });
@@ -778,7 +761,7 @@ impl AgentAdapter for ClaudeAdapter {
 
             if path.exists() {
                 let existing = fs::read(&path)?;
-                if Self::hash_content(&existing) == agent.hash {
+                if hash_content(&existing) == agent.hash {
                     report.skipped.push(SkipReason::Unchanged {
                         item: agent.name.clone(),
                     });
@@ -925,7 +908,7 @@ mod tests {
         let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
 
         let content = b"# Unchanged Command".to_vec();
-        let hash = ClaudeAdapter::hash_content(&content);
+        let hash = hash_content(&content);
 
         // Write initial
         let commands = vec![Command {

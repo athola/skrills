@@ -1,11 +1,11 @@
 //! Codex adapter for reading/writing ~/.codex configuration.
 
 use super::traits::{AgentAdapter, FieldSupport};
+use super::utils::{hash_content, is_hidden_path};
 use crate::common::{Command, McpServer, Preferences};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use anyhow::Context;
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -37,17 +37,6 @@ impl CodexAdapter {
 
     fn skills_dir(&self) -> PathBuf {
         self.root.join("skills")
-    }
-
-    fn is_hidden_component(name: &str) -> bool {
-        name.starts_with('.')
-    }
-
-    fn is_hidden_path(path: &std::path::Path) -> bool {
-        path.components().any(|c| match c {
-            std::path::Component::Normal(s) => Self::is_hidden_component(&s.to_string_lossy()),
-            _ => false,
-        })
     }
 
     fn settings_path(&self) -> PathBuf {
@@ -153,12 +142,6 @@ impl CodexAdapter {
 
         Ok(changed)
     }
-
-    fn hash_content(content: &[u8]) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(content);
-        format!("{:x}", hasher.finalize())
-    }
 }
 
 // Note: We intentionally do not implement Default for CodexAdapter because
@@ -206,7 +189,7 @@ impl AgentAdapter for CodexAdapter {
                 let content = fs::read(path)?;
                 let metadata = fs::metadata(path)?;
                 let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                let hash = Self::hash_content(&content);
+                let hash = hash_content(&content);
 
                 commands.push(Command {
                     name,
@@ -307,7 +290,7 @@ impl AgentAdapter for CodexAdapter {
                 continue;
             }
             let path = entry.path();
-            if Self::is_hidden_path(path.strip_prefix(&skills_dir).unwrap_or(path)) {
+            if is_hidden_path(path.strip_prefix(&skills_dir).unwrap_or(path)) {
                 continue;
             }
             if !entry.file_type().is_file() {
@@ -343,7 +326,7 @@ impl AgentAdapter for CodexAdapter {
             let content = fs::read(path)?;
             let metadata = fs::metadata(path)?;
             let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-            let hash = Self::hash_content(&content);
+            let hash = hash_content(&content);
 
             skills.push(Command {
                 name,
@@ -368,7 +351,7 @@ impl AgentAdapter for CodexAdapter {
 
             if path.exists() {
                 let existing = fs::read(&path)?;
-                if Self::hash_content(&existing) == cmd.hash {
+                if hash_content(&existing) == cmd.hash {
                     report.skipped.push(SkipReason::Unchanged {
                         item: cmd.name.clone(),
                     });
@@ -482,7 +465,7 @@ impl AgentAdapter for CodexAdapter {
 
             if path.exists() {
                 let existing = fs::read(&path)?;
-                if Self::hash_content(&existing) == skill.hash {
+                if hash_content(&existing) == skill.hash {
                     report.skipped.push(SkipReason::Unchanged {
                         item: skill.name.clone(),
                     });

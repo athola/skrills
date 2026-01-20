@@ -1106,7 +1106,8 @@ pub fn run() -> Result<()> {
                 }
 
                 // Then sync commands, MCP servers, preferences, and skills
-                let sync_skills = !from.is_claude(); // Claude source handled above
+                // Only skip skills sync for Claude→Codex (handled above with special logic)
+                let sync_skills = !(from.is_claude() && target.is_codex());
                 let params = SyncParams {
                     from: Some(from.as_str().to_string()),
                     dry_run,
@@ -1150,7 +1151,8 @@ pub fn run() -> Result<()> {
             use skrills_sync::SyncParams;
 
             let target = to.unwrap_or_else(|| from.default_target());
-            let sync_skills = !from.is_claude();
+            // Only skip skills sync for Claude→Codex (it has special handling elsewhere)
+            let sync_skills = !(from.is_claude() && target.is_codex());
 
             let params = SyncParams {
                 from: Some(from.as_str().to_string()),

@@ -200,6 +200,7 @@ mod copilot_to_claude_tests {
             sync_mcp_servers: true,
             sync_preferences: true,
             skip_existing_commands: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -248,6 +249,7 @@ mod copilot_to_claude_tests {
             sync_mcp_servers: true,
             sync_preferences: false,
             skip_existing_commands: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -289,6 +291,7 @@ mod copilot_to_claude_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             skip_existing_commands: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -334,6 +337,7 @@ mod claude_to_copilot_tests {
             sync_mcp_servers: true,
             sync_preferences: true,
             skip_existing_commands: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -381,6 +385,7 @@ mod claude_to_copilot_tests {
             sync_mcp_servers: true,
             sync_preferences: false,
             skip_existing_commands: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -429,6 +434,7 @@ mod claude_to_copilot_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             skip_existing_commands: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -477,6 +483,7 @@ mod copilot_to_codex_tests {
             sync_mcp_servers: true,
             sync_preferences: true,
             skip_existing_commands: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -518,6 +525,7 @@ mod copilot_to_codex_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             skip_existing_commands: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -564,6 +572,7 @@ mod copilot_dry_run_tests {
             sync_mcp_servers: true,
             sync_preferences: true,
             skip_existing_commands: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -726,6 +735,387 @@ mod copilot_security_tests {
             "Mixed path skill should be at safe location {:?}",
             safe_path
         );
+    }
+}
+
+// ==========================================
+// Agent Sync Integration Tests
+// ==========================================
+
+mod agent_sync_tests {
+    use super::*;
+
+    fn setup_claude_with_agents(root: &std::path::Path) {
+        // Create agents directory
+        let agents_dir = root.join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+
+        // Create a Claude agent
+        fs::write(
+            agents_dir.join("code-review-agent.md"),
+            r#"---
+name: code-review-agent
+description: Performs thorough code reviews
+model: opus
+color: blue
+---
+# Code Review Agent
+
+This agent specializes in reviewing code for:
+- Bug detection
+- Security vulnerabilities
+- Performance issues
+"#,
+        )
+        .unwrap();
+
+        // Create another agent
+        fs::write(
+            agents_dir.join("refactor-agent.md"),
+            r#"---
+name: refactor-agent
+description: Helps refactor code
+model: sonnet
+---
+# Refactor Agent
+
+This agent helps with code refactoring tasks.
+"#,
+        )
+        .unwrap();
+    }
+
+    fn setup_copilot_with_agents(root: &std::path::Path) {
+        // Create agents directory
+        let agents_dir = root.join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+
+        // Create a Copilot agent
+        fs::write(
+            agents_dir.join("test-agent.agent.md"),
+            r#"---
+name: test-agent
+description: A test agent for Copilot
+target: github-copilot
+---
+# Test Agent
+
+This is a test agent for Copilot.
+"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_sync_claude_agents_to_copilot() {
+        /*
+        GIVEN a Claude configuration with agents
+        WHEN syncing to Copilot with sync_agents enabled
+        THEN agents should be transferred correctly
+        AND Claude-specific fields (model, color) should be transformed
+        AND target: github-copilot should be added
+        */
+        let claude_dir = TempDir::new().unwrap();
+        let copilot_dir = TempDir::new().unwrap();
+
+        setup_claude_with_agents(claude_dir.path());
+
+        let source = ClaudeAdapter::with_root(claude_dir.path().to_path_buf());
+        let target = CopilotAdapter::with_root(copilot_dir.path().to_path_buf());
+
+        let params = SyncParams {
+            from: Some("claude".to_string()),
+            dry_run: false,
+            force: false,
+            sync_skills: false,
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            skip_existing_commands: false,
+            sync_agents: true, // Enable agent sync
+            include_marketplace: false,
+        };
+
+        let orchestrator = SyncOrchestrator::new(source, target);
+        let result = orchestrator.sync(&params);
+
+        assert!(
+            result.is_ok(),
+            "Claude to Copilot agent sync should succeed"
+        );
+        let report = result.unwrap();
+
+        // Agents should be synced
+        assert!(
+            report.agents.written > 0,
+            "Agents should be written: got {}",
+            report.agents.written
+        );
+
+        // Verify agent was written to Copilot's agents directory
+        let copilot_agents = copilot_dir.path().join("agents");
+        assert!(
+            copilot_agents.exists(),
+            "Copilot agents directory should be created"
+        );
+
+        // Verify agent file exists with correct naming
+        let agent_path = copilot_agents.join("code-review-agent.agent.md");
+        assert!(agent_path.exists(), "Agent should be at {:?}", agent_path);
+
+        // Verify content transformation
+        let content = fs::read_to_string(&agent_path).unwrap();
+        assert!(
+            content.contains("target: github-copilot"),
+            "Should have target: github-copilot"
+        );
+        assert!(
+            !content.contains("model: opus"),
+            "Should NOT have model: opus (Claude-specific)"
+        );
+        assert!(
+            !content.contains("color: blue"),
+            "Should NOT have color: blue (Claude-specific)"
+        );
+    }
+
+    #[test]
+    fn test_sync_copilot_agents_to_claude() {
+        /*
+        GIVEN a Copilot configuration with agents
+        WHEN syncing to Claude with sync_agents enabled
+        THEN agents should be transferred correctly
+        */
+        let claude_dir = TempDir::new().unwrap();
+        let copilot_dir = TempDir::new().unwrap();
+
+        setup_copilot_with_agents(copilot_dir.path());
+
+        let source = CopilotAdapter::with_root(copilot_dir.path().to_path_buf());
+        let target = ClaudeAdapter::with_root(claude_dir.path().to_path_buf());
+
+        let params = SyncParams {
+            from: Some("copilot".to_string()),
+            dry_run: false,
+            force: false,
+            sync_skills: false,
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            skip_existing_commands: false,
+            sync_agents: true,
+            include_marketplace: false,
+        };
+
+        let orchestrator = SyncOrchestrator::new(source, target);
+        let result = orchestrator.sync(&params);
+
+        assert!(
+            result.is_ok(),
+            "Copilot to Claude agent sync should succeed"
+        );
+        let report = result.unwrap();
+
+        assert!(
+            report.agents.written > 0,
+            "Agents should be written: got {}",
+            report.agents.written
+        );
+
+        // Verify agent was written to Claude's agents directory
+        let claude_agents = claude_dir.path().join("agents");
+        assert!(
+            claude_agents.exists(),
+            "Claude agents directory should be created"
+        );
+
+        let agent_path = claude_agents.join("test-agent.md");
+        assert!(agent_path.exists(), "Agent should be at {:?}", agent_path);
+    }
+
+    #[test]
+    fn test_sync_agents_disabled_by_default_in_existing_tests() {
+        /*
+        GIVEN existing SyncParams with sync_agents: false
+        WHEN syncing with agents in source
+        THEN agents should NOT be synced
+        */
+        let claude_dir = TempDir::new().unwrap();
+        let copilot_dir = TempDir::new().unwrap();
+
+        setup_claude_with_agents(claude_dir.path());
+
+        let source = ClaudeAdapter::with_root(claude_dir.path().to_path_buf());
+        let target = CopilotAdapter::with_root(copilot_dir.path().to_path_buf());
+
+        let params = SyncParams {
+            from: Some("claude".to_string()),
+            dry_run: false,
+            force: false,
+            sync_skills: false,
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            skip_existing_commands: false,
+            sync_agents: false, // Explicitly disabled
+            include_marketplace: false,
+        };
+
+        let orchestrator = SyncOrchestrator::new(source, target);
+        let result = orchestrator.sync(&params);
+
+        assert!(result.is_ok(), "Sync should succeed");
+        let report = result.unwrap();
+
+        // Agents should NOT be synced
+        assert_eq!(
+            report.agents.written, 0,
+            "No agents should be written when sync_agents is false"
+        );
+
+        // Verify no agents directory was created
+        let copilot_agents = copilot_dir.path().join("agents");
+        assert!(
+            !copilot_agents.exists(),
+            "Copilot agents directory should NOT be created"
+        );
+    }
+
+    #[test]
+    fn test_agents_dry_run() {
+        /*
+        GIVEN agents to sync with dry_run enabled
+        WHEN performing the sync
+        THEN it should report what would be synced
+        BUT make no actual changes
+        */
+        let claude_dir = TempDir::new().unwrap();
+        let copilot_dir = TempDir::new().unwrap();
+
+        setup_claude_with_agents(claude_dir.path());
+
+        let source = ClaudeAdapter::with_root(claude_dir.path().to_path_buf());
+        let target = CopilotAdapter::with_root(copilot_dir.path().to_path_buf());
+
+        let params = SyncParams {
+            from: Some("claude".to_string()),
+            dry_run: true, // Enable dry run
+            force: false,
+            sync_skills: false,
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            skip_existing_commands: false,
+            sync_agents: true,
+            include_marketplace: false,
+        };
+
+        let orchestrator = SyncOrchestrator::new(source, target);
+        let result = orchestrator.sync(&params);
+
+        assert!(result.is_ok(), "Dry run should succeed");
+        let report = result.unwrap();
+
+        // Should report what would be synced
+        assert!(
+            report.agents.written > 0,
+            "Should report agents would be written"
+        );
+
+        // But target directory should remain empty
+        let copilot_agents = copilot_dir.path().join("agents");
+        assert!(
+            !copilot_agents.exists(),
+            "Agents directory should NOT be created during dry run"
+        );
+    }
+
+    #[test]
+    fn test_sync_agents_codex_unsupported() {
+        /*
+        GIVEN a sync from Claude to Codex
+        WHEN syncing agents
+        THEN agents should be skipped (Codex doesn't support agents)
+        */
+        let claude_dir = TempDir::new().unwrap();
+        let codex_dir = TempDir::new().unwrap();
+
+        setup_claude_with_agents(claude_dir.path());
+
+        let source = ClaudeAdapter::with_root(claude_dir.path().to_path_buf());
+        let target = CodexAdapter::with_root(codex_dir.path().to_path_buf());
+
+        let params = SyncParams {
+            from: Some("claude".to_string()),
+            dry_run: false,
+            force: false,
+            sync_skills: false,
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            skip_existing_commands: false,
+            sync_agents: true, // Try to sync agents
+            include_marketplace: false,
+        };
+
+        let orchestrator = SyncOrchestrator::new(source, target);
+        let result = orchestrator.sync(&params);
+
+        assert!(
+            result.is_ok(),
+            "Sync should succeed even when target doesn't support agents"
+        );
+        let report = result.unwrap();
+
+        // Agents should be skipped (Codex doesn't support them)
+        assert_eq!(
+            report.agents.written, 0,
+            "No agents should be written to Codex"
+        );
+    }
+
+    #[test]
+    fn test_sync_all_with_agents() {
+        /*
+        GIVEN a full sync including agents
+        WHEN syncing from Claude to Copilot
+        THEN all supported fields should be synced including agents
+        */
+        let setup = CopilotSyncTestSetup::new().unwrap();
+
+        // Set up Claude with skills, MCP, and agents
+        setup.setup_claude_config(setup.claude_dir.path());
+        setup_claude_with_agents(setup.claude_dir.path());
+
+        let source = ClaudeAdapter::with_root(setup.claude_dir.path().to_path_buf());
+        let target = CopilotAdapter::with_root(setup.copilot_dir.path().to_path_buf());
+
+        let params = SyncParams {
+            from: Some("claude".to_string()),
+            dry_run: false,
+            force: false,
+            sync_skills: true,
+            sync_commands: false, // Copilot doesn't support commands
+            sync_mcp_servers: true,
+            sync_preferences: true,
+            skip_existing_commands: false,
+            sync_agents: true,
+            include_marketplace: false,
+        };
+
+        let orchestrator = SyncOrchestrator::new(source, target);
+        let result = orchestrator.sync(&params);
+
+        assert!(result.is_ok(), "Full sync should succeed");
+        let report = result.unwrap();
+
+        // All fields should be synced
+        assert!(report.skills.written > 0, "Skills should be synced");
+        assert!(
+            report.mcp_servers.written > 0,
+            "MCP servers should be synced"
+        );
+        assert!(report.agents.written > 0, "Agents should be synced");
     }
 }
 

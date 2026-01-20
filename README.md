@@ -40,9 +40,9 @@ The `sync-commands` tool checks file hashes before writing to preserve local cus
 - `crates/validate`: Validation logic for Claude Code, Codex CLI, and Copilot CLI compatibility.
 - `crates/analyze`: Token counting, dependency analysis, and optimization.
 - `crates/intelligence`: Recommendations, project analysis, skill generation, and usage analytics persistence.
-- `crates/sync`: Bidirectional sync logic (skills, commands, prefs, MCP servers) with adapters for Claude, Codex, and Copilot.
+- `crates/sync`: Bidirectional sync logic (skills, commands, agents, prefs, MCP servers) with adapters for Claude, Codex, and Copilot.
 - `crates/discovery`: Skill discovery and ranking.
-- `crates/state`: Persistent store for manifests and mirrors.
+- `crates/state`: Environment configuration, manifest settings, and runtime overrides.
 - `crates/subagents`: Shared subagent runtime and backends (including `StateRunStore::load_from_disk` for reloading persisted runs).
 
 ## Installation
@@ -178,7 +178,7 @@ When running as an MCP server (`skrills serve`), several categories of tools bec
 `validate-skills` checks CLI compatibility, while `analyze-skills` reports token usage and dependencies. `skill-metrics` aggregates quality and dependency statistics.
 
 **Synchronization**
-A suite of tools handles data transfer between Claude, Codex, and Copilot. `sync-skills`, `sync-commands`, `sync-mcp-servers`, `sync-preferences`, and `sync-all` cover various configuration aspects. `sync-from-claude`, `sync-from-copilot`, and `sync-to-copilot` handle direction-specific sync. `sync-status` provides a dry-run preview of changes. Note: Copilot does not support slash commands, so command sync is skipped when Copilot is the source or target.
+A suite of tools handles data transfer between Claude, Codex, and Copilot. `sync-skills`, `sync-commands`, `sync-mcp-servers`, `sync-preferences`, and `sync-all` cover various configuration aspects. `sync-from-claude`, `sync-from-copilot`, and `sync-to-copilot` handle direction-specific sync. `sync-status` provides a dry-run preview of changes. Agent sync from Claude to Copilot transforms the format automatically (removes `model`/`color`, adds `target: github-copilot`). Note: Copilot does not support slash commands, so command sync is skipped when Copilot is the source or target.
 
 **Dependencies & Loading**
 `resolve-dependencies` finds direct or transitive relationships for a skill URI. `skill-loading-status` reports on root scanning and marker coverage. `enable-skill-trace` and `disable-skill-trace` manage debug skills for tracing, while `skill-loading-selftest` confirms loading via a probe.

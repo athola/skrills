@@ -5,13 +5,16 @@
 ### 0.5.0 (Planned)
 - **NEW: GitHub Copilot CLI Support**: Full bidirectional sync support for GitHub Copilot CLI (`~/.copilot`).
   - Skills: Sync between Copilot and Claude/Codex (SKILL.md format)
+  - Agents: Sync from Claude plugins cache to `~/.copilot/agents/` with format transformation
   - MCP Servers: Read from/write to `mcp-config.json` (Copilot's separate MCP config file)
   - Preferences: Sync via `config.json` with security field preservation
-  - Commands: Skipped (Copilot does not support slash commands)
+  - Commands: Skipped (Copilot does not support slash commands - see FAQ)
+- **NEW: Agent Sync**: Sync Claude Code subagents to Copilot with automatic format transformation (removes `model`/`color`, adds `target: github-copilot`).
 - **NEW: CLI Flags**: Added `--from copilot` and `--to copilot` for sync-all and sync-* commands.
 - **NEW: MCP Tools**: `sync-from-copilot`, `sync-to-copilot`, and enhanced `sync-skills` with all 6 source→target combinations.
 - **NEW: Validation Target**: `--target copilot` for skill validation (same rules as Codex).
-- **Testing**: Added 10 Copilot sync integration tests covering all sync directions.
+- **Testing**: Added 20 Copilot sync integration tests covering all sync directions.
+- **Docs**: Added FAQ entry explaining why Copilot doesn't have slash commands.
 
 ## 0.4.12 - 2026-01-16
 - **Testing**: Added 59 new tests across tool_schemas (20), sync report (20), and validation common (19) modules covering schema generation, report formatting, and validation issue handling.

@@ -4,6 +4,7 @@ mod claude;
 mod codex;
 mod copilot;
 pub mod traits;
+pub(crate) mod utils;
 
 pub use claude::ClaudeAdapter;
 pub use codex::CodexAdapter;
