@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-### 0.5.0 (Planned)
+## 0.5.0 - 2026-01-20
 - **NEW: GitHub Copilot CLI Support**: Full bidirectional sync support for GitHub Copilot CLI (`~/.copilot`).
   - Skills: Sync between Copilot and Claude/Codex (SKILL.md format)
   - Agents: Sync from Claude plugins cache to `~/.copilot/agents/` with format transformation

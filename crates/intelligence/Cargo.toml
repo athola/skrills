@@ -1,6 +1,6 @@
 [package]
 name = "skrills-intelligence"
-version = "0.4.12"
+version = "0.5.0"
 edition = "2021"
 description = "Intelligent skill recommendations based on usage patterns and project context."
 license = "MIT"
