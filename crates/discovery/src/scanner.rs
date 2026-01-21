@@ -408,7 +408,7 @@ pub fn default_roots(home: &Path) -> Vec<SkillRoot> {
         },
     ];
 
-    // Copilot: Add both XDG and legacy paths for comprehensive discovery.
+    // Copilot: Add both XDG and legacy paths for multi-faceted discovery.
     // XDG path: $XDG_CONFIG_HOME/copilot/skills or ~/.config/copilot/skills
     // Legacy path: ~/.copilot/skills
     if let Some(config_dir) = dirs::config_dir() {
@@ -496,7 +496,7 @@ mod tests {
         let roots = default_roots(tmp.path());
         let labels: Vec<_> = roots.iter().map(|r| r.source.label()).collect();
         // Note: "copilot" appears twice - once for XDG path (~/.config/copilot/skills)
-        // and once for legacy path (~/.copilot/skills) to ensure comprehensive discovery
+        // and once for legacy path (~/.copilot/skills) for multi-faceted discovery
         assert_eq!(
             labels,
             vec![

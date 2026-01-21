@@ -1,6 +1,6 @@
 {
   "name": "skrills",
-  "version": "0.4.12",
+  "version": "0.5.0",
   "description": "Skill synchronization and management for Claude Code, Codex, and GitHub Copilot. Provides 25 MCP tools for validation, sync, intelligence, and tracing.",
   "author": {
     "name": "skrills",

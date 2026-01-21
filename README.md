@@ -11,7 +11,7 @@
 [![Audit](https://img.shields.io/github/actions/workflow/status/athola/skrills/audit.yml?branch=master&label=audit)](https://github.com/athola/skrills/actions/workflows/audit.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Skills support engine for Claude Code, Codex CLI, and GitHub Copilot CLI. Validates, analyzes, and syncs skills bidirectionally between all three CLIs.
+Skills support engine for Claude Code, Codex CLI, and GitHub Copilot CLI. Validates, analyzes, and syncs skills across all three CLIs.
 
 ## Demos
 
@@ -30,7 +30,7 @@ Use skrills as an MCP server for dynamic skill loading in both Claude Code and C
 *See the [MCP tutorial](docs/tutorials/mcp.md) for setup instructions.*
 
 ## Why Skrills
-Skrills manages skills and configurations for Claude Code, Codex CLI, and GitHub Copilot CLI. Each CLI has different requirements: Claude Code accepts raw markdown, while Codex and Copilot require strict YAML frontmatter. Skrills validates these files against each CLI's rules, preventing compatibility errors. It also syncs skills bidirectionally, provides diagnostics, and runs an MCP server from a single binary.
+Skrills manages skills and configurations for Claude Code, Codex CLI, and GitHub Copilot CLI. Each CLI has different requirements: Claude Code accepts raw markdown, while Codex and Copilot require strict YAML frontmatter. Skrills validates these files against each CLI's rules, preventing compatibility errors. It also syncs skills across all CLIs, provides diagnostics, and runs an MCP server from a single binary.
 
 The `sync-commands` tool checks file hashes before writing to preserve local customizations. Analytics tools report token usage to suggest optimizations for context window limits.
 
@@ -40,7 +40,7 @@ The `sync-commands` tool checks file hashes before writing to preserve local cus
 - `crates/validate`: Validation logic for Claude Code, Codex CLI, and Copilot CLI compatibility.
 - `crates/analyze`: Token counting, dependency analysis, and optimization.
 - `crates/intelligence`: Recommendations, project analysis, skill generation, and usage analytics persistence.
-- `crates/sync`: Bidirectional sync logic (skills, commands, agents, prefs, MCP servers) with adapters for Claude, Codex, and Copilot.
+- `crates/sync`: Multi-directional sync logic (skills, commands, agents, prefs, MCP servers) with adapters for Claude, Codex, and Copilot.
 - `crates/discovery`: Skill discovery and ranking.
 - `crates/state`: Environment configuration, manifest settings, and runtime overrides.
 - `crates/subagents`: Shared subagent runtime and backends (including `StateRunStore::load_from_disk` for reloading persisted runs).
