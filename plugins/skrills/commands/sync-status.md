@@ -1,6 +1,7 @@
 ---
 description: Preview what would be synced between AI coding assistants without making changes.
 argument-hint: "[--from claude|codex|copilot] [--to claude|codex|copilot]"
+triggers: sync preview, what would sync, sync differences, compare skills, sync dry run
 ---
 
 # Sync Status
@@ -21,3 +22,8 @@ Report:
 - Commands that would be synced
 - MCP server configs that would be synced
 - Any potential conflicts
+
+Handle errors:
+- If MCP server unavailable: Report connection error
+- If source/target invalid: List valid options (claude, codex, copilot)
+- If no skills found in source: Report empty state

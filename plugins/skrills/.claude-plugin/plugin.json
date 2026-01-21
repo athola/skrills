@@ -1,6 +1,6 @@
 {
   "name": "skrills",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Skill synchronization and management for Claude Code, Codex, and GitHub Copilot. Provides 25 MCP tools for validation, sync, intelligence, and tracing.",
   "author": {
     "name": "skrills",
@@ -18,17 +18,19 @@
     "claude-code"
   ],
   "commands": [
-    "./commands/sync-all.md",
-    "./commands/sync-status.md",
-    "./commands/sync-to-copilot.md",
-    "./commands/validate-skills.md",
     "./commands/analyze-skills.md",
     "./commands/create-skill.md",
     "./commands/search-skills.md",
-    "./commands/suggest-skills.md",
+    "./commands/skill-diff.md",
     "./commands/skill-metrics.md",
-    "./commands/skill-trace.md",
-    "./commands/skill-diff.md"
+    "./commands/skill-trace-disable.md",
+    "./commands/skill-trace-enable.md",
+    "./commands/skill-trace-status.md",
+    "./commands/suggest-skills.md",
+    "./commands/sync-all.md",
+    "./commands/sync-status.md",
+    "./commands/sync-to-copilot.md",
+    "./commands/validate-skills.md"
   ],
   "mcpServers": {
     "skrills": {

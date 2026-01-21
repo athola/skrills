@@ -1,6 +1,7 @@
 ---
 description: Identify gaps in your skill library and suggest new skills to create based on project context.
 argument-hint: "[--focus <area>] [--project-dir <path>]"
+triggers: suggest skills, skill gaps, missing skills, what skills, recommend skills
 ---
 
 # Suggest Skills
@@ -25,3 +26,7 @@ Report suggestions including:
 - Why this skill would be useful
 - Estimated complexity
 - Similar existing skills that could be adapted
+
+Handle errors:
+- If project directory invalid: Use current directory or prompt for path
+- If no context available: Provide generic suggestions based on focus area

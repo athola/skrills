@@ -1,6 +1,7 @@
 ---
 description: Sync skills, commands, MCP servers, and preferences between Claude, Codex, and Copilot in one operation.
 argument-hint: "[--from claude|codex|copilot] [--to claude|codex|copilot] [--dry-run]"
+triggers: sync skills, synchronize, copy to codex, copy to copilot, transfer skills, migrate skills
 ---
 
 # Sync All
@@ -26,3 +27,8 @@ Report sync results including:
 - Number of commands synced
 - Number of MCP servers synced
 - Any conflicts or errors encountered
+
+Handle errors:
+- If MCP server unavailable: Report connection error with troubleshooting steps
+- If source/target invalid: List valid options (claude, codex, copilot)
+- If conflicts detected: Show conflicts and prompt for resolution strategy

@@ -1,5 +1,15 @@
 # Changelog Highlights
 
+## 0.5.1 (2026-01-21)
+
+- **Refactor: Skill Trace Commands**: Split monolithic `/skill-trace` into three focused commands:
+  - `/skill-trace-enable` - Enable tracing with instrumentation
+  - `/skill-trace-disable` - Disable tracing and cleanup
+  - `/skill-trace-status` - Check current tracing state
+- **Refactor: Test Utils Crate**: Extracted shared test infrastructure into `crates/test-utils/`.
+- **Code Quality**: Sorted command registrations alphabetically in plugin.json.
+- **Docs**: Cleaned up `docs/audit-logging.md`.
+
 ## 0.5.0 (2026-01-20)
 
 - **NEW: GitHub Copilot CLI Support**: Full bidirectional sync for `~/.copilot` (skills, MCP servers, preferences).

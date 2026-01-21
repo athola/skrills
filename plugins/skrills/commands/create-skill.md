@@ -1,6 +1,7 @@
 ---
 description: Create a new skill via GitHub search, LLM generation, or both.
 argument-hint: "<name> <description> [--method github|llm|both] [--dry-run]"
+triggers: create skill, new skill, generate skill, add skill, make skill
 ---
 
 # Create Skill
@@ -30,3 +31,9 @@ Report:
 - Search results (if method includes github)
 - Generated skill content (if method includes llm)
 - File location where skill was created
+
+Handle errors:
+- If name/description missing: Prompt for required fields
+- If GitHub search fails: Fall back to LLM generation
+- If target directory not writable: Report path and suggest alternative
+- If skill already exists: Prompt for overwrite or new name

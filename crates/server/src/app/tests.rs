@@ -1659,9 +1659,9 @@ A utility skill for database work.
         .get("total_found")
         .and_then(|v| v.as_u64())
         .unwrap();
-    assert!(
-        total >= 1,
-        "Expected to find skill via description match, got {} results",
+    assert_eq!(
+        total, 1,
+        "Expected exactly 1 skill via description match, got {} results",
         total
     );
 

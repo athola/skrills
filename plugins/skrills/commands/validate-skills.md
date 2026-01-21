@@ -1,6 +1,7 @@
 ---
 description: Validate skills for Claude Code, Codex, and/or Copilot CLI compatibility.
 argument-hint: "[--target claude|codex|copilot|all] [--autofix] [--errors-only]"
+triggers: validate skills, check skills, skill errors, skill warnings, skill compatibility
 ---
 
 # Validate Skills
@@ -25,3 +26,8 @@ Report validation results including:
 - Skills with warnings (should fix)
 - Valid skills
 - Specific issues and how to fix them
+
+Handle errors:
+- If target invalid: List valid options (claude, codex, copilot, both, all)
+- If no skills found: Report empty state with setup suggestions
+- If autofix fails: Report which fixes failed and why

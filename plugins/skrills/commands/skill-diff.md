@@ -1,6 +1,7 @@
 ---
 description: Compare a skill across Claude, Codex, and Copilot to show differences.
 argument-hint: "<skill-name> [--context <lines>]"
+triggers: skill diff, compare skill, skill differences, skill versions, skill comparison
 ---
 
 # Skill Diff
@@ -21,3 +22,8 @@ Report comparison results including:
 - Frontmatter differences
 - Token count differences
 - Whether versions are identical
+
+Handle errors:
+- If skill name missing: Prompt for skill name
+- If skill not found in any CLI: Report and suggest search command
+- If skill exists in only one CLI: Report single-source state
