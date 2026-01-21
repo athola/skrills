@@ -113,7 +113,7 @@ The most reliable way to use skrills functionality is via CLI commands. Each MCP
 | `recommend-skills-smart` | `skrills recommend-skills-smart` | `skrills recommend-skills-smart` |
 | `suggest-new-skills` | `skrills suggest-new-skills` | `skrills suggest-new-skills` |
 | `sync-all` | `skrills sync-all` | `skrills sync-all --to codex` |
-| `create-skill` | `skrills create-skill` | `skrills create-skill --name test` |
+| `create-skill` | `skrills create-skill` | `skrills create-skill myskill --description "..."` |
 
 **Example: Validate skills for all CLIs**
 ```bash

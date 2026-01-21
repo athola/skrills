@@ -207,6 +207,7 @@ Deviation scoring compares actual skill-assisted outcomes against category basel
 
 **CLI parity notes**:
 - `skrills sync-from-claude` is an alias for `skrills sync` (copy Claude skills into the Codex mirror).
+- `sync-from-copilot` and `sync-to-copilot` are MCP-only tools. Use `skrills sync-all --from copilot` or `skrills sync-all --to copilot` for CLI equivalents.
 - `resolve-dependencies` and the intelligence tools are available via CLI commands (see below).
 
 ### MCP tool inputs (selected)
