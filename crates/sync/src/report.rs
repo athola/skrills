@@ -99,6 +99,7 @@ pub struct SyncReport {
     pub commands: WriteReport,
     pub mcp_servers: WriteReport,
     pub preferences: WriteReport,
+    pub agents: WriteReport,
     /// Overall success status
     pub success: bool,
     /// Summary message
@@ -120,6 +121,7 @@ impl SyncReport {
             + self.commands.written
             + self.mcp_servers.written
             + self.preferences.written
+            + self.agents.written
     }
 
     /// Returns total items skipped across all types.
@@ -128,6 +130,7 @@ impl SyncReport {
             + self.commands.skipped.len()
             + self.mcp_servers.skipped.len()
             + self.preferences.skipped.len()
+            + self.agents.skipped.len()
     }
 
     /// Generates a formatted summary for display.
@@ -153,6 +156,11 @@ impl SyncReport {
             "  Preferences: {} synced, {} skipped\n",
             self.preferences.written,
             self.preferences.skipped.len()
+        ));
+        out.push_str(&format!(
+            "  Agents:      {} synced, {} skipped\n",
+            self.agents.written,
+            self.agents.skipped.len()
         ));
         out
     }
@@ -402,8 +410,9 @@ mod tests {
             report.commands.written = 2;
             report.mcp_servers.written = 1;
             report.preferences.written = 4;
+            report.agents.written = 2;
 
-            assert_eq!(report.total_synced(), 10);
+            assert_eq!(report.total_synced(), 12);
         }
 
         #[test]
@@ -420,8 +429,11 @@ mod tests {
             report.commands.skipped = vec![SkipReason::WouldOverwrite {
                 item: "c".to_string(),
             }];
+            report.agents.skipped = vec![SkipReason::Unchanged {
+                item: "d".to_string(),
+            }];
 
-            assert_eq!(report.total_skipped(), 3);
+            assert_eq!(report.total_skipped(), 4);
         }
 
         #[test]
@@ -431,6 +443,7 @@ mod tests {
             report.commands.written = 3;
             report.mcp_servers.written = 1;
             report.preferences.written = 2;
+            report.agents.written = 2;
             report.skills.skipped = vec![SkipReason::Unchanged {
                 item: "x".to_string(),
             }];
@@ -443,6 +456,7 @@ mod tests {
             assert!(summary.contains("Commands"));
             assert!(summary.contains("MCP Servers"));
             assert!(summary.contains("Preferences"));
+            assert!(summary.contains("Agents"));
             assert!(summary.contains("5 synced"));
             assert!(summary.contains("1 skipped"));
         }

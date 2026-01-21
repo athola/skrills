@@ -36,6 +36,8 @@
 //!             mcp_servers: true,
 //!             preferences: true,
 //!             skills: true,
+//!             hooks: false,
+//!             agents: false,
 //!         }
 //!     }
 //!
@@ -82,6 +84,22 @@
 //!             ..WriteReport::default()
 //!         })
 //!     }
+//!
+//!     fn read_hooks(&self) -> Result<Vec<Command>> {
+//!         Ok(Vec::new())
+//!     }
+//!
+//!     fn read_agents(&self) -> Result<Vec<Command>> {
+//!         Ok(Vec::new())
+//!     }
+//!
+//!     fn write_hooks(&self, _hooks: &[Command]) -> Result<WriteReport> {
+//!         Ok(WriteReport::default())
+//!     }
+//!
+//!     fn write_agents(&self, _agents: &[Command]) -> Result<WriteReport> {
+//!         Ok(WriteReport::default())
+//!     }
 //! }
 //!
 //! let orchestrator =
@@ -107,12 +125,13 @@ pub mod orchestrator;
 pub mod report;
 pub mod validation;
 
-pub use adapters::{AgentAdapter, ClaudeAdapter, CodexAdapter, FieldSupport};
+pub use adapters::{AgentAdapter, ClaudeAdapter, CodexAdapter, CopilotAdapter, FieldSupport};
 pub use common::{Command, CommonConfig, McpServer, Preferences, SyncMeta};
 pub use models::transform_model;
 pub use orchestrator::{parse_direction, SyncDirection, SyncOrchestrator, SyncParams};
 pub use report::{SkipReason, SyncReport, WriteReport};
 pub use validation::{
-    apply_autofix_to_skill, skill_is_codex_compatible, validate_skill_for_sync,
-    validate_skills_for_sync, SkillValidationResult, SyncValidationOptions, ValidationReport,
+    apply_autofix_to_skill, skill_is_codex_compatible, skill_is_copilot_compatible,
+    validate_skill_for_sync, validate_skills_for_sync, SkillValidationResult,
+    SyncValidationOptions, ValidationReport,
 };

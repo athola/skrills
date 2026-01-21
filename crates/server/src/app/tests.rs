@@ -2730,8 +2730,12 @@ fn test_search_skills_github_default_limit() {
     let result = service.search_skills_github_tool_sync(args);
     if let Err(e) = &result {
         let err_msg = e.to_string();
+        // Rate limit errors are expected network failures, not validation errors
+        let is_rate_limit = err_msg.contains("rate limit");
+        let is_validation_error =
+            err_msg.to_lowercase().contains("missing") || err_msg.contains("required");
         assert!(
-            !err_msg.contains("limit") && !err_msg.contains("Missing"),
+            is_rate_limit || !is_validation_error,
             "Validation should accept missing limit, got: {}",
             err_msg
         );

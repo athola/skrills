@@ -22,7 +22,11 @@ pub enum ValidationTarget {
     Claude,
     /// Codex CLI validation (strict, requires frontmatter).
     Codex,
-    /// Both targets.
+    /// GitHub Copilot CLI validation (strict, requires frontmatter).
+    Copilot,
+    /// All targets (Claude, Codex, and Copilot).
+    All,
+    /// Both Claude and Codex (legacy, use All for new code).
     Both,
 }
 
@@ -89,6 +93,9 @@ impl ValidationIssue {
 }
 
 /// Result of validating a single skill.
+///
+/// Validity flags are managed internally through `add_issue()` to ensure consistency.
+/// Use the getter methods (`is_claude_valid()`, etc.) to check validity status.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationResult {
     /// Path to the skill file.
@@ -98,9 +105,17 @@ pub struct ValidationResult {
     /// Issues found during validation.
     pub issues: Vec<ValidationIssue>,
     /// Whether the skill is valid for Claude Code.
+    /// Use `is_claude_valid()` for read access; modified only via `add_issue()`.
+    #[doc(hidden)]
     pub claude_valid: bool,
     /// Whether the skill is valid for Codex CLI.
+    /// Use `is_codex_valid()` for read access; modified only via `add_issue()`.
+    #[doc(hidden)]
     pub codex_valid: bool,
+    /// Whether the skill is valid for GitHub Copilot CLI.
+    /// Use `is_copilot_valid()` for read access; modified only via `add_issue()`.
+    #[doc(hidden)]
+    pub copilot_valid: bool,
 }
 
 impl ValidationResult {
@@ -112,7 +127,32 @@ impl ValidationResult {
             issues: Vec::new(),
             claude_valid: true,
             codex_valid: true,
+            copilot_valid: true,
         }
+    }
+
+    /// Returns whether the skill is valid for Claude Code.
+    #[inline]
+    pub fn is_claude_valid(&self) -> bool {
+        self.claude_valid
+    }
+
+    /// Returns whether the skill is valid for Codex CLI.
+    #[inline]
+    pub fn is_codex_valid(&self) -> bool {
+        self.codex_valid
+    }
+
+    /// Returns whether the skill is valid for GitHub Copilot CLI.
+    #[inline]
+    pub fn is_copilot_valid(&self) -> bool {
+        self.copilot_valid
+    }
+
+    /// Returns whether the skill is valid for all targets.
+    #[inline]
+    pub fn is_valid_for_all(&self) -> bool {
+        self.claude_valid && self.codex_valid && self.copilot_valid
     }
 
     /// Add an issue to the result, updating validity flags if it's an error.
@@ -121,9 +161,15 @@ impl ValidationResult {
             match issue.target {
                 ValidationTarget::Claude => self.claude_valid = false,
                 ValidationTarget::Codex => self.codex_valid = false,
+                ValidationTarget::Copilot => self.copilot_valid = false,
                 ValidationTarget::Both => {
                     self.claude_valid = false;
                     self.codex_valid = false;
+                }
+                ValidationTarget::All => {
+                    self.claude_valid = false;
+                    self.codex_valid = false;
+                    self.copilot_valid = false;
                 }
             }
         }
@@ -229,11 +275,12 @@ mod tests {
         use super::*;
 
         #[test]
-        fn given_new_result_when_created_then_valid_for_both_targets() {
+        fn given_new_result_when_created_then_valid_for_all_targets() {
             let result = ValidationResult::new("test.md".into(), "test".to_string());
 
             assert!(result.claude_valid);
             assert!(result.codex_valid);
+            assert!(result.copilot_valid);
             assert!(result.issues.is_empty());
             assert_eq!(result.name, "test");
         }
@@ -249,6 +296,7 @@ mod tests {
 
             assert!(!result.claude_valid);
             assert!(result.codex_valid);
+            assert!(result.copilot_valid);
         }
 
         #[test]
@@ -262,16 +310,43 @@ mod tests {
 
             assert!(result.claude_valid);
             assert!(!result.codex_valid);
+            assert!(result.copilot_valid);
         }
 
         #[test]
-        fn given_result_when_both_error_added_then_both_invalid() {
+        fn given_result_when_copilot_error_added_then_copilot_invalid() {
+            let mut result = ValidationResult::new("test.md".into(), "test".to_string());
+
+            result.add_issue(ValidationIssue::error(
+                ValidationTarget::Copilot,
+                "copilot issue",
+            ));
+
+            assert!(result.claude_valid);
+            assert!(result.codex_valid);
+            assert!(!result.copilot_valid);
+        }
+
+        #[test]
+        fn given_result_when_both_error_added_then_claude_and_codex_invalid() {
             let mut result = ValidationResult::new("test.md".into(), "test".to_string());
 
             result.add_issue(ValidationIssue::error(ValidationTarget::Both, "both issue"));
 
             assert!(!result.claude_valid);
             assert!(!result.codex_valid);
+            assert!(result.copilot_valid); // Both only affects Claude and Codex
+        }
+
+        #[test]
+        fn given_result_when_all_error_added_then_all_invalid() {
+            let mut result = ValidationResult::new("test.md".into(), "test".to_string());
+
+            result.add_issue(ValidationIssue::error(ValidationTarget::All, "all issue"));
+
+            assert!(!result.claude_valid);
+            assert!(!result.codex_valid);
+            assert!(!result.copilot_valid);
         }
 
         #[test]
@@ -279,22 +354,24 @@ mod tests {
             let mut result = ValidationResult::new("test.md".into(), "test".to_string());
 
             result.add_issue(ValidationIssue::warning(
-                ValidationTarget::Both,
+                ValidationTarget::All,
                 "just a warning",
             ));
 
             assert!(result.claude_valid);
             assert!(result.codex_valid);
+            assert!(result.copilot_valid);
         }
 
         #[test]
         fn given_result_when_info_added_then_still_valid() {
             let mut result = ValidationResult::new("test.md".into(), "test".to_string());
 
-            result.add_issue(ValidationIssue::info(ValidationTarget::Both, "just info"));
+            result.add_issue(ValidationIssue::info(ValidationTarget::All, "just info"));
 
             assert!(result.claude_valid);
             assert!(result.codex_valid);
+            assert!(result.copilot_valid);
         }
 
         #[test]
@@ -379,7 +456,9 @@ mod tests {
         fn validation_target_equality_works() {
             assert_eq!(ValidationTarget::Claude, ValidationTarget::Claude);
             assert_ne!(ValidationTarget::Claude, ValidationTarget::Codex);
-            assert_ne!(ValidationTarget::Codex, ValidationTarget::Both);
+            assert_ne!(ValidationTarget::Codex, ValidationTarget::Copilot);
+            assert_ne!(ValidationTarget::Copilot, ValidationTarget::Both);
+            assert_ne!(ValidationTarget::Both, ValidationTarget::All);
         }
     }
 }

@@ -5,9 +5,10 @@
 
 use crate::common::Command;
 use skrills_validate::{
-    autofix_frontmatter, is_codex_compatible, validate_skill, AutofixOptions, AutofixResult,
-    ValidationResult, ValidationTarget,
+    autofix_frontmatter, is_codex_compatible, is_copilot_compatible, validate_skill,
+    AutofixOptions, AutofixResult, ValidationResult, ValidationTarget,
 };
+use tracing::warn;
 
 /// Options for validation during sync.
 #[derive(Debug, Clone, Default)]
@@ -90,9 +91,11 @@ pub fn validate_skill_for_sync(
     let validation = validate_skill(&skill.source_path, &content, target);
 
     let is_valid = match target {
-        ValidationTarget::Claude => validation.claude_valid,
-        ValidationTarget::Codex => validation.codex_valid,
-        ValidationTarget::Both => validation.claude_valid && validation.codex_valid,
+        ValidationTarget::Claude => validation.is_claude_valid(),
+        ValidationTarget::Codex => validation.is_codex_valid(),
+        ValidationTarget::Copilot => validation.is_copilot_valid(),
+        ValidationTarget::Both => validation.is_claude_valid() && validation.is_codex_valid(),
+        ValidationTarget::All => validation.is_valid_for_all(),
     };
 
     let mut autofix_result = None;
@@ -107,11 +110,21 @@ pub fn validate_skill_for_sync(
             suggested_description: None,
         };
 
-        if let Ok(result) = autofix_frontmatter(&skill.source_path, &content, &autofix_opts) {
-            if result.modified {
-                can_sync = true;
+        match autofix_frontmatter(&skill.source_path, &content, &autofix_opts) {
+            Ok(result) => {
+                if result.modified {
+                    can_sync = true;
+                }
+                autofix_result = Some(result);
             }
-            autofix_result = Some(result);
+            Err(e) => {
+                warn!(
+                    skill = %skill.name,
+                    path = %skill.source_path.display(),
+                    error = %e,
+                    "Autofix failed for skill"
+                );
+            }
         }
     }
 
@@ -138,7 +151,7 @@ pub fn validate_skills_for_sync(
     for skill in skills {
         let result = validate_skill_for_sync(skill, target, options);
 
-        if result.validation.claude_valid && result.validation.codex_valid {
+        if result.validation.is_valid_for_all() {
             report.passed += 1;
         } else if result.autofix.as_ref().map(|a| a.modified).unwrap_or(false) {
             report.autofixed += 1;
@@ -158,6 +171,12 @@ pub fn validate_skills_for_sync(
 pub fn skill_is_codex_compatible(skill: &Command) -> bool {
     let content = String::from_utf8_lossy(&skill.content);
     is_codex_compatible(&content)
+}
+
+/// Quick check if a skill is compatible with Copilot.
+pub fn skill_is_copilot_compatible(skill: &Command) -> bool {
+    let content = String::from_utf8_lossy(&skill.content);
+    is_copilot_compatible(&content)
 }
 
 /// Apply autofix to a skill and return the modified content.
@@ -205,7 +224,7 @@ mod tests {
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
         assert!(result.can_sync);
-        assert!(result.validation.codex_valid);
+        assert!(result.validation.is_codex_valid());
     }
 
     #[test]
@@ -215,7 +234,7 @@ mod tests {
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
         assert!(!result.can_sync);
-        assert!(!result.validation.codex_valid);
+        assert!(!result.validation.is_codex_valid());
     }
 
     #[test]
@@ -228,8 +247,10 @@ mod tests {
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
         assert!(result.can_sync);
-        assert!(result.autofix.is_some());
-        assert!(result.autofix.unwrap().modified);
+        let autofix = result
+            .autofix
+            .expect("autofix should be Some when autofix option is enabled");
+        assert!(autofix.modified);
     }
 
     #[test]
@@ -242,6 +263,18 @@ mod tests {
 
         assert!(skill_is_codex_compatible(&valid));
         assert!(!skill_is_codex_compatible(&invalid));
+    }
+
+    #[test]
+    fn test_skill_is_copilot_compatible() {
+        let valid = make_skill(
+            "valid",
+            "---\nname: valid\ndescription: Test\n---\n# Content",
+        );
+        let invalid = make_skill("invalid", "# No frontmatter");
+
+        assert!(skill_is_copilot_compatible(&valid));
+        assert!(!skill_is_copilot_compatible(&invalid));
     }
 
     #[test]

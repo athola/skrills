@@ -226,6 +226,7 @@ mod basic_sync_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             skip_existing_commands: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -260,6 +261,7 @@ mod basic_sync_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             skip_existing_commands: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -299,6 +301,7 @@ mod basic_sync_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             skip_existing_commands: false, // Only affects commands, not skills
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -335,6 +338,7 @@ mod basic_sync_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             skip_existing_commands: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -373,6 +377,7 @@ mod basic_sync_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             skip_existing_commands: true, // Should be ignored due to force
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -410,6 +415,7 @@ mod basic_sync_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             skip_existing_commands: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 
@@ -450,7 +456,7 @@ mod validation_sync_tests {
 
         // THEN: Validation passes
         assert!(result.can_sync, "Should be able to sync");
-        assert!(result.validation.codex_valid, "Should be Codex valid");
+        assert!(result.validation.is_codex_valid(), "Should be Codex valid");
     }
 
     #[test]
@@ -464,7 +470,10 @@ mod validation_sync_tests {
 
         // THEN: Validation fails for Codex but would pass for Claude
         assert!(!result.can_sync, "Should not be able to sync to Codex");
-        assert!(!result.validation.codex_valid, "Should not be Codex valid");
+        assert!(
+            !result.validation.is_codex_valid(),
+            "Should not be Codex valid"
+        );
     }
 
     #[test]
@@ -574,8 +583,14 @@ mod validation_sync_tests {
         let result = validate_skill_for_sync(&skill, ValidationTarget::Both, &options);
 
         // THEN: Reports Claude valid but Codex invalid
-        assert!(result.validation.claude_valid, "Should be Claude valid");
-        assert!(!result.validation.codex_valid, "Should not be Codex valid");
+        assert!(
+            result.validation.is_claude_valid(),
+            "Should be Claude valid"
+        );
+        assert!(
+            !result.validation.is_codex_valid(),
+            "Should not be Codex valid"
+        );
     }
 
     #[test]
@@ -590,7 +605,7 @@ mod validation_sync_tests {
         // THEN: Validation handles unicode correctly
         assert!(result.can_sync, "Unicode should be valid");
         assert!(
-            result.validation.codex_valid,
+            result.validation.is_codex_valid(),
             "Unicode skill should be Codex valid"
         );
     }
@@ -932,7 +947,7 @@ mod edge_case_tests {
 
         // THEN: Depends on YAML parsing - document behavior
         // Names with newlines are typically invalid
-        assert!(!result.can_sync || result.validation.codex_valid);
+        assert!(!result.can_sync || result.validation.is_codex_valid());
     }
 
     #[test]
@@ -1297,6 +1312,7 @@ mod case_sensitivity_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             skip_existing_commands: false,
+            sync_agents: false,
             include_marketplace: false,
         };
 

@@ -47,6 +47,33 @@ Use the `Makefile`:
 
 Yes. The MCP server and CLI work without internet access if the binary and skills are local.
 
+### Why doesn't Copilot have slash commands like Claude or Codex?
+
+GitHub Copilot CLI uses a different architectural paradigm. Instead of slash commands (`/command-name`), Copilot has:
+
+1. **Skills** (`~/.copilot/skills/<name>/SKILL.md`) - Reusable instruction sets that extend capabilities (same format as Codex)
+2. **Agents** (`~/.copilot/agents/*.md`) - Autonomous actors with defined tools, targets, and behaviors
+
+When syncing from Claude to Copilot:
+- **Skills**: Sync normally (compatible formats)
+- **Commands**: Skipped (no equivalent in Copilot)
+- **Agents**: Sync with format transformation (Claude's `model`/`color` → Copilot's `target: github-copilot`)
+
+If you want command-like reusable prompts in Copilot, create an agent instead:
+
+```yaml
+# ~/.copilot/agents/my-prompt.agent.md
+---
+name: my-prompt
+description: Does something useful
+target: github-copilot
+---
+
+Your prompt instructions here...
+```
+
+The agent paradigm is more powerful but fundamentally different - agents have defined tool access and autonomous behavior rather than being simple prompt templates.
+
 ### What are the security considerations?
 
 Skrills operates with minimal privileges over standard I/O and has no bundled secrets. You control which skill directories are exposed. Always review third-party skills before use.

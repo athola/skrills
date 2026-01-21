@@ -8,9 +8,70 @@ pub enum ValidationTarget {
     Claude,
     /// Validate for Codex CLI (strict).
     Codex,
-    /// Validate for both targets.
+    /// Validate for GitHub Copilot CLI (strict).
+    Copilot,
+    /// Validate for all targets (Claude, Codex, and Copilot).
     #[default]
+    All,
+    /// Validate for Claude and Codex (legacy, use 'all' for new code).
     Both,
+}
+
+/// Source/target for sync operations.
+#[derive(Debug, Clone, Copy, ValueEnum, Default, PartialEq, Eq)]
+pub enum SyncSource {
+    /// Claude Code CLI.
+    #[default]
+    Claude,
+    /// OpenAI Codex CLI.
+    Codex,
+    /// GitHub Copilot CLI.
+    Copilot,
+}
+
+impl SyncSource {
+    /// Returns the default target for a given source.
+    /// Claude → Codex, Codex/Copilot → Claude.
+    pub fn default_target(self) -> Self {
+        match self {
+            Self::Claude => Self::Codex,
+            Self::Codex | Self::Copilot => Self::Claude,
+        }
+    }
+
+    /// Returns true if this source is Claude.
+    pub fn is_claude(self) -> bool {
+        matches!(self, Self::Claude)
+    }
+
+    /// Returns true if this source is Codex.
+    pub fn is_codex(self) -> bool {
+        matches!(self, Self::Codex)
+    }
+
+    /// Returns true if this source is Copilot.
+    pub fn is_copilot(self) -> bool {
+        matches!(self, Self::Copilot)
+    }
+
+    /// Returns the string name for this source.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Copilot => "copilot",
+        }
+    }
+
+    /// Returns all other targets (CLIs other than this one).
+    /// Used when `--to` is not specified to sync to all other CLIs.
+    pub fn other_targets(self) -> Vec<Self> {
+        match self {
+            Self::Claude => vec![Self::Codex, Self::Copilot],
+            Self::Codex => vec![Self::Claude, Self::Copilot],
+            Self::Copilot => vec![Self::Claude, Self::Codex],
+        }
+    }
 }
 
 /// Dependency traversal direction.
@@ -164,11 +225,14 @@ pub enum Commands {
         #[arg(long, env = "SKRILLS_INCLUDE_MARKETPLACE", default_value_t = false)]
         include_marketplace: bool,
     },
-    /// Syncs slash commands between Claude Code and Codex.
+    /// Syncs slash commands between AI CLI tools (Claude, Codex, Copilot).
     SyncCommands {
-        /// Source agent: "claude" or "codex".
-        #[arg(long, default_value = "claude")]
-        from: String,
+        /// Source CLI: claude, codex, or copilot.
+        #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
+        from: SyncSource,
+        /// Target CLI: claude, codex, or copilot. If not specified, defaults to codex (for claude source) or claude (for codex/copilot source).
+        #[arg(long, value_enum)]
+        to: Option<SyncSource>,
         /// Preview changes without writing.
         #[arg(long)]
         dry_run: bool,
@@ -179,29 +243,38 @@ pub enum Commands {
         #[arg(long, env = "SKRILLS_INCLUDE_MARKETPLACE", default_value_t = false)]
         include_marketplace: bool,
     },
-    /// Syncs MCP server configurations between Claude Code and Codex.
+    /// Syncs MCP server configurations between AI CLI tools.
     SyncMcpServers {
-        /// Source agent: "claude" or "codex".
-        #[arg(long, default_value = "claude")]
-        from: String,
+        /// Source CLI: claude, codex, or copilot.
+        #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
+        from: SyncSource,
+        /// Target CLI: claude, codex, or copilot.
+        #[arg(long, value_enum)]
+        to: Option<SyncSource>,
         /// Preview changes without writing.
         #[arg(long)]
         dry_run: bool,
     },
-    /// Syncs preferences between Claude Code and Codex.
+    /// Syncs preferences between AI CLI tools.
     SyncPreferences {
-        /// Source agent: "claude" or "codex".
-        #[arg(long, default_value = "claude")]
-        from: String,
+        /// Source CLI: claude, codex, or copilot.
+        #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
+        from: SyncSource,
+        /// Target CLI: claude, codex, or copilot.
+        #[arg(long, value_enum)]
+        to: Option<SyncSource>,
         /// Preview changes without writing.
         #[arg(long)]
         dry_run: bool,
     },
     /// Syncs all configurations (commands, MCP servers, preferences, skills).
     SyncAll {
-        /// Source agent: "claude" or "codex".
-        #[arg(long, default_value = "claude")]
-        from: String,
+        /// Source CLI: claude, codex, or copilot.
+        #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
+        from: SyncSource,
+        /// Target CLI: claude, codex, or copilot. If omitted, syncs to ALL other CLIs.
+        #[arg(long, value_enum)]
+        to: Option<SyncSource>,
         /// Preview changes without writing.
         #[arg(long)]
         dry_run: bool,
@@ -220,9 +293,12 @@ pub enum Commands {
     },
     /// Shows sync status and configuration differences.
     SyncStatus {
-        /// Source agent: "claude" or "codex".
-        #[arg(long, default_value = "claude")]
-        from: String,
+        /// Source CLI: claude, codex, or copilot.
+        #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
+        from: SyncSource,
+        /// Target CLI: claude, codex, or copilot.
+        #[arg(long, value_enum)]
+        to: Option<SyncSource>,
     },
     /// Diagnoses Codex MCP configuration for this server.
     Doctor,
@@ -357,6 +433,7 @@ pub enum Commands {
         format: OutputFormat,
     },
     /// Suggest new skills to create based on project context.
+    #[command(alias = "suggest-skills")]
     SuggestNewSkills {
         /// Project directory for context analysis.
         #[arg(long)]
@@ -407,6 +484,27 @@ pub enum Commands {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
+    /// Fuzzy search installed skills by name or description.
+    SearchSkills {
+        /// Search query for skills.
+        #[arg(required = true)]
+        query: String,
+        /// Similarity threshold (0.0-1.0, lower = more results).
+        #[arg(long, short = 't', default_value = "0.3")]
+        threshold: f64,
+        /// Maximum results to return.
+        #[arg(long, short = 'l', default_value = "10")]
+        limit: usize,
+        /// Also search descriptions, not just names.
+        #[arg(long, default_value = "true")]
+        include_description: bool,
+        /// Skills directory to search (default: all discovered skills).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+        /// Output format: text or json.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
     /// Export usage analytics to a file for persistence or backup.
     ExportAnalytics {
         /// Output file path (defaults to ~/.skrills/analytics_cache.json).
@@ -434,9 +532,21 @@ pub enum Commands {
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
     },
-    /// Sets up skrills for Claude Code or Codex (hooks, MCP, directories).
+    /// Compare a skill across Claude, Codex, and Copilot to show differences.
+    SkillDiff {
+        /// Skill name to compare (e.g., "commit", "review-pr").
+        #[arg(required = true)]
+        name: String,
+        /// Output format: text (unified diff), json, or summary.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+        /// Show context lines around differences.
+        #[arg(long, short = 'C', default_value = "3")]
+        context: usize,
+    },
+    /// Sets up skrills for Claude Code, Codex, or Copilot (hooks, MCP, directories).
     Setup {
-        /// Client to set up for (claude, codex, or both). If not specified, prompts interactively.
+        /// Client to set up for (claude, codex, copilot, or all). If not specified, prompts interactively.
         #[arg(long)]
         client: Option<String>,
         /// Binary installation directory. If not specified, uses default or prompts.

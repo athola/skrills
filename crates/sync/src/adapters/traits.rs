@@ -13,6 +13,8 @@ pub struct FieldSupport {
     pub mcp_servers: bool,
     pub preferences: bool,
     pub skills: bool,
+    pub hooks: bool,
+    pub agents: bool,
 }
 
 #[cfg(test)]
@@ -44,6 +46,12 @@ pub trait AgentAdapter: Send + Sync {
     /// Read skills from native format
     fn read_skills(&self) -> Result<Vec<Command>>;
 
+    /// Read hooks from native format
+    fn read_hooks(&self) -> Result<Vec<Command>>;
+
+    /// Read agents from native format
+    fn read_agents(&self) -> Result<Vec<Command>>;
+
     /// Read complete configuration
     fn read_all(&self) -> Result<CommonConfig> {
         Ok(CommonConfig {
@@ -51,6 +59,8 @@ pub trait AgentAdapter: Send + Sync {
             mcp_servers: self.read_mcp_servers()?,
             preferences: self.read_preferences()?,
             skills: self.read_skills()?,
+            hooks: self.read_hooks()?,
+            agents: self.read_agents()?,
         })
     }
 
@@ -67,4 +77,10 @@ pub trait AgentAdapter: Send + Sync {
 
     /// Write skills to native format
     fn write_skills(&self, skills: &[Command]) -> Result<WriteReport>;
+
+    /// Write hooks to native format
+    fn write_hooks(&self, hooks: &[Command]) -> Result<WriteReport>;
+
+    /// Write agents to native format
+    fn write_agents(&self, agents: &[Command]) -> Result<WriteReport>;
 }

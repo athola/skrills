@@ -34,6 +34,7 @@ pub mod autofix;
 pub mod claude;
 pub mod codex;
 pub mod common;
+pub mod copilot;
 pub mod frontmatter;
 
 pub use autofix::{autofix_frontmatter, AutofixOptions, AutofixResult};
@@ -50,6 +51,7 @@ pub fn validate_skill(path: &Path, content: &str, target: ValidationTarget) -> V
     match target {
         ValidationTarget::Claude => claude::validate_claude(path, content),
         ValidationTarget::Codex => codex::validate_codex(path, content),
+        ValidationTarget::Copilot => copilot::validate_copilot(path, content),
         ValidationTarget::Both => {
             let claude_result = claude::validate_claude(path, content);
             let codex_result = codex::validate_codex(path, content);
@@ -69,6 +71,42 @@ pub fn validate_skill(path: &Path, content: &str, target: ValidationTarget) -> V
             }
             for issue in codex_result.issues {
                 // Avoid duplicates for shared issues
+                if !merged.issues.iter().any(|i| i.message == issue.message) {
+                    merged.issues.push(issue);
+                }
+            }
+
+            merged
+        }
+        ValidationTarget::All => {
+            let claude_result = claude::validate_claude(path, content);
+            let codex_result = codex::validate_codex(path, content);
+            let copilot_result = copilot::validate_copilot(path, content);
+
+            // Merge results from all three
+            let mut merged = ValidationResult::new(
+                path.to_path_buf(),
+                codex_result
+                    .name
+                    .clone()
+                    .max(claude_result.name.clone())
+                    .max(copilot_result.name.clone()),
+            );
+
+            merged.claude_valid = claude_result.claude_valid;
+            merged.codex_valid = codex_result.codex_valid;
+            merged.copilot_valid = copilot_result.copilot_valid;
+
+            // Add unique issues from all three
+            for issue in claude_result.issues {
+                merged.issues.push(issue);
+            }
+            for issue in codex_result.issues {
+                if !merged.issues.iter().any(|i| i.message == issue.message) {
+                    merged.issues.push(issue);
+                }
+            }
+            for issue in copilot_result.issues {
                 if !merged.issues.iter().any(|i| i.message == issue.message) {
                     merged.issues.push(issue);
                 }
@@ -123,6 +161,11 @@ pub fn is_codex_compatible(content: &str) -> bool {
     codex::is_codex_compatible(content)
 }
 
+/// Quick check if a skill is Copilot-compatible.
+pub fn is_copilot_compatible(content: &str) -> bool {
+    copilot::is_copilot_compatible(content)
+}
+
 /// Summary of validation results.
 #[derive(Debug, Default)]
 pub struct ValidationSummary {
@@ -132,8 +175,10 @@ pub struct ValidationSummary {
     pub claude_valid: usize,
     /// Number of skills valid for Codex CLI.
     pub codex_valid: usize,
-    /// Number of skills valid for both.
-    pub both_valid: usize,
+    /// Number of skills valid for GitHub Copilot CLI.
+    pub copilot_valid: usize,
+    /// Number of skills valid for all targets (Claude, Codex, and Copilot).
+    pub all_valid: usize,
     /// Total number of error-level issues.
     pub error_count: usize,
     /// Total number of warning-level issues.
@@ -155,8 +200,11 @@ impl ValidationSummary {
             if result.codex_valid {
                 summary.codex_valid += 1;
             }
-            if result.claude_valid && result.codex_valid {
-                summary.both_valid += 1;
+            if result.copilot_valid {
+                summary.copilot_valid += 1;
+            }
+            if result.claude_valid && result.codex_valid && result.copilot_valid {
+                summary.all_valid += 1;
             }
             summary.error_count += result.error_count();
             summary.warning_count += result.warning_count();
@@ -171,21 +219,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_validate_skill_both() {
+    fn test_validate_skill_all() {
         let content = "---\nname: test\ndescription: A test skill\n---\n# Content\nBody.";
-        let result = validate_skill(Path::new("test.md"), content, ValidationTarget::Both);
+        let result = validate_skill(Path::new("test.md"), content, ValidationTarget::All);
 
         assert!(result.claude_valid);
         assert!(result.codex_valid);
+        assert!(result.copilot_valid);
     }
 
     #[test]
     fn test_validate_skill_claude_only() {
         let content = "# Just markdown\nNo frontmatter.";
-        let result = validate_skill(Path::new("test.md"), content, ValidationTarget::Both);
+        let result = validate_skill(Path::new("test.md"), content, ValidationTarget::All);
 
         assert!(result.claude_valid);
         assert!(!result.codex_valid);
+        assert!(!result.copilot_valid);
+    }
+
+    #[test]
+    fn test_validate_skill_copilot() {
+        let content = "---\nname: test\ndescription: A test skill\n---\n# Content\nBody.";
+        let result = validate_skill(Path::new("test.md"), content, ValidationTarget::Copilot);
+
+        assert!(result.copilot_valid);
     }
 
     #[test]
@@ -197,6 +255,7 @@ mod tests {
                 issues: vec![],
                 claude_valid: true,
                 codex_valid: true,
+                copilot_valid: true,
             },
             ValidationResult {
                 path: "b.md".into(),
@@ -204,13 +263,23 @@ mod tests {
                 issues: vec![ValidationIssue::error(ValidationTarget::Codex, "test")],
                 claude_valid: true,
                 codex_valid: false,
+                copilot_valid: true,
+            },
+            ValidationResult {
+                path: "c.md".into(),
+                name: "c".into(),
+                issues: vec![ValidationIssue::error(ValidationTarget::Copilot, "test")],
+                claude_valid: true,
+                codex_valid: true,
+                copilot_valid: false,
             },
         ];
 
         let summary = ValidationSummary::from_results(&results);
-        assert_eq!(summary.total, 2);
-        assert_eq!(summary.claude_valid, 2);
-        assert_eq!(summary.codex_valid, 1);
-        assert_eq!(summary.both_valid, 1);
+        assert_eq!(summary.total, 3);
+        assert_eq!(summary.claude_valid, 3);
+        assert_eq!(summary.codex_valid, 2);
+        assert_eq!(summary.copilot_valid, 2);
+        assert_eq!(summary.all_valid, 1);
     }
 }

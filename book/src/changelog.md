@@ -1,5 +1,24 @@
 # Changelog Highlights
 
+## 0.5.0 (2026-01-20)
+
+- **NEW: GitHub Copilot CLI Support**: Full bidirectional sync for `~/.copilot` (skills, MCP servers, preferences).
+- **NEW: Agent Sync**: Sync Claude Code subagents to Copilot with format transformation (removes `model`/`color`, adds `target: github-copilot`).
+- **NEW: CLI Flags**: Added `--from copilot` and `--to copilot` for sync commands.
+- **NEW: MCP Tools**: `sync-from-copilot`, `sync-to-copilot`, all 6 source→target skill sync combinations.
+- **NEW: Validation Target**: `--target copilot` for skill validation.
+- **Testing**: 20 Copilot sync integration tests.
+
+## 0.4.12 (2026-01-16)
+
+- **Testing**: Added 59 new tests across tool_schemas (20), sync report (20), and validation common (19) modules.
+
+## 0.4.11 (2026-01-15)
+
+- **Refactor**: Improved test infrastructure with RAII guards (`EnvVarGuard`, `TestFixture`).
+- **Bug Fix**: Logging for silent failure path in skill validation; `saturating_mul` for timestamp overflow.
+- **Docs**: Consolidated 14 documentation files from bulleted lists to flowing prose.
+
 ## 0.4.10 (2026-01-15)
 
 - **NEW: Confidence Type**: Type-safe `Confidence` newtype with clamping (0.0-1.0) for recommendations.

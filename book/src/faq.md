@@ -22,14 +22,18 @@ If the error persists with a third-party MCP server, consider proxying problemat
 
 ### How does `skrills` compare to other skill management tools?
 
-`skrills` focuses on skill quality and portability. It checks skills for compatibility across both Claude Code and Codex CLI, analyzes token usage to identify optimization opportunities, and keeps configurations in sync between the two environments. For a detailed comparison, see the [Project Comparison](./comparison.md).
+`skrills` focuses on skill quality and portability. It checks skills for compatibility across Claude Code, Codex CLI, and GitHub Copilot CLI, analyzes token usage to identify optimization opportunities, and keeps configurations in sync between all three environments. For a detailed comparison, see the [Project Comparison](./comparison.md).
 
-### Is it possible to automatically synchronize skills between Claude and Codex?
+### Is it possible to automatically synchronize skills between Claude, Codex, and Copilot?
 
 Yes. Use `skrills sync-all` to sync everything (skills, commands, MCP servers, preferences):
 
 ```bash
-skrills sync-all --from claude --skip-existing-commands
+# Claude → ALL other CLIs (Codex + Copilot) - no flags needed
+skrills sync-all
+
+# Claude → specific CLI only
+skrills sync-all --to codex --skip-existing-commands
 ```
 
 Add `--skip-existing-commands` to preserve local command files. The sync is byte-for-byte, so non-UTF-8 commands are preserved.
@@ -54,6 +58,31 @@ To contribute, add your new skills to your directory (`~/.claude/skills/` or `~/
 ### Does the system work offline?
 
 Yes. As long as you have the `skrills` binary and your skills stored locally, both the MCP server and CLI will function without an internet connection.
+
+### Why doesn't Copilot have slash commands like Claude or Codex?
+
+GitHub Copilot CLI uses a different architectural paradigm. Instead of slash commands (`/command-name`), Copilot has:
+
+1. **Skills** (`~/.copilot/skills/<name>/SKILL.md`) - Reusable instruction sets that extend capabilities (same format as Codex)
+2. **Agents** (`~/.copilot/agents/*.md`) - Autonomous actors with defined tools, targets, and behaviors
+
+When syncing from Claude to Copilot:
+- **Skills**: Sync normally (compatible formats)
+- **Commands**: Skipped (no equivalent in Copilot)
+- **Agents**: Sync with format transformation (Claude's `model`/`color` → Copilot's `target: github-copilot`)
+
+If you want command-like reusable prompts in Copilot, create an agent instead:
+
+```yaml
+# ~/.copilot/agents/my-prompt.agent.md
+---
+name: my-prompt
+description: Does something useful
+target: github-copilot
+---
+
+Your prompt instructions here...
+```
 
 ### What are the security considerations?
 

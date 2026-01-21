@@ -1,0 +1,24 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "skrills-marketplace",
+  "metadata": {
+    "description": "Skill synchronization and management tools for Claude Code, Codex, and GitHub Copilot",
+    "version": "0.5.0"
+  },
+  "owner": {
+    "name": "skrills",
+    "email": "skrills@example.com"
+  },
+  "plugins": [
+    {
+      "name": "skrills",
+      "description": "24 MCP tools for skill validation, sync, intelligence, and tracing across Claude Code, Codex, and Copilot",
+      "version": "0.5.0",
+      "author": {
+        "name": "skrills"
+      },
+      "source": "./plugins/skrills",
+      "category": "productivity"
+    }
+  ]
+}

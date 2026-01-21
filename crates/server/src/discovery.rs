@@ -612,9 +612,20 @@ mod tests {
         let tmp = tempdir().unwrap();
         let roots = default_roots(tmp.path());
         let labels: Vec<_> = roots.iter().map(|r| r.source.label()).collect();
+        // Note: "copilot" appears twice - once for XDG path (~/.config/copilot/skills)
+        // and once for legacy path (~/.copilot/skills) to ensure comprehensive discovery
         assert_eq!(
             labels,
-            vec!["codex", "mirror", "claude", "marketplace", "cache", "agent"]
+            vec![
+                "codex",
+                "mirror",
+                "claude",
+                "copilot", // XDG path
+                "copilot", // Legacy path
+                "marketplace",
+                "cache",
+                "agent"
+            ]
         );
     }
 
@@ -923,7 +934,15 @@ mod tests {
         let labels = priority_labels();
         assert_eq!(
             labels,
-            vec!["codex", "mirror", "claude", "marketplace", "cache", "agent"]
+            vec![
+                "codex",
+                "mirror",
+                "claude",
+                "copilot",
+                "marketplace",
+                "cache",
+                "agent"
+            ]
         );
     }
 
@@ -946,15 +965,16 @@ mod tests {
     fn test_priority_labels_and_rank_map() {
         let (labels, rank_map) = priority_labels_and_rank_map();
 
-        assert_eq!(labels.len(), 6);
-        assert_eq!(rank_map.len(), 6);
+        assert_eq!(labels.len(), 7);
+        assert_eq!(rank_map.len(), 7);
 
         assert_eq!(rank_map.get("codex").unwrap(), 1);
         assert_eq!(rank_map.get("mirror").unwrap(), 2);
         assert_eq!(rank_map.get("claude").unwrap(), 3);
-        assert_eq!(rank_map.get("marketplace").unwrap(), 4);
-        assert_eq!(rank_map.get("cache").unwrap(), 5);
-        assert_eq!(rank_map.get("agent").unwrap(), 6);
+        assert_eq!(rank_map.get("copilot").unwrap(), 4);
+        assert_eq!(rank_map.get("marketplace").unwrap(), 5);
+        assert_eq!(rank_map.get("cache").unwrap(), 6);
+        assert_eq!(rank_map.get("agent").unwrap(), 7);
     }
 
     #[test]

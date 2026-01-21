@@ -76,6 +76,7 @@ pub fn default_priority() -> Vec<SkillSource> {
         SkillSource::Codex,
         SkillSource::Mirror,
         SkillSource::Claude,
+        SkillSource::Copilot,
         SkillSource::Marketplace,
         SkillSource::Cache,
         SkillSource::Agent,
@@ -392,7 +393,7 @@ pub fn extract_refs_from_agents(md: &str) -> std::collections::HashSet<String> {
 
 /// Returns the default skill root directories.
 pub fn default_roots(home: &Path) -> Vec<SkillRoot> {
-    vec![
+    let mut roots = vec![
         SkillRoot {
             root: home.join(".codex/skills"),
             source: SkillSource::Codex,
@@ -405,6 +406,25 @@ pub fn default_roots(home: &Path) -> Vec<SkillRoot> {
             root: home.join(".claude/skills"),
             source: SkillSource::Claude,
         },
+    ];
+
+    // Copilot: Add both XDG and legacy paths for multi-faceted discovery.
+    // XDG path: $XDG_CONFIG_HOME/copilot/skills or ~/.config/copilot/skills
+    // Legacy path: ~/.copilot/skills
+    if let Some(config_dir) = dirs::config_dir() {
+        let xdg_copilot_skills = config_dir.join("copilot/skills");
+        roots.push(SkillRoot {
+            root: xdg_copilot_skills,
+            source: SkillSource::Copilot,
+        });
+    }
+    // Always include legacy path for backwards compatibility
+    roots.push(SkillRoot {
+        root: home.join(".copilot/skills"),
+        source: SkillSource::Copilot,
+    });
+
+    roots.extend([
         SkillRoot {
             root: home.join(".claude/plugins/marketplaces"),
             source: SkillSource::Marketplace,
@@ -417,7 +437,9 @@ pub fn default_roots(home: &Path) -> Vec<SkillRoot> {
             root: home.join(".agent/skills"),
             source: SkillSource::Agent,
         },
-    ]
+    ]);
+
+    roots
 }
 
 /// Builds skill roots from extra directories (project-provided).
@@ -473,9 +495,20 @@ mod tests {
         let tmp = tempdir().unwrap();
         let roots = default_roots(tmp.path());
         let labels: Vec<_> = roots.iter().map(|r| r.source.label()).collect();
+        // Note: "copilot" appears twice - once for XDG path (~/.config/copilot/skills)
+        // and once for legacy path (~/.copilot/skills) for multi-faceted discovery
         assert_eq!(
             labels,
-            vec!["codex", "mirror", "claude", "marketplace", "cache", "agent"]
+            vec![
+                "codex",
+                "mirror",
+                "claude",
+                "copilot", // XDG path
+                "copilot", // Legacy path
+                "marketplace",
+                "cache",
+                "agent"
+            ]
         );
     }
 
@@ -784,7 +817,15 @@ mod tests {
         let labels = priority_labels();
         assert_eq!(
             labels,
-            vec!["codex", "mirror", "claude", "marketplace", "cache", "agent"]
+            vec![
+                "codex",
+                "mirror",
+                "claude",
+                "copilot",
+                "marketplace",
+                "cache",
+                "agent"
+            ]
         );
     }
 
@@ -792,15 +833,16 @@ mod tests {
     fn test_priority_labels_and_rank_map() {
         let (labels, rank_map) = priority_labels_and_rank_map();
 
-        assert_eq!(labels.len(), 6);
-        assert_eq!(rank_map.len(), 6);
+        assert_eq!(labels.len(), 7);
+        assert_eq!(rank_map.len(), 7);
 
         assert_eq!(rank_map.get("codex").unwrap(), 1);
         assert_eq!(rank_map.get("mirror").unwrap(), 2);
         assert_eq!(rank_map.get("claude").unwrap(), 3);
-        assert_eq!(rank_map.get("marketplace").unwrap(), 4);
-        assert_eq!(rank_map.get("cache").unwrap(), 5);
-        assert_eq!(rank_map.get("agent").unwrap(), 6);
+        assert_eq!(rank_map.get("copilot").unwrap(), 4);
+        assert_eq!(rank_map.get("marketplace").unwrap(), 5);
+        assert_eq!(rank_map.get("cache").unwrap(), 6);
+        assert_eq!(rank_map.get("agent").unwrap(), 7);
     }
 
     #[test]

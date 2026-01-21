@@ -50,6 +50,9 @@ pub struct SyncParams {
     /// Sync preferences
     #[serde(default = "default_true")]
     pub sync_preferences: bool,
+    /// Sync agents (subagents)
+    #[serde(default = "default_true")]
+    pub sync_agents: bool,
     /// Include marketplace content (e.g. uninstalled plugins)
     #[serde(default)]
     pub include_marketplace: bool,
@@ -66,6 +69,7 @@ impl Default for SyncParams {
             skip_existing_commands: false,
             sync_mcp_servers: true,
             sync_preferences: true,
+            sync_agents: true,
             include_marketplace: false,
         }
     }
@@ -214,6 +218,16 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 if prefs.model.is_some() {
                     report.preferences.written += 1;
                 }
+            }
+        }
+
+        // Sync agents (subagents)
+        if params.sync_agents {
+            let agents = self.source.read_agents()?;
+            if !params.dry_run {
+                report.agents = self.target.write_agents(&agents)?;
+            } else {
+                report.agents.written = agents.len();
             }
         }
 

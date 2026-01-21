@@ -13,3 +13,4 @@ writing-clearly-and-concisely/
 .cargo-temp/
 .npm-cache/
 .mcp.json
+docs/archive/
