@@ -1,6 +1,6 @@
 [package]
 name = "skrills-intelligence"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 description = "Intelligent skill recommendations based on usage patterns and project context."
 license = "MIT"
@@ -36,3 +36,4 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 wiremock = "0.6"
 serial_test = "3.0"
 proptest = "1.4"
+skrills_test_utils = { path = "../test-utils", version = "0.5.1" }

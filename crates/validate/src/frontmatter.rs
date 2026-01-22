@@ -827,17 +827,54 @@ name: duplicate
     }
 
     #[test]
-    fn test_yaml_error_fallback_without_location() {
-        // This test verifies the fallback path works when no location is available.
-        // Most YAML parse errors include location info, but the fallback should
-        // still produce a valid error message.
-        // We can't easily trigger a locationless error, so we just verify the
-        // format string is correct by checking valid parse errors have location.
+    fn test_yaml_error_with_location_info() {
+        // Test that YAML parse errors include location information when available.
+        // Most serde_yaml errors include location info, which we format with
+        // line offset to account for the opening --- delimiter.
         let content = "---\n: missing key\n---\n";
         let result = parse_frontmatter(content);
         assert!(result.is_err());
-        // Valid YAML errors should have location info
         let err = result.unwrap_err();
-        assert!(err.contains("Invalid YAML frontmatter"));
+        // Should contain location info: "at line X, column Y"
+        assert!(
+            err.contains("Invalid YAML frontmatter at line"),
+            "Error should include location: {}",
+            err
+        );
+        assert!(
+            err.contains("column"),
+            "Error should include column info: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_yaml_error_format_consistency() {
+        // Test that various YAML errors all produce consistent error formatting.
+        // The error format is: "Invalid YAML frontmatter at line X, column Y: {details}"
+        // or the fallback: "Invalid YAML frontmatter: {details}" when no location.
+        //
+        // All errors should start with the "Invalid YAML frontmatter" prefix.
+        let test_cases = [
+            ("---\n: missing key\n---\n", "missing key"),
+            ("---\nname: [\n---\n", "unclosed bracket"),
+            ("---\n  bad indent\n---\n", "bad indentation"),
+        ];
+
+        for (content, case_name) in test_cases {
+            let result = parse_frontmatter(content);
+            assert!(
+                result.is_err(),
+                "Case '{}' should produce an error",
+                case_name
+            );
+            let err = result.unwrap_err();
+            assert!(
+                err.starts_with("Invalid YAML frontmatter"),
+                "Case '{}': Error should start with 'Invalid YAML frontmatter': {}",
+                case_name,
+                err
+            );
+        }
     }
 }

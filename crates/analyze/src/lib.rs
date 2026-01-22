@@ -33,7 +33,10 @@ pub mod optimize;
 pub mod resolve;
 pub mod tokens;
 
-pub use deps::{analyze_dependencies, Dependency, DependencyAnalysis, DependencyType};
+pub use deps::{
+    analyze_dependencies, Dependency, DependencyAnalysis, DependencyFileList, DependencyType,
+    Warning, WarningKind, WarningLevel,
+};
 pub use graph::RelationshipGraph;
 pub use optimize::{quality_score, suggest_optimizations, OptimizationType, Priority, Suggestion};
 pub use resolve::{

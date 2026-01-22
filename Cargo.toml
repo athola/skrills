@@ -9,6 +9,7 @@ members = [
     "crates/validate",
     "crates/analyze",
     "crates/intelligence",
+    "crates/test-utils",
 ]
 resolver = "2"
 

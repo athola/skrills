@@ -44,6 +44,7 @@ The `sync-commands` tool checks file hashes before writing to preserve local cus
 - `crates/discovery`: Skill discovery and ranking.
 - `crates/state`: Environment configuration, manifest settings, and runtime overrides.
 - `crates/subagents`: Shared subagent runtime and backends (including `StateRunStore::load_from_disk` for reloading persisted runs).
+- `crates/test-utils`: Shared test infrastructure (`TempEnv`, `TempSkillDir`, fixtures) for consistent test setup across crates.
 
 ## Installation
 - macOS / Linux:

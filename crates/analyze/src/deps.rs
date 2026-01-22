@@ -8,9 +8,93 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use walkdir::WalkDir;
+
+/// Severity level for warnings encountered during dependency analysis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WarningLevel {
+    /// Informational note, not a problem.
+    Info,
+    /// Potential issue that may need attention.
+    Warning,
+    /// Problem that should be addressed.
+    Error,
+}
+
+impl fmt::Display for WarningLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Info => write!(f, "info"),
+            Self::Warning => write!(f, "warning"),
+            Self::Error => write!(f, "error"),
+        }
+    }
+}
+
+/// Kind of warning encountered during dependency analysis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WarningKind {
+    /// Failed to read file metadata.
+    MetadataAccessFailed,
+    /// Failed to access directory entry during traversal.
+    DirectoryEntryAccessFailed,
+    /// Failed to read file contents.
+    FileReadFailed,
+}
+
+impl fmt::Display for WarningKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MetadataAccessFailed => write!(f, "metadata_access_failed"),
+            Self::DirectoryEntryAccessFailed => write!(f, "directory_entry_access_failed"),
+            Self::FileReadFailed => write!(f, "file_read_failed"),
+        }
+    }
+}
+
+/// A structured warning encountered during dependency analysis.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Warning {
+    /// Severity level of the warning.
+    pub level: WarningLevel,
+    /// Kind of warning.
+    pub kind: WarningKind,
+    /// Human-readable message describing the issue.
+    pub message: String,
+    /// Path context where the warning occurred, if applicable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<PathBuf>,
+}
+
+impl Warning {
+    /// Creates a new warning with the given parameters.
+    pub fn new(level: WarningLevel, kind: WarningKind, message: impl Into<String>) -> Self {
+        Self {
+            level,
+            kind,
+            message: message.into(),
+            context: None,
+        }
+    }
+
+    /// Adds path context to the warning.
+    #[must_use]
+    pub fn with_context(mut self, path: impl Into<PathBuf>) -> Self {
+        self.context = Some(path.into());
+        self
+    }
+}
+
+impl fmt::Display for Warning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
 
 /// Types of dependencies a skill can have.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -54,8 +138,25 @@ pub struct DependencyAnalysis {
     pub missing: Vec<Dependency>,
     /// Total size of local dependencies in bytes.
     pub total_dep_size: u64,
-    /// Warnings encountered during analysis (e.g., permission errors).
-    pub warnings: Vec<String>,
+    /// Structured warnings encountered during analysis (e.g., permission errors).
+    pub warnings: Vec<Warning>,
+}
+
+impl DependencyAnalysis {
+    /// Returns warnings as strings for backward compatibility.
+    pub fn warning_messages(&self) -> Vec<String> {
+        self.warnings.iter().map(|w| w.message.clone()).collect()
+    }
+
+    /// Filters warnings by severity level.
+    pub fn warnings_by_level(&self, level: WarningLevel) -> Vec<&Warning> {
+        self.warnings.iter().filter(|w| w.level == level).collect()
+    }
+
+    /// Filters warnings by kind.
+    pub fn warnings_by_kind(&self, kind: WarningKind) -> Vec<&Warning> {
+        self.warnings.iter().filter(|w| w.kind == kind).collect()
+    }
 }
 
 impl DependencyAnalysis {
@@ -98,21 +199,48 @@ pub fn analyze_dependencies(skill_path: &Path, content: &str) -> DependencyAnaly
                                     analysis.total_dep_size += meta.len();
                                 }
                                 Err(e) => {
-                                    analysis.warnings.push(format!(
+                                    let msg = format!(
                                         "Could not read metadata for {}: {}",
                                         entry.path().display(),
                                         e
-                                    ));
+                                    );
+                                    tracing::warn!(
+                                        path = %entry.path().display(),
+                                        error = %e,
+                                        kind = "metadata_access_failed",
+                                        "{}",
+                                        msg
+                                    );
+                                    analysis.warnings.push(
+                                        Warning::new(
+                                            WarningLevel::Warning,
+                                            WarningKind::MetadataAccessFailed,
+                                            msg,
+                                        )
+                                        .with_context(entry.path()),
+                                    );
                                 }
                             }
                         }
                     }
                     Err(e) => {
-                        analysis.warnings.push(format!(
-                            "failed to access entry in {}: {}",
-                            dir_path.display(),
-                            e
-                        ));
+                        let msg =
+                            format!("failed to access entry in {}: {}", dir_path.display(), e);
+                        tracing::warn!(
+                            dir = %dir_path.display(),
+                            error = %e,
+                            kind = "directory_entry_access_failed",
+                            "{}",
+                            msg
+                        );
+                        analysis.warnings.push(
+                            Warning::new(
+                                WarningLevel::Warning,
+                                WarningKind::DirectoryEntryAccessFailed,
+                                msg,
+                            )
+                            .with_context(&dir_path),
+                        );
                     }
                 }
             }
@@ -257,8 +385,15 @@ fn is_asset_extension(path: &str) -> bool {
 pub struct DependencyFileList {
     /// Files found in dependency directories.
     pub files: Vec<PathBuf>,
-    /// Warnings encountered (e.g., permission errors).
-    pub warnings: Vec<String>,
+    /// Structured warnings encountered (e.g., permission errors).
+    pub warnings: Vec<Warning>,
+}
+
+impl DependencyFileList {
+    /// Returns warnings as strings for backward compatibility.
+    pub fn warning_messages(&self) -> Vec<String> {
+        self.warnings.iter().map(|w| w.message.clone()).collect()
+    }
 }
 
 /// Get all files in a skill's dependency directories.
@@ -277,11 +412,23 @@ pub fn list_dependency_files(skill_path: &Path) -> DependencyFileList {
                         }
                     }
                     Err(e) => {
-                        result.warnings.push(format!(
-                            "failed to access entry in {}: {}",
-                            dir_path.display(),
-                            e
-                        ));
+                        let msg =
+                            format!("failed to access entry in {}: {}", dir_path.display(), e);
+                        tracing::warn!(
+                            dir = %dir_path.display(),
+                            error = %e,
+                            kind = "directory_entry_access_failed",
+                            "{}",
+                            msg
+                        );
+                        result.warnings.push(
+                            Warning::new(
+                                WarningLevel::Warning,
+                                WarningKind::DirectoryEntryAccessFailed,
+                                msg,
+                            )
+                            .with_context(&dir_path),
+                        );
                     }
                 }
             }
@@ -410,6 +557,147 @@ Nested brackets should not confuse: ![text with [brackets]](file.png)
         assert!(
             assets.iter().any(|d| d.target == "diagram.png"),
             "Should handle spaces in alt text"
+        );
+    }
+
+    // ---- Warning type tests ----
+
+    #[test]
+    fn test_warning_level_display() {
+        assert_eq!(WarningLevel::Info.to_string(), "info");
+        assert_eq!(WarningLevel::Warning.to_string(), "warning");
+        assert_eq!(WarningLevel::Error.to_string(), "error");
+    }
+
+    #[test]
+    fn test_warning_kind_display() {
+        assert_eq!(
+            WarningKind::MetadataAccessFailed.to_string(),
+            "metadata_access_failed"
+        );
+        assert_eq!(
+            WarningKind::DirectoryEntryAccessFailed.to_string(),
+            "directory_entry_access_failed"
+        );
+        assert_eq!(WarningKind::FileReadFailed.to_string(), "file_read_failed");
+    }
+
+    #[test]
+    fn test_warning_new_and_display() {
+        let w = Warning::new(
+            WarningLevel::Warning,
+            WarningKind::MetadataAccessFailed,
+            "Could not read file",
+        );
+        assert_eq!(w.level, WarningLevel::Warning);
+        assert_eq!(w.kind, WarningKind::MetadataAccessFailed);
+        assert_eq!(w.message, "Could not read file");
+        assert!(w.context.is_none());
+        assert_eq!(w.to_string(), "Could not read file");
+    }
+
+    #[test]
+    fn test_warning_with_context() {
+        let w = Warning::new(
+            WarningLevel::Error,
+            WarningKind::FileReadFailed,
+            "Read failed",
+        )
+        .with_context("/some/path");
+        assert_eq!(w.context, Some(PathBuf::from("/some/path")));
+    }
+
+    #[test]
+    fn test_warning_serde_roundtrip() {
+        let w = Warning::new(
+            WarningLevel::Info,
+            WarningKind::MetadataAccessFailed,
+            "test msg",
+        )
+        .with_context("/path/to/file");
+        let json = serde_json::to_string(&w).expect("serialize");
+        let parsed: Warning = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.level, w.level);
+        assert_eq!(parsed.kind, w.kind);
+        assert_eq!(parsed.message, w.message);
+        assert_eq!(parsed.context, w.context);
+    }
+
+    #[test]
+    fn test_dependency_analysis_warning_messages() {
+        let mut analysis = DependencyAnalysis::default();
+        analysis.warnings.push(Warning::new(
+            WarningLevel::Warning,
+            WarningKind::MetadataAccessFailed,
+            "msg1",
+        ));
+        analysis.warnings.push(Warning::new(
+            WarningLevel::Error,
+            WarningKind::FileReadFailed,
+            "msg2",
+        ));
+        let messages = analysis.warning_messages();
+        assert_eq!(messages, vec!["msg1", "msg2"]);
+    }
+
+    #[test]
+    fn test_dependency_analysis_warnings_by_level() {
+        let mut analysis = DependencyAnalysis::default();
+        analysis.warnings.push(Warning::new(
+            WarningLevel::Info,
+            WarningKind::MetadataAccessFailed,
+            "info msg",
+        ));
+        analysis.warnings.push(Warning::new(
+            WarningLevel::Warning,
+            WarningKind::MetadataAccessFailed,
+            "warning msg",
+        ));
+        analysis.warnings.push(Warning::new(
+            WarningLevel::Error,
+            WarningKind::FileReadFailed,
+            "error msg",
+        ));
+
+        assert_eq!(analysis.warnings_by_level(WarningLevel::Info).len(), 1);
+        assert_eq!(analysis.warnings_by_level(WarningLevel::Warning).len(), 1);
+        assert_eq!(analysis.warnings_by_level(WarningLevel::Error).len(), 1);
+    }
+
+    #[test]
+    fn test_dependency_analysis_warnings_by_kind() {
+        let mut analysis = DependencyAnalysis::default();
+        analysis.warnings.push(Warning::new(
+            WarningLevel::Warning,
+            WarningKind::MetadataAccessFailed,
+            "meta1",
+        ));
+        analysis.warnings.push(Warning::new(
+            WarningLevel::Warning,
+            WarningKind::MetadataAccessFailed,
+            "meta2",
+        ));
+        analysis.warnings.push(Warning::new(
+            WarningLevel::Error,
+            WarningKind::FileReadFailed,
+            "read",
+        ));
+
+        assert_eq!(
+            analysis
+                .warnings_by_kind(WarningKind::MetadataAccessFailed)
+                .len(),
+            2
+        );
+        assert_eq!(
+            analysis.warnings_by_kind(WarningKind::FileReadFailed).len(),
+            1
+        );
+        assert_eq!(
+            analysis
+                .warnings_by_kind(WarningKind::DirectoryEntryAccessFailed)
+                .len(),
+            0
         );
     }
 }

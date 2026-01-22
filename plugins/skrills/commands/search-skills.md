@@ -1,6 +1,7 @@
 ---
 description: Fuzzy search installed skills by name or description.
 argument-hint: "<query> [--threshold 0.3] [--limit 10]"
+triggers: search skills, find skill, lookup skill, skill search, which skill
 ---
 
 # Search Skills
@@ -24,3 +25,8 @@ Report search results including:
 - Match score
 - Brief description
 - Source (Claude, Codex, Copilot)
+
+Handle errors:
+- If query empty: Prompt for search query
+- If no matches found: Suggest broader search or lower threshold
+- If index unavailable: Report and suggest re-indexing

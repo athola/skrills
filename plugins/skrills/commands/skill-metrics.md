@@ -1,6 +1,7 @@
 ---
 description: Get aggregate statistics about discovered skills including counts, quality, and token usage.
 argument-hint: "[--include-validation]"
+triggers: skill metrics, skill stats, skill statistics, how many skills, skill count
 ---
 
 # Skill Metrics
@@ -19,3 +20,7 @@ Report metrics including:
 - Token usage statistics (total, average, max)
 - Dependency patterns (most depended-on skills)
 - Common tags and categories
+
+Handle errors:
+- If no skills found: Report empty state with setup suggestions
+- If validation fails: Report partial metrics with warning

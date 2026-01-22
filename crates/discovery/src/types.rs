@@ -114,8 +114,51 @@ pub struct SkillMeta {
     /// Content hash for change detection.
     pub hash: String,
     /// Optional description from frontmatter (cached for search).
+    ///
+    /// # Invariant
+    ///
+    /// When present (`Some`), the description MUST be non-empty after trimming.
+    /// An empty or whitespace-only description should be stored as `None`.
+    /// Use [`has_valid_description`](Self::has_valid_description) to check this invariant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+}
+
+impl SkillMeta {
+    /// Returns `true` if this skill has a valid (non-empty) description.
+    ///
+    /// A description is considered valid if it is `Some` and contains
+    /// non-whitespace characters. This enforces the invariant that
+    /// `Some("")` or `Some("   ")` should not occur.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use skrills_discovery::SkillMeta;
+    /// use skrills_discovery::SkillSource;
+    /// use std::path::PathBuf;
+    ///
+    /// let mut meta = SkillMeta {
+    ///     name: "test".to_string(),
+    ///     path: PathBuf::from("test.md"),
+    ///     source: SkillSource::Claude,
+    ///     root: PathBuf::from("/skills"),
+    ///     hash: "abc123".to_string(),
+    ///     description: Some("A helpful skill".to_string()),
+    /// };
+    /// assert!(meta.has_valid_description());
+    ///
+    /// meta.description = Some("".to_string());
+    /// assert!(!meta.has_valid_description());
+    ///
+    /// meta.description = None;
+    /// assert!(!meta.has_valid_description());
+    /// ```
+    pub fn has_valid_description(&self) -> bool {
+        self.description
+            .as_ref()
+            .is_some_and(|d| !d.trim().is_empty())
+    }
 }
 
 /// Metadata for a discovered agent definition.
@@ -678,5 +721,51 @@ Content."#,
         };
 
         assert!(meta.load_config().is_err());
+    }
+
+    // ============================================================
+    // SkillMeta tests
+    // ============================================================
+
+    fn make_skill_meta(description: Option<String>) -> SkillMeta {
+        SkillMeta {
+            name: "test-skill".to_string(),
+            path: PathBuf::from("/skills/test.md"),
+            source: SkillSource::Claude,
+            root: PathBuf::from("/skills"),
+            hash: "abc123".to_string(),
+            description,
+        }
+    }
+
+    #[test]
+    fn test_has_valid_description_with_content() {
+        let meta = make_skill_meta(Some("A helpful skill".to_string()));
+        assert!(meta.has_valid_description());
+    }
+
+    #[test]
+    fn test_has_valid_description_empty_string() {
+        let meta = make_skill_meta(Some("".to_string()));
+        assert!(!meta.has_valid_description());
+    }
+
+    #[test]
+    fn test_has_valid_description_whitespace_only() {
+        let meta = make_skill_meta(Some("   \t\n  ".to_string()));
+        assert!(!meta.has_valid_description());
+    }
+
+    #[test]
+    fn test_has_valid_description_none() {
+        let meta = make_skill_meta(None);
+        assert!(!meta.has_valid_description());
+    }
+
+    #[test]
+    fn test_has_valid_description_with_leading_trailing_whitespace() {
+        // Should still be valid if there's actual content
+        let meta = make_skill_meta(Some("  valid content  ".to_string()));
+        assert!(meta.has_valid_description());
     }
 }

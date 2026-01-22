@@ -291,6 +291,16 @@ fn collect_skills_from(
             seen.insert(name, (root_cfg.source.label(), root.display().to_string()));
         }
     }
+
+    // Log discovery summary for observability
+    let with_description = skills.iter().filter(|s| s.description.is_some()).count();
+    tracing::debug!(
+        total_skills = skills.len(),
+        with_description,
+        without_description = skills.len() - with_description,
+        "Skill discovery complete"
+    );
+
     Ok(skills)
 }
 
@@ -996,6 +1006,88 @@ Content
     }
 
     #[test]
+    fn extract_description_yaml_special_characters() {
+        // Test quotes in description
+        let content = r#"---
+name: test-skill
+description: "Description with 'quotes' and \"double quotes\""
+---
+Content
+"#;
+        let desc = extract_description(content);
+        assert_eq!(
+            desc,
+            Some("Description with 'quotes' and \"double quotes\"".to_string())
+        );
+
+        // Test colon in description (must be quoted in YAML)
+        let content = r#"---
+name: test-skill
+description: "Note: this has a colon"
+---
+Content
+"#;
+        let desc = extract_description(content);
+        assert_eq!(desc, Some("Note: this has a colon".to_string()));
+
+        // Test newlines in multiline description
+        let content = r#"---
+name: test-skill
+description: |
+  Line one
+  Line two
+---
+Content
+"#;
+        let desc = extract_description(content);
+        assert!(desc.is_some());
+        let d = desc.unwrap();
+        assert!(d.contains("Line one"));
+        assert!(d.contains("Line two"));
+    }
+
+    #[test]
+    fn extract_description_crlf_line_endings() {
+        // CRLF line endings (Windows-style)
+        let content = "---\r\nname: test-skill\r\ndescription: CRLF test\r\n---\r\nContent";
+        let desc = extract_description(content);
+        assert_eq!(desc, Some("CRLF test".to_string()));
+
+        // Mixed line endings
+        let content = "---\nname: test-skill\r\ndescription: Mixed endings\n---\r\nContent";
+        let desc = extract_description(content);
+        assert_eq!(desc, Some("Mixed endings".to_string()));
+    }
+
+    #[test]
+    fn extract_description_very_long_description() {
+        // Very long description (edge case)
+        let long_desc = "A".repeat(10_000);
+        let content = format!(
+            "---\nname: test-skill\ndescription: {}\n---\nContent",
+            long_desc
+        );
+        let desc = extract_description(&content);
+        assert_eq!(desc, Some(long_desc));
+    }
+
+    #[test]
+    fn extract_description_whitespace_only() {
+        // Whitespace-only descriptions should be treated as empty
+        let content = r#"---
+name: test-skill
+description: "   "
+---
+Content
+"#;
+        let desc = extract_description(content);
+        // Note: extract_description only filters empty strings, not whitespace-only.
+        // The has_valid_description() method on SkillMeta handles the whitespace check.
+        // This documents the current behavior.
+        assert!(desc.is_some()); // Returns Some("   ")
+    }
+
+    #[test]
     fn discover_skills_includes_description() {
         let tmp = tempdir().unwrap();
         let skill_dir = tmp.path().join("test-skill");
@@ -1022,5 +1114,74 @@ description: A skill with a cached description
             skills[0].description,
             Some("A skill with a cached description".to_string())
         );
+    }
+
+    #[test]
+    fn discover_skills_with_same_description() {
+        // Multiple skills can have identical descriptions - they're independent
+        let tmp = tempdir().unwrap();
+
+        // Create two skills with the same description
+        let skill1_dir = tmp.path().join("skill-one");
+        fs::create_dir_all(&skill1_dir).unwrap();
+        fs::write(
+            skill1_dir.join("SKILL.md"),
+            r#"---
+name: skill-one
+description: Shared description for database operations
+---
+# Skill One
+"#,
+        )
+        .unwrap();
+
+        let skill2_dir = tmp.path().join("skill-two");
+        fs::create_dir_all(&skill2_dir).unwrap();
+        fs::write(
+            skill2_dir.join("SKILL.md"),
+            r#"---
+name: skill-two
+description: Shared description for database operations
+---
+# Skill Two
+"#,
+        )
+        .unwrap();
+
+        let roots = vec![SkillRoot {
+            root: tmp.path().to_path_buf(),
+            source: SkillSource::Codex,
+        }];
+        let skills = discover_skills(&roots, None).unwrap();
+
+        assert_eq!(skills.len(), 2);
+        // Both should have the same description
+        let descriptions: Vec<_> = skills.iter().map(|s| &s.description).collect();
+        assert!(descriptions
+            .iter()
+            .all(|d| *d == &Some("Shared description for database operations".to_string())));
+    }
+
+    #[test]
+    fn extract_description_multiword_matching() {
+        // Test that multi-word descriptions are preserved correctly
+        // This is useful when skills search by first/middle/last word
+        let content = r#"---
+name: test-skill
+description: Database query optimization and performance tuning
+---
+Content
+"#;
+        let desc = extract_description(content).unwrap();
+
+        // All words should be present
+        assert!(desc.contains("Database"));
+        assert!(desc.contains("query"));
+        assert!(desc.contains("optimization"));
+        assert!(desc.contains("performance"));
+        assert!(desc.contains("tuning"));
+
+        // The exact phrase should be preserved
+        assert_eq!(desc, "Database query optimization and performance tuning");
     }
 }

@@ -34,7 +34,7 @@ Each audit log entry must include:
   "severity": "warning",
   "source": {
     "component": "mcp_server",
-    "version": "0.4.6"
+    "version": "<current_version>"
   },
   "actor": {
     "type": "client",
@@ -338,8 +338,6 @@ skill_operations = false  # Disable for high-volume environments
 
 - [Security Overview](security.md)
 - [Threat Model](threat-model.md)
-- [Secrets Management](secrets-management.md) (TODO)
-- [Rate Limiting](rate-limiting.md) (TODO)
 
 ---
 

@@ -310,12 +310,14 @@ fn instrument_root(
                     .io_error()
                     .map(get_actionable_hint)
                     .unwrap_or("Check system resources and file accessibility");
-                report.warnings.push(format!(
+                let msg = format!(
                     "failed to access entry in {}: {}. {}",
                     root.display(),
                     e,
                     hint
-                ));
+                );
+                tracing::warn!(root = %root.display(), error = %e, "{}", msg);
+                report.warnings.push(msg);
                 continue;
             }
         };
@@ -337,9 +339,9 @@ fn instrument_root(
             Ok(s) => s,
             Err(e) => {
                 let hint = get_actionable_hint(&e);
-                report
-                    .warnings
-                    .push(format!("failed to read {}: {e}. {hint}", path.display()));
+                let msg = format!("failed to read {}: {e}. {hint}", path.display());
+                tracing::warn!(path = %path.display(), error = %e, "{}", msg);
+                report.warnings.push(msg);
                 continue;
             }
         };
@@ -679,12 +681,14 @@ pub fn status(
                         .io_error()
                         .map(get_actionable_hint)
                         .unwrap_or("Check system resources and file accessibility");
-                    warnings.push(format!(
+                    let msg = format!(
                         "failed to access entry in {}: {}. {}",
                         root.display(),
                         e,
                         hint
-                    ));
+                    );
+                    tracing::warn!(root = %root.display(), error = %e, "{}", msg);
+                    warnings.push(msg);
                     continue;
                 }
             };

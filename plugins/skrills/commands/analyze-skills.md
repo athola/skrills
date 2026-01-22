@@ -1,6 +1,7 @@
 ---
 description: Analyze skills for token usage, dependencies, and optimization suggestions.
 argument-hint: "[--min-tokens N] [--no-suggestions]"
+triggers: analyze skills, skill tokens, skill optimization, skill dependencies, token usage
 ---
 
 # Analyze Skills
@@ -21,3 +22,7 @@ Report analysis including:
 - Quality score distribution
 - Dependency patterns
 - Optimization recommendations for large/complex skills
+
+Handle errors:
+- If no skills found: Report empty state with setup suggestions
+- If token counting fails: Report which skills failed to parse
