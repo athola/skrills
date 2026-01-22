@@ -4,6 +4,7 @@ version = "0.5.1"
 edition = "2021"
 license = "Apache-2.0"
 description = "Shared test utilities for skrills crates"
+publish = false
 
 [dependencies]
 tempfile = "3"
