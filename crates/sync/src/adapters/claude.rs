@@ -2,7 +2,7 @@
 
 use super::traits::{AgentAdapter, FieldSupport};
 use super::utils::{hash_content, is_hidden_path};
-use crate::common::{Command, McpServer, Preferences};
+use crate::common::{Command, McpServer, McpTransport, Preferences};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use anyhow::Context;
@@ -203,8 +203,19 @@ impl AgentAdapter for ClaudeAdapter {
         let mut servers = HashMap::new();
         if let Some(mcp) = settings.get("mcpServers").and_then(|v| v.as_object()) {
             for (name, config) in mcp {
+                // Determine transport type from "type" field (default to stdio)
+                let transport = match config.get("type").and_then(|v| v.as_str()) {
+                    Some("http") => McpTransport::Http,
+                    Some("stdio") | None => McpTransport::Stdio,
+                    Some(other) => {
+                        tracing::warn!(unknown_type = other, name = %name, "Unknown MCP server type, defaulting to stdio");
+                        McpTransport::Stdio
+                    }
+                };
+
                 let server = McpServer {
                     name: name.clone(),
+                    transport: transport.clone(),
                     command: config
                         .get("command")
                         .and_then(|v| v.as_str())
@@ -228,6 +239,15 @@ impl AgentAdapter for ClaudeAdapter {
                                 .collect()
                         })
                         .unwrap_or_default(),
+                    url: config.get("url").and_then(|v| v.as_str()).map(String::from),
+                    headers: config
+                        .get("headers")
+                        .and_then(|v| v.as_object())
+                        .map(|obj| {
+                            obj.iter()
+                                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                                .collect()
+                        }),
                     enabled: config
                         .get("disabled")
                         .and_then(|v| v.as_bool())
@@ -426,13 +446,45 @@ impl AgentAdapter for ClaudeAdapter {
 
         for (name, server) in servers {
             let mut server_config = serde_json::Map::new();
-            server_config.insert("command".into(), serde_json::json!(server.command));
-            if !server.args.is_empty() {
-                server_config.insert("args".into(), serde_json::json!(server.args));
+
+            // Write transport type (only for non-stdio to keep config clean)
+            if server.transport != McpTransport::Stdio {
+                server_config.insert(
+                    "type".into(),
+                    serde_json::json!(match server.transport {
+                        McpTransport::Stdio => "stdio",
+                        McpTransport::Http => "http",
+                    }),
+                );
             }
-            if !server.env.is_empty() {
-                server_config.insert("env".into(), serde_json::json!(server.env));
+
+            match server.transport {
+                McpTransport::Http => {
+                    // HTTP transport: write url and headers
+                    if let Some(ref url) = server.url {
+                        server_config.insert("url".into(), serde_json::json!(url));
+                    }
+                    if let Some(ref headers) = server.headers {
+                        let headers_obj: serde_json::Map<String, serde_json::Value> = headers
+                            .iter()
+                            .map(|(k, v)| (k.clone(), serde_json::json!(v)))
+                            .collect();
+                        server_config
+                            .insert("headers".into(), serde_json::Value::Object(headers_obj));
+                    }
+                }
+                McpTransport::Stdio => {
+                    // stdio transport: write command, args, env
+                    server_config.insert("command".into(), serde_json::json!(server.command));
+                    if !server.args.is_empty() {
+                        server_config.insert("args".into(), serde_json::json!(server.args));
+                    }
+                    if !server.env.is_empty() {
+                        server_config.insert("env".into(), serde_json::json!(server.env));
+                    }
+                }
             }
+
             if !server.enabled {
                 server_config.insert("disabled".into(), serde_json::json!(true));
             }
@@ -975,9 +1027,12 @@ mod tests {
             "my-server".to_string(),
             McpServer {
                 name: "my-server".to_string(),
+                transport: McpTransport::Stdio,
                 command: "/bin/server".to_string(),
                 args: vec!["arg1".to_string()],
                 env: HashMap::new(),
+                url: None,
+                headers: None,
                 enabled: true,
             },
         );
@@ -1125,9 +1180,12 @@ mod tests {
             "test-server".to_string(),
             McpServer {
                 name: "test-server".to_string(),
+                transport: McpTransport::Stdio,
                 command: "/bin/test".to_string(),
                 args: vec![],
                 env: HashMap::new(),
+                url: None,
+                headers: None,
                 enabled: true,
             },
         );
@@ -1150,5 +1208,58 @@ mod tests {
 
         let result = adapter.write_preferences(&prefs);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn read_mcp_servers_http_type() {
+        // Test reading HTTP-type MCP servers (issue #111)
+        let tmp = tempdir().unwrap();
+        let settings_path = tmp.path().join("settings.json");
+        fs::write(
+            &settings_path,
+            r#"{
+            "mcpServers": {
+                "context7": {
+                    "type": "http",
+                    "url": "https://mcp.context7.com/mcp",
+                    "headers": {
+                        "CONTEXT7_API_KEY": "test-key"
+                    }
+                },
+                "skrills": {
+                    "type": "stdio",
+                    "command": "/usr/bin/skrills",
+                    "args": ["serve"]
+                }
+            }
+        }"#,
+        )
+        .unwrap();
+
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let servers = adapter.read_mcp_servers().unwrap();
+
+        assert_eq!(servers.len(), 2);
+
+        // Verify HTTP server
+        let http_server = servers.get("context7").unwrap();
+        assert_eq!(http_server.transport, McpTransport::Http);
+        assert_eq!(
+            http_server.url,
+            Some("https://mcp.context7.com/mcp".to_string())
+        );
+        assert_eq!(
+            http_server.headers,
+            Some(HashMap::from([(
+                "CONTEXT7_API_KEY".to_string(),
+                "test-key".to_string()
+            )]))
+        );
+
+        // Verify stdio server
+        let stdio_server = servers.get("skrills").unwrap();
+        assert_eq!(stdio_server.transport, McpTransport::Stdio);
+        assert_eq!(stdio_server.command, "/usr/bin/skrills");
+        assert_eq!(stdio_server.args, vec!["serve"]);
     }
 }
