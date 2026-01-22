@@ -34,16 +34,16 @@ Use skrills as an MCP server for dynamic skill loading in both Claude Code and C
 *See the [MCP tutorial](docs/tutorials/mcp.md) for setup instructions.*
 
 ## Why Skrills
-Skrills manages skills and configurations for Claude Code, Codex CLI, and GitHub Copilot CLI. Each CLI has different requirements: Claude Code accepts raw markdown, while Codex and Copilot require strict YAML frontmatter. Skrills validates these files against each CLI's rules, preventing compatibility errors. It also syncs skills across all CLIs, provides diagnostics, and runs an MCP server from a single binary.
+Skrills manages skills for Claude Code, Codex CLI, and GitHub Copilot CLI. Claude Code accepts raw markdown, but Codex and Copilot enforce YAML frontmatter. Skrills validates these files against each CLI's rules to catch compatibility errors before runtime. It also syncs skills across CLIs, provides diagnostics, and runs an MCP server.
 
-The `sync-commands` tool checks file hashes before writing to preserve local customizations. Analytics tools report token usage to suggest optimizations for context window limits.
+The `sync-commands` tool checks file hashes before writing to avoid overwriting user edits. Analytics tools report token usage to help you stay within context window limits.
 
 ## Architecture (workspace crates)
 - `crates/server`: MCP server runtime, CLI, and HTTP transport with security middleware.
-  - `mcp_gateway/`: Context-optimized tool loading with lazy schema retrieval (0.4.9+).
+  - `mcp_gateway/`: Loads tools lazily to save context (0.4.9+).
 - `crates/validate`: Validation logic for Claude Code, Codex CLI, and Copilot CLI compatibility.
 - `crates/analyze`: Token counting, dependency analysis, and optimization.
-- `crates/intelligence`: Recommendations, project analysis, skill generation, and usage analytics persistence.
+- `crates/intelligence`: Recommendations, project analysis, skill generation, and analytics.
 - `crates/sync`: Multi-directional sync logic (skills, commands, agents, prefs, MCP servers) with adapters for Claude, Codex, and Copilot.
 - `crates/discovery`: Skill discovery and ranking.
 - `crates/state`: Environment configuration, manifest settings, and runtime overrides.
@@ -177,38 +177,34 @@ The `--autofix` flag derives missing frontmatter from the file path and content.
 
 ## MCP Tools
 
-When running as an MCP server (`skrills serve`), several categories of tools become available.
+When running as an MCP server (`skrills serve`), these tools become available.
 
 **Validation & Analysis**
-`validate-skills` checks CLI compatibility, while `analyze-skills` reports token usage and dependencies. `skill-metrics` aggregates quality and dependency statistics.
+
+Validation tools like `validate-skills` and `analyze-skills` check compatibility and token usage. `skill-metrics` aggregates quality stats.
 
 **Synchronization**
-A suite of tools handles data transfer between Claude, Codex, and Copilot. `sync-skills`, `sync-commands`, `sync-mcp-servers`, `sync-preferences`, and `sync-all` cover various configuration aspects. `sync-from-claude`, `sync-from-copilot`, and `sync-to-copilot` handle direction-specific sync. `sync-status` provides a dry-run preview of changes. Agent sync from Claude to Copilot transforms the format automatically (removes `model`/`color`, adds `target: github-copilot`). Note: Copilot does not support slash commands, so command sync is skipped when Copilot is the source or target.
+
+Use `sync-skills`, `sync-commands`, `sync-mcp-servers`, and `sync-preferences` to transfer data between Claude, Codex, and Copilot. `sync-all` runs them all. Direction-specific tools like `sync-from-claude`, `sync-from-copilot`, and `sync-to-copilot` handle the transfer. Agent sync from Claude to Copilot transforms the format automatically (removes `model`/`color`, adds `target: github-copilot`). Copilot lacks slash command support, so command sync is skipped when Copilot is the source or target. `sync-status` provides a dry-run preview.
 
 **Dependencies & Loading**
-`resolve-dependencies` finds direct or transitive relationships for a skill URI. `skill-loading-status` reports on root scanning and marker coverage. `enable-skill-trace` and `disable-skill-trace` manage debug skills for tracing, while `skill-loading-selftest` confirms loading via a probe.
+
+Tools like `resolve-dependencies` find skill relationships. `skill-loading-status` reports on root scanning and marker coverage. Debugging tools `enable-skill-trace` and `disable-skill-trace` manage debug skills, while `skill-loading-selftest` confirms loading via a probe.
 
 **Intelligence**
-`recommend-skills` suggests related skills based on dependencies, and `recommend-skills-smart` adds usage patterns and project context to these recommendations. `analyze-project-context` scans languages and frameworks to inform suggestions. `suggest-new-skills` identifies gaps, and `create-skill` generates new skills via GitHub search, LLM generation, or empirical patterns. `search-skills-github` and `search-skills-fuzzy` provide search capabilities. Fuzzy search matches against both skill names and descriptions (0.4.8+).
+
+Intelligence tools suggest skills based on your project. `recommend-skills-smart` uses dependencies and usage patterns, while `analyze-project-context` scans languages and frameworks. `suggest-new-skills` identifies gaps. `create-skill` generates new skills via GitHub search (`search-skills-github`) or LLM generation. Fuzzy search (`search-skills-fuzzy`) matches against skill names and descriptions.
 
 **Context Optimization (0.4.9+)**
-`list-mcp-tools` returns tool names and descriptions without full schemas. `describe-mcp-tool` loads the full schema for a specific tool. `get-context-stats` reports estimated tokens saved and schema load efficiency.
+
+To save tokens, `list-mcp-tools` returns tool names without full schemas, and `describe-mcp-tool` loads schemas on demand. `get-context-stats` reports efficiency.
 
 > **Testing**: Tool handler tests cover edge cases, dry-run modes, and target validation for Claude, Codex, Copilot, and all targets.
 
-### Intelligence tools
-- `recommend-skills-smart` - Smart recommendations using dependencies, usage patterns, and project context
-- `analyze-project-context` - Analyze languages, frameworks, and keywords in a project directory
-- `suggest-new-skills` - Identify skill gaps based on context and usage
-- `create-skill` - Create a new skill via GitHub search, LLM generation, empirical patterns, or combinations
-- `search-skills-github` - Search GitHub for existing `SKILL.md` files
-- `search-skills-fuzzy` - Trigram-based fuzzy search for installed skills (typo-tolerant, matches names and descriptions)
+### Intelligence details
 
-#### Empirical skill creation (0.4.4+)
-The `--method empirical` option mines Claude Code and Codex CLI session history to extract successful tool sequences and failure anti-patterns. It clusters similar sessions and generates skills grounded in observed behavior rather than LLM imagination.
-
-#### Comparative recommendations (0.4.4+)
-Deviation scoring compares actual skill-assisted outcomes against category baselines (Testing, Debugging, Documentation, etc.) to identify underperforming skills and surface improvement opportunities.
+- **Empirical skill creation (0.4.4+)**: The `--method empirical` option mines Claude Code and Codex CLI session history to extract successful tool sequences and failure anti-patterns. It clusters similar sessions and generates skills grounded in observed behavior.
+- **Comparative recommendations (0.4.4+)**: Deviation scoring compares actual skill-assisted outcomes against category baselines (Testing, Debugging, Documentation) to identify underperforming skills.
 
 **CLI parity notes**:
 - `skrills sync-from-claude` is an alias for `skrills sync` (copy Claude skills into the Codex mirror).
@@ -296,7 +292,7 @@ make fmt lint test --quiet
 
 Claude Code and Codex CLI do not inherently report which `SKILL.md` files were injected into the current prompt. Skrills provides an opt-in, deterministic workflow for validation:
 
-This workflow helps with debugging. The trace/probe skills add prompt overhead; remove them when finished.
+Use this workflow to debug skill injection. Trace/probe skills add prompt overhead, so remove them when done.
 
 1. Call `enable-skill-trace` (use `dry_run: true` to preview). This installs two debug skills and can instrument skill files by appending `<!-- skrills-skill-id: ... -->` markers (with optional backups).
 2. Restart the Claude/Codex session if the client does not hot-reload skills.

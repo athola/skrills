@@ -1,7 +1,6 @@
 //! Skill validation for Claude Code and Codex CLI.
 //!
-//! This crate provides validation for SKILL.md files against the requirements
-//! of both Claude Code (permissive) and Codex CLI (strict).
+//! Validates `SKILL.md` files against Claude Code (permissive), Codex CLI (strict), and GitHub Copilot CLI (strict) requirements.
 //!
 //! # Example
 //!
@@ -46,7 +45,7 @@ pub use frontmatter::{
 use std::path::Path;
 use walkdir::WalkDir;
 
-/// Validate a single skill file.
+/// Validates a single skill file.
 pub fn validate_skill(path: &Path, content: &str, target: ValidationTarget) -> ValidationResult {
     match target {
         ValidationTarget::Claude => claude::validate_claude(path, content),
@@ -117,7 +116,7 @@ pub fn validate_skill(path: &Path, content: &str, target: ValidationTarget) -> V
     }
 }
 
-/// Validate all skills in a directory.
+/// Validates all skills in a directory.
 ///
 /// Recursively walks the directory looking for `SKILL.md` files,
 /// skipping hidden directories and symlinks to match Codex discovery behavior.
@@ -156,12 +155,12 @@ pub fn validate_all(dir: &Path, target: ValidationTarget) -> Result<Vec<Validati
     Ok(results)
 }
 
-/// Quick check if a skill is Codex-compatible.
+/// Checks if a skill is Codex-compatible.
 pub fn is_codex_compatible(content: &str) -> bool {
     codex::is_codex_compatible(content)
 }
 
-/// Quick check if a skill is Copilot-compatible.
+/// Checks if a skill is Copilot-compatible.
 pub fn is_copilot_compatible(content: &str) -> bool {
     copilot::is_copilot_compatible(content)
 }
@@ -186,7 +185,7 @@ pub struct ValidationSummary {
 }
 
 impl ValidationSummary {
-    /// Create a summary from validation results.
+    /// Creates a summary from validation results.
     pub fn from_results(results: &[ValidationResult]) -> Self {
         let mut summary = ValidationSummary {
             total: results.len(),

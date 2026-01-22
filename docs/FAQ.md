@@ -1,33 +1,33 @@
 # Frequently Asked Questions
 
-### Why did the installer URL with `/main/` fail?
+### Why does the installer fail with `/main/`?
 
-The installer fails if the repository's default branch isn't named `main`. Use the `/HEAD/` path to automatically resolve the latest commit on the default branch: `https://raw.githubusercontent.com/${SKRILLS_GH_REPO:-athola/skrills}/HEAD/scripts/install.sh`.
+The installer needs `/HEAD/` to resolve the default branch if it isn't named `main`. Use `https://raw.githubusercontent.com/${SKRILLS_GH_REPO:-athola/skrills}/HEAD/scripts/install.sh`.
 
-### Which release asset should I download manually?
+### Which release asset should I download?
 
-Download the archive for your system's architecture (e.g., `skrills-x86_64-unknown-linux-gnu.tar.gz`). The binary is at the root of the archive.
+Download the archive matching your system architecture (e.g., `skrills-x86_64-unknown-linux-gnu.tar.gz`). The binary is at the root.
 
-### How do I resolve the `MCP startup failed: missing field "type"` error in Codex?
+### How do I fix the `MCP startup failed: missing field "type"` error in Codex?
 
 The MCP server registration is missing `type = "stdio"`. Reinstall with the latest installer, or fix manually:
 
-1. Add `type: "stdio"` to the `skrills` entry in `~/.codex/mcp_servers.json`
-2. Add `type = "stdio"` under `[mcp_servers."skrills"]` in `~/.codex/config.toml`
-3. Restart Codex
+1. Add `type: "stdio"` to `skrills` in `~/.codex/mcp_servers.json`
+2. Add `type = "stdio"` to `[mcp_servers."skrills"]` in `~/.codex/config.toml`
+3. Restart Codex.
 
 Run `skrills doctor` to verify.
 
-### Does this project replace my existing Claude skills?
+### Will this overwrite my existing skills?
 
-No. Skrills is non-destructive. It mirrors skills between Claude and Codex and only overwrites files if you explicitly run `sync` commands (and `--skip-existing-commands` prevents overwriting local changes).
+No. Skrills mirrors skills between Claude and Codex but only overwrites files if you explicitly run `sync` commands (and use `--skip-existing-commands` to protect local changes).
 
-### How is this project different from other skill management tools?
+### How is Skrills different from other tools?
 
-Skrills prioritizes validation and portability:
-- **Validation**: Checks skills against Claude Code (permissive) and Codex CLI (strict) requirements.
-- **Analysis**: Reports token usage to help optimize context.
-- **Bidirectional Sync**: Keeps configurations consistent between CLIs.
+Skrills focuses on validation and portability:
+- **Validation**: Checks compatibility for Claude Code (permissive), Codex CLI (strict), and Copilot CLI (strict).
+- **Analysis**: Reports token usage.
+- **Sync**: Keeps configurations consistent across CLIs.
 
 ### How do I validate skills for Codex compatibility?
 
@@ -36,30 +36,27 @@ skrills validate --target codex              # Check Codex compatibility
 skrills validate --target codex --autofix    # Auto-add missing frontmatter
 ```
 
-### How do I build the documentation locally?
+### How do I build documentation locally?
 
-Use the `Makefile`:
-- `make book` - Build and open the mdBook
-- `make book-serve` - Live-reloading as you edit
-- `make docs` - Generate Rust API documentation
+Use `make`:
+- `make book`: Build and open the mdBook
+- `make book-serve`: Live-reload
+- `make docs`: Generate Rust API docs
 
-### Does the system work offline?
+### Does it work offline?
 
-Yes. The MCP server and CLI work without internet access if the binary and skills are local.
+Yes. The MCP server and CLI work locally without internet access.
 
-### Why doesn't Copilot have slash commands like Claude or Codex?
+### Why doesn't Copilot have slash commands?
 
-GitHub Copilot CLI uses a different architectural paradigm. Instead of slash commands (`/command-name`), Copilot has:
+GitHub Copilot CLI uses **Skills** (reusable instructions) and **Agents** (autonomous actors) instead of slash commands.
 
-1. **Skills** (`~/.copilot/skills/<name>/SKILL.md`) - Reusable instruction sets that extend capabilities (same format as Codex)
-2. **Agents** (`~/.copilot/agents/*.md`) - Autonomous actors with defined tools, targets, and behaviors
+When syncing from Claude:
+- **Skills**: Sync normally.
+- **Commands**: Skipped (no equivalent).
+- **Agents**: Transformed automatically (`model`/`color` removed, `target: github-copilot` added).
 
-When syncing from Claude to Copilot:
-- **Skills**: Sync normally (compatible formats)
-- **Commands**: Skipped (no equivalent in Copilot)
-- **Agents**: Sync with format transformation (Claude's `model`/`color` → Copilot's `target: github-copilot`)
-
-If you want command-like reusable prompts in Copilot, create an agent instead:
+To create a reusable prompt in Copilot, use an agent:
 
 ```yaml
 # ~/.copilot/agents/my-prompt.agent.md
@@ -72,8 +69,6 @@ target: github-copilot
 Your prompt instructions here...
 ```
 
-The agent paradigm is more powerful but fundamentally different - agents have defined tool access and autonomous behavior rather than being simple prompt templates.
+### Security considerations?
 
-### What are the security considerations?
-
-Skrills operates with minimal privileges over standard I/O and has no bundled secrets. You control which skill directories are exposed. Always review third-party skills before use.
+Skrills operates with standard I/O and no bundled secrets. You control exposed skill directories. always review third-party skills.

@@ -70,7 +70,7 @@ impl DiscoveryConfig {
     }
 }
 
-/// Returns the default skill source priority order.
+/// Returns the default skill source priority.
 pub fn default_priority() -> Vec<SkillSource> {
     vec![
         SkillSource::Codex,
@@ -126,7 +126,7 @@ pub fn load_priority_override(
     }
 }
 
-/// Checks if a `DirEntry` is a skill file (`SKILL.md`).
+/// Checks if a `DirEntry` is a `SKILL.md` file.
 fn is_skill_file(entry: &walkdir::DirEntry) -> bool {
     entry.file_type().is_file() && entry.file_name() == "SKILL.md"
 }
@@ -178,7 +178,7 @@ fn file_hash(path: &Path) -> Result<String> {
 
 /// Extracts the description from a skill file's YAML frontmatter.
 ///
-/// Parses the frontmatter between `---` delimiters and extracts the `description` field.
+/// Parses frontmatter between `---` delimiters to extract the `description` field.
 /// Returns `None` if no frontmatter or no description is present.
 fn extract_description(content: &str) -> Option<String> {
     let trimmed = content.trim_start();
@@ -304,9 +304,9 @@ fn collect_skills_from(
     Ok(skills)
 }
 
-/// Discovers and collects skill metadata from the provided roots.
+/// Discovers skill metadata from the provided roots.
 ///
-/// If `dup_log` is provided, logs duplicate skill information. Duplicates happen
+/// Logs duplicate skill information if `dup_log` is provided. Duplicates happen
 /// when a skill with the same name exists in multiple roots; only the highest priority
 /// one is kept.
 ///
@@ -318,9 +318,9 @@ pub fn discover_skills(
     collect_skills_from(roots, dup_log, DEFAULT_MAX_DEPTH)
 }
 
-/// Discovers and collects skill metadata from the provided roots with a custom depth limit.
+/// Discovers skill metadata from the provided roots with a custom depth limit.
 ///
-/// If `dup_log` is provided, logs duplicate skill information. Duplicates happen
+/// Logs duplicate skill information if `dup_log` is provided. Duplicates happen
 /// when a skill with the same name exists in multiple roots; only the highest priority
 /// one is kept.
 ///
@@ -380,9 +380,9 @@ pub fn discover_agents(roots: &[SkillRoot]) -> Result<Vec<crate::types::AgentMet
     Ok(agents)
 }
 
-/// Extracts skill references (words not matching "skills" or "rules") from an AGENTS.md document.
+/// Extracts skill references from an AGENTS.md document.
 ///
-/// Tokenizes the input markdown and collects alphanumeric strings that are at least three
+/// Tokenizes input markdown to collect alphanumeric strings that are at least three
 /// characters long and not common keywords.
 pub fn extract_refs_from_agents(md: &str) -> std::collections::HashSet<String> {
     let mut refs = std::collections::HashSet::new();
@@ -452,7 +452,7 @@ pub fn default_roots(home: &Path) -> Vec<SkillRoot> {
     roots
 }
 
-/// Builds skill roots from extra directories (project-provided).
+/// Builds skill roots from extra directories.
 pub fn extra_skill_roots(extra: &[PathBuf]) -> Vec<SkillRoot> {
     extra
         .iter()
@@ -469,9 +469,9 @@ pub fn hash_file(path: &Path) -> Result<String> {
     file_hash(path)
 }
 
-/// Determines the effective skill source priority order.
+/// Determines effective skill source priority.
 ///
-/// Uses `override_order` if provided; otherwise, uses `default_priority`.
+/// Uses `override_order` if provided; otherwise, defaults to `default_priority`.
 ///
 /// ```
 /// use skrills_discovery::{priority_with_override, SkillSource};
