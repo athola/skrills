@@ -59,6 +59,8 @@ pub struct TestFixture {
     pub claude_skills: PathBuf,
     /// Path to ~/.codex/skills in the temp environment
     pub codex_skills: PathBuf,
+    /// Path to ~/.copilot/skills in the temp environment
+    pub copilot_skills: PathBuf,
 }
 
 impl TestFixture {
@@ -67,20 +69,24 @@ impl TestFixture {
     /// Creates:
     /// - `$HOME/.claude/skills/`
     /// - `$HOME/.codex/skills/`
+    /// - `$HOME/.copilot/skills/`
     ///
     /// Does NOT set HOME env var - use `home_guard()` for that.
     pub fn new() -> std::io::Result<Self> {
         let tempdir = tempfile::tempdir()?;
         let claude_skills = tempdir.path().join(".claude/skills");
         let codex_skills = tempdir.path().join(".codex/skills");
+        let copilot_skills = tempdir.path().join(".copilot/skills");
 
         std::fs::create_dir_all(&claude_skills)?;
         std::fs::create_dir_all(&codex_skills)?;
+        std::fs::create_dir_all(&copilot_skills)?;
 
         Ok(Self {
             tempdir,
             claude_skills,
             codex_skills,
+            copilot_skills,
         })
     }
 
@@ -189,8 +195,10 @@ mod tests {
         let fixture = TestFixture::new().expect("fixture creation");
         assert!(fixture.claude_skills.exists());
         assert!(fixture.codex_skills.exists());
+        assert!(fixture.copilot_skills.exists());
         assert!(fixture.claude_skills.is_dir());
         assert!(fixture.codex_skills.is_dir());
+        assert!(fixture.copilot_skills.is_dir());
     }
 
     #[test]
@@ -199,6 +207,7 @@ mod tests {
         let home = fixture.home_path();
         assert!(home.exists());
         assert!(home.join(".claude/skills").exists());
+        assert!(home.join(".copilot/skills").exists());
     }
 
     #[test]
