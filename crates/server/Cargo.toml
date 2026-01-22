@@ -67,4 +67,4 @@ rmcp = { workspace = true, features = ["client", "transport-async-rw", "transpor
 wiremock = "0.6"
 tokio-util = "0.7"
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
-skrills_test_utils = { path = "../test-utils", version = "0.5.1" }
+skrills_test_utils = { path = "../test-utils" }

@@ -203,7 +203,7 @@ fn extract_description(content: &str) -> Option<String> {
     }
 
     match serde_yaml::from_str::<MinimalFrontmatter>(yaml) {
-        Ok(fm) => fm.description.filter(|d| !d.is_empty()),
+        Ok(fm) => fm.description.filter(|d| !d.trim().is_empty()),
         Err(e) => {
             tracing::debug!(error = %e, "Failed to parse skill frontmatter for description");
             None
@@ -294,7 +294,7 @@ fn collect_skills_from(
 
     // Log discovery summary for observability
     let with_description = skills.iter().filter(|s| s.description.is_some()).count();
-    tracing::debug!(
+    tracing::info!(
         total_skills = skills.len(),
         with_description,
         without_description = skills.len() - with_description,
@@ -1073,7 +1073,7 @@ Content
 
     #[test]
     fn extract_description_whitespace_only() {
-        // Whitespace-only descriptions should be treated as empty
+        // Whitespace-only descriptions are filtered out at extraction
         let content = r#"---
 name: test-skill
 description: "   "
@@ -1081,10 +1081,10 @@ description: "   "
 Content
 "#;
         let desc = extract_description(content);
-        // Note: extract_description only filters empty strings, not whitespace-only.
-        // The has_valid_description() method on SkillMeta handles the whitespace check.
-        // This documents the current behavior.
-        assert!(desc.is_some()); // Returns Some("   ")
+        assert!(
+            desc.is_none(),
+            "Whitespace-only descriptions should return None"
+        );
     }
 
     #[test]

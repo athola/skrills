@@ -852,7 +852,8 @@ name: duplicate
     fn test_yaml_error_format_consistency() {
         // Test that various YAML errors all produce consistent error formatting.
         // The error format is: "Invalid YAML frontmatter at line X, column Y: {details}"
-        // or the fallback: "Invalid YAML frontmatter: {details}" when no location.
+        // (The fallback "Invalid YAML frontmatter: {details}" is used when errors
+        // lack location info, but most serde_yaml errors include location).
         //
         // All errors should start with the "Invalid YAML frontmatter" prefix.
         let test_cases = [

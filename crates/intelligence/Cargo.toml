@@ -36,4 +36,4 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 wiremock = "0.6"
 serial_test = "3.0"
 proptest = "1.4"
-skrills_test_utils = { path = "../test-utils", version = "0.5.1" }
+skrills_test_utils = { path = "../test-utils" }

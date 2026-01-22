@@ -461,4 +461,67 @@ mod tests {
         // "bar" has low similarity to "foo"
         assert!(!has_similar_skill("bar", skills.iter().cloned(), 0.8));
     }
+
+    #[test]
+    fn test_match_skill_multi_word_description_first_word() {
+        // Query matches first word of multi-word description
+        let (score, field) = match_skill(
+            "testing",
+            "random-name",
+            Some("Testing framework for unit tests"),
+        );
+        assert!(score > 0.5, "Should match first word: got score {score}");
+        assert_eq!(field, MatchedField::Description);
+    }
+
+    #[test]
+    fn test_match_skill_multi_word_description_middle_word() {
+        // Query matches middle word of multi-word description
+        let (score, field) = match_skill(
+            "framework",
+            "random-name",
+            Some("Testing framework for unit tests"),
+        );
+        assert!(score > 0.5, "Should match middle word: got score {score}");
+        assert_eq!(field, MatchedField::Description);
+    }
+
+    #[test]
+    fn test_match_skill_multi_word_description_last_word() {
+        // Query matches last word of multi-word description
+        let (score, field) = match_skill(
+            "tests",
+            "random-name",
+            Some("Testing framework for unit tests"),
+        );
+        assert!(score > 0.5, "Should match last word: got score {score}");
+        assert_eq!(field, MatchedField::Description);
+    }
+
+    #[test]
+    fn test_match_skill_special_characters_in_description() {
+        // Description with quotes, colons, special YAML characters
+        let (score, field) = match_skill(
+            "database",
+            "random-name",
+            Some("Database: supports \"SQL\" and 'NoSQL' with: colons"),
+        );
+        assert!(
+            score > 0.5,
+            "Should handle special chars: got score {score}"
+        );
+        assert_eq!(field, MatchedField::Description);
+    }
+
+    #[test]
+    fn test_match_skill_very_long_description() {
+        // Edge case: very long description
+        let long_desc = "A ".repeat(1000) + "database ";
+        let (score, _field) = match_skill("database", "random-name", Some(&long_desc));
+        // Should still find the match despite long description
+        assert!(
+            score > 0.1,
+            "Should handle long descriptions: got score {score}"
+        );
+    }
 }
