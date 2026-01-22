@@ -13,6 +13,10 @@
 
 Skills support engine for Claude Code, Codex CLI, and GitHub Copilot CLI. Validates, analyzes, and syncs skills across all three CLIs.
 
+## What's New
+
+**v0.5.2** (2026-01-22) - Hotfix: Dependency cleanup and dead code removal. Removed unused dependencies (`pastey`, `sha2`, `flate2`) and cleaned up unused methods. See [changelog](book/src/changelog.md) for full history.
+
 ## Demos
 
 ### Quickstart

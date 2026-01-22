@@ -22,16 +22,6 @@ fn set_test_home(dir: &TempDir) {
     env::set_var("HOME", dir.path());
 }
 
-/// Create a test directory structure within the actual home directory
-/// This is more reliable for testing
-#[allow(dead_code)]
-fn create_isolated_test_dirs(_name: &str) -> Result<(PathBuf, PathBuf)> {
-    let temp = create_test_home()?;
-    let claude_dir = temp.path().join(".claude");
-    let codex_dir = temp.path().join(".codex");
-    Ok((claude_dir, codex_dir))
-}
-
 #[cfg(test)]
 mod client_tests {
     use super::*;

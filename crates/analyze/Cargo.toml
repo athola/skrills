@@ -15,7 +15,6 @@ categories = ["development-tools"]
 serde = { workspace = true }
 serde_json = { workspace = true }
 regex = "1"
-anyhow = { workspace = true }
 walkdir = { workspace = true }
 thiserror = { workspace = true }
 semver = { workspace = true }

@@ -23,7 +23,6 @@ reqwest = { workspace = true, features = ["json"] }
 walkdir.workspace = true
 toml.workspace = true
 dirs.workspace = true
-regex.workspace = true
 tracing.workspace = true
 
 # Additional dependencies for intelligence features

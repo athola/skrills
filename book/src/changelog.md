@@ -1,5 +1,10 @@
 # Changelog Highlights
 
+## 0.5.2 (2026-01-22)
+
+- **Dependency Cleanup**: Removed unused dependencies (`pastey`, `sha2`, `flate2`) from `crates/server`.
+- **Dead Code Removal**: Removed unused methods from `SkillCache` and unused imports from metrics and test modules.
+
 ## 0.5.1 (2026-01-21)
 
 - **Refactor: Skill Trace Commands**: Split monolithic `/skill-trace` into three focused commands:

@@ -18,7 +18,6 @@ serde_json.workspace = true
 sha2.workspace = true
 walkdir.workspace = true
 dirs.workspace = true
-thiserror.workspace = true
 tracing.workspace = true
 skrills-validate = { path = "../validate", version = "0.5.1" }
 

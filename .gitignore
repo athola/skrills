@@ -14,3 +14,4 @@ writing-clearly-and-concisely/
 .npm-cache/
 .mcp.json
 docs/archive/
+*.info

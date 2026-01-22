@@ -26,7 +26,6 @@ time.workspace = true
 reqwest.workspace = true
 thiserror.workspace = true
 tempfile.workspace = true
-parking_lot.workspace = true
 toml.workspace = true
 
 skrills-discovery = { path = "../discovery", version = "0.5.1" }
