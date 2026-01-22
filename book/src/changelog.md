@@ -2,8 +2,12 @@
 
 ## 0.5.2 (2026-01-22)
 
-- **Dependency Cleanup**: Removed unused dependencies (`pastey`, `sha2`, `flate2`) from `crates/server`.
+- **NEW: HTTP Transport for MCP Servers**: Added support for HTTP-type MCP servers (like context7) which use `type="http"` with `url` and `headers` fields instead of `command/args/env`.
+- **Dependency Cleanup**: Removed unused dependencies (`pastey`, `sha2`, `flate2`) from `crates/server`, `regex` from `crates/intelligence`, `anyhow` from `crates/analyze`, `thiserror` from `crates/sync` and `crates/subagents`.
 - **Dead Code Removal**: Removed unused methods from `SkillCache` and unused imports from metrics and test modules.
+- **Bug Fix**: Filter whitespace-only descriptions at extraction point (not just empty strings).
+- **Improved**: Skill discovery summary log changed from debug to info level for better observability.
+- **Testing**: Added 5 new tests for multi-word description matching (first/middle/last word, special characters, long descriptions).
 
 ## 0.5.1 (2026-01-21)
 
