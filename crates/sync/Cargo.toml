@@ -1,6 +1,6 @@
 [package]
 name = "skrills_sync"
-version = "0.5.2"
+version = "0.5.3"
 edition.workspace = true
 description = "Preference synchronization and validation sync utilities for skrills"
 license = "MIT"

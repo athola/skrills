@@ -1,5 +1,11 @@
 # Changelog Highlights
 
+## 0.5.3 (2026-01-23)
+
+- **Docs**: Streamlined README with navigation links and simplified installation section.
+- **NEW: Config File Support**: Added `--config` flag and `skrills.toml` config file for persistent server settings.
+- **NEW: TLS Auto-Generation**: Generate self-signed TLS certificates with `--tls-generate` for development HTTPS.
+
 ## 0.5.2 (2026-01-22)
 
 - **NEW: HTTP Transport for MCP Servers**: Added support for HTTP-type MCP servers (like context7) which use `type="http"` with `url` and `headers` fields instead of `command/args/env`.
