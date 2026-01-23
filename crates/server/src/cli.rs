@@ -571,6 +571,148 @@ pub enum Commands {
         #[arg(long)]
         mirror_source: Option<PathBuf>,
     },
+    /// Mark a skill as deprecated with optional migration guidance.
+    SkillDeprecate {
+        /// Skill name to mark as deprecated.
+        #[arg(required = true)]
+        name: String,
+        /// Deprecation message explaining why.
+        #[arg(long)]
+        message: Option<String>,
+        /// Suggested replacement skill.
+        #[arg(long)]
+        replacement: Option<String>,
+        /// Skills directory to search (default: all discovered skills).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+        /// Output format: text or json.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+    /// Revert a skill to a previous version.
+    SkillRollback {
+        /// Skill name to rollback.
+        #[arg(required = true)]
+        name: String,
+        /// Specific version hash to rollback to (if not specified, shows available versions).
+        #[arg(long)]
+        version: Option<String>,
+        /// Skills directory to search (default: all discovered skills).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+        /// Output format: text or json.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+    /// Pull skill updates from remote sources.
+    SyncPull {
+        /// Remote source URL (git repo, HTTP endpoint, or registry).
+        #[arg(long)]
+        source: Option<String>,
+        /// Specific skill name to pull (if omitted, pulls all from source).
+        #[arg(long)]
+        skill: Option<String>,
+        /// Target CLI to pull skills into.
+        #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
+        target: SyncSource,
+        /// Preview changes without applying.
+        #[arg(long)]
+        dry_run: bool,
+        /// Output format: text or json.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+    /// View skill execution statistics and performance metrics.
+    SkillProfile {
+        /// Skill name to profile (if omitted, shows overall stats).
+        name: Option<String>,
+        /// Time period in days to analyze.
+        #[arg(long, default_value = "30")]
+        period: u32,
+        /// Output format: text or json.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+    /// Browse and search all available skills across configured sources.
+    SkillCatalog {
+        /// Search query to filter skills.
+        #[arg(long)]
+        search: Option<String>,
+        /// Filter by source CLI.
+        #[arg(long, value_enum)]
+        source: Option<SyncSource>,
+        /// Filter by category tag.
+        #[arg(long)]
+        category: Option<String>,
+        /// Maximum results to return.
+        #[arg(long, default_value = "50")]
+        limit: usize,
+        /// Skills directory to include (default: all discovered skills).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+        /// Output format: text or json.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+    /// Validate skill files for git pre-commit hook integration.
+    PreCommitValidate {
+        /// Only validate staged files (auto-detects via git status).
+        #[arg(long)]
+        staged: bool,
+        /// Validation target: claude, codex, copilot, or all.
+        #[arg(long, value_enum, default_value = "all")]
+        target: ValidationTarget,
+        /// Skills directory to validate (default: all discovered skills).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+    },
+    /// Import skills from external sources (URLs, git repos, local paths).
+    SkillImport {
+        /// Source to import from (URL, git URL, or local path).
+        #[arg(required = true)]
+        source: String,
+        /// Target CLI to import skill into.
+        #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
+        target: SyncSource,
+        /// Force overwrite if skill already exists.
+        #[arg(long)]
+        force: bool,
+        /// Preview import without writing files.
+        #[arg(long)]
+        dry_run: bool,
+        /// Output format: text or json.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+    /// Generate detailed usage reports for skills.
+    SkillUsageReport {
+        /// Time period in days to analyze.
+        #[arg(long, default_value = "30")]
+        period: u32,
+        /// Output format: text, json, html, or markdown.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+        /// Output file path (if not specified, prints to stdout).
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Skills directory to include (default: all discovered skills).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+    },
+    /// Calculate quality scores for skills based on validation, completeness, and metrics.
+    SkillScore {
+        /// Skill name to score (if omitted, scores all discovered skills).
+        name: Option<String>,
+        /// Skills directory to include (default: all discovered skills).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+        /// Output format: text or json.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+        /// Only show skills below this score threshold.
+        #[arg(long)]
+        below_threshold: Option<u8>,
+    },
 }
 
 #[cfg(test)]
