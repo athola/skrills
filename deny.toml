@@ -61,8 +61,9 @@ license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 [bans]
 # Warn on multiple versions of the same crate
 multiple-versions = "warn"
-# Wildcards in dependencies are bad practice
+# Wildcards in dependencies are bad practice, except for path deps (unpublished workspace crates)
 wildcards = "deny"
+allow-wildcard-paths = true
 # Highlight all duplicates
 highlight = "all"
 

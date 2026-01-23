@@ -2,7 +2,7 @@
 
 use super::traits::{AgentAdapter, FieldSupport};
 use super::utils::{hash_content, is_hidden_path};
-use crate::common::{Command, McpServer, Preferences};
+use crate::common::{Command, McpServer, McpTransport, Preferences};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use anyhow::Context;
@@ -219,6 +219,7 @@ impl AgentAdapter for CodexAdapter {
             for (name, config) in mcp {
                 let server = McpServer {
                     name: name.clone(),
+                    transport: McpTransport::Stdio, // Codex only supports stdio
                     command: config
                         .get("command")
                         .and_then(|v| v.as_str())
@@ -242,6 +243,8 @@ impl AgentAdapter for CodexAdapter {
                                 .collect()
                         })
                         .unwrap_or_default(),
+                    url: None,     // Codex doesn't support HTTP
+                    headers: None, // Codex doesn't support HTTP
                     enabled: config
                         .get("disabled")
                         .and_then(|v| v.as_bool())
@@ -634,9 +637,12 @@ mod tests {
             "my-server".to_string(),
             McpServer {
                 name: "my-server".to_string(),
+                transport: McpTransport::Stdio,
                 command: "/bin/server".to_string(),
                 args: vec!["arg1".to_string()],
                 env: HashMap::new(),
+                url: None,
+                headers: None,
                 enabled: true,
             },
         );
@@ -759,9 +765,12 @@ mod tests {
             "test-server".to_string(),
             McpServer {
                 name: "test-server".to_string(),
+                transport: McpTransport::Stdio,
                 command: "/bin/test".to_string(),
                 args: vec![],
                 env: HashMap::new(),
+                url: None,
+                headers: None,
                 enabled: true,
             },
         );

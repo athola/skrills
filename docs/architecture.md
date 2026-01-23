@@ -56,7 +56,7 @@ graph TD
 
 ## Design Principles
 
-The architecture separates concerns strictly. Leaf crates like `validate`, `discovery`, and `state` have no internal dependencies, while near-leaf crates like `analyze` only depend on those specific types. We use trait-based abstraction via `AgentAdapter` to support pluggable source and target adapters for Claude, Codex, and Copilot, and compile-time dispatch through `SyncOrchestrator<S, T>` to maintain performance and type safety. Features like `subagents` and `watch` are gated behind feature flags to keep the core binary small.
+Leaf crates like `validate`, `discovery`, and `state` have no internal dependencies to prevent cycles. `AgentAdapter` allows pluggable adapters for Claude, Codex, and Copilot, while `SyncOrchestrator<S, T>` uses compile-time dispatch for type safety. We gate features like `subagents` behind flags to minimize binary size.
 
 ## Module Organization
 
@@ -71,7 +71,7 @@ The `app` module is split to stay under the 2500 LOC threshold (ADR-0001):
 
 ## Roadmap
 
-Future development will focus on extracting command handlers to submodules as the CLI expands and aligning the CLI and MCP tool lists. We plan to evaluate consolidating `sync-from-claude` with `sync-all` and versioning intelligence tool inputs/outputs. Architectural changes will continue to be documented in ADRs, and we will monitor the `app` module size to trigger further refactoring when needed.
+We will extract command handlers to submodules as the CLI grows and align CLI commands with MCP tools. We also plan to consolidate `sync-from-claude` with `sync-all`. `app` module size is monitored to trigger refactoring before it becomes unmanageable.
 
 ## Related Documents
 

@@ -50,7 +50,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use skrills_analyze::RelationshipGraph;
 use skrills_discovery::{discover_skills, DuplicateInfo, SkillMeta, SkillRoot};
-use skrills_state::{cache_ttl, home_dir, load_manifest_settings};
+use skrills_state::home_dir;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -92,12 +92,6 @@ pub(crate) struct SkillCacheSnapshot {
 }
 
 impl SkillCache {
-    /// Create a new `SkillCache` with the given roots.
-    #[allow(dead_code)]
-    pub(crate) fn new(roots: Vec<SkillRoot>) -> Self {
-        Self::new_with_ttl(roots, cache_ttl(&load_manifest_settings))
-    }
-
     /// Create a new `SkillCache` with the given roots and TTL.
     pub(crate) fn new_with_ttl(roots: Vec<SkillRoot>, ttl: Duration) -> Self {
         let snapshot_path = Self::resolve_snapshot_path();
@@ -119,11 +113,6 @@ impl SkillCache {
             );
         }
         cache
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn ttl(&self) -> Duration {
-        self.ttl
     }
 
     /// Returns the paths of the root directories being watched.

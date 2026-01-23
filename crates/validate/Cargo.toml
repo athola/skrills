@@ -1,6 +1,6 @@
 [package]
 name = "skrills-validate"
-version = "0.5.1"
+version = "0.5.2"
 edition.workspace = true
 description = "Skill validation for Claude Code and Codex CLI"
 license = "MIT"
@@ -16,9 +16,9 @@ serde = { workspace = true }
 serde_yaml = "0.9"
 regex = "1"
 anyhow = { workspace = true }
-thiserror = { workspace = true }
 walkdir = { workspace = true }
 semver = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

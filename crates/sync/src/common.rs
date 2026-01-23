@@ -23,18 +23,40 @@ pub struct Command {
     pub hash: String,
 }
 
+/// Transport type for MCP server connection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum McpTransport {
+    /// stdio transport (command execution)
+    #[default]
+    Stdio,
+    /// HTTP transport (SSE/HTTP-based MCP)
+    Http,
+}
+
 /// An MCP server configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpServer {
     /// Server name/identifier
     pub name: String,
-    /// Command to execute (path to binary)
+    /// Transport type (stdio or http)
+    #[serde(default)]
+    pub transport: McpTransport,
+    /// Command to execute (for stdio transport)
+    #[serde(default)]
     pub command: String,
-    /// Command arguments
+    /// Command arguments (for stdio transport)
+    #[serde(default)]
     pub args: Vec<String>,
-    /// Environment variables
+    /// Environment variables (for stdio transport)
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// URL for HTTP transport
+    #[serde(default)]
+    pub url: Option<String>,
+    /// HTTP headers (for HTTP transport)
+    #[serde(default)]
+    pub headers: Option<HashMap<String, String>>,
     /// Whether the server is enabled
     #[serde(default = "default_true")]
     pub enabled: bool,

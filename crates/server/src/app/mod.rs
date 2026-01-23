@@ -1,18 +1,16 @@
-//! Implements the primary functionality for the `skrills` application.
+//! Implements primary `skrills` application functionality.
 //!
-//! This includes the MCP server, skill discovery, caching mechanisms, and the command-line interface.
+//! Includes the MCP server, skill discovery, caching, and CLI.
 //!
-//! The `run` function initiates the server. The `runtime` module offers tools for
-//! managing runtime options. Other crate components are considered internal and
-//! may be subject to change without prior notice.
+//! The `run` function initiates the server. `runtime` manages runtime options.
+//! Internal components are subject to change.
 //!
-//! For details on stability and versioning, refer to `docs/semver-policy.md`.
+//! See `docs/semver-policy.md` for versioning.
 //!
-//! The `watch` feature allows filesystem monitoring for live cache invalidation.
-//! To build without this feature, use `--no-default-features`.
+//! The `watch` feature enables filesystem monitoring. Build with `--no-default-features` to disable.
 //!
-//! On Unix-like systems, a `SIGCHLD` handler prevents zombie processes.
-//! Keep this file under ~2500 LOC; split it into modules before crossing the limit.
+//! On Unix, a `SIGCHLD` handler prevents zombie processes.
+//! Keep this file under ~2500 LOC; split modules if needed.
 
 mod intelligence;
 mod tools;
@@ -66,10 +64,10 @@ pub use crate::metrics_types::{
     SkillTokenInfo, TokenStats,
 };
 
-/// Manages and serves skills via the Remote Method Call Protocol (RMCP).
+/// Manages and serves skills via RMCP.
 ///
-/// This service discovers, caches, and facilitates interaction with skills.
-/// It employs in-memory caches for skill metadata and content to optimize performance.
+/// Discovers, caches, and manages skill interactions.
+/// Uses in-memory caching for performance.
 pub struct SkillService {
     /// The cache for skill metadata.
     pub(crate) cache: Arc<Mutex<SkillCache>>,
@@ -82,7 +80,7 @@ pub struct SkillService {
     pub(crate) context_stats: Arc<ContextStats>,
 }
 
-/// Start a filesystem watcher to invalidate caches when skill files change.
+/// Starts a filesystem watcher to invalidate caches on changes.
 #[cfg(feature = "watch")]
 pub(crate) fn start_fs_watcher(service: &SkillService) -> Result<RecommendedWatcher> {
     let cache = service.cache.clone();
@@ -109,9 +107,9 @@ pub(crate) fn start_fs_watcher(service: &SkillService) -> Result<RecommendedWatc
     Ok(watcher)
 }
 
-/// This function serves as a placeholder for the filesystem watcher when the 'watch' feature is disabled.
+/// Placeholder for the disabled 'watch' feature.
 ///
-/// It returns an error if called.
+/// Returns an error if called.
 #[cfg(not(feature = "watch"))]
 pub(crate) fn start_fs_watcher(_service: &SkillService) -> Result<()> {
     Err(anyhow!(
@@ -161,7 +159,7 @@ impl ToolCategory {
     }
 }
 
-/// Build the MCP tool registry from all available tool definitions.
+/// Builds the MCP tool registry from available definitions.
 fn build_mcp_registry() -> McpToolRegistry {
     use crate::mcp_gateway::estimate_tokens;
 
@@ -201,13 +199,13 @@ fn build_mcp_registry() -> McpToolRegistry {
 }
 
 impl SkillService {
-    /// Create a new `SkillService` with the default search roots.
+    /// Creates a new `SkillService` with the default search roots.
     #[allow(dead_code)]
     fn new(extra_dirs: Vec<PathBuf>) -> Result<Self> {
         Self::new_with_ttl(extra_dirs, cache_ttl(&load_manifest_settings))
     }
 
-    /// Create a new `SkillService` with a custom cache TTL.
+    /// Creates a new `SkillService` with a custom cache TTL.
     pub fn new_with_ttl(extra_dirs: Vec<PathBuf>, ttl: Duration) -> Result<Self> {
         let build_started = Instant::now();
         let roots = skill_roots(&extra_dirs)?;
@@ -278,25 +276,25 @@ impl SkillService {
         cache.skills_with_dups()
     }
 
-    /// Resolve transitive dependencies for a skill URI.
+    /// Resolves transitive dependencies for a skill URI.
     pub(crate) fn resolve_dependencies(&self, uri: &str) -> Result<Vec<String>> {
         let mut cache = self.cache.lock();
         cache.resolve_dependencies(uri)
     }
 
-    /// Get skills that directly depend on the given skill URI.
+    /// Gets direct dependents for a skill URI.
     pub(crate) fn get_dependents(&self, uri: &str) -> Result<Vec<String>> {
         let mut cache = self.cache.lock();
         cache.get_dependents(uri)
     }
 
-    /// Get all skills that transitively depend on the given skill URI.
+    /// Gets transitive dependents for a skill URI.
     pub(crate) fn get_transitive_dependents(&self, uri: &str) -> Result<Vec<String>> {
         let mut cache = self.cache.lock();
         cache.get_transitive_dependents(uri)
     }
 
-    /// Get skill recommendations based on dependency relationships.
+    /// Gets skill recommendations based on dependencies.
     ///
     /// The algorithm:
     /// 1. Get direct dependencies of the skill (skills it needs)
@@ -461,7 +459,7 @@ impl SkillService {
         })
     }
 
-    /// Compute aggregate metrics for all discovered skills.
+    /// Computes aggregate metrics for discovered skills.
     pub(crate) fn compute_metrics(&self, include_validation: bool) -> Result<SkillMetrics> {
         use skrills_analyze::analyze_skill;
         use skrills_validate::{validate_skill, ValidationTarget};
@@ -618,7 +616,7 @@ impl SkillService {
     // enable_skill_trace_tool, disable_skill_trace_tool, skill_loading_selftest_tool)
     // are now in the `tools` submodule.
 
-    /// Generate the MCP `listResources` payload.
+    /// Generates the MCP `listResources` payload.
     pub(crate) fn list_resources_payload(&self) -> Result<Vec<Resource>> {
         let (skills, dup_log) = self.current_skills_with_dups()?;
         let mut resources: Vec<Resource> = skills
@@ -655,7 +653,7 @@ impl SkillService {
         Ok(resources)
     }
 
-    /// Read a resource by its URI and return its content.
+    /// Reads a resource by URI.
     pub(crate) fn read_resource_sync(&self, uri: &str) -> Result<ReadResourceResult> {
         if uri == AGENTS_URI {
             if !self.expose_agents_doc()? {
@@ -727,12 +725,12 @@ impl SkillService {
         Ok(ReadResourceResult { contents })
     }
 
-    /// Read the content of a skill directly from disk.
+    /// Reads skill content from disk.
     fn read_skill_cached(&self, meta: &SkillMeta) -> Result<String> {
         read_skill(&meta.path)
     }
 
-    /// Checks if the `AGENTS.md` document should be exposed as a resource.
+    /// Checks if `AGENTS.md` should be exposed.
     fn expose_agents_doc(&self) -> Result<bool> {
         let manifest = load_manifest_settings()?;
         if let Some(flag) = manifest.expose_agents {
@@ -758,7 +756,7 @@ impl SkillService {
     }
 }
 
-/// Parse URI and extract query parameters.
+/// Parses URI and extracts query parameters.
 /// Returns (base_uri, resolve_dependencies).
 fn parse_uri_with_query(uri: &str) -> (&str, bool) {
     if let Some((base, query)) = uri.split_once('?') {
@@ -771,7 +769,7 @@ fn parse_uri_with_query(uri: &str) -> (&str, bool) {
     }
 }
 
-/// Inserts location and an optional priority rank into `readResource` responses.
+/// Inserts location and priority rank into responses.
 fn text_with_location(
     text: impl Into<String>,
     uri: &str,
@@ -826,7 +824,7 @@ fn text_with_location_and_role(
     }
 }
 
-/// Helper to run sync with the appropriate adapters based on source and target.
+/// Runs sync with adapters based on source and target.
 fn run_sync_with_adapters(
     from: SyncSource,
     to: SyncSource,
@@ -876,7 +874,7 @@ fn run_sync_with_adapters(
     }
 }
 
-/// The main entry point for the `skrills` application.
+/// Main application entry point.
 pub fn run() -> Result<()> {
     ignore_sigchld()?;
     tracing_subscriber::fmt()

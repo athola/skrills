@@ -1,8 +1,7 @@
 //! Subagent MCP integration for the skrills server.
 //!
-//! This crate will expose tools to list and run subagents across multiple backends
-//! (e.g., Codex Responses and Claude Code). It is wired into `skrills-server`
-//! behind the `subagents` feature flag.
+//! Exposes tools to list and run subagents across backends (e.g., Codex Responses, Claude Code).
+//! Integrated into `skrills-server` via the `subagents` feature flag.
 
 #![deny(unsafe_code)]
 

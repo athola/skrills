@@ -1,15 +1,19 @@
-# Subagents MCP quick example
+# Subagents
 
-1. Build with subagents feature:
-```bash
-cargo run -p skrills-server --features subagents -- serve
-```
+This crate provides subagent capabilities for Skrills, enabling task delegation to specialized agents.
 
-2. From a MCP client, call:
-- `list-subagents` to see available templates.
-- `run-subagent` with `{ "prompt": "list files" , "backend": "codex" }`.
-- `get-run-status` with the returned `run_id`.
+## Quick Start
 
-3. Optional: set `SKRILLS_SUBAGENTS_DEFAULT_BACKEND=claude` to default to Claude-style adapter.
+1. **Build** with the `subagents` feature:
+   ```bash
+   cargo run -p skrills-server --features subagents -- serve
+   ```
 
-Notes: Async runs and secure transcripts are Codex-only; WebSocket/HTTP streaming is planned (issue #25).
+2. **Use** via MCP tools:
+   - `list-subagents`: View available templates.
+   - `run-subagent`: Execute a task (e.g., `{ "prompt": "list files", "backend": "codex" }`).
+   - `get-run-status`: Check progress using `run_id`.
+
+3. **Configure**: Set `SKRILLS_SUBAGENTS_DEFAULT_BACKEND=claude` to change the default adapter.
+
+> **Note**: Async runs and secure transcripts require the Codex backend. WebSocket/HTTP streaming is planned.

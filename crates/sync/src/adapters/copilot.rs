@@ -16,7 +16,7 @@
 
 use super::traits::{AgentAdapter, FieldSupport};
 use super::utils::{hash_content, is_hidden_path};
-use crate::common::{Command, McpServer, Preferences};
+use crate::common::{Command, McpServer, McpTransport, Preferences};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use anyhow::Context;
@@ -193,9 +193,12 @@ impl AgentAdapter for CopilotAdapter {
 
                 let server = McpServer {
                     name: name.clone(),
+                    transport: McpTransport::Stdio, // Copilot only supports stdio
                     command: command.to_string(),
                     args,
                     env,
+                    url: None,     // Copilot doesn't support HTTP
+                    headers: None, // Copilot doesn't support HTTP
                     enabled: server_config
                         .get("disabled")
                         .and_then(|v| v.as_bool())
@@ -899,9 +902,12 @@ mod tests {
             "my-server".to_string(),
             McpServer {
                 name: "my-server".to_string(),
+                transport: McpTransport::Stdio,
                 command: "/bin/server".to_string(),
                 args: vec!["arg1".to_string()],
                 env: HashMap::new(),
+                url: None,
+                headers: None,
                 enabled: true,
             },
         );
@@ -937,9 +943,12 @@ mod tests {
             "new-server".to_string(),
             McpServer {
                 name: "new-server".to_string(),
+                transport: McpTransport::Stdio,
                 command: "/bin/new".to_string(),
                 args: vec![],
                 env: HashMap::new(),
+                url: None,
+                headers: None,
                 enabled: true,
             },
         );
@@ -1155,9 +1164,12 @@ mod tests {
             "test-server".to_string(),
             McpServer {
                 name: "test-server".to_string(),
+                transport: McpTransport::Stdio,
                 command: "/bin/test".to_string(),
                 args: vec!["--arg".to_string()],
                 env: HashMap::from([("KEY".to_string(), "value".to_string())]),
+                url: None,
+                headers: None,
                 enabled: true,
             },
         );

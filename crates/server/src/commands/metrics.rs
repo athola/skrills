@@ -304,16 +304,6 @@ A test skill.
         )
     }
 
-    /// Create a skill with dependencies.
-    #[allow(dead_code)]
-    fn skill_with_deps(name: &str, deps: &[&str]) -> String {
-        let mut content = minimal_skill_content(name, "Has dependencies");
-        for dep in deps {
-            content.push_str(&format!("\nSee [{}](skill://{}) for more.\n", dep, dep));
-        }
-        content
-    }
-
     #[test]
     fn test_handle_metrics_command_empty_dir() {
         // GIVEN an empty directory with no skills

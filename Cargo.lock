@@ -2407,7 +2407,7 @@ checksum = "e320a6c5ad31d271ad523dcf3ad13e2767ad8b1cb8f047f75a8aeaf8da139da2"
 
 [[package]]
 name = "skrills"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "scopeguard",
@@ -2417,9 +2417,8 @@ dependencies = [
 
 [[package]]
 name = "skrills-analyze"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
- "anyhow",
  "parking_lot",
  "regex",
  "semver",
@@ -2435,7 +2434,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-discovery"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "blake2",
@@ -2452,13 +2451,12 @@ dependencies = [
 
 [[package]]
 name = "skrills-intelligence"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "chrono",
  "dirs",
  "proptest",
- "regex",
  "reqwest",
  "serde",
  "serde_json",
@@ -2475,7 +2473,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-server"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -2483,19 +2481,16 @@ dependencies = [
  "base64",
  "clap",
  "dirs",
- "flate2",
  "inquire",
  "libc",
  "notify",
  "parking_lot",
- "pastey",
  "pathdiff",
  "reqwest",
  "rmcp",
  "semver",
  "serde",
  "serde_json",
- "sha2",
  "shellexpand",
  "skrills-analyze",
  "skrills-discovery",
@@ -2520,7 +2515,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-state"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "dirs",
@@ -2531,13 +2526,12 @@ dependencies = [
 
 [[package]]
 name = "skrills-subagents"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "async-trait",
  "dirs",
  "futures",
- "parking_lot",
  "regex",
  "reqwest",
  "rmcp",
@@ -2557,7 +2551,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-validate"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "regex",
@@ -2565,13 +2559,13 @@ dependencies = [
  "serde",
  "serde_yaml",
  "tempfile",
- "thiserror 2.0.18",
+ "tracing",
  "walkdir",
 ]
 
 [[package]]
 name = "skrills_sync"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "dirs",
@@ -2581,7 +2575,6 @@ dependencies = [
  "sha2",
  "skrills-validate",
  "tempfile",
- "thiserror 2.0.18",
  "tokio",
  "tracing",
  "walkdir",
@@ -2589,7 +2582,7 @@ dependencies = [
 
 [[package]]
 name = "skrills_test_utils"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "tempfile",
 ]
