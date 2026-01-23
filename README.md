@@ -140,8 +140,11 @@ The `serve` command supports authentication and TLS for production deployments:
 # Bearer token authentication
 skrills serve --http 0.0.0.0:3000 --auth-token "your-secret-token"
 
-# TLS encryption
+# TLS encryption (manual certificates)
 skrills serve --http 0.0.0.0:3000 --tls-cert /path/to/cert.pem --tls-key /path/to/key.pem
+
+# TLS encryption (auto-generated self-signed for development)
+skrills serve --http 0.0.0.0:3000 --tls-auto
 
 # CORS for browser clients
 skrills serve --http 0.0.0.0:3000 --cors-origins "http://localhost:3000,https://app.example.com"
@@ -154,7 +157,15 @@ skrills serve --http 0.0.0.0:3000 \
   --cors-origins "https://app.example.com"
 ```
 
-The `--auth-token` flag also reads from `SKRILLS_AUTH_TOKEN` environment variable.
+Security options can be configured via CLI arguments, environment variables, or config file (precedence: CLI > ENV > config file):
+
+| Option | CLI Flag | Environment Variable |
+|--------|----------|---------------------|
+| Auth token | `--auth-token` | `SKRILLS_AUTH_TOKEN` |
+| TLS certificate | `--tls-cert` | `SKRILLS_TLS_CERT` |
+| TLS private key | `--tls-key` | `SKRILLS_TLS_KEY` |
+| TLS auto-generate | `--tls-auto` | `SKRILLS_TLS_AUTO` |
+| CORS origins | `--cors-origins` | `SKRILLS_CORS_ORIGINS` |
 
 For deployments without these options, use SSH tunneling:
 
@@ -256,6 +267,24 @@ To save tokens, `list-mcp-tools` returns tool names without full schemas, and `d
 - `skrills import-analytics <input> [--overwrite]` — import analytics from exported file.
 
 ## Configuration
+
+### Config File
+
+Security and serve options can be configured via `~/.skrills/config.toml`:
+
+```toml
+[serve]
+auth_token = "your-secret-token"
+tls_cert = "/path/to/cert.pem"
+tls_key = "/path/to/key.pem"
+tls_auto = true  # auto-generate self-signed cert (overrides tls_cert/tls_key)
+cors_origins = "http://localhost:3000,https://app.example.com"
+```
+
+Precedence: CLI arguments > environment variables > config file.
+
+### Environment Variables
+
 - `SKRILLS_MIRROR_SOURCE` — mirror source root (default `~/.claude`).
 - `SKRILLS_CACHE_TTL_MS` — discovery cache TTL.
 - `SKRILLS_CLIENT` — force installer target (`codex` or `claude`).

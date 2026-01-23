@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- **NEW: Config File Support**: Security and serve options can now be configured via `~/.skrills/config.toml`. Precedence: CLI > ENV > config file. (#103)
+- **NEW: TLS Auto-Generation**: Added `--tls-auto` flag to auto-generate self-signed TLS certificates for development. Certificates are stored in `~/.skrills/tls/` and reused across server restarts. (#104)
 
 ## 0.5.1 - 2026-01-21
 - **Refactor: Skill Trace Commands**: Split monolithic `/skill-trace` into three focused commands for clearer UX:
