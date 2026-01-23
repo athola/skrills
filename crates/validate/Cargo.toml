@@ -18,6 +18,7 @@ regex = "1"
 anyhow = { workspace = true }
 walkdir = { workspace = true }
 semver = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

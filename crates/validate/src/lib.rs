@@ -134,7 +134,17 @@ pub fn validate_all(dir: &Path, target: ValidationTarget) -> Result<Vec<Validati
         // Match Codex discovery behavior: skip symlinks.
         .follow_links(false)
         .into_iter()
-        .filter_map(|e| e.ok())
+        .filter_map(|e| match e {
+            Ok(entry) => Some(entry),
+            Err(err) => {
+                tracing::warn!(
+                    path = ?err.path(),
+                    error = %err,
+                    "Skipping directory entry during validation"
+                );
+                None
+            }
+        })
     {
         let path = entry.path();
         let rel = path.strip_prefix(dir).unwrap_or(path);

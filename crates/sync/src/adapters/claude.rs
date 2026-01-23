@@ -215,7 +215,7 @@ impl AgentAdapter for ClaudeAdapter {
 
                 let server = McpServer {
                     name: name.clone(),
-                    transport: transport.clone(),
+                    transport,
                     command: config
                         .get("command")
                         .and_then(|v| v.as_str())
@@ -254,6 +254,15 @@ impl AgentAdapter for ClaudeAdapter {
                         .map(|d| !d)
                         .unwrap_or(true),
                 };
+
+                // Warn if HTTP transport is missing URL (required for HTTP servers)
+                if server.transport == McpTransport::Http && server.url.is_none() {
+                    tracing::warn!(
+                        name = %name,
+                        "HTTP MCP server is missing required 'url' field"
+                    );
+                }
+
                 servers.insert(name.clone(), server);
             }
         }
@@ -1261,5 +1270,75 @@ mod tests {
         assert_eq!(stdio_server.transport, McpTransport::Stdio);
         assert_eq!(stdio_server.command, "/usr/bin/skrills");
         assert_eq!(stdio_server.args, vec!["serve"]);
+    }
+
+    #[test]
+    fn write_mcp_servers_http_type() {
+        // Test writing HTTP-type MCP servers (issue #111)
+        let tmp = tempdir().unwrap();
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+
+        let mut servers = HashMap::new();
+        servers.insert(
+            "context7".to_string(),
+            McpServer {
+                name: "context7".to_string(),
+                transport: McpTransport::Http,
+                command: String::new(),
+                args: vec![],
+                env: HashMap::new(),
+                url: Some("https://mcp.context7.com/mcp".to_string()),
+                headers: Some(HashMap::from([(
+                    "X-API-Key".to_string(),
+                    "test-key".to_string(),
+                )])),
+                enabled: true,
+            },
+        );
+
+        let report = adapter.write_mcp_servers(&servers).unwrap();
+        assert_eq!(report.written, 1);
+
+        // Read back and verify
+        let read_servers = adapter.read_mcp_servers().unwrap();
+        let server = read_servers.get("context7").unwrap();
+        assert_eq!(server.transport, McpTransport::Http);
+        assert_eq!(server.url, Some("https://mcp.context7.com/mcp".to_string()));
+        assert_eq!(
+            server.headers,
+            Some(HashMap::from([(
+                "X-API-Key".to_string(),
+                "test-key".to_string()
+            ),]))
+        );
+        // HTTP servers should not have command
+        assert!(server.command.is_empty());
+    }
+
+    #[test]
+    fn read_mcp_servers_unknown_type_falls_back_to_stdio() {
+        // Test that unknown transport types fall back to stdio with warning
+        let tmp = tempdir().unwrap();
+        let settings_path = tmp.path().join("settings.json");
+        fs::write(
+            &settings_path,
+            r#"{
+            "mcpServers": {
+                "weird-server": {
+                    "type": "grpc",
+                    "command": "/usr/bin/weird"
+                }
+            }
+        }"#,
+        )
+        .unwrap();
+
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let servers = adapter.read_mcp_servers().unwrap();
+
+        let server = servers.get("weird-server").unwrap();
+        // Unknown types should fall back to stdio
+        assert_eq!(server.transport, McpTransport::Stdio);
+        assert_eq!(server.command, "/usr/bin/weird");
     }
 }
