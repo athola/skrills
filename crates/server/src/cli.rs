@@ -171,15 +171,34 @@ pub enum Commands {
         #[arg(long, value_name = "TOKEN", env = "SKRILLS_AUTH_TOKEN")]
         auth_token: Option<String>,
         /// Path to TLS certificate file (PEM format). Requires --tls-key.
-        #[arg(long, value_name = "PATH", requires = "tls_key")]
+        #[arg(
+            long,
+            value_name = "PATH",
+            env = "SKRILLS_TLS_CERT",
+            requires = "tls_key"
+        )]
         tls_cert: Option<std::path::PathBuf>,
         /// Path to TLS private key file (PEM format). Requires --tls-cert.
-        #[arg(long, value_name = "PATH", requires = "tls_cert")]
+        #[arg(
+            long,
+            value_name = "PATH",
+            env = "SKRILLS_TLS_KEY",
+            requires = "tls_cert"
+        )]
         tls_key: Option<std::path::PathBuf>,
         /// Comma-separated list of allowed CORS origins (e.g., `http://localhost:3000,https://app.example.com`).
         /// Default: no CORS (server-to-server only).
-        #[arg(long, value_name = "ORIGINS", value_delimiter = ',')]
+        #[arg(
+            long,
+            value_name = "ORIGINS",
+            env = "SKRILLS_CORS_ORIGINS",
+            value_delimiter = ','
+        )]
         cors_origins: Vec<String>,
+        /// Auto-generate self-signed TLS certificate for development.
+        /// Stores certificate in ~/.skrills/tls/. Overrides --tls-cert and --tls-key.
+        #[arg(long, env = "SKRILLS_TLS_AUTO")]
+        tls_auto: bool,
 
         /// List all available MCP tools and exit.
         #[arg(long, default_value_t = false)]
@@ -785,6 +804,7 @@ mod tests {
                 tls_cert,
                 tls_key,
                 cors_origins,
+                tls_auto,
             }) => {
                 assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/skills")]);
                 assert_eq!(cache_ttl_ms, Some(1500));
@@ -797,6 +817,7 @@ mod tests {
                 assert!(tls_cert.is_none());
                 assert!(tls_key.is_none());
                 assert!(cors_origins.is_empty());
+                assert!(!tls_auto);
             }
             _ => panic!("expected Serve command"),
         }
@@ -856,6 +877,65 @@ mod tests {
         match cli.command {
             Some(Commands::Serve { auth_token, .. }) => {
                 assert_eq!(auth_token, Some("env-secret-token".to_string()));
+            }
+            _ => panic!("expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn parse_serve_with_tls_auto() {
+        let cli =
+            Cli::try_parse_from(["skrills", "serve", "--http", "127.0.0.1:3000", "--tls-auto"])
+                .expect("serve with tls-auto should parse");
+
+        match cli.command {
+            Some(Commands::Serve { tls_auto, .. }) => {
+                assert!(tls_auto);
+            }
+            _ => panic!("expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn parse_serve_tls_paths_from_env() {
+        let _guard = env_guard();
+        let _cert_env = set_env_var("SKRILLS_TLS_CERT", Some("/env/cert.pem"));
+        let _key_env = set_env_var("SKRILLS_TLS_KEY", Some("/env/key.pem"));
+
+        let cli = Cli::try_parse_from(["skrills", "serve", "--http", "0.0.0.0:8080"])
+            .expect("serve with env TLS paths should parse");
+
+        match cli.command {
+            Some(Commands::Serve {
+                tls_cert, tls_key, ..
+            }) => {
+                assert_eq!(tls_cert, Some(PathBuf::from("/env/cert.pem")));
+                assert_eq!(tls_key, Some(PathBuf::from("/env/key.pem")));
+            }
+            _ => panic!("expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn parse_serve_cors_from_env() {
+        let _guard = env_guard();
+        let _cors_env = set_env_var(
+            "SKRILLS_CORS_ORIGINS",
+            Some("http://localhost:3000,https://example.com"),
+        );
+
+        let cli = Cli::try_parse_from(["skrills", "serve", "--http", "0.0.0.0:8080"])
+            .expect("serve with env CORS should parse");
+
+        match cli.command {
+            Some(Commands::Serve { cors_origins, .. }) => {
+                assert_eq!(
+                    cors_origins,
+                    vec![
+                        "http://localhost:3000".to_string(),
+                        "https://example.com".to_string()
+                    ]
+                );
             }
             _ => panic!("expected Serve command"),
         }

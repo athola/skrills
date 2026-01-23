@@ -885,6 +885,10 @@ pub fn run() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
+    // Load config file and apply settings to env vars before CLI parsing.
+    // This ensures precedence: CLI > ENV > config file.
+    crate::config::apply_config_to_env();
+
     let cli = Cli::parse();
 
     // Check for first-run (only for user-facing commands, not for `serve` which is called by MCP)
@@ -924,6 +928,7 @@ pub fn run() -> Result<()> {
         tls_cert: None,
         tls_key: None,
         cors_origins: Vec::new(),
+        tls_auto: false,
     }) {
         Commands::Serve {
             skill_dirs,
@@ -937,6 +942,7 @@ pub fn run() -> Result<()> {
             tls_cert,
             tls_key,
             cors_origins,
+            tls_auto,
         } => handle_serve_command(
             skill_dirs,
             cache_ttl_ms,
@@ -949,6 +955,7 @@ pub fn run() -> Result<()> {
             tls_cert,
             tls_key,
             cors_origins,
+            tls_auto,
         ),
         Commands::Mirror {
             dry_run,

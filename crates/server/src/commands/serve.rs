@@ -25,6 +25,7 @@ pub(crate) fn handle_serve_command(
     tls_cert: Option<PathBuf>,
     tls_key: Option<PathBuf>,
     cors_origins: Vec<String>,
+    tls_auto: bool,
 ) -> Result<()> {
     // Handle --list-tools: print tool names and exit
     if list_tools {
@@ -58,15 +59,30 @@ pub(crate) fn handle_serve_command(
         #[cfg(feature = "http-transport")]
         {
             use crate::http_transport::HttpSecurityConfig;
+            use crate::tls_auto::ensure_auto_tls_certs;
 
             // Clone values needed for the factory closure
             let skill_dirs_clone = skill_dirs.clone();
 
+            // Resolve TLS paths: use auto-generated certs if --tls-auto, else CLI args
+            let (resolved_cert, resolved_key) = if tls_auto {
+                let (cert_path, key_path) = ensure_auto_tls_certs()?;
+                tracing::info!(
+                    target: "skrills::tls",
+                    cert = %cert_path.display(),
+                    key = %key_path.display(),
+                    "Using auto-generated self-signed TLS certificate"
+                );
+                (Some(cert_path), Some(key_path))
+            } else {
+                (tls_cert, tls_key)
+            };
+
             // Build security config from CLI arguments
             let security = HttpSecurityConfig {
                 auth_token,
-                tls_cert,
-                tls_key,
+                tls_cert: resolved_cert,
+                tls_key: resolved_key,
                 cors_origins,
             };
 
@@ -86,7 +102,7 @@ pub(crate) fn handle_serve_command(
         #[cfg(not(feature = "http-transport"))]
         {
             let _ = bind_addr; // suppress unused warning
-            let _ = (auth_token, tls_cert, tls_key, cors_origins); // suppress unused warnings
+            let _ = (auth_token, tls_cert, tls_key, cors_origins, tls_auto); // suppress unused warnings
             return Err(anyhow!(
                 "HTTP transport requested but not available (built without 'http-transport' feature)"
             ));
