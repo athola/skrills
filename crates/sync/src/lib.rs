@@ -38,6 +38,7 @@
 //!             skills: true,
 //!             hooks: false,
 //!             agents: false,
+//!             instructions: false,
 //!         }
 //!     }
 //!
@@ -98,6 +99,14 @@
 //!     }
 //!
 //!     fn write_agents(&self, _agents: &[Command]) -> Result<WriteReport> {
+//!         Ok(WriteReport::default())
+//!     }
+//!
+//!     fn read_instructions(&self) -> Result<Vec<Command>> {
+//!         Ok(Vec::new())
+//!     }
+//!
+//!     fn write_instructions(&self, _instructions: &[Command]) -> Result<WriteReport> {
 //!         Ok(WriteReport::default())
 //!     }
 //! }

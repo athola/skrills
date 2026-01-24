@@ -99,6 +99,7 @@ impl SkillSyncTestContext {
             source_path: PathBuf::from(format!("{}.md", name)),
             modified: SystemTime::now(),
             hash,
+            modules: Vec::new(),
         }
     }
 
@@ -227,6 +228,8 @@ mod basic_sync_tests {
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -262,6 +265,8 @@ mod basic_sync_tests {
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -302,6 +307,8 @@ mod basic_sync_tests {
             sync_preferences: false,
             skip_existing_commands: false, // Only affects commands, not skills
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -339,6 +346,8 @@ mod basic_sync_tests {
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -378,6 +387,8 @@ mod basic_sync_tests {
             sync_preferences: false,
             skip_existing_commands: true, // Should be ignored due to force
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -416,6 +427,8 @@ mod basic_sync_tests {
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -1062,6 +1075,7 @@ mod negative_tests {
             source_path: PathBuf::from("binary.md"),
             modified: SystemTime::now(),
             hash: "test".to_string(),
+            modules: Vec::new(),
         };
 
         // WHEN: Validating
@@ -1313,6 +1327,8 @@ mod case_sensitivity_tests {
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 

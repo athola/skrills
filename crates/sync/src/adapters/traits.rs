@@ -15,6 +15,7 @@ pub struct FieldSupport {
     pub skills: bool,
     pub hooks: bool,
     pub agents: bool,
+    pub instructions: bool,
 }
 
 #[cfg(test)]
@@ -52,6 +53,9 @@ pub trait AgentAdapter: Send + Sync {
     /// Read agents from native format
     fn read_agents(&self) -> Result<Vec<Command>>;
 
+    /// Read instructions from native format (e.g., CLAUDE.md, *.instructions.md)
+    fn read_instructions(&self) -> Result<Vec<Command>>;
+
     /// Read complete configuration
     fn read_all(&self) -> Result<CommonConfig> {
         Ok(CommonConfig {
@@ -61,6 +65,7 @@ pub trait AgentAdapter: Send + Sync {
             skills: self.read_skills()?,
             hooks: self.read_hooks()?,
             agents: self.read_agents()?,
+            instructions: self.read_instructions()?,
         })
     }
 
@@ -83,4 +88,7 @@ pub trait AgentAdapter: Send + Sync {
 
     /// Write agents to native format
     fn write_agents(&self, agents: &[Command]) -> Result<WriteReport>;
+
+    /// Write instructions to native format (e.g., CLAUDE.md, *.instructions.md)
+    fn write_instructions(&self, instructions: &[Command]) -> Result<WriteReport>;
 }

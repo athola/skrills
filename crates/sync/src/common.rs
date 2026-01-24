@@ -7,6 +7,17 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+/// A companion file within a skill directory (e.g., helpers, sub-modules).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModuleFile {
+    /// Relative path within the skill directory (e.g., "helpers.md", "sub/module.py")
+    pub relative_path: PathBuf,
+    /// File content as bytes
+    pub content: Vec<u8>,
+    /// SHA256 hash for change detection
+    pub hash: String,
+}
+
 /// A slash command that can be synced between agents.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Command {
@@ -21,6 +32,10 @@ pub struct Command {
     pub modified: SystemTime,
     /// SHA256 hash of content for change detection
     pub hash: String,
+    /// Companion files for modular skills (e.g., helpers, sub-modules).
+    /// Empty for commands; populated for directory-based skills.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modules: Vec<ModuleFile>,
 }
 
 /// Transport type for MCP server connection.
@@ -85,6 +100,7 @@ pub struct CommonConfig {
     pub skills: Vec<Command>,
     pub hooks: Vec<Command>,
     pub agents: Vec<Command>,
+    pub instructions: Vec<Command>,
 }
 
 /// Metadata about a sync operation.

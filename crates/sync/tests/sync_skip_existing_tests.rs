@@ -89,6 +89,7 @@ impl SyncTestContext {
             source_path: PathBuf::from(format!("{}.md", name)),
             modified: SystemTime::now(),
             hash,
+            modules: Vec::new(),
         }
     }
 }
@@ -131,6 +132,8 @@ mod skip_existing_commands_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -176,6 +179,8 @@ mod skip_existing_commands_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -243,6 +248,8 @@ mod skip_existing_commands_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -295,6 +302,8 @@ mod skip_existing_commands_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -352,6 +361,8 @@ mod skip_existing_commands_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -394,6 +405,8 @@ mod skip_existing_commands_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -441,6 +454,8 @@ mod skip_existing_commands_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -494,6 +509,8 @@ mod skip_existing_commands_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -543,6 +560,8 @@ mod skip_existing_commands_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 

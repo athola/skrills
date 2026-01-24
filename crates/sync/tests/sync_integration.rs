@@ -132,6 +132,8 @@ mod sync_direction_tests {
             sync_preferences: true,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -183,6 +185,8 @@ mod sync_direction_tests {
             sync_preferences: true,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -235,6 +239,8 @@ mod sync_skip_existing_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -302,6 +308,8 @@ mod sync_dry_run_tests {
             sync_preferences: true,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -370,6 +378,8 @@ mod sync_force_overwrite_tests {
             sync_preferences: false,
             skip_existing_commands: false, // Should be ignored due to force
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -417,6 +427,8 @@ mod sync_error_handling_tests {
             sync_preferences: true,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -460,6 +472,8 @@ mod sync_error_handling_tests {
             sync_preferences: true,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 

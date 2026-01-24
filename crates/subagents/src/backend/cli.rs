@@ -593,6 +593,37 @@ mod tests {
         ]
     }
 
+    /// Wait for a run to complete (not in Running state) with polling.
+    /// This is more reliable than a fixed sleep, especially in CI environments.
+    async fn wait_for_completion(
+        store: &Arc<dyn RunStore>,
+        run_id: RunId,
+        timeout: Duration,
+    ) -> Option<RunStatus> {
+        // Yield to let the spawned task get scheduled before we start polling.
+        // This is crucial in CI environments where CPU time is limited.
+        tokio::task::yield_now().await;
+
+        let start = std::time::Instant::now();
+        // Use 50ms poll interval to reduce scheduler contention in CI
+        let poll_interval = Duration::from_millis(50);
+
+        loop {
+            if let Ok(Some(status)) = store.status(run_id).await {
+                if status.state != RunState::Running && status.state != RunState::Pending {
+                    return Some(status);
+                }
+            }
+
+            if start.elapsed() > timeout {
+                // Return whatever state we have
+                return store.status(run_id).await.ok().flatten();
+            }
+
+            tokio::time::sleep(poll_interval).await;
+        }
+    }
+
     #[test]
     fn test_cli_config_default() {
         let _guard = env_guard_blocking();
@@ -794,10 +825,10 @@ mod tests {
 
         let run_id = adapter.run(request, store.clone()).await.unwrap();
 
-        // Wait for the process to complete
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let status = store.status(run_id).await.unwrap().unwrap();
+        // Wait for the process to complete with polling (more reliable in CI)
+        let status = wait_for_completion(&store, run_id, Duration::from_secs(5))
+            .await
+            .expect("run should have a status");
         assert_eq!(status.state, RunState::Failed);
     }
 
@@ -895,8 +926,16 @@ mod tests {
 
         let run_id = adapter.run(request, store.clone()).await.unwrap();
 
-        // Wait for completion
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Wait for completion with polling (more reliable in CI)
+        let status = wait_for_completion(&store, run_id, Duration::from_secs(5))
+            .await
+            .expect("run should have a status");
+        assert_eq!(
+            status.state,
+            RunState::Succeeded,
+            "pwd should succeed, got: {:?}",
+            status
+        );
 
         // Check for completion event
         let run = store.run(run_id).await.unwrap().unwrap();
@@ -967,10 +1006,10 @@ mod tests {
 
         let run_id = adapter.run(request, store.clone()).await.unwrap();
 
-        // Wait for the process to complete
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let status = store.status(run_id).await.unwrap().unwrap();
+        // Wait for the process to complete with polling (more reliable in CI)
+        let status = wait_for_completion(&store, run_id, Duration::from_secs(5))
+            .await
+            .expect("run should have a status");
         assert_eq!(status.state, RunState::Succeeded);
 
         // Check that we have events

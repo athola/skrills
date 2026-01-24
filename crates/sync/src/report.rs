@@ -100,6 +100,7 @@ pub struct SyncReport {
     pub mcp_servers: WriteReport,
     pub preferences: WriteReport,
     pub agents: WriteReport,
+    pub instructions: WriteReport,
     /// Overall success status
     pub success: bool,
     /// Summary message
@@ -122,6 +123,7 @@ impl SyncReport {
             + self.mcp_servers.written
             + self.preferences.written
             + self.agents.written
+            + self.instructions.written
     }
 
     /// Returns total items skipped across all types.
@@ -131,6 +133,7 @@ impl SyncReport {
             + self.mcp_servers.skipped.len()
             + self.preferences.skipped.len()
             + self.agents.skipped.len()
+            + self.instructions.skipped.len()
     }
 
     /// Generates a formatted summary for display.
@@ -138,29 +141,34 @@ impl SyncReport {
         let mut out = String::new();
         out.push_str(&format!("Sync Complete: {} → {}\n", source, target));
         out.push_str(&format!(
-            "  Skills:      {} synced, {} skipped\n",
+            "  Skills:       {} synced, {} skipped\n",
             self.skills.written,
             self.skills.skipped.len()
         ));
         out.push_str(&format!(
-            "  Commands:    {} synced, {} skipped\n",
+            "  Commands:     {} synced, {} skipped\n",
             self.commands.written,
             self.commands.skipped.len()
         ));
         out.push_str(&format!(
-            "  MCP Servers: {} synced, {} skipped\n",
+            "  MCP Servers:  {} synced, {} skipped\n",
             self.mcp_servers.written,
             self.mcp_servers.skipped.len()
         ));
         out.push_str(&format!(
-            "  Preferences: {} synced, {} skipped\n",
+            "  Preferences:  {} synced, {} skipped\n",
             self.preferences.written,
             self.preferences.skipped.len()
         ));
         out.push_str(&format!(
-            "  Agents:      {} synced, {} skipped\n",
+            "  Agents:       {} synced, {} skipped\n",
             self.agents.written,
             self.agents.skipped.len()
+        ));
+        out.push_str(&format!(
+            "  Instructions: {} synced, {} skipped\n",
+            self.instructions.written,
+            self.instructions.skipped.len()
         ));
         out
     }

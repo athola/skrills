@@ -1,8 +1,15 @@
 //! Codex adapter for reading/writing ~/.codex configuration.
+//!
+//! ## Agent Support
+//!
+//! Codex does not have native agent/subagent support (see openai/codex#2604).
+//! When syncing agents FROM Claude TO Codex, agents are converted to skills
+//! with an "agent-" prefix (e.g., "my-agent" becomes skill "agent-my-agent").
+//! This allows agent functionality to be preserved until Codex adds official support.
 
 use super::traits::{AgentAdapter, FieldSupport};
 use super::utils::{hash_content, is_hidden_path};
-use crate::common::{Command, McpServer, McpTransport, Preferences};
+use crate::common::{Command, McpServer, McpTransport, ModuleFile, Preferences};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use anyhow::Context;
@@ -142,6 +149,49 @@ impl CodexAdapter {
 
         Ok(changed)
     }
+
+    /// Collects companion files from a skill directory (files other than SKILL.md).
+    fn collect_module_files(&self, skill_dir: &std::path::Path) -> Vec<ModuleFile> {
+        let mut modules = Vec::new();
+
+        for entry in WalkDir::new(skill_dir)
+            .min_depth(1)
+            .max_depth(5)
+            .follow_links(false)
+        {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            let path = entry.path();
+
+            if !path.is_file() {
+                continue;
+            }
+
+            if path.file_name().is_some_and(|n| n == "SKILL.md") {
+                continue;
+            }
+
+            if let Ok(rel_path) = path.strip_prefix(skill_dir) {
+                if is_hidden_path(rel_path) {
+                    continue;
+                }
+
+                if let Ok(content) = fs::read(path) {
+                    let hash = hash_content(&content);
+                    modules.push(ModuleFile {
+                        relative_path: rel_path.to_path_buf(),
+                        content,
+                        hash,
+                    });
+                }
+            }
+        }
+
+        modules
+    }
 }
 
 // Note: We intentionally do not implement Default for CodexAdapter because
@@ -163,8 +213,9 @@ impl AgentAdapter for CodexAdapter {
             mcp_servers: true,
             preferences: true,
             skills: true,
-            hooks: false,  // Codex doesn't support hooks
-            agents: false, // Codex doesn't support agents
+            hooks: false,        // Codex doesn't support hooks
+            agents: false,       // Codex doesn't read agents, but write_agents converts to skills
+            instructions: false, // Codex doesn't support instructions
         }
     }
 
@@ -197,6 +248,7 @@ impl AgentAdapter for CodexAdapter {
                     source_path: path.to_path_buf(),
                     modified,
                     hash,
+                    modules: Vec::new(),
                 });
             }
         }
@@ -326,10 +378,23 @@ impl AgentAdapter for CodexAdapter {
                     .to_string()
             };
 
+            // Skip skills with "agent-" prefix - those are read by read_agents()
+            if name.starts_with("agent-") {
+                continue;
+            }
+
             let content = fs::read(path)?;
             let metadata = fs::metadata(path)?;
             let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
             let hash = hash_content(&content);
+
+            // Collect module files for SKILL.md based skills
+            let modules = if is_skill_md {
+                let skill_dir = path.parent().unwrap_or(path);
+                self.collect_module_files(skill_dir)
+            } else {
+                Vec::new()
+            };
 
             skills.push(Command {
                 name,
@@ -337,6 +402,7 @@ impl AgentAdapter for CodexAdapter {
                 source_path: path.to_path_buf(),
                 modified,
                 hash,
+                modules,
             });
         }
         Ok(skills)
@@ -478,6 +544,16 @@ impl AgentAdapter for CodexAdapter {
 
             fs::write(&path, &skill.content)?;
             report.written += 1;
+
+            // Write module files (companion files) alongside SKILL.md
+            let skill_dir = dir.join(&safe_rel_dir);
+            for module in &skill.modules {
+                let module_path = skill_dir.join(&module.relative_path);
+                if let Some(parent) = module_path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(&module_path, &module.content)?;
+            }
         }
 
         let _ = self.ensure_skills_feature_flag_enabled()?;
@@ -491,8 +567,69 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn read_agents(&self) -> Result<Vec<Command>> {
-        // Codex does not support agents
-        Ok(Vec::new())
+        // Codex doesn't have native agent support, but we store agents as skills
+        // with an "agent-" prefix. Read those back as agents for reverse sync.
+        let skills_dir = self.skills_dir();
+        if !skills_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut agents = Vec::new();
+        for entry in WalkDir::new(&skills_dir)
+            .min_depth(1)
+            .max_depth(20)
+            .follow_links(false)
+        {
+            let entry = entry?;
+            if entry.file_type().is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            if is_hidden_path(path.strip_prefix(&skills_dir).unwrap_or(path)) {
+                continue;
+            }
+            if !entry.file_type().is_file() {
+                continue;
+            }
+
+            let is_skill_md = path.file_name().is_some_and(|n| n == "SKILL.md");
+            if !is_skill_md {
+                continue;
+            }
+
+            // Get the skill name from the parent directory
+            let skill_name = path
+                .parent()
+                .and_then(|p| p.strip_prefix(&skills_dir).ok())
+                .and_then(|p| p.to_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("unknown");
+
+            // Only include skills with "agent-" prefix, stripping the prefix
+            if !skill_name.starts_with("agent-") {
+                continue;
+            }
+            let agent_name = skill_name.strip_prefix("agent-").unwrap().to_string();
+
+            let content = fs::read(path)?;
+            let metadata = fs::metadata(path)?;
+            let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            let hash = hash_content(&content);
+
+            let skill_dir = path.parent().unwrap_or(path);
+            let modules = self.collect_module_files(skill_dir);
+
+            agents.push(Command {
+                name: agent_name,
+                content,
+                source_path: path.to_path_buf(),
+                modified,
+                hash,
+                modules,
+            });
+        }
+
+        Ok(agents)
     }
 
     fn write_hooks(&self, _hooks: &[Command]) -> Result<WriteReport> {
@@ -500,8 +637,65 @@ impl AgentAdapter for CodexAdapter {
         Ok(WriteReport::default())
     }
 
-    fn write_agents(&self, _agents: &[Command]) -> Result<WriteReport> {
-        // Codex does not support agents
+    fn write_agents(&self, agents: &[Command]) -> Result<WriteReport> {
+        // Codex does not have native agent support, but we can convert agents to skills.
+        // Agents are written as skills with an "agent-" prefix to distinguish them.
+        // This allows Claude agents to be used as Codex skills until official support arrives.
+        if agents.is_empty() {
+            return Ok(WriteReport::default());
+        }
+
+        let dir = self.skills_dir();
+        fs::create_dir_all(&dir)?;
+
+        let mut report = WriteReport::default();
+
+        for agent in agents {
+            // Prefix agent names with "agent-" to distinguish from regular skills
+            let skill_name = format!("agent-{}", agent.name);
+            let safe_name = sanitize_name(&skill_name);
+            let path = dir.join(&safe_name).join("SKILL.md");
+
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            if path.exists() {
+                let existing = fs::read(&path)?;
+                if hash_content(&existing) == agent.hash {
+                    report
+                        .skipped
+                        .push(SkipReason::Unchanged { item: skill_name });
+                    continue;
+                }
+            }
+
+            fs::write(&path, &agent.content)?;
+            report.written += 1;
+
+            // Write module files (companion files) alongside SKILL.md
+            let skill_dir = dir.join(&safe_name);
+            for module in &agent.modules {
+                let module_path = skill_dir.join(&module.relative_path);
+                if let Some(parent) = module_path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(&module_path, &module.content)?;
+            }
+        }
+
+        let _ = self.ensure_skills_feature_flag_enabled()?;
+
+        Ok(report)
+    }
+
+    fn read_instructions(&self) -> Result<Vec<Command>> {
+        // Codex does not support instructions
+        Ok(Vec::new())
+    }
+
+    fn write_instructions(&self, _instructions: &[Command]) -> Result<WriteReport> {
+        // Codex does not support instructions
         Ok(WriteReport::default())
     }
 }
@@ -570,6 +764,7 @@ mod tests {
             source_path: PathBuf::from("/tmp/hello.md"),
             modified: SystemTime::now(),
             hash: "abc123".to_string(),
+            modules: Vec::new(),
         }];
 
         let report = adapter.write_commands(&commands).unwrap();
@@ -590,6 +785,7 @@ mod tests {
             source_path: PathBuf::from("/tmp/test.md"),
             modified: SystemTime::now(),
             hash: "hash123".to_string(),
+            modules: Vec::new(),
         }];
 
         adapter.write_commands(&commands).unwrap();
@@ -687,6 +883,7 @@ mod tests {
             source_path: PathBuf::from("/tmp/alpha.md"),
             modified: SystemTime::now(),
             hash: "hash".to_string(),
+            modules: Vec::new(),
         };
 
         let report = adapter.write_skills(&[skill]).unwrap();
@@ -705,6 +902,7 @@ mod tests {
             source_path: PathBuf::from("/tmp/alpha.md"),
             modified: SystemTime::now(),
             hash: "hash".to_string(),
+            modules: Vec::new(),
         };
 
         adapter.write_skills(&[skill]).unwrap();
@@ -729,6 +927,222 @@ mod tests {
         let skills = adapter.read_skills().unwrap();
         let names: std::collections::HashSet<_> = skills.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains("nested/foo"));
+    }
+
+    #[test]
+    fn read_skills_collects_module_files() {
+        let tmp = tempdir().unwrap();
+        let skills_dir = tmp.path().join("skills/my-skill");
+        fs::create_dir_all(&skills_dir).unwrap();
+        fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: my-skill\ndescription: test\n---\n",
+        )
+        .unwrap();
+        fs::write(skills_dir.join("helper.py"), "# Python helper").unwrap();
+        fs::write(skills_dir.join("config.json"), r#"{"key": "value"}"#).unwrap();
+
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let skills = adapter.read_skills().unwrap();
+
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "my-skill");
+        assert_eq!(skills[0].modules.len(), 2);
+
+        let module_paths: std::collections::HashSet<_> = skills[0]
+            .modules
+            .iter()
+            .map(|m| m.relative_path.to_string_lossy().to_string())
+            .collect();
+        assert!(module_paths.contains("helper.py"));
+        assert!(module_paths.contains("config.json"));
+    }
+
+    #[test]
+    fn write_skills_writes_module_files() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        let skill = Command {
+            name: "test-skill".to_string(),
+            content: b"---\nname: test-skill\ndescription: test\n---\n".to_vec(),
+            source_path: PathBuf::from("/tmp/test-skill/SKILL.md"),
+            modified: SystemTime::now(),
+            hash: "hash".to_string(),
+            modules: vec![
+                ModuleFile {
+                    relative_path: PathBuf::from("helper.py"),
+                    content: b"# Helper".to_vec(),
+                    hash: "h1".to_string(),
+                },
+                ModuleFile {
+                    relative_path: PathBuf::from("nested/data.json"),
+                    content: b"{}".to_vec(),
+                    hash: "h2".to_string(),
+                },
+            ],
+        };
+
+        let report = adapter.write_skills(&[skill]).unwrap();
+        assert_eq!(report.written, 1);
+
+        // Verify SKILL.md was written
+        assert!(tmp.path().join("skills/test-skill/SKILL.md").exists());
+
+        // Verify module files were written
+        let helper = tmp.path().join("skills/test-skill/helper.py");
+        assert!(helper.exists());
+        assert_eq!(fs::read_to_string(&helper).unwrap(), "# Helper");
+
+        let nested = tmp.path().join("skills/test-skill/nested/data.json");
+        assert!(nested.exists());
+        assert_eq!(fs::read_to_string(&nested).unwrap(), "{}");
+    }
+
+    #[test]
+    fn write_agents_converts_to_skills_with_prefix() {
+        // Codex doesn't have native agent support, so agents are converted to skills
+        // with an "agent-" prefix
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        let agents = vec![
+            Command {
+                name: "code-reviewer".to_string(),
+                content: b"---\nname: code-reviewer\ndescription: Reviews code\n---\n# Agent"
+                    .to_vec(),
+                source_path: PathBuf::from("/tmp/code-reviewer.md"),
+                modified: SystemTime::now(),
+                hash: "hash1".to_string(),
+                modules: Vec::new(),
+            },
+            Command {
+                name: "test-writer".to_string(),
+                content: b"---\nname: test-writer\ndescription: Writes tests\n---\n# Agent"
+                    .to_vec(),
+                source_path: PathBuf::from("/tmp/test-writer.md"),
+                modified: SystemTime::now(),
+                hash: "hash2".to_string(),
+                modules: Vec::new(),
+            },
+        ];
+
+        let report = adapter.write_agents(&agents).unwrap();
+        assert_eq!(report.written, 2);
+
+        // Verify agents were written as skills with "agent-" prefix
+        assert!(tmp
+            .path()
+            .join("skills/agent-code-reviewer/SKILL.md")
+            .exists());
+        assert!(tmp
+            .path()
+            .join("skills/agent-test-writer/SKILL.md")
+            .exists());
+
+        // Verify content
+        let content =
+            fs::read_to_string(tmp.path().join("skills/agent-code-reviewer/SKILL.md")).unwrap();
+        assert!(content.contains("code-reviewer"));
+    }
+
+    #[test]
+    fn write_agents_empty_returns_empty_report() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        let report = adapter.write_agents(&[]).unwrap();
+        assert_eq!(report.written, 0);
+        assert!(report.skipped.is_empty());
+    }
+
+    #[test]
+    fn read_agents_returns_agent_prefixed_skills() {
+        // For reverse sync: skills with "agent-" prefix should be returned as agents
+        let tmp = tempdir().unwrap();
+        let skills_dir = tmp.path().join("skills");
+
+        // Create an agent-prefixed skill
+        let agent_skill_dir = skills_dir.join("agent-code-reviewer");
+        fs::create_dir_all(&agent_skill_dir).unwrap();
+        fs::write(
+            agent_skill_dir.join("SKILL.md"),
+            "---\nname: code-reviewer\ndescription: Reviews code\n---\n# Agent",
+        )
+        .unwrap();
+
+        // Create a regular skill (should NOT be returned as agent)
+        let regular_skill_dir = skills_dir.join("pdf-processing");
+        fs::create_dir_all(&regular_skill_dir).unwrap();
+        fs::write(
+            regular_skill_dir.join("SKILL.md"),
+            "---\nname: pdf-processing\ndescription: Process PDFs\n---\n# Skill",
+        )
+        .unwrap();
+
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let agents = adapter.read_agents().unwrap();
+
+        // Only agent-prefixed skill should be returned, with prefix stripped
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].name, "code-reviewer");
+    }
+
+    #[test]
+    fn read_skills_excludes_agent_prefixed() {
+        // Skills with "agent-" prefix should NOT be returned by read_skills
+        let tmp = tempdir().unwrap();
+        let skills_dir = tmp.path().join("skills");
+
+        // Create an agent-prefixed skill
+        let agent_skill_dir = skills_dir.join("agent-code-reviewer");
+        fs::create_dir_all(&agent_skill_dir).unwrap();
+        fs::write(
+            agent_skill_dir.join("SKILL.md"),
+            "---\nname: code-reviewer\n---\n# Agent",
+        )
+        .unwrap();
+
+        // Create a regular skill
+        let regular_skill_dir = skills_dir.join("pdf-processing");
+        fs::create_dir_all(&regular_skill_dir).unwrap();
+        fs::write(
+            regular_skill_dir.join("SKILL.md"),
+            "---\nname: pdf-processing\n---\n# Skill",
+        )
+        .unwrap();
+
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let skills = adapter.read_skills().unwrap();
+
+        // Only regular skill should be returned (agent-prefixed excluded)
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "pdf-processing");
+    }
+
+    #[test]
+    fn agent_roundtrip_preserves_content() {
+        // Write agents, then read them back - content should be preserved
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        let original_content =
+            b"---\nname: my-agent\ndescription: Test\n---\n# My Agent\n\nInstructions here.";
+        let agents = vec![Command {
+            name: "my-agent".to_string(),
+            content: original_content.to_vec(),
+            source_path: PathBuf::from("/tmp/my-agent.md"),
+            modified: SystemTime::now(),
+            hash: "hash".to_string(),
+            modules: Vec::new(),
+        }];
+
+        adapter.write_agents(&agents).unwrap();
+
+        let read_back = adapter.read_agents().unwrap();
+        assert_eq!(read_back.len(), 1);
+        assert_eq!(read_back[0].name, "my-agent");
+        assert_eq!(read_back[0].content, original_content.to_vec());
     }
 
     #[test]
