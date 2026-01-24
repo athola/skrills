@@ -11,14 +11,14 @@ Thanks for contributing. Focus on API stability, matching existing patterns, and
 Run [`./scripts/install-git-hooks.sh`](scripts/install-git-hooks.sh) once to automatically run `make precommit` on every `git commit`.
 
 ## Public API & Stability
-Stable public APIs are critical.
+We prioritize API stability to ensure reliable automation.
 - **Pre-1.0**: We maintain best-effort compatibility for the documented public API (specifically `run` and `runtime`). See [`docs/semver-policy.md`](docs/semver-policy.md).
-- **Check Compatibility**: Prevent breaking changes by running `cargo +nightly public-api diff --deny removed --deny changed origin/master..HEAD` in `crates/server`. CI enforces this.
+- **Check Compatibility**: Check for breaking changes by running `cargo +nightly public-api diff --deny removed --deny changed origin/master..HEAD` in `crates/server`. CI enforces this.
 - **Evolution**: Follow [Rust RFC 1105](https://rust-lang.github.io/rfcs/1105-api-evolution.html). Prefer additive changes.
 
 ## Tests
 - **Regression Tests**: Add tests for new behaviors, especially MCP tool outputs.
-- **Hermeticity**: Isolate `HOME` and write only to temporary directories in integration tests.
+- **Hermeticity**: Tests must be hermetic. Isolate `HOME` and write only to temporary directories in integration tests.
 - **Gateway Testing**: Use `SKRILLS_GATEWAY_METRICS_PATH=/metrics` or `SKRILLS_GATEWAY_READY_REQUIRE_AUTH=1` for gateway tests. Iterate with `cargo test -p gateway --lib http::`.
 
 ## Documentation

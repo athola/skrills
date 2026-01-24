@@ -1,21 +1,16 @@
 # AI Agent Development Guidelines
 
-This document provides essential guidelines for building AI coding agents that produce functional, high-quality code.
+Use these guidelines to build AI coding agents that produce functional, high-quality code.
 
 ---
 
 ## Guiding Principles
 
-- **Iterate Incrementally**: Prioritize small, functional changes. They are safer and easier to manage than large rewrites.
-- **Adapt to Project Conventions**: Each project has its own conventions. Adapt to them rather than sticking to external rules.
-- **Engineer Pragmatically**: Balance trade-offs like performance, readability, and security within the context.
-- **Base Decisions on Evidence**: Ground technical decisions in data (profiling, metrics) rather than intuition.
-- **Explore Diverse Solutions**: Generate and evaluate multiple approaches before committing to one.
-- **Prioritize Simplicity**: Favor simple, standard solutions. Code that needs extensive comments usually needs refactoring.
-- **Single Responsibility Principle**: Each component should serve one distinct, clearly defined purpose.
-- **Defer Abstraction**: Avoid abstractions until a clear pattern is identified (e.g., Rule of Three).
-- **Document Assumptions**: Explicitly document advantages, disadvantages, and confidence levels. This fosters transparency.
-- **Cultivate Design Diversity**: Explore different approaches to avoid applying the same pattern to every problem ("mode collapse").
+Prioritize small, functional changes. They are safer and easier to debug than large rewrites. Adapt to each project's conventions rather than applying external rules rigidly.
+
+Balance trade-offs like performance, readability, and security based on evidence (profiling, metrics) rather than intuition. Explore multiple solutions before committing to one to avoid "mode collapse." Favor simple, standard solutions—code that requires extensive comments often needs refactoring.
+
+Each component should serve one distinct purpose (Single Responsibility Principle). Defer abstraction until a clear pattern emerges (e.g., Rule of Three). Explicitly document assumptions, trade-offs, and confidence levels to maintain transparency.
 
 ---
 
@@ -42,8 +37,7 @@ If you fail three times:
 
 ### Session Management
 
-- Use session history to analyze errors and monitor progress.
-- For complex tasks, document the current state, then clear the session and restart.
+Use session history to analyze errors and monitor progress. For complex tasks, document the current state, then clear the session and restart.
 
 ---
 
@@ -69,9 +63,10 @@ make fmt lint test --quiet build
 
 ### Effective Prompting
 
-A structured prompt increases the chance of high-quality results. Request detailed comparisons, implementation outlines, trade-offs, and complexity assessments.
+Structured prompts produce better results. Request detailed comparisons, implementation outlines, trade-offs, and complexity assessments.
 
 ### Role Prompting
+
 Assigning a specific role (e.g., security expert, senior developer) focuses the agent's perspective. Precise role definitions improve output quality.
 
 Using XML tags can also help structure prompts and responses:
@@ -98,23 +93,26 @@ Review the authentication implementation for OWASP Top 10 vulnerabilities.
 - Use consistent XML tag names.
 
 ### Creative Problem-Solving
-1. **Diverge**: Generate a minimum of five distinct approaches to the problem, deliberately withholding initial judgment.
-2. **Converge**: Systematically evaluate the trade-offs and inherent constraints associated with each generated approach.
-3. **Select**: Choose the most suitable approach and thoroughly document the underlying reasoning for its selection.
-4. **Document**: Record all other approaches considered, along with the justifications for their rejection. This provides valuable context for future developers.
+
+1. **Diverge**: Generate at least five distinct approaches, withholding initial judgment.
+2. **Converge**: Evaluate the trade-offs and constraints of each approach.
+3. **Select**: Choose the most suitable approach and document the reasoning.
+4. **Document**: Record rejected approaches to provide context for future developers.
 
 ---
 
 ## Architecture
 
 ### Design
-- **Favor Composition**: Use composition and delegation instead of deep class hierarchies to reduce coupling.
-- **Be Explicit**: Write clear code. Avoid "clever" tricks or implicit behaviors.
-- **Use Dependency Injection**: Pass dependencies into components to simplify testing and reuse. Avoid singletons.
+
+- **Favor Composition**: Use composition and delegation to reduce coupling.
+- **Be Explicit**: Avoid implicit behaviors or "clever" tricks.
+- **Use Dependency Injection**: Pass dependencies to simplify testing and reuse.
 - **Design for API Stability**: Minimize breaking changes in public APIs. Internal refactoring should not affect external users.
-- **Handle Errors Gracefully**: Catch specific errors. Avoid broad `except:` clauses that mask bugs.
+- **Handle Errors Gracefully**: Catch specific errors; avoid broad `except:` clauses.
 
 ### Decision-Making
+
 Consider these factors when selecting an approach:
 - **Testability**: Can the solution be thoroughly tested?
 - **Readability**: Will a new developer understand the code quickly?
@@ -124,39 +122,44 @@ Consider these factors when selecting an approach:
 - **Maintainability**: Can others modify and extend the code easily?
 
 ### Security
-- **Integrate Security Early**: Consider security from the start.
+
+- **Integrate Security Early**: Design auth/authz before writing code.
 - **Multi-Layered Defense**: Use defense in depth.
 - **Least Privilege**: Grant only minimum necessary permissions.
 - **Separate Secrets**: Keep secrets out of version control.
 - **Validate Inputs**: Validate all external data.
-- **Use Parameterized Queries**: Prevent SQL injection by using parameterized queries.
-- **Monitor Behavior**: Monitor for anomalies.
-- **Scan for Threats**: Scan file uploads and data streams.
+- **Use Parameterized Queries**: Prevent SQL injection.
+- **Monitor Behavior**: Watch for anomalies.
+- **Scan for Threats**: Check file uploads and data streams.
 
 ### Performance
-- **Measure First**: Profile before optimizing. Avoid premature optimization.
-- **Macro-Optimizations**: Focus on algorithms and architecture over micro-optimizations.
+
+- **Measure First**: Profile before optimizing.
+- **Macro-Optimizations**: Focus on algorithms and architecture.
 - **Document Trade-offs**: Explain performance costs of security measures.
-- **Cache Invalidation**: Plan for cache invalidation when data changes.
+- **Cache Invalidation**: Plan for invalidation when data changes.
 
 ---
 
 ## Integrating with Existing Codebases
 
 ### Learning a New Codebase
+
 Before starting:
-1. Identify at least three existing features similar to what you intend to build.
+1. Identify three existing features similar to what you intend to build.
 2. Identify patterns for error handling, testing, and naming.
 3. Use established libraries and utility functions.
 4. Follow established testing patterns.
 
 ### Tooling and Dependencies
+
 - Use established tools and systems.
 - Avoid new tools or external dependencies without a clear justification.
 - Stick to project conventions.
 - Prefer built-in functionality over new dependencies.
 
 ### Automation and Consistency
+
 - Use automation (e.g., GitHub Actions) for PR checks.
 - Ensure consistent configuration (especially in monorepos).
 - Maintain consistent patterns across projects.
@@ -166,7 +169,8 @@ Before starting:
 ## Context Management
 
 ### Command Optimization
-To maintain clear context and avoid overwhelming output, avoid executing commands that generate excessive output. Be specific.
+
+Excessive output floods the context window. Avoid commands that generate large amounts of text.
 
 **Verbose commands to avoid:**
 - `npm install` or `pip install` without a quiet flag.
@@ -179,6 +183,7 @@ To maintain clear context and avoid overwhelming output, avoid executing command
 - `ls -1 | head -20` or `find . -name "*.py" | head -10`.
 
 ### Session Management
+
 - Use `/context` to monitor token usage.
 - Use `/compact` cautiously (it can hide errors).
 - Use `/clear` and `/catchup` to clean up sessions.
@@ -189,18 +194,21 @@ To maintain clear context and avoid overwhelming output, avoid executing command
 ## Common Anti-Patterns
 
 ### Code Quality
+
 - **Over-engineering**: Building complex systems for simple problems.
 - **Hidden Fragility**: Ignoring edge cases and system interactions.
 - **Library Misuse**: Using libraries without understanding them.
 - **"AI Slop"**: Using generic identifiers (e.g., `data`) or rigid, "machine-perfect" formatting.
 
 ### Security
+
 - **"Eyeball Test"**: Assuming security based on a quick review.
 - **Static Defense**: Relying only on input filtering, ignoring runtime behavior.
 - **Ignoring Invisible Content**: Failing to scan metadata or hidden data.
 - **Input-Centric Governance**: Focusing only on inputs, neglecting output safety.
 
 ### Workflow
+
 - **"Big Bang" Changes**: Large, untested commits.
 - **Premature Abstraction**: Abstracting simple problems too early.
 - **Documentation Debt**: Changing code without updating docs.
@@ -234,7 +242,7 @@ find . -name "*.py" | head -10
 ```
 
 ### Decision Checklist
-Before implementing, ask:
+
 - Do you understand the problem?
 - Did you consider multiple approaches?
 - Is this the simplest effective solution?
@@ -242,12 +250,11 @@ Before implementing, ask:
 - Do the changes follow project patterns?
 
 ### Commit Checklist
-Prior to committing changes, ensure the following:
+
 - The code compiles or builds successfully.
 - All tests pass without errors.
 - New functionality is covered by corresponding new tests.
 - The codebase is free of linting errors.
-
 - The commit message clearly explains the change's rationale.
 
 ---

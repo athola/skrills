@@ -71,7 +71,7 @@ The `app` module is split to stay under the 2500 LOC threshold (ADR-0001):
 
 ## Roadmap
 
-We will extract command handlers to submodules as the CLI grows and align CLI commands with MCP tools. We also plan to consolidate `sync-from-claude` with `sync-all`. `app` module size is monitored to trigger refactoring before it becomes unmanageable.
+Command handlers move to submodules as the CLI grows to align CLI commands with MCP tools. Future work includes consolidating `sync-from-claude` with `sync-all`. The `app` module size is monitored to trigger refactoring at the threshold.
 
 ## Related Documents
 

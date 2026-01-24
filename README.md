@@ -22,14 +22,9 @@ Skills support engine for Claude Code, Codex CLI, and GitHub Copilot CLI.
 
 ## Features
 
-- **Cross-CLI validation**: Validates skills against Claude Code (permissive), Codex CLI (strict), and Copilot CLI (strict) rules
-- **Bidirectional sync**: Sync skills, commands, agents, MCP servers, and preferences between all three CLIs
-- **Auto-fix**: Derives missing YAML frontmatter from file paths and content
-- **Token analysis**: Reports token usage per skill with optimization suggestions
-- **Dependency resolution**: Tracks skill relationships with cycle detection and semver constraints
-- **MCP server**: 40+ tools for validation, sync, recommendations, and skill creation
-- **Intelligence**: Project-aware recommendations, GitHub skill search, LLM generation, and empirical session mining
-- **Context optimization**: Lazy schema loading to reduce context window pressure
+Skrills validates skills against Claude Code (permissive), Codex CLI (strict), and Copilot CLI (strict) rules. It syncs skills, commands, agents, MCP servers, and preferences across all three environments, preventing configuration drift. The validation engine derives missing YAML frontmatter from file paths and content to fix common errors automatically.
+
+For optimization, Skrills analyzes token usage per skill and suggests reductions to fit context windows. It resolves skill dependencies with cycle detection and semantic versioning constraints. The built-in MCP server provides over 40 tools for validation, sync, and project-aware skill generation, while session mining improves recommendations based on actual usage.
 
 ## Demo
 
@@ -77,9 +72,9 @@ See [CLI reference](book/src/cli.md) for all 30+ commands.
 
 ## Why Skrills
 
-Claude Code accepts any markdown as skills. Codex CLI and Copilot CLI require YAML frontmatter with `name` (max 100 chars) and `description` (max 500 chars). Skrills validates files against each CLI's rules before runtime errors occur.
+Claude Code, Codex CLI, and Copilot CLI have different requirements for skill definitions. Codex and Copilot require YAML frontmatter with specific character limits (`name` max 100, `description` max 500), while Claude is permissive. Skrills catches these discrepancies at validation time, preventing runtime errors.
 
-The sync system checks file hashes before writing to avoid overwriting user edits. Analytics tools report token usage to help stay within context limits.
+The sync system uses file hashing to respect manual edits, ensuring user changes aren't overwritten. Token analytics and dependency resolution help maintain a clean, efficient skill library within context limits.
 
 ## Limitations
 
