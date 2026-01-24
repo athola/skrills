@@ -107,7 +107,7 @@ impl CopilotAdapter {
 
         for entry in WalkDir::new(skill_dir)
             .min_depth(1)
-            .max_depth(5)
+            .max_depth(10)
             .follow_links(false)
         {
             let entry = match entry {
@@ -121,6 +121,10 @@ impl CopilotAdapter {
                 continue;
             }
 
+            // Skip the main skill file - we want companion/module files only.
+            // Note: We treat any .md file in the skill directory (other than SKILL.md)
+            // as a module file. If a .md file should be a standalone skill, it should
+            // be placed in its own directory with a SKILL.md file instead.
             if path.file_name().is_some_and(|n| n == "SKILL.md") {
                 continue;
             }
@@ -180,7 +184,7 @@ impl AgentAdapter for CopilotAdapter {
         let mut commands = Vec::new();
         for entry in WalkDir::new(&prompts_dir)
             .min_depth(1)
-            .max_depth(5)
+            .max_depth(10)
             .follow_links(false)
         {
             let entry = match entry {

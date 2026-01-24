@@ -62,7 +62,7 @@ impl ClaudeAdapter {
         // Walk the skill directory looking for companion files
         for entry in WalkDir::new(skill_dir)
             .min_depth(1)
-            .max_depth(5)
+            .max_depth(10)
             .follow_links(false)
         {
             let entry = match entry {
@@ -77,7 +77,10 @@ impl ClaudeAdapter {
                 continue;
             }
 
-            // Skip SKILL.md (the main skill file)
+            // Skip SKILL.md (the main skill file) - we want companion/module files only.
+            // Note: We treat any .md file in the skill directory (other than SKILL.md)
+            // as a module file. If a .md file should be a standalone skill, it should
+            // be placed in its own directory with a SKILL.md file instead.
             if path.file_name().is_some_and(|n| n == "SKILL.md") {
                 continue;
             }
