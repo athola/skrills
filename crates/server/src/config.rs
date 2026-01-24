@@ -100,9 +100,35 @@ pub fn load_config() -> Result<Option<Config>> {
 ///
 /// This should be called early in the application startup, before
 /// parsing CLI arguments.
+///
+/// # Warnings
+/// Logs a warning if the config file exists but fails to parse.
+/// This is a security concern because users may expect auth_token
+/// to be set from config, but a syntax error would cause the server
+/// to start without authentication.
 pub fn apply_config_to_env() {
-    if let Ok(Some(config)) = load_config() {
-        apply_serve_config_to_env(&config.serve);
+    match load_config() {
+        Ok(Some(config)) => {
+            apply_serve_config_to_env(&config.serve);
+        }
+        Ok(None) => {
+            // Config file doesn't exist, nothing to apply
+        }
+        Err(e) => {
+            // Config file exists but failed to parse - this is important to warn about
+            // because users may have set auth_token expecting it to be applied
+            tracing::warn!(
+                target: "skrills::config",
+                error = %e,
+                "Failed to parse config file (~/.skrills/config.toml). \
+                 Server may start without expected settings (e.g., auth_token). \
+                 Fix the config file syntax or remove it."
+            );
+            eprintln!(
+                "WARNING: Config file parse error: {}. Server starting without config settings.",
+                e
+            );
+        }
     }
 }
 

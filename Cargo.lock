@@ -2510,6 +2510,7 @@ dependencies = [
  "parking_lot",
  "pathdiff",
  "rcgen",
+ "regex",
  "reqwest",
  "rmcp",
  "semver",

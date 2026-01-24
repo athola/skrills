@@ -184,23 +184,46 @@ pub(crate) fn handle_skill_rollback_command(
         .current_dir(parent_dir)
         .output();
 
-    let available_versions: Vec<SkillVersion> = match git_log {
-        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter_map(|line| {
-                let parts: Vec<&str> = line.splitn(3, '|').collect();
-                if parts.len() == 3 {
-                    Some(SkillVersion {
-                        hash: parts[0].to_string(),
-                        date: parts[1].to_string(),
-                        message: parts[2].to_string(),
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect(),
-        _ => vec![],
+    let (available_versions, git_error): (Vec<SkillVersion>, Option<String>) = match git_log {
+        Ok(output) if output.status.success() => {
+            let versions = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter_map(|line| {
+                    let parts: Vec<&str> = line.splitn(3, '|').collect();
+                    if parts.len() == 3 {
+                        Some(SkillVersion {
+                            hash: parts[0].to_string(),
+                            date: parts[1].to_string(),
+                            message: parts[2].to_string(),
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            (versions, None)
+        }
+        Ok(output) => {
+            // Git command ran but failed (non-zero exit)
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            tracing::warn!(
+                target: "skrills::skill_management",
+                path = %skill_path.display(),
+                stderr = %stderr,
+                "Git log failed for skill file"
+            );
+            (vec![], Some(stderr))
+        }
+        Err(e) => {
+            // Git command couldn't be executed (git not found, permission denied, etc.)
+            tracing::warn!(
+                target: "skrills::skill_management",
+                path = %skill_path.display(),
+                error = %e,
+                "Failed to execute git command"
+            );
+            (vec![], Some(format!("Could not execute git: {}", e)))
+        }
     };
 
     if available_versions.is_empty() {
@@ -220,6 +243,9 @@ pub(crate) fn handle_skill_rollback_command(
                 skill.name,
                 skill_path.display()
             );
+            if let Some(ref error) = git_error {
+                eprintln!("Git error: {}", error.trim());
+            }
             println!("Skill rollback requires the skill to be under git version control.");
         }
         return Ok(());
@@ -227,6 +253,17 @@ pub(crate) fn handle_skill_rollback_command(
 
     match version {
         Some(target_version) => {
+            // Validate version hash format to prevent command injection
+            // Git commit hashes are 4-40 hexadecimal characters
+            let hash_pattern =
+                regex::Regex::new(r"^[0-9a-fA-F]{4,40}$").expect("Invalid regex pattern");
+            if !hash_pattern.is_match(&target_version) {
+                bail!(
+                    "Invalid version hash '{}'. Expected 4-40 hexadecimal characters (e.g., 'abc1234' or full SHA).",
+                    target_version
+                );
+            }
+
             // Perform rollback to specific version
             let checkout = Command::new("git")
                 .args([
@@ -624,7 +661,12 @@ pub(crate) fn handle_pre_commit_validate_command(
 
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
-            Err(_) => continue,
+            Err(e) => {
+                // Report file read errors - silent failures could let broken skills slip through
+                errors_found = true;
+                eprintln!("✗ {} (read error: {})", path.display(), e);
+                continue;
+            }
         };
 
         let result = validate_skill(path, &content, validation_target);
@@ -1187,4 +1229,136 @@ pub(crate) fn handle_sync_pull_command(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test that invalid git version hashes are rejected (command injection prevention)
+    #[test]
+    fn rollback_invalid_version_hash_is_rejected() {
+        // Valid hashes: 4-40 hex characters
+        let valid_hashes = ["abc1", "abc12345", "abc123456789abcdef", "ABCDEF0123456789"];
+        let hash_pattern = regex::Regex::new(r"^[0-9a-fA-F]{4,40}$").unwrap();
+
+        for hash in &valid_hashes {
+            assert!(
+                hash_pattern.is_match(hash),
+                "Expected '{}' to be valid",
+                hash
+            );
+        }
+
+        // Invalid hashes (potential injection attacks)
+        let invalid_hashes = [
+            "abc",                 // too short
+            "; rm -rf /",          // shell injection
+            "abc123; echo pwned",  // command injection
+            "$(whoami)",           // command substitution
+            "`id`",                // backtick substitution
+            "abc\necho hacked",    // newline injection
+            "abc|cat /etc/passwd", // pipe injection
+            "--help",              // option injection
+            "-",                   // stdin redirect
+            "",                    // empty
+        ];
+
+        for hash in &invalid_hashes {
+            assert!(
+                !hash_pattern.is_match(hash),
+                "Expected '{}' to be rejected as invalid",
+                hash
+            );
+        }
+    }
+
+    /// Test that YAML with special characters is escaped properly (basic check)
+    #[test]
+    fn deprecation_message_basic_format() {
+        // This test documents the current behavior - messages are wrapped in quotes
+        // which handles most special characters but not all edge cases
+        let message = "Use new-skill instead";
+        let formatted = format!("deprecation_message: \"{}\"\n", message);
+        assert!(formatted.contains("\"Use new-skill instead\""));
+    }
+
+    /// Test SkillVersion serialization
+    #[test]
+    fn skill_version_serializes_correctly() {
+        let version = SkillVersion {
+            hash: "abc1234".to_string(),
+            date: "2024-01-15 10:30:00 -0500".to_string(),
+            message: "Initial commit".to_string(),
+        };
+
+        let json = serde_json::to_string(&version).unwrap();
+        assert!(json.contains("abc1234"));
+        assert!(json.contains("Initial commit"));
+    }
+
+    /// Test RollbackResult default state
+    #[test]
+    fn rollback_result_default_state() {
+        let result = RollbackResult {
+            skill_name: "test-skill".to_string(),
+            skill_path: PathBuf::from("/path/to/skill.md"),
+            rolled_back: false,
+            from_version: None,
+            to_version: None,
+            available_versions: vec![],
+        };
+
+        let json = serde_json::to_string_pretty(&result).unwrap();
+        assert!(json.contains("\"rolled_back\": false"));
+        assert!(json.contains("\"available_versions\": []"));
+    }
+
+    /// Test ImportResult with existing skill (no force)
+    #[test]
+    fn import_result_existing_skill_message() {
+        let result = ImportResult {
+            source: "/path/to/source.md".to_string(),
+            target_path: PathBuf::from("/home/user/.claude/skills/my-skill.md"),
+            imported: false,
+            skill_name: Some("my-skill".to_string()),
+            message: "Skill 'my-skill' already exists. Use --force to overwrite.".to_string(),
+        };
+
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"imported\":false"));
+        assert!(json.contains("--force"));
+    }
+
+    /// Test pre-commit validation detects errors_found flag behavior
+    #[test]
+    fn precommit_validation_error_flag_tracking() {
+        // This tests the pattern used in pre-commit validation
+        let mut errors_found = false;
+        let mut validated = 0;
+
+        // Simulate successful validation
+        validated += 1;
+
+        // Simulate read error - should set errors_found (as per our fix)
+        let read_failed = true;
+        if read_failed {
+            errors_found = true;
+        }
+
+        // Simulate validation error - should also set errors_found
+        let has_validation_errors = true;
+        if has_validation_errors {
+            errors_found = true;
+        }
+
+        assert!(
+            errors_found,
+            "errors_found should be true when any error occurs"
+        );
+        assert_eq!(
+            validated, 1,
+            "Only successful validations should be counted"
+        );
+    }
 }

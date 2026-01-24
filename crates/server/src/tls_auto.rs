@@ -35,9 +35,15 @@ fn tls_dir() -> Result<PathBuf> {
 /// Returns the paths to the certificate and key files.
 ///
 /// # Behavior
-/// - If certificates already exist and are valid, returns their paths
+/// - If certificate files already exist, returns their paths (reuses existing)
 /// - If certificates don't exist, generates new self-signed certificates
 /// - Certificates are stored in `~/.skrills/tls/`
+///
+/// # Note
+/// This function only checks for file existence, not certificate validity
+/// or expiration. Certificates are generated with a 365-day validity period.
+/// If certificates expire, delete the files to regenerate:
+/// `rm ~/.skrills/tls/cert.pem ~/.skrills/tls/key.pem`
 ///
 /// # Errors
 /// Returns an error if:

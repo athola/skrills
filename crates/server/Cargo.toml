@@ -51,6 +51,7 @@ skrills-validate = { path = "../validate", version = "0.5.2" }
 skrills-analyze = { path = "../analyze", version = "0.5.2" }
 skrills-intelligence = { path = "../intelligence", version = "0.5.2" }
 shellexpand = "3"
+regex = "1"
 
 [features]
 # Enable subagents and HTTP transport by default so MCP exposes subagent tools
