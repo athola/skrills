@@ -211,6 +211,7 @@ mod tests {
             source_path: format!("{}.md", name).into(),
             modified: SystemTime::now(),
             hash: "test".to_string(),
+            modules: Vec::new(),
         }
     }
 

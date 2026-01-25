@@ -1,6 +1,6 @@
 [package]
 name = "skrills-analyze"
-version = "0.5.2"
+version = "0.5.3"
 edition.workspace = true
 description = "Skill analysis: token counting, dependencies, and optimization"
 license = "MIT"

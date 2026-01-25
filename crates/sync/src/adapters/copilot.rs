@@ -11,12 +11,13 @@
 //! - MCP servers: Stored in `mcp-config.json` (NOT in `config.json`)
 //! - Preferences: Stored in `config.json`, must preserve security fields
 //! - Skills: Same format as Codex (`skills/<name>/SKILL.md`)
-//! - Commands: Not supported (Copilot has no slash commands)
+//! - Commands: NOT synced - Copilot prompts (detailed instruction files) are
+//!   conceptually different from Claude commands/Codex prompts (quick atomic shortcuts)
 //! - No config.toml feature flag management
 
 use super::traits::{AgentAdapter, FieldSupport};
 use super::utils::{hash_content, is_hidden_path};
-use crate::common::{Command, McpServer, McpTransport, Preferences};
+use crate::common::{Command, McpServer, McpTransport, ModuleFile, Preferences};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use anyhow::Context;
@@ -82,6 +83,14 @@ impl CopilotAdapter {
         self.root.join("agents")
     }
 
+    fn prompts_dir(&self) -> PathBuf {
+        self.root.join("prompts")
+    }
+
+    fn instructions_dir(&self) -> PathBuf {
+        self.root.join("instructions")
+    }
+
     /// Path to MCP server configuration (separate from main config).
     fn mcp_config_path(&self) -> PathBuf {
         self.root.join("mcp-config.json")
@@ -90,6 +99,53 @@ impl CopilotAdapter {
     /// Path to preferences/settings (model, security fields).
     fn config_path(&self) -> PathBuf {
         self.root.join("config.json")
+    }
+
+    /// Collects companion files from a skill directory (files other than SKILL.md).
+    fn collect_module_files(&self, skill_dir: &std::path::Path) -> Vec<ModuleFile> {
+        let mut modules = Vec::new();
+
+        for entry in WalkDir::new(skill_dir)
+            .min_depth(1)
+            .max_depth(10)
+            .follow_links(false)
+        {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            let path = entry.path();
+
+            if !path.is_file() {
+                continue;
+            }
+
+            // Skip the main skill file - we want companion/module files only.
+            // Note: We treat any .md file in the skill directory (other than SKILL.md)
+            // as a module file. If a .md file should be a standalone skill, it should
+            // be placed in its own directory with a SKILL.md file instead.
+            if path.file_name().is_some_and(|n| n == "SKILL.md") {
+                continue;
+            }
+
+            if let Ok(rel_path) = path.strip_prefix(skill_dir) {
+                if is_hidden_path(rel_path) {
+                    continue;
+                }
+
+                if let Ok(content) = fs::read(path) {
+                    let hash = hash_content(&content);
+                    modules.push(ModuleFile {
+                        relative_path: rel_path.to_path_buf(),
+                        content,
+                        hash,
+                    });
+                }
+            }
+        }
+
+        modules
     }
 }
 
@@ -108,18 +164,75 @@ impl AgentAdapter for CopilotAdapter {
 
     fn supported_fields(&self) -> FieldSupport {
         FieldSupport {
-            commands: false, // Copilot does not support slash commands
+            commands: false, // Copilot prompts are NOT equivalent to Claude commands/Codex prompts
             mcp_servers: true,
             preferences: true,
             skills: true,
-            hooks: false, // Copilot doesn't support hooks
-            agents: true, // Copilot supports custom agents in ~/.copilot/agents/
+            hooks: false,       // Copilot doesn't support hooks
+            agents: true,       // Copilot supports custom agents in ~/.copilot/agents/
+            instructions: true, // Copilot supports *.instructions.md files
         }
     }
 
     fn read_commands(&self, _include_marketplace: bool) -> Result<Vec<Command>> {
-        // Copilot does not support slash commands
-        Ok(Vec::new())
+        // Copilot uses prompts (*.prompts.md) as the equivalent of slash commands
+        let prompts_dir = self.prompts_dir();
+        if !prompts_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut commands = Vec::new();
+        for entry in WalkDir::new(&prompts_dir)
+            .min_depth(1)
+            .max_depth(10)
+            .follow_links(false)
+        {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    warn!(
+                        path = ?e.path(),
+                        error = %e,
+                        "Failed to read directory entry while scanning prompts"
+                    );
+                    continue;
+                }
+            };
+            if entry.file_type().is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            if is_hidden_path(path.strip_prefix(&prompts_dir).unwrap_or(path)) {
+                continue;
+            }
+            if !entry.file_type().is_file() {
+                continue;
+            }
+
+            // Copilot prompts are *.prompts.md files
+            let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if !file_name.ends_with(".prompts.md") {
+                continue;
+            }
+
+            // Extract name: strip .prompts.md suffix
+            let name = file_name.trim_end_matches(".prompts.md").to_string();
+
+            let content = fs::read(path)?;
+            let metadata = fs::metadata(path)?;
+            let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            let hash = hash_content(&content);
+
+            commands.push(Command {
+                name,
+                content,
+                source_path: path.to_path_buf(),
+                modified,
+                hash,
+                modules: Vec::new(),
+            });
+        }
+        Ok(commands)
     }
 
     fn read_mcp_servers(&self) -> Result<HashMap<String, McpServer>> {
@@ -288,20 +401,52 @@ impl AgentAdapter for CopilotAdapter {
             let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
             let hash = hash_content(&content);
 
+            // Collect companion files from the skill directory
+            let skill_dir = path.parent().unwrap_or(path);
+            let modules = self.collect_module_files(skill_dir);
+
             skills.push(Command {
                 name,
                 content,
                 source_path: path.to_path_buf(),
                 modified,
                 hash,
+                modules,
             });
         }
         Ok(skills)
     }
 
-    fn write_commands(&self, _commands: &[Command]) -> Result<WriteReport> {
-        // Copilot does not support slash commands - no-op
-        Ok(WriteReport::default())
+    fn write_commands(&self, commands: &[Command]) -> Result<WriteReport> {
+        // Copilot uses prompts (*.prompts.md) as the equivalent of slash commands
+        let dir = self.prompts_dir();
+        fs::create_dir_all(&dir)
+            .with_context(|| format!("Failed to create prompts directory: {}", dir.display()))?;
+
+        let mut report = WriteReport::default();
+
+        for cmd in commands {
+            let safe_name = sanitize_name(&cmd.name);
+            let path = dir.join(format!("{}.prompts.md", safe_name));
+
+            if path.exists() {
+                let existing = fs::read(&path).with_context(|| {
+                    format!("Failed to read existing prompt: {}", path.display())
+                })?;
+                if hash_content(&existing) == cmd.hash {
+                    report.skipped.push(SkipReason::Unchanged {
+                        item: cmd.name.clone(),
+                    });
+                    continue;
+                }
+            }
+
+            fs::write(&path, &cmd.content)
+                .with_context(|| format!("Failed to write prompt: {}", path.display()))?;
+            report.written += 1;
+        }
+
+        Ok(report)
     }
 
     fn write_mcp_servers(&self, servers: &HashMap<String, McpServer>) -> Result<WriteReport> {
@@ -433,6 +578,21 @@ impl AgentAdapter for CopilotAdapter {
 
             fs::write(&path, &skill.content)
                 .with_context(|| format!("Failed to write skill: {}", path.display()))?;
+
+            // Write module files (companion files) alongside SKILL.md
+            let skill_dir = dir.join(&safe_rel_dir);
+            for module in &skill.modules {
+                let module_path = skill_dir.join(&module.relative_path);
+                if let Some(parent) = module_path.parent() {
+                    fs::create_dir_all(parent).with_context(|| {
+                        format!("Failed to create module directory: {}", parent.display())
+                    })?;
+                }
+                fs::write(&module_path, &module.content).with_context(|| {
+                    format!("Failed to write module file: {}", module_path.display())
+                })?;
+            }
+
             report.written += 1;
         }
 
@@ -497,6 +657,7 @@ impl AgentAdapter for CopilotAdapter {
                 source_path: path.to_path_buf(),
                 modified,
                 hash,
+                modules: Vec::new(),
             });
         }
 
@@ -537,6 +698,101 @@ impl AgentAdapter for CopilotAdapter {
             fs::write(&path, &transformed_content)
                 .with_context(|| format!("Failed to write agent: {}", path.display()))?;
             report.written += 1;
+        }
+
+        Ok(report)
+    }
+
+    fn read_instructions(&self) -> Result<Vec<Command>> {
+        let dir = self.instructions_dir();
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut instructions = Vec::new();
+        for entry in WalkDir::new(&dir)
+            .min_depth(1)
+            .max_depth(1) // Flat directory structure
+            .follow_links(false)
+        {
+            let entry = entry?;
+            let path = entry.path();
+
+            if !path.is_file() {
+                continue;
+            }
+
+            // Copilot instructions are *.instructions.md files
+            let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if !file_name.ends_with(".instructions.md") {
+                continue;
+            }
+
+            if is_hidden_path(path.strip_prefix(&dir).unwrap_or(path)) {
+                continue;
+            }
+
+            // Extract name: strip .instructions.md suffix
+            let name = file_name.trim_end_matches(".instructions.md").to_string();
+
+            let content = fs::read(path)?;
+            let metadata = fs::metadata(path)?;
+            let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            let hash = hash_content(&content);
+
+            instructions.push(Command {
+                name,
+                content,
+                source_path: path.to_path_buf(),
+                modified,
+                hash,
+                modules: Vec::new(),
+            });
+        }
+
+        Ok(instructions)
+    }
+
+    fn write_instructions(&self, instructions: &[Command]) -> Result<WriteReport> {
+        // Note: ~/.copilot/instructions/ is a staging location, not a standard Copilot path.
+        // Copilot uses repository-level instructions at .github/instructions/*.instructions.md
+        // or IDE-specific global paths (e.g., ~/.config/github-copilot/intellij/).
+        let dir = self.instructions_dir();
+        fs::create_dir_all(&dir).with_context(|| {
+            format!("Failed to create instructions directory: {}", dir.display())
+        })?;
+
+        let mut report = WriteReport::default();
+
+        for instruction in instructions {
+            let safe_name = sanitize_name(&instruction.name);
+            let path = dir.join(format!("{}.instructions.md", safe_name));
+
+            if path.exists() {
+                let existing = fs::read(&path).with_context(|| {
+                    format!("Failed to read existing instruction: {}", path.display())
+                })?;
+                if hash_content(&existing) == instruction.hash {
+                    report.skipped.push(SkipReason::Unchanged {
+                        item: instruction.name.clone(),
+                    });
+                    continue;
+                }
+            }
+
+            fs::write(&path, &instruction.content)
+                .with_context(|| format!("Failed to write instruction: {}", path.display()))?;
+            report.written += 1;
+        }
+
+        // Add warning about the staging location
+        if report.written > 0 {
+            report.warnings.push(format!(
+                "Instructions written to {} (staging). \
+                 Copy to .github/instructions/ in your repository for Copilot to use them, \
+                 or to ~/.config/github-copilot/intellij/global-copilot-instructions.md for JetBrains IDEs.",
+                dir.display()
+            ));
         }
 
         Ok(report)
@@ -647,6 +903,8 @@ mod tests {
         let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
         let fields = adapter.supported_fields();
 
+        // Copilot prompts are NOT equivalent to Claude commands/Codex prompts
+        // (prompts are detailed instruction files, commands are quick atomic shortcuts)
         assert!(!fields.commands, "Copilot should NOT support commands");
         assert!(fields.mcp_servers, "Copilot should support MCP servers");
         assert!(fields.preferences, "Copilot should support preferences");
@@ -654,11 +912,11 @@ mod tests {
     }
 
     // ==========================================
-    // Commands Tests (no-op behavior)
+    // Commands/Prompts Tests
     // ==========================================
 
     #[test]
-    fn read_commands_returns_empty() {
+    fn read_commands_returns_empty_when_no_prompts() {
         let tmp = tempdir().unwrap();
         let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
         let commands = adapter.read_commands(false).unwrap();
@@ -666,21 +924,87 @@ mod tests {
     }
 
     #[test]
-    fn write_commands_is_noop() {
+    fn read_commands_discovers_prompts_md() {
+        let tmp = tempdir().unwrap();
+        let prompts_dir = tmp.path().join("prompts");
+        fs::create_dir_all(&prompts_dir).unwrap();
+        fs::write(
+            prompts_dir.join("commit.prompts.md"),
+            "# Commit Prompt\n\nGenerate a commit message.",
+        )
+        .unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let commands = adapter.read_commands(false).unwrap();
+
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].name, "commit");
+    }
+
+    #[test]
+    fn write_commands_creates_prompts_files() {
         let tmp = tempdir().unwrap();
         let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
 
         let commands = vec![Command {
-            name: "test".to_string(),
-            content: b"# Test".to_vec(),
-            source_path: PathBuf::from("/tmp/test.md"),
+            name: "review".to_string(),
+            content: b"# Review Prompt\n\nReview this code.".to_vec(),
+            source_path: PathBuf::from("/tmp/review.md"),
             modified: SystemTime::now(),
             hash: "abc".to_string(),
+            modules: Vec::new(),
+        }];
+
+        let report = adapter.write_commands(&commands).unwrap();
+        assert_eq!(report.written, 1);
+
+        // Verify file was created with .prompts.md extension
+        let prompt_path = tmp.path().join("prompts/review.prompts.md");
+        assert!(prompt_path.exists());
+    }
+
+    #[test]
+    fn write_commands_skips_unchanged() {
+        let tmp = tempdir().unwrap();
+        let prompts_dir = tmp.path().join("prompts");
+        fs::create_dir_all(&prompts_dir).unwrap();
+        let content = b"# Test Prompt";
+        fs::write(prompts_dir.join("test.prompts.md"), content).unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let commands = vec![Command {
+            name: "test".to_string(),
+            content: content.to_vec(),
+            source_path: PathBuf::from("/tmp/test.md"),
+            modified: SystemTime::now(),
+            hash: hash_content(content),
+            modules: Vec::new(),
         }];
 
         let report = adapter.write_commands(&commands).unwrap();
         assert_eq!(report.written, 0);
-        assert!(report.skipped.is_empty());
+        assert_eq!(report.skipped.len(), 1);
+    }
+
+    #[test]
+    fn commands_roundtrip() {
+        let tmp = tempdir().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+
+        let commands = vec![Command {
+            name: "commit-msg".to_string(),
+            content: b"# Commit Message Generator".to_vec(),
+            source_path: PathBuf::from("/tmp/commit-msg.md"),
+            modified: SystemTime::now(),
+            hash: "hash123".to_string(),
+            modules: Vec::new(),
+        }];
+
+        adapter.write_commands(&commands).unwrap();
+        let read_back = adapter.read_commands(false).unwrap();
+
+        assert_eq!(read_back.len(), 1);
+        assert_eq!(read_back[0].name, "commit-msg");
     }
 
     // ==========================================
@@ -769,6 +1093,7 @@ mod tests {
             source_path: PathBuf::from("/tmp/alpha.md"),
             modified: SystemTime::now(),
             hash: "hash".to_string(),
+            modules: Vec::new(),
         };
 
         let report = adapter.write_skills(&[skill]).unwrap();
@@ -791,6 +1116,7 @@ mod tests {
             source_path: PathBuf::from("/tmp/alpha.md"),
             modified: SystemTime::now(),
             hash: hash_content(content),
+            modules: Vec::new(),
         };
 
         let report = adapter.write_skills(&[skill]).unwrap();
@@ -809,6 +1135,7 @@ mod tests {
             source_path: PathBuf::from("/tmp/test.md"),
             modified: SystemTime::now(),
             hash: "hash".to_string(),
+            modules: Vec::new(),
         };
 
         adapter.write_skills(&[skill]).unwrap();
@@ -1145,6 +1472,7 @@ mod tests {
             source_path: PathBuf::from("/tmp/test.md"),
             modified: SystemTime::now(),
             hash: "hash123".to_string(),
+            modules: Vec::new(),
         };
 
         adapter.write_skills(&[skill]).unwrap();
@@ -1252,6 +1580,7 @@ mod tests {
             source_path: PathBuf::from("/tmp/test.md"),
             modified: SystemTime::now(),
             hash: "abc".to_string(),
+            modules: Vec::new(),
         }];
 
         let report = adapter.write_agents(&agents).unwrap();
@@ -1278,6 +1607,7 @@ mod tests {
             source_path: PathBuf::from("/tmp/test.md"),
             modified: SystemTime::now(),
             hash: "abc".to_string(),
+            modules: Vec::new(),
         }];
 
         // Write once

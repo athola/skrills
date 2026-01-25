@@ -23,11 +23,15 @@ use crate::cli::{Cli, Commands, SyncSource};
 use crate::commands::{
     handle_agent_command, handle_analyze_command, handle_analyze_project_context_command,
     handle_create_skill_command, handle_export_analytics_command, handle_import_analytics_command,
-    handle_metrics_command, handle_mirror_command, handle_recommend_command,
-    handle_recommend_skills_smart_command, handle_resolve_dependencies_command,
-    handle_search_skills_command, handle_search_skills_github_command, handle_serve_command,
-    handle_setup_command, handle_skill_diff_command, handle_suggest_new_skills_command,
-    handle_sync_agents_command, handle_sync_command, handle_validate_command,
+    handle_metrics_command, handle_mirror_command, handle_pre_commit_validate_command,
+    handle_recommend_command, handle_recommend_skills_smart_command,
+    handle_resolve_dependencies_command, handle_search_skills_command,
+    handle_search_skills_github_command, handle_serve_command, handle_setup_command,
+    handle_skill_catalog_command, handle_skill_deprecate_command, handle_skill_diff_command,
+    handle_skill_import_command, handle_skill_profile_command, handle_skill_rollback_command,
+    handle_skill_score_command, handle_skill_usage_report_command,
+    handle_suggest_new_skills_command, handle_sync_agents_command, handle_sync_command,
+    handle_sync_pull_command, handle_validate_command,
 };
 use crate::discovery::{
     merge_extra_dirs, priority_labels, read_skill, skill_roots, AGENTS_DESCRIPTION, AGENTS_NAME,
@@ -881,6 +885,10 @@ pub fn run() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
+    // Load config file and apply settings to env vars before CLI parsing.
+    // This ensures precedence: CLI > ENV > config file.
+    crate::config::apply_config_to_env();
+
     let cli = Cli::parse();
 
     // Check for first-run (only for user-facing commands, not for `serve` which is called by MCP)
@@ -920,6 +928,7 @@ pub fn run() -> Result<()> {
         tls_cert: None,
         tls_key: None,
         cors_origins: Vec::new(),
+        tls_auto: false,
     }) {
         Commands::Serve {
             skill_dirs,
@@ -933,6 +942,7 @@ pub fn run() -> Result<()> {
             tls_cert,
             tls_key,
             cors_origins,
+            tls_auto,
         } => handle_serve_command(
             skill_dirs,
             cache_ttl_ms,
@@ -945,6 +955,7 @@ pub fn run() -> Result<()> {
             tls_cert,
             tls_key,
             cors_origins,
+            tls_auto,
         ),
         Commands::Mirror {
             dry_run,
@@ -1337,6 +1348,63 @@ pub fn run() -> Result<()> {
             format,
             context,
         } => handle_skill_diff_command(name, format, context),
+        Commands::SkillDeprecate {
+            name,
+            message,
+            replacement,
+            skill_dirs,
+            format,
+        } => handle_skill_deprecate_command(name, message, replacement, skill_dirs, format),
+        Commands::SkillRollback {
+            name,
+            version,
+            skill_dirs,
+            format,
+        } => handle_skill_rollback_command(name, version, skill_dirs, format),
+        Commands::SyncPull {
+            source,
+            skill,
+            target,
+            dry_run,
+            format,
+        } => handle_sync_pull_command(source, skill, target, dry_run, format),
+        Commands::SkillProfile {
+            name,
+            period,
+            format,
+        } => handle_skill_profile_command(name, period, format),
+        Commands::SkillCatalog {
+            search,
+            source,
+            category,
+            limit,
+            skill_dirs,
+            format,
+        } => handle_skill_catalog_command(search, source, category, limit, skill_dirs, format),
+        Commands::PreCommitValidate {
+            staged,
+            target,
+            skill_dirs,
+        } => handle_pre_commit_validate_command(staged, target, skill_dirs),
+        Commands::SkillImport {
+            source,
+            target,
+            force,
+            dry_run,
+            format,
+        } => handle_skill_import_command(source, target, force, dry_run, format),
+        Commands::SkillUsageReport {
+            period,
+            format,
+            output,
+            skill_dirs,
+        } => handle_skill_usage_report_command(period, format, output, skill_dirs),
+        Commands::SkillScore {
+            name,
+            skill_dirs,
+            format,
+            below_threshold,
+        } => handle_skill_score_command(name, skill_dirs, format, below_threshold),
     }
 }
 

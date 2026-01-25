@@ -1,6 +1,32 @@
 # Changelog
 
-## Unreleased
+## 0.5.3 - 2026-01-24
+- **NEW: Config File Support**: Security and serve options can now be configured via `~/.skrills/config.toml`. Precedence: CLI > ENV > config file. (#103)
+- **NEW: TLS Auto-Generation**: Added `--tls-auto` flag to auto-generate self-signed TLS certificates for development. Certificates are stored in `~/.skrills/tls/` and reused across server restarts. (#104)
+- **NEW: Skill Management Commands**: Added 9 new CLI commands for skill lifecycle management:
+  - `skill-deprecate`: Mark skills as deprecated with migration guidance
+  - `skill-rollback`: Revert skills to previous git versions
+  - `skill-profile`: View skill execution statistics from analytics cache
+  - `skill-catalog`: Browse and search all available skills with filtering
+  - `skill-import`: Import skills from local paths
+  - `skill-usage-report`: Generate detailed usage reports
+  - `skill-score`: Calculate quality scores for skills (0-100 scale)
+  - `sync-pull`: Placeholder for future remote registry integration
+  - `pre-commit-validate`: Validate skill files for git hooks
+- **NEW: Module Files Sync**: Skills with companion files (helpers, configs) are now synced as complete units, enabling multi-file skill sync between agents.
+- **NEW: Instructions Sync**: Sync instructions between Claude (`CLAUDE.md`) and Copilot (`*.instructions.md` format).
+- **NEW: Codex Agent Support**: Claude agents are now synced to Codex as skills with "agent-" prefix until Codex adds native agent support.
+- **Security**: Added git hash validation for rollback commands, config parse error logging, and proper error handling for silent failures.
+- **Testing**: Added 37 new frontmatter tests and 6 skill management tests covering edge cases and error handling.
+- **Increased max_depth**: Module file collection now traverses up to 10 levels deep (was 5) for deeply nested skill structures.
+
+## 0.5.2 - 2026-01-22
+- **NEW: HTTP Transport Support**: MCP servers using HTTP transport (type="http" with url/headers) are now properly synced. Fixes compatibility with servers like context7. (#111)
+- **Bug Fix**: Filter whitespace-only descriptions at extraction point, not just empty strings. (#100)
+- **Bug Fix**: Skill discovery summary now logs at info level instead of debug. (#101)
+- **Testing**: Added tests for multi-word description matching and special characters. (#99)
+- **Dependencies**: Pruned unused dependencies and dead code for smaller binary size.
+- **CI**: Allow wildcard path deps in cargo-deny config.
 
 ## 0.5.1 - 2026-01-21
 - **Refactor: Skill Trace Commands**: Split monolithic `/skill-trace` into three focused commands for clearer UX:

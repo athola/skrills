@@ -201,6 +201,8 @@ mod copilot_to_claude_tests {
             sync_preferences: true,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -250,6 +252,8 @@ mod copilot_to_claude_tests {
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -292,6 +296,8 @@ mod copilot_to_claude_tests {
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -338,6 +344,8 @@ mod claude_to_copilot_tests {
             sync_preferences: true,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -386,6 +394,8 @@ mod claude_to_copilot_tests {
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -411,12 +421,11 @@ mod claude_to_copilot_tests {
     }
 
     #[test]
-    fn test_claude_commands_skipped_when_syncing_to_copilot() {
+    fn test_claude_commands_synced_to_copilot_as_prompts() {
         /*
         GIVEN a Claude configuration with commands
         WHEN syncing to Copilot with sync_commands enabled
-        THEN commands should be skipped (Copilot doesn't support them)
-        AND no errors should occur
+        THEN commands should be written as *.prompts.md files
         */
         let setup = CopilotSyncTestSetup::new().unwrap();
 
@@ -435,23 +444,26 @@ mod claude_to_copilot_tests {
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
         let result = orchestrator.sync(&params);
 
-        assert!(
-            result.is_ok(),
-            "Sync should succeed even when target doesn't support commands"
-        );
+        assert!(result.is_ok(), "Sync should succeed");
         let report = result.unwrap();
 
-        // Commands should be skipped (Copilot doesn't support them)
-        assert_eq!(
-            report.commands.written, 0,
-            "No commands should be written to Copilot"
+        // Commands should now be written as prompts
+        assert!(
+            report.commands.written > 0,
+            "Commands should be written to Copilot as prompts"
         );
+
+        // Verify the prompts directory was created with .prompts.md files
+        let prompts_dir = setup.copilot_dir.path().join("prompts");
+        assert!(prompts_dir.exists(), "Prompts directory should be created");
     }
 }
 
@@ -484,6 +496,8 @@ mod copilot_to_codex_tests {
             sync_preferences: true,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -526,6 +540,8 @@ mod copilot_to_codex_tests {
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -573,6 +589,8 @@ mod copilot_dry_run_tests {
             sync_preferences: true,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -606,7 +624,7 @@ mod copilot_adapter_field_support_tests {
         /*
         GIVEN a CopilotAdapter
         WHEN checking field support
-        THEN commands should be unsupported
+        THEN commands should NOT be supported (prompts differ from Claude commands/Codex prompts)
         AND skills, mcp_servers, preferences should be supported
         */
         let tmp = TempDir::new().unwrap();
@@ -614,7 +632,12 @@ mod copilot_adapter_field_support_tests {
 
         let support = adapter.supported_fields();
 
-        assert!(!support.commands, "Copilot should NOT support commands");
+        // Copilot prompts are detailed instruction files, NOT equivalent to
+        // Claude commands/Codex prompts (which are quick atomic shortcuts)
+        assert!(
+            !support.commands,
+            "Copilot should NOT support commands (prompts are different)"
+        );
         assert!(support.skills, "Copilot should support skills");
         assert!(support.mcp_servers, "Copilot should support MCP servers");
         assert!(support.preferences, "Copilot should support preferences");
@@ -647,6 +670,7 @@ mod copilot_security_tests {
             source_path: PathBuf::from("/fake/path/skill.md"),
             modified: SystemTime::now(),
             hash: "abc123".to_string(),
+            modules: Vec::new(),
         };
 
         // Write the skill
@@ -693,6 +717,7 @@ mod copilot_security_tests {
             source_path: PathBuf::from("/fake/path/category/my-skill/skill.md"),
             modified: SystemTime::now(),
             hash: "def456".to_string(),
+            modules: Vec::new(),
         };
 
         let result = adapter.write_skills(&[nested_skill]);
@@ -723,6 +748,7 @@ mod copilot_security_tests {
             source_path: PathBuf::from("/fake/path/skill.md"),
             modified: SystemTime::now(),
             hash: "ghi789".to_string(),
+            modules: Vec::new(),
         };
 
         let result = adapter.write_skills(&[mixed_skill]);
@@ -833,6 +859,8 @@ This is a test agent for Copilot.
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: true, // Enable agent sync
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -904,6 +932,8 @@ This is a test agent for Copilot.
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: true,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -958,6 +988,8 @@ This is a test agent for Copilot.
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: false, // Explicitly disabled
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -1007,6 +1039,8 @@ This is a test agent for Copilot.
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: true,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
@@ -1031,11 +1065,12 @@ This is a test agent for Copilot.
     }
 
     #[test]
-    fn test_sync_agents_codex_unsupported() {
+    fn test_sync_agents_codex_converts_to_skills() {
         /*
         GIVEN a sync from Claude to Codex
         WHEN syncing agents
-        THEN agents should be skipped (Codex doesn't support agents)
+        THEN agents should be converted to skills with "agent-" prefix
+        (Codex doesn't have native agent support, so we convert them)
         */
         let claude_dir = TempDir::new().unwrap();
         let codex_dir = TempDir::new().unwrap();
@@ -1054,23 +1089,33 @@ This is a test agent for Copilot.
             sync_mcp_servers: false,
             sync_preferences: false,
             skip_existing_commands: false,
-            sync_agents: true, // Try to sync agents
+            sync_agents: true, // Sync agents (will be converted to skills)
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
         let result = orchestrator.sync(&params);
 
-        assert!(
-            result.is_ok(),
-            "Sync should succeed even when target doesn't support agents"
-        );
+        assert!(result.is_ok(), "Sync should succeed");
         let report = result.unwrap();
 
-        // Agents should be skipped (Codex doesn't support them)
+        // Agents should be written (converted to skills)
         assert_eq!(
-            report.agents.written, 0,
-            "No agents should be written to Codex"
+            report.agents.written, 2,
+            "Agents should be written to Codex as skills"
+        );
+
+        // Verify agents were written as skills with "agent-" prefix
+        let skills_dir = codex_dir.path().join("skills");
+        assert!(
+            skills_dir.join("agent-code-review-agent/SKILL.md").exists(),
+            "Agent should be written as skill with agent- prefix"
+        );
+        assert!(
+            skills_dir.join("agent-refactor-agent/SKILL.md").exists(),
+            "Agent should be written as skill with agent- prefix"
         );
     }
 
@@ -1100,6 +1145,8 @@ This is a test agent for Copilot.
             sync_preferences: true,
             skip_existing_commands: false,
             sync_agents: true,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         };
 

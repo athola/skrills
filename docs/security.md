@@ -195,15 +195,15 @@ We apply rigorous input validation at all trust boundaries and strict path sanit
 ## Compliance
 
 ### Industry Standards
-- **OWASP Top 10**: Mitigations for the OWASP Top 10 vulnerabilities are documented.
-- **CWE Top 25**: The CWE Top 25 most dangerous software errors are addressed in the threat model.
-- **NIST Cybersecurity Framework**: Our security posture aligns with the NIST Cybersecurity Framework.
-- **CIS Controls**: We implement key CIS Controls, such as audit logging and access control.
+- **OWASP Top 10**: Mitigations for Top 10 vulnerabilities are documented.
+- **CWE Top 25**: The Threat Model addresses the 25 most dangerous software errors.
+- **NIST Cybersecurity Framework**: Security posture aligns with NIST CSF.
+- **CIS Controls**: Implements key controls such as audit logging and access control.
 
 ### Data Privacy
-- **GDPR**: Adheres to GDPR principles by not storing user data persistently.
-- **CCPA**: Follows CCPA's privacy by design principles.
-- **SOC 2**: Meets SOC 2 requirements with robust audit logging and access controls.
+- **GDPR**: Skrills does not store user data persistently, aligning with GDPR principles.
+- **CCPA**: Follows privacy-by-design principles.
+- **SOC 2**: Supports SOC 2 requirements via robust audit logging and access controls.
 
 **See**: [Compliance section in Audit Logging](audit-logging.md#compliance)
 
@@ -226,9 +226,9 @@ We apply rigorous input validation at all trust boundaries and strict path sanit
 ```
 
 ### Recommended Manual Testing
-- **Penetration Testing**: Conduct manual penetration testing covering areas such as mTLS authentication bypass, path traversal vulnerabilities, TLS configuration validation, and API key brute-force resistance.
-- **Fuzzing**: Use fuzzing techniques, for example, by running `cargo fuzz run mcp_parser` and `cargo fuzz run skill_parser`, to uncover unexpected behaviors and vulnerabilities.
-- **Security Audits**: Perform annual third-party security audits, conduct thorough code reviews for all sensitive changes, and implement continuous dependency vulnerability scanning.
+- **Penetration Testing**: Conduct manual penetration testing covering mTLS authentication bypass, path traversal vulnerabilities, TLS configuration validation, and API key brute-force resistance.
+- **Fuzzing**: Use fuzzing techniques (e.g., `cargo fuzz run mcp_parser`) to uncover unexpected behaviors.
+- **Security Audits**: Perform annual third-party security audits, conduct code reviews for sensitive changes, and implement continuous dependency scanning.
 
 ---
 
@@ -237,17 +237,17 @@ We apply rigorous input validation at all trust boundaries and strict path sanit
 ### Operating System Level
 
 #### Linux
-- **Linux**: For Linux deployments, configure SELinux/AppArmor contexts and profiles to strictly restrict `skrills` process permissions.
+Configure SELinux/AppArmor contexts and profiles to strictly restrict `skrills` process permissions.
 
 #### macOS
-- **macOS**: Ensure `skrills` is properly code signed and notarized for macOS environments.
+Ensure `skrills` is properly code signed and notarized.
 
 ### Container Security
-- **Container Security**: When deploying `skrills` in containers (e.g., Docker/Podman), use a `distroless` base image, configure the application to run as a non-root user, and apply security options such as `--read-only` and `--cap-drop=ALL`.
+When deploying in containers (e.g., Docker/Podman), use a `distroless` base image, configure the application to run as a non-root user, and apply security options such as `--read-only` and `--cap-drop=ALL`.
 
 ### Network Hardening
-- **Firewall Rules (iptables)**: Implement stringent firewall rules (e.g., using `iptables`) to allow only necessary ports and to rate-limit incoming connections.
-- **Network Segmentation**: Use network segmentation to restrict access to skill directories and require VPN for administrative access when exposing the MCP server to a network.
+- **Firewall Rules (iptables)**: Implement stringent firewall rules to allow only necessary ports and rate-limit incoming connections.
+- **Network Segmentation**: Restrict access to skill directories and require VPN for administrative access when exposing the MCP server.
 
 ---
 

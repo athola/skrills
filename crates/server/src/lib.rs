@@ -13,6 +13,7 @@
 pub mod app;
 pub(crate) mod cache;
 mod commands;
+pub(crate) mod config;
 mod doctor;
 mod handler;
 pub mod mcp_gateway;
@@ -31,6 +32,10 @@ pub mod manifest;
 /// HTTP transport for remote MCP access.
 #[cfg(feature = "http-transport")]
 pub mod http_transport;
+
+/// Auto-generated TLS certificate support.
+#[cfg(feature = "http-transport")]
+pub(crate) mod tls_auto;
 
 /// Command-line interface for the server.
 pub mod cli;

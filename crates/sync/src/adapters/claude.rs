@@ -2,7 +2,7 @@
 
 use super::traits::{AgentAdapter, FieldSupport};
 use super::utils::{hash_content, is_hidden_path};
-use crate::common::{Command, McpServer, McpTransport, Preferences};
+use crate::common::{Command, McpServer, McpTransport, ModuleFile, Preferences};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use anyhow::Context;
@@ -51,6 +51,61 @@ impl ClaudeAdapter {
         self.root.join("settings.json")
     }
 
+    fn instructions_path(&self) -> PathBuf {
+        self.root.join("CLAUDE.md")
+    }
+
+    /// Collects companion files from a skill directory (files other than SKILL.md).
+    fn collect_module_files(&self, skill_dir: &std::path::Path) -> Vec<ModuleFile> {
+        let mut modules = Vec::new();
+
+        // Walk the skill directory looking for companion files
+        for entry in WalkDir::new(skill_dir)
+            .min_depth(1)
+            .max_depth(10)
+            .follow_links(false)
+        {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            let path = entry.path();
+
+            // Skip non-files
+            if !path.is_file() {
+                continue;
+            }
+
+            // Skip SKILL.md (the main skill file) - we want companion/module files only.
+            // Note: We treat any .md file in the skill directory (other than SKILL.md)
+            // as a module file. If a .md file should be a standalone skill, it should
+            // be placed in its own directory with a SKILL.md file instead.
+            if path.file_name().is_some_and(|n| n == "SKILL.md") {
+                continue;
+            }
+
+            // Skip hidden files
+            if let Ok(rel_path) = path.strip_prefix(skill_dir) {
+                if is_hidden_path(rel_path) {
+                    continue;
+                }
+
+                // Read the file content
+                if let Ok(content) = fs::read(path) {
+                    let hash = hash_content(&content);
+                    modules.push(ModuleFile {
+                        relative_path: rel_path.to_path_buf(),
+                        content,
+                        hash,
+                    });
+                }
+            }
+        }
+
+        modules
+    }
+
     fn collect_commands_from_dir(
         &self,
         dir: &PathBuf,
@@ -94,6 +149,7 @@ impl ClaudeAdapter {
                 source_path: path.to_path_buf(),
                 modified,
                 hash,
+                modules: Vec::new(),
             });
         }
 
@@ -122,6 +178,7 @@ impl AgentAdapter for ClaudeAdapter {
             skills: true,
             hooks: true,
             agents: true,
+            instructions: true,
         }
     }
 
@@ -184,6 +241,7 @@ impl AgentAdapter for ClaudeAdapter {
                     source_path: path.to_path_buf(),
                     modified,
                     hash,
+                    modules: Vec::new(),
                 });
             }
         }
@@ -293,9 +351,18 @@ impl AgentAdapter for ClaudeAdapter {
         let mut skills_map: HashMap<String, Command> = HashMap::new();
 
         // Helper to process a skill and update the map if it's newer
-        let mut process_skill = |name: String, path: &std::path::Path| -> Result<()> {
-            let content = fs::read(path)?;
-            let metadata = fs::metadata(path)?;
+        let process_skill = |skills_map: &mut HashMap<String, Command>,
+                             name: String,
+                             path: &std::path::Path,
+                             modules: Vec<ModuleFile>| {
+            let content = match fs::read(path) {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            let metadata = match fs::metadata(path) {
+                Ok(m) => m,
+                Err(_) => return,
+            };
             let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
             let hash = hash_content(&content);
 
@@ -305,6 +372,7 @@ impl AgentAdapter for ClaudeAdapter {
                 source_path: path.to_path_buf(),
                 modified,
                 hash,
+                modules,
             };
 
             // Keep the most recently modified version
@@ -316,7 +384,6 @@ impl AgentAdapter for ClaudeAdapter {
                     skills_map.insert(name, skill);
                 }
             }
-            Ok(())
         };
 
         // 1) Core ~/.claude/skills
@@ -343,21 +410,28 @@ impl AgentAdapter for ClaudeAdapter {
                 }
 
                 let is_skill_md = path.file_name().is_some_and(|n| n == "SKILL.md");
-                let name = if is_skill_md {
-                    path.parent()
+                let (name, modules) = if is_skill_md {
+                    let name = path
+                        .parent()
                         .and_then(|p| p.strip_prefix(&skills_dir).ok())
                         .and_then(|p| p.to_str())
                         .filter(|s| !s.is_empty())
                         .unwrap_or("unknown")
-                        .to_string()
+                        .to_string();
+                    // Collect companion files from the skill directory
+                    let skill_dir = path.parent().unwrap_or(path);
+                    let modules = self.collect_module_files(skill_dir);
+                    (name, modules)
                 } else {
-                    path.file_stem()
+                    let name = path
+                        .file_stem()
                         .and_then(|s| s.to_str())
                         .unwrap_or("unknown")
-                        .to_string()
+                        .to_string();
+                    (name, Vec::new())
                 };
 
-                process_skill(name, path)?;
+                process_skill(&mut skills_map, name, path, modules);
             }
         }
 
@@ -385,26 +459,33 @@ impl AgentAdapter for ClaudeAdapter {
 
                 // Extract skill name from path
                 let is_skill_md = path.file_name().is_some_and(|n| n == "SKILL.md");
-                let name = if is_skill_md {
+                let (name, modules) = if is_skill_md {
                     // Use parent directory name as skill name
-                    path.parent()
+                    let name = path
+                        .parent()
                         .and_then(|p| p.file_name())
                         .and_then(|s| s.to_str())
                         .filter(|s| !s.is_empty() && *s != "skills")
                         .unwrap_or("unknown")
-                        .to_string()
+                        .to_string();
+                    // Collect companion files from the skill directory
+                    let skill_dir = path.parent().unwrap_or(path);
+                    let modules = self.collect_module_files(skill_dir);
+                    (name, modules)
                 } else {
-                    path.file_stem()
+                    let name = path
+                        .file_stem()
                         .and_then(|s| s.to_str())
                         .unwrap_or("unknown")
-                        .to_string()
+                        .to_string();
+                    (name, Vec::new())
                 };
 
                 if name == "unknown" || name == "skills" {
                     continue;
                 }
 
-                process_skill(name, path)?;
+                process_skill(&mut skills_map, name, path, modules);
             }
         }
 
@@ -577,6 +658,17 @@ impl AgentAdapter for ClaudeAdapter {
             }
 
             fs::write(&path, &skill.content)?;
+
+            // Write module files (companion files) alongside SKILL.md
+            let skill_dir = dir.join(&safe_rel_dir);
+            for module in &skill.modules {
+                let module_path = skill_dir.join(&module.relative_path);
+                if let Some(parent) = module_path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(&module_path, &module.content)?;
+            }
+
             report.written += 1;
         }
 
@@ -600,6 +692,7 @@ impl AgentAdapter for ClaudeAdapter {
                 source_path: path.to_path_buf(),
                 modified,
                 hash,
+                modules: Vec::new(),
             };
 
             match hooks_map.get(&name) {
@@ -700,6 +793,7 @@ impl AgentAdapter for ClaudeAdapter {
                 source_path: path.to_path_buf(),
                 modified,
                 hash,
+                modules: Vec::new(),
             };
 
             match agents_map.get(&name) {
@@ -836,6 +930,82 @@ impl AgentAdapter for ClaudeAdapter {
 
         Ok(report)
     }
+
+    fn read_instructions(&self) -> Result<Vec<Command>> {
+        let path = self.instructions_path();
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let content = fs::read(&path)?;
+        let metadata = fs::metadata(&path)?;
+        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let hash = hash_content(&content);
+
+        // Use "CLAUDE" as the instruction name (derived from CLAUDE.md)
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("CLAUDE")
+            .to_string();
+
+        Ok(vec![Command {
+            name,
+            content,
+            source_path: path.clone(),
+            modified,
+            hash,
+            modules: Vec::new(),
+        }])
+    }
+
+    fn write_instructions(&self, instructions: &[Command]) -> Result<WriteReport> {
+        let mut report = WriteReport::default();
+
+        // Claude only supports a single CLAUDE.md file
+        // If multiple instructions are provided, merge them or take the first
+        if instructions.is_empty() {
+            return Ok(report);
+        }
+
+        let path = self.instructions_path();
+
+        // Merge all instructions content if multiple are provided
+        let merged_content: Vec<u8> = if instructions.len() == 1 {
+            instructions[0].content.clone()
+        } else {
+            // Merge multiple instructions with headers
+            let mut merged = Vec::new();
+            for (i, instruction) in instructions.iter().enumerate() {
+                if i > 0 {
+                    merged.extend_from_slice(b"\n\n---\n\n");
+                }
+                merged.extend_from_slice(
+                    format!("<!-- Source: {} -->\n\n", instruction.name).as_bytes(),
+                );
+                merged.extend_from_slice(&instruction.content);
+            }
+            merged
+        };
+
+        if path.exists() {
+            let existing = fs::read(&path)?;
+            if hash_content(&existing) == hash_content(&merged_content) {
+                report.skipped.push(SkipReason::Unchanged {
+                    item: "CLAUDE.md".to_string(),
+                });
+                return Ok(report);
+            }
+        }
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&path, &merged_content)?;
+        report.written += 1;
+
+        Ok(report)
+    }
 }
 
 /// Sanitizes a command/skill name to prevent path traversal attacks.
@@ -954,6 +1124,7 @@ mod tests {
             source_path: PathBuf::from("/tmp/hello.md"),
             modified: SystemTime::now(),
             hash: "abc123".to_string(),
+            modules: Vec::new(),
         }];
 
         let report = adapter.write_commands(&commands).unwrap();
@@ -978,6 +1149,7 @@ mod tests {
             source_path: PathBuf::from("/tmp/unchanged.md"),
             modified: SystemTime::now(),
             hash: hash.clone(),
+            modules: Vec::new(),
         }];
         adapter.write_commands(&commands).unwrap();
 
@@ -988,6 +1160,7 @@ mod tests {
             source_path: PathBuf::from("/tmp/unchanged.md"),
             modified: SystemTime::now(),
             hash,
+            modules: Vec::new(),
         }];
         let report = adapter.write_commands(&commands2).unwrap();
 
@@ -1107,6 +1280,7 @@ mod tests {
             source_path: PathBuf::from("/tmp/alpha.md"),
             modified: SystemTime::now(),
             hash: "hash".to_string(),
+            modules: Vec::new(),
         };
 
         let report = adapter.write_skills(&[skill]).unwrap();

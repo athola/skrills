@@ -171,15 +171,34 @@ pub enum Commands {
         #[arg(long, value_name = "TOKEN", env = "SKRILLS_AUTH_TOKEN")]
         auth_token: Option<String>,
         /// Path to TLS certificate file (PEM format). Requires --tls-key.
-        #[arg(long, value_name = "PATH", requires = "tls_key")]
+        #[arg(
+            long,
+            value_name = "PATH",
+            env = "SKRILLS_TLS_CERT",
+            requires = "tls_key"
+        )]
         tls_cert: Option<std::path::PathBuf>,
         /// Path to TLS private key file (PEM format). Requires --tls-cert.
-        #[arg(long, value_name = "PATH", requires = "tls_cert")]
+        #[arg(
+            long,
+            value_name = "PATH",
+            env = "SKRILLS_TLS_KEY",
+            requires = "tls_cert"
+        )]
         tls_key: Option<std::path::PathBuf>,
         /// Comma-separated list of allowed CORS origins (e.g., `http://localhost:3000,https://app.example.com`).
         /// Default: no CORS (server-to-server only).
-        #[arg(long, value_name = "ORIGINS", value_delimiter = ',')]
+        #[arg(
+            long,
+            value_name = "ORIGINS",
+            env = "SKRILLS_CORS_ORIGINS",
+            value_delimiter = ','
+        )]
         cors_origins: Vec<String>,
+        /// Auto-generate self-signed TLS certificate for development.
+        /// Stores certificate in ~/.skrills/tls/. Overrides --tls-cert and --tls-key.
+        #[arg(long, env = "SKRILLS_TLS_AUTO")]
+        tls_auto: bool,
 
         /// List all available MCP tools and exit.
         #[arg(long, default_value_t = false)]
@@ -571,6 +590,148 @@ pub enum Commands {
         #[arg(long)]
         mirror_source: Option<PathBuf>,
     },
+    /// Mark a skill as deprecated with optional migration guidance.
+    SkillDeprecate {
+        /// Skill name to mark as deprecated.
+        #[arg(required = true)]
+        name: String,
+        /// Deprecation message explaining why.
+        #[arg(long)]
+        message: Option<String>,
+        /// Suggested replacement skill.
+        #[arg(long)]
+        replacement: Option<String>,
+        /// Skills directory to search (default: all discovered skills).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+        /// Output format: text or json.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+    /// Revert a skill to a previous version.
+    SkillRollback {
+        /// Skill name to rollback.
+        #[arg(required = true)]
+        name: String,
+        /// Specific version hash to rollback to (if not specified, shows available versions).
+        #[arg(long)]
+        version: Option<String>,
+        /// Skills directory to search (default: all discovered skills).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+        /// Output format: text or json.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+    /// Pull skill updates from remote sources.
+    SyncPull {
+        /// Remote source URL (git repo, HTTP endpoint, or registry).
+        #[arg(long)]
+        source: Option<String>,
+        /// Specific skill name to pull (if omitted, pulls all from source).
+        #[arg(long)]
+        skill: Option<String>,
+        /// Target CLI to pull skills into.
+        #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
+        target: SyncSource,
+        /// Preview changes without applying.
+        #[arg(long)]
+        dry_run: bool,
+        /// Output format: text or json.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+    /// View skill execution statistics and performance metrics.
+    SkillProfile {
+        /// Skill name to profile (if omitted, shows overall stats).
+        name: Option<String>,
+        /// Time period in days to analyze.
+        #[arg(long, default_value = "30")]
+        period: u32,
+        /// Output format: text or json.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+    /// Browse and search all available skills across configured sources.
+    SkillCatalog {
+        /// Search query to filter skills.
+        #[arg(long)]
+        search: Option<String>,
+        /// Filter by source CLI.
+        #[arg(long, value_enum)]
+        source: Option<SyncSource>,
+        /// Filter by category tag.
+        #[arg(long)]
+        category: Option<String>,
+        /// Maximum results to return.
+        #[arg(long, default_value = "50")]
+        limit: usize,
+        /// Skills directory to include (default: all discovered skills).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+        /// Output format: text or json.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+    /// Validate skill files for git pre-commit hook integration.
+    PreCommitValidate {
+        /// Only validate staged files (auto-detects via git status).
+        #[arg(long)]
+        staged: bool,
+        /// Validation target: claude, codex, copilot, or all.
+        #[arg(long, value_enum, default_value = "all")]
+        target: ValidationTarget,
+        /// Skills directory to validate (default: all discovered skills).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+    },
+    /// Import skills from external sources (URLs, git repos, local paths).
+    SkillImport {
+        /// Source to import from (URL, git URL, or local path).
+        #[arg(required = true)]
+        source: String,
+        /// Target CLI to import skill into.
+        #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
+        target: SyncSource,
+        /// Force overwrite if skill already exists.
+        #[arg(long)]
+        force: bool,
+        /// Preview import without writing files.
+        #[arg(long)]
+        dry_run: bool,
+        /// Output format: text or json.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+    /// Generate detailed usage reports for skills.
+    SkillUsageReport {
+        /// Time period in days to analyze.
+        #[arg(long, default_value = "30")]
+        period: u32,
+        /// Output format: text, json, html, or markdown.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+        /// Output file path (if not specified, prints to stdout).
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Skills directory to include (default: all discovered skills).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+    },
+    /// Calculate quality scores for skills based on validation, completeness, and metrics.
+    SkillScore {
+        /// Skill name to score (if omitted, scores all discovered skills).
+        name: Option<String>,
+        /// Skills directory to include (default: all discovered skills).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+        /// Output format: text or json.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+        /// Only show skills below this score threshold.
+        #[arg(long)]
+        below_threshold: Option<u8>,
+    },
 }
 
 #[cfg(test)]
@@ -643,6 +804,7 @@ mod tests {
                 tls_cert,
                 tls_key,
                 cors_origins,
+                tls_auto,
             }) => {
                 assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/skills")]);
                 assert_eq!(cache_ttl_ms, Some(1500));
@@ -655,6 +817,7 @@ mod tests {
                 assert!(tls_cert.is_none());
                 assert!(tls_key.is_none());
                 assert!(cors_origins.is_empty());
+                assert!(!tls_auto);
             }
             _ => panic!("expected Serve command"),
         }
@@ -714,6 +877,65 @@ mod tests {
         match cli.command {
             Some(Commands::Serve { auth_token, .. }) => {
                 assert_eq!(auth_token, Some("env-secret-token".to_string()));
+            }
+            _ => panic!("expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn parse_serve_with_tls_auto() {
+        let cli =
+            Cli::try_parse_from(["skrills", "serve", "--http", "127.0.0.1:3000", "--tls-auto"])
+                .expect("serve with tls-auto should parse");
+
+        match cli.command {
+            Some(Commands::Serve { tls_auto, .. }) => {
+                assert!(tls_auto);
+            }
+            _ => panic!("expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn parse_serve_tls_paths_from_env() {
+        let _guard = env_guard();
+        let _cert_env = set_env_var("SKRILLS_TLS_CERT", Some("/env/cert.pem"));
+        let _key_env = set_env_var("SKRILLS_TLS_KEY", Some("/env/key.pem"));
+
+        let cli = Cli::try_parse_from(["skrills", "serve", "--http", "0.0.0.0:8080"])
+            .expect("serve with env TLS paths should parse");
+
+        match cli.command {
+            Some(Commands::Serve {
+                tls_cert, tls_key, ..
+            }) => {
+                assert_eq!(tls_cert, Some(PathBuf::from("/env/cert.pem")));
+                assert_eq!(tls_key, Some(PathBuf::from("/env/key.pem")));
+            }
+            _ => panic!("expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn parse_serve_cors_from_env() {
+        let _guard = env_guard();
+        let _cors_env = set_env_var(
+            "SKRILLS_CORS_ORIGINS",
+            Some("http://localhost:3000,https://example.com"),
+        );
+
+        let cli = Cli::try_parse_from(["skrills", "serve", "--http", "0.0.0.0:8080"])
+            .expect("serve with env CORS should parse");
+
+        match cli.command {
+            Some(Commands::Serve { cors_origins, .. }) => {
+                assert_eq!(
+                    cors_origins,
+                    vec![
+                        "http://localhost:3000".to_string(),
+                        "https://example.com".to_string()
+                    ]
+                );
             }
             _ => panic!("expected Serve command"),
         }

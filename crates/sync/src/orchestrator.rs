@@ -53,6 +53,12 @@ pub struct SyncParams {
     /// Sync agents (subagents)
     #[serde(default = "default_true")]
     pub sync_agents: bool,
+    /// Sync instructions (CLAUDE.md → *.instructions.md)
+    #[serde(default = "default_true")]
+    pub sync_instructions: bool,
+    /// Skip overwriting existing instructions on the target (only add new ones)
+    #[serde(default)]
+    pub skip_existing_instructions: bool,
     /// Include marketplace content (e.g. uninstalled plugins)
     #[serde(default)]
     pub include_marketplace: bool,
@@ -70,6 +76,8 @@ impl Default for SyncParams {
             sync_mcp_servers: true,
             sync_preferences: true,
             sync_agents: true,
+            sync_instructions: true,
+            skip_existing_instructions: false,
             include_marketplace: false,
         }
     }
@@ -228,6 +236,75 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 report.agents = self.target.write_agents(&agents)?;
             } else {
                 report.agents.written = agents.len();
+            }
+        }
+
+        // Sync instructions (CLAUDE.md → *.instructions.md)
+        if params.sync_instructions {
+            let instructions = self.source.read_instructions()?;
+
+            if params.force {
+                // If force is true, we always write all instructions, bypassing skip_existing_instructions
+                if params.dry_run {
+                    report.instructions.written = instructions.len();
+                } else {
+                    report.instructions = self.target.write_instructions(&instructions)?;
+                }
+            } else if params.dry_run {
+                if params.skip_existing_instructions {
+                    let existing: HashSet<String> = self
+                        .target
+                        .read_instructions()?
+                        .into_iter()
+                        .map(|i| i.name)
+                        .collect();
+
+                    for instr in &instructions {
+                        if existing.contains(&instr.name) {
+                            report
+                                .instructions
+                                .skipped
+                                .push(SkipReason::WouldOverwrite {
+                                    item: instr.name.clone(),
+                                });
+                        } else {
+                            report.instructions.written += 1;
+                        }
+                    }
+                } else {
+                    report.instructions.written = instructions.len();
+                }
+            } else if params.skip_existing_instructions {
+                let existing: HashSet<String> = self
+                    .target
+                    .read_instructions()?
+                    .into_iter()
+                    .map(|i| i.name)
+                    .collect();
+
+                let mut new_instructions = Vec::new();
+                let mut skipped = Vec::new();
+
+                for instr in instructions {
+                    if existing.contains(&instr.name) {
+                        skipped.push(SkipReason::WouldOverwrite {
+                            item: instr.name.clone(),
+                        });
+                    } else {
+                        new_instructions.push(instr);
+                    }
+                }
+
+                let mut instr_report = if new_instructions.is_empty() {
+                    WriteReport::default()
+                } else {
+                    self.target.write_instructions(&new_instructions)?
+                };
+
+                instr_report.skipped.extend(skipped);
+                report.instructions = instr_report;
+            } else {
+                report.instructions = self.target.write_instructions(&instructions)?;
             }
         }
 
@@ -555,5 +632,95 @@ mod tests {
         let content = fs::read_to_string(&tgt_config).unwrap();
         let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(settings["model"], "custom-model-v1");
+    }
+
+    #[test]
+    fn skip_existing_instructions_does_not_overwrite() {
+        use crate::adapters::CopilotAdapter;
+
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+
+        // Source (Claude) has a CLAUDE.md file - this becomes an instruction
+        let src_claude_md = src_dir.path().join("CLAUDE.md");
+        fs::write(&src_claude_md, "# New Instructions").unwrap();
+
+        // Target (Copilot) already has instructions
+        let tgt_instr_dir = tgt_dir.path().join("instructions");
+        fs::create_dir_all(&tgt_instr_dir).unwrap();
+        fs::write(
+            tgt_instr_dir.join("CLAUDE.instructions.md"),
+            "# Existing Instructions",
+        )
+        .unwrap();
+
+        let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
+        let target = CopilotAdapter::with_root(tgt_dir.path().to_path_buf());
+
+        let orchestrator = SyncOrchestrator::new(source, target);
+        let params = SyncParams {
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_skills: false,
+            sync_instructions: true,
+            skip_existing_instructions: true,
+            ..Default::default()
+        };
+
+        let report = orchestrator.sync(&params).unwrap();
+        assert_eq!(report.instructions.written, 0);
+        assert_eq!(report.instructions.skipped.len(), 1);
+
+        // Ensure target file was not overwritten
+        let tgt_file = tgt_dir.path().join("instructions/CLAUDE.instructions.md");
+        assert_eq!(
+            fs::read_to_string(&tgt_file).unwrap(),
+            "# Existing Instructions"
+        );
+    }
+
+    #[test]
+    fn skip_existing_instructions_still_writes_new_items() {
+        use crate::adapters::CopilotAdapter;
+
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+
+        // Source (Claude) has CLAUDE.md
+        let src_claude_md = src_dir.path().join("CLAUDE.md");
+        fs::write(&src_claude_md, "# New Instructions").unwrap();
+
+        // Target (Copilot) has different instruction (not CLAUDE)
+        let tgt_instr_dir = tgt_dir.path().join("instructions");
+        fs::create_dir_all(&tgt_instr_dir).unwrap();
+        fs::write(
+            tgt_instr_dir.join("other.instructions.md"),
+            "# Other Instructions",
+        )
+        .unwrap();
+
+        let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
+        let target = CopilotAdapter::with_root(tgt_dir.path().to_path_buf());
+
+        let orchestrator = SyncOrchestrator::new(source, target);
+        let params = SyncParams {
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_skills: false,
+            sync_instructions: true,
+            skip_existing_instructions: true,
+            ..Default::default()
+        };
+
+        let report = orchestrator.sync(&params).unwrap();
+        // New instruction should be written
+        assert_eq!(report.instructions.written, 1);
+        assert_eq!(report.instructions.skipped.len(), 0);
+
+        // New instruction should exist
+        let new_file = tgt_dir.path().join("instructions/CLAUDE.instructions.md");
+        assert!(new_file.exists());
     }
 }

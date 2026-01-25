@@ -1574,6 +1574,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
 
 [[package]]
+name = "pem"
+version = "3.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d30c53c26bc5b31a98cd02d20f25a7c8567146caf63ed593a9d87b2775291be"
+dependencies = [
+ "base64",
+ "serde_core",
+]
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1816,6 +1826,19 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
+]
+
+[[package]]
+name = "rcgen"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75e669e5202259b5314d1ea5397316ad400819437857b90861765f24c4cf80a2"
+dependencies = [
+ "pem",
+ "ring",
+ "rustls-pki-types",
+ "time",
+ "yasna",
 ]
 
 [[package]]
@@ -2407,7 +2430,7 @@ checksum = "e320a6c5ad31d271ad523dcf3ad13e2767ad8b1cb8f047f75a8aeaf8da139da2"
 
 [[package]]
 name = "skrills"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "scopeguard",
@@ -2417,7 +2440,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-analyze"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "parking_lot",
  "regex",
@@ -2434,7 +2457,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-discovery"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "blake2",
@@ -2451,7 +2474,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-intelligence"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2473,7 +2496,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-server"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -2486,6 +2509,8 @@ dependencies = [
  "notify",
  "parking_lot",
  "pathdiff",
+ "rcgen",
+ "regex",
  "reqwest",
  "rmcp",
  "semver",
@@ -2502,6 +2527,7 @@ dependencies = [
  "skrills_test_utils",
  "subtle",
  "tempfile",
+ "time",
  "tokio",
  "tokio-util",
  "toml",
@@ -2515,7 +2541,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-state"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "dirs",
@@ -2526,7 +2552,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-subagents"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2551,7 +2577,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-validate"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "regex",
@@ -2565,7 +2591,7 @@ dependencies = [
 
 [[package]]
 name = "skrills_sync"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "dirs",
@@ -2582,7 +2608,7 @@ dependencies = [
 
 [[package]]
 name = "skrills_test_utils"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "tempfile",
 ]
@@ -3684,6 +3710,15 @@ name = "writeable"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9edde0db4769d2dc68579893f2306b26c6ecfbe0ef499b013d731b7b9247e0b9"
+
+[[package]]
+name = "yasna"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e17bb3549cc1321ae1296b9cdc2698e2b6cb1992adfa19a8c72e5b7a738f44cd"
+dependencies = [
+ "time",
+]
 
 [[package]]
 name = "yoke"

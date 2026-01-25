@@ -1,6 +1,6 @@
 # Skill Dependency Resolution
 
-Skills can declare dependencies on other skills via YAML frontmatter. The resolution engine handles circular dependency detection, semver version constraints, source pinning, and optional dependencies.
+Skills declare dependencies on other skills via YAML frontmatter. The resolution engine handles circular dependency detection, semver version constraints, source pinning, and optional dependencies.
 
 ## Frontmatter Schema
 
@@ -31,10 +31,10 @@ depends:
 
 The resolver performs a depth-first traversal with cycle detection:
 
-1. **Cycle detection**: Track in-progress nodes; error if revisited
-2. **Version matching**: Validate semver constraints against skill versions
-3. **Optional handling**: Skip missing optionals with warning (or error if `strict_optional`)
-4. **Topological order**: Return dependencies before dependents
+1. **Cycle detection**: Tracks in-progress nodes and errors if a node is revisited.
+2. **Version matching**: Validates semver constraints against skill versions.
+3. **Optional handling**: Skips missing optionals with a warning (or errors if `strict_optional` is set).
+4. **Topological order**: Returns dependencies before dependents.
 
 ```
 resolve(skill, registry, options) -> Result<ResolutionResult>:
@@ -111,7 +111,7 @@ resolve(skill, registry, options) -> Result<ResolutionResult>:
 
 ## Validation
 
-The `validate-skills` tool reports dependency issues:
+The `validate-skills` tool reports dependency issues when the `--check-deps` flag is enabled:
 
 | Issue | Severity | Description |
 |-------|----------|-------------|
@@ -121,19 +121,7 @@ The `validate-skills` tool reports dependency issues:
 | `VersionMismatch` | Error | Constraint not satisfied |
 | `InvalidDependencyFormat` | Error | Can't parse dependency string |
 
-Enable with `--check-deps` flag.
-
-## Backward Compatibility
-
-- Skills without `depends` field work unchanged
-- Resolution is opt-in (via tool or `?resolve=true` query param)
-- No changes to existing URIs or resource format
-
-## Implementation
-
-- Schema: `crates/validate/src/frontmatter.rs`
-- Resolver: `crates/analyze/src/resolve.rs`
-- MCP integration: `crates/server/src/app.rs`
+## Implementation Details
 
 ### Data Structures
 
@@ -233,75 +221,10 @@ pub enum ResolveError {
 
 When `read_resource(uri)` is called with dependency resolution:
 
-1. Parse URI, lookup skill
-2. Check for `?resolve=true` query parameter or header
+1. Parse URI, lookup skill.
+2. Check for `?resolve=true` query parameter or header.
 3. If resolving:
-   - Run resolution algorithm
-   - Return JSON with `resolved_uris`, `warnings`, and skill content
+   - Run resolution algorithm.
+   - Return JSON with `resolved_uris`, `warnings`, and skill content.
 4. If not resolving:
-   - Return skill content as before (backward compatible)
-
-### Implementation Phases
-
-1. **Schema Extension** (~150 lines)
-   - Add `DeclaredDependency` enum to frontmatter.rs
-   - Add `version`, `depends` fields to `SkillFrontmatter`
-   - Add parsing tests
-
-2. **Semver Support** (~100 lines)
-   - Add semver to validate crate dependencies
-   - Implement `NormalizedDependency` with version parsing
-   - Add `parse_dependency()` function for compact syntax
-
-3. **Resolution Engine** (~300 lines)
-   - Create `crates/analyze/src/resolve.rs`
-   - Implement `DependencyResolver` struct
-   - Add cycle detection via in-stack tracking
-   - Add memoization cache
-
-4. **MCP Integration** (~150 lines)
-   - Extend `read_resource()` with resolution option
-   - Add response format for resolved dependencies
-   - Implement concatenation fallback mode
-
-5. **MCP Tool** (~100 lines)
-   - Add `resolve-dependencies` tool definition
-   - Implement tool handler
-   - Add JSON response formatting
-
-6. **Validation Integration** (~100 lines)
-   - Add dependency validation issues
-   - Implement `--check-deps` flag
-   - Add validation during cache refresh
-
-### Files to Modify
-
-1. `crates/validate/src/frontmatter.rs` - Schema extension
-2. `crates/validate/src/common.rs` - New validation issues
-3. `crates/validate/Cargo.toml` - Add semver dependency
-4. `crates/analyze/src/resolve.rs` - New resolution module
-5. `crates/analyze/src/lib.rs` - Export resolve module
-6. `crates/server/src/app.rs` - MCP integration
-7. `crates/discovery/src/types.rs` - Possibly extend SkillMeta
-
-### Testing Strategy
-
-#### Unit Tests
-- Frontmatter parsing (simple, structured, compact syntax)
-- Semver constraint matching
-- Cycle detection (A→B→A, A→B→C→A)
-- Topological ordering
-- Version mismatch detection
-
-#### Integration Tests
-- Create test skill fixtures with dependencies
-- Test MCP resource read with resolution
-- Test `resolve-dependencies` tool
-- Test validation with missing deps
-
-## Future Work
-
-- Transitive version conflict resolution (pick highest compatible)
-- Dependency lockfiles
-- Remote skill registry integration
-- Dependency visualization tool
+   - Return skill content as before.

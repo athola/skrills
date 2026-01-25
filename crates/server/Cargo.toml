@@ -1,6 +1,6 @@
 [package]
 name = "skrills-server"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2021"
 description = "Core library for the skrills MCP server: discovery, filtering, manifest generation, and runtime control."
 license = "MIT"
@@ -39,6 +39,8 @@ axum = { version = "0.8", optional = true }
 axum-server = { version = "0.8", features = ["tls-rustls"], optional = true }
 tower = { version = "0.5", optional = true }
 tower-http = { version = "0.6", features = ["cors"], optional = true }
+rcgen = { version = "0.13", optional = true }
+time.workspace = true
 
 skrills-subagents = { path = "../subagents", version = "0.5.2", optional = true }
 
@@ -49,6 +51,7 @@ skrills-validate = { path = "../validate", version = "0.5.2" }
 skrills-analyze = { path = "../analyze", version = "0.5.2" }
 skrills-intelligence = { path = "../intelligence", version = "0.5.2" }
 shellexpand = "3"
+regex = "1"
 
 [features]
 # Enable subagents and HTTP transport by default so MCP exposes subagent tools
@@ -56,7 +59,7 @@ shellexpand = "3"
 default = ["watch", "subagents", "http-transport"]
 watch = ["notify"]
 subagents = ["skrills-subagents"]
-http-transport = ["axum", "axum-server", "tower", "tower-http", "subtle"]
+http-transport = ["axum", "axum-server", "tower", "tower-http", "subtle", "rcgen"]
 test-support = []
 
 [dev-dependencies]
