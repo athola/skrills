@@ -126,6 +126,12 @@ impl SubagentService {
             config.binary = match backend_hint {
                 Some(BackendKind::Codex) => "codex".into(),
                 Some(BackendKind::Claude) => "claude".into(),
+                Some(BackendKind::Other(ref name)) if name.eq_ignore_ascii_case("copilot") => {
+                    tracing::warn!(
+                        "Copilot CLI does not support subagent execution; using default binary"
+                    );
+                    self.default_cli_binary()
+                }
                 Some(BackendKind::Other(_)) | None => self.default_cli_binary(),
             };
         }
@@ -1040,6 +1046,16 @@ Content."#,
             default_adapter.config().binary,
             "claude",
             "No backend hint should fall back to default"
+        );
+
+        // When backend hint is Copilot (via Other), should fall back to default
+        // (Copilot CLI doesn't support subagent execution)
+        let copilot_adapter =
+            service.cli_adapter_for(None, Some(BackendKind::Other("copilot".to_string())));
+        assert_eq!(
+            copilot_adapter.config().binary,
+            "claude",
+            "Backend hint Copilot should fall back to default (unsupported)"
         );
     }
 
