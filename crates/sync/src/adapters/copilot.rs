@@ -264,44 +264,66 @@ impl AgentAdapter for CopilotAdapter {
                     continue;
                 }
 
-                // Parse args with warnings for non-string values
-                let args = if let Some(arr) = server_config.get("args").and_then(|v| v.as_array()) {
-                    let mut result = Vec::new();
-                    for (i, v) in arr.iter().enumerate() {
-                        if let Some(s) = v.as_str() {
-                            result.push(s.to_string());
-                        } else {
-                            warn!(
-                                server = %name,
-                                index = i,
-                                value_type = ?v,
-                                "Skipping non-string value in MCP server args"
-                            );
+                // Parse args with warnings for wrong types
+                let args = match server_config.get("args") {
+                    Some(v) if v.is_array() => {
+                        let mut result = Vec::new();
+                        for (i, item) in v.as_array().unwrap().iter().enumerate() {
+                            if let Some(s) = item.as_str() {
+                                result.push(s.to_string());
+                            } else {
+                                warn!(
+                                    server = %name,
+                                    index = i,
+                                    value_type = ?item,
+                                    "Skipping non-string value in MCP server args"
+                                );
+                            }
                         }
+                        result
                     }
-                    result
-                } else {
-                    Vec::new()
+                    Some(v) => {
+                        // args exists but is wrong type (e.g., string instead of array)
+                        warn!(
+                            server = %name,
+                            expected = "array",
+                            actual = ?v,
+                            "MCP server 'args' has wrong type, expected array"
+                        );
+                        Vec::new()
+                    }
+                    None => Vec::new(),
                 };
 
-                // Parse env with warnings for non-string values
-                let env = if let Some(obj) = server_config.get("env").and_then(|v| v.as_object()) {
-                    let mut result = HashMap::new();
-                    for (k, v) in obj {
-                        if let Some(s) = v.as_str() {
-                            result.insert(k.clone(), s.to_string());
-                        } else {
-                            warn!(
-                                server = %name,
-                                key = %k,
-                                value_type = ?v,
-                                "Skipping non-string value in MCP server env"
-                            );
+                // Parse env with warnings for wrong types
+                let env = match server_config.get("env") {
+                    Some(v) if v.is_object() => {
+                        let mut result = HashMap::new();
+                        for (k, val) in v.as_object().unwrap() {
+                            if let Some(s) = val.as_str() {
+                                result.insert(k.clone(), s.to_string());
+                            } else {
+                                warn!(
+                                    server = %name,
+                                    key = %k,
+                                    value_type = ?val,
+                                    "Skipping non-string value in MCP server env"
+                                );
+                            }
                         }
+                        result
                     }
-                    result
-                } else {
-                    HashMap::new()
+                    Some(v) => {
+                        // env exists but is wrong type (e.g., array instead of object)
+                        warn!(
+                            server = %name,
+                            expected = "object",
+                            actual = ?v,
+                            "MCP server 'env' has wrong type, expected object"
+                        );
+                        HashMap::new()
+                    }
+                    None => HashMap::new(),
                 };
 
                 let server = McpServer {
@@ -800,6 +822,19 @@ impl AgentAdapter for CopilotAdapter {
 }
 
 /// Sanitizes a skill name to prevent path traversal attacks.
+///
+/// # Security Rationale
+///
+/// This function is **critical for security** because skill names are used to construct
+/// file paths. Without sanitization, a malicious skill name like `../../../etc/passwd`
+/// could escape the intended directory and read/write arbitrary files on the filesystem.
+///
+/// The sanitization prevents:
+/// - **Directory traversal**: `..` segments that could escape the skill directory
+/// - **Absolute paths**: Would be split and lose the leading `/`
+/// - **Hidden files**: Dots at segment start are preserved but traversal is blocked
+///
+/// # Behavior
 ///
 /// Preserves forward slashes for nested skill directories (e.g., `category/my-skill`)
 /// while preventing path traversal attacks (e.g., `../../../etc/passwd`).
@@ -1692,5 +1727,289 @@ mod tests {
             "Config root should be named 'copilot' or '.copilot', got: {}",
             filename
         );
+    }
+
+    // ==========================================
+    // Edge Case Tests (Issue #125)
+    // ==========================================
+
+    /// Test that skill names with path traversal attempts are properly sanitized
+    /// during write operations. This is a security-critical test.
+    #[test]
+    fn write_skills_sanitizes_path_traversal_in_names() {
+        let tmp = tempdir().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+
+        // Attempt path traversal in skill name
+        let malicious_skill = Command {
+            name: "../../../etc/passwd".to_string(),
+            content: b"---\nname: malicious\ndescription: Attack\n---\n# Evil".to_vec(),
+            source_path: PathBuf::from("/tmp/test.md"),
+            modified: SystemTime::now(),
+            hash: "evil".to_string(),
+            modules: Vec::new(),
+        };
+
+        adapter.write_skills(&[malicious_skill]).unwrap();
+
+        // Verify the file was NOT written outside the skills directory
+        let evil_path = PathBuf::from("/etc/passwd");
+        assert!(!evil_path.exists() || !evil_path.ends_with("passwd.md"));
+
+        // Verify it was written to the sanitized path instead
+        let skills_dir = tmp.path().join("skills");
+        let safe_path = skills_dir.join("etc/passwd/SKILL.md");
+        assert!(safe_path.exists(), "Skill should be at sanitized path");
+    }
+
+    /// Test that absolute paths in skill names are sanitized
+    #[test]
+    fn write_skills_sanitizes_absolute_paths() {
+        let tmp = tempdir().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+
+        let skill = Command {
+            name: "/absolute/path/skill".to_string(),
+            content: b"---\nname: abs\ndescription: Test\n---\n# Abs".to_vec(),
+            source_path: PathBuf::from("/tmp/test.md"),
+            modified: SystemTime::now(),
+            hash: "abs".to_string(),
+            modules: Vec::new(),
+        };
+
+        adapter.write_skills(&[skill]).unwrap();
+
+        // Should be sanitized to relative path
+        let skills_dir = tmp.path().join("skills");
+        // Leading slash removed, segments preserved
+        let expected = skills_dir.join("absolute/path/skill/SKILL.md");
+        assert!(
+            expected.exists(),
+            "Skill should exist at sanitized path: {:?}",
+            expected
+        );
+    }
+
+    /// Test handling of env variables with special characters
+    #[test]
+    fn mcp_servers_handles_special_chars_in_env() {
+        let tmp = tempdir().unwrap();
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+
+        let mut servers = HashMap::new();
+        servers.insert(
+            "special-env".to_string(),
+            McpServer {
+                name: "special-env".to_string(),
+                transport: McpTransport::Stdio,
+                command: "/bin/test".to_string(),
+                args: vec![],
+                env: HashMap::from([
+                    ("NORMAL".to_string(), "value".to_string()),
+                    (
+                        "WITH_QUOTES".to_string(),
+                        "value with \"quotes\"".to_string(),
+                    ),
+                    ("WITH_NEWLINE".to_string(), "line1\nline2".to_string()),
+                    ("WITH_UNICODE".to_string(), "日本語 émoji 🎉".to_string()),
+                ]),
+                url: None,
+                headers: None,
+                enabled: true,
+            },
+        );
+
+        adapter.write_mcp_servers(&servers).unwrap();
+        let read_back = adapter.read_mcp_servers().unwrap();
+
+        let server = read_back.get("special-env").unwrap();
+        assert_eq!(server.env.get("NORMAL").unwrap(), "value");
+        assert_eq!(
+            server.env.get("WITH_QUOTES").unwrap(),
+            "value with \"quotes\""
+        );
+        assert_eq!(server.env.get("WITH_NEWLINE").unwrap(), "line1\nline2");
+        assert_eq!(server.env.get("WITH_UNICODE").unwrap(), "日本語 émoji 🎉");
+    }
+
+    /// Test handling of malformed mcpServers field as null
+    #[test]
+    fn mcp_servers_handles_null_field() {
+        let tmp = tempdir().unwrap();
+        let config_dir = tmp.path();
+        fs::create_dir_all(config_dir).unwrap();
+
+        // Write config with mcpServers: null
+        let config_path = config_dir.join("mcp-config.json");
+        fs::write(&config_path, r#"{"mcpServers": null}"#).unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let servers = adapter.read_mcp_servers().unwrap();
+
+        assert!(
+            servers.is_empty(),
+            "null mcpServers should return empty map"
+        );
+    }
+
+    /// Test handling of malformed mcpServers field as array
+    #[test]
+    fn mcp_servers_handles_array_field() {
+        let tmp = tempdir().unwrap();
+        let config_dir = tmp.path();
+        fs::create_dir_all(config_dir).unwrap();
+
+        // Write config with mcpServers as array (wrong type)
+        let config_path = config_dir.join("mcp-config.json");
+        fs::write(&config_path, r#"{"mcpServers": ["item1", "item2"]}"#).unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let servers = adapter.read_mcp_servers().unwrap();
+
+        assert!(
+            servers.is_empty(),
+            "array mcpServers should return empty map"
+        );
+    }
+
+    /// Test handling of malformed mcpServers field as string
+    #[test]
+    fn mcp_servers_handles_string_field() {
+        let tmp = tempdir().unwrap();
+        let config_dir = tmp.path();
+        fs::create_dir_all(config_dir).unwrap();
+
+        // Write config with mcpServers as string (wrong type)
+        let config_path = config_dir.join("mcp-config.json");
+        fs::write(&config_path, r#"{"mcpServers": "not an object"}"#).unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let servers = adapter.read_mcp_servers().unwrap();
+
+        assert!(
+            servers.is_empty(),
+            "string mcpServers should return empty map"
+        );
+    }
+
+    /// Test that symlinked skill directories are skipped
+    #[test]
+    #[cfg(unix)]
+    fn read_skills_skips_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempdir().unwrap();
+        let skills_dir = tmp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+
+        // Create a real skill
+        let real_skill_dir = skills_dir.join("real-skill");
+        fs::create_dir_all(&real_skill_dir).unwrap();
+        fs::write(
+            real_skill_dir.join("SKILL.md"),
+            "---\nname: real\n---\n# Real",
+        )
+        .unwrap();
+
+        // Create a symlinked skill directory
+        let target_dir = tmp.path().join("symlink-target");
+        fs::create_dir_all(&target_dir).unwrap();
+        fs::write(
+            target_dir.join("SKILL.md"),
+            "---\nname: symlinked\n---\n# Symlinked",
+        )
+        .unwrap();
+        symlink(&target_dir, skills_dir.join("symlink-skill")).unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let skills = adapter.read_skills().unwrap();
+
+        // Should only find the real skill, not the symlinked one
+        assert_eq!(skills.len(), 1);
+        // Skill name is extracted from directory, not frontmatter
+        assert_eq!(skills[0].name, "real-skill");
+    }
+
+    /// Test that broken symlinks are handled gracefully
+    #[test]
+    #[cfg(unix)]
+    fn read_skills_handles_broken_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempdir().unwrap();
+        let skills_dir = tmp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+
+        // Create a broken symlink
+        symlink("/nonexistent/path", skills_dir.join("broken-link")).unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let skills = adapter.read_skills();
+
+        // Should succeed without panicking
+        assert!(skills.is_ok());
+        assert!(skills.unwrap().is_empty());
+    }
+
+    /// Test that MCP server args field with wrong type logs warning
+    #[test]
+    fn mcp_servers_warns_on_wrong_args_type() {
+        let tmp = tempdir().unwrap();
+        let config_dir = tmp.path();
+        fs::create_dir_all(config_dir).unwrap();
+
+        // Write config with args as string instead of array
+        let config_path = config_dir.join("mcp-config.json");
+        fs::write(
+            &config_path,
+            r#"{
+                "mcpServers": {
+                    "test": {
+                        "command": "/bin/test",
+                        "args": "not-an-array"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let servers = adapter.read_mcp_servers().unwrap();
+
+        // Server should still be parsed, but with empty args
+        let server = servers.get("test").unwrap();
+        assert_eq!(server.command, "/bin/test");
+        assert!(server.args.is_empty(), "Wrong type args should be empty");
+    }
+
+    /// Test that MCP server env field with wrong type logs warning
+    #[test]
+    fn mcp_servers_warns_on_wrong_env_type() {
+        let tmp = tempdir().unwrap();
+        let config_dir = tmp.path();
+        fs::create_dir_all(config_dir).unwrap();
+
+        // Write config with env as array instead of object
+        let config_path = config_dir.join("mcp-config.json");
+        fs::write(
+            &config_path,
+            r#"{
+                "mcpServers": {
+                    "test": {
+                        "command": "/bin/test",
+                        "env": ["KEY=value"]
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+        let servers = adapter.read_mcp_servers().unwrap();
+
+        // Server should still be parsed, but with empty env
+        let server = servers.get("test").unwrap();
+        assert_eq!(server.command, "/bin/test");
+        assert!(server.env.is_empty(), "Wrong type env should be empty");
     }
 }

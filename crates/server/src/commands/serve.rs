@@ -1,4 +1,8 @@
 //! Handler for the `serve` command.
+//!
+//! Includes fallback auto-persist behavior: when enabled via `SKRILLS_AUTO_PERSIST=1`,
+//! analytics are automatically saved when the server exits. This provides persistence
+//! until Claude Code exposes session-end hooks.
 
 use crate::app::{start_fs_watcher, SkillService};
 use crate::discovery::merge_extra_dirs;
@@ -10,6 +14,47 @@ use skrills_state::{cache_ttl, load_manifest_settings};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::runtime::Runtime;
+
+/// Persist analytics to cache file on server exit.
+/// Called when auto-persist is enabled and the server is shutting down.
+fn persist_analytics_on_exit() {
+    use skrills_intelligence::{
+        default_analytics_cache_path, load_or_build_analytics, save_analytics,
+    };
+
+    tracing::info!(target: "skrills::serve", "Persisting analytics on server exit...");
+
+    match load_or_build_analytics(false, true) {
+        Ok(analytics) => {
+            if let Some(cache_path) = default_analytics_cache_path() {
+                match save_analytics(&analytics, &cache_path) {
+                    Ok(()) => {
+                        tracing::info!(
+                            target: "skrills::serve",
+                            path = %cache_path.display(),
+                            "Analytics persisted successfully on exit"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "skrills::serve",
+                            path = %cache_path.display(),
+                            error = %e,
+                            "Failed to persist analytics on exit"
+                        );
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "skrills::serve",
+                error = %e,
+                "Failed to build analytics for exit persistence"
+            );
+        }
+    }
+}
 
 /// Handle the `serve` command.
 #[allow(clippy::too_many_arguments)]
@@ -119,12 +164,22 @@ pub(crate) fn handle_serve_command(
         None
     };
 
+    // Check if auto-persist is enabled for exit handling
+    let auto_persist_on_exit = skrills_state::env_auto_persist();
+    if auto_persist_on_exit {
+        tracing::debug!(
+            target: "skrills::serve",
+            "Auto-persist enabled, analytics will be saved on server exit"
+        );
+    }
+
     let transport = stdio_with_optional_trace(trace_wire);
     let running = rt.block_on(async {
         serve_server(service, transport)
             .await
             .map_err(|e| anyhow!("failed to start server: {e}"))
     })?;
+
     rt.block_on(async {
         running
             .waiting()
@@ -132,7 +187,14 @@ pub(crate) fn handle_serve_command(
             .map_err(|e| anyhow!("server task ended: {e}"))
     })?;
 
+    // Persist analytics on server exit if enabled
+    // This serves as a fallback until Claude Code exposes session-end hooks
+    if auto_persist_on_exit {
+        persist_analytics_on_exit();
+    }
+
     #[cfg(feature = "watch")]
     drop(_watcher);
+
     Ok(())
 }

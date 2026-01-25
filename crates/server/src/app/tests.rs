@@ -1,16 +1,34 @@
 //! Tests for the app module.
 //!
-//! These tests verify core SkillService functionality including:
-//! - Skill validation with autofix
-//! - Dependency graph resolution
-//! - Resource reading with dependency resolution
-//! - URI query parameter parsing
-//! - Sync operations
+//! This file contains tests organized into logical sections:
+//!
+//! ## Test Organization
+//!
+//! | Section | Line Range | Description |
+//! |---------|------------|-------------|
+//! | **Config Tests** | ~15-70 | Skill root selection, project directory resolution |
+//! | **Validation Tests** | ~72-125, ~662-775 | Skill validation, autofix, dependency checking |
+//! | **Dependency Tests** | ~128-365, ~828-1120 | Dependency graph, transitive resolution |
+//! | **Resource Tests** | ~366-660 | Resource reading with dependency resolution |
+//! | **Search Tests** | ~1121-1837 | Fuzzy skill search |
+//! | **Trace Tests** | ~1838-2287 | Skill loading status, trace instrumentation |
+//! | **Intelligence Tests** | ~2288-3054 | Smart recommendations, skill creation, GitHub search |
+//! | **MCP Tests** | ~3055-end | MCP registry, tool operations, context stats |
+//!
+//! ## Future Refactoring
+//!
+//! This file can be split into submodules for better organization.
+//! See issue #126 for the modular structure proposal.
 
 use super::*;
 use serde_json::json;
 use std::time::Duration;
 use tempfile::tempdir;
+
+// ============================================================================
+// CONFIG TESTS
+// Tests for skill root selection and project directory resolution
+// ============================================================================
 
 #[test]
 fn default_skill_root_prefers_claude_when_both_installed() {
@@ -68,6 +86,11 @@ fn resolve_project_dir_returns_none_when_cwd_missing() {
     assert!(resolved.is_none());
 }
 
+// ============================================================================
+// VALIDATION TESTS
+// Tests for skill validation, autofix, and dependency checking
+// ============================================================================
+
 #[test]
 fn validate_skills_tool_autofix_adds_frontmatter() {
     let _guard = crate::test_support::env_guard();
@@ -123,6 +146,11 @@ fn create_skill_rejects_path_like_names() {
         .expect_err("should reject path-like name");
     assert!(err.to_string().contains("Invalid name"));
 }
+
+// ============================================================================
+// DEPENDENCY TESTS
+// Tests for dependency graph resolution and transitive dependencies
+// ============================================================================
 
 #[test]
 fn test_dependency_graph_integration() {
@@ -361,6 +389,11 @@ Base skill.
     assert!(trans_dependents.contains(&"skill://skrills/extra0/skill-a/SKILL.md".to_string()));
     assert!(trans_dependents.contains(&"skill://skrills/extra0/skill-b/SKILL.md".to_string()));
 }
+
+// ============================================================================
+// RESOURCE TESTS
+// Tests for resource reading with dependency resolution
+// ============================================================================
 
 #[test]
 fn test_read_resource_without_resolve() {
@@ -3050,6 +3083,11 @@ fn test_create_skill_empirical_without_sessions() {
         "Expected errors or preview mode for empirical without sessions"
     );
 }
+
+// ============================================================================
+// MCP TESTS
+// Tests for MCP registry and tool operations
+// ============================================================================
 
 #[test]
 fn test_mcp_registry_is_populated_on_service_creation() {

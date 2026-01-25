@@ -1,6 +1,7 @@
-//! Skill validation for Claude Code and Codex CLI.
+//! Skill validation for Claude Code, Codex CLI, and GitHub Copilot CLI.
 //!
-//! Validates `SKILL.md` files against Claude Code (permissive), Codex CLI (strict), and GitHub Copilot CLI (strict) requirements.
+//! Validates `SKILL.md` files against Claude Code (permissive), Codex CLI (strict),
+//! and GitHub Copilot CLI (strict) requirements.
 //!
 //! # Example
 //!
