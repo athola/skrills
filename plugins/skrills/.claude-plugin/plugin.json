@@ -18,19 +18,19 @@
     "claude-code"
   ],
   "commands": [
-    "./commands/analyze-skills.md",
-    "./commands/create-skill.md",
-    "./commands/search-skills.md",
-    "./commands/skill-diff.md",
-    "./commands/skill-metrics.md",
-    "./commands/skill-trace-disable.md",
-    "./commands/skill-trace-enable.md",
-    "./commands/skill-trace-status.md",
-    "./commands/suggest-skills.md",
-    "./commands/sync-all.md",
-    "./commands/sync-status.md",
-    "./commands/sync-to-copilot.md",
-    "./commands/validate-skills.md"
+    "../commands/analyze-skills.md",
+    "../commands/create-skill.md",
+    "../commands/search-skills.md",
+    "../commands/skill-diff.md",
+    "../commands/skill-metrics.md",
+    "../commands/skill-trace-disable.md",
+    "../commands/skill-trace-enable.md",
+    "../commands/skill-trace-status.md",
+    "../commands/suggest-skills.md",
+    "../commands/sync-all.md",
+    "../commands/sync-status.md",
+    "../commands/sync-to-copilot.md",
+    "../commands/validate-skills.md"
   ],
   "mcpServers": {
     "skrills": {
