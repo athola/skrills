@@ -1,6 +1,7 @@
 # Changelog
 
 ## 0.5.3 - 2026-01-24
+- **Bug Fix**: Fixed CLI binary selection in subagent service to use the `backend` parameter when spawning CLI subprocesses. Previously, running in Codex would incorrectly spawn the `claude` binary instead of `codex`, causing process spawn failures. (#133)
 - **NEW: Config File Support**: Security and serve options can now be configured via `~/.skrills/config.toml`. Precedence: CLI > ENV > config file. (#103)
 - **NEW: TLS Auto-Generation**: Added `--tls-auto` flag to auto-generate self-signed TLS certificates for development. Certificates are stored in `~/.skrills/tls/` and reused across server restarts. (#104)
 - **NEW: Skill Management Commands**: Added 9 new CLI commands for skill lifecycle management:
