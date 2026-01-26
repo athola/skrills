@@ -44,6 +44,11 @@ fn persist_analytics_on_exit() {
                         );
                     }
                 }
+            } else {
+                tracing::warn!(
+                    target: "skrills::serve",
+                    "Cannot persist analytics: no cache path available"
+                );
             }
         }
         Err(e) => {
@@ -82,8 +87,10 @@ pub(crate) fn handle_serve_command(
             if let Some(ref desc) = tool.description {
                 // Truncate description to first line or 80 chars
                 let short_desc = desc.lines().next().unwrap_or("");
-                let display = if short_desc.len() > 72 {
-                    format!("{}...", &short_desc[..69])
+                let display = if short_desc.chars().count() > 72 {
+                    // Use char-aware truncation to avoid panic on multi-byte UTF-8
+                    let truncated: String = short_desc.chars().take(69).collect();
+                    format!("{}...", truncated)
                 } else {
                     short_desc.to_string()
                 };

@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::time::SystemTime;
-use tracing::warn;
+use tracing::{debug, warn};
 use walkdir::WalkDir;
 
 /// Adapter for GitHub Copilot CLI configuration.
@@ -112,7 +112,14 @@ impl CopilotAdapter {
         {
             let entry = match entry {
                 Ok(e) => e,
-                Err(_) => continue,
+                Err(e) => {
+                    debug!(
+                        error = %e,
+                        path = ?e.path(),
+                        "Skipping directory entry due to traversal error"
+                    );
+                    continue;
+                }
             };
 
             let path = entry.path();

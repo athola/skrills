@@ -81,9 +81,12 @@ pub(crate) fn handle_skill_deprecate_command(
             new_content.push('\n');
         }
         new_content.push_str("deprecated: true\n");
-        new_content.push_str(&format!("deprecation_message: \"{}\"\n", deprecation_msg));
+        // Escape special characters to prevent YAML injection
+        let escaped_msg = deprecation_msg.replace('\\', "\\\\").replace('"', "\\\"");
+        new_content.push_str(&format!("deprecation_message: \"{}\"\n", escaped_msg));
         if let Some(ref repl) = replacement {
-            new_content.push_str(&format!("replacement: \"{}\"\n", repl));
+            let escaped_repl = repl.replace('\\', "\\\\").replace('"', "\\\"");
+            new_content.push_str(&format!("replacement: \"{}\"\n", escaped_repl));
         }
         new_content.push_str("---\n");
         new_content.push_str(&parsed.content);
@@ -92,9 +95,12 @@ pub(crate) fn handle_skill_deprecate_command(
         new_content.push_str("---\n");
         new_content.push_str(&format!("name: {}\n", skill.name));
         new_content.push_str("deprecated: true\n");
-        new_content.push_str(&format!("deprecation_message: \"{}\"\n", deprecation_msg));
+        // Escape special characters to prevent YAML injection
+        let escaped_msg = deprecation_msg.replace('\\', "\\\\").replace('"', "\\\"");
+        new_content.push_str(&format!("deprecation_message: \"{}\"\n", escaped_msg));
         if let Some(ref repl) = replacement {
-            new_content.push_str(&format!("replacement: \"{}\"\n", repl));
+            let escaped_repl = repl.replace('\\', "\\\\").replace('"', "\\\"");
+            new_content.push_str(&format!("replacement: \"{}\"\n", escaped_repl));
         }
         new_content.push_str("---\n\n");
         new_content.push_str(&content);
