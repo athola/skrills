@@ -2430,7 +2430,7 @@ checksum = "e320a6c5ad31d271ad523dcf3ad13e2767ad8b1cb8f047f75a8aeaf8da139da2"
 
 [[package]]
 name = "skrills"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "anyhow",
  "scopeguard",
@@ -2440,7 +2440,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-analyze"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "parking_lot",
  "regex",
@@ -2457,7 +2457,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-discovery"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "anyhow",
  "blake2",
@@ -2474,7 +2474,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-intelligence"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2496,7 +2496,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-server"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "anyhow",
  "axum",
@@ -2541,7 +2541,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-state"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "anyhow",
  "dirs",
@@ -2552,7 +2552,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-subagents"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2577,7 +2577,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-validate"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "anyhow",
  "regex",
@@ -2591,7 +2591,7 @@ dependencies = [
 
 [[package]]
 name = "skrills_sync"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "anyhow",
  "dirs",
@@ -2608,7 +2608,7 @@ dependencies = [
 
 [[package]]
 name = "skrills_test_utils"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "tempfile",
 ]

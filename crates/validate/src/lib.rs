@@ -292,4 +292,224 @@ mod tests {
         assert_eq!(summary.copilot_valid, 2);
         assert_eq!(summary.all_valid, 1);
     }
+
+    /// BDD Test: Validate all skills in a directory
+    ///
+    /// Given: A directory containing multiple SKILL.md files
+    /// When: validate_all is called with the directory path
+    /// Then: All skills are validated and results returned
+    #[test]
+    fn given_skill_directory_when_validate_all_then_returns_all_results() {
+        use tempfile::TempDir;
+
+        // GIVEN: A directory with multiple skill files
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path();
+
+        // Create valid skill
+        std::fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: valid-skill\ndescription: A valid skill\n---\n# Content\nBody.",
+        )
+        .unwrap();
+
+        // Create subdirectory with another skill
+        let subdir = skills_dir.join("subdir");
+        std::fs::create_dir(&subdir).unwrap();
+        std::fs::write(
+            subdir.join("SKILL.md"),
+            "---\nname: sub-skill\ndescription: Another skill\n---\n# Content\nBody.",
+        )
+        .unwrap();
+
+        // WHEN: Validating all skills in the directory
+        let results = validate_all(skills_dir, ValidationTarget::Both).unwrap();
+
+        // THEN: All skill files are found and validated
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.claude_valid && r.codex_valid));
+    }
+
+    /// BDD Test: Hidden directories are skipped during validation
+    ///
+    /// Given: A directory with hidden subdirectories containing skills
+    /// When: validate_all is called
+    /// Then: Skills in hidden directories are skipped
+    #[test]
+    fn given_hidden_directory_when_validate_all_then_skips_hidden() {
+        use tempfile::TempDir;
+
+        // GIVEN: A directory with a hidden subdirectory containing a skill
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path();
+
+        let hidden_dir = skills_dir.join(".hidden");
+        std::fs::create_dir(&hidden_dir).unwrap();
+        std::fs::write(
+            hidden_dir.join("SKILL.md"),
+            "---\nname: hidden-skill\ndescription: Should be skipped\n---\n# Content\nBody.",
+        )
+        .unwrap();
+
+        // Create a visible skill
+        std::fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: visible-skill\ndescription: Should be found\n---\n# Content\nBody.",
+        )
+        .unwrap();
+
+        // WHEN: Validating all skills
+        let results = validate_all(skills_dir, ValidationTarget::Both).unwrap();
+
+        // THEN: Only visible skill is validated
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "visible-skill");
+    }
+
+    /// BDD Test: Only SKILL.md files are processed
+    ///
+    /// Given: A directory with various markdown files
+    /// When: validate_all is called
+    /// Then: Only files named exactly SKILL.md are validated
+    #[test]
+    fn given_mixed_files_when_validate_all_then_only_skill_md() {
+        use tempfile::TempDir;
+
+        // GIVEN: A directory with different markdown files
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path();
+
+        std::fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: skill-md\ndescription: Valid name\n---\n# Content\nBody.",
+        )
+        .unwrap();
+
+        std::fs::write(
+            skills_dir.join("skill.md"), // lowercase - should be ignored
+            "---\nname: lowercase\ndescription: Should be ignored\n---\n# Content\nBody.",
+        )
+        .unwrap();
+
+        std::fs::write(
+            skills_dir.join("README.md"), // different name - should be ignored
+            "# README\nNot a skill file.",
+        )
+        .unwrap();
+
+        // WHEN: Validating all skills
+        let results = validate_all(skills_dir, ValidationTarget::Both).unwrap();
+
+        // THEN: Only SKILL.md is processed
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "skill-md");
+    }
+
+    /// BDD Test: Empty directory returns empty results
+    ///
+    /// Given: An empty directory
+    /// When: validate_all is called
+    /// Then: Returns empty vector without error
+    #[test]
+    fn given_empty_directory_when_validate_all_then_empty_results() {
+        use tempfile::TempDir;
+
+        // GIVEN: An empty directory
+        let temp_dir = TempDir::new().unwrap();
+
+        // WHEN: Validating all skills
+        let results = validate_all(temp_dir.path(), ValidationTarget::Both).unwrap();
+
+        // THEN: No results returned
+        assert_eq!(results.len(), 0);
+        assert!(results.is_empty());
+    }
+
+    /// BDD Test: validate_all handles invalid skills gracefully
+    ///
+    /// Given: A directory with invalid skill files
+    /// When: validate_all is called
+    /// Then: Returns validation results with errors
+    #[test]
+    fn given_invalid_skills_when_validate_all_then_includes_errors() {
+        use tempfile::TempDir;
+
+        // GIVEN: A directory with invalid skill (missing required fields)
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path();
+
+        std::fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: invalid-skill\n---\n# Content\nMissing description for Codex/Copilot.",
+        )
+        .unwrap();
+
+        // WHEN: Validating with strict target
+        let results = validate_all(skills_dir, ValidationTarget::Codex).unwrap();
+
+        // THEN: Validation errors are included
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].codex_valid);
+        assert!(!results[0].issues.is_empty());
+    }
+
+    /// BDD Test: validate_all with All target validates against all platforms
+    ///
+    /// Given: A valid skill file
+    /// When: validate_all is called with ValidationTarget::All
+    /// Then: Result includes validation status for all three platforms
+    #[test]
+    fn given_valid_skill_when_validate_all_targets_then_all_valid() {
+        use tempfile::TempDir;
+
+        // GIVEN: A valid skill file
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path();
+
+        std::fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: multi-skill\ndescription: Works everywhere\n---\n# Content\nBody.",
+        )
+        .unwrap();
+
+        // WHEN: Validating against all targets
+        let results = validate_all(skills_dir, ValidationTarget::All).unwrap();
+
+        // THEN: All platforms marked as valid
+        assert_eq!(results.len(), 1);
+        let result = &results[0];
+        assert!(result.claude_valid);
+        assert!(result.codex_valid);
+        assert!(result.copilot_valid);
+    }
+
+    /// BDD Test: Partially valid skill produces mixed results
+    ///
+    /// Given: A skill valid only for Claude
+    /// When: validate_all is called with ValidationTarget::All
+    /// Then: Result shows Claude valid but Codex/Copilot invalid
+    #[test]
+    fn given_claude_only_skill_when_validate_all_then_partial_validity() {
+        use tempfile::TempDir;
+
+        // GIVEN: A markdown-only skill (no frontmatter)
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path();
+
+        std::fs::write(
+            skills_dir.join("SKILL.md"),
+            "# Claude Only\n\nThis skill has no frontmatter.",
+        )
+        .unwrap();
+
+        // WHEN: Validating against all targets
+        let results = validate_all(skills_dir, ValidationTarget::All).unwrap();
+
+        // THEN: Mixed validity results
+        assert_eq!(results.len(), 1);
+        let result = &results[0];
+        assert!(result.claude_valid);
+        assert!(!result.codex_valid);
+        assert!(!result.copilot_valid);
+    }
 }

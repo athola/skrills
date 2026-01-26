@@ -1,5 +1,10 @@
 # Changelog Highlights
 
+## 0.5.4 (2026-01-25)
+
+- **Testing**: Added comprehensive BDD-style tests for configuration loading and directory validation
+- **Documentation**: Updated README command count to 37 and added skill management section
+
 ## 0.5.3 (2026-01-23)
 
 - **Docs**: Streamlined README with navigation links and simplified installation section.
