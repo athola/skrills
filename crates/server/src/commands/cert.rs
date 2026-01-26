@@ -1,0 +1,370 @@
+//! TLS certificate management commands.
+//!
+//! Provides CLI handlers for certificate status, renewal, and installation.
+
+use crate::cli::OutputFormat;
+use anyhow::{bail, Context, Result};
+use std::fs;
+use std::path::PathBuf;
+
+/// Certificate information structure.
+#[derive(Debug, serde::Serialize)]
+pub struct CertInfo {
+    pub path: PathBuf,
+    pub exists: bool,
+    pub issuer: Option<String>,
+    pub subject: Option<String>,
+    pub not_before: Option<String>,
+    pub not_after: Option<String>,
+    pub days_until_expiry: Option<i64>,
+    pub is_valid: bool,
+    pub is_self_signed: bool,
+}
+
+/// Returns the default TLS directory path (~/.skrills/tls/).
+fn tls_dir() -> Result<PathBuf> {
+    let home = dirs::home_dir().context("Could not determine home directory")?;
+    Ok(home.join(".skrills").join("tls"))
+}
+
+/// Parse a PEM certificate and extract metadata.
+#[cfg(feature = "http-transport")]
+fn parse_cert_info(cert_path: &PathBuf) -> Result<CertInfo> {
+    use x509_parser::prelude::*;
+
+    if !cert_path.exists() {
+        return Ok(CertInfo {
+            path: cert_path.clone(),
+            exists: false,
+            issuer: None,
+            subject: None,
+            not_before: None,
+            not_after: None,
+            days_until_expiry: None,
+            is_valid: false,
+            is_self_signed: false,
+        });
+    }
+
+    let pem_data = fs::read_to_string(cert_path)
+        .with_context(|| format!("Failed to read certificate: {}", cert_path.display()))?;
+
+    let (_, pem) = x509_parser::pem::parse_x509_pem(pem_data.as_bytes())
+        .map_err(|e| anyhow::anyhow!("Failed to parse PEM: {}", e))?;
+
+    let (_, cert) = X509Certificate::from_der(&pem.contents)
+        .map_err(|e| anyhow::anyhow!("Failed to parse X.509 certificate: {}", e))?;
+
+    let issuer = cert.issuer().to_string();
+    let subject = cert.subject().to_string();
+    let not_before = cert.validity().not_before.to_rfc2822().ok();
+    let not_after = cert.validity().not_after.to_rfc2822().ok();
+
+    // Calculate days until expiry
+    let now = ::time::OffsetDateTime::now_utc();
+    let expiry_timestamp = cert.validity().not_after.timestamp();
+    let now_timestamp = now.unix_timestamp();
+    let days_until_expiry = (expiry_timestamp - now_timestamp) / 86400;
+
+    let is_valid = days_until_expiry > 0;
+    let is_self_signed = issuer == subject;
+
+    Ok(CertInfo {
+        path: cert_path.clone(),
+        exists: true,
+        issuer: Some(issuer),
+        subject: Some(subject),
+        not_before,
+        not_after,
+        days_until_expiry: Some(days_until_expiry),
+        is_valid,
+        is_self_signed,
+    })
+}
+
+#[cfg(not(feature = "http-transport"))]
+fn parse_cert_info(cert_path: &PathBuf) -> Result<CertInfo> {
+    Ok(CertInfo {
+        path: cert_path.clone(),
+        exists: cert_path.exists(),
+        issuer: None,
+        subject: None,
+        not_before: None,
+        not_after: None,
+        days_until_expiry: None,
+        is_valid: false,
+        is_self_signed: false,
+    })
+}
+
+/// Handle `skrills cert status` command.
+pub fn handle_cert_status_command(format: OutputFormat) -> Result<()> {
+    let tls_path = tls_dir()?;
+    let cert_path = tls_path.join("cert.pem");
+    let key_path = tls_path.join("key.pem");
+
+    let cert_info = parse_cert_info(&cert_path)?;
+    let key_exists = key_path.exists();
+
+    if format.is_json() {
+        #[derive(serde::Serialize)]
+        struct Status {
+            cert: CertInfo,
+            key_exists: bool,
+            tls_dir: PathBuf,
+        }
+        let status = Status {
+            cert: cert_info,
+            key_exists,
+            tls_dir: tls_path,
+        };
+        println!("{}", serde_json::to_string_pretty(&status)?);
+        return Ok(());
+    }
+
+    // Text output
+    println!("TLS Certificate Status");
+    println!("======================");
+    println!();
+    println!("TLS Directory: {}", tls_path.display());
+    println!();
+
+    if !cert_info.exists {
+        println!("Certificate: NOT FOUND");
+        println!("  Path: {}", cert_path.display());
+        println!();
+        println!("Hint: Run `skrills serve --http <addr> --tls-auto` to generate");
+        println!("      a self-signed certificate for development.");
+    } else {
+        println!("Certificate: {}", cert_path.display());
+        if let Some(ref subject) = cert_info.subject {
+            println!("  Subject: {}", subject);
+        }
+        if let Some(ref issuer) = cert_info.issuer {
+            println!("  Issuer:  {}", issuer);
+        }
+        if let Some(ref not_before) = cert_info.not_before {
+            println!("  Valid From: {}", not_before);
+        }
+        if let Some(ref not_after) = cert_info.not_after {
+            println!("  Valid Until: {}", not_after);
+        }
+        if let Some(days) = cert_info.days_until_expiry {
+            let status = if days <= 0 {
+                "EXPIRED"
+            } else if days <= 30 {
+                "EXPIRING SOON"
+            } else {
+                "OK"
+            };
+            println!("  Days Until Expiry: {} ({})", days, status);
+        }
+        println!(
+            "  Self-Signed: {}",
+            if cert_info.is_self_signed {
+                "Yes"
+            } else {
+                "No"
+            }
+        );
+        println!("  Valid: {}", if cert_info.is_valid { "Yes" } else { "No" });
+    }
+
+    println!();
+    println!(
+        "Private Key: {}",
+        if key_exists { "FOUND" } else { "NOT FOUND" }
+    );
+    println!("  Path: {}", key_path.display());
+
+    Ok(())
+}
+
+/// Handle `skrills cert renew` command.
+#[cfg(feature = "http-transport")]
+pub fn handle_cert_renew_command(force: bool) -> Result<()> {
+    use crate::tls_auto::ensure_auto_tls_certs;
+
+    let tls_path = tls_dir()?;
+    let cert_path = tls_path.join("cert.pem");
+    let key_path = tls_path.join("key.pem");
+
+    // Check if renewal is needed
+    if cert_path.exists() && !force {
+        let cert_info = parse_cert_info(&cert_path)?;
+        if let Some(days) = cert_info.days_until_expiry {
+            if days > 30 {
+                println!(
+                    "Certificate is still valid for {} days. Use --force to renew anyway.",
+                    days
+                );
+                return Ok(());
+            }
+        }
+    }
+
+    // Remove existing certs to trigger regeneration
+    if cert_path.exists() {
+        fs::remove_file(&cert_path).with_context(|| {
+            format!("Failed to remove old certificate: {}", cert_path.display())
+        })?;
+    }
+    if key_path.exists() {
+        fs::remove_file(&key_path)
+            .with_context(|| format!("Failed to remove old key: {}", key_path.display()))?;
+    }
+
+    // Generate new certificate
+    let (new_cert, new_key) = ensure_auto_tls_certs()?;
+    println!("Certificate renewed successfully!");
+    println!("  Certificate: {}", new_cert.display());
+    println!("  Private Key: {}", new_key.display());
+
+    Ok(())
+}
+
+#[cfg(not(feature = "http-transport"))]
+pub fn handle_cert_renew_command(_force: bool) -> Result<()> {
+    bail!("Certificate renewal requires the 'http-transport' feature")
+}
+
+/// Handle `skrills cert install <path>` command.
+pub fn handle_cert_install_command(
+    cert_source: PathBuf,
+    key_source: Option<PathBuf>,
+    format: OutputFormat,
+) -> Result<()> {
+    let tls_path = tls_dir()?;
+    let cert_dest = tls_path.join("cert.pem");
+    let key_dest = tls_path.join("key.pem");
+
+    // Validate source cert exists
+    if !cert_source.exists() {
+        bail!("Certificate file not found: {}", cert_source.display());
+    }
+
+    // Create TLS directory if needed
+    fs::create_dir_all(&tls_path)
+        .with_context(|| format!("Failed to create TLS directory: {}", tls_path.display()))?;
+
+    // Copy certificate
+    fs::copy(&cert_source, &cert_dest).with_context(|| {
+        format!(
+            "Failed to copy certificate from {} to {}",
+            cert_source.display(),
+            cert_dest.display()
+        )
+    })?;
+
+    // Copy key if provided
+    if let Some(ref key_src) = key_source {
+        if !key_src.exists() {
+            bail!("Key file not found: {}", key_src.display());
+        }
+
+        // Set restrictive permissions on key file (Unix only)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let key_data = fs::read(key_src)
+                .with_context(|| format!("Failed to read key file: {}", key_src.display()))?;
+
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&key_dest)
+                .and_then(|mut f| std::io::Write::write_all(&mut f, &key_data))
+                .with_context(|| format!("Failed to write key file to {}", key_dest.display()))?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            fs::copy(key_src, &key_dest).with_context(|| {
+                format!(
+                    "Failed to copy key from {} to {}",
+                    key_src.display(),
+                    key_dest.display()
+                )
+            })?;
+        }
+    }
+
+    if format.is_json() {
+        #[derive(serde::Serialize)]
+        struct InstallResult {
+            cert_installed: PathBuf,
+            key_installed: Option<PathBuf>,
+        }
+        let result = InstallResult {
+            cert_installed: cert_dest,
+            key_installed: key_source.map(|_| key_dest),
+        };
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!("Certificate installed successfully!");
+        println!("  Certificate: {}", cert_dest.display());
+        if key_source.is_some() {
+            println!("  Private Key: {}", key_dest.display());
+        }
+    }
+
+    Ok(())
+}
+
+/// Get certificate status for display on server startup.
+#[cfg(feature = "http-transport")]
+pub fn get_cert_status_summary() -> Option<String> {
+    let tls_path = tls_dir().ok()?;
+    let cert_path = tls_path.join("cert.pem");
+
+    if !cert_path.exists() {
+        return None;
+    }
+
+    let cert_info = parse_cert_info(&cert_path).ok()?;
+    if !cert_info.exists {
+        return None;
+    }
+
+    let days = cert_info.days_until_expiry?;
+    let status = if days <= 0 {
+        "EXPIRED"
+    } else if days <= 7 {
+        "CRITICAL"
+    } else if days <= 30 {
+        "WARNING"
+    } else {
+        "OK"
+    };
+
+    let self_signed = if cert_info.is_self_signed {
+        " (self-signed)"
+    } else {
+        ""
+    };
+
+    Some(format!(
+        "TLS: {} days until expiry [{}]{}",
+        days, status, self_signed
+    ))
+}
+
+#[cfg(not(feature = "http-transport"))]
+pub fn get_cert_status_summary() -> Option<String> {
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tls_dir_returns_expected_path() {
+        let result = tls_dir();
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        assert!(path.ends_with(".skrills/tls"));
+    }
+}

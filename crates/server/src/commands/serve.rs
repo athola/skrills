@@ -138,6 +138,11 @@ pub(crate) fn handle_serve_command(
                 cors_origins,
             };
 
+            // Show certificate status on startup if available
+            if let Some(cert_status) = crate::commands::get_cert_status_summary() {
+                tracing::info!(target: "skrills::tls", "{}", cert_status);
+            }
+
             return rt.block_on(async move {
                 crate::http_transport::serve_http_with_security(
                     move || {

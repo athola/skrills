@@ -50,6 +50,7 @@ impl AdapterConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     /// BDD Test: Configuration loading with all default values
     ///
@@ -57,6 +58,7 @@ mod tests {
     /// When: AdapterConfig::from_env is called
     /// Then: Configuration uses defaults for optional fields
     #[test]
+    #[serial]
     fn given_minimal_env_when_from_env_then_uses_defaults() {
         // GIVEN: Only API key is set
         std::env::set_var("SKRILLS_CLAUDE_API_KEY", "test-key-123");
@@ -86,6 +88,7 @@ mod tests {
     /// When: AdapterConfig::from_env is called
     /// Then: Configuration uses custom values over defaults
     #[test]
+    #[serial]
     fn given_custom_env_when_from_env_then_uses_custom_values() {
         // GIVEN: Custom environment variables set
         std::env::set_var("SKRILLS_CODEX_API_KEY", "custom-key-456");
@@ -117,6 +120,7 @@ mod tests {
     /// When: AdapterConfig::from_env is called
     /// Then: Returns error with helpful message
     #[test]
+    #[serial]
     fn given_missing_api_key_when_from_env_then_returns_error() {
         // GIVEN: API key is not set
         std::env::remove_var("SKRILLS_CLAUDE_API_KEY");
@@ -138,6 +142,7 @@ mod tests {
     /// When: AdapterConfig::from_env is called
     /// Then: Returns error with URL validation message
     #[test]
+    #[serial]
     fn given_invalid_base_url_when_from_env_then_returns_url_error() {
         // GIVEN: Invalid URL in environment
         std::env::set_var("SKRILLS_CLAUDE_API_KEY", "test-key");
@@ -164,6 +169,7 @@ mod tests {
     /// When: AdapterConfig::from_env is called
     /// Then: Uses default timeout instead of failing
     #[test]
+    #[serial]
     fn given_invalid_timeout_when_from_env_then_uses_default_timeout() {
         // GIVEN: Invalid timeout value
         std::env::set_var("SKRILLS_CLAUDE_API_KEY", "test-key");
@@ -189,6 +195,7 @@ mod tests {
     /// When: AdapterConfig::from_env is called
     /// Then: Zero duration timeout is returned
     #[test]
+    #[serial]
     fn given_zero_timeout_when_from_env_then_zero_duration() {
         // GIVEN: Zero timeout
         std::env::set_var("SKRILLS_CLAUDE_API_KEY", "test-key");

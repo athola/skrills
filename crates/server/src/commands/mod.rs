@@ -2,6 +2,7 @@
 
 mod agent;
 mod analyze;
+mod cert;
 mod diff;
 mod intelligence;
 mod metrics;
@@ -15,6 +16,10 @@ mod validate;
 
 pub(crate) use agent::handle_agent_command;
 pub(crate) use analyze::handle_analyze_command;
+pub(crate) use cert::{
+    get_cert_status_summary, handle_cert_install_command, handle_cert_renew_command,
+    handle_cert_status_command,
+};
 pub(crate) use diff::handle_skill_diff_command;
 pub(crate) use intelligence::{
     handle_analyze_project_context_command, handle_create_skill_command,

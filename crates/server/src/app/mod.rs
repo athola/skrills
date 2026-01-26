@@ -19,9 +19,10 @@ mod tools;
 pub(crate) use intelligence::{resolve_project_dir, select_default_skill_root};
 
 use crate::cache::SkillCache;
-use crate::cli::{Cli, Commands, SyncSource};
+use crate::cli::{CertAction, Cli, Commands, SyncSource};
 use crate::commands::{
     handle_agent_command, handle_analyze_command, handle_analyze_project_context_command,
+    handle_cert_install_command, handle_cert_renew_command, handle_cert_status_command,
     handle_create_skill_command, handle_export_analytics_command, handle_import_analytics_command,
     handle_metrics_command, handle_mirror_command, handle_pre_commit_validate_command,
     handle_recommend_command, handle_recommend_skills_smart_command,
@@ -1405,6 +1406,13 @@ pub fn run() -> Result<()> {
             format,
             below_threshold,
         } => handle_skill_score_command(name, skill_dirs, format, below_threshold),
+        Commands::Cert(action) => match action {
+            CertAction::Status { format } => handle_cert_status_command(format),
+            CertAction::Renew { force } => handle_cert_renew_command(force),
+            CertAction::Install { cert, key, format } => {
+                handle_cert_install_command(cert, key, format)
+            }
+        },
     }
 }
 

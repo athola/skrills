@@ -1,6 +1,6 @@
 [package]
 name = "skrills-server"
-version = "0.5.4"
+version = "0.5.5"
 edition = "2021"
 description = "Core library for the skrills MCP server: discovery, filtering, manifest generation, and runtime control."
 license = "MIT"
@@ -40,6 +40,7 @@ axum-server = { version = "0.8", features = ["tls-rustls"], optional = true }
 tower = { version = "0.5", optional = true }
 tower-http = { version = "0.6", features = ["cors"], optional = true }
 rcgen = { version = "0.13", optional = true }
+x509-parser = { version = "0.16", optional = true }
 time.workspace = true
 
 skrills-subagents = { path = "../subagents", version = "0.5.2", optional = true }
@@ -59,7 +60,7 @@ regex = "1"
 default = ["watch", "subagents", "http-transport"]
 watch = ["notify"]
 subagents = ["skrills-subagents"]
-http-transport = ["axum", "axum-server", "tower", "tower-http", "subtle", "rcgen"]
+http-transport = ["axum", "axum-server", "tower", "tower-http", "subtle", "rcgen", "x509-parser"]
 test-support = []
 
 [dev-dependencies]
