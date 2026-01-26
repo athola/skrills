@@ -105,15 +105,42 @@ impl SubagentService {
             .ok_or_else(|| anyhow!("backend not configured: {key:?}"))
     }
 
-    fn cli_adapter_for(&self, cli_binary_override: Option<String>) -> Arc<CodexCliAdapter> {
-        let env_binary = normalize_cli_binary(std::env::var("SKRILLS_CLI_BINARY").ok());
+    /// Constructs a CLI adapter with the appropriate binary selection.
+    ///
+    /// Binary selection precedence (highest to lowest):
+    /// 1. Explicit `cli_binary_override` parameter
+    /// 2. `SKRILLS_CLI_BINARY` environment variable (handled by `CliConfig::from_env()`)
+    /// 3. Backend hint (`Codex` -> "codex", `Claude` -> "claude")
+    /// 4. Default CLI binary from service configuration/environment detection
+    fn cli_adapter_for(
+        &self,
+        cli_binary_override: Option<String>,
+        backend_hint: Option<BackendKind>,
+    ) -> Arc<CodexCliAdapter> {
         let mut config = CliConfig::from_env();
+
+        // Only apply backend hint if env var is not set (from_env handles env var internally,
+        // but we check here to determine if we should override with backend hint)
+        let env_binary = normalize_cli_binary(std::env::var("SKRILLS_CLI_BINARY").ok());
         if env_binary.is_none() {
-            config.binary = self.default_cli_binary();
+            config.binary = match backend_hint {
+                Some(BackendKind::Codex) => "codex".into(),
+                Some(BackendKind::Claude) => "claude".into(),
+                Some(BackendKind::Other(ref name)) if name.eq_ignore_ascii_case("copilot") => {
+                    tracing::warn!(
+                        "Copilot CLI does not support subagent execution; using default binary"
+                    );
+                    self.default_cli_binary()
+                }
+                Some(BackendKind::Other(_)) | None => self.default_cli_binary(),
+            };
         }
+
+        // Explicit override takes highest precedence
         if let Some(binary) = cli_binary_override {
             config.binary = binary;
         }
+
         Arc::new(CodexCliAdapter::with_config(config))
     }
 
@@ -187,7 +214,7 @@ impl SubagentService {
             let mut t = adapter.list_templates().await?;
             templates.append(&mut t);
         }
-        let mut cli_templates = self.cli_adapter_for(None).list_templates().await?;
+        let mut cli_templates = self.cli_adapter_for(None, None).list_templates().await?;
         templates.append(&mut cli_templates);
         Ok(CallToolResult {
             content: vec![Content::text("listed subagents")],
@@ -261,18 +288,25 @@ impl SubagentService {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        // Determine backend from args (used for both CLI binary selection and API routing)
+        let backend = args
+            .get("backend")
+            .and_then(|v| v.as_str())
+            .map(backend_from_str)
+            .unwrap_or_else(|| self.default_backend_from_env());
+
         // Smart routing: if agent_id is specified, use agent-based routing
         let adapter: Arc<dyn BackendAdapter> = if let Some(agent_name) = agent_id {
-            self.route_for_agent(agent_name, execution_mode, cli_binary_override.clone())?
+            self.route_for_agent(
+                agent_name,
+                execution_mode,
+                cli_binary_override.clone(),
+                Some(backend.clone()),
+            )?
         } else if matches!(execution_mode, ExecutionMode::Cli) {
-            self.cli_adapter_for(cli_binary_override)
+            self.cli_adapter_for(cli_binary_override, Some(backend))
         } else {
             // API mode: use backend from args or default.
-            let backend = args
-                .get("backend")
-                .and_then(|v| v.as_str())
-                .map(backend_from_str)
-                .unwrap_or_else(|| self.default_backend_from_env());
             self.adapter_for(Some(backend))?
         };
 
@@ -304,11 +338,15 @@ impl SubagentService {
     /// - CLI adapter if agent requires tools (spawns CLI subprocess)
     /// - API adapter if agent doesn't require tools
     /// - Error if agent not found
+    ///
+    /// When routing to CLI, the `backend_hint` takes precedence over model-based detection
+    /// for determining which CLI binary to spawn.
     fn route_for_agent(
         &self,
         agent_name: &str,
         execution_mode: ExecutionMode,
         cli_binary_override: Option<String>,
+        backend_hint: Option<BackendKind>,
     ) -> Result<Arc<dyn BackendAdapter>> {
         let agent = self
             .registry
@@ -317,21 +355,24 @@ impl SubagentService {
 
         // Check if agent requires CLI execution (has tools)
         let requires_cli = agent.config.tools.as_ref().is_some_and(|t| !t.is_empty());
+        let use_cli = matches!(execution_mode, ExecutionMode::Cli) || requires_cli;
 
-        if matches!(execution_mode, ExecutionMode::Cli) || requires_cli {
+        if use_cli {
             if matches!(execution_mode, ExecutionMode::Api) && requires_cli {
                 tracing::debug!(
-                    "execution_mode=api requested for agent '{}' but tools require CLI",
-                    agent_name
+                    agent = agent_name,
+                    "execution_mode=api requested but tools require CLI"
                 );
             }
-            // Use CLI adapter for agents that require tool execution
             tracing::debug!(
-                "routing agent '{}' to CLI adapter (tools: {:?})",
-                agent_name,
-                agent.config.tools
+                agent = agent_name,
+                tools = ?agent.config.tools,
+                "routing to CLI adapter"
             );
-            return Ok(self.cli_adapter_for(cli_binary_override) as Arc<dyn BackendAdapter>);
+            // Use backend hint to determine CLI binary, falling back to model-based detection
+            let cli_backend = backend_hint
+                .unwrap_or_else(|| self.backend_for_model(agent.config.model.as_deref()));
+            return Ok(self.cli_adapter_for(cli_binary_override, Some(cli_backend)));
         }
 
         // Agent doesn't require tools - use API adapter
@@ -950,7 +991,7 @@ Content."#,
             let service =
                 SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex)
                     .unwrap();
-            service.cli_adapter_for(None)
+            service.cli_adapter_for(None, Some(BackendKind::Codex))
         };
 
         let templates = adapter.list_templates().await.unwrap();
@@ -960,6 +1001,62 @@ Content."#,
             .unwrap_or_default();
 
         assert!(name.contains("codex"));
+    }
+
+    #[tokio::test]
+    async fn cli_adapter_uses_backend_hint_for_binary_selection() {
+        // Test that backend hint overrides default cli binary detection
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let _home_guard = set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+        // Clear all client detection env vars
+        let _client_guard = set_env_var("SKRILLS_CLIENT", None);
+        let _cli_guard = set_env_var("SKRILLS_CLI_BINARY", None);
+        let _claude_session = set_env_var("CLAUDE_CODE_SESSION", None);
+        let _claude_cli = set_env_var("CLAUDE_CLI", None);
+        let _claude_mcp = set_env_var("__CLAUDE_MCP_SERVER", None);
+        let _claude_entry = set_env_var("CLAUDE_CODE_ENTRYPOINT", None);
+        let _codex_session = set_env_var("CODEX_SESSION_ID", None);
+        let _codex_cli = set_env_var("CODEX_CLI", None);
+        let _codex_home = set_env_var("CODEX_HOME", None);
+
+        let service =
+            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+
+        // When backend hint is Codex, CLI binary should be "codex"
+        let codex_adapter = service.cli_adapter_for(None, Some(BackendKind::Codex));
+        assert_eq!(
+            codex_adapter.config().binary,
+            "codex",
+            "Backend hint Codex should select 'codex' binary"
+        );
+
+        // When backend hint is Claude, CLI binary should be "claude"
+        let claude_adapter = service.cli_adapter_for(None, Some(BackendKind::Claude));
+        assert_eq!(
+            claude_adapter.config().binary,
+            "claude",
+            "Backend hint Claude should select 'claude' binary"
+        );
+
+        // When no backend hint, should fall back to default detection
+        let default_adapter = service.cli_adapter_for(None, None);
+        // Default is "claude" when no env vars are set (DEFAULT_CLI_BINARY)
+        assert_eq!(
+            default_adapter.config().binary,
+            "claude",
+            "No backend hint should fall back to default"
+        );
+
+        // When backend hint is Copilot (via Other), should fall back to default
+        // (Copilot CLI doesn't support subagent execution)
+        let copilot_adapter =
+            service.cli_adapter_for(None, Some(BackendKind::Other("copilot".to_string())));
+        assert_eq!(
+            copilot_adapter.config().binary,
+            "claude",
+            "Backend hint Copilot should fall back to default (unsupported)"
+        );
     }
 
     #[tokio::test]

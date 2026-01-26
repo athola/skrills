@@ -187,6 +187,14 @@ impl CodexCliAdapter {
         Self::with_config(CliConfig::from_env())
     }
 
+    /// Returns a reference to the adapter's configuration.
+    ///
+    /// This is primarily useful for testing to verify the correct binary was selected.
+    #[cfg(test)]
+    pub fn config(&self) -> &CliConfig {
+        &self.config
+    }
+
     /// Build the command arguments for the CLI.
     fn build_command_args(&self, prompt: &str) -> Vec<String> {
         let mut args = Vec::new();

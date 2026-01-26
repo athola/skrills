@@ -1,6 +1,13 @@
 # Changelog
 
+## 0.5.4 - 2026-01-25
+- **Testing**: Added comprehensive BDD-style tests for configuration loading (backend/config.rs) covering defaults, custom values, error handling, and edge cases
+- **Testing**: Added directory validation tests (validate/lib.rs) for skill discovery, hidden directory handling, multi-target validation, and edge cases
+- **Documentation**: Updated README to reflect 37 CLI commands and added skill management section
+- **Internal**: Improved test coverage with 407 new lines of tests across core modules
+
 ## 0.5.3 - 2026-01-24
+- **Bug Fix**: Fixed CLI binary selection in subagent service to use the `backend` parameter when spawning CLI subprocesses. Previously, running in Codex would incorrectly spawn the `claude` binary instead of `codex`, causing process spawn failures. (#133)
 - **NEW: Config File Support**: Security and serve options can now be configured via `~/.skrills/config.toml`. Precedence: CLI > ENV > config file. (#103)
 - **NEW: TLS Auto-Generation**: Added `--tls-auto` flag to auto-generate self-signed TLS certificates for development. Certificates are stored in `~/.skrills/tls/` and reused across server restarts. (#104)
 - **NEW: Skill Management Commands**: Added 9 new CLI commands for skill lifecycle management:

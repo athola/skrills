@@ -17,6 +17,17 @@ pub const MAX_NAME_LENGTH: usize = 100;
 pub const MAX_DESCRIPTION_LENGTH: usize = 500;
 
 /// Maximum recommended content length for Copilot skills.
+///
+/// # Rationale
+///
+/// The 30,000 character limit is based on practical token budget constraints:
+/// - Copilot's context window must accommodate the skill content plus user prompts
+/// - Skills exceeding this limit consume disproportionate context, leaving less
+///   room for conversation history and code context
+/// - Very large skills often indicate they should be split into focused sub-skills
+///
+/// This is a **warning** threshold, not a hard limit. Skills can exceed this but
+/// will trigger a recommendation to consider splitting.
 pub const MAX_CONTENT_LENGTH: usize = 30_000;
 
 /// Validate a skill for Copilot CLI compatibility.
@@ -58,10 +69,13 @@ pub fn validate_copilot(path: &Path, content: &str) -> ValidationResult {
         return result;
     }
 
-    let fm = parsed
-        .frontmatter
-        .as_ref()
-        .expect("frontmatter required for Copilot validation");
+    // SAFETY: We just checked `parsed.frontmatter.is_none()` above and returned early,
+    // so this unwrap is guaranteed to succeed. Using `let Some` pattern for defense in depth.
+    let Some(fm) = parsed.frontmatter.as_ref() else {
+        // This branch should never be reached due to the early return above,
+        // but we handle it defensively to prevent potential panics if code is refactored.
+        return result;
+    };
 
     // Update name from frontmatter
     if let Some(ref n) = fm.name {

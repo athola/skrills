@@ -68,7 +68,29 @@ skrills serve
 skrills tui
 ```
 
-See [CLI reference](book/src/cli.md) for all 30+ commands.
+See [CLI reference](book/src/cli.md) for all 37 commands including skill lifecycle management.
+
+## Skill Management
+
+Beyond validation and analysis, Skrills provides tools for managing skill lifecycles:
+
+```bash
+# Deprecate a skill with migration guidance
+skrills skill-deprecate old-skill --replace "new-skill" --reason "Replaced by more efficient version"
+
+# Rollback a skill to a previous git version
+skrills skill-rollback my-skill --commit abc123
+
+# Import skills from external sources
+skrills skill-import https://example.com/skill.md
+skrills skill-import ~/local/skills/
+
+# Generate usage reports
+skrills skill-usage-report --format json > report.json
+
+# Calculate quality scores
+skrills skill-score --min-score 80
+```
 
 ## Why Skrills
 

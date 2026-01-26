@@ -422,49 +422,6 @@ pub fn ensure_probe(home: &Path, target: ClientTarget, dry_run: bool) -> Result<
     }
 }
 
-#[allow(dead_code)]
-pub fn ensure_trace_skill(home: &Path, target: ClientTarget, dry_run: bool) -> Result<bool> {
-    let opts = TraceInstallOptions {
-        instrument: false,
-        backup: false,
-        dry_run,
-        ..Default::default()
-    };
-    match target {
-        ClientTarget::Claude => install_skill(
-            home,
-            ClientTarget::Claude,
-            TRACE_SKILL_DIR,
-            &trace_skill_content(),
-            &opts,
-        ),
-        ClientTarget::Codex => install_skill(
-            home,
-            ClientTarget::Codex,
-            TRACE_SKILL_DIR,
-            &trace_skill_content(),
-            &opts,
-        ),
-        ClientTarget::Both => {
-            let a = install_skill(
-                home,
-                ClientTarget::Claude,
-                TRACE_SKILL_DIR,
-                &trace_skill_content(),
-                &opts,
-            )?;
-            let b = install_skill(
-                home,
-                ClientTarget::Codex,
-                TRACE_SKILL_DIR,
-                &trace_skill_content(),
-                &opts,
-            )?;
-            Ok(a || b)
-        }
-    }
-}
-
 pub fn enable_trace(
     home: &Path,
     target: ClientTarget,

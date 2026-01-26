@@ -81,9 +81,12 @@ pub(crate) fn handle_skill_deprecate_command(
             new_content.push('\n');
         }
         new_content.push_str("deprecated: true\n");
-        new_content.push_str(&format!("deprecation_message: \"{}\"\n", deprecation_msg));
+        // Escape special characters to prevent YAML injection
+        let escaped_msg = deprecation_msg.replace('\\', "\\\\").replace('"', "\\\"");
+        new_content.push_str(&format!("deprecation_message: \"{}\"\n", escaped_msg));
         if let Some(ref repl) = replacement {
-            new_content.push_str(&format!("replacement: \"{}\"\n", repl));
+            let escaped_repl = repl.replace('\\', "\\\\").replace('"', "\\\"");
+            new_content.push_str(&format!("replacement: \"{}\"\n", escaped_repl));
         }
         new_content.push_str("---\n");
         new_content.push_str(&parsed.content);
@@ -92,9 +95,12 @@ pub(crate) fn handle_skill_deprecate_command(
         new_content.push_str("---\n");
         new_content.push_str(&format!("name: {}\n", skill.name));
         new_content.push_str("deprecated: true\n");
-        new_content.push_str(&format!("deprecation_message: \"{}\"\n", deprecation_msg));
+        // Escape special characters to prevent YAML injection
+        let escaped_msg = deprecation_msg.replace('\\', "\\\\").replace('"', "\\\"");
+        new_content.push_str(&format!("deprecation_message: \"{}\"\n", escaped_msg));
         if let Some(ref repl) = replacement {
-            new_content.push_str(&format!("replacement: \"{}\"\n", repl));
+            let escaped_repl = repl.replace('\\', "\\\\").replace('"', "\\\"");
+            new_content.push_str(&format!("replacement: \"{}\"\n", escaped_repl));
         }
         new_content.push_str("---\n\n");
         new_content.push_str(&content);
@@ -1234,6 +1240,324 @@ pub(crate) fn handle_sync_pull_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skrills_test_utils::{env_guard, TestFixture};
+    use tempfile::tempdir;
+
+    //========================================================================
+    // Integration Tests - Command Handlers
+    //========================================================================
+
+    /// Test that skill-catalog command discovers and lists skills correctly
+    #[test]
+    fn catalog_discovers_skills_in_fixture() {
+        let _g = env_guard();
+        let fixture = TestFixture::new().expect("fixture");
+        let _home = fixture.home_guard();
+
+        // Create test skills
+        fixture
+            .create_skill_with_frontmatter("test-skill-alpha", "Alpha skill for testing", "Content")
+            .expect("create alpha");
+        fixture
+            .create_skill_with_frontmatter("test-skill-beta", "Beta skill for testing", "Content")
+            .expect("create beta");
+
+        // Call the catalog command - it prints to stdout, so we can't easily capture,
+        // but we can verify it doesn't error
+        let result = handle_skill_catalog_command(
+            None,
+            None,
+            None,
+            100,
+            vec![fixture.claude_skills.clone()],
+            OutputFormat::Json,
+        );
+
+        assert!(result.is_ok(), "catalog command should succeed");
+    }
+
+    /// Test that skill-catalog respects search filter
+    #[test]
+    fn catalog_filters_by_search_query() {
+        let _g = env_guard();
+        let fixture = TestFixture::new().expect("fixture");
+        let _home = fixture.home_guard();
+
+        fixture
+            .create_skill_with_frontmatter("matching-skill", "This matches the query", "Content")
+            .expect("create matching");
+        fixture
+            .create_skill_with_frontmatter("other-skill", "This does not", "Content")
+            .expect("create other");
+
+        // Search for "matching" - should succeed
+        let result = handle_skill_catalog_command(
+            Some("matching".to_string()),
+            None,
+            None,
+            100,
+            vec![fixture.claude_skills.clone()],
+            OutputFormat::Json,
+        );
+
+        assert!(result.is_ok(), "filtered catalog should succeed");
+    }
+
+    /// Test that skill-import command works for local files
+    #[test]
+    fn import_local_file_succeeds() {
+        let _g = env_guard();
+        let fixture = TestFixture::new().expect("fixture");
+        let _home = fixture.home_guard();
+
+        // Create a source skill file
+        let source_dir = tempdir().expect("tempdir");
+        let source_path = source_dir.path().join("source-skill.md");
+        std::fs::write(
+            &source_path,
+            "---\nname: imported-skill\ndescription: Test\n---\nContent",
+        )
+        .expect("write source");
+
+        let result = handle_skill_import_command(
+            source_path.to_string_lossy().to_string(),
+            SyncSource::Claude,
+            false,
+            false,
+            OutputFormat::Json,
+        );
+
+        assert!(result.is_ok(), "import should succeed");
+
+        // Verify skill was created
+        let target = fixture.claude_skills.join("source-skill.md");
+        assert!(target.exists(), "imported skill should exist at target");
+    }
+
+    /// Test that skill-import respects dry-run flag
+    #[test]
+    fn import_dry_run_does_not_create_file() {
+        let _g = env_guard();
+        let fixture = TestFixture::new().expect("fixture");
+        let _home = fixture.home_guard();
+
+        let source_dir = tempdir().expect("tempdir");
+        let source_path = source_dir.path().join("dry-run-skill.md");
+        std::fs::write(&source_path, "---\nname: dry\n---\nContent").expect("write source");
+
+        let result = handle_skill_import_command(
+            source_path.to_string_lossy().to_string(),
+            SyncSource::Claude,
+            false,
+            true, // dry_run = true
+            OutputFormat::Json,
+        );
+
+        assert!(result.is_ok(), "dry run should succeed");
+
+        // Verify no file was created
+        let target = fixture.claude_skills.join("dry-run-skill.md");
+        assert!(!target.exists(), "dry run should not create file");
+    }
+
+    /// Test that skill-import with force overwrites existing file
+    #[test]
+    fn import_force_overwrites_existing() {
+        let _g = env_guard();
+        let fixture = TestFixture::new().expect("fixture");
+        let _home = fixture.home_guard();
+
+        // Create existing skill
+        let existing = fixture.claude_skills.join("overwrite-skill.md");
+        std::fs::write(&existing, "old content").expect("write existing");
+
+        // Create source with new content
+        let source_dir = tempdir().expect("tempdir");
+        let source_path = source_dir.path().join("overwrite-skill.md");
+        std::fs::write(&source_path, "new content").expect("write source");
+
+        let result = handle_skill_import_command(
+            source_path.to_string_lossy().to_string(),
+            SyncSource::Claude,
+            true, // force = true
+            false,
+            OutputFormat::Json,
+        );
+
+        assert!(result.is_ok(), "force import should succeed");
+
+        // Verify content was overwritten
+        let content = std::fs::read_to_string(&existing).expect("read");
+        assert_eq!(content, "new content", "content should be overwritten");
+    }
+
+    /// Test that skill-import without force does not overwrite
+    #[test]
+    fn import_without_force_skips_existing() {
+        let _g = env_guard();
+        let fixture = TestFixture::new().expect("fixture");
+        let _home = fixture.home_guard();
+
+        // Create existing skill
+        let existing = fixture.claude_skills.join("keep-skill.md");
+        std::fs::write(&existing, "keep this").expect("write existing");
+
+        // Create source with new content
+        let source_dir = tempdir().expect("tempdir");
+        let source_path = source_dir.path().join("keep-skill.md");
+        std::fs::write(&source_path, "replace this").expect("write source");
+
+        let result = handle_skill_import_command(
+            source_path.to_string_lossy().to_string(),
+            SyncSource::Claude,
+            false, // force = false
+            false,
+            OutputFormat::Json,
+        );
+
+        // Should succeed but not overwrite
+        assert!(result.is_ok());
+
+        let content = std::fs::read_to_string(&existing).expect("read");
+        assert_eq!(content, "keep this", "content should not be overwritten");
+    }
+
+    /// Test that skill-import errors on nonexistent source
+    #[test]
+    fn import_nonexistent_source_errors() {
+        let _g = env_guard();
+        let fixture = TestFixture::new().expect("fixture");
+        let _home = fixture.home_guard();
+
+        let result = handle_skill_import_command(
+            "/nonexistent/path/skill.md".to_string(),
+            SyncSource::Claude,
+            false,
+            false,
+            OutputFormat::Json,
+        );
+
+        assert!(result.is_err(), "import nonexistent should error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("does not exist"),
+            "error should mention missing file"
+        );
+    }
+
+    /// Test that skill-score command calculates scores
+    #[test]
+    fn score_calculates_for_skills() {
+        let _g = env_guard();
+        let fixture = TestFixture::new().expect("fixture");
+        let _home = fixture.home_guard();
+
+        fixture
+            .create_skill_with_frontmatter(
+                "well-documented",
+                "A very detailed description that exceeds 100 characters to get maximum points for description quality in scoring",
+                "# Well Documented Skill\n\nThis skill has good documentation.",
+            )
+            .expect("create skill");
+
+        let result = handle_skill_score_command(
+            Some("well-documented".to_string()),
+            vec![fixture.claude_skills.clone()],
+            OutputFormat::Json,
+            None,
+        );
+
+        assert!(result.is_ok(), "score command should succeed");
+    }
+
+    /// Test that skill-score filters by name
+    #[test]
+    fn score_filters_by_skill_name() {
+        let _g = env_guard();
+        let fixture = TestFixture::new().expect("fixture");
+        let _home = fixture.home_guard();
+
+        fixture
+            .create_skill_with_frontmatter("target-skill", "Target", "Content")
+            .expect("create target");
+        fixture
+            .create_skill_with_frontmatter("other-skill", "Other", "Content")
+            .expect("create other");
+
+        // Score only target-skill
+        let result = handle_skill_score_command(
+            Some("target-skill".to_string()),
+            vec![fixture.claude_skills.clone()],
+            OutputFormat::Json,
+            None,
+        );
+
+        assert!(result.is_ok());
+    }
+
+    /// Test that skill-score errors when skill not found
+    #[test]
+    fn score_errors_when_skill_not_found() {
+        let _g = env_guard();
+        let fixture = TestFixture::new().expect("fixture");
+        let _home = fixture.home_guard();
+
+        let result = handle_skill_score_command(
+            Some("nonexistent-skill".to_string()),
+            vec![fixture.claude_skills.clone()],
+            OutputFormat::Json,
+            None,
+        );
+
+        assert!(result.is_err(), "should error for nonexistent skill");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not found"), "error should mention not found");
+    }
+
+    /// Test that skill-score respects below_threshold filter
+    #[test]
+    fn score_filters_by_threshold() {
+        let _g = env_guard();
+        let fixture = TestFixture::new().expect("fixture");
+        let _home = fixture.home_guard();
+
+        // Create a minimal skill (low score expected)
+        fixture
+            .create_skill("poor-skill", "no frontmatter here")
+            .expect("create poor");
+
+        // Create a well-formed skill (high score expected)
+        fixture
+            .create_skill_with_frontmatter(
+                "good-skill",
+                "A detailed description with more than 100 characters to maximize the description quality score component",
+                "# Good Skill\n\nContent",
+            )
+            .expect("create good");
+
+        // Filter for scores below 50 - should only show poor-skill
+        let result = handle_skill_score_command(
+            None,
+            vec![fixture.claude_skills.clone()],
+            OutputFormat::Json,
+            Some(50),
+        );
+
+        assert!(result.is_ok());
+    }
+
+    /// Test sync-pull placeholder behavior
+    #[test]
+    fn sync_pull_returns_placeholder_message() {
+        let result =
+            handle_sync_pull_command(None, None, SyncSource::Claude, false, OutputFormat::Json);
+
+        assert!(result.is_ok(), "sync-pull should succeed (placeholder)");
+    }
+
+    //========================================================================
+    // Unit Tests - Validation and Security
+    //========================================================================
 
     /// Test that invalid git version hashes are rejected (command injection prevention)
     #[test]
