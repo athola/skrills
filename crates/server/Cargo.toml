@@ -43,14 +43,14 @@ rcgen = { version = "0.13", optional = true }
 x509-parser = { version = "0.16", optional = true }
 time.workspace = true
 
-skrills-subagents = { path = "../subagents", version = "0.5.2", optional = true }
+skrills-subagents = { path = "../subagents", version = "0.5.5", optional = true }
 
-skrills-discovery = { path = "../discovery", version = "0.5.2" }
-skrills-state = { path = "../state", version = "0.5.2" }
-skrills_sync = { path = "../sync", version = "0.5.2" }
-skrills-validate = { path = "../validate", version = "0.5.2" }
-skrills-analyze = { path = "../analyze", version = "0.5.2" }
-skrills-intelligence = { path = "../intelligence", version = "0.5.2" }
+skrills-discovery = { path = "../discovery", version = "0.5.5" }
+skrills-state = { path = "../state", version = "0.5.5" }
+skrills_sync = { path = "../sync", version = "0.5.5" }
+skrills-validate = { path = "../validate", version = "0.5.5" }
+skrills-analyze = { path = "../analyze", version = "0.5.5" }
+skrills-intelligence = { path = "../intelligence", version = "0.5.5" }
 shellexpand = "3"
 regex = "1"
 

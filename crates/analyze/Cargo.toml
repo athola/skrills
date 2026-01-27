@@ -19,8 +19,8 @@ walkdir = { workspace = true }
 thiserror = { workspace = true }
 semver = { workspace = true }
 tracing = { workspace = true }
-skrills-validate = { path = "../validate", version = "0.5.2" }
-skrills-discovery = { path = "../discovery", version = "0.5.2" }
+skrills-validate = { path = "../validate", version = "0.5.5" }
+skrills-discovery = { path = "../discovery", version = "0.5.5" }
 parking_lot = { workspace = true }
 
 [dev-dependencies]

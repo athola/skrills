@@ -68,7 +68,7 @@ skrills serve
 skrills tui
 ```
 
-See [CLI reference](book/src/cli.md) for all 37 commands including skill lifecycle management.
+See [CLI reference](book/src/cli.md) for all 38 commands including skill lifecycle management.
 
 ## Skill Management
 

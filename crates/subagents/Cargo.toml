@@ -28,8 +28,8 @@ thiserror.workspace = true
 tempfile.workspace = true
 toml.workspace = true
 
-skrills-discovery = { path = "../discovery", version = "0.5.2" }
-skrills-state = { path = "../state", version = "0.5.2" }
+skrills-discovery = { path = "../discovery", version = "0.5.5" }
+skrills-state = { path = "../state", version = "0.5.5" }
 
 [dev-dependencies]
 wiremock = "0.6"

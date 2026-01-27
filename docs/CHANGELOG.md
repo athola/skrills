@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.5 - 2026-01-26
+- **NEW: TLS Certificate Management**: Added `skrills cert` subcommand with `status`, `renew`, and `install` operations for managing TLS certificates. Certificate validity is displayed on server startup.
+- **Refactor: Copilot Adapter**: Split monolithic `copilot.rs` into focused modules (agents, commands, mcp, paths, preferences, skills, utils, tests) for improved maintainability and testability.
+- **Testing**: Added unit tests for certificate parsing covering missing file handling, valid PEM parsing, and invalid PEM detection.
+
 ## 0.5.4 - 2026-01-25
 - **Testing**: Added comprehensive BDD-style tests for configuration loading (backend/config.rs) covering defaults, custom values, error handling, and edge cases
 - **Testing**: Added directory validation tests (validate/lib.rs) for skill discovery, hidden directory handling, multi-target validation, and edge cases

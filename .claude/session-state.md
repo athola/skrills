@@ -1,22 +1,29 @@
-# Session State: TLS Certificate Management
+# Session State: Workflow Fix Complete
 
-## Status: COMPLETE ✅
+## Status: DONE
 
-Issue #131 TLS certificate management fully implemented.
+## Completed Work
+- ✅ v0.5.5 release committed and pushed
+- ✅ PR #143 created: https://github.com/athola/skrills/pull/143
+- ✅ All tasks marked complete
+- ✅ Task Completion Discipline added to claude-night-market
 
-## Changes Made
-1. `crates/server/src/commands/cert.rs` - New file with cert handlers
-2. `crates/server/src/commands/mod.rs` - Added cert module exports
-3. `crates/server/src/cli.rs` - Added CertAction enum and Cert subcommand
-4. `crates/server/src/app/mod.rs` - Added match arm for Cert command
-5. `crates/server/Cargo.toml` - Added x509-parser dependency
-6. `crates/server/src/commands/serve.rs` - Added cert status on startup
+## Changes Made (~/claude-night-market/)
 
-## Verification
-- `cargo check -p skrills-server` ✅ PASS
-- `cargo build -p skrills-server` ✅ PASS
+Added "Task Completion Discipline" guidance to:
+1. `plugins/attune/docs/tasks-integration.md` - Central Tasks API reference
+2. `plugins/attune/skills/project-execution/SKILL.md` - Execution skill checkpoint section
+3. `plugins/attune/commands/execute.md` - Execute command checkpoint section
+
+Rule added:
+```markdown
+**CRITICAL**: Mark tasks complete IMMEDIATELY after finishing work:
+1. Complete the work
+2. Run `TaskUpdate(taskId: "X", status: "completed")`
+3. Then move to next task
+
+Do NOT batch task completions at the end—update status as you go.
+```
 
 ## Next Steps
-1. Run full test suite: `cargo test`
-2. Commit changes
-3. Close issue #131
+- Commit changes in claude-night-market repo

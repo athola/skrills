@@ -367,4 +367,59 @@ mod tests {
         let path = result.unwrap();
         assert!(path.ends_with(".skrills/tls"));
     }
+
+    #[test]
+    fn cert_info_default_for_missing_file() {
+        let path = PathBuf::from("/nonexistent/path/cert.pem");
+        let info = parse_cert_info(&path).unwrap();
+
+        assert!(!info.exists);
+        assert!(!info.is_valid);
+        assert!(!info.is_self_signed);
+        assert!(info.issuer.is_none());
+        assert!(info.subject.is_none());
+        assert!(info.days_until_expiry.is_none());
+    }
+
+    #[test]
+    #[cfg(feature = "http-transport")]
+    fn cert_info_parses_valid_pem() {
+        use crate::tls_auto::generate_self_signed_cert;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let cert_path = tmp.path().join("cert.pem");
+
+        // Generate and write a test certificate
+        let (cert_pem, _key_pem) = generate_self_signed_cert().unwrap();
+        std::fs::write(&cert_path, &cert_pem).unwrap();
+
+        let info = parse_cert_info(&cert_path).unwrap();
+
+        assert!(info.exists);
+        assert!(info.is_valid);
+        assert!(info.is_self_signed); // Self-signed cert has issuer == subject
+        assert!(info.issuer.is_some());
+        assert!(info.subject.is_some());
+        assert!(info.days_until_expiry.is_some());
+        // Fresh cert should have ~365 days validity
+        let days = info.days_until_expiry.unwrap();
+        assert!(
+            days > 360 && days <= 366,
+            "Expected ~365 days, got {}",
+            days
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "http-transport")]
+    fn cert_info_handles_invalid_pem() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cert_path = tmp.path().join("bad_cert.pem");
+
+        // Write invalid PEM content
+        std::fs::write(&cert_path, "not a valid certificate").unwrap();
+
+        let result = parse_cert_info(&cert_path);
+        assert!(result.is_err());
+    }
 }
