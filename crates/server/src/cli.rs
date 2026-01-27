@@ -113,6 +113,34 @@ impl std::fmt::Display for CreateSkillMethod {
     }
 }
 
+/// Certificate management action.
+#[derive(Debug, Clone, Subcommand)]
+pub enum CertAction {
+    /// Show certificate status and expiry information.
+    Status {
+        /// Output format: text or json.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+    /// Renew or regenerate self-signed certificate.
+    Renew {
+        /// Force renewal even if not expiring.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Install a certificate from external source.
+    Install {
+        /// Path to certificate file (PEM format).
+        cert: PathBuf,
+        /// Path to private key file (PEM format).
+        #[arg(long)]
+        key: Option<PathBuf>,
+        /// Output format: text or json.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+}
+
 /// Output format for command results.
 #[derive(Debug, Clone, Copy, ValueEnum, Default, PartialEq, Eq)]
 pub enum OutputFormat {
@@ -732,6 +760,9 @@ pub enum Commands {
         #[arg(long)]
         below_threshold: Option<u8>,
     },
+    /// Manage TLS certificates for HTTPS transport.
+    #[command(subcommand)]
+    Cert(CertAction),
 }
 
 #[cfg(test)]

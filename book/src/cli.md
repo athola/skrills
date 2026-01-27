@@ -373,6 +373,26 @@ skrills tui --skill-dir ~/.custom/skills
 
 Provides a visual interface for sync management.
 
+### cert
+
+Manage TLS certificates for HTTPS transport:
+
+```bash
+skrills cert status                       # Show certificate validity and expiry
+skrills cert renew                        # Regenerate self-signed certificate
+skrills cert install --cert my.pem --key my-key.pem  # Install custom certificate
+```
+
+**Subcommands:**
+
+| Subcommand | Purpose |
+|------------|---------|
+| `status` | Display certificate path, validity, issuer, and days until expiry |
+| `renew` | Generate a new self-signed certificate (365-day validity) |
+| `install` | Import certificate and key from external files |
+
+> **Note:** Certificate management is currently CLI-only. There is no MCP tool or plugin skill for cert operations yet. Use the `skrills cert` subcommands directly from a terminal.
+
 ## MCP Tools Reference
 
 When running as an MCP server, skrills exposes these tools to your AI assistant:
