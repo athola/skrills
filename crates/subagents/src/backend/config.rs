@@ -221,6 +221,7 @@ mod tests {
     /// When: AdapterConfig::from_env is called with different prefixes
     /// Then: Each prefix reads from its own environment variables
     #[test]
+    #[serial]
     fn given_multiple_prefixes_when_from_env_then_isolated_configs() {
         // GIVEN: Multiple adapter configurations
         std::env::set_var("SKRILLS_CLAUDE_API_KEY", "claude-key");

@@ -53,14 +53,23 @@ pub fn collect_module_files(skill_dir: &Path) -> Vec<ModuleFile> {
                 continue;
             }
 
-            if let Ok(content) = fs::read(path) {
-                let hash = hash_content(&content);
-                modules.push(ModuleFile {
-                    relative_path: rel_path.to_path_buf(),
-                    content,
-                    hash,
-                });
-            }
+            let content = match fs::read(path) {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "Skipping unreadable module file"
+                    );
+                    continue;
+                }
+            };
+            let hash = hash_content(&content);
+            modules.push(ModuleFile {
+                relative_path: rel_path.to_path_buf(),
+                content,
+                hash,
+            });
         }
     }
 

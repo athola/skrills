@@ -175,7 +175,7 @@ pub fn write_instructions(root: &Path, instructions: &[Command]) -> Result<Write
             let existing = fs::read(&path).with_context(|| {
                 format!("Failed to read existing instruction: {}", path.display())
             })?;
-            if hash_content(&existing) == instruction.hash {
+            if hash_content(&existing) == hash_content(&instruction.content) {
                 report.skipped.push(SkipReason::Unchanged {
                     item: instruction.name.clone(),
                 });
