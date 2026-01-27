@@ -53,6 +53,8 @@ skrills-analyze = { path = "../analyze", version = "0.5.5" }
 skrills-intelligence = { path = "../intelligence", version = "0.5.5" }
 shellexpand = "3"
 regex = "1"
+sha2.workspace = true
+hex = "0.4.3"
 
 [features]
 # Enable subagents and HTTP transport by default so MCP exposes subagent tools

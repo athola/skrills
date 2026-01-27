@@ -391,6 +391,8 @@ skrills cert install --cert my.pem --key my-key.pem  # Install custom certificat
 | `renew` | Generate a new self-signed certificate (365-day validity) |
 | `install` | Import certificate and key from external files |
 
+> **Note:** Certificate management is currently CLI-only. There is no MCP tool or plugin skill for cert operations yet. Use the `skrills cert` subcommands directly from a terminal.
+
 ## MCP Tools Reference
 
 When running as an MCP server, skrills exposes these tools to your AI assistant:

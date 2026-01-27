@@ -4,6 +4,7 @@
 
 use crate::cli::OutputFormat;
 use anyhow::{bail, Context, Result};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
 
@@ -97,6 +98,14 @@ fn parse_cert_info(cert_path: &PathBuf) -> Result<CertInfo> {
     })
 }
 
+/// Compute a SHA-256 fingerprint of a key file for safe display.
+fn key_fingerprint(key_path: &PathBuf) -> Result<String> {
+    let data = fs::read(key_path)
+        .with_context(|| format!("Failed to read key file: {}", key_path.display()))?;
+    let hash = Sha256::digest(&data);
+    Ok(format!("SHA256:{}", hex::encode(hash)))
+}
+
 /// Handle `skrills cert status` command.
 pub fn handle_cert_status_command(format: OutputFormat) -> Result<()> {
     let tls_path = tls_dir()?;
@@ -111,11 +120,18 @@ pub fn handle_cert_status_command(format: OutputFormat) -> Result<()> {
         struct Status {
             cert: CertInfo,
             key_exists: bool,
+            key_fingerprint: Option<String>,
             tls_dir: PathBuf,
         }
+        let kfp = if key_exists {
+            key_fingerprint(&key_path).ok()
+        } else {
+            None
+        };
         let status = Status {
             cert: cert_info,
             key_exists,
+            key_fingerprint: kfp,
             tls_dir: tls_path,
         };
         println!("{}", serde_json::to_string_pretty(&status)?);
@@ -171,11 +187,13 @@ pub fn handle_cert_status_command(format: OutputFormat) -> Result<()> {
     }
 
     println!();
-    println!(
-        "Private Key: {}",
-        if key_exists { "FOUND" } else { "NOT FOUND" }
-    );
-    println!("  Path: {}", key_path.display());
+    if key_exists {
+        let fingerprint = key_fingerprint(&key_path)?;
+        println!("Private Key: FOUND");
+        println!("  Fingerprint: {}", fingerprint);
+    } else {
+        println!("Private Key: NOT FOUND");
+    }
 
     Ok(())
 }
@@ -218,7 +236,8 @@ pub fn handle_cert_renew_command(force: bool) -> Result<()> {
     let (new_cert, new_key) = ensure_auto_tls_certs()?;
     println!("Certificate renewed successfully!");
     println!("  Certificate: {}", new_cert.display());
-    println!("  Private Key: {}", new_key.display());
+    let fingerprint = key_fingerprint(&new_key)?;
+    println!("  Private Key Fingerprint: {}", fingerprint);
 
     Ok(())
 }
@@ -295,18 +314,24 @@ pub fn handle_cert_install_command(
         #[derive(serde::Serialize)]
         struct InstallResult {
             cert_installed: PathBuf,
-            key_installed: Option<PathBuf>,
+            key_fingerprint: Option<String>,
         }
+        let kfp = if key_source.is_some() {
+            Some(key_fingerprint(&key_dest)?)
+        } else {
+            None
+        };
         let result = InstallResult {
             cert_installed: cert_dest,
-            key_installed: key_source.map(|_| key_dest),
+            key_fingerprint: kfp,
         };
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
         println!("Certificate installed successfully!");
         println!("  Certificate: {}", cert_dest.display());
         if key_source.is_some() {
-            println!("  Private Key: {}", key_dest.display());
+            let fingerprint = key_fingerprint(&key_dest)?;
+            println!("  Private Key Fingerprint: {}", fingerprint);
         }
     }
 
