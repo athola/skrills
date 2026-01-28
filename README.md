@@ -68,7 +68,7 @@ skrills serve
 skrills tui
 ```
 
-See [CLI reference](book/src/cli.md) for all 38 commands including skill lifecycle management.
+See [CLI reference](book/src/cli.md) for all 39 commands including skill lifecycle management.
 
 ## Skill Management
 
@@ -76,10 +76,10 @@ Beyond validation and analysis, Skrills provides tools for managing skill lifecy
 
 ```bash
 # Deprecate a skill with migration guidance
-skrills skill-deprecate old-skill --replace "new-skill" --reason "Replaced by more efficient version"
+skrills skill-deprecate old-skill --replacement "new-skill" --message "Replaced by more efficient version"
 
-# Rollback a skill to a previous git version
-skrills skill-rollback my-skill --commit abc123
+# Rollback a skill to a previous version
+skrills skill-rollback my-skill --version abc123
 
 # Import skills from external sources
 skrills skill-import https://example.com/skill.md
@@ -89,7 +89,13 @@ skrills skill-import ~/local/skills/
 skrills skill-usage-report --format json > report.json
 
 # Calculate quality scores
-skrills skill-score --min-score 80
+skrills skill-score
+
+# Browse and search available skills
+skrills skill-catalog --filter "python"
+
+# View skill performance metrics
+skrills skill-profile my-skill
 ```
 
 ## Why Skrills
@@ -117,7 +123,7 @@ The sync system uses file hashing to respect manual edits, ensuring user changes
 | `discovery` | Skill discovery and ranking |
 | `state` | Environment config, manifest settings, runtime overrides |
 | `subagents` | Shared subagent runtime and backends |
-| `test-utils` | Shared test infrastructure |
+| `test-utils` | Shared test infrastructure (fixtures, RAII guards, temp dirs) |
 
 See [architecture docs](docs/architecture.md) for details.
 
@@ -135,6 +141,24 @@ cors_origins = "https://app.example.com"
 Precedence: CLI flags > environment variables > config file.
 
 See [security docs](docs/security.md) for TLS setup and [FAQ](docs/FAQ.md) for environment variables.
+
+## TLS Certificate Management
+
+For secure HTTPS transport, Skrills includes certificate management:
+
+```bash
+# Check certificate status
+skrills cert status
+
+# Auto-generate self-signed certificates for development
+skrills serve --tls-auto
+
+# Renew expiring certificates
+skrills cert renew
+
+# Install custom certificates
+skrills cert install /path/to/cert.pem --key /path/to/key.pem
+```
 
 ## Documentation
 

@@ -522,8 +522,6 @@ impl SubagentService {
             })
             .collect();
 
-        let has_more = false; // For now, we return all matching events
-
         Ok(CallToolResult {
             content: vec![Content::text(format!(
                 "events: {} of {} total",
@@ -534,7 +532,7 @@ impl SubagentService {
                 "run_id": run_id.to_string(),
                 "events": events_json,
                 "total_count": total_count,
-                "has_more": has_more
+                "has_more": false
             })),
             is_error: Some(false),
             meta: None,

@@ -56,8 +56,8 @@ define verify_setup
 endef
 
 # Phony targets: core developer flow
-.PHONY: help fmt fmt-check lint lint-md check test test-unit test-integration test-setup test-install \
-	build build-min serve-help install status coverage test-coverage dogfood ci precommit \
+.PHONY: all help version verify fmt fmt-check lint lint-md check test test-unit test-integration test-setup test-install \
+	build build-min serve-help install status coverage test-coverage dogfood dogfood-readme ci precommit \
 	clean clean-demo githooks hooks require-cargo security deny deps-update check-deps \
 	quick watch bench release
 # Phony targets: docs
@@ -74,9 +74,21 @@ endef
 
 $(CARGO_GUARD_TARGETS): require-cargo
 
+all: fmt lint test build
+	@echo "==> Full build complete"
+
+version:
+	@grep '^version' crates/cli/Cargo.toml | head -1 | cut -d'=' -f2 | cut -d'#' -f1 | tr -d " \"'"
+
+verify: fmt-check lint lint-md test test-install
+	@echo "==> All verification checks passed"
+
 help:
 	@printf "Usage: make <target>\n\n"
 	@printf "Core\n"
+	@printf "  %-23s %s\n" "all" "full build (fmt + lint + test + build)"
+	@printf "  %-23s %s\n" "version" "print current version"
+	@printf "  %-23s %s\n" "verify" "run all verification checks"
 	@printf "  %-23s %s\n" "fmt | fmt-check" "format workspace or check only"
 	@printf "  %-23s %s\n" "lint" "clippy with -D warnings"
 	@printf "  %-23s %s\n" "lint-md" "lint markdown files"
@@ -90,7 +102,8 @@ help:
 	@printf "  %-23s %s\n" "serve-help" "binary --help smoke check"
 	@printf "  %-23s %s\n" "status" "show project status and environment"
 	@printf "  %-23s %s\n" "coverage" "generate test coverage report"
-	@printf "  %-23s %s\n" "dogfood" "run skrills on its own codebase"
+	@printf "  %-23s %s\n" "dogfood" "full dogfood (doctor + README validation)"
+	@printf "  %-23s %s\n" "dogfood-readme" "validate README CLI examples only"
 	@printf "  %-23s %s\n" "ci | precommit" "run common pipelines"
 	@printf "  %-23s %s\n" "quick" "fast check (fmt + check, no tests)"
 	@printf "  %-23s %s\n" "watch" "watch mode with cargo-watch"
@@ -112,6 +125,8 @@ help:
 	@printf "  %-23s %s\n" "demo-cli" "test all CLI commands"
 	@printf "  %-23s %s\n" "demo-doctor | demo-empirical" "individual command demos"
 	@printf "  %-23s %s\n" "demo-http" "start HTTP MCP server (127.0.0.1:3000)"
+	@printf "  %-23s %s\n" "demo-cert" "test TLS certificate management"
+	@printf "  %-23s %s\n" "demo-skill-lifecycle" "test skill lifecycle commands"
 	@printf "  %-23s %s\n" "demo-analytics" "test analytics export/import"
 	@printf "  %-23s %s\n" "demo-gateway" "test MCP gateway tools"
 	@printf "  %-23s %s\n" "demo-setup-all" "run all setup flow demos"
@@ -193,10 +208,30 @@ coverage:
 	$(CARGO_CMD) tarpaulin --workspace --all-features --out Html
 	$(call open_file,$(CURDIR)/tarpaulin-report.html)
 
-dogfood: build demo-fixtures
+dogfood: build demo-fixtures dogfood-readme
 	@echo "==> Dogfooding: Running skrills on itself"
 	HOME=$(HOME_DIR) $(BIN_PATH) doctor
 	@echo "==> Dogfood complete"
+
+dogfood-readme: build demo-fixtures
+	@echo "==> Dogfooding README CLI examples"
+	@echo "--- cert status"
+	$(DEMO_RUN) cert status
+	@echo "--- cert renew"
+	$(DEMO_RUN) cert renew
+	@echo "--- skill-catalog"
+	$(DEMO_RUN) skill-catalog
+	@echo "--- skill-profile"
+	$(DEMO_RUN) skill-profile
+	@echo "--- skill-usage-report"
+	$(DEMO_RUN) skill-usage-report
+	@echo "--- skill-score"
+	$(DEMO_RUN) skill-score || echo "    (No skills found - expected on fresh install)"
+	@echo "--- skill-deprecate --help"
+	$(DEMO_RUN) skill-deprecate --help >/dev/null
+	@echo "--- skill-rollback --help"
+	$(DEMO_RUN) skill-rollback --help >/dev/null
+	@echo "==> README examples validated"
 
 docs:
 	RUSTDOCFLAGS="-D warnings" $(CARGO_CMD) doc --workspace --all-features --no-deps
@@ -217,6 +252,32 @@ demo-http: build
 	@echo "==> Demo: HTTP Transport (starts server, ctrl-c to stop)"
 	@echo "    Connect to http://127.0.0.1:3000/mcp"
 	$(BIN_PATH) serve --http 127.0.0.1:3000
+
+demo-cert: demo-fixtures build
+	@echo "==> Demo: TLS Certificate Management"
+	@echo "--- cert status"
+	$(DEMO_RUN) cert status
+	@echo "--- cert status (json)"
+	$(DEMO_RUN) cert status --format json | head -5
+	@echo "--- cert renew (skip if valid)"
+	$(DEMO_RUN) cert renew || true
+	@echo "--- cert renew --force"
+	$(DEMO_RUN) cert renew --force
+	@echo "==> Certificate demo complete"
+
+demo-skill-lifecycle: demo-fixtures build
+	@echo "==> Demo: Skill Lifecycle Commands"
+	@echo "--- pre-commit-validate"
+	$(DEMO_RUN) pre-commit-validate || echo "    (No skills to validate)"
+	@echo "--- skill-catalog"
+	$(DEMO_RUN) skill-catalog
+	@echo "--- skill-profile"
+	$(DEMO_RUN) skill-profile
+	@echo "--- skill-usage-report"
+	$(DEMO_RUN) skill-usage-report
+	@echo "--- skill-score"
+	$(DEMO_RUN) skill-score || echo "    (No skills to score)"
+	@echo "==> Skill lifecycle demo complete"
 
 demo-analytics: demo-fixtures build
 	@echo "==> Demo: Analytics Export/Import"

@@ -2,7 +2,7 @@
 **/*/target/
 .cargo-tmp/
 .home-tmp/
-docs/plans/
+docs/archive/
 .cargo/
 .cargo-home/
 .rustup-temp/

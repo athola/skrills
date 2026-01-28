@@ -230,6 +230,12 @@ fn collect_skills_from(
             .max_depth(max_depth)
             .into_iter()
             .filter_entry(|e| {
+                // SAFETY: Known TOCTOU limitation - a file could become a symlink between
+                // this check and subsequent fs::read(). Mitigated by:
+                // 1. WalkDir's follow_links(false) default behavior
+                // 2. Skills directories are typically user-controlled, not attacker-writable
+                // 3. The sanitize_name() function prevents path traversal in output paths
+                // See: https://github.com/athola/skrills/issues/135
                 if e.file_type().is_symlink() {
                     return false;
                 }
@@ -346,6 +352,12 @@ pub fn discover_agents(roots: &[SkillRoot]) -> Result<Vec<crate::types::AgentMet
             .max_depth(20)
             .into_iter()
             .filter_entry(|e| {
+                // SAFETY: Known TOCTOU limitation - a file could become a symlink between
+                // this check and subsequent fs::read(). Mitigated by:
+                // 1. WalkDir's follow_links(false) default behavior
+                // 2. Skills directories are typically user-controlled, not attacker-writable
+                // 3. The sanitize_name() function prevents path traversal in output paths
+                // See: https://github.com/athola/skrills/issues/135
                 if e.file_type().is_symlink() {
                     return false;
                 }

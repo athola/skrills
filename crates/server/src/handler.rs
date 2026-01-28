@@ -34,6 +34,50 @@ use serde_json::json;
 use skrills_state::home_dir;
 use std::fs;
 
+/// Common arguments for sync tool requests.
+#[allow(dead_code)]
+struct SyncToolArgs {
+    from: String,
+    dry_run: bool,
+    include_marketplace: bool,
+    skip_existing_commands: bool,
+    skip_existing_instructions: bool,
+    force: bool,
+}
+
+impl SyncToolArgs {
+    fn from_request(request: &CallToolRequestParam) -> Self {
+        let args = request.arguments.as_ref();
+        Self {
+            from: args
+                .and_then(|obj| obj.get("from"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("claude")
+                .to_string(),
+            dry_run: args
+                .and_then(|obj| obj.get("dry_run"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            include_marketplace: args
+                .and_then(|obj| obj.get("include_marketplace"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            skip_existing_commands: args
+                .and_then(|obj| obj.get("skip_existing_commands"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            skip_existing_instructions: args
+                .and_then(|obj| obj.get("skip_existing_instructions"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            force: args
+                .and_then(|obj| obj.get("force"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        }
+    }
+}
+
 impl ServerHandler for SkillService {
     /// List all available resources, including skills and the AGENTS.md document.
     fn list_resources(
@@ -222,46 +266,21 @@ impl ServerHandler for SkillService {
                             ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams,
                         };
 
-                        let from = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("from"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("claude");
-                        let dry_run = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("dry_run"))
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-
-                        let skip_existing_commands = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("skip_existing_commands"))
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-
-                        let include_marketplace = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("include_marketplace"))
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
+                        let args = SyncToolArgs::from_request(&request);
 
                         let params = SyncParams {
-                            from: Some(from.to_string()),
-                            dry_run,
+                            from: Some(args.from.clone()),
+                            dry_run: args.dry_run,
                             sync_commands: true,
-                            skip_existing_commands,
+                            skip_existing_commands: args.skip_existing_commands,
                             sync_mcp_servers: false,
                             sync_preferences: false,
                             sync_skills: false,
-                            include_marketplace,
+                            include_marketplace: args.include_marketplace,
                             ..Default::default()
                         };
 
-                        let report = if from == "claude" {
+                        let report = if args.from == "claude" {
                             let source = ClaudeAdapter::new()?;
                             let target = CodexAdapter::new()?;
                             SyncOrchestrator::new(source, target).sync(&params)?
@@ -276,8 +295,8 @@ impl ServerHandler for SkillService {
                             is_error: Some(false),
                             structured_content: Some(json!({
                                 "report": report,
-                                "dry_run": dry_run,
-                                "skip_existing_commands": skip_existing_commands
+                                "dry_run": args.dry_run,
+                                "skip_existing_commands": args.skip_existing_commands
                             })),
                             meta: None,
                         })
@@ -287,22 +306,11 @@ impl ServerHandler for SkillService {
                             ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams,
                         };
 
-                        let from = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("from"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("claude");
-                        let dry_run = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("dry_run"))
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
+                        let args = SyncToolArgs::from_request(&request);
 
                         let params = SyncParams {
-                            from: Some(from.to_string()),
-                            dry_run,
+                            from: Some(args.from.clone()),
+                            dry_run: args.dry_run,
                             sync_commands: false,
                             sync_mcp_servers: true,
                             sync_preferences: false,
@@ -310,7 +318,7 @@ impl ServerHandler for SkillService {
                             ..Default::default()
                         };
 
-                        let report = if from == "claude" {
+                        let report = if args.from == "claude" {
                             let source = ClaudeAdapter::new()?;
                             let target = CodexAdapter::new()?;
                             SyncOrchestrator::new(source, target).sync(&params)?
@@ -325,7 +333,7 @@ impl ServerHandler for SkillService {
                             is_error: Some(false),
                             structured_content: Some(json!({
                                 "report": report,
-                                "dry_run": dry_run
+                                "dry_run": args.dry_run
                             })),
                             meta: None,
                         })
@@ -335,22 +343,11 @@ impl ServerHandler for SkillService {
                             ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams,
                         };
 
-                        let from = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("from"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("claude");
-                        let dry_run = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("dry_run"))
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
+                        let args = SyncToolArgs::from_request(&request);
 
                         let params = SyncParams {
-                            from: Some(from.to_string()),
-                            dry_run,
+                            from: Some(args.from.clone()),
+                            dry_run: args.dry_run,
                             sync_commands: false,
                             sync_mcp_servers: false,
                             sync_preferences: true,
@@ -358,7 +355,7 @@ impl ServerHandler for SkillService {
                             ..Default::default()
                         };
 
-                        let report = if from == "claude" {
+                        let report = if args.from == "claude" {
                             let source = ClaudeAdapter::new()?;
                             let target = CodexAdapter::new()?;
                             SyncOrchestrator::new(source, target).sync(&params)?
@@ -373,7 +370,7 @@ impl ServerHandler for SkillService {
                             is_error: Some(false),
                             structured_content: Some(json!({
                                 "report": report,
-                                "dry_run": dry_run
+                                "dry_run": args.dry_run
                             })),
                             meta: None,
                         })
@@ -388,12 +385,7 @@ impl ServerHandler for SkillService {
                             SyncParams,
                         };
 
-                        let from = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("from"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("claude");
+                        let args = SyncToolArgs::from_request(&request);
 
                         let to = request
                             .arguments
@@ -402,7 +394,7 @@ impl ServerHandler for SkillService {
                             .and_then(|v| v.as_str());
 
                         let params = SyncParams {
-                            from: Some(from.to_string()),
+                            from: Some(args.from.clone()),
                             dry_run: true, // Always dry run for status
                             sync_commands: true,
                             sync_mcp_servers: true,
@@ -412,6 +404,7 @@ impl ServerHandler for SkillService {
                         };
 
                         // Determine target based on from (if not specified)
+                        let from = args.from.as_str();
                         let target = to.unwrap_or(match from {
                             "claude" => "codex",
                             "codex" => "claude",
