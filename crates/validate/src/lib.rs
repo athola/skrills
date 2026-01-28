@@ -46,74 +46,52 @@ pub use frontmatter::{
 use std::path::Path;
 use walkdir::WalkDir;
 
+/// Merges multiple `ValidationResult`s into one, combining validity flags and deduplicating issues by message.
+fn merge_validation_results(results: Vec<ValidationResult>, path: &Path) -> ValidationResult {
+    let name = results
+        .iter()
+        .map(|r| r.name.clone())
+        .max()
+        .unwrap_or_default();
+
+    let mut merged = ValidationResult::new(path.to_path_buf(), name);
+
+    for result in results {
+        merged.claude_valid &= result.claude_valid;
+        merged.codex_valid &= result.codex_valid;
+        merged.copilot_valid &= result.copilot_valid;
+
+        for issue in result.issues {
+            if !merged.issues.iter().any(|i| i.message == issue.message) {
+                merged.issues.push(issue);
+            }
+        }
+    }
+
+    merged
+}
+
 /// Validates a single skill file.
 pub fn validate_skill(path: &Path, content: &str, target: ValidationTarget) -> ValidationResult {
     match target {
         ValidationTarget::Claude => claude::validate_claude(path, content),
         ValidationTarget::Codex => codex::validate_codex(path, content),
         ValidationTarget::Copilot => copilot::validate_copilot(path, content),
-        ValidationTarget::Both => {
-            let claude_result = claude::validate_claude(path, content);
-            let codex_result = codex::validate_codex(path, content);
-
-            // Merge results
-            let mut merged = ValidationResult::new(
-                path.to_path_buf(),
-                codex_result.name.clone().max(claude_result.name.clone()),
-            );
-
-            merged.claude_valid = claude_result.claude_valid;
-            merged.codex_valid = codex_result.codex_valid;
-
-            // Add unique issues from both
-            for issue in claude_result.issues {
-                merged.issues.push(issue);
-            }
-            for issue in codex_result.issues {
-                // Avoid duplicates for shared issues
-                if !merged.issues.iter().any(|i| i.message == issue.message) {
-                    merged.issues.push(issue);
-                }
-            }
-
-            merged
-        }
-        ValidationTarget::All => {
-            let claude_result = claude::validate_claude(path, content);
-            let codex_result = codex::validate_codex(path, content);
-            let copilot_result = copilot::validate_copilot(path, content);
-
-            // Merge results from all three
-            let mut merged = ValidationResult::new(
-                path.to_path_buf(),
-                codex_result
-                    .name
-                    .clone()
-                    .max(claude_result.name.clone())
-                    .max(copilot_result.name.clone()),
-            );
-
-            merged.claude_valid = claude_result.claude_valid;
-            merged.codex_valid = codex_result.codex_valid;
-            merged.copilot_valid = copilot_result.copilot_valid;
-
-            // Add unique issues from all three
-            for issue in claude_result.issues {
-                merged.issues.push(issue);
-            }
-            for issue in codex_result.issues {
-                if !merged.issues.iter().any(|i| i.message == issue.message) {
-                    merged.issues.push(issue);
-                }
-            }
-            for issue in copilot_result.issues {
-                if !merged.issues.iter().any(|i| i.message == issue.message) {
-                    merged.issues.push(issue);
-                }
-            }
-
-            merged
-        }
+        ValidationTarget::Both => merge_validation_results(
+            vec![
+                claude::validate_claude(path, content),
+                codex::validate_codex(path, content),
+            ],
+            path,
+        ),
+        ValidationTarget::All => merge_validation_results(
+            vec![
+                claude::validate_claude(path, content),
+                codex::validate_codex(path, content),
+                copilot::validate_copilot(path, content),
+            ],
+            path,
+        ),
     }
 }
 
@@ -512,4 +490,92 @@ mod tests {
         assert!(!result.codex_valid);
         assert!(!result.copilot_valid);
     }
+}
+
+// === Error path tests ===
+
+#[test]
+fn test_validate_empty_content() {
+    let result = validate_skill(Path::new("empty.md"), "", ValidationTarget::All);
+    // Empty content fails all validators
+    assert!(!result.codex_valid);
+    assert!(!result.copilot_valid);
+    // Has validation issues
+    assert!(!result.issues.is_empty() || !result.claude_valid);
+}
+
+#[test]
+fn test_validate_no_frontmatter_delimiter() {
+    let content = "Just plain text without any YAML frontmatter delimiters.";
+    let result = validate_skill(Path::new("no-fm.md"), content, ValidationTarget::All);
+    assert!(result.claude_valid);
+    assert!(!result.codex_valid);
+    assert!(!result.copilot_valid);
+}
+
+#[test]
+fn test_validate_malformed_frontmatter_missing_description() {
+    let content = "---\nname: test-skill\n---\n# Content\nBody.";
+    let result = validate_skill(Path::new("no-desc.md"), content, ValidationTarget::Codex);
+    assert!(!result.codex_valid);
+    assert!(!result.issues.is_empty());
+}
+
+#[test]
+fn test_validate_malformed_frontmatter_missing_name() {
+    let content = "---\ndescription: A skill without a name\n---\n# Content\nBody.";
+    let result = validate_skill(Path::new("no-name.md"), content, ValidationTarget::Codex);
+    assert!(!result.codex_valid);
+}
+
+#[test]
+fn test_validate_frontmatter_empty_yaml_block() {
+    let content = "---\n---\n# Content\nBody.";
+    let result = validate_skill(Path::new("empty-fm.md"), content, ValidationTarget::All);
+    assert!(result.claude_valid);
+    assert!(!result.codex_valid);
+    assert!(!result.copilot_valid);
+}
+
+#[test]
+fn test_validate_all_nonexistent_directory() {
+    let result = validate_all(
+        Path::new("/nonexistent/path/that/does/not/exist"),
+        ValidationTarget::Both,
+    );
+    // walkdir on nonexistent path returns empty or error
+    if let Ok(v) = result {
+        assert!(v.is_empty());
+    }
+}
+
+#[test]
+fn test_validate_both_target_merges_issues() {
+    // Content valid for Claude but not Codex (missing description)
+    let content = "---\nname: merge-test\n---\n# Content\nBody.";
+    let result = validate_skill(Path::new("merge.md"), content, ValidationTarget::Both);
+    assert!(result.claude_valid);
+    assert!(!result.codex_valid);
+    // Should have issues from Codex validation
+    assert!(!result.issues.is_empty());
+}
+
+#[test]
+fn test_validation_summary_empty_results() {
+    let summary = ValidationSummary::from_results(&[]);
+    assert_eq!(summary.total, 0);
+    assert_eq!(summary.claude_valid, 0);
+    assert_eq!(summary.codex_valid, 0);
+    assert_eq!(summary.copilot_valid, 0);
+    assert_eq!(summary.all_valid, 0);
+    assert_eq!(summary.error_count, 0);
+    assert_eq!(summary.warning_count, 0);
+}
+
+#[test]
+fn test_validate_frontmatter_invalid_yaml_syntax() {
+    let content = "---\nname: [unclosed bracket\n---\n# Content";
+    let result = validate_skill(Path::new("bad-yaml.md"), content, ValidationTarget::Codex);
+    // Should handle gracefully - either invalid or has issues
+    assert!(!result.codex_valid || !result.issues.is_empty());
 }

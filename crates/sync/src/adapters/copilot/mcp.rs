@@ -32,6 +32,11 @@ pub fn read_mcp_servers(root: &Path) -> Result<HashMap<String, McpServer>> {
                 .unwrap_or("");
 
             if command.is_empty() {
+                eprintln!(
+                    "warning: skipping MCP server '{}' (missing or empty 'command' field in {})",
+                    name,
+                    path.display()
+                );
                 warn!(
                     server = %name,
                     path = %path.display(),

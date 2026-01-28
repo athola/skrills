@@ -10,6 +10,7 @@ use anyhow::Context;
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
+use tracing::warn;
 use walkdir::WalkDir;
 
 /// Reads agents from the agents directory.
@@ -26,7 +27,17 @@ pub fn read_agents(root: &Path) -> Result<Vec<Command>> {
         .max_depth(1) // Flat directory structure for Copilot agents
         .follow_links(false)
     {
-        let entry = entry?;
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                warn!(
+                    path = ?e.path(),
+                    error = %e,
+                    "Failed to read directory entry while scanning agents"
+                );
+                continue;
+            }
+        };
         let path = entry.path();
 
         if !path.is_file() {
@@ -118,7 +129,17 @@ pub fn read_instructions(root: &Path) -> Result<Vec<Command>> {
         .max_depth(1) // Flat directory structure
         .follow_links(false)
     {
-        let entry = entry?;
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                warn!(
+                    path = ?e.path(),
+                    error = %e,
+                    "Failed to read directory entry while scanning instructions"
+                );
+                continue;
+            }
+        };
         let path = entry.path();
 
         if !path.is_file() {
