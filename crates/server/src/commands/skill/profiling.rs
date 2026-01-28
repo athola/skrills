@@ -114,3 +114,127 @@ pub(crate) fn handle_skill_profile_command(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::{ProfileResult, SkillStats};
+    use std::collections::HashMap;
+
+    // GIVEN an empty analytics cache
+    // WHEN building a ProfileResult
+    // THEN all counts are zero
+    #[test]
+    fn empty_profile_result() {
+        let result = ProfileResult {
+            period_days: 30,
+            total_invocations: 0,
+            unique_skills_used: 0,
+            top_skills: vec![],
+        };
+        let json = serde_json::to_string_pretty(&result).unwrap();
+        assert!(json.contains("\"total_invocations\": 0"));
+        assert!(json.contains("\"unique_skills_used\": 0"));
+        assert!(json.contains("\"top_skills\": []"));
+    }
+
+    // GIVEN a SkillStats with only required fields
+    // WHEN optional fields are None
+    // THEN serialization includes null values
+    #[test]
+    fn skill_stats_optional_fields_null() {
+        let stats = SkillStats {
+            name: "test-skill".to_string(),
+            invocations: 42,
+            last_used: None,
+            avg_tokens: None,
+            success_rate: None,
+        };
+        let json = serde_json::to_string(&stats).unwrap();
+        assert!(json.contains("\"last_used\":null"));
+        assert!(json.contains("\"avg_tokens\":null"));
+        assert!(json.contains("\"success_rate\":null"));
+        assert!(json.contains("\"invocations\":42"));
+    }
+
+    // GIVEN skill usage counts from analytics JSON
+    // WHEN parsing into a HashMap
+    // THEN counts are correctly extracted
+    #[test]
+    fn parse_skill_usage_from_json() {
+        let analytics_json = r#"{"skill_usage": {"commit": 10, "review": 5, "deploy": 3}}"#;
+        let analytics: serde_json::Value = serde_json::from_str(analytics_json).unwrap();
+
+        let mut skill_counts: HashMap<String, u64> = HashMap::new();
+        if let Some(usage) = analytics.get("skill_usage").and_then(|u| u.as_object()) {
+            for (name, count) in usage {
+                if let Some(n) = count.as_u64() {
+                    skill_counts.insert(name.clone(), n);
+                }
+            }
+        }
+
+        assert_eq!(skill_counts.len(), 3);
+        assert_eq!(skill_counts["commit"], 10);
+        assert_eq!(skill_counts["review"], 5);
+        assert_eq!(skill_counts["deploy"], 3);
+    }
+
+    // GIVEN skill counts
+    // WHEN sorting by invocations descending and taking top 10
+    // THEN the result is in correct order and capped at 10
+    #[test]
+    fn top_skills_sorted_and_capped() {
+        let mut counts: Vec<(String, u64)> = (0..15)
+            .map(|i| (format!("skill-{}", i), i as u64))
+            .collect();
+        counts.sort_by(|a, b| b.1.cmp(&a.1));
+        let top: Vec<SkillStats> = counts
+            .into_iter()
+            .take(10)
+            .map(|(name, invocations)| SkillStats {
+                name,
+                invocations,
+                last_used: None,
+                avg_tokens: None,
+                success_rate: None,
+            })
+            .collect();
+
+        assert_eq!(top.len(), 10);
+        assert_eq!(top[0].name, "skill-14");
+        assert_eq!(top[0].invocations, 14);
+        assert_eq!(top[9].name, "skill-5");
+    }
+
+    // GIVEN a target skill name lookup
+    // WHEN the skill exists in counts
+    // THEN return its count; otherwise 0
+    #[test]
+    fn lookup_specific_skill_count() {
+        let mut skill_counts: HashMap<String, u64> = HashMap::new();
+        skill_counts.insert("commit".to_string(), 25);
+
+        assert_eq!(skill_counts.get("commit").copied().unwrap_or(0), 25);
+        assert_eq!(skill_counts.get("nonexistent").copied().unwrap_or(0), 0);
+    }
+
+    // GIVEN analytics JSON without skill_usage key
+    // WHEN parsing
+    // THEN skill_counts remains empty
+    #[test]
+    fn missing_skill_usage_key_yields_empty() {
+        let analytics_json = r#"{"other_data": 123}"#;
+        let analytics: serde_json::Value = serde_json::from_str(analytics_json).unwrap();
+
+        let mut skill_counts: HashMap<String, u64> = HashMap::new();
+        if let Some(usage) = analytics.get("skill_usage").and_then(|u| u.as_object()) {
+            for (name, count) in usage {
+                if let Some(n) = count.as_u64() {
+                    skill_counts.insert(name.clone(), n);
+                }
+            }
+        }
+
+        assert!(skill_counts.is_empty());
+    }
+}
