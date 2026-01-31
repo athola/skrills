@@ -18,7 +18,7 @@ pub(crate) fn handle_skill_import_command(
     let target_dir = match target {
         SyncSource::Claude => home.join(".claude/skills"),
         SyncSource::Codex => home.join(".codex/skills"),
-        SyncSource::Copilot => home.join(".github/copilot/skills"),
+        SyncSource::Copilot => home.join(".copilot/skills"),
     };
 
     if !dry_run {

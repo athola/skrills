@@ -3,6 +3,7 @@
 .cargo-tmp/
 .home-tmp/
 docs/archive/
+docs/plans/
 .cargo/
 .cargo-home/
 .rustup-temp/
