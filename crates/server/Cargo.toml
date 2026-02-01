@@ -51,6 +51,8 @@ skrills_sync = { path = "../sync", version = "0.5.5" }
 skrills-validate = { path = "../validate", version = "0.5.5" }
 skrills-analyze = { path = "../analyze", version = "0.5.5" }
 skrills-intelligence = { path = "../intelligence", version = "0.5.5" }
+skrills-metrics = { path = "../metrics", version = "0.5.6" }
+skrills-dashboard = { path = "../dashboard", version = "0.1.0", optional = true }
 shellexpand = "3"
 regex = "1"
 sha2.workspace = true
@@ -59,7 +61,8 @@ hex = "0.4.3"
 [features]
 # Enable subagents and HTTP transport by default so MCP exposes subagent tools
 # and remote access capabilities out of the box.
-default = ["watch", "subagents", "http-transport"]
+default = ["watch", "subagents", "http-transport", "dashboard"]
+dashboard = ["skrills-dashboard"]
 watch = ["notify"]
 subagents = ["skrills-subagents"]
 http-transport = ["axum", "axum-server", "tower", "tower-http", "subtle", "rcgen", "x509-parser"]

@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Skrills Dashboard</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body x-data="dashboard()" x-init="init()">
+    <header>
+        <h1>Skrills Dashboard</h1>
+        <div class="stats">
+            <span>Skills: <strong x-text="skills.length">0</strong></span>
+            <span>Events: <strong x-text="events.length">0</strong></span>
+            <span x-text="lastUpdate">-</span>
+        </div>
+    </header>
+
+    <main>
+        <section class="panel skills-panel">
+            <h2>Skills</h2>
+            <div class="skill-list">
+                <template x-for="skill in skills" :key="skill.name">
+                    <div class="skill-item" @click="selectSkill(skill)">
+                        <span class="skill-name" x-text="skill.name"></span>
+                        <span class="skill-source" x-text="skill.source"></span>
+                    </div>
+                </template>
+                <div x-show="skills.length === 0" class="empty">No skills found</div>
+            </div>
+        </section>
+
+        <section class="panel activity-panel">
+            <h2>Activity</h2>
+            <div class="activity-list">
+                <template x-for="(event, idx) in events" :key="idx">
+                    <div class="activity-item" :class="event.type">
+                        <span class="event-type" x-text="event.type"></span>
+                        <span class="event-detail" x-text="eventDetail(event)"></span>
+                    </div>
+                </template>
+                <div x-show="events.length === 0" class="empty">No recent activity</div>
+            </div>
+        </section>
+
+        <section class="panel metrics-panel">
+            <h2>Metrics</h2>
+            <div x-show="selectedSkill">
+                <h3 x-text="selectedSkill?.name">-</h3>
+                <dl>
+                    <dt>Path</dt>
+                    <dd x-text="selectedSkill?.path">-</dd>
+                    <dt>Source</dt>
+                    <dd x-text="selectedSkill?.source">-</dd>
+                    <dt>Description</dt>
+                    <dd x-text="selectedSkill?.description || 'N/A'">-</dd>
+                </dl>
+            </div>
+            <div x-show="!selectedSkill" class="empty">Select a skill to view details</div>
+        </section>
+    </main>
+
+    <footer>
+        <span>q: Quit | r: Refresh | Tab: Switch panel</span>
+    </footer>
+
+    <script>
+        function dashboard() {
+            return {
+                skills: [],
+                events: [],
+                selectedSkill: null,
+                lastUpdate: '-',
+                ws: null,
+
+                async init() {
+                    await this.refresh();
+                    this.connectWebSocket();
+                    setInterval(() => this.refresh(), 30000);
+                },
+
+                async refresh() {
+                    try {
+                        const res = await fetch('/api/skills');
+                        this.skills = await res.json();
+                        this.lastUpdate = new Date().toLocaleTimeString();
+                    } catch (e) {
+                        console.error('Failed to fetch skills:', e);
+                    }
+
+                    try {
+                        const res = await fetch('/api/metrics/events');
+                        const data = await res.json();
+                        this.events = data.events || [];
+                    } catch (e) {
+                        console.error('Failed to fetch events:', e);
+                    }
+                },
+
+                connectWebSocket() {
+                    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    this.ws = new WebSocket(`${proto}//${location.host}/ws`);
+                    this.ws.onmessage = (e) => {
+                        const event = JSON.parse(e.data);
+                        this.events.unshift(event);
+                        if (this.events.length > 100) this.events.pop();
+                    };
+                    this.ws.onclose = () => {
+                        setTimeout(() => this.connectWebSocket(), 3000);
+                    };
+                },
+
+                selectSkill(skill) {
+                    this.selectedSkill = skill;
+                },
+
+                eventDetail(event) {
+                    if (event.type === 'SkillInvocation') {
+                        return `${event.skill_name} - ${event.success ? 'OK' : 'FAIL'}`;
+                    }
+                    if (event.type === 'Validation') {
+                        return `${event.skill_name} - ${event.checks_failed?.length ? 'FAIL' : 'PASS'}`;
+                    }
+                    if (event.type === 'Sync') {
+                        return `${event.operation} - ${event.status}`;
+                    }
+                    return JSON.stringify(event);
+                }
+            };
+        }
+    </script>
+</body>
+</html>

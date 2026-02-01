@@ -579,6 +579,12 @@ pub enum Commands {
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
     },
+    /// Real-time terminal dashboard for skills monitoring.
+    Dashboard {
+        /// Additional skill directories (repeatable).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+    },
     /// Compare a skill across Claude, Codex, and Copilot to show differences.
     SkillDiff {
         /// Skill name to compare (e.g., "commit", "review-pr").

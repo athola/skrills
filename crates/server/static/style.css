@@ -1,0 +1,171 @@
+/* Skrills Dashboard - Dark Mode */
+:root {
+    --bg-primary: #1a1a2e;
+    --bg-secondary: #16213e;
+    --bg-panel: #0f3460;
+    --text-primary: #e8e8e8;
+    --text-secondary: #a0a0a0;
+    --accent: #00d9ff;
+    --success: #00ff88;
+    --error: #ff4757;
+    --warning: #ffa502;
+    --border: #2a2a4a;
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+header {
+    background: var(--bg-secondary);
+    padding: 1rem 2rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+}
+
+header h1 {
+    font-size: 1.5rem;
+    color: var(--accent);
+}
+
+.stats {
+    display: flex;
+    gap: 2rem;
+    color: var(--text-secondary);
+}
+
+.stats strong {
+    color: var(--accent);
+}
+
+main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 1rem;
+    padding: 1rem;
+}
+
+.panel {
+    background: var(--bg-panel);
+    border-radius: 8px;
+    padding: 1rem;
+    border: 1px solid var(--border);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.panel h2 {
+    font-size: 1rem;
+    color: var(--accent);
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.skill-list, .activity-list {
+    flex: 1;
+    overflow-y: auto;
+}
+
+.skill-item, .activity-item {
+    padding: 0.75rem;
+    border-radius: 4px;
+    margin-bottom: 0.5rem;
+    background: var(--bg-secondary);
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.skill-item:hover {
+    background: var(--bg-primary);
+}
+
+.skill-name {
+    display: block;
+    font-weight: 500;
+}
+
+.skill-source {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.activity-item {
+    display: flex;
+    gap: 1rem;
+    font-size: 0.875rem;
+}
+
+.activity-item.SkillInvocation .event-type { color: var(--accent); }
+.activity-item.Validation .event-type { color: var(--warning); }
+.activity-item.Sync .event-type { color: var(--success); }
+
+.event-type {
+    font-weight: 500;
+    min-width: 100px;
+}
+
+.event-detail {
+    color: var(--text-secondary);
+}
+
+.metrics-panel dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.5rem 1rem;
+}
+
+.metrics-panel dt {
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+}
+
+.metrics-panel dd {
+    font-size: 0.875rem;
+}
+
+.metrics-panel h3 {
+    margin-bottom: 1rem;
+    color: var(--accent);
+}
+
+.empty {
+    color: var(--text-secondary);
+    text-align: center;
+    padding: 2rem;
+    font-style: italic;
+}
+
+footer {
+    background: var(--bg-secondary);
+    padding: 0.75rem 2rem;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    border-top: 1px solid var(--border);
+}
+
+@media (max-width: 1024px) {
+    main {
+        grid-template-columns: 1fr;
+    }
+
+    .panel {
+        max-height: 300px;
+    }
+}
