@@ -4,6 +4,8 @@ use super::{PromptAffinity, SkillUsageEvent, TimeRange, UsageAnalytics};
 use crate::types::Confidence;
 use std::collections::{HashMap, HashSet};
 
+/// Minimum length for a keyword to be considered meaningful.
+const MIN_KEYWORD_LENGTH: usize = 3;
 /// Tracks keyword statistics for confidence calculation.
 #[derive(Default)]
 struct KeywordStats {
@@ -127,7 +129,7 @@ fn extract_keywords(prompt: &str) -> Vec<String> {
     prompt
         .to_lowercase()
         .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
-        .filter(|s| s.len() >= 3)
+        .filter(|s| s.len() >= MIN_KEYWORD_LENGTH)
         .filter(|s| !is_stop_word(s))
         .map(|s| s.to_string())
         .collect()

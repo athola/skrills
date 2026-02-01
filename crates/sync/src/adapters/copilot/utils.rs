@@ -87,3 +87,90 @@ pub fn transform_agent_for_copilot(content: &[u8]) -> Vec<u8> {
 
     format!("---\n{}\n---{}", new_lines.join("\n"), body).into_bytes()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_path_traversal_attack() {
+        assert_eq!(sanitize_name("../../../etc/passwd"), "etc/passwd");
+    }
+
+    #[test]
+    fn test_sanitize_double_dot_alone() {
+        assert_eq!(sanitize_name(".."), "");
+    }
+
+    #[test]
+    fn test_sanitize_single_dot_alone() {
+        assert_eq!(sanitize_name("."), "");
+    }
+
+    #[test]
+    fn test_sanitize_strips_dotdot_segment() {
+        assert_eq!(sanitize_name("foo/../bar"), "foo/bar");
+    }
+
+    #[test]
+    fn test_sanitize_strips_dot_segment() {
+        assert_eq!(sanitize_name("foo/./bar"), "foo/bar");
+    }
+
+    #[test]
+    fn test_sanitize_normal_name() {
+        assert_eq!(sanitize_name("my-skill"), "my-skill");
+    }
+
+    #[test]
+    fn test_sanitize_nested_valid_name() {
+        assert_eq!(sanitize_name("category/my-skill"), "category/my-skill");
+    }
+
+    #[test]
+    fn test_sanitize_empty_string() {
+        assert_eq!(sanitize_name(""), "");
+    }
+
+    #[test]
+    fn test_sanitize_special_chars() {
+        assert_eq!(sanitize_name("my skill!@#"), "myskill");
+    }
+
+    #[test]
+    fn test_sanitize_multiple_slashes() {
+        assert_eq!(sanitize_name("foo///bar"), "foo/bar");
+    }
+
+    #[test]
+    fn test_transform_no_frontmatter() {
+        let content = b"This is agent content";
+        let result = transform_agent_for_copilot(content);
+        let result_str = std::str::from_utf8(&result).unwrap();
+
+        assert!(result_str.starts_with("---\ntarget: github-copilot\n---\n\n"));
+        assert!(result_str.contains("This is agent content"));
+    }
+
+    #[test]
+    fn test_transform_with_model_line() {
+        let content = b"---\nmodel: claude-opus-4\nname: test\n---\n\nContent here";
+        let result = transform_agent_for_copilot(content);
+        let result_str = std::str::from_utf8(&result).unwrap();
+
+        assert!(result_str.contains("target: github-copilot"));
+        assert!(!result_str.contains("model:"));
+        assert!(result_str.contains("name: test"));
+        assert!(result_str.contains("Content here"));
+    }
+
+    #[test]
+    fn test_transform_with_existing_target() {
+        let content = b"---\ntarget: existing-target\nname: test\n---\n\nContent here";
+        let result = transform_agent_for_copilot(content);
+        let result_str = std::str::from_utf8(&result).unwrap();
+
+        assert!(result_str.contains("target: existing-target"));
+        assert_eq!(result_str.matches("target:").count(), 1);
+    }
+}

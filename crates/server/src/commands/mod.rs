@@ -10,7 +10,7 @@ mod recommend;
 mod resolve;
 mod serve;
 mod setup;
-mod skill_management;
+mod skill;
 mod sync;
 mod validate;
 
@@ -32,7 +32,7 @@ pub(crate) use recommend::handle_recommend_command;
 pub(crate) use resolve::handle_resolve_dependencies_command;
 pub(crate) use serve::handle_serve_command;
 pub(crate) use setup::handle_setup_command;
-pub(crate) use skill_management::{
+pub(crate) use skill::{
     handle_pre_commit_validate_command, handle_skill_catalog_command,
     handle_skill_deprecate_command, handle_skill_import_command, handle_skill_profile_command,
     handle_skill_rollback_command, handle_skill_score_command, handle_skill_usage_report_command,

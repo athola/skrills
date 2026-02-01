@@ -8,8 +8,6 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
 use tracing::debug;
-#[cfg(feature = "http-transport")]
-use tracing::warn;
 
 /// Certificate expiry warning threshold (days).
 const CERT_EXPIRY_CRITICAL_DAYS: i64 = 7;
@@ -298,6 +296,24 @@ pub fn handle_cert_install_command(
         bail!("Certificate file exceeds maximum size of 10 MB");
     }
 
+    // Validate PEM format BEFORE copying (fail fast on invalid certificates)
+    match validate_pem_format(&cert_source) {
+        Ok(false) => {
+            bail!(
+                "Certificate file does not appear to be valid PEM format: {}",
+                cert_source.display()
+            );
+        }
+        Err(e) => {
+            bail!(
+                "Could not validate certificate file {}: {}",
+                cert_source.display(),
+                e
+            );
+        }
+        Ok(true) => {}
+    }
+
     // Create TLS directory if needed
     fs::create_dir_all(&tls_path)
         .with_context(|| format!("Failed to create TLS directory: {}", tls_path.display()))?;
@@ -310,15 +326,6 @@ pub fn handle_cert_install_command(
             cert_dest.display()
         )
     })?;
-
-    // Warn if cert doesn't look like valid PEM (non-fatal)
-    match validate_pem_format(&cert_dest) {
-        Ok(false) => {
-            warn!(path = %cert_dest.display(), "Installed certificate does not appear to be valid PEM format")
-        }
-        Err(e) => warn!(error = %e, "Could not validate PEM format of installed certificate"),
-        Ok(true) => {}
-    }
 
     // Copy key if provided
     if let Some(ref key_src) = key_source {

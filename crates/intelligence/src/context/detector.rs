@@ -11,6 +11,8 @@ use std::fs;
 use std::path::Path;
 use walkdir::WalkDir;
 
+/// Maximum directory depth when scanning for language files.
+const MAX_DIRECTORY_SCAN_DEPTH: usize = 8;
 /// Language extension mappings.
 const LANGUAGE_EXTENSIONS: &[(&str, &str)] = &[
     ("rs", "Rust"),
@@ -170,7 +172,7 @@ pub fn detect_languages(root: &Path) -> Result<HashMap<String, LanguageInfo>> {
     let mut counts: HashMap<String, (usize, Vec<String>)> = HashMap::new();
 
     for entry in WalkDir::new(root)
-        .max_depth(8)
+        .max_depth(MAX_DIRECTORY_SCAN_DEPTH)
         .into_iter()
         .filter_entry(|e| {
             // Don't filter the root directory itself

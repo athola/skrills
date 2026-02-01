@@ -1,12 +1,15 @@
 # Changelog
 
+## 0.5.6 - 2026-01-28
+- **Testing**: Added BDD-style unit tests for skill management modules (deprecation, pre-commit, profiling, rollback, usage-report) covering serialization, YAML escaping, git log parsing, file filtering, percentage calculations, and version hash validation.
+
 ## 0.5.5 - 2026-01-26
 - **NEW: TLS Certificate Management**: Added `skrills cert` subcommand with `status`, `renew`, and `install` operations for managing TLS certificates. Certificate validity is displayed on server startup.
 - **Refactor: Copilot Adapter**: Split monolithic `copilot.rs` into focused modules (agents, commands, mcp, paths, preferences, skills, utils, tests) for improved maintainability and testability.
 - **Testing**: Added unit tests for certificate parsing covering missing file handling, valid PEM parsing, and invalid PEM detection.
 
 ## 0.5.4 - 2026-01-25
-- **Testing**: Added comprehensive BDD-style tests for configuration loading (backend/config.rs) covering defaults, custom values, error handling, and edge cases
+- **Testing**: Added BDD-style tests for configuration loading (backend/config.rs) covering defaults, custom values, error handling, and edge cases
 - **Testing**: Added directory validation tests (validate/lib.rs) for skill discovery, hidden directory handling, multi-target validation, and edge cases
 - **Documentation**: Updated README to reflect 37 CLI commands and added skill management section
 - **Internal**: Improved test coverage with 407 new lines of tests across core modules
@@ -100,12 +103,12 @@
 ## 0.4.6 - 2026-01-08
 - **Bug Fixes**: Address 14 issues including warnings for skipped optional dependencies, YAML line/column info in parse errors, SAFETY comments for regex patterns, and actionable hints for I/O errors.
 - **Testing**: Add 282 new tests across claude_parser, codex_parser, context detector, github_search, dependencies, llm_generator, and scorer modules.
-- **Documentation**: Add comprehensive audit-logging.md covering security events, mTLS audit trails, and SIEM integration.
+- **Documentation**: Add audit-logging.md covering security events, mTLS audit trails, and SIEM integration.
 - **CI**: Revert sync crate name to skrills_sync (crates.io disallows renaming published crates).
 - **Build**: Add fmt-check target to catch formatting issues in pre-commit hooks.
 
 ## 0.4.5 - 2026-01-03
-- **Testing**: Added comprehensive test coverage for tool handler functions including `parse_trace_target`, `skill_loading_status_tool`, `skill_loading_selftest_tool`, and `disable_skill_trace_tool`. Tests cover edge cases, dry-run modes, and target validation for Claude, Codex, and Both trace targets.
+- **Testing**: Added tests for tool handler functions including `parse_trace_target`, `skill_loading_status_tool`, `skill_loading_selftest_tool`, and `disable_skill_trace_tool`. Tests cover edge cases, dry-run modes, and target validation for Claude, Codex, and Both trace targets.
 
 ## 0.4.4 - 2026-01-02
 - **NEW: Empirical Skill Creation**: Generate skills from observed session patterns via `--method empirical`. Clusters successful tool sequences and failure patterns from Claude Code/Codex CLI history.
@@ -120,7 +123,7 @@
 
 ## 0.4.2 - 2025-12-29
 - **NEW: Fuzzy Skill Search**: Added `search-skills-fuzzy` MCP tool with trigram-based similarity matching for typo-tolerant skill discovery (e.g., "databas" finds "database").
-- **Improved Tests**: Added comprehensive edge case tests for similarity matching (unicode, empty strings, punctuation, long strings) and integration tests for fuzzy search tool.
+- **Improved Tests**: Added edge case tests for similarity matching (unicode, empty strings, punctuation, long strings) and integration tests for fuzzy search tool.
 
 ## 0.4.1 - 2025-12-27
 - **Hashing**: Switched file hash algorithm to blake2b-256 for improved performance and security.
@@ -145,7 +148,7 @@
 - **Improved Error Handling**: Added structured `CliError` enum for CLI adapter with better error messages.
 - **Logging**: Added error logging for silent failures to improve debugging.
 - **Publishing**: Added missing crates.io metadata to workspace crates.
-- **Testing**: Added comprehensive integration tests for the subagent workflow.
+- **Testing**: Added integration tests for the subagent workflow.
 - **Documentation**: Addressed PR review suggestions and added SAFETY comments for `json!()` expect invariants.
 
 ## 0.3.4 - 2025-12-19
@@ -166,7 +169,7 @@
 - **Extended Validation**: Dependency-related validation issues added to the validate crate.
 - **NEW: Skill Loading Trace**: Diagnostic tools (`skill-loading-status`, `enable-skill-trace`, `disable-skill-trace`, `skill-loading-selftest`) for debugging skill loading.
 - **Discovery & Sync Updates**: Updated discovery and sync modules for dependency support.
-- **Documentation**: Added ADR 0002 for dependency resolution architecture and comprehensive docs.
+- **Documentation**: Added ADR 0002 for dependency resolution architecture.
 - **BREAKING**: rmcp updated to 0.10; removed deprecated `info()` method from ServerHandler impl.
 - **BREAKING**: `SkillSource` enum requires wildcard pattern matching due to `#[non_exhaustive]`.
 
@@ -183,10 +186,10 @@
 - **REMOVED**: MCP tools: `list-skills`, `autoload-snippet`, `render-preview`, `runtime-status`, `set-runtime-options`, `pin-skills`, `unpin-skills`, `refresh-cache`.
 
 ## 0.3.0 - 2025-12-12
-- **NEW: Subagents Module**: Added comprehensive subagent functionality with MCP server support. Run subagents via `list-subagents`, `run-subagent`, and `get-run-status` tools.
+- **NEW: Subagents Module**: Added subagent functionality with MCP server support. Run subagents via `list-subagents`, `run-subagent`, and `get-run-status` tools.
 - **NEW: Backend Support**: Implemented dual backend support for both Claude-style and Codex-style subagent execution with configurable adapters.
 - **NEW: Sync Infrastructure**: Introduced cross-agent sync orchestration with `SyncOrchestrator`, `ClaudeAdapter`, and `CodexAdapter` for multi-agent coordination.
-- **Documentation**: Added comprehensive AGENTS.md (1500+ lines) with subagent usage examples, configuration options, and best practices.
+- **Documentation**: Added AGENTS.md (1500+ lines) with subagent usage examples, configuration options, and best practices.
 - **Enhanced CLI**: Added sync commands (`skrills sync import`, `skrills sync export`, `skrills sync report`) for cross-agent skill synchronization.
 - **Testing**: Added end-to-end integration tests for subagents functionality ensuring reliable operation across different backends.
 - **BREAKING**: Removed the gateway crate and related functionality. The gateway approach has been replaced with a simpler MCP server integration for Codex.

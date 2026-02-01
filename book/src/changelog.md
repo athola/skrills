@@ -1,5 +1,9 @@
 # Changelog Highlights
 
+## 0.5.6 (2026-01-28)
+
+- **Testing**: Added BDD-style unit tests for skill management modules (deprecation, pre-commit, profiling, rollback, usage-report) covering serialization, parsing, and validation logic.
+
 ## 0.5.5 (2026-01-26)
 
 - **NEW: TLS Certificate Management**: Added `skrills cert` subcommand with `status`, `renew`, and `install` operations. Certificate validity is shown on server startup.
@@ -8,7 +12,7 @@
 
 ## 0.5.4 (2026-01-25)
 
-- **Testing**: Added comprehensive BDD-style tests for configuration loading and directory validation
+- **Testing**: Added BDD-style tests for configuration loading and directory validation
 - **Documentation**: Updated README command count to 37 and added skill management section
 
 ## 0.5.3 (2026-01-23)
@@ -84,7 +88,7 @@
 
 ## 0.4.5 (2026-01-03)
 
-- **Testing**: Added comprehensive test coverage for tool handler functions.
+- **Testing**: Added tests for tool handler functions.
 
 ## 0.4.4 (2026-01-02)
 
@@ -168,7 +172,7 @@
 - **NEW: Subagents Module**: Comprehensive subagent functionality with MCP server support via `list-subagents`, `run-subagent`, and `get-run-status` tools.
 - **NEW: Backend Support**: Dual backend support for both Claude-style and Codex-style subagent execution.
 - **NEW: Sync Infrastructure**: Cross-agent sync orchestration with `SyncOrchestrator` and adapters for Claude/Codex.
-- **Documentation**: Added comprehensive AGENTS.md with subagent usage examples.
+- **Documentation**: Added AGENTS.md with subagent usage examples.
 - **BREAKING**: Removed the gateway crate and related functionality. Replaced with simpler MCP server integration.
 - **Security Fix**: Updated `rmcp` from 0.9.1 to 0.10.0, replacing unmaintained `paste` with `pastey`.
 

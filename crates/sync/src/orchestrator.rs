@@ -87,6 +87,81 @@ fn default_true() -> bool {
     true
 }
 
+/// Applies force/dry_run/skip_existing policy when syncing a collection of named items.
+///
+/// Encapsulates the shared conditional logic used by both commands and instructions
+/// sync paths to avoid duplication.
+fn sync_items<Item>(
+    items: Vec<Item>,
+    force: bool,
+    dry_run: bool,
+    skip_existing: bool,
+    get_name: impl Fn(&Item) -> String,
+    read_existing: impl FnOnce() -> Result<Vec<Item>>,
+    write_items: impl FnOnce(&[Item]) -> Result<WriteReport>,
+) -> Result<WriteReport> {
+    if force {
+        if dry_run {
+            return Ok(WriteReport {
+                written: items.len(),
+                ..Default::default()
+            });
+        }
+        return write_items(&items);
+    }
+
+    if !skip_existing {
+        if dry_run {
+            return Ok(WriteReport {
+                written: items.len(),
+                ..Default::default()
+            });
+        }
+        return write_items(&items);
+    }
+
+    // skip_existing is true: partition into new vs existing
+    let existing: HashSet<String> = read_existing()?
+        .into_iter()
+        .map(|item| get_name(&item))
+        .collect();
+
+    if dry_run {
+        let mut report = WriteReport::default();
+        for item in &items {
+            if existing.contains(&get_name(item)) {
+                report.skipped.push(SkipReason::WouldOverwrite {
+                    item: get_name(item),
+                });
+            } else {
+                report.written += 1;
+            }
+        }
+        return Ok(report);
+    }
+
+    let mut new_items = Vec::new();
+    let mut skipped = Vec::new();
+
+    for item in items {
+        let name = get_name(&item);
+        if existing.contains(&name) {
+            skipped.push(SkipReason::WouldOverwrite { item: name });
+        } else {
+            new_items.push(item);
+        }
+    }
+
+    let mut report = if new_items.is_empty() {
+        WriteReport::default()
+    } else {
+        write_items(&new_items)?
+    };
+
+    report.skipped.extend(skipped);
+    Ok(report)
+}
+
 /// Orchestrates sync operations between agents.
 pub struct SyncOrchestrator<S: AgentAdapter, T: AgentAdapter> {
     source: S,
@@ -117,66 +192,16 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
         if params.sync_commands {
             let commands = self.source.read_commands(params.include_marketplace)?;
 
-            if params.force {
-                // If force is true, we always write all commands, bypassing skip_existing_commands
-                if params.dry_run {
-                    report.commands.written = commands.len();
-                } else {
-                    report.commands = self.target.write_commands(&commands)?;
-                }
-            } else if params.dry_run {
-                if params.skip_existing_commands {
-                    let existing: HashSet<String> = self
-                        .target
-                        .read_commands(params.include_marketplace)?
-                        .into_iter()
-                        .map(|c| c.name)
-                        .collect();
-
-                    for cmd in &commands {
-                        if existing.contains(&cmd.name) {
-                            report.commands.skipped.push(SkipReason::WouldOverwrite {
-                                item: cmd.name.clone(),
-                            });
-                        } else {
-                            report.commands.written += 1;
-                        }
-                    }
-                } else {
-                    report.commands.written = commands.len();
-                }
-            } else if params.skip_existing_commands {
-                let existing: HashSet<String> = self
-                    .target
-                    .read_commands(params.include_marketplace)?
-                    .into_iter()
-                    .map(|c| c.name)
-                    .collect();
-
-                let mut new_commands = Vec::new();
-                let mut skipped = Vec::new();
-
-                for cmd in commands {
-                    if existing.contains(&cmd.name) {
-                        skipped.push(SkipReason::WouldOverwrite {
-                            item: cmd.name.clone(),
-                        });
-                    } else {
-                        new_commands.push(cmd);
-                    }
-                }
-
-                let mut cmd_report = if new_commands.is_empty() {
-                    WriteReport::default()
-                } else {
-                    self.target.write_commands(&new_commands)?
-                };
-
-                cmd_report.skipped.extend(skipped);
-                report.commands = cmd_report;
-            } else {
-                report.commands = self.target.write_commands(&commands)?;
-            }
+            let include_marketplace = params.include_marketplace;
+            report.commands = sync_items(
+                commands,
+                params.force,
+                params.dry_run,
+                params.skip_existing_commands,
+                |c| c.name.clone(),
+                || self.target.read_commands(include_marketplace),
+                |items| self.target.write_commands(items),
+            )?;
         }
         // Sync skills
         if params.sync_skills {
@@ -243,69 +268,15 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
         if params.sync_instructions {
             let instructions = self.source.read_instructions()?;
 
-            if params.force {
-                // If force is true, we always write all instructions, bypassing skip_existing_instructions
-                if params.dry_run {
-                    report.instructions.written = instructions.len();
-                } else {
-                    report.instructions = self.target.write_instructions(&instructions)?;
-                }
-            } else if params.dry_run {
-                if params.skip_existing_instructions {
-                    let existing: HashSet<String> = self
-                        .target
-                        .read_instructions()?
-                        .into_iter()
-                        .map(|i| i.name)
-                        .collect();
-
-                    for instr in &instructions {
-                        if existing.contains(&instr.name) {
-                            report
-                                .instructions
-                                .skipped
-                                .push(SkipReason::WouldOverwrite {
-                                    item: instr.name.clone(),
-                                });
-                        } else {
-                            report.instructions.written += 1;
-                        }
-                    }
-                } else {
-                    report.instructions.written = instructions.len();
-                }
-            } else if params.skip_existing_instructions {
-                let existing: HashSet<String> = self
-                    .target
-                    .read_instructions()?
-                    .into_iter()
-                    .map(|i| i.name)
-                    .collect();
-
-                let mut new_instructions = Vec::new();
-                let mut skipped = Vec::new();
-
-                for instr in instructions {
-                    if existing.contains(&instr.name) {
-                        skipped.push(SkipReason::WouldOverwrite {
-                            item: instr.name.clone(),
-                        });
-                    } else {
-                        new_instructions.push(instr);
-                    }
-                }
-
-                let mut instr_report = if new_instructions.is_empty() {
-                    WriteReport::default()
-                } else {
-                    self.target.write_instructions(&new_instructions)?
-                };
-
-                instr_report.skipped.extend(skipped);
-                report.instructions = instr_report;
-            } else {
-                report.instructions = self.target.write_instructions(&instructions)?;
-            }
+            report.instructions = sync_items(
+                instructions,
+                params.force,
+                params.dry_run,
+                params.skip_existing_instructions,
+                |i| i.name.clone(),
+                || self.target.read_instructions(),
+                |items| self.target.write_instructions(items),
+            )?;
         }
 
         report.success = true;
@@ -722,5 +693,168 @@ mod tests {
         // New instruction should exist
         let new_file = tgt_dir.path().join("instructions/CLAUDE.instructions.md");
         assert!(new_file.exists());
+    }
+
+    #[test]
+    fn sync_with_empty_source_commands() {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+
+        // Source has no commands directory at all
+        let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
+        let target = CodexAdapter::with_root(tgt_dir.path().to_path_buf());
+
+        let orchestrator = SyncOrchestrator::new(source, target);
+        let params = SyncParams {
+            sync_commands: true,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_skills: false,
+            sync_agents: false,
+            sync_instructions: false,
+            ..Default::default()
+        };
+
+        let report = orchestrator.sync(&params).unwrap();
+        assert_eq!(report.commands.written, 0);
+        assert!(report.success);
+    }
+
+    #[test]
+    fn force_and_dry_run_combination() {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+
+        let src_cmd_dir = src_dir.path().join("commands");
+        fs::create_dir_all(&src_cmd_dir).unwrap();
+        fs::write(src_cmd_dir.join("cmd.md"), "# Command").unwrap();
+
+        let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
+        let target = CodexAdapter::with_root(tgt_dir.path().to_path_buf());
+
+        let orchestrator = SyncOrchestrator::new(source, target);
+        let params = SyncParams {
+            force: true,
+            dry_run: true,
+            sync_commands: true,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_skills: false,
+            sync_agents: false,
+            sync_instructions: false,
+            ..Default::default()
+        };
+
+        let report = orchestrator.sync(&params).unwrap();
+        // dry_run + force: should report written but not actually write
+        assert_eq!(report.commands.written, 1);
+        let tgt_file = tgt_dir.path().join("prompts/cmd.md");
+        assert!(
+            !tgt_file.exists(),
+            "dry_run should not create files even with force"
+        );
+    }
+
+    #[test]
+    fn skip_existing_with_all_items_already_existing() {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+
+        let src_cmd_dir = src_dir.path().join("commands");
+        fs::create_dir_all(&src_cmd_dir).unwrap();
+        fs::write(src_cmd_dir.join("a.md"), "# A new").unwrap();
+        fs::write(src_cmd_dir.join("b.md"), "# B new").unwrap();
+
+        let tgt_cmd_dir = tgt_dir.path().join("prompts");
+        fs::create_dir_all(&tgt_cmd_dir).unwrap();
+        fs::write(tgt_cmd_dir.join("a.md"), "# A existing").unwrap();
+        fs::write(tgt_cmd_dir.join("b.md"), "# B existing").unwrap();
+
+        let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
+        let target = CodexAdapter::with_root(tgt_dir.path().to_path_buf());
+
+        let orchestrator = SyncOrchestrator::new(source, target);
+        let params = SyncParams {
+            sync_commands: true,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_skills: false,
+            sync_agents: false,
+            sync_instructions: false,
+            skip_existing_commands: true,
+            ..Default::default()
+        };
+
+        let report = orchestrator.sync(&params).unwrap();
+        assert_eq!(report.commands.written, 0);
+        assert_eq!(report.commands.skipped.len(), 2);
+        // Existing content preserved
+        assert_eq!(
+            fs::read_to_string(tgt_cmd_dir.join("a.md")).unwrap(),
+            "# A existing"
+        );
+        assert_eq!(
+            fs::read_to_string(tgt_cmd_dir.join("b.md")).unwrap(),
+            "# B existing"
+        );
+    }
+
+    #[test]
+    fn sync_nothing_enabled() {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+
+        let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
+        let target = CodexAdapter::with_root(tgt_dir.path().to_path_buf());
+
+        let orchestrator = SyncOrchestrator::new(source, target);
+        let params = SyncParams {
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_skills: false,
+            sync_agents: false,
+            sync_instructions: false,
+            ..Default::default()
+        };
+
+        let report = orchestrator.sync(&params).unwrap();
+        assert!(report.success);
+        assert_eq!(report.commands.written, 0);
+        assert_eq!(report.skills.written, 0);
+    }
+
+    #[test]
+    fn dry_run_skip_existing_reports_skipped() {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+
+        let src_cmd_dir = src_dir.path().join("commands");
+        fs::create_dir_all(&src_cmd_dir).unwrap();
+        fs::write(src_cmd_dir.join("existing.md"), "# New").unwrap();
+
+        let tgt_cmd_dir = tgt_dir.path().join("prompts");
+        fs::create_dir_all(&tgt_cmd_dir).unwrap();
+        fs::write(tgt_cmd_dir.join("existing.md"), "# Old").unwrap();
+
+        let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
+        let target = CodexAdapter::with_root(tgt_dir.path().to_path_buf());
+
+        let orchestrator = SyncOrchestrator::new(source, target);
+        let params = SyncParams {
+            dry_run: true,
+            skip_existing_commands: true,
+            sync_commands: true,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_skills: false,
+            sync_agents: false,
+            sync_instructions: false,
+            ..Default::default()
+        };
+
+        let report = orchestrator.sync(&params).unwrap();
+        assert_eq!(report.commands.written, 0);
+        assert_eq!(report.commands.skipped.len(), 1);
     }
 }
