@@ -37,6 +37,10 @@ pub mod http_transport;
 #[cfg(feature = "http-transport")]
 pub mod api;
 
+/// Leptos-based browser UI for the dashboard.
+#[cfg(feature = "http-transport")]
+pub mod ui;
+
 /// Auto-generated TLS certificate support.
 #[cfg(feature = "http-transport")]
 pub(crate) mod tls_auto;
