@@ -26,6 +26,31 @@ pub(crate) fn empty_schema() -> Arc<JsonMap<String, serde_json::Value>> {
     Arc::new(schema)
 }
 
+/// Returns a standard result output schema with success/message/data fields.
+fn result_output_schema() -> Option<Arc<JsonMap<String, serde_json::Value>>> {
+    let mut schema = JsonMap::new();
+    schema.insert("type".into(), json!("object"));
+    schema.insert(
+        "properties".into(),
+        json!({
+            "success": { "type": "boolean", "description": "Whether the operation succeeded" },
+            "message": { "type": "string", "description": "Human-readable result message" },
+            "data": { "type": "object", "description": "Operation-specific result data" }
+        }),
+    );
+    schema.insert("required".into(), json!(["success"]));
+    Some(Arc::new(schema))
+}
+
+/// Returns an array output schema for list operations.
+fn array_output_schema(item_desc: &str) -> Option<Arc<JsonMap<String, serde_json::Value>>> {
+    let mut schema = JsonMap::new();
+    schema.insert("type".into(), json!("array"));
+    schema.insert("items".into(), json!({ "type": "object" }));
+    schema.insert("description".into(), json!(item_desc));
+    Some(Arc::new(schema))
+}
+
 /// Returns the schema for sync tools (from, to, dry_run, force parameters).
 fn sync_schema() -> Arc<JsonMap<String, serde_json::Value>> {
     let mut schema = JsonMap::new();
@@ -74,7 +99,7 @@ pub(crate) fn sync_tools() -> Vec<Tool> {
                     .into(),
             ),
             input_schema: schema_empty.clone(),
-            output_schema: None,
+            output_schema: result_output_schema(),
             annotations: Some(ToolAnnotations::default()),
             icons: None,
             meta: None,
@@ -218,7 +243,7 @@ pub(crate) fn validation_tools() -> Vec<Tool> {
                 schema.insert("additionalProperties".into(), json!(false));
                 schema
             }),
-            output_schema: None,
+            output_schema: array_output_schema("Validation results per skill"),
             annotations: Some(ToolAnnotations::default()),
             icons: None,
             meta: None,
@@ -727,11 +752,12 @@ pub(crate) fn intelligence_tools() -> Vec<Tool> {
             meta: None,
         },
         Tool {
-            name: "search-skills-fuzzy".into(),
-            title: Some("Fuzzy search installed skills".into()),
+            name: "search-skills".into(),
+            title: Some("Search installed skills".into()),
             description: Some(
                 "Search installed skills using trigram-based fuzzy matching. \
-                 Tolerates typos and finds similar skill names (e.g., 'databas' finds 'database')."
+                 Tolerates typos and finds similar skill names (e.g., 'databas' finds 'database'). \
+                 Aligns with CLI command: `skrills search-skills`."
                     .into(),
             ),
             input_schema: Arc::new({

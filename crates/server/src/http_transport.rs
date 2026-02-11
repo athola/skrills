@@ -21,6 +21,10 @@ use std::path::Path;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
+
+/// Header name for request ID.
+const REQUEST_ID_HEADER: &str = "x-request-id";
 
 /// Configuration for HTTP transport security.
 ///
@@ -73,6 +77,11 @@ async fn auth_middleware(
     next: axum::middleware::Next,
 ) -> impl IntoResponse {
     let uri = req.uri().path();
+    let request_id = req
+        .headers()
+        .get(REQUEST_ID_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("-");
 
     // Check Authorization header
     if let Some(auth_header) = req.headers().get(header::AUTHORIZATION) {
@@ -88,6 +97,7 @@ async fn auth_middleware(
                     tracing::debug!(
                         target: "skrills::http::auth",
                         uri,
+                        request_id,
                         "Auth successful"
                     );
                     return next.run(req).await;
@@ -95,12 +105,14 @@ async fn auth_middleware(
                 tracing::debug!(
                     target: "skrills::http::auth",
                     uri,
+                    request_id,
                     "Auth failed: invalid token"
                 );
             } else {
                 tracing::debug!(
                     target: "skrills::http::auth",
                     uri,
+                    request_id,
                     "Auth failed: malformed Authorization header (expected 'Bearer <token>')"
                 );
             }
@@ -108,6 +120,7 @@ async fn auth_middleware(
             tracing::debug!(
                 target: "skrills::http::auth",
                 uri,
+                request_id,
                 "Auth failed: Authorization header not valid UTF-8"
             );
         }
@@ -115,6 +128,7 @@ async fn auth_middleware(
         tracing::debug!(
             target: "skrills::http::auth",
             uri,
+            request_id,
             "Auth failed: missing Authorization header"
         );
     }
@@ -262,7 +276,9 @@ where
         None
     };
 
-    // Create router with optional auth middleware
+    // Create router with request ID and optional auth middleware
+    // Request ID layers: SetRequestIdLayer generates UUID, PropagateRequestIdLayer copies to response
+    let request_id_header = axum::http::HeaderName::from_static(REQUEST_ID_HEADER);
     let app = if let Some(token) = security.auth_token {
         let token = Arc::new(token);
         axum::Router::new()
@@ -272,10 +288,14 @@ where
                 let token = token.clone();
                 auth_middleware(token, req, next)
             }))
+            .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
+            .layer(SetRequestIdLayer::new(request_id_header, MakeRequestUuid))
     } else {
         axum::Router::new()
             .fallback_service(http_service)
             .layer(cors_layer)
+            .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
+            .layer(SetRequestIdLayer::new(request_id_header, MakeRequestUuid))
     };
 
     // Serve with or without TLS

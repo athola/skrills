@@ -7,6 +7,18 @@ use ratatui::{
 
 use crate::app::{App, FocusPanel};
 
+/// RFC3339 timestamp display length (YYYY-MM-DDTHH:MM:SS).
+const TIMESTAMP_DISPLAY_LEN: usize = 19;
+
+/// Returns border style based on focus state.
+fn focused_border_style(focused: bool) -> Style {
+    if focused {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::White)
+    }
+}
+
 /// Draw the dashboard UI.
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -36,7 +48,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         if app.last_refresh.is_empty() {
             "-"
         } else {
-            &app.last_refresh[..19.min(app.last_refresh.len())]
+            &app.last_refresh[..TIMESTAMP_DISPLAY_LEN.min(app.last_refresh.len())]
         }
     );
 
@@ -75,12 +87,7 @@ fn draw_main(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_skills_panel(f: &mut Frame, app: &App, area: Rect) {
-    let focused = app.focus == FocusPanel::Skills;
-    let border_style = if focused {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default().fg(Color::White)
-    };
+    let border_style = focused_border_style(app.focus == FocusPanel::Skills);
 
     let items: Vec<ListItem> = app
         .skills
@@ -119,12 +126,7 @@ fn draw_skills_panel(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_activity_panel(f: &mut Frame, app: &App, area: Rect) {
-    let focused = app.focus == FocusPanel::Activity;
-    let border_style = if focused {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default().fg(Color::White)
-    };
+    let border_style = focused_border_style(app.focus == FocusPanel::Activity);
 
     let items: Vec<ListItem> = app
         .activity
@@ -155,12 +157,7 @@ fn draw_activity_panel(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_metrics_panel(f: &mut Frame, app: &App, area: Rect) {
-    let focused = app.focus == FocusPanel::Metrics;
-    let border_style = if focused {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default().fg(Color::White)
-    };
+    let border_style = focused_border_style(app.focus == FocusPanel::Metrics);
 
     let content = if let Some(stats) = &app.selected_stats {
         let success_rate = if stats.total_invocations > 0 {

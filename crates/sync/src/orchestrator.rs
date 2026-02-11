@@ -83,6 +83,115 @@ impl Default for SyncParams {
     }
 }
 
+impl SyncParams {
+    /// Creates a new builder for SyncParams.
+    pub fn builder() -> SyncParamsBuilder {
+        SyncParamsBuilder::default()
+    }
+}
+
+/// Builder for SyncParams with fluent API.
+///
+/// ```
+/// use skrills_sync::SyncParamsBuilder;
+///
+/// let params = SyncParamsBuilder::new()
+///     .dry_run(true)
+///     .sync_skills(true)
+///     .sync_commands(false)
+///     .build();
+/// assert!(params.dry_run);
+/// assert!(!params.sync_commands);
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct SyncParamsBuilder {
+    params: SyncParams,
+}
+
+impl SyncParamsBuilder {
+    /// Creates a new builder with default values.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the source agent name.
+    pub fn from(mut self, from: impl Into<String>) -> Self {
+        self.params.from = Some(from.into());
+        self
+    }
+
+    /// Sets dry run mode (preview only).
+    pub fn dry_run(mut self, dry_run: bool) -> Self {
+        self.params.dry_run = dry_run;
+        self
+    }
+
+    /// Sets force mode (skip confirmation prompts).
+    pub fn force(mut self, force: bool) -> Self {
+        self.params.force = force;
+        self
+    }
+
+    /// Sets whether to sync skills.
+    pub fn sync_skills(mut self, sync: bool) -> Self {
+        self.params.sync_skills = sync;
+        self
+    }
+
+    /// Sets whether to sync commands.
+    pub fn sync_commands(mut self, sync: bool) -> Self {
+        self.params.sync_commands = sync;
+        self
+    }
+
+    /// Sets whether to skip existing commands.
+    pub fn skip_existing_commands(mut self, skip: bool) -> Self {
+        self.params.skip_existing_commands = skip;
+        self
+    }
+
+    /// Sets whether to sync MCP servers.
+    pub fn sync_mcp_servers(mut self, sync: bool) -> Self {
+        self.params.sync_mcp_servers = sync;
+        self
+    }
+
+    /// Sets whether to sync preferences.
+    pub fn sync_preferences(mut self, sync: bool) -> Self {
+        self.params.sync_preferences = sync;
+        self
+    }
+
+    /// Sets whether to sync agents.
+    pub fn sync_agents(mut self, sync: bool) -> Self {
+        self.params.sync_agents = sync;
+        self
+    }
+
+    /// Sets whether to sync instructions.
+    pub fn sync_instructions(mut self, sync: bool) -> Self {
+        self.params.sync_instructions = sync;
+        self
+    }
+
+    /// Sets whether to skip existing instructions.
+    pub fn skip_existing_instructions(mut self, skip: bool) -> Self {
+        self.params.skip_existing_instructions = skip;
+        self
+    }
+
+    /// Sets whether to include marketplace content.
+    pub fn include_marketplace(mut self, include: bool) -> Self {
+        self.params.include_marketplace = include;
+        self
+    }
+
+    /// Builds the SyncParams.
+    pub fn build(self) -> SyncParams {
+        self.params
+    }
+}
+
 fn default_true() -> bool {
     true
 }

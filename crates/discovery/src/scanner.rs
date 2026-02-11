@@ -165,7 +165,7 @@ fn file_hash(path: &Path) -> Result<String> {
     if size > 0 {
         use std::io::Read;
         if let Ok(mut file) = fs::File::open(path) {
-            let mut prefix = vec![0u8; 1024.min(size as usize)];
+            let mut prefix = vec![0u8; 1024.min(usize::try_from(size).unwrap_or(usize::MAX))];
             if let Ok(n) = file.read(&mut prefix) {
                 prefix.truncate(n);
                 hasher.update(&prefix);
@@ -303,7 +303,7 @@ fn collect_skills_from(
     tracing::info!(
         total_skills = skills.len(),
         with_description,
-        without_description = skills.len() - with_description,
+        without_description = skills.len().saturating_sub(with_description),
         "Skill discovery complete"
     );
 
@@ -474,6 +474,49 @@ pub fn extra_skill_roots(extra: &[PathBuf]) -> Vec<SkillRoot> {
             source: SkillSource::Extra(i as u32),
         })
         .collect()
+}
+
+/// Returns default skill roots using the user's home directory.
+///
+/// Returns an empty vector if the home directory cannot be determined.
+pub fn default_roots_auto() -> Vec<SkillRoot> {
+    dirs::home_dir()
+        .map(|home| default_roots(&home))
+        .unwrap_or_default()
+}
+
+/// Returns skill roots from custom directories, or defaults if empty.
+///
+/// Custom directories are assigned `SkillSource` based on path inference:
+/// - Paths containing `.claude` → `SkillSource::Claude`
+/// - Paths containing `.codex` → `SkillSource::Codex`
+/// - Paths containing `.copilot` or `copilot` → `SkillSource::Copilot`
+/// - Otherwise → `SkillSource::Extra(index)`
+pub fn skill_roots_or_default(custom: &[PathBuf]) -> Vec<SkillRoot> {
+    if custom.is_empty() {
+        default_roots_auto()
+    } else {
+        custom
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let path_str = p.to_string_lossy();
+                let source = if path_str.contains(".claude") {
+                    SkillSource::Claude
+                } else if path_str.contains(".codex") {
+                    SkillSource::Codex
+                } else if path_str.contains("copilot") {
+                    SkillSource::Copilot
+                } else {
+                    SkillSource::Extra(i as u32)
+                };
+                SkillRoot {
+                    root: p.clone(),
+                    source,
+                }
+            })
+            .collect()
+    }
 }
 
 /// Computes the BLAKE2b-256 hash of a file.

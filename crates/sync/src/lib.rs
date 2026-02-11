@@ -137,7 +137,9 @@ pub mod validation;
 pub use adapters::{AgentAdapter, ClaudeAdapter, CodexAdapter, CopilotAdapter, FieldSupport};
 pub use common::{Command, CommonConfig, McpServer, Preferences, SyncMeta};
 pub use models::transform_model;
-pub use orchestrator::{parse_direction, SyncDirection, SyncOrchestrator, SyncParams};
+pub use orchestrator::{
+    parse_direction, SyncDirection, SyncOrchestrator, SyncParams, SyncParamsBuilder,
+};
 pub use report::{SkipReason, SyncReport, WriteReport};
 pub use validation::{
     apply_autofix_to_skill, skill_is_codex_compatible, skill_is_copilot_compatible,

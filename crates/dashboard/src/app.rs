@@ -134,10 +134,13 @@ impl App {
         }
     }
 
+    /// Maximum activity entries to keep.
+    const MAX_ACTIVITY_ENTRIES: usize = 100;
+
     /// Add activity message.
     pub fn add_activity(&mut self, msg: String) {
         self.activity.insert(0, msg);
-        if self.activity.len() > 100 {
+        if self.activity.len() > Self::MAX_ACTIVITY_ENTRIES {
             self.activity.pop();
         }
     }
@@ -262,38 +265,9 @@ impl Dashboard {
     }
 
     fn refresh_skills(&self, app: &mut App) {
-        // Use discovery crate to find skills
-        use skrills_discovery::{discover_skills, SkillRoot, SkillSource};
+        use skrills_discovery::{discover_skills, skill_roots_or_default};
 
-        let roots: Vec<SkillRoot> = if self.skill_dirs.is_empty() {
-            // Default skill directories
-            let mut roots = Vec::new();
-            if let Some(home) = dirs::home_dir() {
-                let claude_dir = home.join(".claude").join("skills");
-                if claude_dir.exists() {
-                    roots.push(SkillRoot {
-                        root: claude_dir,
-                        source: SkillSource::Claude,
-                    });
-                }
-                let codex_dir = home.join(".codex").join("skills");
-                if codex_dir.exists() {
-                    roots.push(SkillRoot {
-                        root: codex_dir,
-                        source: SkillSource::Codex,
-                    });
-                }
-            }
-            roots
-        } else {
-            self.skill_dirs
-                .iter()
-                .map(|p| SkillRoot {
-                    root: p.clone(),
-                    source: SkillSource::Codex, // Use Codex as default for custom dirs
-                })
-                .collect()
-        };
+        let roots = skill_roots_or_default(&self.skill_dirs);
 
         let discovered = discover_skills(&roots, None).unwrap_or_default();
         app.total_skills = discovered.len();

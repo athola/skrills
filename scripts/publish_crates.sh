@@ -49,11 +49,13 @@ publish_one skrills-validate
 publish_one skrills-state
 publish_one skrills-discovery
 publish_one skrills-intelligence
+publish_one skrills-metrics
 
 # Level 1: depend on leaf crates only
 publish_one skrills_sync
 publish_one skrills-subagents
 publish_one skrills-analyze
+publish_one skrills-dashboard
 
 # Level 2: server depends on all above
 publish_one skrills-server

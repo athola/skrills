@@ -1,4 +1,17 @@
 //! Metrics API endpoints.
+//!
+//! REST API for skill usage metrics and statistics.
+//!
+//! ## Endpoints
+//!
+//! | Method | Path | Description |
+//! |--------|------|-------------|
+//! | GET | `/api/metrics/events` | Get recent metric events (max 100) |
+//! | GET | `/api/metrics/skills/:skill` | Get stats for a specific skill |
+//!
+//! ## Response Format
+//!
+//! All endpoints return JSON. Errors return appropriate HTTP status codes.
 
 use axum::{extract::State, http::StatusCode, routing::get, Json, Router};
 use serde::Serialize;
@@ -16,17 +29,24 @@ pub struct MetricsState {
 /// Recent events response.
 #[derive(Debug, Serialize)]
 pub struct RecentEventsResponse {
+    /// Array of recent metric events (max 100).
     pub events: Vec<serde_json::Value>,
 }
 
 /// Stats response for a skill.
 #[derive(Debug, Serialize)]
 pub struct StatsResponse {
+    /// Skill name.
     pub skill: String,
+    /// Total number of invocations.
     pub total_invocations: u64,
+    /// Number of successful invocations.
     pub successful_invocations: u64,
+    /// Number of failed invocations.
     pub failed_invocations: u64,
+    /// Average execution duration in milliseconds.
     pub avg_duration_ms: f64,
+    /// Total tokens consumed.
     pub total_tokens: u64,
 }
 
@@ -63,8 +83,11 @@ async fn get_skill_stats(
     state
         .collector
         .get_skill_stats(&skill)
-        .map(|stats| Json(StatsResponse::from_stats(skill, stats)))
-        .map_err(|_| StatusCode::NOT_FOUND)
+        .map(|stats| Json(StatsResponse::from_stats(skill.clone(), stats)))
+        .map_err(|e| {
+            tracing::warn!(error = %e, skill = %skill, "Failed to get skill stats");
+            StatusCode::NOT_FOUND
+        })
 }
 
 /// Create metrics API routes.
