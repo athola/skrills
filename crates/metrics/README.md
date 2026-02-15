@@ -11,10 +11,10 @@ SQLite-based metrics collection for skrills skill invocations, validations, and 
 ## Usage
 
 ```rust
-use skrills_metrics::MetricsStore;
+use skrills_metrics::MetricsCollector;
 
-let store = MetricsStore::open_default().await?;
-store.record_invocation("my-skill", duration, success).await?;
+let collector = MetricsCollector::new()?;
+collector.record_skill_invocation("my-skill", 150, true, Some(1024))?;
 ```
 
 ## License

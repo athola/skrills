@@ -108,6 +108,8 @@ fn default_limit() -> usize {
     50
 }
 
+const MAX_LIMIT: usize = 200;
+
 /// Paginated response wrapper.
 #[derive(Debug, Serialize)]
 pub struct PaginatedResponse<T> {
@@ -189,17 +191,18 @@ async fn list_skills(
     };
 
     let total = skills.len();
+    let limit = params.limit.min(MAX_LIMIT);
     let items: Vec<SkillResponse> = skills
         .into_iter()
         .skip(params.offset)
-        .take(params.limit)
+        .take(limit)
         .map(Into::into)
         .collect();
 
     Json(PaginatedResponse {
         items,
         total,
-        limit: params.limit,
+        limit,
         offset: params.offset,
     })
 }

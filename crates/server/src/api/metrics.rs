@@ -64,15 +64,20 @@ impl StatsResponse {
 }
 
 /// Get recent metric events.
-async fn get_recent_events(State(state): State<Arc<MetricsState>>) -> Json<RecentEventsResponse> {
+async fn get_recent_events(
+    State(state): State<Arc<MetricsState>>,
+) -> Result<Json<RecentEventsResponse>, StatusCode> {
     let events = state
         .collector
         .get_recent_events(100)
-        .unwrap_or_default()
+        .map_err(|e| {
+            tracing::warn!(error = %e, "Failed to get recent events");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
         .into_iter()
         .filter_map(|e| serde_json::to_value(e).ok())
         .collect();
-    Json(RecentEventsResponse { events })
+    Ok(Json(RecentEventsResponse { events }))
 }
 
 /// Get stats for a specific skill.
@@ -86,7 +91,7 @@ async fn get_skill_stats(
         .map(|stats| Json(StatsResponse::from_stats(skill.clone(), stats)))
         .map_err(|e| {
             tracing::warn!(error = %e, skill = %skill, "Failed to get skill stats");
-            StatusCode::NOT_FOUND
+            StatusCode::INTERNAL_SERVER_ERROR
         })
 }
 

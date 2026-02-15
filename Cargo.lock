@@ -4080,6 +4080,7 @@ dependencies = [
  "anyhow",
  "crossterm",
  "dirs",
+ "futures",
  "ratatui",
  "skrills-discovery",
  "skrills-metrics",

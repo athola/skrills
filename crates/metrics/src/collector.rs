@@ -110,7 +110,7 @@ impl MetricsCollector {
             std::fs::create_dir_all(parent)?;
         }
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| MetricsError::MutexPoisoned)?;
         conn.execute_batch(&format!(
             "VACUUM INTO '{}'",
             path.to_string_lossy().replace('\'', "''")
@@ -138,7 +138,7 @@ impl MetricsCollector {
         success: bool,
         tokens: Option<u64>,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| MetricsError::MutexPoisoned)?;
         conn.execute(
             "INSERT INTO skill_invocations (skill_name, plugin, duration_ms, success, tokens_used) VALUES (?1, ?2, ?3, ?4, ?5)",
             (skill, plugin, duration_ms as i64, success as i32, tokens.map(|t| t as i64)),
@@ -170,7 +170,7 @@ impl MetricsCollector {
         let passed_json = serde_json::to_string(passed)?;
         let failed_json = serde_json::to_string(failed)?;
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| MetricsError::MutexPoisoned)?;
         conn.execute(
             "INSERT INTO validation_runs (skill_name, checks_passed, checks_failed) VALUES (?1, ?2, ?3)",
             (skill, &passed_json, &failed_json),
@@ -197,7 +197,7 @@ impl MetricsCollector {
 
     /// Record a sync event.
     pub fn record_sync_event(&self, operation: &str, files: usize, status: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| MetricsError::MutexPoisoned)?;
         conn.execute(
             "INSERT INTO sync_events (operation, files_count, status) VALUES (?1, ?2, ?3)",
             (operation, files as i64, status),
@@ -224,7 +224,7 @@ impl MetricsCollector {
 
     /// Get recent metric events across all tables.
     pub fn get_recent_events(&self, limit: usize) -> Result<Vec<MetricEvent>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| MetricsError::MutexPoisoned)?;
         let mut events = Vec::new();
 
         // Get recent skill invocations
@@ -315,7 +315,7 @@ impl MetricsCollector {
 
     /// Get statistics for a specific skill.
     pub fn get_skill_stats(&self, skill: &str) -> Result<SkillStats> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| MetricsError::MutexPoisoned)?;
         let mut stmt = conn.prepare(
             "SELECT
                 COUNT(*) as total,
@@ -348,7 +348,7 @@ impl MetricsCollector {
     ///
     /// Returns the total number of rows deleted.
     pub fn cleanup_old_data(&self, days: u32) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| MetricsError::MutexPoisoned)?;
         let cutoff = format!("-{} days", days);
 
         let mut total_deleted = 0usize;

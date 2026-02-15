@@ -3,19 +3,19 @@
     let skills = [];
     let events = [];
     let selectedSkill = null;
-    let ws = null;
 
     function escapeHtml(text) {
         const div = document.createElement('div');
         div.textContent = text;
-        return div.textContent;
+        return div.innerHTML;
     }
 
     async function refresh() {
         try {
             const res = await fetch('/api/skills');
-            skills = await res.json();
-            document.getElementById('skill-count').textContent = skills.length;
+            const data = await res.json();
+            skills = data.items || [];
+            document.getElementById('skill-count').textContent = data.total || skills.length;
             renderSkills();
         } catch (e) {
             console.error('Failed to fetch skills:', e);
@@ -166,31 +166,15 @@
         content.appendChild(dl);
     }
 
-    function connectWebSocket() {
-        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        ws = new WebSocket(proto + '//' + location.host + '/ws');
-        ws.onmessage = (e) => {
-            const event = JSON.parse(e.data);
-            events.unshift(event);
-            if (events.length > 100) events.pop();
-            document.getElementById('event-count').textContent = events.length;
-            renderEvents();
-        };
-        ws.onclose = () => {
-            setTimeout(connectWebSocket, 3000);
-        };
+    // Initialize once
+    function init() {
+        refresh();
+        setInterval(refresh, 30000);
     }
 
-    // Initialize
-    document.addEventListener('DOMContentLoaded', async () => {
-        await refresh();
-        connectWebSocket();
-        setInterval(refresh, 30000);
-    });
-
-    // Also run if DOM already loaded
-    if (document.readyState !== 'loading') {
-        refresh().then(connectWebSocket);
-        setInterval(refresh, 30000);
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
     }
 })();

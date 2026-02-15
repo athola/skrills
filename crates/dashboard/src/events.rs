@@ -2,7 +2,8 @@
 
 use std::time::Duration;
 
-use crossterm::event::{self, Event as CrosstermEvent, KeyEvent};
+use crossterm::event::{Event as CrosstermEvent, EventStream, KeyEvent};
+use futures::StreamExt;
 use tokio::sync::mpsc;
 
 /// Dashboard events.
@@ -28,27 +29,33 @@ impl EventHandler {
         let (tx, rx) = mpsc::unbounded_channel();
         let tx_clone = tx.clone();
 
-        // Spawn event polling task
+        // Spawn async event polling task using EventStream (non-blocking)
         tokio::spawn(async move {
+            let mut reader = EventStream::new();
+            let mut interval = tokio::time::interval(tick_rate);
+
             loop {
-                if event::poll(tick_rate).unwrap_or(false) {
-                    match event::read() {
-                        Ok(CrosstermEvent::Key(key)) => {
-                            if tx_clone.send(Event::Key(key)).is_err() {
-                                break;
+                tokio::select! {
+                    maybe_event = reader.next() => {
+                        match maybe_event {
+                            Some(Ok(CrosstermEvent::Key(key))) => {
+                                if tx_clone.send(Event::Key(key)).is_err() {
+                                    break;
+                                }
                             }
-                        }
-                        Ok(CrosstermEvent::Resize(w, h)) => {
-                            if tx_clone.send(Event::Resize(w, h)).is_err() {
-                                break;
+                            Some(Ok(CrosstermEvent::Resize(w, h))) => {
+                                if tx_clone.send(Event::Resize(w, h)).is_err() {
+                                    break;
+                                }
                             }
+                            Some(Err(_)) | None => break,
+                            _ => {}
                         }
-                        _ => {}
                     }
-                } else {
-                    // Tick event
-                    if tx_clone.send(Event::Tick).is_err() {
-                        break;
+                    _ = interval.tick() => {
+                        if tx_clone.send(Event::Tick).is_err() {
+                            break;
+                        }
                     }
                 }
             }

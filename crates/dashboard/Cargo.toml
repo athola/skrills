@@ -23,6 +23,7 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 
 # Async
 tokio = { workspace = true, features = ["sync", "time"] }
+futures = "0.3"
 
 # Error handling
 anyhow = { workspace = true }

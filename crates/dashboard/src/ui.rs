@@ -200,7 +200,7 @@ fn draw_metrics_panel(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_footer(f: &mut Frame, _app: &App, area: Rect) {
-    let text = " q:Quit | Tab:Switch Panel | j/k:Navigate | ?:Help | r:Refresh | v:Validate ";
+    let text = " q:Quit | Tab:Switch Panel | j/k:Navigate | ?:Help ";
 
     let footer = Paragraph::new(text)
         .style(Style::default().fg(Color::DarkGray))
@@ -222,9 +222,6 @@ Keyboard Shortcuts:
   k, Up      Select previous item
   Home       Jump to first item
   End        Jump to last item
-  r          Refresh skills list
-  v          Validate selected skill
-  s          Sync skills
   ?          Toggle this help
 
 Panels:

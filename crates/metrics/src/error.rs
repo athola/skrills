@@ -24,6 +24,10 @@ pub enum MetricsError {
     /// Channel send error.
     #[error("channel send error")]
     ChannelSend,
+
+    /// Mutex poisoned.
+    #[error("Mutex poisoned")]
+    MutexPoisoned,
 }
 
 /// Result type for metrics operations.

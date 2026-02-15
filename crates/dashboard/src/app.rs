@@ -202,8 +202,27 @@ impl Dashboard {
         }
     }
 
+    /// Restore terminal to normal state.
+    fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) {
+        let _ = disable_raw_mode();
+        let _ = execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        );
+        let _ = terminal.show_cursor();
+    }
+
     /// Run the dashboard.
     pub async fn run(self) -> Result<()> {
+        // Install panic hook to restore terminal on panic
+        let original_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+            original_hook(info);
+        }));
+
         // Setup terminal
         enable_raw_mode()?;
         let mut stdout = io::stdout();
@@ -211,6 +230,15 @@ impl Dashboard {
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
+        let result = self.run_inner(&mut terminal).await;
+
+        // Always restore terminal, even on error
+        Self::restore_terminal(&mut terminal);
+
+        result
+    }
+
+    async fn run_inner(self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
         // Create app state
         let mut app = App::new();
 
@@ -251,15 +279,6 @@ impl Dashboard {
                 }
             }
         }
-
-        // Restore terminal
-        disable_raw_mode()?;
-        execute!(
-            terminal.backend_mut(),
-            LeaveAlternateScreen,
-            DisableMouseCapture
-        )?;
-        terminal.show_cursor()?;
 
         Ok(())
     }

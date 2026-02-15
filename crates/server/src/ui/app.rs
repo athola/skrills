@@ -2,22 +2,6 @@
 
 use leptos::prelude::*;
 
-/// Skill data for display.
-#[derive(Clone, Debug)]
-pub struct SkillInfo {
-    pub name: String,
-    pub path: String,
-    pub source: String,
-    pub description: Option<String>,
-}
-
-/// Event data for activity feed.
-#[derive(Clone, Debug)]
-pub struct EventInfo {
-    pub event_type: String,
-    pub detail: String,
-}
-
 /// Main dashboard application component.
 #[component]
 pub fn App() -> impl IntoView {
