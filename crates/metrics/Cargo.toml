@@ -22,6 +22,7 @@ dirs.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 rusqlite = { version = "0.38", features = ["bundled"] }
 thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

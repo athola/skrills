@@ -272,7 +272,12 @@ impl Dashboard {
         let original_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             let _ = disable_raw_mode();
-            let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+            let _ = execute!(
+                io::stdout(),
+                LeaveAlternateScreen,
+                DisableMouseCapture,
+                crossterm::cursor::Show
+            );
             original_hook(info);
         }));
 
@@ -313,18 +318,19 @@ impl Dashboard {
             tokio::select! {
                 event = events.next() => {
                     match event {
-                        Event::Key(key) => {
+                        Some(Event::Key(key)) => {
                             app.on_key(key.code);
                             if app.should_quit {
                                 break;
                             }
                         }
-                        Event::Tick => {
+                        Some(Event::Tick) => {
                             // Periodic refresh
                         }
-                        Event::Resize(_, _) => {
+                        Some(Event::Resize(_, _)) => {
                             // Terminal handles resize
                         }
+                        None => break, // Event channel closed
                     }
                 }
                 Ok(metric) = rx.recv() => {

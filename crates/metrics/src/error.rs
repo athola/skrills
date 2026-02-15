@@ -28,6 +28,10 @@ pub enum MetricsError {
     /// Mutex poisoned.
     #[error("Mutex poisoned")]
     MutexPoisoned,
+
+    /// Invalid argument.
+    #[error("invalid argument: {0}")]
+    InvalidArgument(String),
 }
 
 /// Result type for metrics operations.

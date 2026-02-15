@@ -106,6 +106,15 @@ impl MetricsCollector {
     /// For in-memory collectors, this saves the database to the specified path.
     /// For persistent collectors, this is a no-op (data is already on disk).
     pub fn flush_to_disk(&self, path: &Path) -> Result<()> {
+        // Reject paths with directory traversal components
+        for component in path.components() {
+            if matches!(component, std::path::Component::ParentDir) {
+                return Err(MetricsError::InvalidArgument(
+                    "path must not contain '..' components".into(),
+                ));
+            }
+        }
+
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -265,8 +274,30 @@ impl MetricsCollector {
         })?;
         for val in validations {
             let (id, skill_name, passed_json, failed_json, created_at) = val?;
-            let checks_passed: Vec<String> = serde_json::from_str(&passed_json).unwrap_or_default();
-            let checks_failed: Vec<String> = serde_json::from_str(&failed_json).unwrap_or_default();
+            let checks_passed: Vec<String> = match serde_json::from_str(&passed_json) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        id,
+                        skill_name = %skill_name,
+                        error = %e,
+                        "failed to deserialize checks_passed JSON, skipping row"
+                    );
+                    continue;
+                }
+            };
+            let checks_failed: Vec<String> = match serde_json::from_str(&failed_json) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        id,
+                        skill_name = %skill_name,
+                        error = %e,
+                        "failed to deserialize checks_failed JSON, skipping row"
+                    );
+                    continue;
+                }
+            };
             events.push(MetricEvent::Validation {
                 id,
                 skill_name,
@@ -348,6 +379,12 @@ impl MetricsCollector {
     ///
     /// Returns the total number of rows deleted.
     pub fn cleanup_old_data(&self, days: u32) -> Result<usize> {
+        if days == 0 || days > 3650 {
+            return Err(MetricsError::InvalidArgument(format!(
+                "days must be between 1 and 3650, got {days}"
+            )));
+        }
+
         let conn = self.conn.lock().map_err(|_| MetricsError::MutexPoisoned)?;
         let cutoff = format!("-{} days", days);
 
@@ -374,12 +411,6 @@ impl MetricsCollector {
     /// Apply default retention policy (30 days).
     pub fn apply_retention_policy(&self) -> Result<usize> {
         self.cleanup_old_data(30)
-    }
-}
-
-impl Default for MetricsCollector {
-    fn default() -> Self {
-        Self::new().expect("Failed to create in-memory metrics collector")
     }
 }
 
@@ -621,5 +652,59 @@ mod tests {
         let persistent = MetricsCollector::persistent(db_path).unwrap();
         let stats = persistent.get_skill_stats("flush-skill").unwrap();
         assert_eq!(stats.total_invocations, 1);
+    }
+
+    #[test]
+    fn test_flush_to_disk_rejects_path_traversal() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        let malicious = Path::new("/tmp/../etc/passwd");
+        let result = collector.flush_to_disk(malicious);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, MetricsError::InvalidArgument(_)),
+            "expected InvalidArgument, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_flush_to_disk_allows_normal_paths() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let normal_path = temp_dir.path().join("subdir").join("metrics.db");
+        assert!(collector.flush_to_disk(&normal_path).is_ok());
+    }
+
+    #[test]
+    fn test_cleanup_old_data_rejects_zero_days() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        let result = collector.cleanup_old_data(0);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, MetricsError::InvalidArgument(_)),
+            "expected InvalidArgument, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_cleanup_old_data_rejects_excessive_days() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        let result = collector.cleanup_old_data(9999);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, MetricsError::InvalidArgument(_)),
+            "expected InvalidArgument, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_cleanup_old_data_accepts_boundary_values() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        // 1 day (lower bound) should succeed
+        assert!(collector.cleanup_old_data(1).is_ok());
+        // 3650 days (upper bound) should succeed
+        assert!(collector.cleanup_old_data(3650).is_ok());
     }
 }

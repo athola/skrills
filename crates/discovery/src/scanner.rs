@@ -575,7 +575,7 @@ pub fn skill_roots_or_default(custom: &[PathBuf]) -> Vec<SkillRoot> {
                 } else if path_str.contains("copilot") {
                     SkillSource::Copilot
                 } else {
-                    SkillSource::Extra(i as u32)
+                    SkillSource::Extra(u32::try_from(i).unwrap_or(u32::MAX))
                 };
                 SkillRoot {
                     root: p.clone(),

@@ -28,16 +28,7 @@ pub enum SkillSource {
 
 impl std::fmt::Display for SkillSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SkillSource::Codex => write!(f, "codex"),
-            SkillSource::Claude => write!(f, "claude"),
-            SkillSource::Copilot => write!(f, "copilot"),
-            SkillSource::Marketplace => write!(f, "marketplace"),
-            SkillSource::Cache => write!(f, "cache"),
-            SkillSource::Mirror => write!(f, "mirror"),
-            SkillSource::Agent => write!(f, "agent"),
-            SkillSource::Extra(n) => write!(f, "extra{n}"),
-        }
+        f.write_str(&self.label())
     }
 }
 

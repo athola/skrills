@@ -48,7 +48,11 @@ impl EventHandler {
                                     break;
                                 }
                             }
-                            Some(Err(_)) | None => break,
+                            Some(Err(e)) => {
+                        tracing::debug!(error = %e, "crossterm event stream error");
+                        break;
+                    }
+                    None => break,
                             _ => {}
                         }
                     }
@@ -64,8 +68,8 @@ impl EventHandler {
         Self { rx, _tx: tx }
     }
 
-    /// Get next event.
-    pub async fn next(&mut self) -> Event {
-        self.rx.recv().await.unwrap_or(Event::Tick)
+    /// Get next event, or `None` if the event channel has closed.
+    pub async fn next(&mut self) -> Option<Event> {
+        self.rx.recv().await
     }
 }

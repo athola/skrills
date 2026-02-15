@@ -46,6 +46,15 @@ impl SkillCache {
         }
     }
 
+    /// Get cached skills without refreshing (for read-lock callers).
+    pub fn get_cached(&self) -> Option<Vec<SkillMeta>> {
+        if self.is_valid() {
+            Some(self.skills.clone())
+        } else {
+            None
+        }
+    }
+
     /// Check if the cache is still valid.
     fn is_valid(&self) -> bool {
         self.last_refresh
@@ -185,9 +194,10 @@ async fn list_skills(
 ) -> Json<PaginatedResponse<SkillResponse>> {
     let roots = skill_roots_or_default(&state.skill_dirs);
 
-    let skills = {
-        let mut cache = state.cache.write().await;
-        cache.get_or_refresh(&roots)
+    let skills = if let Some(cached) = state.cache.read().await.get_cached() {
+        cached
+    } else {
+        state.cache.write().await.get_or_refresh(&roots)
     };
 
     let total = skills.len();
@@ -224,9 +234,10 @@ async fn get_skill(
 ) -> Result<Json<SkillResponse>, StatusCode> {
     let roots = skill_roots_or_default(&state.skill_dirs);
 
-    let skills = {
-        let mut cache = state.cache.write().await;
-        cache.get_or_refresh(&roots)
+    let skills = if let Some(cached) = state.cache.read().await.get_cached() {
+        cached
+    } else {
+        state.cache.write().await.get_or_refresh(&roots)
     };
 
     skills
