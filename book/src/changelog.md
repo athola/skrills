@@ -1,5 +1,12 @@
 # Changelog Highlights
 
+## 0.6.0 (2026-02-15)
+
+- **Discovery**: Frontmatter-based skill deduplication across roots using `name` field and Jaccard similarity on descriptions. Skills with matching frontmatter identity are consolidated regardless of path differences.
+- **Dashboard**: Sortable skills panel (press `s` to toggle alphabetical/discovery order), stateful list scrolling, and multi-location display showing all roots where a skill was discovered.
+- **Dashboard**: Extracted `SkillLocation` struct to track per-skill discovery sources and paths. Metrics panel shows location count and source details.
+- **Fix**: Corrected plugin.json command paths from `../commands/` to `./commands/`.
+
 ## 0.5.6 (2026-01-28)
 
 - **Testing**: Added BDD-style unit tests for skill management modules (deprecation, pre-commit, profiling, rollback, usage-report) covering serialization, parsing, and validation logic.

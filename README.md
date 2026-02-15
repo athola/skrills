@@ -24,7 +24,7 @@ Skills support engine for Claude Code, Codex CLI, and GitHub Copilot CLI.
 
 Skrills validates skills against Claude Code (permissive), Codex CLI (strict), and Copilot CLI (strict) rules. It syncs skills, commands, agents, MCP servers, and preferences across all three environments, preventing configuration drift. The validation engine derives missing YAML frontmatter from file paths and content to fix common errors automatically.
 
-For optimization, Skrills analyzes token usage per skill and suggests reductions to fit context windows. It resolves skill dependencies with cycle detection and semantic versioning constraints. The built-in MCP server provides over 40 tools for validation, sync, and project-aware skill generation, while session mining improves recommendations based on actual usage.
+For optimization, Skrills analyzes token usage per skill and suggests reductions to fit context windows. It resolves skill dependencies with cycle detection and semantic versioning constraints. The built-in MCP server provides over 40 tools for validation, sync, and project-aware skill generation, while session mining improves recommendations based on actual usage. A visualization dashboard (TUI and browser) shows discovered skills, validation status, and usage metrics at a glance.
 
 ## Demo
 
@@ -61,10 +61,10 @@ skrills analyze --min-tokens 1000 --suggestions
 # Sync from Claude to all other CLIs
 skrills sync-all
 
-# Start MCP server
+# Start MCP server (browser dashboard at http://localhost:<port>)
 skrills serve
 
-# Interactive mode
+# Interactive TUI dashboard
 skrills tui
 ```
 
@@ -102,7 +102,7 @@ skrills skill-profile my-skill
 
 Claude Code, Codex CLI, and Copilot CLI have different requirements for skill definitions. Codex and Copilot require YAML frontmatter with specific character limits (`name` max 100, `description` max 500), while Claude is permissive. Skrills catches these discrepancies at validation time, preventing runtime errors.
 
-The sync system uses file hashing to respect manual edits, ensuring user changes aren't overwritten. Token analytics and dependency resolution help maintain a clean, efficient skill library within context limits.
+The sync system uses file hashing to respect manual edits, ensuring user changes aren't overwritten. Token analytics and dependency resolution help maintain a clean, efficient skill library within context limits. Discovery deduplicates skills across roots using frontmatter identity matching, so the same skill installed in multiple locations appears once.
 
 ## Limitations
 
@@ -120,6 +120,7 @@ The sync system uses file hashing to respect manual edits, ensuring user changes
 | `analyze` | Token counting, dependency analysis, optimization |
 | `intelligence` | Recommendations, project analysis, skill generation |
 | `sync` | Multi-directional sync with adapters for each CLI |
+| `dashboard` | TUI and browser-based skill visualization |
 | `discovery` | Skill discovery and ranking |
 | `state` | Environment config, manifest settings, runtime overrides |
 | `subagents` | Shared subagent runtime and backends |

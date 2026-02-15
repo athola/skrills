@@ -1016,6 +1016,7 @@ mod tests {
                 root: PathBuf::from("/tmp"),
                 hash: "x".to_string(),
                 description: None,
+                frontmatter_name: None,
             },
             SkillMeta {
                 name: "Baz".to_string(),
@@ -1024,6 +1025,7 @@ mod tests {
                 root: PathBuf::from("/tmp"),
                 hash: "y".to_string(),
                 description: None,
+                frontmatter_name: None,
             },
         ];
 

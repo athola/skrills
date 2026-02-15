@@ -677,6 +677,7 @@ mod tests {
             root: path.clone(),
             hash: hash_file(&skill_path).unwrap(),
             description: None,
+            frontmatter_name: None,
         }];
         let reference = render_skills_reference(&skills);
         assert!(reference.contains("Total: 1 skills"));
@@ -696,6 +697,7 @@ mod tests {
             root: tmp.path().join("codex/skills"),
             hash: "abc".into(),
             description: None,
+            frontmatter_name: None,
         }];
         sync_agents_with_assets(&agents, &skills, &[])?;
         let text = fs::read_to_string(&agents)?;
@@ -719,6 +721,7 @@ mod tests {
             root: tmp.path().join("codex/skills"),
             hash: "abc".into(),
             description: None,
+            frontmatter_name: None,
         }];
         let reference = render_skills_reference(&skills);
         assert!(reference.contains("skills-cache.json"));

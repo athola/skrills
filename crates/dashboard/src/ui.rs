@@ -5,7 +5,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 
-use crate::app::{App, FocusPanel};
+use crate::app::{App, FocusPanel, SortOrder};
 
 /// RFC3339 timestamp display length (YYYY-MM-DDTHH:MM:SS).
 const TIMESTAMP_DISPLAY_LEN: usize = 19;
@@ -20,7 +20,7 @@ fn focused_border_style(focused: bool) -> Style {
 }
 
 /// Draw the dashboard UI.
-pub fn draw(f: &mut Frame, app: &App) {
+pub fn draw(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -63,7 +63,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(header, area);
 }
 
-fn draw_main(f: &mut Frame, app: &App, area: Rect) {
+fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -86,43 +86,45 @@ fn draw_main(f: &mut Frame, app: &App, area: Rect) {
     draw_metrics_panel(f, app, right_chunks[1]);
 }
 
-fn draw_skills_panel(f: &mut Frame, app: &App, area: Rect) {
+fn draw_skills_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let border_style = focused_border_style(app.focus == FocusPanel::Skills);
 
     let items: Vec<ListItem> = app
         .skills
         .iter()
-        .enumerate()
-        .map(|(i, skill)| {
+        .map(|skill| {
             let status = match skill.valid {
                 Some(true) => "[OK]",
                 Some(false) => "[ERR]",
                 None => "[--]",
             };
 
-            let style = if i == app.skill_index {
-                Style::default().bg(Color::DarkGray).fg(Color::White)
-            } else {
-                match skill.valid {
-                    Some(true) => Style::default().fg(Color::Green),
-                    Some(false) => Style::default().fg(Color::Red),
-                    None => Style::default().fg(Color::Gray),
-                }
+            let style = match skill.valid {
+                Some(true) => Style::default().fg(Color::Green),
+                Some(false) => Style::default().fg(Color::Red),
+                None => Style::default().fg(Color::Gray),
             };
 
-            let line = format!("{} {} ({})", status, skill.name, skill.invocations);
+            let line = format!("{} {}", status, skill.name);
             ListItem::new(line).style(style)
         })
         .collect();
 
-    let list = List::new(items).block(
-        Block::default()
-            .title(" Skills ")
-            .borders(Borders::ALL)
-            .border_style(border_style),
-    );
+    let title = match app.sort_order {
+        SortOrder::Discovery => " Skills ",
+        SortOrder::Alphabetical => " Skills [A-Z] ",
+    };
 
-    f.render_widget(list, area);
+    let list = List::new(items)
+        .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White))
+        .block(
+            Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(border_style),
+        );
+
+    f.render_stateful_widget(list, area, &mut app.skill_list_state);
 }
 
 fn draw_activity_panel(f: &mut Frame, app: &App, area: Rect) {
@@ -159,39 +161,39 @@ fn draw_activity_panel(f: &mut Frame, app: &App, area: Rect) {
 fn draw_metrics_panel(f: &mut Frame, app: &App, area: Rect) {
     let border_style = focused_border_style(app.focus == FocusPanel::Metrics);
 
-    let content = if let Some(stats) = &app.selected_stats {
-        let success_rate = if stats.total_invocations > 0 {
-            (stats.successful_invocations as f64 / stats.total_invocations as f64) * 100.0
+    let content = if let Some(skill) = app.skills.get(app.skill_index) {
+        let mut lines = vec![format!("Skill: {}", skill.name)];
+
+        // Show stats if available
+        if let Some(stats) = &app.selected_stats {
+            let success_rate = if stats.total_invocations > 0 {
+                (stats.successful_invocations as f64 / stats.total_invocations as f64) * 100.0
+            } else {
+                0.0
+            };
+            lines.push(format!("Invocations: {}", stats.total_invocations));
+            lines.push(format!("Success Rate: {:.1}%", success_rate));
+            lines.push(format!("Avg Duration: {:.1}ms", stats.avg_duration_ms));
+            lines.push(format!("Total Tokens: {}", stats.total_tokens));
         } else {
-            0.0
-        };
-        format!(
-            "Skill: {}\n\
-             Invocations: {}\n\
-             Success Rate: {:.1}%\n\
-             Avg Duration: {:.1}ms\n\
-             Total Tokens: {}",
-            app.skills
-                .get(app.skill_index)
-                .map(|s| s.name.as_str())
-                .unwrap_or("-"),
-            stats.total_invocations,
-            success_rate,
-            stats.avg_duration_ms,
-            stats.total_tokens
-        )
-    } else if let Some(skill) = app.skills.get(app.skill_index) {
-        format!(
-            "Skill: {}\nURI: {}\nInvocations: {}\n\nNo detailed stats available",
-            skill.name, skill.uri, skill.invocations
-        )
+            lines.push(format!("Invocations: {}", skill.invocations));
+        }
+
+        // Show all discovered locations
+        lines.push(String::new());
+        lines.push(format!("Locations ({})", skill.locations.len()));
+        for (i, loc) in skill.locations.iter().enumerate() {
+            lines.push(format!("  {}. [{}] {}", i + 1, loc.source, loc.path));
+        }
+
+        lines.join("\n")
     } else {
         "No skill selected".to_string()
     };
 
     let paragraph = Paragraph::new(content).wrap(Wrap { trim: true }).block(
         Block::default()
-            .title(" Metrics ")
+            .title(" Skill Info ")
             .borders(Borders::ALL)
             .border_style(border_style),
     );
@@ -200,7 +202,7 @@ fn draw_metrics_panel(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_footer(f: &mut Frame, _app: &App, area: Rect) {
-    let text = " q:Quit | Tab:Switch Panel | j/k:Navigate | ?:Help ";
+    let text = " q:Quit | Tab:Switch Panel | j/k:Navigate | s:Sort | ?:Help ";
 
     let footer = Paragraph::new(text)
         .style(Style::default().fg(Color::DarkGray))
@@ -222,6 +224,7 @@ Keyboard Shortcuts:
   k, Up      Select previous item
   Home       Jump to first item
   End        Jump to last item
+  s          Toggle sort (discovery / A-Z)
   ?          Toggle this help
 
 Panels:

@@ -137,6 +137,12 @@ pub struct SkillMeta {
     /// Use [`has_valid_description`](Self::has_valid_description) to check this invariant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Optional frontmatter `name` field (used for cross-root deduplication).
+    ///
+    /// When skills from different roots share the same frontmatter name and
+    /// similar descriptions, they are treated as duplicates regardless of path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frontmatter_name: Option<String>,
 }
 
 impl SkillMeta {
@@ -160,6 +166,7 @@ impl SkillMeta {
     ///     root: PathBuf::from("/skills"),
     ///     hash: "abc123".to_string(),
     ///     description: Some("A helpful skill".to_string()),
+    ///     frontmatter_name: None,
     /// };
     /// assert!(meta.has_valid_description());
     ///
@@ -750,6 +757,7 @@ Content."#,
             root: PathBuf::from("/skills"),
             hash: "abc123".to_string(),
             description,
+            frontmatter_name: None,
         }
     }
 
