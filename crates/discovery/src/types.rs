@@ -95,6 +95,63 @@ pub fn parse_source_key(key: &str) -> Option<SkillSource> {
     }
 }
 
+/// Category of a hookify rule.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RuleCategory {
+    /// Pre-commit hook rules.
+    PreCommit,
+    /// Post-commit hook rules.
+    PostCommit,
+    /// Pre-push hook rules.
+    PrePush,
+    /// User-prompt-submit hook rules.
+    PromptSubmit,
+    /// Notification hook rules.
+    Notification,
+    /// Other/custom hook rules.
+    Other(String),
+}
+
+impl RuleCategory {
+    /// Returns the category as a string slice.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::PreCommit => "pre-commit",
+            Self::PostCommit => "post-commit",
+            Self::PrePush => "pre-push",
+            Self::PromptSubmit => "prompt-submit",
+            Self::Notification => "notification",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl std::fmt::Display for RuleCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Discovered hookify rule metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuleMeta {
+    /// Rule name.
+    pub name: String,
+    /// Path to the rule configuration file.
+    pub path: PathBuf,
+    /// Discovery source (e.g. "claude", "project").
+    pub source: String,
+    /// Rule category/trigger event.
+    pub category: RuleCategory,
+    /// Whether the rule is currently enabled.
+    pub enabled: bool,
+    /// Optional description of the rule.
+    pub description: Option<String>,
+    /// Command or script the rule executes.
+    pub command: Option<String>,
+}
+
 /// Represents a root directory where skills are discovered, along with its associated source type.
 #[derive(Debug, Clone)]
 pub struct SkillRoot {
@@ -854,5 +911,95 @@ Content."#,
         // Should still be valid if there's actual content
         let meta = make_skill_meta(Some("  valid content  ".to_string()));
         assert!(meta.has_valid_description());
+    }
+
+    // ============================================================
+    // RuleCategory tests
+    // ============================================================
+
+    #[test]
+    fn rule_category_as_str_known_variants() {
+        assert_eq!(RuleCategory::PreCommit.as_str(), "pre-commit");
+        assert_eq!(RuleCategory::PostCommit.as_str(), "post-commit");
+        assert_eq!(RuleCategory::PrePush.as_str(), "pre-push");
+        assert_eq!(RuleCategory::PromptSubmit.as_str(), "prompt-submit");
+        assert_eq!(RuleCategory::Notification.as_str(), "notification");
+    }
+
+    #[test]
+    fn rule_category_as_str_other() {
+        let cat = RuleCategory::Other("custom-hook".to_string());
+        assert_eq!(cat.as_str(), "custom-hook");
+    }
+
+    #[test]
+    fn rule_category_display() {
+        assert_eq!(RuleCategory::PreCommit.to_string(), "pre-commit");
+        assert_eq!(
+            RuleCategory::Other("my-hook".to_string()).to_string(),
+            "my-hook"
+        );
+    }
+
+    #[test]
+    fn rule_category_serialization_roundtrip() {
+        let categories = vec![
+            RuleCategory::PreCommit,
+            RuleCategory::PostCommit,
+            RuleCategory::PrePush,
+            RuleCategory::PromptSubmit,
+            RuleCategory::Notification,
+            RuleCategory::Other("custom".to_string()),
+        ];
+        for cat in categories {
+            let json = serde_json::to_string(&cat).unwrap();
+            let deserialized: RuleCategory = serde_json::from_str(&json).unwrap();
+            assert_eq!(cat, deserialized);
+        }
+    }
+
+    // ============================================================
+    // RuleMeta tests
+    // ============================================================
+
+    #[test]
+    fn rule_meta_serialization_roundtrip() {
+        let rule = RuleMeta {
+            name: "pre-commit-lint".to_string(),
+            path: PathBuf::from("/home/user/.claude/hooks/pre-commit-lint.json"),
+            source: "user".to_string(),
+            category: RuleCategory::PreCommit,
+            enabled: true,
+            description: Some("Runs linter before commit".to_string()),
+            command: Some("cargo clippy".to_string()),
+        };
+        let json = serde_json::to_string(&rule).unwrap();
+        let deserialized: RuleMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.name, "pre-commit-lint");
+        assert_eq!(deserialized.category, RuleCategory::PreCommit);
+        assert!(deserialized.enabled);
+        assert_eq!(
+            deserialized.description,
+            Some("Runs linter before commit".to_string())
+        );
+    }
+
+    #[test]
+    fn rule_meta_with_none_fields() {
+        let rule = RuleMeta {
+            name: "basic".to_string(),
+            path: PathBuf::from("/tmp/basic.json"),
+            source: "project".to_string(),
+            category: RuleCategory::Other("misc".to_string()),
+            enabled: false,
+            description: None,
+            command: None,
+        };
+        let json = serde_json::to_string(&rule).unwrap();
+        let deserialized: RuleMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.name, "basic");
+        assert!(!deserialized.enabled);
+        assert!(deserialized.description.is_none());
+        assert!(deserialized.command.is_none());
     }
 }

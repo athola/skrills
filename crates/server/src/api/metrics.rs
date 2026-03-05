@@ -14,6 +14,9 @@
 //! | GET | `/api/metrics/validation/:skill` | Get validation history for a skill |
 //! | GET | `/api/metrics/sync` | Get recent sync event history |
 //! | GET | `/api/metrics/sync/summary` | Get sync summary statistics |
+//! | GET | `/api/metrics/rules/analytics` | Get overall rule analytics summary |
+//! | GET | `/api/metrics/rules/top` | Get top rules by trigger count |
+//! | GET | `/api/metrics/rules/:rule` | Get effectiveness for a specific rule |
 //!
 //! ## Response Format
 //!
@@ -24,8 +27,8 @@ use serde::Serialize;
 use std::sync::Arc;
 
 use skrills_metrics::{
-    AnalyticsSummary, MetricEvent, MetricsCollector, SkillStats, SyncDetail, SyncSummary, TopSkill,
-    ValidationDetail, ValidationSummary,
+    AnalyticsSummary, MetricEvent, MetricsCollector, RuleAnalyticsSummary, RuleEffectiveness,
+    SkillStats, SyncDetail, SyncSummary, TopSkill, ValidationDetail, ValidationSummary,
 };
 
 /// Metrics API state.
@@ -245,6 +248,75 @@ async fn get_sync_summary(
     Ok(Json(SyncSummaryResponse { summary }))
 }
 
+/// Response wrapper for rule analytics summary.
+#[derive(Debug, Serialize)]
+pub struct RuleAnalyticsSummaryResponse {
+    /// The rule analytics summary data.
+    #[serde(flatten)]
+    pub summary: RuleAnalyticsSummary,
+}
+
+/// Response wrapper for top rules.
+#[derive(Debug, Serialize)]
+pub struct TopRulesResponse {
+    /// Top rules by trigger count.
+    pub rules: Vec<RuleEffectiveness>,
+}
+
+/// Response wrapper for rule effectiveness.
+#[derive(Debug, Serialize)]
+pub struct RuleEffectivenessResponse {
+    /// The rule effectiveness data.
+    #[serde(flatten)]
+    pub effectiveness: RuleEffectiveness,
+}
+
+/// Default limit for top rules query.
+const DEFAULT_TOP_RULES_LIMIT: usize = 10;
+
+/// Get overall rule analytics summary.
+async fn get_rule_analytics_summary(
+    State(state): State<Arc<MetricsState>>,
+) -> Result<Json<RuleAnalyticsSummaryResponse>, StatusCode> {
+    let summary = state
+        .collector
+        .get_rule_analytics_summary()
+        .map_err(|e| {
+            tracing::warn!(error = %e, "Failed to get rule analytics summary");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(Json(RuleAnalyticsSummaryResponse { summary }))
+}
+
+/// Get top rules by trigger count.
+async fn get_top_rules(
+    State(state): State<Arc<MetricsState>>,
+) -> Result<Json<TopRulesResponse>, StatusCode> {
+    let rules = state
+        .collector
+        .get_top_rules(DEFAULT_TOP_RULES_LIMIT)
+        .map_err(|e| {
+            tracing::warn!(error = %e, "Failed to get top rules");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(Json(TopRulesResponse { rules }))
+}
+
+/// Get effectiveness for a specific rule.
+async fn get_rule_effectiveness(
+    State(state): State<Arc<MetricsState>>,
+    axum::extract::Path(rule): axum::extract::Path<String>,
+) -> Result<Json<RuleEffectivenessResponse>, StatusCode> {
+    let effectiveness = state
+        .collector
+        .get_rule_effectiveness(&rule)
+        .map_err(|e| {
+            tracing::warn!(error = %e, rule = %rule, "Failed to get rule effectiveness");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(Json(RuleEffectivenessResponse { effectiveness }))
+}
+
 /// Create metrics API routes.
 pub fn metrics_routes(state: Arc<MetricsState>) -> Router {
     Router::new()
@@ -256,5 +328,8 @@ pub fn metrics_routes(state: Arc<MetricsState>) -> Router {
         .route("/api/metrics/validation/{skill}", get(get_validation_history))
         .route("/api/metrics/sync", get(get_sync_history))
         .route("/api/metrics/sync/summary", get(get_sync_summary))
+        .route("/api/metrics/rules/analytics", get(get_rule_analytics_summary))
+        .route("/api/metrics/rules/top", get(get_top_rules))
+        .route("/api/metrics/rules/{rule}", get(get_rule_effectiveness))
         .with_state(state)
 }

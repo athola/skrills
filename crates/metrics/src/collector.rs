@@ -9,7 +9,8 @@ use tokio::sync::broadcast::{self, Receiver, Sender};
 use crate::error::{MetricsError, Result};
 use crate::schema::init_schema;
 use crate::types::{
-    parse_sync_operation, parse_sync_status, AnalyticsSummary, MetricEvent, SkillStats, SyncDetail,
+    parse_rule_outcome, parse_sync_operation, parse_sync_status, AnalyticsSummary, MetricEvent,
+    RuleAnalyticsSummary, RuleEffectiveness, RuleOutcome, RuleTriggerDetail, SkillStats, SyncDetail,
     SyncOperation, SyncStatus, SyncSummary, TopSkill, ValidationDetail, ValidationSummary,
 };
 
@@ -356,17 +357,39 @@ impl MetricsCollector {
             events.push(sync?);
         }
 
+        // Get recent rule triggers
+        let mut stmt = conn.prepare(
+            "SELECT id, rule_name, category, duration_ms, outcome, created_at
+             FROM rule_triggers ORDER BY created_at DESC LIMIT ?1",
+        )?;
+        let triggers = stmt.query_map([limit as i64], |row| {
+            let outcome_str: String = row.get(4)?;
+            Ok(MetricEvent::RuleTrigger {
+                id: row.get(0)?,
+                rule_name: row.get(1)?,
+                category: row.get(2)?,
+                outcome: parse_rule_outcome(&outcome_str),
+                duration_ms: row.get::<_, Option<i64>>(3)?.map(|d| d as u64),
+                created_at: row.get(5)?,
+            })
+        })?;
+        for trigger in triggers {
+            events.push(trigger?);
+        }
+
         // Sort by created_at descending and take limit
         events.sort_by(|a, b| {
             let a_time = match a {
                 MetricEvent::SkillInvocation { created_at, .. } => created_at,
                 MetricEvent::Validation { created_at, .. } => created_at,
                 MetricEvent::Sync { created_at, .. } => created_at,
+                MetricEvent::RuleTrigger { created_at, .. } => created_at,
             };
             let b_time = match b {
                 MetricEvent::SkillInvocation { created_at, .. } => created_at,
                 MetricEvent::Validation { created_at, .. } => created_at,
                 MetricEvent::Sync { created_at, .. } => created_at,
+                MetricEvent::RuleTrigger { created_at, .. } => created_at,
             };
             b_time.cmp(a_time)
         });
@@ -694,6 +717,173 @@ impl MetricsCollector {
         Ok(summary)
     }
 
+    /// Record a rule trigger event.
+    pub fn record_rule_trigger(
+        &self,
+        rule_name: &str,
+        category: Option<&str>,
+        triggered_by: Option<&str>,
+        duration_ms: Option<u64>,
+        outcome: RuleOutcome,
+        details: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO rule_triggers (rule_name, category, triggered_by, duration_ms, outcome, details) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            (rule_name, category, triggered_by, duration_ms.map(|d| d as i64), outcome.as_str(), details),
+        )?;
+
+        let id = conn.last_insert_rowid();
+        let created_at = conn.query_row(
+            "SELECT created_at FROM rule_triggers WHERE id = ?1",
+            [id],
+            |row| row.get::<_, String>(0),
+        )?;
+
+        drop(conn);
+
+        self.broadcast(MetricEvent::RuleTrigger {
+            id,
+            rule_name: rule_name.to_string(),
+            category: category.map(String::from),
+            outcome,
+            duration_ms,
+            created_at,
+        });
+
+        Ok(())
+    }
+
+    /// Get rule trigger history.
+    pub fn get_rule_trigger_history(&self, rule_name: &str, limit: usize) -> Result<Vec<RuleTriggerDetail>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, rule_name, category, triggered_by, duration_ms, outcome, details, created_at
+             FROM rule_triggers WHERE rule_name = ?1
+             ORDER BY created_at DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![rule_name, limit as i64], |row| {
+            let outcome_str: String = row.get(5)?;
+            Ok(RuleTriggerDetail {
+                id: row.get(0)?,
+                rule_name: row.get(1)?,
+                category: row.get(2)?,
+                triggered_by: row.get(3)?,
+                duration_ms: row.get::<_, Option<i64>>(4)?.map(|d| d as u64),
+                outcome: parse_rule_outcome(&outcome_str),
+                details: row.get(6)?,
+                created_at: row.get(7)?,
+            })
+        })?;
+        let mut details = Vec::new();
+        for row in rows {
+            details.push(row?);
+        }
+        Ok(details)
+    }
+
+    /// Get effectiveness stats for a specific rule.
+    pub fn get_rule_effectiveness(&self, rule_name: &str) -> Result<RuleEffectiveness> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT
+                COUNT(*) as total,
+                COALESCE(SUM(CASE WHEN outcome = 'pass' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN outcome = 'fail' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN outcome = 'skip' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN outcome = 'error' THEN 1 ELSE 0 END), 0),
+                COALESCE(AVG(duration_ms), 0.0)
+             FROM rule_triggers WHERE rule_name = ?1",
+        )?;
+        let stats = stmt.query_row([rule_name], |row| {
+            let total: i64 = row.get(0)?;
+            let fails: i64 = row.get(2)?;
+            let failure_rate = if total > 0 { (fails as f64 / total as f64) * 100.0 } else { 0.0 };
+            Ok(RuleEffectiveness {
+                rule_name: rule_name.to_string(),
+                total_triggers: total as u64,
+                pass_count: row.get::<_, i64>(1)? as u64,
+                fail_count: fails as u64,
+                skip_count: row.get::<_, i64>(3)? as u64,
+                error_count: row.get::<_, i64>(4)? as u64,
+                avg_duration_ms: row.get(5)?,
+                failure_rate,
+            })
+        })?;
+        Ok(stats)
+    }
+
+    /// Get overall rule analytics summary.
+    pub fn get_rule_analytics_summary(&self) -> Result<RuleAnalyticsSummary> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT
+                COUNT(*) as total,
+                COALESCE(SUM(CASE WHEN outcome = 'pass' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN outcome = 'fail' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN outcome = 'skip' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN outcome = 'error' THEN 1 ELSE 0 END), 0),
+                COUNT(DISTINCT rule_name),
+                COALESCE(AVG(duration_ms), 0.0)
+             FROM rule_triggers",
+        )?;
+        let summary = stmt.query_row([], |row| {
+            let total: i64 = row.get(0)?;
+            let fails: i64 = row.get(2)?;
+            let failure_rate = if total > 0 { (fails as f64 / total as f64) * 100.0 } else { 0.0 };
+            Ok(RuleAnalyticsSummary {
+                total_triggers: total as u64,
+                total_passes: row.get::<_, i64>(1)? as u64,
+                total_failures: fails as u64,
+                total_skips: row.get::<_, i64>(3)? as u64,
+                total_errors: row.get::<_, i64>(4)? as u64,
+                unique_rules: row.get::<_, i64>(5)? as u64,
+                avg_duration_ms: row.get(6)?,
+                overall_failure_rate: failure_rate,
+            })
+        })?;
+        Ok(summary)
+    }
+
+    /// Get top rules by trigger count.
+    pub fn get_top_rules(&self, limit: usize) -> Result<Vec<RuleEffectiveness>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT
+                rule_name,
+                COUNT(*) as total,
+                COALESCE(SUM(CASE WHEN outcome = 'pass' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN outcome = 'fail' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN outcome = 'skip' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN outcome = 'error' THEN 1 ELSE 0 END), 0),
+                AVG(duration_ms)
+             FROM rule_triggers
+             GROUP BY rule_name
+             ORDER BY total DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], |row| {
+            let total: i64 = row.get(1)?;
+            let fails: i64 = row.get(3)?;
+            let failure_rate = if total > 0 { (fails as f64 / total as f64) * 100.0 } else { 0.0 };
+            Ok(RuleEffectiveness {
+                rule_name: row.get(0)?,
+                total_triggers: total as u64,
+                pass_count: row.get::<_, i64>(2)? as u64,
+                fail_count: fails as u64,
+                skip_count: row.get::<_, i64>(4)? as u64,
+                error_count: row.get::<_, i64>(5)? as u64,
+                avg_duration_ms: row.get::<_, Option<f64>>(6)?.unwrap_or(0.0),
+                failure_rate,
+            })
+        })?;
+        let mut rules = Vec::new();
+        for row in rows {
+            rules.push(row?);
+        }
+        Ok(rules)
+    }
+
     /// Subscribe to metric events.
     pub fn subscribe(&self) -> Receiver<MetricEvent> {
         self.sender.subscribe()
@@ -726,6 +916,11 @@ impl MetricsCollector {
 
         total_deleted += conn.execute(
             "DELETE FROM sync_events WHERE created_at < datetime('now', ?1)",
+            [&cutoff],
+        )?;
+
+        total_deleted += conn.execute(
+            "DELETE FROM rule_triggers WHERE created_at < datetime('now', ?1)",
             [&cutoff],
         )?;
 
@@ -1241,6 +1436,193 @@ mod tests {
         assert_eq!(summary["total_skills"], 0);
         let skills = report["skills"].as_array().unwrap();
         assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn test_record_rule_trigger() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        collector
+            .record_rule_trigger(
+                "no-unsafe",
+                Some("safety"),
+                Some("ci-pipeline"),
+                Some(42),
+                RuleOutcome::Pass,
+                Some("all clear"),
+            )
+            .unwrap();
+
+        let history = collector.get_rule_trigger_history("no-unsafe", 10).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].rule_name, "no-unsafe");
+        assert_eq!(history[0].category.as_deref(), Some("safety"));
+        assert_eq!(history[0].triggered_by.as_deref(), Some("ci-pipeline"));
+        assert_eq!(history[0].duration_ms, Some(42));
+        assert_eq!(history[0].outcome, RuleOutcome::Pass);
+        assert_eq!(history[0].details.as_deref(), Some("all clear"));
+    }
+
+    #[test]
+    fn test_get_rule_effectiveness() {
+        let collector = MetricsCollector::in_memory().unwrap();
+
+        // Record mixed outcomes
+        collector
+            .record_rule_trigger("lint-check", None, None, Some(10), RuleOutcome::Pass, None)
+            .unwrap();
+        collector
+            .record_rule_trigger("lint-check", None, None, Some(20), RuleOutcome::Pass, None)
+            .unwrap();
+        collector
+            .record_rule_trigger("lint-check", None, None, Some(30), RuleOutcome::Fail, None)
+            .unwrap();
+        collector
+            .record_rule_trigger("lint-check", None, None, Some(40), RuleOutcome::Skip, None)
+            .unwrap();
+        collector
+            .record_rule_trigger("lint-check", None, None, Some(50), RuleOutcome::Error, None)
+            .unwrap();
+
+        let eff = collector.get_rule_effectiveness("lint-check").unwrap();
+        assert_eq!(eff.rule_name, "lint-check");
+        assert_eq!(eff.total_triggers, 5);
+        assert_eq!(eff.pass_count, 2);
+        assert_eq!(eff.fail_count, 1);
+        assert_eq!(eff.skip_count, 1);
+        assert_eq!(eff.error_count, 1);
+        assert!((eff.avg_duration_ms - 30.0).abs() < 0.01);
+        assert!((eff.failure_rate - 20.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_rule_effectiveness_empty() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        let eff = collector.get_rule_effectiveness("nonexistent").unwrap();
+        assert_eq!(eff.total_triggers, 0);
+        assert_eq!(eff.pass_count, 0);
+        assert_eq!(eff.fail_count, 0);
+        assert!((eff.failure_rate - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_rule_analytics_summary() {
+        let collector = MetricsCollector::in_memory().unwrap();
+
+        collector
+            .record_rule_trigger("rule-a", None, None, Some(10), RuleOutcome::Pass, None)
+            .unwrap();
+        collector
+            .record_rule_trigger("rule-a", None, None, Some(20), RuleOutcome::Fail, None)
+            .unwrap();
+        collector
+            .record_rule_trigger("rule-b", None, None, Some(30), RuleOutcome::Skip, None)
+            .unwrap();
+        collector
+            .record_rule_trigger("rule-c", None, None, Some(40), RuleOutcome::Error, None)
+            .unwrap();
+
+        let summary = collector.get_rule_analytics_summary().unwrap();
+        assert_eq!(summary.total_triggers, 4);
+        assert_eq!(summary.total_passes, 1);
+        assert_eq!(summary.total_failures, 1);
+        assert_eq!(summary.total_skips, 1);
+        assert_eq!(summary.total_errors, 1);
+        assert_eq!(summary.unique_rules, 3);
+        assert!((summary.avg_duration_ms - 25.0).abs() < 0.01);
+        assert!((summary.overall_failure_rate - 25.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_rule_analytics_summary_empty() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        let summary = collector.get_rule_analytics_summary().unwrap();
+        assert_eq!(summary.total_triggers, 0);
+        assert_eq!(summary.total_passes, 0);
+        assert_eq!(summary.total_failures, 0);
+        assert_eq!(summary.total_skips, 0);
+        assert_eq!(summary.total_errors, 0);
+        assert_eq!(summary.unique_rules, 0);
+        assert!((summary.overall_failure_rate - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_top_rules() {
+        let collector = MetricsCollector::in_memory().unwrap();
+
+        // Record more triggers for popular-rule
+        for _ in 0..5 {
+            collector
+                .record_rule_trigger("popular-rule", None, None, Some(10), RuleOutcome::Pass, None)
+                .unwrap();
+        }
+        for _ in 0..3 {
+            collector
+                .record_rule_trigger("medium-rule", None, None, Some(20), RuleOutcome::Fail, None)
+                .unwrap();
+        }
+        collector
+            .record_rule_trigger("rare-rule", None, None, Some(30), RuleOutcome::Error, None)
+            .unwrap();
+
+        let top = collector.get_top_rules(2).unwrap();
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].rule_name, "popular-rule");
+        assert_eq!(top[0].total_triggers, 5);
+        assert_eq!(top[1].rule_name, "medium-rule");
+        assert_eq!(top[1].total_triggers, 3);
+
+        // Request all
+        let all = collector.get_top_rules(10).unwrap();
+        assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn test_rule_outcome_display() {
+        assert_eq!(RuleOutcome::Pass.to_string(), "pass");
+        assert_eq!(RuleOutcome::Fail.to_string(), "fail");
+        assert_eq!(RuleOutcome::Skip.to_string(), "skip");
+        assert_eq!(RuleOutcome::Error.to_string(), "error");
+    }
+
+    #[test]
+    fn test_rule_outcome_as_str() {
+        assert_eq!(RuleOutcome::Pass.as_str(), "pass");
+        assert_eq!(RuleOutcome::Fail.as_str(), "fail");
+        assert_eq!(RuleOutcome::Skip.as_str(), "skip");
+        assert_eq!(RuleOutcome::Error.as_str(), "error");
+    }
+
+    #[test]
+    fn test_parse_rule_outcome() {
+        use crate::types::parse_rule_outcome;
+        assert_eq!(parse_rule_outcome("pass"), RuleOutcome::Pass);
+        assert_eq!(parse_rule_outcome("fail"), RuleOutcome::Fail);
+        assert_eq!(parse_rule_outcome("skip"), RuleOutcome::Skip);
+        assert_eq!(parse_rule_outcome("error"), RuleOutcome::Error);
+        // Unknown defaults to Pass
+        assert_eq!(parse_rule_outcome("unknown"), RuleOutcome::Pass);
+        assert_eq!(parse_rule_outcome(""), RuleOutcome::Pass);
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_rule_trigger() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        let mut rx = collector.subscribe();
+
+        collector
+            .record_rule_trigger("sub-rule", Some("test"), None, Some(10), RuleOutcome::Fail, None)
+            .unwrap();
+
+        let event = rx.try_recv().unwrap();
+        if let MetricEvent::RuleTrigger {
+            rule_name, outcome, ..
+        } = event
+        {
+            assert_eq!(rule_name, "sub-rule");
+            assert_eq!(outcome, RuleOutcome::Fail);
+        } else {
+            panic!("Expected RuleTrigger event");
+        }
     }
 
     #[test]

@@ -80,6 +80,112 @@ pub(crate) fn parse_sync_status(s: &str) -> SyncStatus {
     }
 }
 
+/// Outcome of a rule trigger.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RuleOutcome {
+    /// Rule check passed.
+    Pass,
+    /// Rule check failed (violation detected).
+    Fail,
+    /// Rule was skipped.
+    Skip,
+    /// Rule encountered an error.
+    Error,
+}
+
+impl RuleOutcome {
+    /// Returns the outcome as a string slice.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Pass => "pass",
+            Self::Fail => "fail",
+            Self::Skip => "skip",
+            Self::Error => "error",
+        }
+    }
+}
+
+impl std::fmt::Display for RuleOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Parse a rule outcome from a database string.
+pub(crate) fn parse_rule_outcome(s: &str) -> RuleOutcome {
+    match s {
+        "pass" => RuleOutcome::Pass,
+        "fail" => RuleOutcome::Fail,
+        "skip" => RuleOutcome::Skip,
+        "error" => RuleOutcome::Error,
+        _ => RuleOutcome::Pass,
+    }
+}
+
+/// A single rule trigger event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuleTriggerDetail {
+    /// Unique identifier.
+    pub id: i64,
+    /// Name of the rule.
+    pub rule_name: String,
+    /// Rule category.
+    pub category: Option<String>,
+    /// Who or what triggered the rule.
+    pub triggered_by: Option<String>,
+    /// Duration in milliseconds.
+    pub duration_ms: Option<u64>,
+    /// Outcome of the rule trigger.
+    pub outcome: RuleOutcome,
+    /// Additional details.
+    pub details: Option<String>,
+    /// Timestamp of the event.
+    pub created_at: String,
+}
+
+/// Effectiveness stats for a single rule.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RuleEffectiveness {
+    /// Name of the rule.
+    pub rule_name: String,
+    /// Total number of triggers.
+    pub total_triggers: u64,
+    /// Number of pass outcomes.
+    pub pass_count: u64,
+    /// Number of fail outcomes.
+    pub fail_count: u64,
+    /// Number of skip outcomes.
+    pub skip_count: u64,
+    /// Number of error outcomes.
+    pub error_count: u64,
+    /// Average duration in milliseconds.
+    pub avg_duration_ms: f64,
+    /// Failure rate as percentage (0.0 - 100.0).
+    pub failure_rate: f64,
+}
+
+/// Overall rule analytics summary.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RuleAnalyticsSummary {
+    /// Total number of rule triggers.
+    pub total_triggers: u64,
+    /// Total number of pass outcomes.
+    pub total_passes: u64,
+    /// Total number of fail outcomes.
+    pub total_failures: u64,
+    /// Total number of skip outcomes.
+    pub total_skips: u64,
+    /// Total number of error outcomes.
+    pub total_errors: u64,
+    /// Number of unique rules.
+    pub unique_rules: u64,
+    /// Average duration in milliseconds.
+    pub avg_duration_ms: f64,
+    /// Overall failure rate as percentage.
+    pub overall_failure_rate: f64,
+}
+
 /// A recorded metric event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -124,6 +230,21 @@ pub enum MetricEvent {
         files_count: usize,
         /// Status of the operation.
         status: SyncStatus,
+        /// Timestamp of the event.
+        created_at: String,
+    },
+    /// Rule trigger event.
+    RuleTrigger {
+        /// Unique identifier.
+        id: i64,
+        /// Name of the rule.
+        rule_name: String,
+        /// Rule category.
+        category: Option<String>,
+        /// Outcome of the rule trigger.
+        outcome: RuleOutcome,
+        /// Duration in milliseconds.
+        duration_ms: Option<u64>,
         /// Timestamp of the event.
         created_at: String,
     },

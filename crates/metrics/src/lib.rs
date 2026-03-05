@@ -31,6 +31,7 @@ mod types;
 pub use collector::{MetricsCollector, StorageMode};
 pub use error::{MetricsError, Result};
 pub use types::{
-    AnalyticsSummary, MetricEvent, SkillStats, SyncDetail, SyncOperation, SyncStatus, SyncSummary,
-    TopSkill, ValidationDetail, ValidationSummary,
+    AnalyticsSummary, MetricEvent, RuleAnalyticsSummary, RuleEffectiveness, RuleOutcome,
+    RuleTriggerDetail, SkillStats, SyncDetail, SyncOperation, SyncStatus, SyncSummary, TopSkill,
+    ValidationDetail, ValidationSummary,
 };

@@ -355,6 +355,19 @@ impl App {
                     operation, files_count, status_tag
                 )
             }
+            MetricEvent::RuleTrigger {
+                rule_name,
+                ref outcome,
+                ..
+            } => {
+                let tag = match outcome {
+                    skrills_metrics::RuleOutcome::Pass => "OK",
+                    skrills_metrics::RuleOutcome::Fail => "FAIL",
+                    skrills_metrics::RuleOutcome::Skip => "SKIP",
+                    skrills_metrics::RuleOutcome::Error => "ERR",
+                };
+                format!("[RULE] {} - {}", rule_name, tag)
+            }
         };
         self.add_activity(msg);
     }

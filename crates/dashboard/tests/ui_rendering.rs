@@ -8,7 +8,7 @@ use ratatui::{backend::TestBackend, Terminal};
 
 use skrills_dashboard::app::{App, FocusPanel, SkillInfo, SkillLocation, SortOrder, PAGE_SIZE};
 use skrills_dashboard::ui;
-use skrills_metrics::{MetricEvent, SyncOperation, SyncStatus};
+use skrills_metrics::{MetricEvent, RuleOutcome, SyncOperation, SyncStatus};
 
 /// Helper to create a test terminal with a given width and height.
 fn test_terminal(width: u16, height: u16) -> Terminal<TestBackend> {
@@ -687,6 +687,39 @@ fn metric_event_sync() {
     assert!(app.activity[0].message.contains("[SYNC]"));
     assert!(app.activity[0].message.contains("push"));
     assert!(app.activity[0].message.contains("OK"));
+}
+
+#[test]
+fn metric_event_rule_trigger() {
+    let mut app = App::new();
+    app.on_metric_event(MetricEvent::RuleTrigger {
+        id: 6,
+        rule_name: "no-unsafe".to_string(),
+        category: Some("safety".to_string()),
+        outcome: RuleOutcome::Fail,
+        duration_ms: Some(42),
+        created_at: "2025-01-15T10:00:00Z".to_string(),
+    });
+
+    assert_eq!(app.activity.len(), 1);
+    assert!(app.activity[0].message.contains("[RULE]"));
+    assert!(app.activity[0].message.contains("no-unsafe"));
+    assert!(app.activity[0].message.contains("FAIL"));
+
+    // Test pass outcome
+    let mut app2 = App::new();
+    app2.on_metric_event(MetricEvent::RuleTrigger {
+        id: 7,
+        rule_name: "lint-check".to_string(),
+        category: None,
+        outcome: RuleOutcome::Pass,
+        duration_ms: None,
+        created_at: "2025-01-15T10:01:00Z".to_string(),
+    });
+
+    assert_eq!(app2.activity.len(), 1);
+    assert!(app2.activity[0].message.contains("[RULE]"));
+    assert!(app2.activity[0].message.contains("OK"));
 }
 
 // ── Rendering at Different Terminal Sizes ──
