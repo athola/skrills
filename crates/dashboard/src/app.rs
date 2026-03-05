@@ -103,7 +103,7 @@ pub struct ActivityEntry {
 
 impl ActivityEntry {
     fn new(message: String) -> Self {
-        let now = time::OffsetDateTime::now_utc();
+        let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
         let timestamp = format!(
             "{:02}:{:02}:{:02}",
             now.hour(),
@@ -248,7 +248,7 @@ impl App {
         if let Some(latest) = self.activity.first_mut() {
             if latest.message == msg {
                 // Same event as most recent — update timestamp and bump count
-                let now = time::OffsetDateTime::now_utc();
+                let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
                 latest.timestamp = format!(
                     "{:02}:{:02}:{:02}",
                     now.hour(),
@@ -532,7 +532,7 @@ impl Dashboard {
         }
 
         // Update timestamp
-        let now = time::OffsetDateTime::now_utc();
+        let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
         app.last_refresh = now
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|_| "now".to_string());

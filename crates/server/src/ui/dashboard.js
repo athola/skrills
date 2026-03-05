@@ -3,13 +3,17 @@
     let skills = [];
     let events = [];
     let selectedSkill = null;
+    let skillsTotal = 0;
+    let loadingMore = false;
+    const PAGE_SIZE = 50;
 
     async function refresh() {
         try {
-            const res = await fetch('/api/skills');
+            const res = await fetch('/api/skills?limit=' + PAGE_SIZE);
             const data = await res.json();
             skills = data.items || [];
-            document.getElementById('skill-count').textContent = data.total || skills.length;
+            skillsTotal = data.total || skills.length;
+            document.getElementById('skill-count').textContent = skillsTotal;
             renderSkills();
         } catch (e) {
             console.error('Failed to fetch skills:', e);
@@ -26,6 +30,23 @@
         }
 
         document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+    }
+
+    async function loadMoreSkills() {
+        if (loadingMore || skills.length >= skillsTotal) return;
+        loadingMore = true;
+        try {
+            const res = await fetch('/api/skills?limit=' + PAGE_SIZE + '&offset=' + skills.length);
+            const data = await res.json();
+            const newItems = data.items || [];
+            if (newItems.length > 0) {
+                skills = skills.concat(newItems);
+                appendSkills(newItems);
+            }
+        } catch (e) {
+            console.error('Failed to load more skills:', e);
+        }
+        loadingMore = false;
     }
 
     function createSkillItem(skill) {
@@ -65,6 +86,16 @@
         }
 
         skills.forEach(skill => {
+            list.appendChild(createSkillItem(skill));
+        });
+    }
+
+    function appendSkills(newSkills) {
+        const list = document.getElementById('skill-list');
+        // Remove "No skills found" placeholder if present
+        const empty = list.querySelector('.empty');
+        if (empty) empty.remove();
+        newSkills.forEach(skill => {
             list.appendChild(createSkillItem(skill));
         });
     }
@@ -165,6 +196,15 @@
     function init() {
         refresh();
         setInterval(refresh, 30000);
+
+        // Infinite scroll: load more skills when near bottom of the skill list
+        const list = document.getElementById('skill-list');
+        if (list) {
+            list.addEventListener('scroll', () => {
+                const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 100;
+                if (nearBottom) loadMoreSkills();
+            });
+        }
     }
 
     if (document.readyState === 'loading') {

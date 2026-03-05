@@ -2,7 +2,7 @@
 
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 
 use crate::app::{App, FocusPanel, SortOrder};
@@ -236,8 +236,11 @@ Panels:
   Metrics    Stats for selected skill
 "#;
 
+    // Clear the overlay area first so background content doesn't bleed through
+    f.render_widget(Clear, area);
+
     let paragraph = Paragraph::new(help_text)
-        .style(Style::default().fg(Color::White))
+        .style(Style::default().fg(Color::White).bg(Color::Black))
         .block(
             Block::default()
                 .title(" Help ")
