@@ -7,14 +7,22 @@
     let loadingMore = false;
     const PAGE_SIZE = 50;
 
+    let initialized = false;
+
     async function refresh() {
         try {
+            // On first load, fetch page 1. On subsequent refreshes, only
+            // update the total count — don't nuke already-loaded skills.
             const res = await fetch('/api/skills?limit=' + PAGE_SIZE);
             const data = await res.json();
-            skills = data.items || [];
-            skillsTotal = data.total || skills.length;
+            skillsTotal = data.total || 0;
             document.getElementById('skill-count').textContent = skillsTotal;
-            renderSkills();
+
+            if (!initialized) {
+                skills = data.items || [];
+                renderSkills();
+                initialized = true;
+            }
         } catch (e) {
             console.error('Failed to fetch skills:', e);
         }
@@ -192,9 +200,19 @@
         content.appendChild(dl);
     }
 
+    // Load more if the list isn't tall enough to scroll yet
+    function fillIfNeeded() {
+        const list = document.getElementById('skill-list');
+        if (!list) return;
+        // If list content fits without scrollbar and there are more to load
+        if (list.scrollHeight <= list.clientHeight && skills.length < skillsTotal) {
+            loadMoreSkills().then(fillIfNeeded);
+        }
+    }
+
     // Initialize once
     function init() {
-        refresh();
+        refresh().then(fillIfNeeded);
         setInterval(refresh, 30000);
 
         // Infinite scroll: load more skills when near bottom of the skill list
