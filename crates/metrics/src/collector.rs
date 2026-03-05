@@ -8,7 +8,10 @@ use tokio::sync::broadcast::{self, Receiver, Sender};
 
 use crate::error::{MetricsError, Result};
 use crate::schema::init_schema;
-use crate::types::{parse_sync_operation, parse_sync_status, MetricEvent, SkillStats, SyncOperation, SyncStatus};
+use crate::types::{
+    parse_sync_operation, parse_sync_status, AnalyticsSummary, MetricEvent, SkillStats, SyncDetail,
+    SyncOperation, SyncStatus, SyncSummary, TopSkill, ValidationDetail, ValidationSummary,
+};
 
 /// Default channel capacity for metric event subscribers.
 const CHANNEL_CAPACITY: usize = 100;
@@ -396,6 +399,301 @@ impl MetricsCollector {
         Ok(stats)
     }
 
+    /// Get validation history for a specific skill.
+    ///
+    /// Returns up to `limit` most recent validation runs, ordered by timestamp descending.
+    pub fn get_validation_history(&self, skill: &str, limit: usize) -> Result<Vec<ValidationDetail>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, skill_name, checks_passed, checks_failed, created_at
+             FROM validation_runs WHERE skill_name = ?1
+             ORDER BY created_at DESC, id DESC LIMIT ?2",
+        )?;
+
+        let rows = stmt.query_map(rusqlite::params![skill, limit as i64], |row| {
+            let passed_json: String = row.get(2)?;
+            let failed_json: String = row.get(3)?;
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                passed_json,
+                failed_json,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+
+        let mut details = Vec::new();
+        for row in rows {
+            let (id, skill_name, passed_json, failed_json, created_at) = row?;
+            let checks_passed: Vec<String> = serde_json::from_str(&passed_json)?;
+            let checks_failed: Vec<String> = serde_json::from_str(&failed_json)?;
+            details.push(ValidationDetail {
+                id,
+                skill_name,
+                checks_passed,
+                checks_failed,
+                created_at,
+            });
+        }
+
+        Ok(details)
+    }
+
+    /// Get a summary of validation status across all skills.
+    ///
+    /// For each skill, examines the most recent validation run to classify it as
+    /// valid (all passed), warning (some passed, some failed), or error (none passed).
+    pub fn get_validation_summary(&self) -> Result<ValidationSummary> {
+        let conn = self.conn.lock();
+
+        // Use a window function to get only the latest run per skill
+        let mut stmt = conn.prepare(
+            "SELECT skill_name, checks_passed, checks_failed
+             FROM (
+                 SELECT skill_name, checks_passed, checks_failed,
+                        ROW_NUMBER() OVER (PARTITION BY skill_name ORDER BY created_at DESC, id DESC) as rn
+                 FROM validation_runs
+             ) WHERE rn = 1",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+
+        let mut summary = ValidationSummary::default();
+
+        for row in rows {
+            let (_skill_name, passed_json, failed_json) = row?;
+            let passed: Vec<String> = serde_json::from_str(&passed_json).unwrap_or_default();
+            let failed: Vec<String> = serde_json::from_str(&failed_json).unwrap_or_default();
+
+            summary.total_skills += 1;
+            if failed.is_empty() {
+                summary.valid += 1;
+            } else if passed.is_empty() {
+                summary.error += 1;
+            } else {
+                summary.warning += 1;
+            }
+        }
+
+        Ok(summary)
+    }
+
+    /// Export a validation report as JSON.
+    ///
+    /// Returns a JSON object containing the validation summary and per-skill
+    /// latest validation details.
+    pub fn export_validation_report(&self) -> Result<serde_json::Value> {
+        let summary = self.get_validation_summary()?;
+
+        let conn = self.conn.lock();
+
+        // Get the latest validation run for each skill
+        let mut stmt = conn.prepare(
+            "SELECT id, skill_name, checks_passed, checks_failed, created_at
+             FROM (
+                 SELECT id, skill_name, checks_passed, checks_failed, created_at,
+                        ROW_NUMBER() OVER (PARTITION BY skill_name ORDER BY created_at DESC, id DESC) as rn
+                 FROM validation_runs
+             ) WHERE rn = 1
+             ORDER BY skill_name",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+
+        let mut skills = Vec::new();
+        for row in rows {
+            let (id, skill_name, passed_json, failed_json, created_at) = row?;
+            let checks_passed: Vec<String> = serde_json::from_str(&passed_json).unwrap_or_default();
+            let checks_failed: Vec<String> = serde_json::from_str(&failed_json).unwrap_or_default();
+
+            let status = if checks_failed.is_empty() {
+                "valid"
+            } else if checks_passed.is_empty() {
+                "error"
+            } else {
+                "warning"
+            };
+
+            skills.push(serde_json::json!({
+                "id": id,
+                "skill_name": skill_name,
+                "status": status,
+                "checks_passed": checks_passed,
+                "checks_failed": checks_failed,
+                "created_at": created_at,
+            }));
+        }
+
+        Ok(serde_json::json!({
+            "summary": summary,
+            "skills": skills,
+        }))
+    }
+
+    /// Get the top skills by invocation count.
+    ///
+    /// Returns up to `limit` skills ordered by total invocations descending.
+    pub fn get_top_skills(&self, limit: usize) -> Result<Vec<TopSkill>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT
+                skill_name,
+                COUNT(*) as total,
+                COALESCE(SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END), 0) as successful,
+                COALESCE(SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END), 0) as failed,
+                AVG(duration_ms) as avg_duration
+             FROM skill_invocations
+             GROUP BY skill_name
+             ORDER BY total DESC
+             LIMIT ?1",
+        )?;
+
+        let rows = stmt.query_map([limit as i64], |row| {
+            Ok(TopSkill {
+                skill_name: row.get(0)?,
+                total_invocations: row.get::<_, i64>(1)? as u64,
+                successful_invocations: row.get::<_, i64>(2)? as u64,
+                failed_invocations: row.get::<_, i64>(3)? as u64,
+                avg_duration_ms: row.get::<_, f64>(4)?,
+            })
+        })?;
+
+        let mut skills = Vec::new();
+        for row in rows {
+            skills.push(row?);
+        }
+
+        Ok(skills)
+    }
+
+    /// Get an overall analytics summary across all skills.
+    ///
+    /// Aggregates total invocations, success rate, average duration, total tokens,
+    /// and unique skill count from the skill_invocations table.
+    pub fn get_analytics_summary(&self) -> Result<AnalyticsSummary> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT
+                COUNT(*) as total,
+                COALESCE(SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END), 0) as successful,
+                COALESCE(SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END), 0) as failed,
+                COALESCE(AVG(duration_ms), 0.0) as avg_duration,
+                COALESCE(SUM(tokens_used), 0) as total_tokens,
+                COUNT(DISTINCT skill_name) as unique_skills
+             FROM skill_invocations",
+        )?;
+
+        let summary = stmt.query_row([], |row| {
+            let total: i64 = row.get(0)?;
+            let successful: i64 = row.get(1)?;
+            let success_rate = if total > 0 {
+                (successful as f64 / total as f64) * 100.0
+            } else {
+                0.0
+            };
+
+            Ok(AnalyticsSummary {
+                total_invocations: total as u64,
+                successful_invocations: successful as u64,
+                failed_invocations: row.get::<_, i64>(2)? as u64,
+                avg_duration_ms: row.get(3)?,
+                success_rate,
+                total_tokens: row.get::<_, i64>(4)? as u64,
+                unique_skills: row.get::<_, i64>(5)? as u64,
+            })
+        })?;
+
+        Ok(summary)
+    }
+
+    /// Get recent sync event history.
+    ///
+    /// Returns up to `limit` most recent sync events, ordered by timestamp descending.
+    pub fn get_sync_history(&self, limit: usize) -> Result<Vec<SyncDetail>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, operation, files_count, status, created_at
+             FROM sync_events ORDER BY created_at DESC LIMIT ?1",
+        )?;
+
+        let rows = stmt.query_map([limit as i64], |row| {
+            let op_str: String = row.get(1)?;
+            let status_str: String = row.get(3)?;
+            Ok(SyncDetail {
+                id: row.get(0)?,
+                operation: parse_sync_operation(&op_str),
+                files_count: row.get::<_, i64>(2)? as usize,
+                status: parse_sync_status(&status_str),
+                created_at: row.get(4)?,
+            })
+        })?;
+
+        let mut details = Vec::new();
+        for row in rows {
+            details.push(row?);
+        }
+
+        Ok(details)
+    }
+
+    /// Get an aggregate summary of all sync activity.
+    ///
+    /// Returns totals, success rate, push/pull breakdown, and average files per sync.
+    pub fn get_sync_summary(&self) -> Result<SyncSummary> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT
+                COUNT(*) as total,
+                COALESCE(SUM(CASE WHEN status = 'success' OR status = 'complete' THEN 1 ELSE 0 END), 0) as successful,
+                COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) as failed,
+                COALESCE(SUM(CASE WHEN operation = 'push' THEN 1 ELSE 0 END), 0) as pushes,
+                COALESCE(SUM(CASE WHEN operation = 'pull' THEN 1 ELSE 0 END), 0) as pulls,
+                COALESCE(AVG(files_count), 0.0) as avg_files
+             FROM sync_events",
+        )?;
+
+        let summary = stmt.query_row([], |row| {
+            let total: i64 = row.get(0)?;
+            let successful: i64 = row.get(1)?;
+            let failed: i64 = row.get(2)?;
+            let pushes: i64 = row.get(3)?;
+            let pulls: i64 = row.get(4)?;
+            let avg_files: f64 = row.get(5)?;
+
+            let success_rate = if total > 0 {
+                (successful as f64 / total as f64) * 100.0
+            } else {
+                0.0
+            };
+
+            Ok(SyncSummary {
+                total_syncs: total as u64,
+                successful_syncs: successful as u64,
+                failed_syncs: failed as u64,
+                success_rate,
+                total_pushes: pushes as u64,
+                total_pulls: pulls as u64,
+                avg_files_per_sync: avg_files,
+            })
+        })?;
+
+        Ok(summary)
+    }
+
     /// Subscribe to metric events.
     pub fn subscribe(&self) -> Receiver<MetricEvent> {
         self.sender.subscribe()
@@ -736,5 +1034,307 @@ mod tests {
         assert!(collector.cleanup_old_data(1).is_ok());
         // 3650 days (upper bound) should succeed
         assert!(collector.cleanup_old_data(3650).is_ok());
+    }
+
+    #[test]
+    fn test_get_top_skills() {
+        let collector = MetricsCollector::in_memory().unwrap();
+
+        // Record invocations for multiple skills
+        for _ in 0..5 {
+            collector
+                .record_skill_invocation("popular-skill", 100, true, Some(100))
+                .unwrap();
+        }
+        for _ in 0..3 {
+            collector
+                .record_skill_invocation("medium-skill", 200, true, Some(200))
+                .unwrap();
+        }
+        collector
+            .record_skill_invocation("rare-skill", 300, false, Some(300))
+            .unwrap();
+
+        let top = collector.get_top_skills(2).unwrap();
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].skill_name, "popular-skill");
+        assert_eq!(top[0].total_invocations, 5);
+        assert_eq!(top[0].successful_invocations, 5);
+        assert_eq!(top[0].failed_invocations, 0);
+        assert_eq!(top[1].skill_name, "medium-skill");
+        assert_eq!(top[1].total_invocations, 3);
+
+        // Request all
+        let all = collector.get_top_skills(10).unwrap();
+        assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn test_get_top_skills_empty() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        let top = collector.get_top_skills(5).unwrap();
+        assert!(top.is_empty());
+    }
+
+    #[test]
+    fn test_get_analytics_summary() {
+        let collector = MetricsCollector::in_memory().unwrap();
+
+        collector
+            .record_skill_invocation("skill-a", 100, true, Some(500))
+            .unwrap();
+        collector
+            .record_skill_invocation("skill-a", 200, true, Some(600))
+            .unwrap();
+        collector
+            .record_skill_invocation("skill-b", 150, false, Some(400))
+            .unwrap();
+
+        let summary = collector.get_analytics_summary().unwrap();
+        assert_eq!(summary.total_invocations, 3);
+        assert_eq!(summary.successful_invocations, 2);
+        assert_eq!(summary.failed_invocations, 1);
+        assert_eq!(summary.total_tokens, 1500);
+        assert_eq!(summary.unique_skills, 2);
+        assert!((summary.success_rate - 66.666).abs() < 1.0);
+        assert!((summary.avg_duration_ms - 150.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_analytics_summary_empty() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        let summary = collector.get_analytics_summary().unwrap();
+        assert_eq!(summary.total_invocations, 0);
+        assert_eq!(summary.successful_invocations, 0);
+        assert_eq!(summary.failed_invocations, 0);
+        assert_eq!(summary.total_tokens, 0);
+        assert_eq!(summary.unique_skills, 0);
+        assert!((summary.success_rate - 0.0).abs() < 0.01);
+        assert!((summary.avg_duration_ms - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_validation_history() {
+        let collector = MetricsCollector::in_memory().unwrap();
+
+        collector
+            .record_validation("skill-a", &["check1", "check2"], &["check3"])
+            .unwrap();
+        collector
+            .record_validation("skill-a", &["check1", "check2", "check3"], &[])
+            .unwrap();
+        collector
+            .record_validation("skill-b", &["check1"], &["check2"])
+            .unwrap();
+
+        // Get history for skill-a (should be 2, most recent first)
+        let history = collector.get_validation_history("skill-a", 10).unwrap();
+        assert_eq!(history.len(), 2);
+        // Most recent first: the one with all passing
+        assert!(history[0].checks_failed.is_empty());
+        assert_eq!(history[0].checks_passed.len(), 3);
+        // Older one had a failure
+        assert_eq!(history[1].checks_failed.len(), 1);
+
+        // Limit works
+        let limited = collector.get_validation_history("skill-a", 1).unwrap();
+        assert_eq!(limited.len(), 1);
+
+        // Non-existent skill returns empty
+        let empty = collector
+            .get_validation_history("no-such-skill", 10)
+            .unwrap();
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn test_get_validation_summary() {
+        let collector = MetricsCollector::in_memory().unwrap();
+
+        // skill-a: all pass (valid)
+        collector
+            .record_validation("skill-a", &["check1", "check2"], &[])
+            .unwrap();
+        // skill-b: some pass some fail (warning)
+        collector
+            .record_validation("skill-b", &["check1"], &["check2"])
+            .unwrap();
+        // skill-c: all fail (error)
+        collector
+            .record_validation("skill-c", &[], &["check1", "check2"])
+            .unwrap();
+
+        let summary = collector.get_validation_summary().unwrap();
+        assert_eq!(summary.total_skills, 3);
+        assert_eq!(summary.valid, 1);
+        assert_eq!(summary.warning, 1);
+        assert_eq!(summary.error, 1);
+    }
+
+    #[test]
+    fn test_get_validation_summary_uses_latest_run() {
+        let collector = MetricsCollector::in_memory().unwrap();
+
+        // skill-a first fails, then passes — summary should show valid
+        collector
+            .record_validation("skill-a", &[], &["check1"])
+            .unwrap();
+        collector
+            .record_validation("skill-a", &["check1"], &[])
+            .unwrap();
+
+        let summary = collector.get_validation_summary().unwrap();
+        assert_eq!(summary.total_skills, 1);
+        assert_eq!(summary.valid, 1);
+        assert_eq!(summary.error, 0);
+    }
+
+    #[test]
+    fn test_get_validation_summary_empty() {
+        let collector = MetricsCollector::in_memory().unwrap();
+
+        let summary = collector.get_validation_summary().unwrap();
+        assert_eq!(summary.total_skills, 0);
+        assert_eq!(summary.valid, 0);
+        assert_eq!(summary.warning, 0);
+        assert_eq!(summary.error, 0);
+    }
+
+    #[test]
+    fn test_export_validation_report() {
+        let collector = MetricsCollector::in_memory().unwrap();
+
+        collector
+            .record_validation("skill-a", &["check1"], &[])
+            .unwrap();
+        collector
+            .record_validation("skill-b", &["check1"], &["check2"])
+            .unwrap();
+
+        let report = collector.export_validation_report().unwrap();
+
+        // Check summary section
+        let summary = &report["summary"];
+        assert_eq!(summary["total_skills"], 2);
+        assert_eq!(summary["valid"], 1);
+        assert_eq!(summary["warning"], 1);
+        assert_eq!(summary["error"], 0);
+
+        // Check skills section
+        let skills = report["skills"].as_array().unwrap();
+        assert_eq!(skills.len(), 2);
+
+        // Skills are ordered alphabetically by name
+        assert_eq!(skills[0]["skill_name"], "skill-a");
+        assert_eq!(skills[0]["status"], "valid");
+        assert_eq!(skills[1]["skill_name"], "skill-b");
+        assert_eq!(skills[1]["status"], "warning");
+    }
+
+    #[test]
+    fn test_export_validation_report_empty() {
+        let collector = MetricsCollector::in_memory().unwrap();
+
+        let report = collector.export_validation_report().unwrap();
+
+        let summary = &report["summary"];
+        assert_eq!(summary["total_skills"], 0);
+        let skills = report["skills"].as_array().unwrap();
+        assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn test_validation_detail_helpers() {
+        let detail = ValidationDetail {
+            id: 1,
+            skill_name: "test".to_string(),
+            checks_passed: vec!["a".to_string(), "b".to_string()],
+            checks_failed: vec!["c".to_string()],
+            created_at: "2025-01-01T00:00:00".to_string(),
+        };
+        assert!(!detail.is_valid());
+        assert_eq!(detail.total_checks(), 3);
+
+        let valid_detail = ValidationDetail {
+            id: 2,
+            skill_name: "test".to_string(),
+            checks_passed: vec!["a".to_string()],
+            checks_failed: vec![],
+            created_at: "2025-01-01T00:00:00".to_string(),
+        };
+        assert!(valid_detail.is_valid());
+        assert_eq!(valid_detail.total_checks(), 1);
+    }
+
+    #[test]
+    fn test_get_sync_history() {
+        let collector = MetricsCollector::in_memory().unwrap();
+
+        collector
+            .record_sync_event(SyncOperation::Push, 5, SyncStatus::Success)
+            .unwrap();
+        collector
+            .record_sync_event(SyncOperation::Pull, 3, SyncStatus::Failed)
+            .unwrap();
+        collector
+            .record_sync_event(SyncOperation::Push, 10, SyncStatus::Complete)
+            .unwrap();
+
+        // Get all history
+        let history = collector.get_sync_history(10).unwrap();
+        assert_eq!(history.len(), 3);
+        // Most recent first
+        assert_eq!(history[0].files_count, 10);
+        assert_eq!(history[0].operation, SyncOperation::Push);
+        assert_eq!(history[0].status, SyncStatus::Complete);
+
+        // Limit works
+        let limited = collector.get_sync_history(2).unwrap();
+        assert_eq!(limited.len(), 2);
+    }
+
+    #[test]
+    fn test_get_sync_history_empty() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        let history = collector.get_sync_history(10).unwrap();
+        assert!(history.is_empty());
+    }
+
+    #[test]
+    fn test_get_sync_summary() {
+        let collector = MetricsCollector::in_memory().unwrap();
+
+        collector
+            .record_sync_event(SyncOperation::Push, 5, SyncStatus::Success)
+            .unwrap();
+        collector
+            .record_sync_event(SyncOperation::Push, 3, SyncStatus::Failed)
+            .unwrap();
+        collector
+            .record_sync_event(SyncOperation::Pull, 10, SyncStatus::Complete)
+            .unwrap();
+        collector
+            .record_sync_event(SyncOperation::Pull, 2, SyncStatus::Success)
+            .unwrap();
+
+        let summary = collector.get_sync_summary().unwrap();
+        assert_eq!(summary.total_syncs, 4);
+        assert_eq!(summary.successful_syncs, 3); // success + complete
+        assert_eq!(summary.failed_syncs, 1);
+        assert_eq!(summary.total_pushes, 2);
+        assert_eq!(summary.total_pulls, 2);
+        assert!((summary.success_rate - 75.0).abs() < 0.01);
+        assert!((summary.avg_files_per_sync - 5.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_sync_summary_empty() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        let summary = collector.get_sync_summary().unwrap();
+        assert_eq!(summary.total_syncs, 0);
+        assert_eq!(summary.successful_syncs, 0);
+        assert_eq!(summary.failed_syncs, 0);
+        assert!((summary.success_rate - 0.0).abs() < 0.01);
+        assert!((summary.avg_files_per_sync - 0.0).abs() < 0.01);
     }
 }

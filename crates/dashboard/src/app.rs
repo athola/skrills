@@ -13,7 +13,7 @@ use crossterm::{
 };
 use ratatui::prelude::*;
 use ratatui::widgets::ListState;
-use skrills_metrics::{MetricEvent, MetricsCollector, SkillStats};
+use skrills_metrics::{MetricEvent, MetricsCollector, SkillStats, ValidationDetail};
 
 use crate::events::{Event, EventHandler};
 use crate::ui;
@@ -173,6 +173,12 @@ pub struct App {
     pub show_help: bool,
     /// Current sort order for skills panel.
     pub sort_order: SortOrder,
+    /// Total invocations across all skills (from analytics summary).
+    pub total_invocations: u64,
+    /// Overall success rate percentage (from analytics summary).
+    pub overall_success_rate: f64,
+    /// Latest validation detail for the currently selected skill.
+    pub selected_validation: Option<ValidationDetail>,
 }
 
 impl Default for App {
@@ -192,6 +198,9 @@ impl Default for App {
             last_refresh: String::new(),
             show_help: false,
             sort_order: SortOrder::default(),
+            total_invocations: 0,
+            overall_success_rate: 0.0,
+            selected_validation: None,
         }
     }
 }
@@ -331,10 +340,20 @@ impl App {
             }
             MetricEvent::Sync {
                 ref operation,
+                files_count,
                 ref status,
                 ..
             } => {
-                format!("[SYNC] {} - {}", operation, status)
+                let status_tag = match status {
+                    skrills_metrics::SyncStatus::Success
+                    | skrills_metrics::SyncStatus::Complete => "OK",
+                    skrills_metrics::SyncStatus::Failed => "FAIL",
+                    skrills_metrics::SyncStatus::InProgress => "...",
+                };
+                format!(
+                    "[SYNC] {} {} files - {}",
+                    operation, files_count, status_tag
+                )
             }
         };
         self.add_activity(msg);
@@ -598,6 +617,26 @@ impl Dashboard {
             let visible = app.visible_skill_count();
             app.skill_index = app.skill_index.min(visible.saturating_sub(1));
             app.skill_list_state.select(Some(app.skill_index));
+        }
+
+        // Update analytics summary
+        if let Ok(summary) = self.collector.get_analytics_summary() {
+            app.total_invocations = summary.total_invocations;
+            app.overall_success_rate = summary.success_rate;
+        }
+
+        // Update validation summary counts
+        if let Ok(val_summary) = self.collector.get_validation_summary() {
+            app.valid_skills = val_summary.valid as usize;
+            app.invalid_skills = (val_summary.error + val_summary.warning) as usize;
+        }
+
+        // Load validation detail for the currently selected skill
+        app.selected_validation = None;
+        if let Some(skill) = app.skills.get(app.skill_index) {
+            if let Ok(history) = self.collector.get_validation_history(&skill.name, 1) {
+                app.selected_validation = history.into_iter().next();
+            }
         }
 
         // Update timestamp

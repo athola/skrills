@@ -41,8 +41,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let text = format!(
-        " skrills dashboard | Skills: {} | Valid: {} | Invalid: {} | Last: {}",
+        " skrills dashboard | Skills: {} | Invocations: {} | Success: {:.1}% | Valid: {} | Invalid: {} | Last: {}",
         app.total_skills,
+        app.total_invocations,
+        app.overall_success_rate,
         app.valid_skills,
         app.invalid_skills,
         if app.last_refresh.is_empty() {
@@ -145,12 +147,19 @@ fn draw_activity_panel(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .take(area.height.saturating_sub(2) as usize)
         .map(|entry| {
-            let style = if entry.message.contains("[ERR]") || entry.message.contains("FAIL") {
+            let style = if entry.message.starts_with("[SYNC]") {
+                // Sync events: green for success, red for failure, blue for in-progress
+                if entry.message.contains("- OK") {
+                    Style::default().fg(Color::Green)
+                } else if entry.message.contains("- FAIL") {
+                    Style::default().fg(Color::Red)
+                } else {
+                    Style::default().fg(Color::Blue)
+                }
+            } else if entry.message.contains("[ERR]") || entry.message.contains("FAIL") {
                 Style::default().fg(Color::Red)
             } else if entry.message.contains("[OK]") || entry.message.contains("PASS") {
                 Style::default().fg(Color::Green)
-            } else if entry.message.contains("[SYNC]") {
-                Style::default().fg(Color::Blue)
             } else {
                 Style::default().fg(Color::Gray)
             };
@@ -171,8 +180,9 @@ fn draw_activity_panel(f: &mut Frame, app: &App, area: Rect) {
 fn draw_metrics_panel(f: &mut Frame, app: &App, area: Rect) {
     let border_style = focused_border_style(app.focus == FocusPanel::Metrics);
 
-    let content = if let Some(skill) = app.skills.get(app.skill_index) {
-        let mut lines = vec![format!("Skill: {}", skill.name)];
+    let text = if let Some(skill) = app.skills.get(app.skill_index) {
+        let mut lines: Vec<Line> = Vec::new();
+        lines.push(Line::from(format!("Skill: {}", skill.name)));
 
         // Show stats if available
         if let Some(stats) = &app.selected_stats {
@@ -181,27 +191,75 @@ fn draw_metrics_panel(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 0.0
             };
-            lines.push(format!("Invocations: {}", stats.total_invocations()));
-            lines.push(format!("Success Rate: {:.1}%", success_rate));
-            lines.push(format!("Avg Duration: {:.1}ms", stats.avg_duration_ms));
-            lines.push(format!("Total Tokens: {}", stats.total_tokens));
+            lines.push(Line::from(format!(
+                "Invocations: {}",
+                stats.total_invocations()
+            )));
+            lines.push(Line::from(format!("Success Rate: {:.1}%", success_rate)));
+            lines.push(Line::from(format!(
+                "Avg Duration: {:.1}ms",
+                stats.avg_duration_ms
+            )));
+            lines.push(Line::from(format!("Total Tokens: {}", stats.total_tokens)));
         } else {
-            lines.push(format!("Invocations: {}", skill.invocations));
+            lines.push(Line::from(format!("Invocations: {}", skill.invocations)));
+        }
+
+        // Show validation checks for the selected skill
+        if let Some(val) = &app.selected_validation {
+            lines.push(Line::from(""));
+            let status_span = if val.checks_failed.is_empty() {
+                Span::styled("PASSED", Style::default().fg(Color::Green).bold())
+            } else if val.checks_passed.is_empty() {
+                Span::styled("FAILED", Style::default().fg(Color::Red).bold())
+            } else {
+                Span::styled("WARNING", Style::default().fg(Color::Yellow).bold())
+            };
+            lines.push(Line::from(vec![
+                Span::raw("Validation: "),
+                status_span,
+                Span::raw(format!(
+                    " ({}/{})",
+                    val.checks_passed.len(),
+                    val.checks_passed.len() + val.checks_failed.len()
+                )),
+            ]));
+
+            for check in &val.checks_passed {
+                lines.push(Line::from(Span::styled(
+                    format!("  + {}", check),
+                    Style::default().fg(Color::Green),
+                )));
+            }
+            for check in &val.checks_failed {
+                lines.push(Line::from(Span::styled(
+                    format!("  - {}", check),
+                    Style::default().fg(Color::Red),
+                )));
+            }
         }
 
         // Show all discovered locations
-        lines.push(String::new());
-        lines.push(format!("Locations ({})", skill.locations.len()));
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!(
+            "Locations ({})",
+            skill.locations.len()
+        )));
         for (i, loc) in skill.locations.iter().enumerate() {
-            lines.push(format!("  {}. [{}] {}", i + 1, loc.source, loc.path));
+            lines.push(Line::from(format!(
+                "  {}. [{}] {}",
+                i + 1,
+                loc.source,
+                loc.path
+            )));
         }
 
-        lines.join("\n")
+        Text::from(lines)
     } else {
-        "No skill selected".to_string()
+        Text::raw("No skill selected")
     };
 
-    let paragraph = Paragraph::new(content).wrap(Wrap { trim: true }).block(
+    let paragraph = Paragraph::new(text).wrap(Wrap { trim: true }).block(
         Block::default()
             .title(" Skill Info ")
             .borders(Borders::ALL)

@@ -69,7 +69,7 @@ fn render_to_string(terminal: &Terminal<TestBackend>) -> String {
 
 #[test]
 fn header_shows_skill_counts_and_timestamp() {
-    let mut terminal = test_terminal(100, 20);
+    let mut terminal = test_terminal(130, 20);
     let mut app = app_with_skills();
 
     terminal
@@ -92,6 +92,14 @@ fn header_shows_skill_counts_and_timestamp() {
     assert!(
         output.contains("Invalid: 1"),
         "Header should show invalid count"
+    );
+    assert!(
+        output.contains("Invocations: 0"),
+        "Header should show total invocations"
+    );
+    assert!(
+        output.contains("Success: 0.0%"),
+        "Header should show overall success rate"
     );
     assert!(
         output.contains("2025-01-15T10:30:00"),
@@ -678,7 +686,7 @@ fn metric_event_sync() {
     assert_eq!(app.activity.len(), 1);
     assert!(app.activity[0].message.contains("[SYNC]"));
     assert!(app.activity[0].message.contains("push"));
-    assert!(app.activity[0].message.contains("complete"));
+    assert!(app.activity[0].message.contains("OK"));
 }
 
 // ── Rendering at Different Terminal Sizes ──

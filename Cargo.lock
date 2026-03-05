@@ -4278,6 +4278,7 @@ version = "0.6.0"
 dependencies = [
  "anyhow",
  "dirs",
+ "parking_lot",
  "rusqlite",
  "serde",
  "serde_json",
