@@ -296,6 +296,10 @@ impl Dashboard {
         result
     }
 
+    /// How many ticks between automatic skill refreshes.
+    /// At 250 ms per tick this gives a ~5 s refresh cadence.
+    const REFRESH_INTERVAL_TICKS: u32 = 20;
+
     async fn run_inner(self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
         // Create app state
         let mut app = App::new();
@@ -308,6 +312,8 @@ impl Dashboard {
 
         // Event handler
         let mut events = EventHandler::new(Duration::from_millis(250));
+
+        let mut tick_count: u32 = 0;
 
         // Main loop
         loop {
@@ -325,10 +331,14 @@ impl Dashboard {
                             }
                         }
                         Some(Event::Tick) => {
-                            // Periodic refresh
+                            tick_count += 1;
+                            if tick_count >= Self::REFRESH_INTERVAL_TICKS {
+                                tick_count = 0;
+                                self.refresh_skills(&mut app);
+                            }
                         }
-                        Some(Event::Resize(_, _)) => {
-                            // Terminal handles resize
+                        Some(Event::Resize(w, h)) => {
+                            terminal.resize(Rect::new(0, 0, w, h))?;
                         }
                         None => break, // Event channel closed
                     }
