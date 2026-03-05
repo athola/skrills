@@ -17,7 +17,7 @@ use axum::{extract::State, http::StatusCode, routing::get, Json, Router};
 use serde::Serialize;
 use std::sync::Arc;
 
-use skrills_metrics::{MetricsCollector, SkillStats};
+use skrills_metrics::{MetricEvent, MetricsCollector, SkillStats};
 
 /// Metrics API state.
 #[derive(Clone)]
@@ -30,7 +30,7 @@ pub struct MetricsState {
 #[derive(Debug, Serialize)]
 pub struct RecentEventsResponse {
     /// Array of recent metric events (max 100).
-    pub events: Vec<serde_json::Value>,
+    pub events: Vec<MetricEvent>,
 }
 
 /// Stats response for a skill.
@@ -54,7 +54,7 @@ impl StatsResponse {
     fn from_stats(skill: String, stats: SkillStats) -> Self {
         Self {
             skill,
-            total_invocations: stats.total_invocations,
+            total_invocations: stats.total_invocations(),
             successful_invocations: stats.successful_invocations,
             failed_invocations: stats.failed_invocations,
             avg_duration_ms: stats.avg_duration_ms,
@@ -73,10 +73,7 @@ async fn get_recent_events(
         .map_err(|e| {
             tracing::warn!(error = %e, "Failed to get recent events");
             StatusCode::INTERNAL_SERVER_ERROR
-        })?
-        .into_iter()
-        .filter_map(|e| serde_json::to_value(e).ok())
-        .collect();
+        })?;
     Ok(Json(RecentEventsResponse { events }))
 }
 

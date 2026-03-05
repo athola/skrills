@@ -8,7 +8,7 @@ use ratatui::{backend::TestBackend, Terminal};
 
 use skrills_dashboard::app::{App, FocusPanel, SkillInfo, SkillLocation, SortOrder, PAGE_SIZE};
 use skrills_dashboard::ui;
-use skrills_metrics::MetricEvent;
+use skrills_metrics::{MetricEvent, SyncOperation, SyncStatus};
 
 /// Helper to create a test terminal with a given width and height.
 fn test_terminal(width: u16, height: u16) -> Terminal<TestBackend> {
@@ -669,9 +669,9 @@ fn metric_event_sync() {
     let mut app = App::new();
     app.on_metric_event(MetricEvent::Sync {
         id: 5,
-        operation: "push".to_string(),
+        operation: SyncOperation::Push,
         files_count: 5,
-        status: "complete".to_string(),
+        status: SyncStatus::Complete,
         created_at: "2025-01-15T10:00:00Z".to_string(),
     });
 

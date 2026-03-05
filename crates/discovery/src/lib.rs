@@ -46,6 +46,6 @@ pub use scanner::{
     skill_roots_or_default, DiscoveryConfig, DEFAULT_MAX_DEPTH,
 };
 pub use types::{
-    parse_agent_config, parse_source_key, AgentConfig, AgentMeta, Diagnostics, DuplicateInfo,
-    SkillMeta, SkillRoot, SkillSource,
+    parse_agent_config, parse_source_key, AgentConfig, AgentMeta, AgentModel, Diagnostics,
+    DuplicateInfo, IncludedSkill, SkillMeta, SkillRoot, SkillSource, SkippedSkill,
 };

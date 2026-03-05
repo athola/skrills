@@ -176,12 +176,12 @@ fn draw_metrics_panel(f: &mut Frame, app: &App, area: Rect) {
 
         // Show stats if available
         if let Some(stats) = &app.selected_stats {
-            let success_rate = if stats.total_invocations > 0 {
-                (stats.successful_invocations as f64 / stats.total_invocations as f64) * 100.0
+            let success_rate = if stats.total_invocations() > 0 {
+                (stats.successful_invocations as f64 / stats.total_invocations() as f64) * 100.0
             } else {
                 0.0
             };
-            lines.push(format!("Invocations: {}", stats.total_invocations));
+            lines.push(format!("Invocations: {}", stats.total_invocations()));
             lines.push(format!("Success Rate: {:.1}%", success_rate));
             lines.push(format!("Avg Duration: {:.1}ms", stats.avg_duration_ms));
             lines.push(format!("Total Tokens: {}", stats.total_tokens));

@@ -17,7 +17,7 @@
 //! let collector = MetricsCollector::new().unwrap();
 //! collector.record_skill_invocation("my-skill", 150, true, Some(1024)).unwrap();
 //! let stats = collector.get_skill_stats("my-skill").unwrap();
-//! println!("Total invocations: {}", stats.total_invocations);
+//! println!("Total invocations: {}", stats.total_invocations());
 //! ```
 
 #![deny(unsafe_code)]
@@ -30,4 +30,4 @@ mod types;
 
 pub use collector::{MetricsCollector, StorageMode};
 pub use error::{MetricsError, Result};
-pub use types::{MetricEvent, SkillStats, SyncEvent, ValidationRun};
+pub use types::{MetricEvent, SkillStats, SyncOperation, SyncStatus};

@@ -330,7 +330,9 @@ impl App {
                 format!("[VAL] {} - {}", skill_name, status)
             }
             MetricEvent::Sync {
-                operation, status, ..
+                ref operation,
+                ref status,
+                ..
             } => {
                 format!("[SYNC] {} - {}", operation, status)
             }
@@ -546,7 +548,7 @@ impl Dashboard {
 
             // Get stats if available
             let stats = self.collector.get_skill_stats(&base_name).ok();
-            let invocations = stats.as_ref().map(|s| s.total_invocations).unwrap_or(0);
+            let invocations = stats.as_ref().map(|s| s.total_invocations()).unwrap_or(0);
 
             app.skills.push(SkillInfo {
                 discovery_index: idx,

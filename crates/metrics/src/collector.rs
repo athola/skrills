@@ -8,7 +8,7 @@ use tokio::sync::broadcast::{self, Receiver, Sender};
 
 use crate::error::{MetricsError, Result};
 use crate::schema::init_schema;
-use crate::types::{MetricEvent, SkillStats};
+use crate::types::{parse_sync_operation, parse_sync_status, MetricEvent, SkillStats, SyncOperation, SyncStatus};
 
 /// Default channel capacity for metric event subscribers.
 const CHANNEL_CAPACITY: usize = 100;
@@ -127,6 +127,19 @@ impl MetricsCollector {
         Ok(())
     }
 
+    /// Broadcast a metric event to all subscribers.
+    ///
+    /// Logs a warning if there are no active subscribers or if the channel is full.
+    fn broadcast(&self, event: MetricEvent) {
+        match self.sender.send(event) {
+            Ok(_) => {}
+            Err(_) => {
+                // No active subscribers — this is normal when no dashboard is running.
+                tracing::trace!("no active metric event subscribers");
+            }
+        }
+    }
+
     /// Record a skill invocation.
     pub fn record_skill_invocation(
         &self,
@@ -160,7 +173,9 @@ impl MetricsCollector {
             |row| row.get::<_, String>(0),
         )?;
 
-        let event = MetricEvent::SkillInvocation {
+        drop(conn);
+
+        self.broadcast(MetricEvent::SkillInvocation {
             id,
             skill_name: skill.to_string(),
             plugin: plugin.map(String::from),
@@ -168,9 +183,8 @@ impl MetricsCollector {
             success,
             tokens_used: tokens,
             created_at,
-        };
+        });
 
-        let _ = self.sender.send(event);
         Ok(())
     }
 
@@ -192,24 +206,30 @@ impl MetricsCollector {
             |row| row.get::<_, String>(0),
         )?;
 
-        let event = MetricEvent::Validation {
+        drop(conn);
+
+        self.broadcast(MetricEvent::Validation {
             id,
             skill_name: skill.to_string(),
             checks_passed: passed.iter().map(|s| s.to_string()).collect(),
             checks_failed: failed.iter().map(|s| s.to_string()).collect(),
             created_at,
-        };
+        });
 
-        let _ = self.sender.send(event);
         Ok(())
     }
 
     /// Record a sync event.
-    pub fn record_sync_event(&self, operation: &str, files: usize, status: &str) -> Result<()> {
+    pub fn record_sync_event(
+        &self,
+        operation: SyncOperation,
+        files: usize,
+        status: SyncStatus,
+    ) -> Result<()> {
         let conn = self.conn.lock().map_err(|_| MetricsError::MutexPoisoned)?;
         conn.execute(
             "INSERT INTO sync_events (operation, files_count, status) VALUES (?1, ?2, ?3)",
-            (operation, files as i64, status),
+            (operation.as_str(), files as i64, status.as_str()),
         )?;
 
         let id = conn.last_insert_rowid();
@@ -219,15 +239,16 @@ impl MetricsCollector {
             |row| row.get::<_, String>(0),
         )?;
 
-        let event = MetricEvent::Sync {
-            id,
-            operation: operation.to_string(),
-            files_count: files,
-            status: status.to_string(),
-            created_at,
-        };
+        drop(conn);
 
-        let _ = self.sender.send(event);
+        self.broadcast(MetricEvent::Sync {
+            id,
+            operation,
+            files_count: files,
+            status,
+            created_at,
+        });
+
         Ok(())
     }
 
@@ -318,11 +339,13 @@ impl MetricsCollector {
              FROM sync_events ORDER BY created_at DESC LIMIT ?1",
         )?;
         let syncs = stmt.query_map([limit as i64], |row| {
+            let op_str: String = row.get(1)?;
+            let status_str: String = row.get(3)?;
             Ok(MetricEvent::Sync {
                 id: row.get(0)?,
-                operation: row.get(1)?,
+                operation: parse_sync_operation(&op_str),
                 files_count: row.get::<_, i64>(2)? as usize,
-                status: row.get(3)?,
+                status: parse_sync_status(&status_str),
                 created_at: row.get(4)?,
             })
         })?;
@@ -354,7 +377,6 @@ impl MetricsCollector {
         let conn = self.conn.lock().map_err(|_| MetricsError::MutexPoisoned)?;
         let mut stmt = conn.prepare(
             "SELECT
-                COUNT(*) as total,
                 COALESCE(SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END), 0) as successful,
                 COALESCE(SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END), 0) as failed,
                 AVG(duration_ms) as avg_duration,
@@ -364,11 +386,10 @@ impl MetricsCollector {
 
         let stats = stmt.query_row([skill], |row| {
             Ok(SkillStats {
-                total_invocations: row.get::<_, i64>(0)? as u64,
-                successful_invocations: row.get::<_, Option<i64>>(1)?.unwrap_or(0) as u64,
-                failed_invocations: row.get::<_, Option<i64>>(2)?.unwrap_or(0) as u64,
-                avg_duration_ms: row.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
-                total_tokens: row.get::<_, Option<i64>>(4)?.unwrap_or(0) as u64,
+                successful_invocations: row.get::<_, Option<i64>>(0)?.unwrap_or(0) as u64,
+                failed_invocations: row.get::<_, Option<i64>>(1)?.unwrap_or(0) as u64,
+                avg_duration_ms: row.get::<_, Option<f64>>(2)?.unwrap_or(0.0),
+                total_tokens: row.get::<_, Option<i64>>(3)?.unwrap_or(0) as u64,
             })
         })?;
 
@@ -437,7 +458,7 @@ mod tests {
             .unwrap();
 
         let stats = collector.get_skill_stats("test-skill").unwrap();
-        assert_eq!(stats.total_invocations, 1);
+        assert_eq!(stats.total_invocations(), 1);
         assert_eq!(stats.successful_invocations, 1);
         assert_eq!(stats.failed_invocations, 0);
         assert_eq!(stats.total_tokens, 1024);
@@ -451,7 +472,7 @@ mod tests {
             .unwrap();
 
         let stats = collector.get_skill_stats("test-skill").unwrap();
-        assert_eq!(stats.total_invocations, 1);
+        assert_eq!(stats.total_invocations(), 1);
         assert_eq!(stats.failed_invocations, 1);
     }
 
@@ -481,7 +502,9 @@ mod tests {
     #[test]
     fn test_record_sync_event() {
         let collector = MetricsCollector::in_memory().unwrap();
-        collector.record_sync_event("push", 5, "success").unwrap();
+        collector
+            .record_sync_event(SyncOperation::Push, 5, SyncStatus::Success)
+            .unwrap();
 
         let events = collector.get_recent_events(10).unwrap();
         assert_eq!(events.len(), 1);
@@ -493,9 +516,9 @@ mod tests {
             ..
         } = &events[0]
         {
-            assert_eq!(operation, "push");
+            assert_eq!(*operation, SyncOperation::Push);
             assert_eq!(*files_count, 5);
-            assert_eq!(status, "success");
+            assert_eq!(*status, SyncStatus::Success);
         } else {
             panic!("Expected Sync event");
         }
@@ -509,7 +532,9 @@ mod tests {
             .record_skill_invocation("skill1", 100, true, None)
             .unwrap();
         collector.record_validation("skill2", &["a"], &[]).unwrap();
-        collector.record_sync_event("pull", 3, "success").unwrap();
+        collector
+            .record_sync_event(SyncOperation::Pull, 3, SyncStatus::Success)
+            .unwrap();
 
         let events = collector.get_recent_events(10).unwrap();
         assert_eq!(events.len(), 3);
@@ -530,7 +555,7 @@ mod tests {
             .unwrap();
 
         let stats = collector.get_skill_stats("multi-skill").unwrap();
-        assert_eq!(stats.total_invocations, 3);
+        assert_eq!(stats.total_invocations(), 3);
         assert_eq!(stats.successful_invocations, 2);
         assert_eq!(stats.failed_invocations, 1);
         assert_eq!(stats.total_tokens, 1500);
@@ -541,7 +566,7 @@ mod tests {
     fn test_get_skill_stats_nonexistent() {
         let collector = MetricsCollector::in_memory().unwrap();
         let stats = collector.get_skill_stats("nonexistent").unwrap();
-        assert_eq!(stats.total_invocations, 0);
+        assert_eq!(stats.total_invocations(), 0);
         assert_eq!(stats.successful_invocations, 0);
         assert_eq!(stats.failed_invocations, 0);
     }
@@ -582,7 +607,7 @@ mod tests {
         assert_eq!(deleted, 0);
 
         let stats = collector.get_skill_stats("recent-skill").unwrap();
-        assert_eq!(stats.total_invocations, 1);
+        assert_eq!(stats.total_invocations(), 1);
     }
 
     #[tokio::test]
@@ -637,7 +662,7 @@ mod tests {
         {
             let collector = MetricsCollector::persistent(db_path).unwrap();
             let stats = collector.get_skill_stats("persistent-skill").unwrap();
-            assert_eq!(stats.total_invocations, 1);
+            assert_eq!(stats.total_invocations(), 1);
         }
     }
 
@@ -656,7 +681,7 @@ mod tests {
         // Verify the flushed database
         let persistent = MetricsCollector::persistent(db_path).unwrap();
         let stats = persistent.get_skill_stats("flush-skill").unwrap();
-        assert_eq!(stats.total_invocations, 1);
+        assert_eq!(stats.total_invocations(), 1);
     }
 
     #[test]
