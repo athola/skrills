@@ -116,6 +116,11 @@ fn default_limit() -> usize {
     50
 }
 
+/// Maximum number of items a client can request per page.
+///
+/// Requests with `limit` above this value are silently clamped to `MAX_LIMIT`.
+/// This prevents clients from fetching the entire skill set in one request,
+/// which could be expensive for large installations with thousands of skills.
 const MAX_LIMIT: usize = 200;
 
 /// Paginated response wrapper.

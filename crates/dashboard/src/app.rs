@@ -345,6 +345,8 @@ impl App {
 pub struct Dashboard {
     skill_dirs: Vec<PathBuf>,
     collector: Arc<MetricsCollector>,
+    /// Refresh interval in ticks (each tick is 250ms).
+    refresh_ticks: u32,
 }
 
 impl Dashboard {
@@ -354,6 +356,7 @@ impl Dashboard {
         Ok(Self {
             skill_dirs,
             collector,
+            refresh_ticks: Self::REFRESH_INTERVAL_TICKS,
         })
     }
 
@@ -362,7 +365,15 @@ impl Dashboard {
         Self {
             skill_dirs,
             collector,
+            refresh_ticks: Self::REFRESH_INTERVAL_TICKS,
         }
+    }
+
+    /// Set the refresh interval in seconds.
+    pub fn with_refresh_secs(mut self, secs: u32) -> Self {
+        // Each tick is 250ms, so multiply seconds by 4
+        self.refresh_ticks = secs.max(1) * 4;
+        self
     }
 
     /// Restore terminal to normal state.
@@ -423,6 +434,10 @@ impl Dashboard {
         // Event handler
         let mut events = EventHandler::new(Duration::from_millis(250));
 
+        // Ctrl+C signal handler for graceful shutdown
+        let sigint = tokio::signal::ctrl_c();
+        tokio::pin!(sigint);
+
         let mut tick_count: u32 = 0;
 
         // Main loop
@@ -442,7 +457,7 @@ impl Dashboard {
                         }
                         Some(Event::Tick) => {
                             tick_count += 1;
-                            if tick_count >= Self::REFRESH_INTERVAL_TICKS {
+                            if tick_count >= self.refresh_ticks {
                                 tick_count = 0;
                                 self.refresh_skills(&mut app);
                             }
@@ -455,6 +470,10 @@ impl Dashboard {
                 }
                 Ok(metric) = rx.recv() => {
                     app.on_metric_event(metric);
+                }
+                _ = &mut sigint => {
+                    // Graceful shutdown on Ctrl+C
+                    break;
                 }
             }
         }

@@ -23,6 +23,7 @@ tokio = { workspace = true, features = ["sync"] }
 rusqlite = { version = "0.38", features = ["bundled"] }
 thiserror.workspace = true
 tracing.workspace = true
+parking_lot.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
