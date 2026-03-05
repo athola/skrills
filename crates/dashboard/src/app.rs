@@ -519,6 +519,12 @@ impl Dashboard {
             });
         }
 
+        // Re-apply current sort order after rebuilding the list
+        match app.sort_order {
+            SortOrder::Alphabetical => app.skills.sort_by(|a, b| a.name.cmp(&b.name)),
+            SortOrder::Discovery => {} // already in discovery order
+        }
+
         // Sync list state selection
         if !app.skills.is_empty() {
             app.skill_index = app.skill_index.min(app.skills.len() - 1);
