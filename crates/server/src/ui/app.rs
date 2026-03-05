@@ -95,6 +95,6 @@ pub fn MetricsPanel() -> impl IntoView {
 pub fn render_dashboard() -> String {
     use leptos::tachys::view::RenderHtml;
     let view = App();
-    let html = view.to_html();
-    format!("<!DOCTYPE html>{}", html)
+    // App component already renders <!DOCTYPE html>, so no prefix needed.
+    view.to_html()
 }

@@ -371,13 +371,13 @@ impl SubagentService {
             );
             // Use backend hint to determine CLI binary, falling back to model-based detection
             let cli_backend = backend_hint
-                .unwrap_or_else(|| self.backend_for_model(agent.config.model.as_deref()));
+                .unwrap_or_else(|| self.backend_for_model(agent.config.model.as_ref().map(|m| m.as_str())));
             return Ok(self.cli_adapter_for(cli_binary_override, Some(cli_backend)));
         }
 
         // Agent doesn't require tools - use API adapter
         // Determine which API backend to use based on agent's model
-        let backend = self.backend_for_model(agent.config.model.as_deref());
+        let backend = self.backend_for_model(agent.config.model.as_ref().map(|m| m.as_str()));
         self.adapter_for(Some(backend))
     }
 

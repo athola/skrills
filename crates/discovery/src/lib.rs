@@ -40,12 +40,13 @@ pub mod scanner;
 pub mod types;
 
 pub use scanner::{
-    default_priority, default_roots, default_roots_auto, discover_agents, discover_skills,
-    discover_skills_with_depth, extra_skill_roots, extract_refs_from_agents, hash_file,
-    load_priority_override, priority_labels, priority_labels_and_rank_map, priority_with_override,
-    skill_roots_or_default, DiscoveryConfig, DEFAULT_MAX_DEPTH,
+    default_priority, default_roots, default_roots_auto, discover_agents, discover_rules,
+    discover_skills, discover_skills_with_depth, extra_skill_roots, extract_refs_from_agents,
+    hash_file, load_priority_override, priority_labels, priority_labels_and_rank_map,
+    priority_with_override, skill_roots_or_default, DiscoveryConfig, DEFAULT_MAX_DEPTH,
 };
 pub use types::{
-    parse_agent_config, parse_source_key, AgentConfig, AgentMeta, Diagnostics, DuplicateInfo,
-    SkillMeta, SkillRoot, SkillSource,
+    parse_agent_config, parse_source_key, AgentConfig, AgentMeta, AgentModel, Diagnostics,
+    DuplicateInfo, IncludedSkill, RuleCategory, RuleMeta, SkillMeta, SkillRoot, SkillSource,
+    SkippedSkill,
 };

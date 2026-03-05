@@ -364,8 +364,8 @@ mod tests {
         .unwrap();
 
         std::fs::write(
-            skills_dir.join("skill.md"), // lowercase - should be ignored
-            "---\nname: lowercase\ndescription: Should be ignored\n---\n# Content\nBody.",
+            skills_dir.join("Skills.md"), // wrong casing - should be ignored
+            "---\nname: wrong-case\ndescription: Should be ignored\n---\n# Content\nBody.",
         )
         .unwrap();
 

@@ -13,7 +13,7 @@ use crossterm::{
 };
 use ratatui::prelude::*;
 use ratatui::widgets::ListState;
-use skrills_metrics::{MetricEvent, MetricsCollector, SkillStats};
+use skrills_metrics::{MetricEvent, MetricsCollector, SkillStats, ValidationDetail};
 
 use crate::events::{Event, EventHandler};
 use crate::ui;
@@ -173,6 +173,12 @@ pub struct App {
     pub show_help: bool,
     /// Current sort order for skills panel.
     pub sort_order: SortOrder,
+    /// Total invocations across all skills (from analytics summary).
+    pub total_invocations: u64,
+    /// Overall success rate percentage (from analytics summary).
+    pub overall_success_rate: f64,
+    /// Latest validation detail for the currently selected skill.
+    pub selected_validation: Option<ValidationDetail>,
 }
 
 impl Default for App {
@@ -192,6 +198,9 @@ impl Default for App {
             last_refresh: String::new(),
             show_help: false,
             sort_order: SortOrder::default(),
+            total_invocations: 0,
+            overall_success_rate: 0.0,
+            selected_validation: None,
         }
     }
 }
@@ -330,9 +339,34 @@ impl App {
                 format!("[VAL] {} - {}", skill_name, status)
             }
             MetricEvent::Sync {
-                operation, status, ..
+                ref operation,
+                files_count,
+                ref status,
+                ..
             } => {
-                format!("[SYNC] {} - {}", operation, status)
+                let status_tag = match status {
+                    skrills_metrics::SyncStatus::Success
+                    | skrills_metrics::SyncStatus::Complete => "OK",
+                    skrills_metrics::SyncStatus::Failed => "FAIL",
+                    skrills_metrics::SyncStatus::InProgress => "...",
+                };
+                format!(
+                    "[SYNC] {} {} files - {}",
+                    operation, files_count, status_tag
+                )
+            }
+            MetricEvent::RuleTrigger {
+                rule_name,
+                ref outcome,
+                ..
+            } => {
+                let tag = match outcome {
+                    skrills_metrics::RuleOutcome::Pass => "OK",
+                    skrills_metrics::RuleOutcome::Fail => "FAIL",
+                    skrills_metrics::RuleOutcome::Skip => "SKIP",
+                    skrills_metrics::RuleOutcome::Error => "ERR",
+                };
+                format!("[RULE] {} - {}", rule_name, tag)
             }
         };
         self.add_activity(msg);
@@ -343,6 +377,8 @@ impl App {
 pub struct Dashboard {
     skill_dirs: Vec<PathBuf>,
     collector: Arc<MetricsCollector>,
+    /// Refresh interval in ticks (each tick is 250ms).
+    refresh_ticks: u32,
 }
 
 impl Dashboard {
@@ -352,6 +388,7 @@ impl Dashboard {
         Ok(Self {
             skill_dirs,
             collector,
+            refresh_ticks: Self::REFRESH_INTERVAL_TICKS,
         })
     }
 
@@ -360,7 +397,15 @@ impl Dashboard {
         Self {
             skill_dirs,
             collector,
+            refresh_ticks: Self::REFRESH_INTERVAL_TICKS,
         }
+    }
+
+    /// Set the refresh interval in seconds.
+    pub fn with_refresh_secs(mut self, secs: u32) -> Self {
+        // Each tick is 250ms, so multiply seconds by 4
+        self.refresh_ticks = secs.max(1) * 4;
+        self
     }
 
     /// Restore terminal to normal state.
@@ -421,6 +466,10 @@ impl Dashboard {
         // Event handler
         let mut events = EventHandler::new(Duration::from_millis(250));
 
+        // Ctrl+C signal handler for graceful shutdown
+        let sigint = tokio::signal::ctrl_c();
+        tokio::pin!(sigint);
+
         let mut tick_count: u32 = 0;
 
         // Main loop
@@ -440,7 +489,7 @@ impl Dashboard {
                         }
                         Some(Event::Tick) => {
                             tick_count += 1;
-                            if tick_count >= Self::REFRESH_INTERVAL_TICKS {
+                            if tick_count >= self.refresh_ticks {
                                 tick_count = 0;
                                 self.refresh_skills(&mut app);
                             }
@@ -453,6 +502,10 @@ impl Dashboard {
                 }
                 Ok(metric) = rx.recv() => {
                     app.on_metric_event(metric);
+                }
+                _ = &mut sigint => {
+                    // Graceful shutdown on Ctrl+C
+                    break;
                 }
             }
         }
@@ -546,7 +599,7 @@ impl Dashboard {
 
             // Get stats if available
             let stats = self.collector.get_skill_stats(&base_name).ok();
-            let invocations = stats.as_ref().map(|s| s.total_invocations).unwrap_or(0);
+            let invocations = stats.as_ref().map(|s| s.total_invocations()).unwrap_or(0);
 
             app.skills.push(SkillInfo {
                 discovery_index: idx,
@@ -577,6 +630,26 @@ impl Dashboard {
             let visible = app.visible_skill_count();
             app.skill_index = app.skill_index.min(visible.saturating_sub(1));
             app.skill_list_state.select(Some(app.skill_index));
+        }
+
+        // Update analytics summary
+        if let Ok(summary) = self.collector.get_analytics_summary() {
+            app.total_invocations = summary.total_invocations;
+            app.overall_success_rate = summary.success_rate;
+        }
+
+        // Update validation summary counts
+        if let Ok(val_summary) = self.collector.get_validation_summary() {
+            app.valid_skills = val_summary.valid as usize;
+            app.invalid_skills = (val_summary.error + val_summary.warning) as usize;
+        }
+
+        // Load validation detail for the currently selected skill
+        app.selected_validation = None;
+        if let Some(skill) = app.skills.get(app.skill_index) {
+            if let Ok(history) = self.collector.get_validation_history(&skill.name, 1) {
+                app.selected_validation = history.into_iter().next();
+            }
         }
 
         // Update timestamp

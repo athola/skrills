@@ -8,7 +8,7 @@ use ratatui::{backend::TestBackend, Terminal};
 
 use skrills_dashboard::app::{App, FocusPanel, SkillInfo, SkillLocation, SortOrder, PAGE_SIZE};
 use skrills_dashboard::ui;
-use skrills_metrics::MetricEvent;
+use skrills_metrics::{MetricEvent, RuleOutcome, SyncOperation, SyncStatus};
 
 /// Helper to create a test terminal with a given width and height.
 fn test_terminal(width: u16, height: u16) -> Terminal<TestBackend> {
@@ -69,7 +69,7 @@ fn render_to_string(terminal: &Terminal<TestBackend>) -> String {
 
 #[test]
 fn header_shows_skill_counts_and_timestamp() {
-    let mut terminal = test_terminal(100, 20);
+    let mut terminal = test_terminal(130, 20);
     let mut app = app_with_skills();
 
     terminal
@@ -92,6 +92,14 @@ fn header_shows_skill_counts_and_timestamp() {
     assert!(
         output.contains("Invalid: 1"),
         "Header should show invalid count"
+    );
+    assert!(
+        output.contains("Invocations: 0"),
+        "Header should show total invocations"
+    );
+    assert!(
+        output.contains("Success: 0.0%"),
+        "Header should show overall success rate"
     );
     assert!(
         output.contains("2025-01-15T10:30:00"),
@@ -669,16 +677,49 @@ fn metric_event_sync() {
     let mut app = App::new();
     app.on_metric_event(MetricEvent::Sync {
         id: 5,
-        operation: "push".to_string(),
+        operation: SyncOperation::Push,
         files_count: 5,
-        status: "complete".to_string(),
+        status: SyncStatus::Complete,
         created_at: "2025-01-15T10:00:00Z".to_string(),
     });
 
     assert_eq!(app.activity.len(), 1);
     assert!(app.activity[0].message.contains("[SYNC]"));
     assert!(app.activity[0].message.contains("push"));
-    assert!(app.activity[0].message.contains("complete"));
+    assert!(app.activity[0].message.contains("OK"));
+}
+
+#[test]
+fn metric_event_rule_trigger() {
+    let mut app = App::new();
+    app.on_metric_event(MetricEvent::RuleTrigger {
+        id: 6,
+        rule_name: "no-unsafe".to_string(),
+        category: Some("safety".to_string()),
+        outcome: RuleOutcome::Fail,
+        duration_ms: Some(42),
+        created_at: "2025-01-15T10:00:00Z".to_string(),
+    });
+
+    assert_eq!(app.activity.len(), 1);
+    assert!(app.activity[0].message.contains("[RULE]"));
+    assert!(app.activity[0].message.contains("no-unsafe"));
+    assert!(app.activity[0].message.contains("FAIL"));
+
+    // Test pass outcome
+    let mut app2 = App::new();
+    app2.on_metric_event(MetricEvent::RuleTrigger {
+        id: 7,
+        rule_name: "lint-check".to_string(),
+        category: None,
+        outcome: RuleOutcome::Pass,
+        duration_ms: None,
+        created_at: "2025-01-15T10:01:00Z".to_string(),
+    });
+
+    assert_eq!(app2.activity.len(), 1);
+    assert!(app2.activity[0].message.contains("[RULE]"));
+    assert!(app2.activity[0].message.contains("OK"));
 }
 
 // ── Rendering at Different Terminal Sizes ──

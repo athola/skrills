@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.1 - 2026-03-05
+- **Fix**: Tests that relied on case-only filename differences (`MySkill`/`myskill`/`MYSKILL`) now use distinct names to avoid collisions on case-insensitive filesystems (macOS APFS/HFS+).
+- **Fix**: Validation test uses `Skills.md` instead of `skill.md` for wrong-casing detection, preventing false passes on case-insensitive filesystems.
+- **Internal**: Bumped all workspace crate versions from 0.6.0 to 0.6.1.
+- **Internal**: Updated marketplace.json MCP tool count from 24 to 25.
+
 ## 0.6.0 - 2026-02-15
 - **Discovery**: Frontmatter-based skill deduplication across roots using `name` field and Jaccard similarity on descriptions. Skills with matching frontmatter identity (name + similar description) are consolidated regardless of path differences.
 - **Dashboard**: Sortable skills panel (press `s` to toggle alphabetical/discovery order), stateful list scrolling via `ListState`, and multi-location display showing all roots where a skill was discovered.

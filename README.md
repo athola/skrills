@@ -22,15 +22,32 @@ Skills support engine for Claude Code, Codex CLI, and GitHub Copilot CLI.
 
 ## Features
 
-Skrills validates skills against Claude Code (permissive), Codex CLI (strict), and Copilot CLI (strict) rules. It syncs skills, commands, agents, MCP servers, and preferences across all three environments, preventing configuration drift. The validation engine derives missing YAML frontmatter from file paths and content to fix common errors automatically.
-
-For optimization, Skrills analyzes token usage per skill and suggests reductions to fit context windows. It resolves skill dependencies with cycle detection and semantic versioning constraints. The built-in MCP server provides over 40 tools for validation, sync, and project-aware skill generation, while session mining improves recommendations based on actual usage. A visualization dashboard (TUI and browser) shows discovered skills, validation status, and usage metrics at a glance.
+- **Cross-CLI validation** -- validates skills against Claude Code
+  (permissive), Codex CLI (strict), and Copilot CLI (strict) rules.
+  Auto-derives missing YAML frontmatter from file paths and content.
+- **Multi-directional sync** -- syncs skills, commands, agents, MCP
+  servers, and preferences across all three environments. Uses file
+  hashing to respect manual edits so user changes are not overwritten.
+- **Token analytics** -- measures token usage per skill and suggests
+  reductions to fit context windows.
+- **Dependency resolution** -- resolves skill dependencies with cycle
+  detection and semantic versioning constraints.
+- **MCP server** -- 25 tools for validation, sync, intelligence, and
+  project-aware skill generation over stdio or HTTP transport.
+- **Session mining** -- parses Claude Code and Codex CLI session
+  history to improve recommendations based on actual usage.
+- **Visualization** -- TUI and browser dashboard showing discovered
+  skills, validation status, and usage metrics.
+- **Discovery deduplication** -- frontmatter identity matching
+  consolidates the same skill installed in multiple locations.
 
 ## Demo
 
 ![Skrills Demo](assets/gifs/quickstart.gif)
 
-See the [quickstart tutorial](docs/tutorials/quickstart.md) for a detailed walkthrough, or the [MCP tutorial](docs/tutorials/mcp.md) for server setup.
+See the [quickstart tutorial](docs/tutorials/quickstart.md) for a
+walkthrough, or the [MCP tutorial](docs/tutorials/mcp.md) for server
+setup.
 
 ## Installation
 
@@ -53,7 +70,7 @@ See [installation guide](book/src/installation.md) for HTTP transport setup, sys
 
 ```bash
 # Validate skills for Codex/Copilot compatibility
-skrills validate --target all --autofix
+skrills validate --target both --autofix
 
 # Analyze token usage
 skrills analyze --min-tokens 1000 --suggestions
@@ -68,7 +85,8 @@ skrills serve
 skrills tui
 ```
 
-See [CLI reference](book/src/cli.md) for all 39 commands including skill lifecycle management.
+See [CLI reference](book/src/cli.md) for all commands including
+skill lifecycle management.
 
 ## Skill Management
 
@@ -97,12 +115,6 @@ skrills skill-catalog --filter "python"
 # View skill performance metrics
 skrills skill-profile my-skill
 ```
-
-## Why Skrills
-
-Claude Code, Codex CLI, and Copilot CLI have different requirements for skill definitions. Codex and Copilot require YAML frontmatter with specific character limits (`name` max 100, `description` max 500), while Claude is permissive. Skrills catches these discrepancies at validation time, preventing runtime errors.
-
-The sync system uses file hashing to respect manual edits, ensuring user changes aren't overwritten. Token analytics and dependency resolution help maintain a clean, efficient skill library within context limits. Discovery deduplicates skills across roots using frontmatter identity matching, so the same skill installed in multiple locations appears once.
 
 ## Limitations
 
@@ -142,25 +154,8 @@ cors_origins = "https://app.example.com"
 
 Precedence: CLI flags > environment variables > config file.
 
-See [security docs](docs/security.md) for TLS setup and [FAQ](docs/FAQ.md) for environment variables.
-
-## TLS Certificate Management
-
-For secure HTTPS transport, Skrills includes certificate management:
-
-```bash
-# Check certificate status
-skrills cert status
-
-# Auto-generate self-signed certificates for development
-skrills serve --tls-auto
-
-# Renew expiring certificates
-skrills cert renew
-
-# Install custom certificates
-skrills cert install /path/to/cert.pem --key /path/to/key.pem
-```
+See [security docs](docs/security.md) for TLS setup (`skrills cert`
+subcommand) and [FAQ](docs/FAQ.md) for environment variables.
 
 ## Documentation
 
