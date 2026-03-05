@@ -165,7 +165,7 @@ fn file_hash(path: &Path) -> Result<String> {
     if size > 0 {
         use std::io::Read;
         if let Ok(mut file) = fs::File::open(path) {
-            let mut prefix = vec![0u8; 1024.min(size as usize)];
+            let mut prefix = vec![0u8; 1024.min(usize::try_from(size).unwrap_or(usize::MAX))];
             if let Ok(n) = file.read(&mut prefix) {
                 prefix.truncate(n);
                 hasher.update(&prefix);
@@ -176,39 +176,68 @@ fn file_hash(path: &Path) -> Result<String> {
     Ok(format!("{:x}", digest))
 }
 
-/// Extracts the description from a skill file's YAML frontmatter.
+/// Extracts identity fields (name and description) from a skill file's YAML frontmatter.
 ///
-/// Parses frontmatter between `---` delimiters to extract the `description` field.
-/// Returns `None` if no frontmatter or no description is present.
-fn extract_description(content: &str) -> Option<String> {
+/// Parses frontmatter between `---` delimiters to extract the `name` and `description` fields.
+/// Returns `(None, None)` if no frontmatter is present.
+fn extract_frontmatter_identity(content: &str) -> (Option<String>, Option<String>) {
     let trimmed = content.trim_start();
     if !trimmed.starts_with("---") {
-        return None;
+        return (None, None);
     }
 
     // Find content after opening ---
-    let after_open = trimmed.get(3..)?.trim_start_matches(['\r', '\n']);
+    let after_open = match trimmed.get(3..) {
+        Some(s) => s.trim_start_matches(['\r', '\n']),
+        None => return (None, None),
+    };
 
     // Find closing ---
-    let end_pos = after_open
+    let end_pos = match after_open
         .find("\n---")
-        .or_else(|| after_open.find("\r\n---"))?;
+        .or_else(|| after_open.find("\r\n---"))
+    {
+        Some(pos) => pos,
+        None => return (None, None),
+    };
     let yaml = &after_open[..end_pos];
 
-    // Parse YAML to extract description field
+    // Parse YAML to extract name and description fields
     // Use a minimal struct to avoid pulling in complex types
     #[derive(serde::Deserialize)]
     struct MinimalFrontmatter {
+        name: Option<String>,
         description: Option<String>,
     }
 
     match serde_yaml::from_str::<MinimalFrontmatter>(yaml) {
-        Ok(fm) => fm.description.filter(|d| !d.trim().is_empty()),
+        Ok(fm) => {
+            let name = fm.name.filter(|n| !n.trim().is_empty());
+            let description = fm.description.filter(|d| !d.trim().is_empty());
+            (name, description)
+        }
         Err(e) => {
-            tracing::debug!(error = %e, "Failed to parse skill frontmatter for description");
-            None
+            tracing::debug!(error = %e, "Failed to parse skill frontmatter");
+            (None, None)
         }
     }
+}
+
+/// Computes Jaccard similarity between two strings based on whitespace-separated word sets.
+///
+/// Returns a value in [0.0, 1.0] where 1.0 means identical word sets.
+fn jaccard_similarity(a: &str, b: &str) -> f64 {
+    use std::collections::HashSet;
+    let words_a: Vec<String> = a.split_whitespace().map(|w| w.to_lowercase()).collect();
+    let words_b: Vec<String> = b.split_whitespace().map(|w| w.to_lowercase()).collect();
+    let set_a: HashSet<&str> = words_a.iter().map(|s| s.as_str()).collect();
+    let set_b: HashSet<&str> = words_b.iter().map(|s| s.as_str()).collect();
+    if set_a.is_empty() && set_b.is_empty() {
+        return 0.0;
+    }
+    let intersection = set_a.intersection(&set_b).count();
+    let union = set_a.union(&set_b).count();
+    intersection as f64 / union as f64
 }
 
 /// Collects skill metadata from the provided roots.
@@ -220,6 +249,12 @@ fn collect_skills_from(
     let mut skills = Vec::new();
     let mut seen: std::collections::HashMap<String, (String, String)> =
         std::collections::HashMap::new(); // name -> (source, root)
+                                          // Frontmatter-name-based dedup: catches duplicates across roots with different paths
+                                          // but the same frontmatter identity (name + similar description).
+    let mut seen_by_fm_name: std::collections::HashMap<String, (String, String, Option<String>)> =
+        std::collections::HashMap::new();
+    // key: lowercased frontmatter name
+    // value: (source_label, root_display, description)
     for root_cfg in roots {
         let root = &root_cfg.root;
         if !root.exists() {
@@ -260,19 +295,19 @@ fn collect_skills_from(
                     .and_then(|p| p.to_str().map(|s| s.to_owned()))
                     .unwrap_or_else(|| path.to_string_lossy().into_owned());
                 let hash = file_hash(&path)?;
-                // Extract description from frontmatter (best-effort, log errors)
-                let description = match fs::read_to_string(&path) {
-                    Ok(content) => extract_description(&content),
+                // Extract frontmatter identity (best-effort, log errors)
+                let (frontmatter_name, description) = match fs::read_to_string(&path) {
+                    Ok(content) => extract_frontmatter_identity(&content),
                     Err(e) => {
-                        tracing::trace!(path = %path.display(), error = %e, "Failed to read skill file for description");
-                        None
+                        tracing::trace!(path = %path.display(), error = %e, "Failed to read skill file");
+                        (None, None)
                     }
                 };
-                Ok((name, path, hash, description))
+                Ok((name, path, hash, frontmatter_name, description))
             })
             .collect::<Result<Vec<_>>>()?;
 
-        for (name, path, hash, description) in metas {
+        for (name, path, hash, frontmatter_name, description) in metas {
             if let Some((seen_src, seen_root)) = seen.get(&name) {
                 if let Some(dup_log) = dup_log.as_mut() {
                     dup_log.push(DuplicateInfo {
@@ -286,6 +321,37 @@ fn collect_skills_from(
                 continue;
             }
 
+            // Frontmatter-name dedup: same frontmatter name + similar description = duplicate
+            if let Some(ref fm_name) = frontmatter_name {
+                let fm_key = fm_name.to_lowercase();
+                if let Some((prev_src, prev_root, prev_desc)) = seen_by_fm_name.get(&fm_key) {
+                    let is_dup = match (&description, prev_desc) {
+                        (Some(a), Some(b)) => jaccard_similarity(a, b) >= 0.5,
+                        _ => false, // missing description = can't compare semantically
+                    };
+                    if is_dup {
+                        if let Some(dup_log) = dup_log.as_mut() {
+                            dup_log.push(DuplicateInfo {
+                                name: name.clone(),
+                                skipped_source: root_cfg.source.label(),
+                                skipped_root: root.display().to_string(),
+                                kept_source: prev_src.clone(),
+                                kept_root: prev_root.clone(),
+                            });
+                        }
+                        continue;
+                    }
+                }
+                seen_by_fm_name.insert(
+                    fm_key,
+                    (
+                        root_cfg.source.label(),
+                        root.display().to_string(),
+                        description.clone(),
+                    ),
+                );
+            }
+
             skills.push(SkillMeta {
                 name: name.clone(),
                 path: path.clone(),
@@ -293,6 +359,7 @@ fn collect_skills_from(
                 root: root.clone(),
                 hash,
                 description,
+                frontmatter_name,
             });
             seen.insert(name, (root_cfg.source.label(), root.display().to_string()));
         }
@@ -303,7 +370,7 @@ fn collect_skills_from(
     tracing::info!(
         total_skills = skills.len(),
         with_description,
-        without_description = skills.len() - with_description,
+        without_description = skills.len().saturating_sub(with_description),
         "Skill discovery complete"
     );
 
@@ -474,6 +541,57 @@ pub fn extra_skill_roots(extra: &[PathBuf]) -> Vec<SkillRoot> {
             source: SkillSource::Extra(i as u32),
         })
         .collect()
+}
+
+/// Returns default skill roots using the user's home directory.
+///
+/// Returns an empty vector if the home directory cannot be determined.
+pub fn default_roots_auto() -> Vec<SkillRoot> {
+    dirs::home_dir()
+        .map(|home| default_roots(&home))
+        .unwrap_or_default()
+}
+
+/// Returns skill roots from custom directories, or defaults if empty.
+///
+/// Custom directories are assigned `SkillSource` based on path component matching:
+/// - Path containing a `.claude` component → `SkillSource::Claude`
+/// - Path containing a `.codex` component → `SkillSource::Codex`
+/// - Path containing a `.copilot` or `copilot` component → `SkillSource::Copilot`
+/// - Otherwise → `SkillSource::Extra(index)`
+pub fn skill_roots_or_default(custom: &[PathBuf]) -> Vec<SkillRoot> {
+    if custom.is_empty() {
+        default_roots_auto()
+    } else {
+        custom
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                // Match against individual path components to avoid false positives
+                // from substring matching (e.g. "/home/alice/my-codex-tools")
+                let has_component = |name: &str| {
+                    p.components().any(|c| {
+                        c.as_os_str()
+                            .to_str()
+                            .is_some_and(|s| s.eq_ignore_ascii_case(name))
+                    })
+                };
+                let source = if has_component(".claude") {
+                    SkillSource::Claude
+                } else if has_component(".codex") {
+                    SkillSource::Codex
+                } else if has_component(".copilot") || has_component("copilot") {
+                    SkillSource::Copilot
+                } else {
+                    SkillSource::Extra(u32::try_from(i).unwrap_or(u32::MAX))
+                };
+                SkillRoot {
+                    root: p.clone(),
+                    source,
+                }
+            })
+            .collect()
+    }
 }
 
 /// Computes the BLAKE2b-256 hash of a file.
@@ -940,11 +1058,11 @@ mod tests {
     }
 
     // ============================================================
-    // Description extraction tests
+    // Frontmatter identity extraction tests
     // ============================================================
 
     #[test]
-    fn extract_description_from_valid_frontmatter() {
+    fn extract_frontmatter_identity_from_valid_frontmatter() {
         let content = r#"---
 name: test-skill
 description: This is a test skill description
@@ -953,12 +1071,13 @@ version: 1.0.0
 
 # Test Skill Content
 "#;
-        let desc = extract_description(content);
+        let (name, desc) = extract_frontmatter_identity(content);
+        assert_eq!(name, Some("test-skill".to_string()));
         assert_eq!(desc, Some("This is a test skill description".to_string()));
     }
 
     #[test]
-    fn extract_description_returns_none_for_missing_description() {
+    fn extract_frontmatter_identity_returns_none_for_missing_description() {
         let content = r#"---
 name: test-skill
 version: 1.0.0
@@ -966,12 +1085,13 @@ version: 1.0.0
 
 # Test Skill Content
 "#;
-        let desc = extract_description(content);
+        let (name, desc) = extract_frontmatter_identity(content);
+        assert_eq!(name, Some("test-skill".to_string()));
         assert!(desc.is_none());
     }
 
     #[test]
-    fn extract_description_returns_none_for_empty_description() {
+    fn extract_frontmatter_identity_returns_none_for_empty_description() {
         let content = r#"---
 name: test-skill
 description: ""
@@ -979,29 +1099,32 @@ description: ""
 
 # Test Skill Content
 "#;
-        let desc = extract_description(content);
+        let (name, desc) = extract_frontmatter_identity(content);
+        assert_eq!(name, Some("test-skill".to_string()));
         assert!(desc.is_none());
     }
 
     #[test]
-    fn extract_description_returns_none_for_no_frontmatter() {
+    fn extract_frontmatter_identity_returns_none_for_no_frontmatter() {
         let content = "# Just Markdown\n\nNo frontmatter here.";
-        let desc = extract_description(content);
+        let (name, desc) = extract_frontmatter_identity(content);
+        assert!(name.is_none());
         assert!(desc.is_none());
     }
 
     #[test]
-    fn extract_description_returns_none_for_unclosed_frontmatter() {
+    fn extract_frontmatter_identity_returns_none_for_unclosed_frontmatter() {
         let content = r#"---
 name: test-skill
 description: This will not be extracted
 "#;
-        let desc = extract_description(content);
+        let (name, desc) = extract_frontmatter_identity(content);
+        assert!(name.is_none());
         assert!(desc.is_none());
     }
 
     #[test]
-    fn extract_description_handles_leading_whitespace() {
+    fn extract_frontmatter_identity_handles_leading_whitespace() {
         let content = r#"
 ---
 name: test-skill
@@ -1010,7 +1133,8 @@ description: Description with leading whitespace
 
 Content
 "#;
-        let desc = extract_description(content);
+        let (name, desc) = extract_frontmatter_identity(content);
+        assert_eq!(name, Some("test-skill".to_string()));
         assert_eq!(
             desc,
             Some("Description with leading whitespace".to_string())
@@ -1018,7 +1142,7 @@ Content
     }
 
     #[test]
-    fn extract_description_yaml_special_characters() {
+    fn extract_frontmatter_identity_yaml_special_characters() {
         // Test quotes in description
         let content = r#"---
 name: test-skill
@@ -1026,7 +1150,7 @@ description: "Description with 'quotes' and \"double quotes\""
 ---
 Content
 "#;
-        let desc = extract_description(content);
+        let (_, desc) = extract_frontmatter_identity(content);
         assert_eq!(
             desc,
             Some("Description with 'quotes' and \"double quotes\"".to_string())
@@ -1039,7 +1163,7 @@ description: "Note: this has a colon"
 ---
 Content
 "#;
-        let desc = extract_description(content);
+        let (_, desc) = extract_frontmatter_identity(content);
         assert_eq!(desc, Some("Note: this has a colon".to_string()));
 
         // Test newlines in multiline description
@@ -1051,7 +1175,7 @@ description: |
 ---
 Content
 "#;
-        let desc = extract_description(content);
+        let (_, desc) = extract_frontmatter_identity(content);
         assert!(desc.is_some());
         let d = desc.unwrap();
         assert!(d.contains("Line one"));
@@ -1059,32 +1183,35 @@ Content
     }
 
     #[test]
-    fn extract_description_crlf_line_endings() {
+    fn extract_frontmatter_identity_crlf_line_endings() {
         // CRLF line endings (Windows-style)
         let content = "---\r\nname: test-skill\r\ndescription: CRLF test\r\n---\r\nContent";
-        let desc = extract_description(content);
+        let (name, desc) = extract_frontmatter_identity(content);
+        assert_eq!(name, Some("test-skill".to_string()));
         assert_eq!(desc, Some("CRLF test".to_string()));
 
         // Mixed line endings
         let content = "---\nname: test-skill\r\ndescription: Mixed endings\n---\r\nContent";
-        let desc = extract_description(content);
+        let (name, desc) = extract_frontmatter_identity(content);
+        assert_eq!(name, Some("test-skill".to_string()));
         assert_eq!(desc, Some("Mixed endings".to_string()));
     }
 
     #[test]
-    fn extract_description_very_long_description() {
+    fn extract_frontmatter_identity_very_long_description() {
         // Very long description (edge case)
         let long_desc = "A".repeat(10_000);
         let content = format!(
             "---\nname: test-skill\ndescription: {}\n---\nContent",
             long_desc
         );
-        let desc = extract_description(&content);
+        let (name, desc) = extract_frontmatter_identity(&content);
+        assert_eq!(name, Some("test-skill".to_string()));
         assert_eq!(desc, Some(long_desc));
     }
 
     #[test]
-    fn extract_description_whitespace_only() {
+    fn extract_frontmatter_identity_whitespace_only() {
         // Whitespace-only descriptions are filtered out at extraction
         let content = r#"---
 name: test-skill
@@ -1092,11 +1219,36 @@ description: "   "
 ---
 Content
 "#;
-        let desc = extract_description(content);
+        let (name, desc) = extract_frontmatter_identity(content);
+        assert_eq!(name, Some("test-skill".to_string()));
         assert!(
             desc.is_none(),
             "Whitespace-only descriptions should return None"
         );
+    }
+
+    #[test]
+    fn extract_frontmatter_identity_returns_both() {
+        let content = "---\nname: my-skill\ndescription: Does stuff\n---\nBody";
+        let (name, desc) = extract_frontmatter_identity(content);
+        assert_eq!(name, Some("my-skill".to_string()));
+        assert_eq!(desc, Some("Does stuff".to_string()));
+    }
+
+    #[test]
+    fn extract_frontmatter_identity_name_only() {
+        let content = "---\nname: my-skill\n---\nBody";
+        let (name, desc) = extract_frontmatter_identity(content);
+        assert_eq!(name, Some("my-skill".to_string()));
+        assert!(desc.is_none());
+    }
+
+    #[test]
+    fn extract_frontmatter_identity_no_frontmatter() {
+        let content = "# Just markdown";
+        let (name, desc) = extract_frontmatter_identity(content);
+        assert!(name.is_none());
+        assert!(desc.is_none());
     }
 
     #[test]
@@ -1131,9 +1283,10 @@ description: A skill with a cached description
     #[test]
     fn discover_skills_with_same_description() {
         // Multiple skills can have identical descriptions - they're independent
+        // (different frontmatter names means they are distinct skills)
         let tmp = tempdir().unwrap();
 
-        // Create two skills with the same description
+        // Create two skills with the same description but different names
         let skill1_dir = tmp.path().join("skill-one");
         fs::create_dir_all(&skill1_dir).unwrap();
         fs::write(
@@ -1175,25 +1328,216 @@ description: Shared description for database operations
     }
 
     #[test]
-    fn extract_description_multiword_matching() {
+    fn extract_frontmatter_identity_multiword_matching() {
         // Test that multi-word descriptions are preserved correctly
-        // This is useful when skills search by first/middle/last word
         let content = r#"---
 name: test-skill
 description: Database query optimization and performance tuning
 ---
 Content
 "#;
-        let desc = extract_description(content).unwrap();
+        let (name, desc) = extract_frontmatter_identity(content);
+        assert_eq!(name, Some("test-skill".to_string()));
+        let d = desc.unwrap();
 
         // All words should be present
-        assert!(desc.contains("Database"));
-        assert!(desc.contains("query"));
-        assert!(desc.contains("optimization"));
-        assert!(desc.contains("performance"));
-        assert!(desc.contains("tuning"));
+        assert!(d.contains("Database"));
+        assert!(d.contains("query"));
+        assert!(d.contains("optimization"));
+        assert!(d.contains("performance"));
+        assert!(d.contains("tuning"));
 
         // The exact phrase should be preserved
-        assert_eq!(desc, "Database query optimization and performance tuning");
+        assert_eq!(d, "Database query optimization and performance tuning");
+    }
+
+    // ============================================================
+    // Jaccard similarity tests
+    // ============================================================
+
+    #[test]
+    fn jaccard_similarity_identical() {
+        assert!((jaccard_similarity("hello world", "hello world") - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn jaccard_similarity_disjoint() {
+        assert!((jaccard_similarity("hello world", "foo bar")).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn jaccard_similarity_partial_overlap() {
+        let sim = jaccard_similarity("hello world foo", "hello world bar");
+        assert!(sim > 0.3 && sim < 0.7); // 2/4 = 0.5
+    }
+
+    #[test]
+    fn jaccard_similarity_case_insensitive() {
+        assert!((jaccard_similarity("Hello World", "hello world") - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn jaccard_similarity_both_empty() {
+        assert!((jaccard_similarity("", "")).abs() < f64::EPSILON);
+    }
+
+    // ============================================================
+    // Frontmatter dedup integration tests
+    // ============================================================
+
+    #[test]
+    fn frontmatter_dedup_same_name_similar_desc() {
+        let tmp = tempdir().unwrap();
+
+        let root_a = tmp.path().join("codex");
+        fs::create_dir_all(root_a.join("plugin-a/commit")).unwrap();
+        fs::write(
+            root_a.join("plugin-a/commit/SKILL.md"),
+            "---\nname: commit-messages\ndescription: Generate conventional commit messages\n---\nContent A",
+        ).unwrap();
+
+        let root_b = tmp.path().join("marketplace");
+        fs::create_dir_all(root_b.join("sanctum/commit")).unwrap();
+        fs::write(
+            root_b.join("sanctum/commit/SKILL.md"),
+            "---\nname: commit-messages\ndescription: Generate conventional commit messages for repos\n---\nContent B",
+        ).unwrap();
+
+        let roots = vec![
+            SkillRoot {
+                root: root_a,
+                source: SkillSource::Codex,
+            },
+            SkillRoot {
+                root: root_b,
+                source: SkillSource::Marketplace,
+            },
+        ];
+
+        let mut dup_log = vec![];
+        let skills = discover_skills(&roots, Some(&mut dup_log)).unwrap();
+
+        assert_eq!(skills.len(), 1, "Same fm name + similar desc should dedup");
+        assert_eq!(dup_log.len(), 1);
+        assert_eq!(skills[0].source, SkillSource::Codex);
+    }
+
+    #[test]
+    fn frontmatter_dedup_same_name_different_desc() {
+        let tmp = tempdir().unwrap();
+
+        let root_a = tmp.path().join("codex");
+        fs::create_dir_all(root_a.join("skill-a")).unwrap();
+        fs::write(
+            root_a.join("skill-a/SKILL.md"),
+            "---\nname: deploy\ndescription: Deploy to production AWS servers\n---\nContent A",
+        )
+        .unwrap();
+
+        let root_b = tmp.path().join("marketplace");
+        fs::create_dir_all(root_b.join("skill-b")).unwrap();
+        fs::write(
+            root_b.join("skill-b/SKILL.md"),
+            "---\nname: deploy\ndescription: Run local Docker containers for testing\n---\nContent B",
+        ).unwrap();
+
+        let roots = vec![
+            SkillRoot {
+                root: root_a,
+                source: SkillSource::Codex,
+            },
+            SkillRoot {
+                root: root_b,
+                source: SkillSource::Marketplace,
+            },
+        ];
+
+        let mut dup_log = vec![];
+        let skills = discover_skills(&roots, Some(&mut dup_log)).unwrap();
+
+        assert_eq!(
+            skills.len(),
+            2,
+            "Same fm name but very different desc should keep both"
+        );
+        assert!(dup_log.is_empty());
+    }
+
+    #[test]
+    fn frontmatter_dedup_one_missing_desc() {
+        let tmp = tempdir().unwrap();
+
+        let root_a = tmp.path().join("codex");
+        fs::create_dir_all(root_a.join("skill-a")).unwrap();
+        fs::write(
+            root_a.join("skill-a/SKILL.md"),
+            "---\nname: my-skill\ndescription: Does useful things\n---\nContent A",
+        )
+        .unwrap();
+
+        let root_b = tmp.path().join("marketplace");
+        fs::create_dir_all(root_b.join("skill-b")).unwrap();
+        fs::write(
+            root_b.join("skill-b/SKILL.md"),
+            "---\nname: my-skill\n---\nContent B",
+        )
+        .unwrap();
+
+        let roots = vec![
+            SkillRoot {
+                root: root_a,
+                source: SkillSource::Codex,
+            },
+            SkillRoot {
+                root: root_b,
+                source: SkillSource::Marketplace,
+            },
+        ];
+
+        let mut dup_log = vec![];
+        let skills = discover_skills(&roots, Some(&mut dup_log)).unwrap();
+
+        assert_eq!(
+            skills.len(),
+            2,
+            "Same fm name + one missing desc should NOT dedup (can't compare semantically)"
+        );
+        assert_eq!(dup_log.len(), 0);
+    }
+
+    #[test]
+    fn frontmatter_dedup_no_fm_name() {
+        let tmp = tempdir().unwrap();
+
+        let root_a = tmp.path().join("codex");
+        fs::create_dir_all(root_a.join("skill-x")).unwrap();
+        fs::write(
+            root_a.join("skill-x/SKILL.md"),
+            "---\ndescription: No name field here\n---\nContent A",
+        )
+        .unwrap();
+
+        let root_b = tmp.path().join("marketplace");
+        fs::create_dir_all(root_b.join("skill-y")).unwrap();
+        fs::write(
+            root_b.join("skill-y/SKILL.md"),
+            "---\ndescription: No name field here either\n---\nContent B",
+        )
+        .unwrap();
+
+        let roots = vec![
+            SkillRoot {
+                root: root_a,
+                source: SkillSource::Codex,
+            },
+            SkillRoot {
+                root: root_b,
+                source: SkillSource::Marketplace,
+            },
+        ];
+
+        let skills = discover_skills(&roots, None).unwrap();
+
+        assert_eq!(skills.len(), 2, "Without fm name, only path dedup applies");
     }
 }

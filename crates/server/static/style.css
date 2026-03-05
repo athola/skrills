@@ -1,0 +1,311 @@
+/* Skrills Dashboard — warm ocean palette
+   Inspired by Anthropic's clean warmth + the skrill underwater pixel-art:
+   deep navy sea, coral/terracotta highlights, sandy text, teal accents. */
+:root {
+    --bg-deep:      #0c1222;
+    --bg-surface:   #131b2e;
+    --bg-panel:     #19243a;
+    --bg-card:      #1f2d47;
+    --bg-hover:     #253550;
+    --text-primary: #e2ddd5;
+    --text-muted:   #8d9bb0;
+    --accent:       #d4845a;     /* coral / terracotta */
+    --accent-dim:   #a8603c;
+    --teal:         #5ab8b3;     /* ocean teal */
+    --teal-dim:     #3d8884;
+    --success:      #6bc98f;
+    --error:        #e06060;
+    --warning:      #d4a35a;
+    --border:       #263250;
+    --border-focus: #d4845a44;
+    --radius:       10px;
+    --header-h:     3.5rem;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg-deep);
+    color: var(--text-primary);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* ── Header ──────────────────────────────────── */
+header {
+    background: var(--bg-surface);
+    padding: 0.875rem 1.75rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+header h1 {
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: var(--accent);
+    letter-spacing: 0.02em;
+}
+
+.stats {
+    display: flex;
+    gap: 1.5rem;
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+}
+
+.stats strong {
+    color: var(--teal);
+    font-weight: 600;
+}
+
+/* ── Main grid ───────────────────────────────── */
+main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    min-height: 0;
+    align-items: start;
+}
+
+/* ── Panels ──────────────────────────────────── */
+.panel {
+    background: var(--bg-panel);
+    border-radius: var(--radius);
+    padding: 1rem;
+    border: 1px solid var(--border);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    transition: border-color 0.2s;
+}
+
+.panel:hover {
+    border-color: var(--border-focus);
+}
+
+.panel h2 {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+}
+
+.panel-header h2 {
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: none;
+}
+
+.panel-header + .skill-list {
+    margin-top: 0.5rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border);
+}
+
+.sort-btn {
+    background: var(--bg-card);
+    color: var(--teal);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.sort-btn:hover {
+    background: var(--bg-hover);
+    border-color: var(--teal-dim);
+}
+
+/* ── Skills panel: grows naturally, page scrolls ── */
+.skills-panel {
+    overflow: visible;
+}
+
+/* ── Activity & Metrics: sticky alongside skills ── */
+.activity-panel,
+.metrics-panel {
+    position: sticky;
+    top: calc(var(--header-h) + 0.75rem);
+    max-height: calc(100vh - var(--header-h) - 2.25rem);
+    overflow-y: auto;
+}
+
+/* ── Scrollable lists ────────────────────────── */
+.skill-list {
+    /* no internal scroll — page scrolls instead */
+}
+
+.activity-list {
+    flex: 1;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+}
+
+.activity-list::-webkit-scrollbar {
+    width: 5px;
+}
+
+.activity-list::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 4px;
+}
+
+/* ── Skill items ─────────────────────────────── */
+.skill-item {
+    padding: 0.625rem 0.75rem;
+    border-radius: 6px;
+    margin-bottom: 0.375rem;
+    background: var(--bg-card);
+    cursor: pointer;
+    transition: background 0.15s, box-shadow 0.15s;
+    border: 1px solid transparent;
+}
+
+.skill-item:hover {
+    background: var(--bg-hover);
+    border-color: var(--border-focus);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+}
+
+.skill-name {
+    display: block;
+    font-weight: 500;
+    font-size: 0.875rem;
+    color: var(--text-primary);
+}
+
+.skill-source {
+    font-size: 0.6875rem;
+    font-weight: 500;
+    color: var(--teal);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-top: 0.125rem;
+}
+
+/* ── Activity items ──────────────────────────── */
+.activity-item {
+    display: flex;
+    gap: 0.75rem;
+    align-items: baseline;
+    font-size: 0.8125rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    margin-bottom: 0.375rem;
+    background: var(--bg-card);
+}
+
+.activity-item.SkillInvocation .event-type { color: var(--teal); }
+.activity-item.Validation .event-type { color: var(--warning); }
+.activity-item.Sync .event-type { color: var(--success); }
+
+.event-type {
+    font-weight: 600;
+    min-width: 90px;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.event-detail {
+    color: var(--text-muted);
+}
+
+/* ── Metrics panel ───────────────────────────── */
+.metrics-panel dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.375rem 1rem;
+}
+
+.metrics-panel dt {
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+}
+
+.metrics-panel dd {
+    font-size: 0.8125rem;
+    color: var(--text-primary);
+}
+
+.metrics-panel h3 {
+    margin-bottom: 0.75rem;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--accent);
+}
+
+/* ── Empty states ────────────────────────────── */
+.empty {
+    color: var(--text-muted);
+    text-align: center;
+    padding: 2rem 1rem;
+    font-size: 0.8125rem;
+}
+
+/* ── Footer ──────────────────────────────────── */
+footer {
+    background: var(--bg-surface);
+    padding: 0.625rem 1.75rem;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    border-top: 1px solid var(--border);
+    letter-spacing: 0.01em;
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
+}
+
+/* ── Responsive ──────────────────────────────── */
+@media (max-width: 1024px) {
+    main {
+        grid-template-columns: 1fr;
+    }
+
+    .skills-panel {
+        order: 2;
+    }
+
+    .activity-panel {
+        order: 0;
+        max-height: 200px;
+    }
+
+    .metrics-panel {
+        order: 1;
+        max-height: 250px;
+    }
+
+    .activity-panel,
+    .metrics-panel {
+        position: sticky;
+        top: calc(var(--header-h) + 0.75rem);
+    }
+}

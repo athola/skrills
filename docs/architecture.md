@@ -27,6 +27,8 @@ graph TD
     server --> analyze[analyze]
     server --> intelligence[intelligence]
     server --> subagents[subagents]
+    server --> dashboard[dashboard<br/>TUI + browser UI]
+    server --> metrics[metrics<br/>SQLite telemetry]
     sync --> validate
     analyze --> validate
     analyze --> discovery
@@ -37,6 +39,8 @@ graph TD
         intelligence
         state
         validate
+        metrics
+        dashboard
     end
 ```
 
@@ -45,7 +49,7 @@ graph TD
 | Crate | Purpose |
 |-------|---------|
 | `cli` | Thin binary wrapper |
-| `server` | MCP server, CLI commands, TUI |
+| `server` | MCP server, CLI commands, HTTP transport, REST API |
 | `sync` | Bidirectional Claude/Codex/Copilot sync |
 | `validate` | Skill validation (Claude/Codex/Copilot) |
 | `analyze` | Token counting, dependencies |
@@ -53,6 +57,8 @@ graph TD
 | `discovery` | Skill/agent discovery, ranking |
 | `state` | Environment config, persistence |
 | `subagents` | Multi-backend agent runtime |
+| `dashboard` | TUI and browser-based skill visualization (Leptos SSR) |
+| `metrics` | SQLite-based telemetry for invocations, validations, sync |
 
 ## Design Principles
 

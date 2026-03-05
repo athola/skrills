@@ -33,13 +33,14 @@ fn resolve_project_dir_prefers_explicit_path() {
 fn resolve_project_dir_uses_current_dir() {
     let _guard = crate::test_support::env_guard();
     let temp = tempdir().expect("create temp directory");
+    let canonical = temp.path().canonicalize().expect("canonicalize temp path");
     let original = std::env::current_dir().expect("get current directory");
     std::env::set_current_dir(temp.path()).expect("change to temp directory");
 
     let resolved = resolve_project_dir(None, "test");
 
     std::env::set_current_dir(original).expect("restore original directory");
-    assert_eq!(resolved, Some(temp.path().to_path_buf()));
+    assert_eq!(resolved, Some(canonical));
 }
 
 #[cfg(unix)]

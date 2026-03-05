@@ -143,6 +143,7 @@ pub(crate) fn handle_serve_command(
                 tracing::info!(target: "skrills::tls", "{}", cert_status);
             }
 
+            let api_skill_dirs = skill_dirs.clone();
             return rt.block_on(async move {
                 crate::http_transport::serve_http_with_security(
                     move || {
@@ -151,6 +152,7 @@ pub(crate) fn handle_serve_command(
                     },
                     &bind_addr,
                     security,
+                    merge_extra_dirs(&api_skill_dirs),
                 )
                 .await
             });

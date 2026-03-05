@@ -1,10 +1,50 @@
 //! Skill recommendations based on usage patterns and project context.
 //!
-//! This crate provides:
-//! - Usage analytics from Claude Code and Codex CLI session data
-//! - Project context analysis (languages, dependencies, frameworks)
-//! - Recommendations combining multiple signals
-//! - Skill creation via GitHub search or LLM generation
+//! This crate provides intelligent skill discovery and creation:
+//!
+//! - **Usage analytics**: Parse Claude Code and Codex CLI session data
+//! - **Project context**: Analyze languages, dependencies, frameworks
+//! - **Recommendations**: Combine multiple signals for smart suggestions
+//! - **Skill creation**: Search GitHub or generate via LLM
+//!
+//! # Examples
+//!
+//! ## Analyze a project
+//!
+//! ```no_run
+//! use skrills_intelligence::{analyze_project, ProjectProfile};
+//! use std::path::Path;
+//!
+//! let profile = analyze_project(Path::new(".")).unwrap();
+//! println!("Languages: {:?}", profile.languages);
+//! println!("Project type: {:?}", profile.project_type);
+//! ```
+//!
+//! ## Search GitHub for skills
+//!
+//! ```no_run
+//! # async fn example() -> anyhow::Result<()> {
+//! use skrills_intelligence::search_github_skills;
+//!
+//! let results = search_github_skills("database migration", 5).await?;
+//! for skill in results {
+//!     println!("{}: {}", skill.skill_path, skill.repo_url);
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ## Build usage analytics
+//!
+//! ```no_run
+//! use skrills_intelligence::{build_analytics, save_analytics, SkillUsageEvent};
+//! use std::path::Path;
+//!
+//! let events: Vec<SkillUsageEvent> = vec![]; // Load from session data
+//! let analytics = build_analytics(events);
+//! println!("Tracked {} skills", analytics.frequency.len());
+//! save_analytics(&analytics, Path::new("analytics.json")).unwrap();
+//! ```
 
 pub mod context;
 pub mod create;

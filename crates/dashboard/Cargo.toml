@@ -1,0 +1,41 @@
+[package]
+name = "skrills-dashboard"
+version = "0.6.0"
+edition.workspace = true
+description = "Terminal UI dashboard for skrills metrics and monitoring"
+license = "MIT"
+repository = "https://github.com/athola/skrills"
+homepage = "https://github.com/athola/skrills"
+documentation = "https://athola.github.io/skrills/"
+readme = "README.md"
+keywords = ["mcp", "skills", "dashboard", "tui", "metrics"]
+categories = ["development-tools", "visualization"]
+publish = false
+
+[dependencies]
+skrills-metrics = { path = "../metrics" }
+skrills-discovery = { path = "../discovery" }
+skrills-validate = { path = "../validate" }
+
+# TUI
+ratatui = "0.30"
+crossterm = { version = "0.29", features = ["event-stream"] }
+
+# Async
+tokio = { workspace = true, features = ["sync", "time"] }
+futures = "0.3"
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# Time
+time = { workspace = true }
+
+# Directories
+dirs = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+insta = "1"

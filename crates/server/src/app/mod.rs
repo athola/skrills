@@ -1214,6 +1214,16 @@ pub fn run() -> Result<()> {
         }
         Commands::Doctor => doctor_report(),
         Commands::Tui { skill_dirs } => tui_flow(&merge_extra_dirs(&skill_dirs)),
+        #[cfg(feature = "dashboard")]
+        Commands::Dashboard { skill_dirs } => {
+            let dashboard = skrills_dashboard::Dashboard::new(skill_dirs)?;
+            tokio::runtime::Runtime::new()?.block_on(dashboard.run())
+        }
+        #[cfg(not(feature = "dashboard"))]
+        Commands::Dashboard { .. } => {
+            eprintln!("Dashboard feature not enabled. Rebuild with --features dashboard");
+            Ok(())
+        }
         Commands::Setup {
             client,
             bin_dir,

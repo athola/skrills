@@ -9,6 +9,8 @@ members = [
     "crates/validate",
     "crates/analyze",
     "crates/intelligence",
+    "crates/metrics",
+    "crates/dashboard",
     "crates/test-utils",
 ]
 resolver = "2"
@@ -44,7 +46,7 @@ semver = "1"
 flate2 = "1"
 async-trait = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
-time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
+time = { version = "0.3", features = ["formatting", "local-offset", "parsing", "serde"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "gzip", "rustls", "query"] }
 rayon = "1.10"
 parking_lot = "0.12"

@@ -1,0 +1,29 @@
+[package]
+name = "skrills-metrics"
+version = "0.6.0"
+edition = "2021"
+description = "SQLite-based metrics collection for skrills skill invocations, validations, and sync events."
+license = "MIT"
+repository = "https://github.com/athola/skrills"
+homepage = "https://github.com/athola/skrills"
+documentation = "https://athola.github.io/skrills/"
+readme = "README.md"
+keywords = ["mcp", "skills", "metrics", "sqlite", "telemetry"]
+categories = ["development-tools", "database"]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+dirs.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+rusqlite = { version = "0.38", features = ["bundled"] }
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
