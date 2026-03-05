@@ -130,21 +130,24 @@ fn draw_skills_panel(f: &mut Frame, app: &mut App, area: Rect) {
 fn draw_activity_panel(f: &mut Frame, app: &App, area: Rect) {
     let border_style = focused_border_style(app.focus == FocusPanel::Activity);
 
+    // Available width inside the bordered block (minus 2 for left+right borders)
+    let inner_width = area.width.saturating_sub(2) as usize;
+
     let items: Vec<ListItem> = app
         .activity
         .iter()
-        .take(area.height as usize - 2)
-        .map(|msg| {
-            let style = if msg.contains("[ERR]") || msg.contains("FAIL") {
+        .take(area.height.saturating_sub(2) as usize)
+        .map(|entry| {
+            let style = if entry.message.contains("[ERR]") || entry.message.contains("FAIL") {
                 Style::default().fg(Color::Red)
-            } else if msg.contains("[OK]") || msg.contains("PASS") {
+            } else if entry.message.contains("[OK]") || entry.message.contains("PASS") {
                 Style::default().fg(Color::Green)
-            } else if msg.contains("[SYNC]") {
+            } else if entry.message.contains("[SYNC]") {
                 Style::default().fg(Color::Blue)
             } else {
                 Style::default().fg(Color::Gray)
             };
-            ListItem::new(msg.as_str()).style(style)
+            ListItem::new(entry.format(inner_width)).style(style)
         })
         .collect();
 

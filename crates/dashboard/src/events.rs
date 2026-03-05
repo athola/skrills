@@ -49,9 +49,9 @@ impl EventHandler {
                                 }
                             }
                             Some(Err(e)) => {
-                        tracing::debug!(error = %e, "crossterm event stream error");
-                        break;
-                    }
+                                tracing::warn!(error = %e, "crossterm event stream error, stopping event loop");
+                                break;
+                            }
                     None => break,
                             _ => {}
                         }

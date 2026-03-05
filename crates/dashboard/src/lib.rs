@@ -21,9 +21,9 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
-mod app;
+pub mod app;
 mod events;
-mod ui;
+pub mod ui;
 
-pub use app::{App, Dashboard};
+pub use app::{ActivityEntry, App, Dashboard};
 pub use events::Event;

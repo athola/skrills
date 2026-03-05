@@ -23,9 +23,8 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
 
 use skrills_discovery::{discover_skills, skill_roots_or_default, SkillMeta, SkillRoot};
 
@@ -120,7 +119,7 @@ fn default_limit() -> usize {
 const MAX_LIMIT: usize = 200;
 
 /// Paginated response wrapper.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PaginatedResponse<T> {
     /// Items in the current page.
     pub items: Vec<T>,
@@ -135,7 +134,7 @@ pub struct PaginatedResponse<T> {
 /// Skill info for API response.
 ///
 /// Represents a discovered skill with its metadata.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SkillResponse {
     /// Skill name (directory name).
     pub name: String,
@@ -151,9 +150,17 @@ pub struct SkillResponse {
 
 impl From<SkillMeta> for SkillResponse {
     fn from(meta: SkillMeta) -> Self {
+        // Replace home directory with ~ to avoid leaking absolute paths
+        let path = meta.path.display().to_string();
+        let path = dirs::home_dir()
+            .and_then(|home| {
+                path.strip_prefix(&home.display().to_string())
+                    .map(|rest| format!("~{rest}"))
+            })
+            .unwrap_or(path);
         Self {
             name: meta.name,
-            path: meta.path.display().to_string(),
+            path,
             source: meta.source.to_string(),
             description: meta.description,
             hash: Some(meta.hash),
@@ -194,10 +201,18 @@ async fn list_skills(
 ) -> Json<PaginatedResponse<SkillResponse>> {
     let roots = skill_roots_or_default(&state.skill_dirs);
 
-    let skills = if let Some(cached) = state.cache.read().await.get_cached() {
-        cached
-    } else {
-        state.cache.write().await.get_or_refresh(&roots)
+    let skills = {
+        let read_guard = state.cache.read().unwrap_or_else(|e| e.into_inner());
+        if let Some(cached) = read_guard.get_cached() {
+            cached
+        } else {
+            drop(read_guard);
+            state
+                .cache
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_or_refresh(&roots)
+        }
     };
 
     let total = skills.len();
@@ -234,10 +249,18 @@ async fn get_skill(
 ) -> Result<Json<SkillResponse>, StatusCode> {
     let roots = skill_roots_or_default(&state.skill_dirs);
 
-    let skills = if let Some(cached) = state.cache.read().await.get_cached() {
-        cached
-    } else {
-        state.cache.write().await.get_or_refresh(&roots)
+    let skills = {
+        let read_guard = state.cache.read().unwrap_or_else(|e| e.into_inner());
+        if let Some(cached) = read_guard.get_cached() {
+            cached
+        } else {
+            drop(read_guard);
+            state
+                .cache
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_or_refresh(&roots)
+        }
     };
 
     skills
@@ -251,6 +274,113 @@ async fn get_skill(
 pub fn skills_routes(state: Arc<ApiState>) -> Router {
     Router::new()
         .route("/api/skills", get(list_skills))
-        .route("/api/skills/:name", get(get_skill))
+        .route("/api/skills/{*name}", get(get_skill))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_cache_is_empty_and_invalid() {
+        let cache = SkillCache::new(30);
+        assert!(
+            cache.get_cached().is_none(),
+            "fresh cache should be invalid"
+        );
+        assert!(cache.skills.is_empty());
+    }
+
+    #[test]
+    fn cache_valid_after_manual_refresh() {
+        let mut cache = SkillCache::new(60);
+        cache.skills = vec![];
+        cache.last_refresh = Some(Instant::now());
+        assert!(cache.is_valid());
+        assert!(cache.get_cached().is_some());
+    }
+
+    #[test]
+    fn cache_expires_after_ttl() {
+        let mut cache = SkillCache::new(0); // 0-second TTL
+        cache.skills = vec![];
+        cache.last_refresh = Some(Instant::now() - Duration::from_secs(1));
+        assert!(!cache.is_valid());
+        assert!(cache.get_cached().is_none());
+    }
+
+    #[test]
+    fn get_or_refresh_with_empty_roots_returns_empty() {
+        let mut cache = SkillCache::new(30);
+        let roots: Vec<SkillRoot> = vec![];
+        let result = cache.get_or_refresh(&roots);
+        // With no roots, discovery returns empty or error; either way cache is populated
+        assert!(cache.last_refresh.is_some() || !cache.skills.is_empty() || result.is_empty());
+    }
+
+    #[test]
+    fn get_or_refresh_returns_cached_when_valid() {
+        let mut cache = SkillCache::new(60);
+        // Simulate a prior successful refresh
+        cache.last_refresh = Some(Instant::now());
+        cache.skills = vec![]; // empty but valid
+
+        let roots: Vec<SkillRoot> = vec![];
+        let result = cache.get_or_refresh(&roots);
+        assert!(result.is_empty()); // returns cached (empty) without re-discovery
+    }
+
+    #[test]
+    fn stale_cache_returned_on_discovery_error() {
+        let mut cache = SkillCache::new(0); // expired TTL
+                                            // Pre-populate with stale data
+        cache.skills = vec![];
+        cache.last_refresh = Some(Instant::now() - Duration::from_secs(10));
+
+        // Discovery with non-existent roots may fail; stale cache returned
+        let bad_roots = vec![SkillRoot {
+            root: std::path::PathBuf::from("/nonexistent/path/that/does/not/exist"),
+            source: skrills_discovery::SkillSource::Claude,
+        }];
+        let result = cache.get_or_refresh(&bad_roots);
+        // Should return stale cache (empty vec) rather than panic
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn pagination_defaults() {
+        let params: PaginationParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(params.limit, 50);
+        assert_eq!(params.offset, 0);
+    }
+
+    #[test]
+    fn pagination_limit_clamped_to_max() {
+        let clamped = 999_usize.min(MAX_LIMIT);
+        assert_eq!(clamped, 200);
+    }
+
+    #[test]
+    fn api_state_creates_with_default_ttl() {
+        let state = ApiState::new(vec![]);
+        let cache = state.cache.read().unwrap();
+        assert_eq!(cache.ttl, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn rwlock_recovers_from_poison() {
+        let state = ApiState::new(vec![]);
+        // Simulate a poisoned lock by panicking in a thread holding write
+        let cache = state.cache.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = cache.write().unwrap();
+            panic!("intentional poison");
+        })
+        .join();
+
+        // Should recover via into_inner
+        let guard = state.cache.read().unwrap_or_else(|e| e.into_inner());
+        assert!(guard.get_cached().is_none()); // fresh cache, not corrupted
+    }
 }

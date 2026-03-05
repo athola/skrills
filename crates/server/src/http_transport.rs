@@ -9,6 +9,11 @@
 //! - **TLS/HTTPS**: Supports TLS with custom certificates
 //! - **CORS**: Configurable Cross-Origin Resource Sharing for browser clients
 
+use crate::api::{
+    dashboard_routes,
+    metrics::{metrics_routes, MetricsState},
+    skills::{skills_routes, ApiState},
+};
 use crate::app::SkillService;
 use anyhow::{Context, Result};
 use axum::http::{header, HeaderValue, Method, StatusCode};
@@ -92,8 +97,17 @@ async fn auth_middleware(
                 let provided = token.as_bytes();
                 let expected = expected_token.as_bytes();
 
-                // Length check must also be constant-time to avoid leaking length info
-                if provided.len() == expected.len() && provided.ct_eq(expected).into() {
+                // Both length and content checks must be constant-time.
+                // Using bitwise AND avoids short-circuit evaluation that would
+                // leak token length via timing.
+                let length_ok =
+                    subtle::Choice::from((provided.len() == expected.len()) as u8);
+                let content_ok = if provided.len() == expected.len() {
+                    provided.ct_eq(expected)
+                } else {
+                    subtle::Choice::from(0)
+                };
+                if (length_ok & content_ok).into() {
                     tracing::debug!(
                         target: "skrills::http::auth",
                         uri,
@@ -133,9 +147,10 @@ async fn auth_middleware(
         );
     }
 
-    // Auth failed - return generic message to avoid information leakage
+    // Auth failed - return 401 with WWW-Authenticate header per RFC 7235 §4.1
     (
         StatusCode::UNAUTHORIZED,
+        [(header::WWW_AUTHENTICATE, "Bearer")],
         "Invalid or missing authorization token",
     )
         .into_response()
@@ -210,7 +225,13 @@ pub async fn serve_http<F>(service_factory: F, bind_addr: &str) -> Result<()>
 where
     F: Fn() -> Result<SkillService, std::io::Error> + Send + Sync + 'static,
 {
-    serve_http_with_security(service_factory, bind_addr, HttpSecurityConfig::default()).await
+    serve_http_with_security(
+        service_factory,
+        bind_addr,
+        HttpSecurityConfig::default(),
+        vec![],
+    )
+    .await
 }
 
 /// Starts the MCP server over HTTP transport with security configuration.
@@ -219,10 +240,12 @@ where
 /// * `service_factory` - Factory function to create SkillService instances
 /// * `bind_addr` - Socket address to bind (e.g., "127.0.0.1:3000")
 /// * `security` - Security configuration (auth, TLS, CORS)
+/// * `skill_dirs` - Directories to scan for skills (used by dashboard API)
 pub async fn serve_http_with_security<F>(
     service_factory: F,
     bind_addr: &str,
     security: HttpSecurityConfig,
+    skill_dirs: Vec<std::path::PathBuf>,
 ) -> Result<()>
 where
     F: Fn() -> Result<SkillService, std::io::Error> + Send + Sync + 'static,
@@ -276,12 +299,37 @@ where
         None
     };
 
+    // Build dashboard and API routes
+    let api_state = Arc::new(ApiState::new(skill_dirs));
+    let metrics_collector = Arc::new(
+        skrills_metrics::MetricsCollector::new()
+            .expect("in-memory SQLite creation should not fail"),
+    );
+    let metrics_state = Arc::new(MetricsState {
+        collector: metrics_collector,
+    });
+
+    // Serve static files (CSS) embedded at compile time
+    let static_router = axum::Router::new().route(
+        "/static/style.css",
+        axum::routing::get(|| async {
+            (
+                [(axum::http::header::CONTENT_TYPE, "text/css")],
+                include_str!("../static/style.css"),
+            )
+        }),
+    );
+
     // Create router with request ID and optional auth middleware
     // Request ID layers: SetRequestIdLayer generates UUID, PropagateRequestIdLayer copies to response
     let request_id_header = axum::http::HeaderName::from_static(REQUEST_ID_HEADER);
     let app = if let Some(token) = security.auth_token {
         let token = Arc::new(token);
         axum::Router::new()
+            .merge(dashboard_routes())
+            .merge(skills_routes(api_state))
+            .merge(metrics_routes(metrics_state))
+            .merge(static_router)
             .fallback_service(http_service)
             .layer(cors_layer)
             .layer(axum::middleware::from_fn(move |req, next| {
@@ -292,6 +340,10 @@ where
             .layer(SetRequestIdLayer::new(request_id_header, MakeRequestUuid))
     } else {
         axum::Router::new()
+            .merge(dashboard_routes())
+            .merge(skills_routes(api_state))
+            .merge(metrics_routes(metrics_state))
+            .merge(static_router)
             .fallback_service(http_service)
             .layer(cors_layer)
             .layer(PropagateRequestIdLayer::new(request_id_header.clone()))

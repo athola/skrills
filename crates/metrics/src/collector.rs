@@ -232,6 +232,11 @@ impl MetricsCollector {
     }
 
     /// Get recent metric events across all tables.
+    ///
+    /// Fetches up to `limit` rows from each event table independently, then merges
+    /// and sorts by timestamp to return the global top-N. This approach is correct
+    /// because each per-table query returns the most recent entries, guaranteeing
+    /// the merged result contains the true top-N across all tables.
     pub fn get_recent_events(&self, limit: usize) -> Result<Vec<MetricEvent>> {
         let conn = self.conn.lock().map_err(|_| MetricsError::MutexPoisoned)?;
         let mut events = Vec::new();

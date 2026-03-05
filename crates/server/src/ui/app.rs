@@ -44,7 +44,7 @@ pub fn Dashboard() -> impl IntoView {
         </main>
 
         <footer>
-            <span>"q: Quit | r: Refresh | Tab: Switch panel"</span>
+            <span>"Auto-refreshes every 30s"</span>
         </footer>
     }
 }

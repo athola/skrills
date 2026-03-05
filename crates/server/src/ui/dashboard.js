@@ -4,12 +4,6 @@
     let events = [];
     let selectedSkill = null;
 
-    function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
-
     async function refresh() {
         try {
             const res = await fetch('/api/skills');
@@ -76,14 +70,15 @@
     }
 
     function eventDetail(event) {
+        // No escapeHtml needed — callers set this via .textContent which is XSS-safe
         if (event.type === 'SkillInvocation') {
-            return escapeHtml(event.skill_name) + ' - ' + (event.success ? 'OK' : 'FAIL');
+            return (event.skill_name || '') + ' - ' + (event.success ? 'OK' : 'FAIL');
         }
         if (event.type === 'Validation') {
-            return escapeHtml(event.skill_name) + ' - ' + (event.checks_failed?.length ? 'FAIL' : 'PASS');
+            return (event.skill_name || '') + ' - ' + (event.checks_failed?.length ? 'FAIL' : 'PASS');
         }
         if (event.type === 'Sync') {
-            return escapeHtml(event.operation) + ' - ' + escapeHtml(event.status);
+            return (event.operation || '') + ' - ' + (event.status || '');
         }
         return JSON.stringify(event).slice(0, 50);
     }

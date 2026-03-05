@@ -90,6 +90,59 @@ pub struct SkillInfo {
     pub invocations: u64,
 }
 
+/// A single activity feed entry with dedup support.
+#[derive(Debug, Clone)]
+pub struct ActivityEntry {
+    /// The activity message.
+    pub message: String,
+    /// Shortened timestamp (HH:MM:SS).
+    pub timestamp: String,
+    /// Number of consecutive identical events (1 = first occurrence).
+    pub count: u32,
+}
+
+impl ActivityEntry {
+    fn new(message: String) -> Self {
+        let now = time::OffsetDateTime::now_utc();
+        let timestamp = format!(
+            "{:02}:{:02}:{:02}",
+            now.hour(),
+            now.minute(),
+            now.second()
+        );
+        Self {
+            message,
+            timestamp,
+            count: 1,
+        }
+    }
+
+    /// Format the entry for display, truncating to fit `max_width`.
+    pub fn format(&self, max_width: usize) -> String {
+        let count_suffix = if self.count > 1 {
+            format!(" (x{})", self.count)
+        } else {
+            String::new()
+        };
+        let prefix = format!("{} ", self.timestamp);
+        let overhead = prefix.len() + count_suffix.len();
+
+        if max_width <= overhead + 3 {
+            // Not enough room even for "..."
+            return format!("{}{}", &self.timestamp, count_suffix);
+        }
+
+        let msg_budget = max_width - overhead;
+        let msg = if self.message.len() > msg_budget {
+            format!("{}(...)", &self.message[..msg_budget.saturating_sub(5)])
+        } else {
+            self.message.clone()
+        };
+
+        format!("{}{}{}", prefix, msg, count_suffix)
+    }
+}
+
 /// Application state.
 #[derive(Debug, Default)]
 pub struct App {
@@ -103,8 +156,8 @@ pub struct App {
     pub skill_list_state: ListState,
     /// List of discovered skills.
     pub skills: Vec<SkillInfo>,
-    /// Recent activity events.
-    pub activity: Vec<String>,
+    /// Recent activity events with dedup and timestamps.
+    pub activity: Vec<ActivityEntry>,
     /// Skill stats for selected skill.
     pub selected_stats: Option<SkillStats>,
     /// Total skills count.
@@ -190,9 +243,23 @@ impl App {
     /// Maximum activity entries to keep.
     const MAX_ACTIVITY_ENTRIES: usize = 100;
 
-    /// Add activity message.
+    /// Add activity message, deduplicating consecutive identical events.
     pub fn add_activity(&mut self, msg: String) {
-        self.activity.insert(0, msg);
+        if let Some(latest) = self.activity.first_mut() {
+            if latest.message == msg {
+                // Same event as most recent — update timestamp and bump count
+                let now = time::OffsetDateTime::now_utc();
+                latest.timestamp = format!(
+                    "{:02}:{:02}:{:02}",
+                    now.hour(),
+                    now.minute(),
+                    now.second()
+                );
+                latest.count += 1;
+                return;
+            }
+        }
+        self.activity.insert(0, ActivityEntry::new(msg));
         if self.activity.len() > Self::MAX_ACTIVITY_ENTRIES {
             self.activity.pop();
         }

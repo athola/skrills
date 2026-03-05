@@ -327,7 +327,7 @@ fn collect_skills_from(
                 if let Some((prev_src, prev_root, prev_desc)) = seen_by_fm_name.get(&fm_key) {
                     let is_dup = match (&description, prev_desc) {
                         (Some(a), Some(b)) => jaccard_similarity(a, b) >= 0.5,
-                        _ => true, // one or both missing -> treat as duplicate
+                        _ => false, // missing description = can't compare semantically
                     };
                     if is_dup {
                         if let Some(dup_log) = dup_log.as_mut() {
@@ -554,10 +554,10 @@ pub fn default_roots_auto() -> Vec<SkillRoot> {
 
 /// Returns skill roots from custom directories, or defaults if empty.
 ///
-/// Custom directories are assigned `SkillSource` based on path inference:
-/// - Paths containing `.claude` → `SkillSource::Claude`
-/// - Paths containing `.codex` → `SkillSource::Codex`
-/// - Paths containing `.copilot` or `copilot` → `SkillSource::Copilot`
+/// Custom directories are assigned `SkillSource` based on path component matching:
+/// - Path containing a `.claude` component → `SkillSource::Claude`
+/// - Path containing a `.codex` component → `SkillSource::Codex`
+/// - Path containing a `.copilot` or `copilot` component → `SkillSource::Copilot`
 /// - Otherwise → `SkillSource::Extra(index)`
 pub fn skill_roots_or_default(custom: &[PathBuf]) -> Vec<SkillRoot> {
     if custom.is_empty() {
@@ -567,12 +567,20 @@ pub fn skill_roots_or_default(custom: &[PathBuf]) -> Vec<SkillRoot> {
             .iter()
             .enumerate()
             .map(|(i, p)| {
-                let path_str = p.to_string_lossy();
-                let source = if path_str.contains(".claude") {
+                // Match against individual path components to avoid false positives
+                // from substring matching (e.g. "/home/alice/my-codex-tools")
+                let has_component = |name: &str| {
+                    p.components().any(|c| {
+                        c.as_os_str()
+                            .to_str()
+                            .is_some_and(|s| s.eq_ignore_ascii_case(name))
+                    })
+                };
+                let source = if has_component(".claude") {
                     SkillSource::Claude
-                } else if path_str.contains(".codex") {
+                } else if has_component(".codex") {
                     SkillSource::Codex
-                } else if path_str.contains("copilot") {
+                } else if has_component(".copilot") || has_component("copilot") {
                     SkillSource::Copilot
                 } else {
                     SkillSource::Extra(u32::try_from(i).unwrap_or(u32::MAX))
@@ -1491,10 +1499,10 @@ Content
 
         assert_eq!(
             skills.len(),
-            1,
-            "Same fm name + one missing desc should dedup"
+            2,
+            "Same fm name + one missing desc should NOT dedup (can't compare semantically)"
         );
-        assert_eq!(dup_log.len(), 1);
+        assert_eq!(dup_log.len(), 0);
     }
 
     #[test]
