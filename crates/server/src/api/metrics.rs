@@ -99,6 +99,6 @@ async fn get_skill_stats(
 pub fn metrics_routes(state: Arc<MetricsState>) -> Router {
     Router::new()
         .route("/api/metrics/events", get(get_recent_events))
-        .route("/api/metrics/skills/:skill", get(get_skill_stats))
+        .route("/api/metrics/skills/{skill}", get(get_skill_stats))
         .with_state(state)
 }

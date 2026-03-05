@@ -38,3 +38,4 @@ dirs = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+insta = "1"

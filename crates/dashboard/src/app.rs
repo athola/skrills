@@ -103,13 +103,9 @@ pub struct ActivityEntry {
 
 impl ActivityEntry {
     fn new(message: String) -> Self {
-        let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
-        let timestamp = format!(
-            "{:02}:{:02}:{:02}",
-            now.hour(),
-            now.minute(),
-            now.second()
-        );
+        let now =
+            time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+        let timestamp = format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
         Self {
             message,
             timestamp,
@@ -143,8 +139,11 @@ impl ActivityEntry {
     }
 }
 
+/// Number of skills to show per page for lazy loading.
+pub const PAGE_SIZE: usize = 50;
+
 /// Application state.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct App {
     /// Whether the app should quit.
     pub should_quit: bool,
@@ -156,6 +155,8 @@ pub struct App {
     pub skill_list_state: ListState,
     /// List of discovered skills.
     pub skills: Vec<SkillInfo>,
+    /// How many skills are currently visible (lazy-loaded in pages).
+    pub visible_count: usize,
     /// Recent activity events with dedup and timestamps.
     pub activity: Vec<ActivityEntry>,
     /// Skill stats for selected skill.
@@ -174,10 +175,36 @@ pub struct App {
     pub sort_order: SortOrder,
 }
 
+impl Default for App {
+    fn default() -> Self {
+        Self {
+            should_quit: false,
+            focus: FocusPanel::default(),
+            skill_index: 0,
+            skill_list_state: ListState::default(),
+            skills: Vec::new(),
+            visible_count: PAGE_SIZE,
+            activity: Vec::new(),
+            selected_stats: None,
+            total_skills: 0,
+            valid_skills: 0,
+            invalid_skills: 0,
+            last_refresh: String::new(),
+            show_help: false,
+            sort_order: SortOrder::default(),
+        }
+    }
+}
+
 impl App {
     /// Create new app state.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Number of skills currently visible (capped to total).
+    pub fn visible_skill_count(&self) -> usize {
+        self.visible_count.min(self.skills.len())
     }
 
     /// Handle keyboard input.
@@ -198,6 +225,8 @@ impl App {
             }
             KeyCode::End => {
                 if !self.skills.is_empty() {
+                    // End loads all skills and jumps to the last one
+                    self.visible_count = self.skills.len();
                     self.skill_index = self.skills.len() - 1;
                     self.skill_list_state.select(Some(self.skill_index));
                 }
@@ -215,24 +244,39 @@ impl App {
             SortOrder::Alphabetical => self.skills.sort_by(|a, b| a.name.cmp(&b.name)),
             SortOrder::Discovery => self.skills.sort_by_key(|s| s.discovery_index),
         }
-        // Reset selection to top after re-sort
+        // Reset selection and visible window after re-sort
         self.skill_index = 0;
+        self.visible_count = PAGE_SIZE;
         if !self.skills.is_empty() {
             self.skill_list_state.select(Some(0));
         }
     }
 
     fn select_next(&mut self) {
-        if !self.skills.is_empty() {
-            self.skill_index = (self.skill_index + 1) % self.skills.len();
-            self.skill_list_state.select(Some(self.skill_index));
+        let visible = self.visible_skill_count();
+        if visible == 0 {
+            return;
         }
+        if self.skill_index + 1 >= visible {
+            if self.visible_count < self.skills.len() {
+                // At the bottom of the visible window with more to load
+                self.visible_count = (self.visible_count + PAGE_SIZE).min(self.skills.len());
+                self.skill_index += 1;
+            } else {
+                // All skills visible — wrap to top
+                self.skill_index = 0;
+            }
+        } else {
+            self.skill_index += 1;
+        }
+        self.skill_list_state.select(Some(self.skill_index));
     }
 
     fn select_prev(&mut self) {
-        if !self.skills.is_empty() {
+        let visible = self.visible_skill_count();
+        if visible > 0 {
             if self.skill_index == 0 {
-                self.skill_index = self.skills.len() - 1;
+                self.skill_index = visible - 1;
             } else {
                 self.skill_index -= 1;
             }
@@ -248,13 +292,10 @@ impl App {
         if let Some(latest) = self.activity.first_mut() {
             if latest.message == msg {
                 // Same event as most recent — update timestamp and bump count
-                let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
-                latest.timestamp = format!(
-                    "{:02}:{:02}:{:02}",
-                    now.hour(),
-                    now.minute(),
-                    now.second()
-                );
+                let now = time::OffsetDateTime::now_local()
+                    .unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+                latest.timestamp =
+                    format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
                 latest.count += 1;
                 return;
             }
@@ -525,14 +566,22 @@ impl Dashboard {
             SortOrder::Discovery => {} // already in discovery order
         }
 
+        // Reset visible window on refresh (keep existing visible_count if user has scrolled)
+        // but cap it to the new skills length
+        if app.visible_count > app.skills.len() {
+            app.visible_count = app.skills.len().max(PAGE_SIZE);
+        }
+
         // Sync list state selection
         if !app.skills.is_empty() {
-            app.skill_index = app.skill_index.min(app.skills.len() - 1);
+            let visible = app.visible_skill_count();
+            app.skill_index = app.skill_index.min(visible.saturating_sub(1));
             app.skill_list_state.select(Some(app.skill_index));
         }
 
         // Update timestamp
-        let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+        let now =
+            time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
         app.last_refresh = now
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|_| "now".to_string());
@@ -728,5 +777,117 @@ mod tests {
     #[test]
     fn test_sort_order_default() {
         assert_eq!(SortOrder::default(), SortOrder::Discovery);
+    }
+
+    /// Helper to create N dummy skills.
+    fn make_skills(n: usize) -> Vec<SkillInfo> {
+        (0..n)
+            .map(|i| SkillInfo {
+                discovery_index: i,
+                name: format!("skill-{}", i),
+                source: "claude".into(),
+                uri: format!("skill://{}", i),
+                locations: vec![SkillLocation {
+                    source: "claude".into(),
+                    path: format!("/skill-{}", i),
+                }],
+                valid: None,
+                last_used: None,
+                invocations: 0,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_lazy_loading_initial_visible_count() {
+        let mut app = App::new();
+        app.skills = make_skills(120);
+        // Default visible count is PAGE_SIZE
+        assert_eq!(app.visible_skill_count(), PAGE_SIZE);
+        assert_eq!(app.visible_count, PAGE_SIZE);
+    }
+
+    #[test]
+    fn test_lazy_loading_extends_at_bottom() {
+        let mut app = App::new();
+        app.skills = make_skills(120);
+        app.skill_list_state.select(Some(0));
+
+        // Navigate to the last visible item (index 49)
+        for _ in 0..PAGE_SIZE - 1 {
+            app.on_key(KeyCode::Down);
+        }
+        assert_eq!(app.skill_index, PAGE_SIZE - 1);
+        // Still on the first page
+        assert_eq!(app.visible_count, PAGE_SIZE);
+
+        // One more Down at the bottom loads the next page
+        app.on_key(KeyCode::Down);
+        assert_eq!(app.visible_count, PAGE_SIZE * 2);
+        assert_eq!(app.skill_index, PAGE_SIZE); // moved to first item of new page
+    }
+
+    #[test]
+    fn test_lazy_loading_wraps_only_when_all_loaded() {
+        let mut app = App::new();
+        app.skills = make_skills(60);
+        app.skill_list_state.select(Some(0));
+
+        // Navigate to the last visible item (index 49)
+        for _ in 0..PAGE_SIZE - 1 {
+            app.on_key(KeyCode::Down);
+        }
+        // Down at bottom extends to show remaining 10 skills
+        app.on_key(KeyCode::Down);
+        assert_eq!(app.visible_count, 60);
+        assert_eq!(app.skill_index, PAGE_SIZE);
+
+        // Navigate to the real end
+        for _ in 0..9 {
+            app.on_key(KeyCode::Down);
+        }
+        assert_eq!(app.skill_index, 59);
+
+        // Now Down should wrap since all skills are visible
+        app.on_key(KeyCode::Down);
+        assert_eq!(app.skill_index, 0);
+    }
+
+    #[test]
+    fn test_lazy_loading_end_key_loads_all() {
+        let mut app = App::new();
+        app.skills = make_skills(120);
+        app.skill_list_state.select(Some(0));
+
+        assert_eq!(app.visible_count, PAGE_SIZE);
+        app.on_key(KeyCode::End);
+        // End should reveal all skills and jump to last
+        assert_eq!(app.visible_count, 120);
+        assert_eq!(app.skill_index, 119);
+    }
+
+    #[test]
+    fn test_lazy_loading_sort_resets_visible() {
+        let mut app = App::new();
+        app.skills = make_skills(120);
+        app.skill_list_state.select(Some(0));
+
+        // Extend visible
+        app.on_key(KeyCode::End);
+        assert_eq!(app.visible_count, 120);
+
+        // Sort resets to PAGE_SIZE
+        app.on_key(KeyCode::Char('s'));
+        assert_eq!(app.visible_count, PAGE_SIZE);
+    }
+
+    #[test]
+    fn test_lazy_loading_small_set_shows_all() {
+        let mut app = App::new();
+        app.skills = make_skills(10);
+        app.skill_list_state.select(Some(0));
+
+        // With fewer skills than PAGE_SIZE, visible_skill_count is just the total
+        assert_eq!(app.visible_skill_count(), 10);
     }
 }

@@ -100,8 +100,7 @@ async fn auth_middleware(
                 // Both length and content checks must be constant-time.
                 // Using bitwise AND avoids short-circuit evaluation that would
                 // leak token length via timing.
-                let length_ok =
-                    subtle::Choice::from((provided.len() == expected.len()) as u8);
+                let length_ok = subtle::Choice::from((provided.len() == expected.len()) as u8);
                 let content_ok = if provided.len() == expected.len() {
                     provided.ct_eq(expected)
                 } else {

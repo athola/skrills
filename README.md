@@ -123,6 +123,7 @@ The sync system uses file hashing to respect manual edits, ensuring user changes
 | `dashboard` | TUI and browser-based skill visualization |
 | `discovery` | Skill discovery and ranking |
 | `state` | Environment config, manifest settings, runtime overrides |
+| `metrics` | SQLite-based telemetry for invocations, validations, sync |
 | `subagents` | Shared subagent runtime and backends |
 | `test-utils` | Shared test infrastructure (fixtures, RAII guards, temp dirs) |
 

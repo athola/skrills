@@ -89,9 +89,11 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
 fn draw_skills_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let border_style = focused_border_style(app.focus == FocusPanel::Skills);
 
+    let visible = app.visible_skill_count();
     let items: Vec<ListItem> = app
         .skills
         .iter()
+        .take(visible)
         .map(|skill| {
             let status = match skill.valid {
                 Some(true) => "[OK]",
@@ -110,9 +112,14 @@ fn draw_skills_panel(f: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
 
-    let title = match app.sort_order {
-        SortOrder::Discovery => " Skills ",
-        SortOrder::Alphabetical => " Skills [A-Z] ",
+    let sort_tag = match app.sort_order {
+        SortOrder::Discovery => "",
+        SortOrder::Alphabetical => " [A-Z]",
+    };
+    let title = if visible < app.skills.len() {
+        format!(" Skills{} ({}/{}) ", sort_tag, visible, app.skills.len())
+    } else {
+        format!(" Skills{} ", sort_tag)
     };
 
     let list = List::new(items)

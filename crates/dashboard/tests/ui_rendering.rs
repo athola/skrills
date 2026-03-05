@@ -6,7 +6,7 @@
 use crossterm::event::KeyCode;
 use ratatui::{backend::TestBackend, Terminal};
 
-use skrills_dashboard::app::{App, FocusPanel, SkillInfo, SkillLocation, SortOrder};
+use skrills_dashboard::app::{App, FocusPanel, SkillInfo, SkillLocation, SortOrder, PAGE_SIZE};
 use skrills_dashboard::ui;
 use skrills_metrics::MetricEvent;
 
@@ -186,6 +186,52 @@ fn skills_panel_title_reflects_sort_order() {
     assert!(
         output.contains("Skills [A-Z]"),
         "Alphabetical sort title should show [A-Z]"
+    );
+}
+
+#[test]
+fn skills_panel_title_shows_visible_total_when_partially_loaded() {
+    let mut terminal = test_terminal(100, 40);
+    let mut app = App::new();
+    // Create more skills than PAGE_SIZE so only a subset is visible
+    app.skills = (0..PAGE_SIZE + 20)
+        .map(|i| sample_skill(&format!("s{}", i), "claude", Some(true), 0))
+        .collect();
+    app.skill_list_state.select(Some(0));
+
+    terminal
+        .draw(|f| ui::draw(f, &mut app))
+        .expect("draw failed");
+
+    let output = render_to_string(&terminal);
+    let expected = format!("({}/{})", PAGE_SIZE, PAGE_SIZE + 20);
+    assert!(
+        output.contains(&expected),
+        "Title should show ({}/{}) when partially loaded, got:\n{}",
+        PAGE_SIZE,
+        PAGE_SIZE + 20,
+        output
+    );
+}
+
+#[test]
+fn skills_panel_title_no_count_when_all_visible() {
+    let mut terminal = test_terminal(100, 20);
+    let mut app = app_with_skills(); // only 3 skills, all visible
+
+    terminal
+        .draw(|f| ui::draw(f, &mut app))
+        .expect("draw failed");
+
+    let output = render_to_string(&terminal);
+    // With all skills visible, title should NOT show (x/y) count
+    assert!(
+        !output.contains("(3/3)"),
+        "Title should NOT show count when all skills are visible"
+    );
+    assert!(
+        output.contains(" Skills "),
+        "Title should just say 'Skills'"
     );
 }
 

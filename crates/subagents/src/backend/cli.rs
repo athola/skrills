@@ -807,10 +807,10 @@ mod tests {
 
         let run_id = adapter.run(request, store.clone()).await.unwrap();
 
-        // Wait for the process to complete
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let status = store.status(run_id).await.unwrap().unwrap();
+        // Wait for the process to complete with polling (more reliable in CI)
+        let status = wait_for_completion(&store, run_id, Duration::from_secs(5))
+            .await
+            .expect("run should have a status");
         assert_eq!(status.state, RunState::Succeeded);
     }
 

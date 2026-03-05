@@ -8,6 +8,7 @@
     const PAGE_SIZE = 50;
 
     let initialized = false;
+    let sortOrder = 'discovery'; // 'discovery' | 'alpha'
 
     async function refresh() {
         try {
@@ -19,7 +20,10 @@
             document.getElementById('skill-count').textContent = skillsTotal;
 
             if (!initialized) {
-                skills = data.items || [];
+                skills = (data.items || []).map((s, i) => ({ ...s, _idx: i }));
+                if (sortOrder === 'alpha') {
+                    skills.sort((a, b) => a.name.localeCompare(b.name));
+                }
                 renderSkills();
                 initialized = true;
             }
@@ -46,10 +50,16 @@
         try {
             const res = await fetch('/api/skills?limit=' + PAGE_SIZE + '&offset=' + skills.length);
             const data = await res.json();
-            const newItems = data.items || [];
+            const baseIdx = skills.length;
+            const newItems = (data.items || []).map((s, i) => ({ ...s, _idx: baseIdx + i }));
             if (newItems.length > 0) {
                 skills = skills.concat(newItems);
-                appendSkills(newItems);
+                if (sortOrder === 'alpha') {
+                    skills.sort((a, b) => a.name.localeCompare(b.name));
+                    renderSkills();
+                } else {
+                    appendSkills(newItems);
+                }
             }
         } catch (e) {
             console.error('Failed to load more skills:', e);
@@ -83,6 +93,8 @@
 
     function renderSkills() {
         const list = document.getElementById('skill-list');
+        // Preserve the sentinel if it exists
+        const sentinel = document.getElementById('skill-sentinel');
         list.replaceChildren();
 
         if (skills.length === 0) {
@@ -90,12 +102,14 @@
             empty.className = 'empty';
             empty.textContent = 'No skills found';
             list.appendChild(empty);
-            return;
+        } else {
+            skills.forEach(skill => {
+                list.appendChild(createSkillItem(skill));
+            });
         }
 
-        skills.forEach(skill => {
-            list.appendChild(createSkillItem(skill));
-        });
+        // Re-append sentinel so it stays at the bottom
+        if (sentinel) list.appendChild(sentinel);
     }
 
     function appendSkills(newSkills) {
@@ -200,29 +214,46 @@
         content.appendChild(dl);
     }
 
-    // Load more if the list isn't tall enough to scroll yet
-    function fillIfNeeded() {
+    // Sentinel-based infinite scroll using IntersectionObserver.
+    // Works regardless of which ancestor container actually scrolls.
+    function setupInfiniteScroll() {
         const list = document.getElementById('skill-list');
         if (!list) return;
-        // If list content fits without scrollbar and there are more to load
-        if (list.scrollHeight <= list.clientHeight && skills.length < skillsTotal) {
-            loadMoreSkills().then(fillIfNeeded);
+
+        const sentinel = document.createElement('div');
+        sentinel.id = 'skill-sentinel';
+        sentinel.style.height = '1px';
+        list.appendChild(sentinel);
+
+        const observer = new IntersectionObserver((entries) => {
+            if (entries[0].isIntersecting && skills.length < skillsTotal) {
+                loadMoreSkills();
+            }
+        }, { threshold: 0 });
+
+        observer.observe(sentinel);
+    }
+
+    function toggleSort() {
+        sortOrder = sortOrder === 'discovery' ? 'alpha' : 'discovery';
+        if (sortOrder === 'alpha') {
+            skills.sort((a, b) => a.name.localeCompare(b.name));
+        } else {
+            // Restore discovery order by re-sorting on the original index
+            skills.sort((a, b) => (a._idx ?? 0) - (b._idx ?? 0));
         }
+        const btn = document.getElementById('sort-btn');
+        if (btn) btn.textContent = sortOrder === 'alpha' ? 'Sort: A-Z' : 'Sort: Discovery';
+        renderSkills();
     }
 
     // Initialize once
     function init() {
-        refresh().then(fillIfNeeded);
+        refresh().then(setupInfiniteScroll);
         setInterval(refresh, 30000);
 
-        // Infinite scroll: load more skills when near bottom of the skill list
-        const list = document.getElementById('skill-list');
-        if (list) {
-            list.addEventListener('scroll', () => {
-                const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 100;
-                if (nearBottom) loadMoreSkills();
-            });
-        }
+        const sortBtn = document.getElementById('sort-btn');
+        if (sortBtn) sortBtn.addEventListener('click', toggleSort);
     }
 
     if (document.readyState === 'loading') {

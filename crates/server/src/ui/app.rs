@@ -54,7 +54,10 @@ pub fn Dashboard() -> impl IntoView {
 pub fn SkillsPanel() -> impl IntoView {
     view! {
         <section class="panel skills-panel">
-            <h2>"Skills"</h2>
+            <div class="panel-header">
+                <h2>"Skills"</h2>
+                <button id="sort-btn" class="sort-btn" title="Toggle sort order">"Sort: Discovery"</button>
+            </div>
             <div class="skill-list" id="skill-list">
                 <div class="empty">"Loading skills..."</div>
             </div>
