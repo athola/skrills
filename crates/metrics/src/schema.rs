@@ -97,7 +97,10 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     //     conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [3])?;
     // }
 
-    debug_assert_eq!(SCHEMA_VERSION, 2, "update migrations when bumping SCHEMA_VERSION");
+    debug_assert_eq!(
+        SCHEMA_VERSION, 2,
+        "update migrations when bumping SCHEMA_VERSION"
+    );
 
     Ok(())
 }

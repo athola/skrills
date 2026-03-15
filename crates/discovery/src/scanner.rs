@@ -658,7 +658,7 @@ fn scan_hooks_dir(dir: &Path, source: &str, rules: &mut Vec<RuleMeta>) {
         let path = entry.path();
         if path
             .extension()
-            .map_or(false, |e| e == "json" || e == "yaml" || e == "yml" || e == "toml")
+            .is_some_and(|e| e == "json" || e == "yaml" || e == "yml" || e == "toml")
         {
             // Try to parse as a hook/rule definition
             if let Ok(contents) = fs::read_to_string(&path) {

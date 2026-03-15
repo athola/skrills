@@ -377,4 +377,3 @@ pub struct SyncSummary {
     /// Average files per sync operation.
     pub avg_files_per_sync: f64,
 }
-

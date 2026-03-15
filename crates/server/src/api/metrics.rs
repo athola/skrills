@@ -79,13 +79,10 @@ impl StatsResponse {
 async fn get_recent_events(
     State(state): State<Arc<MetricsState>>,
 ) -> Result<Json<RecentEventsResponse>, StatusCode> {
-    let events = state
-        .collector
-        .get_recent_events(100)
-        .map_err(|e| {
-            tracing::warn!(error = %e, "Failed to get recent events");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let events = state.collector.get_recent_events(100).map_err(|e| {
+        tracing::warn!(error = %e, "Failed to get recent events");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     Ok(Json(RecentEventsResponse { events }))
 }
 
@@ -126,13 +123,10 @@ const DEFAULT_TOP_SKILLS_LIMIT: usize = 10;
 async fn get_analytics_summary(
     State(state): State<Arc<MetricsState>>,
 ) -> Result<Json<AnalyticsSummaryResponse>, StatusCode> {
-    let summary = state
-        .collector
-        .get_analytics_summary()
-        .map_err(|e| {
-            tracing::warn!(error = %e, "Failed to get analytics summary");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let summary = state.collector.get_analytics_summary().map_err(|e| {
+        tracing::warn!(error = %e, "Failed to get analytics summary");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     Ok(Json(AnalyticsSummaryResponse { summary }))
 }
 
@@ -192,13 +186,10 @@ async fn get_validation_history(
 async fn get_validation_summary(
     State(state): State<Arc<MetricsState>>,
 ) -> Result<Json<ValidationSummaryResponse>, StatusCode> {
-    let summary = state
-        .collector
-        .get_validation_summary()
-        .map_err(|e| {
-            tracing::warn!(error = %e, "Failed to get validation summary");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let summary = state.collector.get_validation_summary().map_err(|e| {
+        tracing::warn!(error = %e, "Failed to get validation summary");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     Ok(Json(ValidationSummaryResponse { summary }))
 }
 
@@ -238,13 +229,10 @@ async fn get_sync_history(
 async fn get_sync_summary(
     State(state): State<Arc<MetricsState>>,
 ) -> Result<Json<SyncSummaryResponse>, StatusCode> {
-    let summary = state
-        .collector
-        .get_sync_summary()
-        .map_err(|e| {
-            tracing::warn!(error = %e, "Failed to get sync summary");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let summary = state.collector.get_sync_summary().map_err(|e| {
+        tracing::warn!(error = %e, "Failed to get sync summary");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     Ok(Json(SyncSummaryResponse { summary }))
 }
 
@@ -278,13 +266,10 @@ const DEFAULT_TOP_RULES_LIMIT: usize = 10;
 async fn get_rule_analytics_summary(
     State(state): State<Arc<MetricsState>>,
 ) -> Result<Json<RuleAnalyticsSummaryResponse>, StatusCode> {
-    let summary = state
-        .collector
-        .get_rule_analytics_summary()
-        .map_err(|e| {
-            tracing::warn!(error = %e, "Failed to get rule analytics summary");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let summary = state.collector.get_rule_analytics_summary().map_err(|e| {
+        tracing::warn!(error = %e, "Failed to get rule analytics summary");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     Ok(Json(RuleAnalyticsSummaryResponse { summary }))
 }
 
@@ -307,13 +292,10 @@ async fn get_rule_effectiveness(
     State(state): State<Arc<MetricsState>>,
     axum::extract::Path(rule): axum::extract::Path<String>,
 ) -> Result<Json<RuleEffectivenessResponse>, StatusCode> {
-    let effectiveness = state
-        .collector
-        .get_rule_effectiveness(&rule)
-        .map_err(|e| {
-            tracing::warn!(error = %e, rule = %rule, "Failed to get rule effectiveness");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let effectiveness = state.collector.get_rule_effectiveness(&rule).map_err(|e| {
+        tracing::warn!(error = %e, rule = %rule, "Failed to get rule effectiveness");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     Ok(Json(RuleEffectivenessResponse { effectiveness }))
 }
 
@@ -324,11 +306,20 @@ pub fn metrics_routes(state: Arc<MetricsState>) -> Router {
         .route("/api/metrics/skills/{skill}", get(get_skill_stats))
         .route("/api/metrics/analytics", get(get_analytics_summary))
         .route("/api/metrics/analytics/top", get(get_top_skills))
-        .route("/api/metrics/validation/summary", get(get_validation_summary))
-        .route("/api/metrics/validation/{skill}", get(get_validation_history))
+        .route(
+            "/api/metrics/validation/summary",
+            get(get_validation_summary),
+        )
+        .route(
+            "/api/metrics/validation/{skill}",
+            get(get_validation_history),
+        )
         .route("/api/metrics/sync", get(get_sync_history))
         .route("/api/metrics/sync/summary", get(get_sync_summary))
-        .route("/api/metrics/rules/analytics", get(get_rule_analytics_summary))
+        .route(
+            "/api/metrics/rules/analytics",
+            get(get_rule_analytics_summary),
+        )
         .route("/api/metrics/rules/top", get(get_top_rules))
         .route("/api/metrics/rules/{rule}", get(get_rule_effectiveness))
         .with_state(state)

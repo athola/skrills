@@ -241,10 +241,7 @@ fn draw_metrics_panel(f: &mut Frame, app: &App, area: Rect) {
 
         // Show all discovered locations
         lines.push(Line::from(""));
-        lines.push(Line::from(format!(
-            "Locations ({})",
-            skill.locations.len()
-        )));
+        lines.push(Line::from(format!("Locations ({})", skill.locations.len())));
         for (i, loc) in skill.locations.iter().enumerate() {
             lines.push(Line::from(format!(
                 "  {}. [{}] {}",

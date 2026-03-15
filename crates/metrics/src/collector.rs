@@ -10,8 +10,9 @@ use crate::error::{MetricsError, Result};
 use crate::schema::init_schema;
 use crate::types::{
     parse_rule_outcome, parse_sync_operation, parse_sync_status, AnalyticsSummary, MetricEvent,
-    RuleAnalyticsSummary, RuleEffectiveness, RuleOutcome, RuleTriggerDetail, SkillStats, SyncDetail,
-    SyncOperation, SyncStatus, SyncSummary, TopSkill, ValidationDetail, ValidationSummary,
+    RuleAnalyticsSummary, RuleEffectiveness, RuleOutcome, RuleTriggerDetail, SkillStats,
+    SyncDetail, SyncOperation, SyncStatus, SyncSummary, TopSkill, ValidationDetail,
+    ValidationSummary,
 };
 
 /// Default channel capacity for metric event subscribers.
@@ -425,7 +426,11 @@ impl MetricsCollector {
     /// Get validation history for a specific skill.
     ///
     /// Returns up to `limit` most recent validation runs, ordered by timestamp descending.
-    pub fn get_validation_history(&self, skill: &str, limit: usize) -> Result<Vec<ValidationDetail>> {
+    pub fn get_validation_history(
+        &self,
+        skill: &str,
+        limit: usize,
+    ) -> Result<Vec<ValidationDetail>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, skill_name, checks_passed, checks_failed, created_at
@@ -755,7 +760,11 @@ impl MetricsCollector {
     }
 
     /// Get rule trigger history.
-    pub fn get_rule_trigger_history(&self, rule_name: &str, limit: usize) -> Result<Vec<RuleTriggerDetail>> {
+    pub fn get_rule_trigger_history(
+        &self,
+        rule_name: &str,
+        limit: usize,
+    ) -> Result<Vec<RuleTriggerDetail>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, rule_name, category, triggered_by, duration_ms, outcome, details, created_at
@@ -798,7 +807,11 @@ impl MetricsCollector {
         let stats = stmt.query_row([rule_name], |row| {
             let total: i64 = row.get(0)?;
             let fails: i64 = row.get(2)?;
-            let failure_rate = if total > 0 { (fails as f64 / total as f64) * 100.0 } else { 0.0 };
+            let failure_rate = if total > 0 {
+                (fails as f64 / total as f64) * 100.0
+            } else {
+                0.0
+            };
             Ok(RuleEffectiveness {
                 rule_name: rule_name.to_string(),
                 total_triggers: total as u64,
@@ -830,7 +843,11 @@ impl MetricsCollector {
         let summary = stmt.query_row([], |row| {
             let total: i64 = row.get(0)?;
             let fails: i64 = row.get(2)?;
-            let failure_rate = if total > 0 { (fails as f64 / total as f64) * 100.0 } else { 0.0 };
+            let failure_rate = if total > 0 {
+                (fails as f64 / total as f64) * 100.0
+            } else {
+                0.0
+            };
             Ok(RuleAnalyticsSummary {
                 total_triggers: total as u64,
                 total_passes: row.get::<_, i64>(1)? as u64,
@@ -865,7 +882,11 @@ impl MetricsCollector {
         let rows = stmt.query_map([limit as i64], |row| {
             let total: i64 = row.get(1)?;
             let fails: i64 = row.get(3)?;
-            let failure_rate = if total > 0 { (fails as f64 / total as f64) * 100.0 } else { 0.0 };
+            let failure_rate = if total > 0 {
+                (fails as f64 / total as f64) * 100.0
+            } else {
+                0.0
+            };
             Ok(RuleEffectiveness {
                 rule_name: row.get(0)?,
                 total_triggers: total as u64,
@@ -1552,7 +1573,14 @@ mod tests {
         // Record more triggers for popular-rule
         for _ in 0..5 {
             collector
-                .record_rule_trigger("popular-rule", None, None, Some(10), RuleOutcome::Pass, None)
+                .record_rule_trigger(
+                    "popular-rule",
+                    None,
+                    None,
+                    Some(10),
+                    RuleOutcome::Pass,
+                    None,
+                )
                 .unwrap();
         }
         for _ in 0..3 {
@@ -1610,7 +1638,14 @@ mod tests {
         let mut rx = collector.subscribe();
 
         collector
-            .record_rule_trigger("sub-rule", Some("test"), None, Some(10), RuleOutcome::Fail, None)
+            .record_rule_trigger(
+                "sub-rule",
+                Some("test"),
+                None,
+                Some(10),
+                RuleOutcome::Fail,
+                None,
+            )
             .unwrap();
 
         let event = rx.try_recv().unwrap();

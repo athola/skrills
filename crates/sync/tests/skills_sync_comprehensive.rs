@@ -1312,8 +1312,10 @@ mod case_sensitivity_tests {
             SkillSyncTestContext::universal_skill("my-skill-caps", "Variant C"),
         ];
 
-        let target_skills =
-            vec![SkillSyncTestContext::universal_skill("my-skill-lower", "Existing")];
+        let target_skills = vec![SkillSyncTestContext::universal_skill(
+            "my-skill-lower",
+            "Existing",
+        )];
 
         let source = ctx.claude_adapter_with_skills(source_skills);
         let target = ctx.codex_adapter_with_skills(target_skills);
