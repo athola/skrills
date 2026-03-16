@@ -28,7 +28,6 @@ fn sample_skill(name: &str, source: &str, valid: Option<bool>, invocations: u64)
             path: format!("/test/{}/SKILL.md", name),
         }],
         valid,
-        last_used: None,
         invocations,
     }
 }
@@ -679,7 +678,7 @@ fn metric_event_sync() {
         id: 5,
         operation: SyncOperation::Push,
         files_count: 5,
-        status: SyncStatus::Complete,
+        status: SyncStatus::Success,
         created_at: "2025-01-15T10:00:00Z".to_string(),
     });
 

@@ -184,26 +184,7 @@ fn draw_metrics_panel(f: &mut Frame, app: &App, area: Rect) {
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(format!("Skill: {}", skill.name)));
 
-        // Show stats if available
-        if let Some(stats) = &app.selected_stats {
-            let success_rate = if stats.total_invocations() > 0 {
-                (stats.successful_invocations as f64 / stats.total_invocations() as f64) * 100.0
-            } else {
-                0.0
-            };
-            lines.push(Line::from(format!(
-                "Invocations: {}",
-                stats.total_invocations()
-            )));
-            lines.push(Line::from(format!("Success Rate: {:.1}%", success_rate)));
-            lines.push(Line::from(format!(
-                "Avg Duration: {:.1}ms",
-                stats.avg_duration_ms
-            )));
-            lines.push(Line::from(format!("Total Tokens: {}", stats.total_tokens)));
-        } else {
-            lines.push(Line::from(format!("Invocations: {}", skill.invocations)));
-        }
+        lines.push(Line::from(format!("Invocations: {}", skill.invocations)));
 
         // Show validation checks for the selected skill
         if let Some(val) = &app.selected_validation {
@@ -316,21 +297,24 @@ Panels:
 
 /// Create a centered rect.
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let px = percent_x.min(100);
+    let py = percent_y.min(100);
+
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage((100 - py) / 2),
+            Constraint::Percentage(py),
+            Constraint::Percentage((100 - py) / 2),
         ])
         .split(r);
 
     Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage((100 - px) / 2),
+            Constraint::Percentage(px),
+            Constraint::Percentage((100 - px) / 2),
         ])
         .split(popup_layout[1])[1]
 }

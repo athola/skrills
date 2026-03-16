@@ -38,6 +38,25 @@ pub struct MetricsState {
     pub collector: Arc<MetricsCollector>,
 }
 
+/// Run a blocking metrics collector call on the Tokio blocking thread pool.
+async fn blocking_query<T, F>(collector: &Arc<MetricsCollector>, f: F) -> Result<T, StatusCode>
+where
+    T: Send + 'static,
+    F: FnOnce(&MetricsCollector) -> skrills_metrics::Result<T> + Send + 'static,
+{
+    let collector = collector.clone();
+    tokio::task::spawn_blocking(move || f(&collector))
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "Blocking task panicked");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .map_err(|e| {
+            tracing::warn!(error = %e, "Metrics query failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
 /// Recent events response.
 #[derive(Debug, Serialize)]
 pub struct RecentEventsResponse {
@@ -79,10 +98,7 @@ impl StatsResponse {
 async fn get_recent_events(
     State(state): State<Arc<MetricsState>>,
 ) -> Result<Json<RecentEventsResponse>, StatusCode> {
-    let events = state.collector.get_recent_events(100).map_err(|e| {
-        tracing::warn!(error = %e, "Failed to get recent events");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let events = blocking_query(&state.collector, |c| c.get_recent_events(100)).await?;
     Ok(Json(RecentEventsResponse { events }))
 }
 
@@ -91,14 +107,9 @@ async fn get_skill_stats(
     State(state): State<Arc<MetricsState>>,
     axum::extract::Path(skill): axum::extract::Path<String>,
 ) -> Result<Json<StatsResponse>, StatusCode> {
-    state
-        .collector
-        .get_skill_stats(&skill)
-        .map(|stats| Json(StatsResponse::from_stats(skill.clone(), stats)))
-        .map_err(|e| {
-            tracing::warn!(error = %e, skill = %skill, "Failed to get skill stats");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+    let skill_name = skill.clone();
+    let stats = blocking_query(&state.collector, move |c| c.get_skill_stats(&skill_name)).await?;
+    Ok(Json(StatsResponse::from_stats(skill, stats)))
 }
 
 /// Response wrapper for analytics summary.
@@ -123,10 +134,7 @@ const DEFAULT_TOP_SKILLS_LIMIT: usize = 10;
 async fn get_analytics_summary(
     State(state): State<Arc<MetricsState>>,
 ) -> Result<Json<AnalyticsSummaryResponse>, StatusCode> {
-    let summary = state.collector.get_analytics_summary().map_err(|e| {
-        tracing::warn!(error = %e, "Failed to get analytics summary");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let summary = blocking_query(&state.collector, |c| c.get_analytics_summary()).await?;
     Ok(Json(AnalyticsSummaryResponse { summary }))
 }
 
@@ -134,13 +142,8 @@ async fn get_analytics_summary(
 async fn get_top_skills(
     State(state): State<Arc<MetricsState>>,
 ) -> Result<Json<TopSkillsResponse>, StatusCode> {
-    let skills = state
-        .collector
-        .get_top_skills(DEFAULT_TOP_SKILLS_LIMIT)
-        .map_err(|e| {
-            tracing::warn!(error = %e, "Failed to get top skills");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let skills =
+        blocking_query(&state.collector, |c| c.get_top_skills(DEFAULT_TOP_SKILLS_LIMIT)).await?;
     Ok(Json(TopSkillsResponse { skills }))
 }
 
@@ -169,27 +172,19 @@ async fn get_validation_history(
     State(state): State<Arc<MetricsState>>,
     axum::extract::Path(skill): axum::extract::Path<String>,
 ) -> Result<Json<ValidationHistoryResponse>, StatusCode> {
-    let history = state
-        .collector
-        .get_validation_history(&skill, DEFAULT_VALIDATION_HISTORY_LIMIT)
-        .map_err(|e| {
-            tracing::warn!(error = %e, skill = %skill, "Failed to get validation history");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-    Ok(Json(ValidationHistoryResponse {
-        skill: skill.clone(),
-        history,
-    }))
+    let skill_name = skill.clone();
+    let history = blocking_query(&state.collector, move |c| {
+        c.get_validation_history(&skill_name, DEFAULT_VALIDATION_HISTORY_LIMIT)
+    })
+    .await?;
+    Ok(Json(ValidationHistoryResponse { skill, history }))
 }
 
 /// Get validation summary across all skills.
 async fn get_validation_summary(
     State(state): State<Arc<MetricsState>>,
 ) -> Result<Json<ValidationSummaryResponse>, StatusCode> {
-    let summary = state.collector.get_validation_summary().map_err(|e| {
-        tracing::warn!(error = %e, "Failed to get validation summary");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let summary = blocking_query(&state.collector, |c| c.get_validation_summary()).await?;
     Ok(Json(ValidationSummaryResponse { summary }))
 }
 
@@ -215,13 +210,9 @@ const DEFAULT_SYNC_HISTORY_LIMIT: usize = 50;
 async fn get_sync_history(
     State(state): State<Arc<MetricsState>>,
 ) -> Result<Json<SyncHistoryResponse>, StatusCode> {
-    let events = state
-        .collector
-        .get_sync_history(DEFAULT_SYNC_HISTORY_LIMIT)
-        .map_err(|e| {
-            tracing::warn!(error = %e, "Failed to get sync history");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let events =
+        blocking_query(&state.collector, |c| c.get_sync_history(DEFAULT_SYNC_HISTORY_LIMIT))
+            .await?;
     Ok(Json(SyncHistoryResponse { events }))
 }
 
@@ -229,10 +220,7 @@ async fn get_sync_history(
 async fn get_sync_summary(
     State(state): State<Arc<MetricsState>>,
 ) -> Result<Json<SyncSummaryResponse>, StatusCode> {
-    let summary = state.collector.get_sync_summary().map_err(|e| {
-        tracing::warn!(error = %e, "Failed to get sync summary");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let summary = blocking_query(&state.collector, |c| c.get_sync_summary()).await?;
     Ok(Json(SyncSummaryResponse { summary }))
 }
 
@@ -266,10 +254,7 @@ const DEFAULT_TOP_RULES_LIMIT: usize = 10;
 async fn get_rule_analytics_summary(
     State(state): State<Arc<MetricsState>>,
 ) -> Result<Json<RuleAnalyticsSummaryResponse>, StatusCode> {
-    let summary = state.collector.get_rule_analytics_summary().map_err(|e| {
-        tracing::warn!(error = %e, "Failed to get rule analytics summary");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let summary = blocking_query(&state.collector, |c| c.get_rule_analytics_summary()).await?;
     Ok(Json(RuleAnalyticsSummaryResponse { summary }))
 }
 
@@ -277,13 +262,8 @@ async fn get_rule_analytics_summary(
 async fn get_top_rules(
     State(state): State<Arc<MetricsState>>,
 ) -> Result<Json<TopRulesResponse>, StatusCode> {
-    let rules = state
-        .collector
-        .get_top_rules(DEFAULT_TOP_RULES_LIMIT)
-        .map_err(|e| {
-            tracing::warn!(error = %e, "Failed to get top rules");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let rules =
+        blocking_query(&state.collector, |c| c.get_top_rules(DEFAULT_TOP_RULES_LIMIT)).await?;
     Ok(Json(TopRulesResponse { rules }))
 }
 
@@ -292,10 +272,9 @@ async fn get_rule_effectiveness(
     State(state): State<Arc<MetricsState>>,
     axum::extract::Path(rule): axum::extract::Path<String>,
 ) -> Result<Json<RuleEffectivenessResponse>, StatusCode> {
-    let effectiveness = state.collector.get_rule_effectiveness(&rule).map_err(|e| {
-        tracing::warn!(error = %e, rule = %rule, "Failed to get rule effectiveness");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let rule_name = rule.clone();
+    let effectiveness =
+        blocking_query(&state.collector, move |c| c.get_rule_effectiveness(&rule_name)).await?;
     Ok(Json(RuleEffectivenessResponse { effectiveness }))
 }
 

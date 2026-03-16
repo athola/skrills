@@ -15,7 +15,6 @@ publish = false
 [dependencies]
 skrills-metrics = { path = "../metrics" }
 skrills-discovery = { path = "../discovery" }
-skrills-validate = { path = "../validate" }
 
 # TUI
 ratatui = "0.30"

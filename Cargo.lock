@@ -4225,7 +4225,6 @@ dependencies = [
  "ratatui",
  "skrills-discovery",
  "skrills-metrics",
- "skrills-validate",
  "tempfile",
  "thiserror 2.0.18",
  "time",

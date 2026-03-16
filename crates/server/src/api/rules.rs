@@ -43,16 +43,9 @@ pub struct RuleResponse {
 
 impl From<RuleMeta> for RuleResponse {
     fn from(meta: RuleMeta) -> Self {
-        let path = meta.path.display().to_string();
-        let path = dirs::home_dir()
-            .and_then(|home| {
-                path.strip_prefix(&home.display().to_string())
-                    .map(|rest| format!("~{rest}"))
-            })
-            .unwrap_or(path);
         Self {
             name: meta.name,
-            path,
+            path: super::strip_home_prefix(&meta.path),
             source: meta.source,
             category: meta.category.to_string(),
             enabled: meta.enabled,

@@ -39,8 +39,6 @@ pub enum SyncStatus {
     InProgress,
     /// Operation failed.
     Failed,
-    /// Operation completed.
-    Complete,
 }
 
 impl SyncStatus {
@@ -50,7 +48,6 @@ impl SyncStatus {
             Self::Success => "success",
             Self::InProgress => "in_progress",
             Self::Failed => "failed",
-            Self::Complete => "complete",
         }
     }
 }
@@ -62,21 +59,32 @@ impl std::fmt::Display for SyncStatus {
 }
 
 /// Parse a sync operation from a database string.
+///
+/// Logs a warning and defaults to `Pull` for unrecognized values.
 pub(crate) fn parse_sync_operation(s: &str) -> SyncOperation {
     match s {
         "push" => SyncOperation::Push,
-        _ => SyncOperation::Pull,
+        "pull" => SyncOperation::Pull,
+        other => {
+            tracing::warn!(value = other, "Unknown sync operation in DB, defaulting to Pull");
+            SyncOperation::Pull
+        }
     }
 }
 
 /// Parse a sync status from a database string.
+///
+/// Logs a warning and defaults to `Failed` for unrecognized values,
+/// avoiding silent inflation of success counts.
 pub(crate) fn parse_sync_status(s: &str) -> SyncStatus {
     match s {
-        "success" => SyncStatus::Success,
+        "success" | "complete" => SyncStatus::Success,
         "in_progress" => SyncStatus::InProgress,
         "failed" => SyncStatus::Failed,
-        "complete" => SyncStatus::Complete,
-        _ => SyncStatus::Success,
+        other => {
+            tracing::warn!(value = other, "Unknown sync status in DB, defaulting to Failed");
+            SyncStatus::Failed
+        }
     }
 }
 
@@ -113,13 +121,19 @@ impl std::fmt::Display for RuleOutcome {
 }
 
 /// Parse a rule outcome from a database string.
+///
+/// Logs a warning and defaults to `Error` for unrecognized values,
+/// avoiding silent inflation of pass counts.
 pub(crate) fn parse_rule_outcome(s: &str) -> RuleOutcome {
     match s {
         "pass" => RuleOutcome::Pass,
         "fail" => RuleOutcome::Fail,
         "skip" => RuleOutcome::Skip,
         "error" => RuleOutcome::Error,
-        _ => RuleOutcome::Pass,
+        other => {
+            tracing::warn!(value = other, "Unknown rule outcome in DB, defaulting to Error");
+            RuleOutcome::Error
+        }
     }
 }
 

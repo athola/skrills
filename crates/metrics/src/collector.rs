@@ -270,7 +270,7 @@ impl MetricsCollector {
         // Get recent skill invocations
         let mut stmt = conn.prepare(
             "SELECT id, skill_name, plugin, duration_ms, success, tokens_used, created_at
-             FROM skill_invocations ORDER BY created_at DESC LIMIT ?1",
+             FROM skill_invocations ORDER BY created_at DESC, id DESC LIMIT ?1",
         )?;
         let invocations = stmt.query_map([limit as i64], |row| {
             Ok(MetricEvent::SkillInvocation {
@@ -290,7 +290,7 @@ impl MetricsCollector {
         // Get recent validations
         let mut stmt = conn.prepare(
             "SELECT id, skill_name, checks_passed, checks_failed, created_at
-             FROM validation_runs ORDER BY created_at DESC LIMIT ?1",
+             FROM validation_runs ORDER BY created_at DESC, id DESC LIMIT ?1",
         )?;
         let validations = stmt.query_map([limit as i64], |row| {
             let passed_json: String = row.get(2)?;
@@ -341,7 +341,7 @@ impl MetricsCollector {
         // Get recent sync events
         let mut stmt = conn.prepare(
             "SELECT id, operation, files_count, status, created_at
-             FROM sync_events ORDER BY created_at DESC LIMIT ?1",
+             FROM sync_events ORDER BY created_at DESC, id DESC LIMIT ?1",
         )?;
         let syncs = stmt.query_map([limit as i64], |row| {
             let op_str: String = row.get(1)?;
@@ -361,7 +361,7 @@ impl MetricsCollector {
         // Get recent rule triggers
         let mut stmt = conn.prepare(
             "SELECT id, rule_name, category, duration_ms, outcome, created_at
-             FROM rule_triggers ORDER BY created_at DESC LIMIT ?1",
+             FROM rule_triggers ORDER BY created_at DESC, id DESC LIMIT ?1",
         )?;
         let triggers = stmt.query_map([limit as i64], |row| {
             let outcome_str: String = row.get(4)?;
@@ -453,8 +453,30 @@ impl MetricsCollector {
         let mut details = Vec::new();
         for row in rows {
             let (id, skill_name, passed_json, failed_json, created_at) = row?;
-            let checks_passed: Vec<String> = serde_json::from_str(&passed_json)?;
-            let checks_failed: Vec<String> = serde_json::from_str(&failed_json)?;
+            let checks_passed: Vec<String> = match serde_json::from_str(&passed_json) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        id,
+                        skill_name = %skill_name,
+                        error = %e,
+                        "failed to deserialize checks_passed JSON, skipping row"
+                    );
+                    continue;
+                }
+            };
+            let checks_failed: Vec<String> = match serde_json::from_str(&failed_json) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        id,
+                        skill_name = %skill_name,
+                        error = %e,
+                        "failed to deserialize checks_failed JSON, skipping row"
+                    );
+                    continue;
+                }
+            };
             details.push(ValidationDetail {
                 id,
                 skill_name,
@@ -655,7 +677,7 @@ impl MetricsCollector {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, operation, files_count, status, created_at
-             FROM sync_events ORDER BY created_at DESC LIMIT ?1",
+             FROM sync_events ORDER BY created_at DESC, id DESC LIMIT ?1",
         )?;
 
         let rows = stmt.query_map([limit as i64], |row| {
@@ -686,7 +708,7 @@ impl MetricsCollector {
         let mut stmt = conn.prepare(
             "SELECT
                 COUNT(*) as total,
-                COALESCE(SUM(CASE WHEN status = 'success' OR status = 'complete' THEN 1 ELSE 0 END), 0) as successful,
+                COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0) as successful,
                 COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) as failed,
                 COALESCE(SUM(CASE WHEN operation = 'push' THEN 1 ELSE 0 END), 0) as pushes,
                 COALESCE(SUM(CASE WHEN operation = 'pull' THEN 1 ELSE 0 END), 0) as pulls,
@@ -769,7 +791,7 @@ impl MetricsCollector {
         let mut stmt = conn.prepare(
             "SELECT id, rule_name, category, triggered_by, duration_ms, outcome, details, created_at
              FROM rule_triggers WHERE rule_name = ?1
-             ORDER BY created_at DESC LIMIT ?2",
+             ORDER BY created_at DESC, id DESC LIMIT ?2",
         )?;
         let rows = stmt.query_map(rusqlite::params![rule_name, limit as i64], |row| {
             let outcome_str: String = row.get(5)?;
@@ -1627,9 +1649,9 @@ mod tests {
         assert_eq!(parse_rule_outcome("fail"), RuleOutcome::Fail);
         assert_eq!(parse_rule_outcome("skip"), RuleOutcome::Skip);
         assert_eq!(parse_rule_outcome("error"), RuleOutcome::Error);
-        // Unknown defaults to Pass
-        assert_eq!(parse_rule_outcome("unknown"), RuleOutcome::Pass);
-        assert_eq!(parse_rule_outcome(""), RuleOutcome::Pass);
+        // Unknown defaults to Error (avoids inflating pass counts)
+        assert_eq!(parse_rule_outcome("unknown"), RuleOutcome::Error);
+        assert_eq!(parse_rule_outcome(""), RuleOutcome::Error);
     }
 
     #[tokio::test]
@@ -1694,7 +1716,7 @@ mod tests {
             .record_sync_event(SyncOperation::Pull, 3, SyncStatus::Failed)
             .unwrap();
         collector
-            .record_sync_event(SyncOperation::Push, 10, SyncStatus::Complete)
+            .record_sync_event(SyncOperation::Push, 10, SyncStatus::Success)
             .unwrap();
 
         // Get all history
@@ -1703,7 +1725,7 @@ mod tests {
         // Most recent first
         assert_eq!(history[0].files_count, 10);
         assert_eq!(history[0].operation, SyncOperation::Push);
-        assert_eq!(history[0].status, SyncStatus::Complete);
+        assert_eq!(history[0].status, SyncStatus::Success);
 
         // Limit works
         let limited = collector.get_sync_history(2).unwrap();
@@ -1728,7 +1750,7 @@ mod tests {
             .record_sync_event(SyncOperation::Push, 3, SyncStatus::Failed)
             .unwrap();
         collector
-            .record_sync_event(SyncOperation::Pull, 10, SyncStatus::Complete)
+            .record_sync_event(SyncOperation::Pull, 10, SyncStatus::Success)
             .unwrap();
         collector
             .record_sync_event(SyncOperation::Pull, 2, SyncStatus::Success)

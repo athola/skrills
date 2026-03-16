@@ -13,7 +13,7 @@ use crossterm::{
 };
 use ratatui::prelude::*;
 use ratatui::widgets::ListState;
-use skrills_metrics::{MetricEvent, MetricsCollector, SkillStats, ValidationDetail};
+use skrills_metrics::{MetricEvent, MetricsCollector, ValidationDetail};
 
 use crate::events::{Event, EventHandler};
 use crate::ui;
@@ -84,8 +84,6 @@ pub struct SkillInfo {
     pub locations: Vec<SkillLocation>,
     /// Validation status (None = not validated, Some(true) = valid, Some(false) = invalid).
     pub valid: Option<bool>,
-    /// Last invocation time.
-    pub last_used: Option<String>,
     /// Total invocations.
     pub invocations: u64,
 }
@@ -159,8 +157,6 @@ pub struct App {
     pub visible_count: usize,
     /// Recent activity events with dedup and timestamps.
     pub activity: Vec<ActivityEntry>,
-    /// Skill stats for selected skill.
-    pub selected_stats: Option<SkillStats>,
     /// Total skills count.
     pub total_skills: usize,
     /// Valid skills count.
@@ -191,7 +187,7 @@ impl Default for App {
             skills: Vec::new(),
             visible_count: PAGE_SIZE,
             activity: Vec::new(),
-            selected_stats: None,
+
             total_skills: 0,
             valid_skills: 0,
             invalid_skills: 0,
@@ -345,8 +341,7 @@ impl App {
                 ..
             } => {
                 let status_tag = match status {
-                    skrills_metrics::SyncStatus::Success
-                    | skrills_metrics::SyncStatus::Complete => "OK",
+                    skrills_metrics::SyncStatus::Success => "OK",
                     skrills_metrics::SyncStatus::Failed => "FAIL",
                     skrills_metrics::SyncStatus::InProgress => "...",
                 };
@@ -608,7 +603,7 @@ impl Dashboard {
                 uri,
                 locations,
                 valid: None,
-                last_used: None,
+
                 invocations,
             });
         }
@@ -704,7 +699,7 @@ mod tests {
                     path: "/a".into(),
                 }],
                 valid: None,
-                last_used: None,
+
                 invocations: 0,
             },
             SkillInfo {
@@ -717,7 +712,7 @@ mod tests {
                     path: "/b".into(),
                 }],
                 valid: None,
-                last_used: None,
+
                 invocations: 0,
             },
         ];
@@ -800,7 +795,7 @@ mod tests {
                     path: "/c".into(),
                 }],
                 valid: None,
-                last_used: None,
+
                 invocations: 0,
             },
             SkillInfo {
@@ -813,7 +808,7 @@ mod tests {
                     path: "/a".into(),
                 }],
                 valid: None,
-                last_used: None,
+
                 invocations: 0,
             },
             SkillInfo {
@@ -826,7 +821,7 @@ mod tests {
                     path: "/b".into(),
                 }],
                 valid: None,
-                last_used: None,
+
                 invocations: 0,
             },
         ];
@@ -865,7 +860,7 @@ mod tests {
                     path: format!("/skill-{}", i),
                 }],
                 valid: None,
-                last_used: None,
+
                 invocations: 0,
             })
             .collect()

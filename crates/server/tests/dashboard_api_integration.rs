@@ -15,6 +15,7 @@ use tower::ServiceExt;
 
 use skrills_server::api::dashboard_routes;
 use skrills_server::api::metrics::{metrics_routes, MetricsState};
+use skrills_server::api::rules::{rules_routes, RuleResponse, RulesState};
 use skrills_server::api::skills::{skills_routes, ApiState, PaginatedResponse, SkillResponse};
 
 /// Create a test skill directory with sample SKILL.md files.
@@ -536,4 +537,361 @@ async fn pagination_offset_beyond_total() {
         "Offset beyond total should return empty items"
     );
     assert_eq!(result.total, 3, "Total should still reflect actual count");
+}
+
+// ── Analytics & Validation & Sync & Rules Metrics API Tests ──
+
+/// Build a metrics app with seed data for comprehensive testing.
+fn seeded_metrics_app() -> Router {
+    let collector = Arc::new(
+        skrills_metrics::MetricsCollector::new().expect("Failed to create metrics collector"),
+    );
+
+    // Seed skill invocations
+    collector
+        .record_skill_invocation("alpha", 100, true, Some(50))
+        .unwrap();
+    collector
+        .record_skill_invocation("alpha", 200, false, None)
+        .unwrap();
+    collector
+        .record_skill_invocation("beta", 150, true, Some(30))
+        .unwrap();
+
+    // Seed validation runs
+    collector
+        .record_validation("alpha", &["lint", "test"], &["format"])
+        .unwrap();
+    collector
+        .record_validation("beta", &["lint", "test", "format"], &[])
+        .unwrap();
+
+    // Seed sync events
+    collector
+        .record_sync_event(
+            skrills_metrics::SyncOperation::Push,
+            3,
+            skrills_metrics::SyncStatus::Success,
+        )
+        .unwrap();
+    collector
+        .record_sync_event(
+            skrills_metrics::SyncOperation::Pull,
+            5,
+            skrills_metrics::SyncStatus::Failed,
+        )
+        .unwrap();
+
+    // Seed rule triggers
+    collector
+        .record_rule_trigger(
+            "no-console",
+            Some("lint"),
+            Some("user"),
+            Some(50),
+            skrills_metrics::RuleOutcome::Pass,
+            None,
+        )
+        .unwrap();
+    collector
+        .record_rule_trigger(
+            "no-console",
+            Some("lint"),
+            Some("ci"),
+            Some(30),
+            skrills_metrics::RuleOutcome::Fail,
+            None,
+        )
+        .unwrap();
+    collector
+        .record_rule_trigger(
+            "require-tests",
+            Some("quality"),
+            Some("ci"),
+            Some(80),
+            skrills_metrics::RuleOutcome::Pass,
+            None,
+        )
+        .unwrap();
+
+    let state = Arc::new(MetricsState { collector });
+    metrics_routes(state)
+}
+
+#[tokio::test]
+async fn get_analytics_summary_returns_json() {
+    let app = seeded_metrics_app();
+
+    let req = Request::builder()
+        .uri("/api/metrics/analytics")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = body_string(response.into_body()).await;
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    assert_eq!(json["total_invocations"], 3);
+    assert_eq!(json["successful_invocations"], 2);
+    assert_eq!(json["failed_invocations"], 1);
+    assert_eq!(json["unique_skills"], 2);
+}
+
+#[tokio::test]
+async fn get_top_skills_returns_json() {
+    let app = seeded_metrics_app();
+
+    let req = Request::builder()
+        .uri("/api/metrics/analytics/top")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = body_string(response.into_body()).await;
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    assert!(json["skills"].is_array());
+    let skills = json["skills"].as_array().unwrap();
+    assert!(!skills.is_empty(), "Should have at least one top skill");
+    // "alpha" has 2 invocations, should be first
+    assert_eq!(skills[0]["skill_name"], "alpha");
+}
+
+#[tokio::test]
+async fn get_validation_summary_returns_json() {
+    let app = seeded_metrics_app();
+
+    let req = Request::builder()
+        .uri("/api/metrics/validation/summary")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = body_string(response.into_body()).await;
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    assert_eq!(json["total_skills"], 2);
+}
+
+#[tokio::test]
+async fn get_validation_history_returns_json() {
+    let app = seeded_metrics_app();
+
+    let req = Request::builder()
+        .uri("/api/metrics/validation/alpha")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = body_string(response.into_body()).await;
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    assert_eq!(json["skill"], "alpha");
+    assert!(json["history"].is_array());
+    let history = json["history"].as_array().unwrap();
+    assert_eq!(history.len(), 1, "Should have 1 validation entry for alpha");
+}
+
+#[tokio::test]
+async fn get_sync_history_returns_json() {
+    let app = seeded_metrics_app();
+
+    let req = Request::builder()
+        .uri("/api/metrics/sync")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = body_string(response.into_body()).await;
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    assert!(json["events"].is_array());
+    let events = json["events"].as_array().unwrap();
+    assert_eq!(events.len(), 2, "Should have 2 sync events");
+}
+
+#[tokio::test]
+async fn get_sync_summary_returns_json() {
+    let app = seeded_metrics_app();
+
+    let req = Request::builder()
+        .uri("/api/metrics/sync/summary")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = body_string(response.into_body()).await;
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    assert_eq!(json["total_syncs"], 2);
+    assert_eq!(json["successful_syncs"], 1);
+    assert_eq!(json["failed_syncs"], 1);
+}
+
+#[tokio::test]
+async fn get_rule_analytics_summary_returns_json() {
+    let app = seeded_metrics_app();
+
+    let req = Request::builder()
+        .uri("/api/metrics/rules/analytics")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = body_string(response.into_body()).await;
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    assert_eq!(json["total_triggers"], 3);
+    assert_eq!(json["unique_rules"], 2);
+}
+
+#[tokio::test]
+async fn get_top_rules_returns_json() {
+    let app = seeded_metrics_app();
+
+    let req = Request::builder()
+        .uri("/api/metrics/rules/top")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = body_string(response.into_body()).await;
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    assert!(json["rules"].is_array());
+    let rules = json["rules"].as_array().unwrap();
+    assert!(!rules.is_empty());
+    // "no-console" has 2 triggers, should be first
+    assert_eq!(rules[0]["rule_name"], "no-console");
+}
+
+#[tokio::test]
+async fn get_rule_effectiveness_returns_json() {
+    let app = seeded_metrics_app();
+
+    let req = Request::builder()
+        .uri("/api/metrics/rules/no-console")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = body_string(response.into_body()).await;
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    assert_eq!(json["rule_name"], "no-console");
+    assert_eq!(json["total_triggers"], 2);
+    assert_eq!(json["pass_count"], 1);
+    assert_eq!(json["fail_count"], 1);
+}
+
+// ── Rules API Tests ──
+
+fn rules_app() -> Router {
+    use skrills_discovery::{RuleCategory, RuleMeta};
+    use std::path::PathBuf;
+
+    let rules = vec![
+        RuleMeta {
+            name: "pre-commit-lint".to_string(),
+            path: PathBuf::from("/tmp/hooks/pre-commit-lint.json"),
+            source: "user".to_string(),
+            category: RuleCategory::PreCommit,
+            enabled: true,
+            description: Some("Runs linter before commit".to_string()),
+            command: Some("cargo clippy".to_string()),
+        },
+        RuleMeta {
+            name: "post-push-notify".to_string(),
+            path: PathBuf::from("/tmp/hooks/post-push-notify.yaml"),
+            source: "project".to_string(),
+            category: RuleCategory::PostCommit,
+            enabled: false,
+            description: None,
+            command: None,
+        },
+    ];
+
+    let state = Arc::new(RulesState {
+        rules: Arc::new(rules),
+    });
+    rules_routes(state)
+}
+
+#[tokio::test]
+async fn list_rules_returns_json() {
+    let app = rules_app();
+
+    let req = Request::builder()
+        .uri("/api/rules")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = body_string(response.into_body()).await;
+    let rules: Vec<RuleResponse> = serde_json::from_str(&body).unwrap();
+
+    assert_eq!(rules.len(), 2);
+    assert_eq!(rules[0].name, "pre-commit-lint");
+    assert!(rules[0].enabled);
+    assert_eq!(rules[1].name, "post-push-notify");
+    assert!(!rules[1].enabled);
+}
+
+#[tokio::test]
+async fn get_rule_by_name_returns_json() {
+    let app = rules_app();
+
+    let req = Request::builder()
+        .uri("/api/rules/pre-commit-lint")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = body_string(response.into_body()).await;
+    let rule: RuleResponse = serde_json::from_str(&body).unwrap();
+
+    assert_eq!(rule.name, "pre-commit-lint");
+    assert_eq!(rule.source, "user");
+    assert_eq!(rule.category, "pre-commit");
+    assert!(rule.enabled);
+    assert_eq!(rule.description, Some("Runs linter before commit".to_string()));
+}
+
+#[tokio::test]
+async fn get_rule_not_found_returns_404() {
+    let app = rules_app();
+
+    let req = Request::builder()
+        .uri("/api/rules/nonexistent")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "Should return 404 for nonexistent rule"
+    );
 }

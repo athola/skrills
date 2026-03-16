@@ -14,6 +14,19 @@ pub use rules::rules_routes;
 #[cfg(feature = "http-transport")]
 pub use skills::skills_routes;
 
+/// Replace the user's home directory prefix with `~` to avoid leaking absolute paths.
+#[cfg(feature = "http-transport")]
+pub(crate) fn strip_home_prefix(path: &std::path::Path) -> String {
+    let display = path.display().to_string();
+    dirs::home_dir()
+        .and_then(|home| {
+            display
+                .strip_prefix(&home.display().to_string())
+                .map(|rest| format!("~{rest}"))
+        })
+        .unwrap_or(display)
+}
+
 #[cfg(feature = "http-transport")]
 use axum::{
     response::{Html, IntoResponse},

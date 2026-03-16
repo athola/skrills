@@ -27,6 +27,12 @@
                 renderSkills();
                 initialized = true;
             }
+
+            // Clear selected skill if it no longer exists in the refreshed list
+            if (selectedSkill && !skills.find(s => s.name === selectedSkill.name)) {
+                selectedSkill = null;
+                renderMetrics();
+            }
         } catch (e) {
             console.error('Failed to fetch skills:', e);
         }
