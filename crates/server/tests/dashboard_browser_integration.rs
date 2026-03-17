@@ -94,6 +94,7 @@ async fn launch_browser() -> (Browser, tokio::task::JoinHandle<()>) {
 
 #[tokio::test]
 #[serial]
+#[ignore = "requires Chrome installed"]
 async fn browser_loads_dashboard_page() {
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());
@@ -126,6 +127,7 @@ async fn browser_loads_dashboard_page() {
 
 #[tokio::test]
 #[serial]
+#[ignore = "requires Chrome installed"]
 async fn browser_renders_three_panels() {
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());
@@ -168,6 +170,7 @@ async fn browser_renders_three_panels() {
 
 #[tokio::test]
 #[serial]
+#[ignore = "requires Chrome installed"]
 async fn browser_fetches_and_renders_skills() {
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());
@@ -228,6 +231,7 @@ async fn browser_fetches_and_renders_skills() {
 
 #[tokio::test]
 #[serial]
+#[ignore = "requires Chrome installed"]
 async fn browser_updates_last_update_timestamp() {
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());
@@ -259,6 +263,7 @@ async fn browser_updates_last_update_timestamp() {
 
 #[tokio::test]
 #[serial]
+#[ignore = "requires Chrome installed"]
 async fn browser_click_skill_shows_details() {
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());
@@ -304,6 +309,7 @@ async fn browser_click_skill_shows_details() {
 
 #[tokio::test]
 #[serial]
+#[ignore = "requires Chrome installed"]
 async fn browser_css_loaded_and_applied() {
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());
@@ -345,6 +351,7 @@ async fn browser_css_loaded_and_applied() {
 
 #[tokio::test]
 #[serial]
+#[ignore = "requires Chrome installed"]
 async fn browser_panels_have_correct_layout() {
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());
@@ -383,6 +390,7 @@ async fn browser_panels_have_correct_layout() {
 
 #[tokio::test]
 #[serial]
+#[ignore = "requires Chrome installed"]
 async fn browser_empty_skills_shows_no_skills_found() {
     let tmp = tempfile::TempDir::new().unwrap();
     // Don't create any skills
@@ -421,6 +429,7 @@ async fn browser_empty_skills_shows_no_skills_found() {
 
 #[tokio::test]
 #[serial]
+#[ignore = "requires Chrome installed"]
 async fn browser_header_shows_stats() {
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());
@@ -455,6 +464,7 @@ async fn browser_header_shows_stats() {
 
 #[tokio::test]
 #[serial]
+#[ignore = "requires Chrome installed"]
 async fn browser_footer_exists() {
     let tmp = tempfile::TempDir::new().unwrap();
 
@@ -480,6 +490,7 @@ async fn browser_footer_exists() {
 
 #[tokio::test]
 #[serial]
+#[ignore = "requires Chrome installed"]
 async fn browser_metrics_panel_shows_select_prompt() {
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());
@@ -510,6 +521,7 @@ async fn browser_metrics_panel_shows_select_prompt() {
 
 #[tokio::test]
 #[serial]
+#[ignore = "requires Chrome installed"]
 async fn browser_skill_items_show_source() {
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());
@@ -541,6 +553,7 @@ async fn browser_skill_items_show_source() {
 
 #[tokio::test]
 #[serial]
+#[ignore = "requires Chrome installed"]
 async fn browser_sort_button_toggles_order() {
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());
@@ -623,6 +636,7 @@ async fn browser_sort_button_toggles_order() {
 
 #[tokio::test]
 #[serial]
+#[ignore = "requires Chrome installed"]
 async fn browser_has_scroll_sentinel() {
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());

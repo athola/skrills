@@ -326,8 +326,7 @@ impl App {
             self.bump_activity(idx, msg);
             return;
         }
-        self.activity
-            .insert(0, ActivityEntry::new_keyed(key, msg));
+        self.activity.insert(0, ActivityEntry::new_keyed(key, msg));
         if self.activity.len() > Self::MAX_ACTIVITY_ENTRIES {
             self.activity.pop();
         }
@@ -825,7 +824,7 @@ mod tests {
         // Same refresh message should still dedup within the scan window
         app.add_activity("Refreshed: 161 skills discovered".into());
         assert_eq!(app.activity.len(), 3); // not 4
-        // The deduped entry should be moved to the front
+                                           // The deduped entry should be moved to the front
         assert_eq!(app.activity[0].message, "Refreshed: 161 skills discovered");
         assert_eq!(app.activity[0].count, 2);
     }
