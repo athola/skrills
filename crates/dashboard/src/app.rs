@@ -95,8 +95,12 @@ pub struct ActivityEntry {
     pub message: String,
     /// Shortened timestamp (HH:MM:SS).
     pub timestamp: String,
-    /// Number of consecutive identical events (1 = first occurrence).
+    /// Number of identical events (1 = first occurrence).
     pub count: u32,
+    /// Optional dedup key. When present, used instead of `message` for matching.
+    /// This allows events with varying message text (e.g. different skill counts)
+    /// to still be consolidated into a single line.
+    pub key: Option<String>,
 }
 
 impl ActivityEntry {
@@ -108,7 +112,14 @@ impl ActivityEntry {
             message,
             timestamp,
             count: 1,
+            key: None,
         }
+    }
+
+    fn new_keyed(key: String, message: String) -> Self {
+        let mut entry = Self::new(message);
+        entry.key = Some(key);
+        entry
     }
 
     /// Format the entry for display, truncating to fit `max_width`.
@@ -292,22 +303,67 @@ impl App {
     /// Maximum activity entries to keep.
     const MAX_ACTIVITY_ENTRIES: usize = 100;
 
-    /// Add activity message, deduplicating consecutive identical events.
+    /// Add activity message, deduplicating identical events anywhere in the list.
+    ///
+    /// Matching uses the entry's `key` field when present, otherwise falls back
+    /// to exact `message` comparison.
     pub fn add_activity(&mut self, msg: String) {
-        if let Some(latest) = self.activity.first_mut() {
-            if latest.message == msg {
-                // Same event as most recent — update timestamp and bump count
-                let now = time::OffsetDateTime::now_local()
-                    .unwrap_or_else(|_| time::OffsetDateTime::now_utc());
-                latest.timestamp =
-                    format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
-                latest.count += 1;
-                return;
-            }
+        if let Some(idx) = self.find_matching_activity(None, &msg) {
+            self.bump_activity(idx, msg);
+            return;
         }
         self.activity.insert(0, ActivityEntry::new(msg));
         if self.activity.len() > Self::MAX_ACTIVITY_ENTRIES {
             self.activity.pop();
+        }
+    }
+
+    /// Add activity with a stable dedup key, allowing the display message to
+    /// vary (e.g. "Refreshed: 161 skills" vs "Refreshed: 162 skills") while
+    /// still consolidating into one line with an incrementing count.
+    pub fn add_activity_keyed(&mut self, key: String, msg: String) {
+        if let Some(idx) = self.find_matching_activity(Some(&key), &msg) {
+            self.bump_activity(idx, msg);
+            return;
+        }
+        self.activity
+            .insert(0, ActivityEntry::new_keyed(key, msg));
+        if self.activity.len() > Self::MAX_ACTIVITY_ENTRIES {
+            self.activity.pop();
+        }
+    }
+
+    /// Find an existing activity entry that matches `key` (if given) or `msg`.
+    fn find_matching_activity(&self, key: Option<&str>, msg: &str) -> Option<usize> {
+        for i in 0..self.activity.len() {
+            let entry = &self.activity[i];
+            let matches = match (&entry.key, key) {
+                // Both have keys — compare keys
+                (Some(existing_key), Some(k)) => existing_key == k,
+                // Neither has a key — compare messages
+                (None, None) => entry.message == msg,
+                // One has a key, the other doesn't — no match
+                _ => false,
+            };
+            if matches {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Bump an existing activity entry: update count, timestamp, message, and
+    /// move it to the front of the list.
+    fn bump_activity(&mut self, idx: usize, msg: String) {
+        let now =
+            time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+        self.activity[idx].timestamp =
+            format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
+        self.activity[idx].count += 1;
+        self.activity[idx].message = msg;
+        if idx > 0 {
+            let entry = self.activity.remove(idx);
+            self.activity.insert(0, entry);
         }
     }
 
@@ -654,7 +710,10 @@ impl Dashboard {
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|_| "now".to_string());
 
-        app.add_activity(format!("Refreshed: {} skills discovered", app.total_skills));
+        app.add_activity_keyed(
+            "refresh".into(),
+            format!("Refreshed: {} skills discovered", app.total_skills),
+        );
     }
 }
 
@@ -745,6 +804,94 @@ mod tests {
             app.add_activity(format!("msg {}", i));
         }
         assert_eq!(app.activity.len(), 100);
+    }
+
+    #[test]
+    fn test_activity_dedup_consecutive() {
+        let mut app = App::new();
+        app.add_activity("Refreshed: 161 skills discovered".into());
+        app.add_activity("Refreshed: 161 skills discovered".into());
+        app.add_activity("Refreshed: 161 skills discovered".into());
+        assert_eq!(app.activity.len(), 1);
+        assert_eq!(app.activity[0].count, 3);
+    }
+
+    #[test]
+    fn test_activity_dedup_interleaved() {
+        let mut app = App::new();
+        app.add_activity("Refreshed: 161 skills discovered".into());
+        app.add_activity("[INV] some-skill - OK".into());
+        app.add_activity("[RULE] some-rule - PASS".into());
+        // Same refresh message should still dedup within the scan window
+        app.add_activity("Refreshed: 161 skills discovered".into());
+        assert_eq!(app.activity.len(), 3); // not 4
+        // The deduped entry should be moved to the front
+        assert_eq!(app.activity[0].message, "Refreshed: 161 skills discovered");
+        assert_eq!(app.activity[0].count, 2);
+    }
+
+    #[test]
+    fn test_activity_dedup_across_many_events() {
+        let mut app = App::new();
+        app.add_activity("Refreshed: 161 skills discovered".into());
+        // Push many unique events between the two identical messages
+        for i in 0..20 {
+            app.add_activity(format!("unique-event-{}", i));
+        }
+        // Same message should still dedup regardless of distance
+        app.add_activity("Refreshed: 161 skills discovered".into());
+        let refresh_count: usize = app
+            .activity
+            .iter()
+            .filter(|e| e.message == "Refreshed: 161 skills discovered")
+            .count();
+        assert_eq!(refresh_count, 1);
+        // Should be moved to the front with count bumped
+        assert_eq!(app.activity[0].message, "Refreshed: 161 skills discovered");
+        assert_eq!(app.activity[0].count, 2);
+    }
+
+    #[test]
+    fn test_activity_keyed_dedup_varying_message() {
+        let mut app = App::new();
+        // Simulate refresh cycles where skill count changes
+        app.add_activity_keyed("refresh".into(), "Refreshed: 161 skills discovered".into());
+        app.add_activity("[INV] some-skill - OK".into());
+        app.add_activity_keyed("refresh".into(), "Refreshed: 162 skills discovered".into());
+        app.add_activity_keyed("refresh".into(), "Refreshed: 160 skills discovered".into());
+
+        // Should be 2 entries: one refresh (consolidated) + one invocation
+        assert_eq!(app.activity.len(), 2);
+        // Refresh entry should be at front with count 3 and the latest message
+        assert_eq!(app.activity[0].message, "Refreshed: 160 skills discovered");
+        assert_eq!(app.activity[0].count, 3);
+        assert!(app.activity[0].key.as_deref() == Some("refresh"));
+    }
+
+    #[test]
+    fn test_activity_keyed_does_not_match_unkeyted() {
+        let mut app = App::new();
+        // A keyed entry should NOT match an unkeyed entry with the same message
+        app.add_activity("refresh".into());
+        app.add_activity_keyed("refresh".into(), "Refreshed: 161 skills discovered".into());
+        assert_eq!(app.activity.len(), 2);
+    }
+
+    #[test]
+    fn test_activity_format_includes_timestamp_and_count() {
+        let mut app = App::new();
+        app.add_activity("test event".into());
+        app.add_activity("test event".into());
+        let formatted = app.activity[0].format(80);
+        // Should contain timestamp (HH:MM:SS pattern) and count suffix
+        assert!(formatted.contains("(x2)"), "missing count: {}", formatted);
+        // Timestamp is 8 chars (HH:MM:SS) at the start
+        assert!(
+            formatted.len() >= 8,
+            "too short for timestamp: {}",
+            formatted
+        );
+        assert_eq!(&formatted[2..3], ":", "no timestamp colon: {}", formatted);
     }
 
     #[test]

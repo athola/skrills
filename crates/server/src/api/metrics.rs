@@ -142,8 +142,10 @@ async fn get_analytics_summary(
 async fn get_top_skills(
     State(state): State<Arc<MetricsState>>,
 ) -> Result<Json<TopSkillsResponse>, StatusCode> {
-    let skills =
-        blocking_query(&state.collector, |c| c.get_top_skills(DEFAULT_TOP_SKILLS_LIMIT)).await?;
+    let skills = blocking_query(&state.collector, |c| {
+        c.get_top_skills(DEFAULT_TOP_SKILLS_LIMIT)
+    })
+    .await?;
     Ok(Json(TopSkillsResponse { skills }))
 }
 
@@ -210,9 +212,10 @@ const DEFAULT_SYNC_HISTORY_LIMIT: usize = 50;
 async fn get_sync_history(
     State(state): State<Arc<MetricsState>>,
 ) -> Result<Json<SyncHistoryResponse>, StatusCode> {
-    let events =
-        blocking_query(&state.collector, |c| c.get_sync_history(DEFAULT_SYNC_HISTORY_LIMIT))
-            .await?;
+    let events = blocking_query(&state.collector, |c| {
+        c.get_sync_history(DEFAULT_SYNC_HISTORY_LIMIT)
+    })
+    .await?;
     Ok(Json(SyncHistoryResponse { events }))
 }
 
@@ -262,8 +265,10 @@ async fn get_rule_analytics_summary(
 async fn get_top_rules(
     State(state): State<Arc<MetricsState>>,
 ) -> Result<Json<TopRulesResponse>, StatusCode> {
-    let rules =
-        blocking_query(&state.collector, |c| c.get_top_rules(DEFAULT_TOP_RULES_LIMIT)).await?;
+    let rules = blocking_query(&state.collector, |c| {
+        c.get_top_rules(DEFAULT_TOP_RULES_LIMIT)
+    })
+    .await?;
     Ok(Json(TopRulesResponse { rules }))
 }
 
@@ -273,8 +278,10 @@ async fn get_rule_effectiveness(
     axum::extract::Path(rule): axum::extract::Path<String>,
 ) -> Result<Json<RuleEffectivenessResponse>, StatusCode> {
     let rule_name = rule.clone();
-    let effectiveness =
-        blocking_query(&state.collector, move |c| c.get_rule_effectiveness(&rule_name)).await?;
+    let effectiveness = blocking_query(&state.collector, move |c| {
+        c.get_rule_effectiveness(&rule_name)
+    })
+    .await?;
     Ok(Json(RuleEffectivenessResponse { effectiveness }))
 }
 

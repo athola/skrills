@@ -66,7 +66,10 @@ pub(crate) fn parse_sync_operation(s: &str) -> SyncOperation {
         "push" => SyncOperation::Push,
         "pull" => SyncOperation::Pull,
         other => {
-            tracing::warn!(value = other, "Unknown sync operation in DB, defaulting to Pull");
+            tracing::warn!(
+                value = other,
+                "Unknown sync operation in DB, defaulting to Pull"
+            );
             SyncOperation::Pull
         }
     }
@@ -82,7 +85,10 @@ pub(crate) fn parse_sync_status(s: &str) -> SyncStatus {
         "in_progress" => SyncStatus::InProgress,
         "failed" => SyncStatus::Failed,
         other => {
-            tracing::warn!(value = other, "Unknown sync status in DB, defaulting to Failed");
+            tracing::warn!(
+                value = other,
+                "Unknown sync status in DB, defaulting to Failed"
+            );
             SyncStatus::Failed
         }
     }
@@ -131,7 +137,10 @@ pub(crate) fn parse_rule_outcome(s: &str) -> RuleOutcome {
         "skip" => RuleOutcome::Skip,
         "error" => RuleOutcome::Error,
         other => {
-            tracing::warn!(value = other, "Unknown rule outcome in DB, defaulting to Error");
+            tracing::warn!(
+                value = other,
+                "Unknown rule outcome in DB, defaulting to Error"
+            );
             RuleOutcome::Error
         }
     }

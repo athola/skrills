@@ -876,7 +876,10 @@ async fn get_rule_by_name_returns_json() {
     assert_eq!(rule.source, "user");
     assert_eq!(rule.category, "pre-commit");
     assert!(rule.enabled);
-    assert_eq!(rule.description, Some("Runs linter before commit".to_string()));
+    assert_eq!(
+        rule.description,
+        Some("Runs linter before commit".to_string())
+    );
 }
 
 #[tokio::test]

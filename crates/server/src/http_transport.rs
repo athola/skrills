@@ -107,8 +107,7 @@ async fn auth_middleware(
                 p_padded[..provided.len()].copy_from_slice(provided);
                 e_padded[..expected.len()].copy_from_slice(expected);
 
-                let length_ok =
-                    subtle::Choice::from((provided.len() == expected.len()) as u8);
+                let length_ok = subtle::Choice::from((provided.len() == expected.len()) as u8);
                 let content_ok = p_padded.ct_eq(&e_padded);
                 if (length_ok & content_ok).into() {
                     tracing::debug!(

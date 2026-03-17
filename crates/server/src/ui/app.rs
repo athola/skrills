@@ -32,6 +32,7 @@ pub fn Dashboard() -> impl IntoView {
             <h1>"Skrills Dashboard"</h1>
             <div class="stats">
                 <span>"Skills: "<strong id="skill-count">"0"</strong></span>
+                <span>"Invocations: "<strong id="invocation-count">"0"</strong></span>
                 <span>"Events: "<strong id="event-count">"0"</strong></span>
                 <span id="last-update">"-"</span>
             </div>

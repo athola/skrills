@@ -10,7 +10,7 @@ documentation = "https://athola.github.io/skrills/"
 readme = "README.md"
 keywords = ["mcp", "skills", "dashboard", "tui", "metrics"]
 categories = ["development-tools", "visualization"]
-publish = false
+publish = true
 
 [dependencies]
 skrills-metrics = { path = "../metrics" }
