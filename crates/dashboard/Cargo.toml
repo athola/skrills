@@ -13,8 +13,8 @@ categories = ["development-tools", "visualization"]
 publish = true
 
 [dependencies]
-skrills-metrics = { path = "../metrics" }
-skrills-discovery = { path = "../discovery" }
+skrills-metrics = { path = "../metrics", version = "0.6.1" }
+skrills-discovery = { path = "../discovery", version = "0.6.1" }
 
 # TUI
 ratatui = "0.30"
