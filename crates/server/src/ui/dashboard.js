@@ -9,6 +9,7 @@
 
     let initialized = false;
     let sortOrder = 'discovery'; // 'discovery' | 'alpha'
+    let skillInvocationCounts = {}; // skill_name -> total_invocations
 
     async function refresh() {
         try {
@@ -27,6 +28,12 @@
                 renderSkills();
                 initialized = true;
             }
+
+            // Clear selected skill if it no longer exists in the refreshed list
+            if (selectedSkill && !skills.find(s => s.name === selectedSkill.name)) {
+                selectedSkill = null;
+                renderMetrics();
+            }
         } catch (e) {
             console.error('Failed to fetch skills:', e);
         }
@@ -39,6 +46,27 @@
             renderEvents();
         } catch (e) {
             console.error('Failed to fetch events:', e);
+        }
+
+        try {
+            const res = await fetch('/api/metrics/analytics');
+            const data = await res.json();
+            document.getElementById('invocation-count').textContent = data.total_invocations || 0;
+        } catch (e) {
+            console.error('Failed to fetch analytics:', e);
+        }
+
+        try {
+            const res = await fetch('/api/metrics/analytics/top');
+            const data = await res.json();
+            skillInvocationCounts = {};
+            (data.skills || []).forEach(s => {
+                skillInvocationCounts[s.skill_name] = s.total_invocations;
+            });
+            // Re-render skill list to show updated counts
+            if (initialized) renderSkills();
+        } catch (e) {
+            console.error('Failed to fetch top skills:', e);
         }
 
         document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
@@ -72,15 +100,29 @@
         div.className = 'skill-item';
         div.dataset.name = skill.name;
 
+        const topRow = document.createElement('div');
+        topRow.className = 'skill-top-row';
+
         const nameSpan = document.createElement('span');
         nameSpan.className = 'skill-name';
         nameSpan.textContent = skill.name;
+
+        topRow.appendChild(nameSpan);
+
+        const count = skillInvocationCounts[skill.name];
+        if (count > 0) {
+            const badge = document.createElement('span');
+            badge.className = 'skill-invocations';
+            badge.textContent = count;
+            badge.title = count + ' invocation' + (count !== 1 ? 's' : '');
+            topRow.appendChild(badge);
+        }
 
         const sourceSpan = document.createElement('span');
         sourceSpan.className = 'skill-source';
         sourceSpan.textContent = skill.source;
 
-        div.appendChild(nameSpan);
+        div.appendChild(topRow);
         div.appendChild(sourceSpan);
 
         div.addEventListener('click', () => {
@@ -133,12 +175,37 @@
         if (event.type === 'Sync') {
             return (event.operation || '') + ' - ' + (event.status || '');
         }
-        return JSON.stringify(event).slice(0, 50);
+        if (event.type === 'RuleTrigger') {
+            return (event.rule_name || '') + ' - ' + (event.outcome || '');
+        }
+        // Fallback: strip unique fields (id, created_at) so dedup keys match
+        var copy = Object.assign({}, event);
+        delete copy.id;
+        delete copy.created_at;
+        delete copy.type;
+        return JSON.stringify(copy).slice(0, 80);
     }
 
-    function createEventItem(event) {
+    /** Extract a short HH:MM:SS timestamp from the event's created_at field. */
+    function formatTimestamp(event) {
+        const raw = event.created_at;
+        if (!raw) return '';
+        try {
+            const d = new Date(raw);
+            if (isNaN(d.getTime())) return raw.slice(11, 19) || raw;
+            return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        } catch (_) {
+            return raw;
+        }
+    }
+
+    function createEventItem(event, count) {
         const div = document.createElement('div');
         div.className = 'activity-item ' + (event.type || '');
+
+        const tsSpan = document.createElement('span');
+        tsSpan.className = 'event-timestamp';
+        tsSpan.textContent = formatTimestamp(event);
 
         const typeSpan = document.createElement('span');
         typeSpan.className = 'event-type';
@@ -148,10 +215,40 @@
         detailSpan.className = 'event-detail';
         detailSpan.textContent = eventDetail(event);
 
+        div.appendChild(tsSpan);
         div.appendChild(typeSpan);
         div.appendChild(detailSpan);
 
+        if (count > 1) {
+            const countBadge = document.createElement('span');
+            countBadge.className = 'event-count';
+            countBadge.textContent = '\u00d7' + count;
+            countBadge.title = count + ' identical events';
+            div.appendChild(countBadge);
+        }
+
         return div;
+    }
+
+    /** Collapse ALL events with identical type+detail into groups.
+     *  Groups are ordered by the most recent event (latest timestamp wins). */
+    function deduplicateEvents(rawEvents) {
+        const map = new Map();   // key -> { event, count }
+        const order = [];        // insertion order of keys
+        for (const event of rawEvents) {
+            const key = (event.type || '') + ':' + eventDetail(event);
+            if (map.has(key)) {
+                const group = map.get(key);
+                group.count += 1;
+                // Keep the most recent event (last seen = latest timestamp)
+                group.event = event;
+            } else {
+                const group = { event, key, count: 1 };
+                map.set(key, group);
+                order.push(key);
+            }
+        }
+        return order.map(k => map.get(k));
     }
 
     function renderEvents() {
@@ -166,9 +263,20 @@
             return;
         }
 
-        events.slice(0, 50).forEach(event => {
-            list.appendChild(createEventItem(event));
+        const groups = deduplicateEvents(events);
+        groups.slice(0, 50).forEach(({ event, count }) => {
+            list.appendChild(createEventItem(event, count));
         });
+    }
+
+    function addDlEntry(dl, label, value, className) {
+        const dt = document.createElement('dt');
+        dt.textContent = label;
+        const dd = document.createElement('dd');
+        dd.textContent = value;
+        if (className) dd.className = className;
+        dl.appendChild(dt);
+        dl.appendChild(dd);
     }
 
     function renderMetrics() {
@@ -188,30 +296,34 @@
         content.appendChild(h3);
 
         const dl = document.createElement('dl');
-
-        const dtPath = document.createElement('dt');
-        dtPath.textContent = 'Path';
-        const ddPath = document.createElement('dd');
-        ddPath.textContent = selectedSkill.path;
-
-        const dtSource = document.createElement('dt');
-        dtSource.textContent = 'Source';
-        const ddSource = document.createElement('dd');
-        ddSource.textContent = selectedSkill.source;
-
-        const dtDesc = document.createElement('dt');
-        dtDesc.textContent = 'Description';
-        const ddDesc = document.createElement('dd');
-        ddDesc.textContent = selectedSkill.description || 'N/A';
-
-        dl.appendChild(dtPath);
-        dl.appendChild(ddPath);
-        dl.appendChild(dtSource);
-        dl.appendChild(ddSource);
-        dl.appendChild(dtDesc);
-        dl.appendChild(ddDesc);
-
+        addDlEntry(dl, 'Path', selectedSkill.path);
+        addDlEntry(dl, 'Source', selectedSkill.source);
+        addDlEntry(dl, 'Description', selectedSkill.description || 'N/A');
         content.appendChild(dl);
+
+        // Fetch and display invocation stats
+        fetch('/api/metrics/skills/' + encodeURIComponent(selectedSkill.name))
+            .then(res => res.json())
+            .then(data => {
+                // Guard: user may have clicked a different skill
+                if (!selectedSkill || selectedSkill.name !== data.skill) return;
+
+                const statsDl = document.createElement('dl');
+                statsDl.className = 'metrics-stats';
+                addDlEntry(statsDl, 'Invocations', data.total_invocations);
+                addDlEntry(statsDl, 'Successful', data.successful_invocations, 'stat-success');
+                addDlEntry(statsDl, 'Failed', data.failed_invocations, 'stat-error');
+                if (data.total_invocations > 0) {
+                    const rate = ((data.successful_invocations / data.total_invocations) * 100).toFixed(1);
+                    addDlEntry(statsDl, 'Success Rate', rate + '%');
+                    addDlEntry(statsDl, 'Avg Duration', data.avg_duration_ms.toFixed(1) + ' ms');
+                }
+                if (data.total_tokens > 0) {
+                    addDlEntry(statsDl, 'Total Tokens', data.total_tokens.toLocaleString());
+                }
+                content.appendChild(statsDl);
+            })
+            .catch(e => console.error('Failed to fetch skill stats:', e));
     }
 
     // Sentinel-based infinite scroll using IntersectionObserver.

@@ -1,6 +1,6 @@
 [package]
 name = "skrills-dashboard"
-version = "0.6.0"
+version = "0.6.1"
 edition.workspace = true
 description = "Terminal UI dashboard for skrills metrics and monitoring"
 license = "MIT"
@@ -10,19 +10,18 @@ documentation = "https://athola.github.io/skrills/"
 readme = "README.md"
 keywords = ["mcp", "skills", "dashboard", "tui", "metrics"]
 categories = ["development-tools", "visualization"]
-publish = false
+publish = true
 
 [dependencies]
-skrills-metrics = { path = "../metrics" }
-skrills-discovery = { path = "../discovery" }
-skrills-validate = { path = "../validate" }
+skrills-metrics = { path = "../metrics", version = "0.6.1" }
+skrills-discovery = { path = "../discovery", version = "0.6.1" }
 
 # TUI
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
 
 # Async
-tokio = { workspace = true, features = ["sync", "time"] }
+tokio = { workspace = true, features = ["sync", "time", "signal"] }
 futures = "0.3"
 
 # Error handling

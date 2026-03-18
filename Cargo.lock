@@ -3131,9 +3131,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.13"
+version = "0.11.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1906b49b0c3bc04b5fe5d86a77925ae6524a19b816ae38ce1e426255f1d8a31"
+checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
 dependencies = [
  "aws-lc-rs",
  "bytes",
@@ -4188,7 +4188,7 @@ checksum = "b2aa850e253778c88a04c3d7323b043aeda9d3e30d5971937c1855769763678e"
 
 [[package]]
 name = "skrills"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "scopeguard",
@@ -4198,7 +4198,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-analyze"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "parking_lot",
  "regex",
@@ -4215,7 +4215,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-dashboard"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -4225,7 +4225,6 @@ dependencies = [
  "ratatui",
  "skrills-discovery",
  "skrills-metrics",
- "skrills-validate",
  "tempfile",
  "thiserror 2.0.18",
  "time",
@@ -4235,7 +4234,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-discovery"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "blake2",
@@ -4252,7 +4251,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-intelligence"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4274,10 +4273,11 @@ dependencies = [
 
 [[package]]
 name = "skrills-metrics"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "dirs",
+ "parking_lot",
  "rusqlite",
  "serde",
  "serde_json",
@@ -4289,7 +4289,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-server"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
@@ -4345,7 +4345,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-state"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "dirs",
@@ -4356,7 +4356,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-subagents"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4382,7 +4382,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-validate"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "regex",
@@ -4396,7 +4396,7 @@ dependencies = [
 
 [[package]]
 name = "skrills_sync"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "dirs",
@@ -4413,7 +4413,7 @@ dependencies = [
 
 [[package]]
 name = "skrills_test_utils"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "tempfile",
 ]

@@ -537,14 +537,15 @@ mod skip_existing_commands_tests {
         let ctx = SyncTestContext::new().unwrap();
 
         let source_commands = vec![
-            SyncTestContext::create_sample_command("Command", "Mixed case"),
-            SyncTestContext::create_sample_command("command", "Lowercase"),
-            SyncTestContext::create_sample_command("COMMAND", "Uppercase"),
+            SyncTestContext::create_sample_command("cmd-mixed", "Mixed case"),
+            SyncTestContext::create_sample_command("cmd-lower", "Lowercase"),
+            SyncTestContext::create_sample_command("cmd-upper", "Uppercase"),
         ];
 
+        // Target has one command that matches a source command exactly
         let target_commands = vec![SyncTestContext::create_sample_command(
-            "command",
-            "Existing lowercase",
+            "cmd-lower",
+            "Existing command",
         )];
 
         let source_adapter = ctx.create_claude_adapter_with_commands(source_commands);
@@ -568,10 +569,10 @@ mod skip_existing_commands_tests {
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
         let report = orchestrator.sync(&params).unwrap();
 
-        // Only exact case match should be skipped
+        // Exact name match should be skipped, other two written
         assert_eq!(
             report.commands.written, 2,
-            "Should write 2 commands (different case)"
+            "Should write 2 commands (non-matching names)"
         );
         assert_eq!(
             report.commands.skipped.len(),

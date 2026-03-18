@@ -193,11 +193,28 @@ main {
     box-shadow: 0 1px 4px rgba(0,0,0,0.2);
 }
 
+.skill-top-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
 .skill-name {
     display: block;
     font-weight: 500;
     font-size: 0.875rem;
     color: var(--text-primary);
+}
+
+.skill-invocations {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--bg-surface);
+    padding: 0.125rem 0.5rem;
+    border-radius: 9999px;
+    min-width: 1.5rem;
+    text-align: center;
 }
 
 .skill-source {
@@ -224,6 +241,16 @@ main {
 .activity-item.SkillInvocation .event-type { color: var(--teal); }
 .activity-item.Validation .event-type { color: var(--warning); }
 .activity-item.Sync .event-type { color: var(--success); }
+.activity-item.RuleTrigger .event-type { color: var(--accent); }
+
+.event-timestamp {
+    font-size: 0.6875rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    min-width: 60px;
+}
 
 .event-type {
     font-weight: 600;
@@ -235,6 +262,18 @@ main {
 
 .event-detail {
     color: var(--text-muted);
+    flex: 1;
+}
+
+.event-count {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--bg-surface);
+    padding: 0.125rem 0.5rem;
+    border-radius: 9999px;
+    white-space: nowrap;
+    margin-left: auto;
 }
 
 /* ── Metrics panel ───────────────────────────── */
@@ -260,6 +299,16 @@ main {
     font-weight: 600;
     color: var(--accent);
 }
+
+/* ── Metrics stats ──────────────────────────── */
+.metrics-stats {
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border);
+}
+
+.metrics-stats .stat-success { color: var(--success); }
+.metrics-stats .stat-error { color: var(--error); }
 
 /* ── Empty states ────────────────────────────── */
 .empty {

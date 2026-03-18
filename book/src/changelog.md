@@ -1,5 +1,10 @@
 # Changelog Highlights
 
+## 0.6.1 (2026-03-05)
+
+- **Fix**: Tests now use distinct filenames instead of case-only differences to avoid collisions on case-insensitive filesystems (macOS APFS/HFS+).
+- **Internal**: Bumped all workspace crate versions to 0.6.1 and updated MCP tool count to 25.
+
 ## 0.6.0 (2026-02-15)
 
 - **Discovery**: Frontmatter-based skill deduplication across roots using `name` field and Jaccard similarity on descriptions. Skills with matching frontmatter identity are consolidated regardless of path differences.

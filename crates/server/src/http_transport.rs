@@ -12,6 +12,7 @@
 use crate::api::{
     dashboard_routes,
     metrics::{metrics_routes, MetricsState},
+    rules::{rules_routes, RulesState},
     skills::{skills_routes, ApiState},
 };
 use crate::app::SkillService;
@@ -94,18 +95,20 @@ async fn auth_middleware(
             if let Some(token) = auth_str.strip_prefix("Bearer ") {
                 // Constant-time comparison to prevent timing attacks.
                 // Both tokens are converted to bytes and compared in constant time.
+                // Note: ct_eq requires equal-length slices, so we pad the shorter
+                // one with zeros and always compare. The length mismatch is folded
+                // into the final result without leaking via a timing side-channel.
                 let provided = token.as_bytes();
                 let expected = expected_token.as_bytes();
 
-                // Both length and content checks must be constant-time.
-                // Using bitwise AND avoids short-circuit evaluation that would
-                // leak token length via timing.
+                let max_len = provided.len().max(expected.len());
+                let mut p_padded = vec![0u8; max_len];
+                let mut e_padded = vec![0u8; max_len];
+                p_padded[..provided.len()].copy_from_slice(provided);
+                e_padded[..expected.len()].copy_from_slice(expected);
+
                 let length_ok = subtle::Choice::from((provided.len() == expected.len()) as u8);
-                let content_ok = if provided.len() == expected.len() {
-                    provided.ct_eq(expected)
-                } else {
-                    subtle::Choice::from(0)
-                };
+                let content_ok = p_padded.ct_eq(&e_padded);
                 if (length_ok & content_ok).into() {
                     tracing::debug!(
                         target: "skrills::http::auth",
@@ -302,10 +305,18 @@ where
     let api_state = Arc::new(ApiState::new(skill_dirs));
     let metrics_collector = Arc::new(
         skrills_metrics::MetricsCollector::new()
-            .expect("in-memory SQLite creation should not fail"),
+            .context("failed to create in-memory SQLite metrics collector")?,
     );
     let metrics_state = Arc::new(MetricsState {
         collector: metrics_collector,
+    });
+
+    // Discover rules for rules API
+    let home = dirs::home_dir().unwrap_or_default();
+    let project_dir = std::env::current_dir().ok();
+    let rules = skrills_discovery::discover_rules(&home, project_dir.as_deref());
+    let rules_state = Arc::new(RulesState {
+        rules: Arc::new(rules),
     });
 
     // Serve static files (CSS) embedded at compile time
@@ -328,6 +339,7 @@ where
             .merge(dashboard_routes())
             .merge(skills_routes(api_state))
             .merge(metrics_routes(metrics_state))
+            .merge(rules_routes(rules_state))
             .merge(static_router)
             .fallback_service(http_service)
             .layer(cors_layer)
@@ -342,6 +354,7 @@ where
             .merge(dashboard_routes())
             .merge(skills_routes(api_state))
             .merge(metrics_routes(metrics_state))
+            .merge(rules_routes(rules_state))
             .merge(static_router)
             .fallback_service(http_service)
             .layer(cors_layer)

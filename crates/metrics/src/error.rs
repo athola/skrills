@@ -25,10 +25,6 @@ pub enum MetricsError {
     #[error("channel send error")]
     ChannelSend,
 
-    /// Mutex poisoned.
-    #[error("Mutex poisoned")]
-    MutexPoisoned,
-
     /// Invalid argument.
     #[error("invalid argument: {0}")]
     InvalidArgument(String),

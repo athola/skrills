@@ -13,7 +13,7 @@ use crossterm::{
 };
 use ratatui::prelude::*;
 use ratatui::widgets::ListState;
-use skrills_metrics::{MetricEvent, MetricsCollector, SkillStats};
+use skrills_metrics::{MetricEvent, MetricsCollector, ValidationDetail};
 
 use crate::events::{Event, EventHandler};
 use crate::ui;
@@ -84,8 +84,6 @@ pub struct SkillInfo {
     pub locations: Vec<SkillLocation>,
     /// Validation status (None = not validated, Some(true) = valid, Some(false) = invalid).
     pub valid: Option<bool>,
-    /// Last invocation time.
-    pub last_used: Option<String>,
     /// Total invocations.
     pub invocations: u64,
 }
@@ -97,8 +95,12 @@ pub struct ActivityEntry {
     pub message: String,
     /// Shortened timestamp (HH:MM:SS).
     pub timestamp: String,
-    /// Number of consecutive identical events (1 = first occurrence).
+    /// Number of identical events (1 = first occurrence).
     pub count: u32,
+    /// Optional dedup key. When present, used instead of `message` for matching.
+    /// This allows events with varying message text (e.g. different skill counts)
+    /// to still be consolidated into a single line.
+    pub key: Option<String>,
 }
 
 impl ActivityEntry {
@@ -110,7 +112,14 @@ impl ActivityEntry {
             message,
             timestamp,
             count: 1,
+            key: None,
         }
+    }
+
+    fn new_keyed(key: String, message: String) -> Self {
+        let mut entry = Self::new(message);
+        entry.key = Some(key);
+        entry
     }
 
     /// Format the entry for display, truncating to fit `max_width`.
@@ -159,8 +168,6 @@ pub struct App {
     pub visible_count: usize,
     /// Recent activity events with dedup and timestamps.
     pub activity: Vec<ActivityEntry>,
-    /// Skill stats for selected skill.
-    pub selected_stats: Option<SkillStats>,
     /// Total skills count.
     pub total_skills: usize,
     /// Valid skills count.
@@ -173,6 +180,12 @@ pub struct App {
     pub show_help: bool,
     /// Current sort order for skills panel.
     pub sort_order: SortOrder,
+    /// Total invocations across all skills (from analytics summary).
+    pub total_invocations: u64,
+    /// Overall success rate percentage (from analytics summary).
+    pub overall_success_rate: f64,
+    /// Latest validation detail for the currently selected skill.
+    pub selected_validation: Option<ValidationDetail>,
 }
 
 impl Default for App {
@@ -185,13 +198,16 @@ impl Default for App {
             skills: Vec::new(),
             visible_count: PAGE_SIZE,
             activity: Vec::new(),
-            selected_stats: None,
+
             total_skills: 0,
             valid_skills: 0,
             invalid_skills: 0,
             last_refresh: String::new(),
             show_help: false,
             sort_order: SortOrder::default(),
+            total_invocations: 0,
+            overall_success_rate: 0.0,
+            selected_validation: None,
         }
     }
 }
@@ -287,22 +303,66 @@ impl App {
     /// Maximum activity entries to keep.
     const MAX_ACTIVITY_ENTRIES: usize = 100;
 
-    /// Add activity message, deduplicating consecutive identical events.
+    /// Add activity message, deduplicating identical events anywhere in the list.
+    ///
+    /// Matching uses the entry's `key` field when present, otherwise falls back
+    /// to exact `message` comparison.
     pub fn add_activity(&mut self, msg: String) {
-        if let Some(latest) = self.activity.first_mut() {
-            if latest.message == msg {
-                // Same event as most recent — update timestamp and bump count
-                let now = time::OffsetDateTime::now_local()
-                    .unwrap_or_else(|_| time::OffsetDateTime::now_utc());
-                latest.timestamp =
-                    format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
-                latest.count += 1;
-                return;
-            }
+        if let Some(idx) = self.find_matching_activity(None, &msg) {
+            self.bump_activity(idx, msg);
+            return;
         }
         self.activity.insert(0, ActivityEntry::new(msg));
         if self.activity.len() > Self::MAX_ACTIVITY_ENTRIES {
             self.activity.pop();
+        }
+    }
+
+    /// Add activity with a stable dedup key, allowing the display message to
+    /// vary (e.g. "Refreshed: 161 skills" vs "Refreshed: 162 skills") while
+    /// still consolidating into one line with an incrementing count.
+    pub fn add_activity_keyed(&mut self, key: String, msg: String) {
+        if let Some(idx) = self.find_matching_activity(Some(&key), &msg) {
+            self.bump_activity(idx, msg);
+            return;
+        }
+        self.activity.insert(0, ActivityEntry::new_keyed(key, msg));
+        if self.activity.len() > Self::MAX_ACTIVITY_ENTRIES {
+            self.activity.pop();
+        }
+    }
+
+    /// Find an existing activity entry that matches `key` (if given) or `msg`.
+    fn find_matching_activity(&self, key: Option<&str>, msg: &str) -> Option<usize> {
+        for i in 0..self.activity.len() {
+            let entry = &self.activity[i];
+            let matches = match (&entry.key, key) {
+                // Both have keys — compare keys
+                (Some(existing_key), Some(k)) => existing_key == k,
+                // Neither has a key — compare messages
+                (None, None) => entry.message == msg,
+                // One has a key, the other doesn't — no match
+                _ => false,
+            };
+            if matches {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Bump an existing activity entry: update count, timestamp, message, and
+    /// move it to the front of the list.
+    fn bump_activity(&mut self, idx: usize, msg: String) {
+        let now =
+            time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+        self.activity[idx].timestamp =
+            format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
+        self.activity[idx].count += 1;
+        self.activity[idx].message = msg;
+        if idx > 0 {
+            let entry = self.activity.remove(idx);
+            self.activity.insert(0, entry);
         }
     }
 
@@ -330,9 +390,33 @@ impl App {
                 format!("[VAL] {} - {}", skill_name, status)
             }
             MetricEvent::Sync {
-                operation, status, ..
+                ref operation,
+                files_count,
+                ref status,
+                ..
             } => {
-                format!("[SYNC] {} - {}", operation, status)
+                let status_tag = match status {
+                    skrills_metrics::SyncStatus::Success => "OK",
+                    skrills_metrics::SyncStatus::Failed => "FAIL",
+                    skrills_metrics::SyncStatus::InProgress => "...",
+                };
+                format!(
+                    "[SYNC] {} {} files - {}",
+                    operation, files_count, status_tag
+                )
+            }
+            MetricEvent::RuleTrigger {
+                rule_name,
+                ref outcome,
+                ..
+            } => {
+                let tag = match outcome {
+                    skrills_metrics::RuleOutcome::Pass => "OK",
+                    skrills_metrics::RuleOutcome::Fail => "FAIL",
+                    skrills_metrics::RuleOutcome::Skip => "SKIP",
+                    skrills_metrics::RuleOutcome::Error => "ERR",
+                };
+                format!("[RULE] {} - {}", rule_name, tag)
             }
         };
         self.add_activity(msg);
@@ -343,6 +427,8 @@ impl App {
 pub struct Dashboard {
     skill_dirs: Vec<PathBuf>,
     collector: Arc<MetricsCollector>,
+    /// Refresh interval in ticks (each tick is 250ms).
+    refresh_ticks: u32,
 }
 
 impl Dashboard {
@@ -352,6 +438,7 @@ impl Dashboard {
         Ok(Self {
             skill_dirs,
             collector,
+            refresh_ticks: Self::REFRESH_INTERVAL_TICKS,
         })
     }
 
@@ -360,7 +447,15 @@ impl Dashboard {
         Self {
             skill_dirs,
             collector,
+            refresh_ticks: Self::REFRESH_INTERVAL_TICKS,
         }
+    }
+
+    /// Set the refresh interval in seconds.
+    pub fn with_refresh_secs(mut self, secs: u32) -> Self {
+        // Each tick is 250ms, so multiply seconds by 4
+        self.refresh_ticks = secs.max(1) * 4;
+        self
     }
 
     /// Restore terminal to normal state.
@@ -421,6 +516,10 @@ impl Dashboard {
         // Event handler
         let mut events = EventHandler::new(Duration::from_millis(250));
 
+        // Ctrl+C signal handler for graceful shutdown
+        let sigint = tokio::signal::ctrl_c();
+        tokio::pin!(sigint);
+
         let mut tick_count: u32 = 0;
 
         // Main loop
@@ -440,7 +539,7 @@ impl Dashboard {
                         }
                         Some(Event::Tick) => {
                             tick_count += 1;
-                            if tick_count >= Self::REFRESH_INTERVAL_TICKS {
+                            if tick_count >= self.refresh_ticks {
                                 tick_count = 0;
                                 self.refresh_skills(&mut app);
                             }
@@ -453,6 +552,10 @@ impl Dashboard {
                 }
                 Ok(metric) = rx.recv() => {
                     app.on_metric_event(metric);
+                }
+                _ = &mut sigint => {
+                    // Graceful shutdown on Ctrl+C
+                    break;
                 }
             }
         }
@@ -546,7 +649,7 @@ impl Dashboard {
 
             // Get stats if available
             let stats = self.collector.get_skill_stats(&base_name).ok();
-            let invocations = stats.as_ref().map(|s| s.total_invocations).unwrap_or(0);
+            let invocations = stats.as_ref().map(|s| s.total_invocations()).unwrap_or(0);
 
             app.skills.push(SkillInfo {
                 discovery_index: idx,
@@ -555,7 +658,7 @@ impl Dashboard {
                 uri,
                 locations,
                 valid: None,
-                last_used: None,
+
                 invocations,
             });
         }
@@ -579,6 +682,26 @@ impl Dashboard {
             app.skill_list_state.select(Some(app.skill_index));
         }
 
+        // Update analytics summary
+        if let Ok(summary) = self.collector.get_analytics_summary() {
+            app.total_invocations = summary.total_invocations;
+            app.overall_success_rate = summary.success_rate;
+        }
+
+        // Update validation summary counts
+        if let Ok(val_summary) = self.collector.get_validation_summary() {
+            app.valid_skills = val_summary.valid as usize;
+            app.invalid_skills = (val_summary.error + val_summary.warning) as usize;
+        }
+
+        // Load validation detail for the currently selected skill
+        app.selected_validation = None;
+        if let Some(skill) = app.skills.get(app.skill_index) {
+            if let Ok(history) = self.collector.get_validation_history(&skill.name, 1) {
+                app.selected_validation = history.into_iter().next();
+            }
+        }
+
         // Update timestamp
         let now =
             time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
@@ -586,7 +709,10 @@ impl Dashboard {
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|_| "now".to_string());
 
-        app.add_activity(format!("Refreshed: {} skills discovered", app.total_skills));
+        app.add_activity_keyed(
+            "refresh".into(),
+            format!("Refreshed: {} skills discovered", app.total_skills),
+        );
     }
 }
 
@@ -631,7 +757,7 @@ mod tests {
                     path: "/a".into(),
                 }],
                 valid: None,
-                last_used: None,
+
                 invocations: 0,
             },
             SkillInfo {
@@ -644,7 +770,7 @@ mod tests {
                     path: "/b".into(),
                 }],
                 valid: None,
-                last_used: None,
+
                 invocations: 0,
             },
         ];
@@ -677,6 +803,94 @@ mod tests {
             app.add_activity(format!("msg {}", i));
         }
         assert_eq!(app.activity.len(), 100);
+    }
+
+    #[test]
+    fn test_activity_dedup_consecutive() {
+        let mut app = App::new();
+        app.add_activity("Refreshed: 161 skills discovered".into());
+        app.add_activity("Refreshed: 161 skills discovered".into());
+        app.add_activity("Refreshed: 161 skills discovered".into());
+        assert_eq!(app.activity.len(), 1);
+        assert_eq!(app.activity[0].count, 3);
+    }
+
+    #[test]
+    fn test_activity_dedup_interleaved() {
+        let mut app = App::new();
+        app.add_activity("Refreshed: 161 skills discovered".into());
+        app.add_activity("[INV] some-skill - OK".into());
+        app.add_activity("[RULE] some-rule - PASS".into());
+        // Same refresh message should still dedup within the scan window
+        app.add_activity("Refreshed: 161 skills discovered".into());
+        assert_eq!(app.activity.len(), 3); // not 4
+                                           // The deduped entry should be moved to the front
+        assert_eq!(app.activity[0].message, "Refreshed: 161 skills discovered");
+        assert_eq!(app.activity[0].count, 2);
+    }
+
+    #[test]
+    fn test_activity_dedup_across_many_events() {
+        let mut app = App::new();
+        app.add_activity("Refreshed: 161 skills discovered".into());
+        // Push many unique events between the two identical messages
+        for i in 0..20 {
+            app.add_activity(format!("unique-event-{}", i));
+        }
+        // Same message should still dedup regardless of distance
+        app.add_activity("Refreshed: 161 skills discovered".into());
+        let refresh_count: usize = app
+            .activity
+            .iter()
+            .filter(|e| e.message == "Refreshed: 161 skills discovered")
+            .count();
+        assert_eq!(refresh_count, 1);
+        // Should be moved to the front with count bumped
+        assert_eq!(app.activity[0].message, "Refreshed: 161 skills discovered");
+        assert_eq!(app.activity[0].count, 2);
+    }
+
+    #[test]
+    fn test_activity_keyed_dedup_varying_message() {
+        let mut app = App::new();
+        // Simulate refresh cycles where skill count changes
+        app.add_activity_keyed("refresh".into(), "Refreshed: 161 skills discovered".into());
+        app.add_activity("[INV] some-skill - OK".into());
+        app.add_activity_keyed("refresh".into(), "Refreshed: 162 skills discovered".into());
+        app.add_activity_keyed("refresh".into(), "Refreshed: 160 skills discovered".into());
+
+        // Should be 2 entries: one refresh (consolidated) + one invocation
+        assert_eq!(app.activity.len(), 2);
+        // Refresh entry should be at front with count 3 and the latest message
+        assert_eq!(app.activity[0].message, "Refreshed: 160 skills discovered");
+        assert_eq!(app.activity[0].count, 3);
+        assert!(app.activity[0].key.as_deref() == Some("refresh"));
+    }
+
+    #[test]
+    fn test_activity_keyed_does_not_match_unkeyted() {
+        let mut app = App::new();
+        // A keyed entry should NOT match an unkeyed entry with the same message
+        app.add_activity("refresh".into());
+        app.add_activity_keyed("refresh".into(), "Refreshed: 161 skills discovered".into());
+        assert_eq!(app.activity.len(), 2);
+    }
+
+    #[test]
+    fn test_activity_format_includes_timestamp_and_count() {
+        let mut app = App::new();
+        app.add_activity("test event".into());
+        app.add_activity("test event".into());
+        let formatted = app.activity[0].format(80);
+        // Should contain timestamp (HH:MM:SS pattern) and count suffix
+        assert!(formatted.contains("(x2)"), "missing count: {}", formatted);
+        // Timestamp is 8 chars (HH:MM:SS) at the start
+        assert!(
+            formatted.len() >= 8,
+            "too short for timestamp: {}",
+            formatted
+        );
+        assert_eq!(&formatted[2..3], ":", "no timestamp colon: {}", formatted);
     }
 
     #[test]
@@ -727,7 +941,7 @@ mod tests {
                     path: "/c".into(),
                 }],
                 valid: None,
-                last_used: None,
+
                 invocations: 0,
             },
             SkillInfo {
@@ -740,7 +954,7 @@ mod tests {
                     path: "/a".into(),
                 }],
                 valid: None,
-                last_used: None,
+
                 invocations: 0,
             },
             SkillInfo {
@@ -753,7 +967,7 @@ mod tests {
                     path: "/b".into(),
                 }],
                 valid: None,
-                last_used: None,
+
                 invocations: 0,
             },
         ];
@@ -792,7 +1006,7 @@ mod tests {
                     path: format!("/skill-{}", i),
                 }],
                 valid: None,
-                last_used: None,
+
                 invocations: 0,
             })
             .collect()

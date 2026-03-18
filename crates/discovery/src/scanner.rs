@@ -1,4 +1,6 @@
-use crate::types::{parse_source_key, DuplicateInfo, SkillMeta, SkillRoot, SkillSource};
+use crate::types::{
+    parse_source_key, DuplicateInfo, RuleCategory, RuleMeta, SkillMeta, SkillRoot, SkillSource,
+};
 use crate::Result;
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest};
@@ -615,6 +617,103 @@ pub fn hash_file(path: &Path) -> Result<String> {
 /// ```
 pub fn priority_with_override(override_order: Option<Vec<SkillSource>>) -> Vec<SkillSource> {
     override_order.unwrap_or_else(default_priority)
+}
+
+/// Discover hookify rules from known locations.
+///
+/// Scans for rule configuration files in:
+/// - `~/.claude/hooks/` (user-level rules)
+/// - `<project>/.claude/hooks/` (project-level rules)
+/// - `<project>/.hookify/` (hookify-specific rules)
+pub fn discover_rules(home: &Path, project_dir: Option<&Path>) -> Vec<RuleMeta> {
+    let mut rules = Vec::new();
+
+    // Check ~/.claude/hooks/ for user-level rules
+    let user_hooks = home.join(".claude").join("hooks");
+    if user_hooks.is_dir() {
+        scan_hooks_dir(&user_hooks, "user", &mut rules);
+    }
+
+    // Check project-level hooks
+    if let Some(proj) = project_dir {
+        let proj_hooks = proj.join(".claude").join("hooks");
+        if proj_hooks.is_dir() {
+            scan_hooks_dir(&proj_hooks, "project", &mut rules);
+        }
+        let hookify_dir = proj.join(".hookify");
+        if hookify_dir.is_dir() {
+            scan_hooks_dir(&hookify_dir, "hookify", &mut rules);
+        }
+    }
+
+    rules
+}
+
+/// Scan a directory for hook/rule configuration files.
+fn scan_hooks_dir(dir: &Path, source: &str, rules: &mut Vec<RuleMeta>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path
+            .extension()
+            .is_some_and(|e| e == "json" || e == "yaml" || e == "yml" || e == "toml")
+        {
+            // Try to parse as a hook/rule definition
+            if let Ok(contents) = fs::read_to_string(&path) {
+                if let Some(rule) = parse_rule_file(&path, &contents, source) {
+                    rules.push(rule);
+                }
+            }
+        }
+    }
+}
+
+/// Attempt to parse a rule configuration file into `RuleMeta`.
+fn parse_rule_file(path: &Path, contents: &str, source: &str) -> Option<RuleMeta> {
+    let name = path.file_stem()?.to_str()?.to_string();
+    let category = infer_category_from_name(&name);
+
+    // Try to extract description from file content
+    let description = contents
+        .lines()
+        .find(|l| l.contains("description") || l.contains("# "))
+        .map(|l| l.trim().trim_start_matches('#').trim().to_string());
+
+    // Try to extract command
+    let command = contents
+        .lines()
+        .find(|l| l.contains("command") || l.contains("run"))
+        .map(|l| l.trim().to_string());
+
+    Some(RuleMeta {
+        name,
+        path: path.to_path_buf(),
+        source: source.to_string(),
+        category,
+        enabled: true, // Default to enabled
+        description,
+        command,
+    })
+}
+
+/// Infer a `RuleCategory` from a rule file name.
+fn infer_category_from_name(name: &str) -> RuleCategory {
+    let lower = name.to_lowercase();
+    if lower.contains("pre-commit") || lower.contains("precommit") {
+        RuleCategory::PreCommit
+    } else if lower.contains("post-commit") || lower.contains("postcommit") {
+        RuleCategory::PostCommit
+    } else if lower.contains("pre-push") || lower.contains("prepush") {
+        RuleCategory::PrePush
+    } else if lower.contains("prompt") || lower.contains("submit") {
+        RuleCategory::PromptSubmit
+    } else if lower.contains("notif") {
+        RuleCategory::Notification
+    } else {
+        RuleCategory::Other(name.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -1539,5 +1638,169 @@ Content
         let skills = discover_skills(&roots, None).unwrap();
 
         assert_eq!(skills.len(), 2, "Without fm name, only path dedup applies");
+    }
+
+    // ============================================================
+    // Rule discovery tests
+    // ============================================================
+
+    #[test]
+    fn discover_rules_from_user_hooks_dir() {
+        let tmp = tempdir().unwrap();
+        let hooks_dir = tmp.path().join(".claude").join("hooks");
+        fs::create_dir_all(&hooks_dir).unwrap();
+        fs::write(
+            hooks_dir.join("pre-commit-lint.json"),
+            r#"{"description": "Run linter", "command": "cargo clippy"}"#,
+        )
+        .unwrap();
+
+        let rules = discover_rules(tmp.path(), None);
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "pre-commit-lint");
+        assert_eq!(rules[0].source, "user");
+        assert_eq!(rules[0].category, RuleCategory::PreCommit);
+        assert!(rules[0].enabled);
+    }
+
+    #[test]
+    fn discover_rules_from_project_hooks_dir() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let project = tmp.path().join("project");
+        fs::create_dir_all(&home).unwrap();
+
+        let proj_hooks = project.join(".claude").join("hooks");
+        fs::create_dir_all(&proj_hooks).unwrap();
+        fs::write(
+            proj_hooks.join("post-commit-notify.yaml"),
+            "description: Notify on commit\ncommand: notify-send",
+        )
+        .unwrap();
+
+        let rules = discover_rules(&home, Some(&project));
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "post-commit-notify");
+        assert_eq!(rules[0].source, "project");
+        assert_eq!(rules[0].category, RuleCategory::PostCommit);
+    }
+
+    #[test]
+    fn discover_rules_from_hookify_dir() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let project = tmp.path().join("project");
+        fs::create_dir_all(&home).unwrap();
+
+        let hookify_dir = project.join(".hookify");
+        fs::create_dir_all(&hookify_dir).unwrap();
+        fs::write(
+            hookify_dir.join("notification-slack.toml"),
+            "description = \"Slack notification\"\ncommand = \"curl ...\"",
+        )
+        .unwrap();
+
+        let rules = discover_rules(&home, Some(&project));
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "notification-slack");
+        assert_eq!(rules[0].source, "hookify");
+        assert_eq!(rules[0].category, RuleCategory::Notification);
+    }
+
+    #[test]
+    fn discover_rules_combines_all_sources() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let project = tmp.path().join("project");
+
+        // User hooks
+        let user_hooks = home.join(".claude").join("hooks");
+        fs::create_dir_all(&user_hooks).unwrap();
+        fs::write(user_hooks.join("pre-push-check.json"), "{}").unwrap();
+
+        // Project hooks
+        let proj_hooks = project.join(".claude").join("hooks");
+        fs::create_dir_all(&proj_hooks).unwrap();
+        fs::write(proj_hooks.join("precommit-format.json"), "{}").unwrap();
+
+        // Hookify rules
+        let hookify_dir = project.join(".hookify");
+        fs::create_dir_all(&hookify_dir).unwrap();
+        fs::write(hookify_dir.join("prompt-validate.yml"), "{}").unwrap();
+
+        let rules = discover_rules(&home, Some(&project));
+        assert_eq!(rules.len(), 3);
+
+        let sources: Vec<&str> = rules.iter().map(|r| r.source.as_str()).collect();
+        assert!(sources.contains(&"user"));
+        assert!(sources.contains(&"project"));
+        assert!(sources.contains(&"hookify"));
+    }
+
+    #[test]
+    fn discover_rules_skips_non_config_files() {
+        let tmp = tempdir().unwrap();
+        let hooks_dir = tmp.path().join(".claude").join("hooks");
+        fs::create_dir_all(&hooks_dir).unwrap();
+        fs::write(hooks_dir.join("readme.txt"), "not a rule").unwrap();
+        fs::write(hooks_dir.join("script.sh"), "#!/bin/bash").unwrap();
+        fs::write(hooks_dir.join("valid.json"), "{}").unwrap();
+
+        let rules = discover_rules(tmp.path(), None);
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "valid");
+    }
+
+    #[test]
+    fn discover_rules_empty_when_no_dirs_exist() {
+        let tmp = tempdir().unwrap();
+        let rules = discover_rules(tmp.path(), None);
+        assert!(rules.is_empty());
+    }
+
+    #[test]
+    fn infer_category_known_patterns() {
+        assert_eq!(
+            infer_category_from_name("pre-commit-lint"),
+            RuleCategory::PreCommit
+        );
+        assert_eq!(
+            infer_category_from_name("precommit-format"),
+            RuleCategory::PreCommit
+        );
+        assert_eq!(
+            infer_category_from_name("post-commit-notify"),
+            RuleCategory::PostCommit
+        );
+        assert_eq!(
+            infer_category_from_name("postcommit-hook"),
+            RuleCategory::PostCommit
+        );
+        assert_eq!(
+            infer_category_from_name("pre-push-check"),
+            RuleCategory::PrePush
+        );
+        assert_eq!(
+            infer_category_from_name("prepush-validate"),
+            RuleCategory::PrePush
+        );
+        assert_eq!(
+            infer_category_from_name("prompt-validate"),
+            RuleCategory::PromptSubmit
+        );
+        assert_eq!(
+            infer_category_from_name("on-submit-check"),
+            RuleCategory::PromptSubmit
+        );
+        assert_eq!(
+            infer_category_from_name("notification-slack"),
+            RuleCategory::Notification
+        );
+    }
+
+    #[test]
+    fn infer_category_unknown_falls_back_to_other() {
+        let cat = infer_category_from_name("custom-hook");
+        assert_eq!(cat, RuleCategory::Other("custom-hook".to_string()));
     }
 }

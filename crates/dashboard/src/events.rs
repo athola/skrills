@@ -17,16 +17,20 @@ pub enum Event {
     Tick,
 }
 
-/// Async event handler.
+/// Capacity for the event channel.
+/// 256 entries is enough for burst input without unbounded growth.
+const EVENT_CHANNEL_CAPACITY: usize = 256;
+
+/// Async event handler with bounded backpressure.
 pub struct EventHandler {
-    rx: mpsc::UnboundedReceiver<Event>,
-    _tx: mpsc::UnboundedSender<Event>,
+    rx: mpsc::Receiver<Event>,
+    _tx: mpsc::Sender<Event>,
 }
 
 impl EventHandler {
     /// Create new event handler with tick rate.
     pub fn new(tick_rate: Duration) -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         let tx_clone = tx.clone();
 
         // Spawn async event polling task using EventStream (non-blocking)
@@ -39,12 +43,12 @@ impl EventHandler {
                     maybe_event = reader.next() => {
                         match maybe_event {
                             Some(Ok(CrosstermEvent::Key(key))) => {
-                                if tx_clone.send(Event::Key(key)).is_err() {
+                                if tx_clone.send(Event::Key(key)).await.is_err() {
                                     break;
                                 }
                             }
                             Some(Ok(CrosstermEvent::Resize(w, h))) => {
-                                if tx_clone.send(Event::Resize(w, h)).is_err() {
+                                if tx_clone.send(Event::Resize(w, h)).await.is_err() {
                                     break;
                                 }
                             }
@@ -57,7 +61,7 @@ impl EventHandler {
                         }
                     }
                     _ = interval.tick() => {
-                        if tx_clone.send(Event::Tick).is_err() {
+                        if tx_clone.send(Event::Tick).await.is_err() {
                             break;
                         }
                     }

@@ -22,8 +22,9 @@ use axum::{
     routing::get,
     Json, Router,
 };
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use skrills_discovery::{discover_skills, skill_roots_or_default, SkillMeta, SkillRoot};
@@ -116,6 +117,11 @@ fn default_limit() -> usize {
     50
 }
 
+/// Maximum number of items a client can request per page.
+///
+/// Requests with `limit` above this value are silently clamped to `MAX_LIMIT`.
+/// This prevents clients from fetching the entire skill set in one request,
+/// which could be expensive for large installations with thousands of skills.
 const MAX_LIMIT: usize = 200;
 
 /// Paginated response wrapper.
@@ -150,17 +156,9 @@ pub struct SkillResponse {
 
 impl From<SkillMeta> for SkillResponse {
     fn from(meta: SkillMeta) -> Self {
-        // Replace home directory with ~ to avoid leaking absolute paths
-        let path = meta.path.display().to_string();
-        let path = dirs::home_dir()
-            .and_then(|home| {
-                path.strip_prefix(&home.display().to_string())
-                    .map(|rest| format!("~{rest}"))
-            })
-            .unwrap_or(path);
         Self {
             name: meta.name,
-            path,
+            path: super::strip_home_prefix(&meta.path),
             source: meta.source.to_string(),
             description: meta.description,
             hash: Some(meta.hash),
@@ -202,16 +200,12 @@ async fn list_skills(
     let roots = skill_roots_or_default(&state.skill_dirs);
 
     let skills = {
-        let read_guard = state.cache.read().unwrap_or_else(|e| e.into_inner());
+        let read_guard = state.cache.read();
         if let Some(cached) = read_guard.get_cached() {
             cached
         } else {
             drop(read_guard);
-            state
-                .cache
-                .write()
-                .unwrap_or_else(|e| e.into_inner())
-                .get_or_refresh(&roots)
+            state.cache.write().get_or_refresh(&roots)
         }
     };
 
@@ -250,16 +244,12 @@ async fn get_skill(
     let roots = skill_roots_or_default(&state.skill_dirs);
 
     let skills = {
-        let read_guard = state.cache.read().unwrap_or_else(|e| e.into_inner());
+        let read_guard = state.cache.read();
         if let Some(cached) = read_guard.get_cached() {
             cached
         } else {
             drop(read_guard);
-            state
-                .cache
-                .write()
-                .unwrap_or_else(|e| e.into_inner())
-                .get_or_refresh(&roots)
+            state.cache.write().get_or_refresh(&roots)
         }
     };
 
@@ -364,23 +354,23 @@ mod tests {
     #[test]
     fn api_state_creates_with_default_ttl() {
         let state = ApiState::new(vec![]);
-        let cache = state.cache.read().unwrap();
+        let cache = state.cache.read();
         assert_eq!(cache.ttl, Duration::from_secs(30));
     }
 
     #[test]
-    fn rwlock_recovers_from_poison() {
+    fn rwlock_survives_panic_in_writer() {
         let state = ApiState::new(vec![]);
-        // Simulate a poisoned lock by panicking in a thread holding write
+        // parking_lot::RwLock does not poison — the lock is released on panic
         let cache = state.cache.clone();
         let _ = std::thread::spawn(move || {
-            let _guard = cache.write().unwrap();
-            panic!("intentional poison");
+            let _guard = cache.write();
+            panic!("intentional panic");
         })
         .join();
 
-        // Should recover via into_inner
-        let guard = state.cache.read().unwrap_or_else(|e| e.into_inner());
-        assert!(guard.get_cached().is_none()); // fresh cache, not corrupted
+        // Lock should still be usable (no poison)
+        let guard = state.cache.read();
+        assert!(guard.get_cached().is_none());
     }
 }

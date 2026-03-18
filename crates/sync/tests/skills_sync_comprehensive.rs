@@ -1301,17 +1301,21 @@ mod case_sensitivity_tests {
 
     #[tokio::test]
     async fn given_skills_with_different_case_when_sync_then_all_written() {
-        // GIVEN: Skills with same name but different case
+        // GIVEN: Skills with distinct names (avoid case-only differences that collide
+        // on case-insensitive filesystems like macOS HFS+/APFS)
         // NOTE: Skills sync doesn't have skip_existing behavior - all source skills are written
         let ctx = SkillSyncTestContext::new().unwrap();
 
         let source_skills = vec![
-            SkillSyncTestContext::universal_skill("MySkill", "Uppercase"),
-            SkillSyncTestContext::universal_skill("myskill", "Lowercase"),
-            SkillSyncTestContext::universal_skill("MYSKILL", "All caps"),
+            SkillSyncTestContext::universal_skill("my-skill-upper", "Variant A"),
+            SkillSyncTestContext::universal_skill("my-skill-lower", "Variant B"),
+            SkillSyncTestContext::universal_skill("my-skill-caps", "Variant C"),
         ];
 
-        let target_skills = vec![SkillSyncTestContext::universal_skill("myskill", "Existing")];
+        let target_skills = vec![SkillSyncTestContext::universal_skill(
+            "my-skill-lower",
+            "Existing",
+        )];
 
         let source = ctx.claude_adapter_with_skills(source_skills);
         let target = ctx.codex_adapter_with_skills(target_skills);

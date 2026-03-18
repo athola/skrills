@@ -32,6 +32,7 @@ pub fn Dashboard() -> impl IntoView {
             <h1>"Skrills Dashboard"</h1>
             <div class="stats">
                 <span>"Skills: "<strong id="skill-count">"0"</strong></span>
+                <span>"Invocations: "<strong id="invocation-count">"0"</strong></span>
                 <span>"Events: "<strong id="event-count">"0"</strong></span>
                 <span id="last-update">"-"</span>
             </div>
@@ -95,6 +96,6 @@ pub fn MetricsPanel() -> impl IntoView {
 pub fn render_dashboard() -> String {
     use leptos::tachys::view::RenderHtml;
     let view = App();
-    let html = view.to_html();
-    format!("<!DOCTYPE html>{}", html)
+    // App component already renders <!DOCTYPE html>, so no prefix needed.
+    view.to_html()
 }
