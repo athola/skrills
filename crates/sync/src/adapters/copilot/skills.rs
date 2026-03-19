@@ -1,80 +1,18 @@
 //! Skills reading and writing for Copilot adapter.
 
 use super::paths::skills_dir;
-use super::utils::sanitize_name;
-use crate::adapters::utils::{hash_content, is_hidden_path};
-use crate::common::{Command, ModuleFile};
+use crate::adapters::utils::{
+    collect_module_files, hash_content, is_hidden_path, sanitize_name_segments,
+};
+use crate::common::{Command, ContentFormat};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use anyhow::Context;
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
-use tracing::{debug, warn};
+use tracing::warn;
 use walkdir::WalkDir;
-
-/// Collects companion files from a skill directory (files other than SKILL.md).
-pub fn collect_module_files(skill_dir: &Path) -> Vec<ModuleFile> {
-    let mut modules = Vec::new();
-
-    for entry in WalkDir::new(skill_dir)
-        .min_depth(1)
-        .max_depth(10)
-        .follow_links(false)
-    {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(e) => {
-                debug!(
-                    error = %e,
-                    path = ?e.path(),
-                    "Skipping directory entry due to traversal error"
-                );
-                continue;
-            }
-        };
-
-        let path = entry.path();
-
-        if !path.is_file() {
-            continue;
-        }
-
-        // Skip the main skill file - we want companion/module files only.
-        // Note: We treat any .md file in the skill directory (other than SKILL.md)
-        // as a module file. If a .md file should be a standalone skill, it should
-        // be placed in its own directory with a SKILL.md file instead.
-        if path.file_name().is_some_and(|n| n == "SKILL.md") {
-            continue;
-        }
-
-        if let Ok(rel_path) = path.strip_prefix(skill_dir) {
-            if is_hidden_path(rel_path) {
-                continue;
-            }
-
-            let content = match fs::read(path) {
-                Ok(c) => c,
-                Err(e) => {
-                    warn!(
-                        path = %path.display(),
-                        error = %e,
-                        "Skipping unreadable module file"
-                    );
-                    continue;
-                }
-            };
-            let hash = hash_content(&content);
-            modules.push(ModuleFile {
-                relative_path: rel_path.to_path_buf(),
-                content,
-                hash,
-            });
-        }
-    }
-
-    modules
-}
 
 /// Reads skills from the skills directory.
 pub fn read_skills(root: &Path) -> Result<Vec<Command>> {
@@ -144,6 +82,7 @@ pub fn read_skills(root: &Path) -> Result<Vec<Command>> {
             modified,
             hash,
             modules,
+            content_format: ContentFormat::default(),
         });
     }
     Ok(skills)
@@ -174,7 +113,7 @@ pub fn write_skills(root: &Path, skills: &[Command]) -> Result<WriteReport> {
             skill.name.clone()
         };
 
-        let safe_rel_dir = sanitize_name(&skill_rel_dir);
+        let safe_rel_dir = sanitize_name_segments(&skill_rel_dir);
         let path = dir.join(&safe_rel_dir).join("SKILL.md");
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).with_context(|| {
@@ -200,6 +139,13 @@ pub fn write_skills(root: &Path, skills: &[Command]) -> Result<WriteReport> {
         let skill_dir = dir.join(&safe_rel_dir);
         for module in &skill.modules {
             let module_path = skill_dir.join(&module.relative_path);
+            if !crate::adapters::utils::is_path_contained(&module_path, &skill_dir) {
+                tracing::debug!(
+                    path = %module.relative_path.display(),
+                    "Skipping module with path outside skill directory"
+                );
+                continue;
+            }
             if let Some(parent) = module_path.parent() {
                 fs::create_dir_all(parent).with_context(|| {
                     format!("Failed to create module directory: {}", parent.display())

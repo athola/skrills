@@ -22,7 +22,7 @@ pass() {
     PASSED=$((PASSED + 1))
 }
 
-fail() {
+test_fail() {
     echo -e "${RED}FAIL${NC}: $1"
     FAILED=$((FAILED + 1))
 }
@@ -34,7 +34,7 @@ assert_eq() {
     if [[ "$actual" == "$expected" ]]; then
         pass "$msg"
     else
-        fail "$msg (expected '$expected', got '$actual')"
+        test_fail "$msg (expected '$expected', got '$actual')"
     fi
 }
 
@@ -45,7 +45,7 @@ assert_contains() {
     if [[ "$haystack" == *"$needle"* ]]; then
         pass "$msg"
     else
-        fail "$msg (expected to contain '$needle')"
+        test_fail "$msg (expected to contain '$needle')"
     fi
 }
 
@@ -53,7 +53,7 @@ assert_contains() {
 # We extract them to avoid running the main script
 extract_functions() {
     # Extract everything between first function and "# --- main"
-    sed -n '/^fail()/,/^# --- main/p' "$INSTALL_SCRIPT" | head -n -1
+    sed -n '/^fail()/,/^# --- main/p' "$INSTALL_SCRIPT" | sed '$d'
 }
 
 # Create a temp file with the functions
@@ -72,7 +72,7 @@ OS_RESULT=$(OS)
 case "$(uname -s)" in
     Linux) assert_eq "$OS_RESULT" "linux" "OS detection on Linux" ;;
     Darwin) assert_eq "$OS_RESULT" "macos" "OS detection on macOS" ;;
-    *) fail "Unknown OS: $(uname -s)" ;;
+    *) test_fail "Unknown OS: $(uname -s)" ;;
 esac
 
 # Test 2: ARCH detection
@@ -82,7 +82,7 @@ ARCH_RESULT=$(ARCH)
 case "$(uname -m)" in
     x86_64|amd64) assert_eq "$ARCH_RESULT" "x86_64" "ARCH detection for x86_64" ;;
     aarch64|arm64) assert_eq "$ARCH_RESULT" "aarch64" "ARCH detection for aarch64" ;;
-    *) fail "Unknown arch: $(uname -m)" ;;
+    *) test_fail "Unknown arch: $(uname -m)" ;;
 esac
 
 # Test 3: TARGET detection

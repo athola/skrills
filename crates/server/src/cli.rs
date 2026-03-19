@@ -776,34 +776,7 @@ mod tests {
     use super::*;
     use clap::Parser;
 
-    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        crate::test_support::env_guard()
-    }
-
-    struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(v) = &self.previous {
-                std::env::set_var(self.key, v);
-            } else {
-                std::env::remove_var(self.key);
-            }
-        }
-    }
-
-    fn set_env_var(key: &'static str, value: Option<&str>) -> EnvVarGuard {
-        let previous = std::env::var(key).ok();
-        if let Some(v) = value {
-            std::env::set_var(key, v);
-        } else {
-            std::env::remove_var(key);
-        }
-        EnvVarGuard { key, previous }
-    }
+    use crate::test_support::{env_guard, set_env_var};
 
     #[test]
     fn parse_defaults_to_serve_when_no_subcommand() {
@@ -1270,6 +1243,422 @@ mod tests {
                 assert_eq!(format, OutputFormat::Json);
             }
             _ => panic!("expected SearchSkillsGithub command"),
+        }
+    }
+
+    #[test]
+    fn unknown_flag_is_rejected() {
+        let result = Cli::try_parse_from(["skrills", "--nonexistent"]);
+        assert!(result.is_err(), "unknown global flag should be rejected");
+    }
+
+    #[test]
+    fn unknown_subcommand_is_rejected() {
+        let result = Cli::try_parse_from(["skrills", "frobnicate"]);
+        assert!(result.is_err(), "unknown subcommand should be rejected");
+    }
+
+    #[test]
+    fn parse_mirror_arguments() {
+        let _guard = env_guard();
+        let _env = set_env_var("SKRILLS_INCLUDE_MARKETPLACE", None);
+
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "mirror",
+            "--dry-run",
+            "--skip-existing-commands",
+            "--include-marketplace",
+        ])
+        .expect("mirror args should parse");
+
+        match cli.command {
+            Some(Commands::Mirror {
+                dry_run,
+                skip_existing_commands,
+                include_marketplace,
+            }) => {
+                assert!(dry_run);
+                assert!(skip_existing_commands);
+                assert!(include_marketplace);
+            }
+            _ => panic!("expected Mirror command"),
+        }
+    }
+
+    #[test]
+    fn parse_agent_requires_name() {
+        let result = Cli::try_parse_from(["skrills", "agent"]);
+        assert!(
+            result.is_err(),
+            "agent subcommand requires a positional name argument"
+        );
+    }
+
+    #[test]
+    fn parse_agent_with_arguments() {
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "agent",
+            "my-agent",
+            "--skill-dir",
+            "/tmp/agent-skills",
+            "--dry-run",
+        ])
+        .expect("agent args should parse");
+
+        match cli.command {
+            Some(Commands::Agent {
+                agent,
+                skill_dirs,
+                dry_run,
+            }) => {
+                assert_eq!(agent, "my-agent");
+                assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/agent-skills")]);
+                assert!(dry_run);
+            }
+            _ => panic!("expected Agent command"),
+        }
+    }
+
+    #[test]
+    fn parse_sync_all_arguments() {
+        let _guard = env_guard();
+        let _env = set_env_var("SKRILLS_INCLUDE_MARKETPLACE", None);
+
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "sync-all",
+            "--from",
+            "codex",
+            "--to",
+            "copilot",
+            "--dry-run",
+            "--skip-existing-commands",
+            "--validate",
+            "--autofix",
+        ])
+        .expect("sync-all args should parse");
+
+        match cli.command {
+            Some(Commands::SyncAll {
+                from,
+                to,
+                dry_run,
+                skip_existing_commands,
+                include_marketplace,
+                validate,
+                autofix,
+            }) => {
+                assert!(matches!(from, SyncSource::Codex));
+                assert_eq!(to, Some(SyncSource::Copilot));
+                assert!(dry_run);
+                assert!(skip_existing_commands);
+                assert!(!include_marketplace);
+                assert!(validate);
+                assert!(autofix);
+            }
+            _ => panic!("expected SyncAll command"),
+        }
+    }
+
+    #[test]
+    fn parse_sync_commands_defaults() {
+        let cli = Cli::try_parse_from(["skrills", "sync-commands"])
+            .expect("sync-commands with defaults should parse");
+
+        match cli.command {
+            Some(Commands::SyncCommands {
+                from, to, dry_run, ..
+            }) => {
+                assert!(matches!(from, SyncSource::Claude));
+                assert!(to.is_none());
+                assert!(!dry_run);
+            }
+            _ => panic!("expected SyncCommands command"),
+        }
+    }
+
+    #[test]
+    fn parse_doctor_subcommand() {
+        let cli = Cli::try_parse_from(["skrills", "doctor"]).expect("doctor should parse");
+
+        assert!(
+            matches!(cli.command, Some(Commands::Doctor)),
+            "expected Doctor command"
+        );
+    }
+
+    #[test]
+    fn parse_validate_all_flags() {
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "validate",
+            "--skill-dir",
+            "/tmp/s",
+            "--target",
+            "codex",
+            "--autofix",
+            "--backup",
+            "--format",
+            "json",
+            "--errors-only",
+        ])
+        .expect("validate with all flags should parse");
+
+        match cli.command {
+            Some(Commands::Validate {
+                skill_dirs,
+                target,
+                autofix,
+                backup,
+                format,
+                errors_only,
+            }) => {
+                assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/s")]);
+                assert!(matches!(target, ValidationTarget::Codex));
+                assert!(autofix);
+                assert!(backup);
+                assert_eq!(format, OutputFormat::Json);
+                assert!(errors_only);
+            }
+            _ => panic!("expected Validate command"),
+        }
+    }
+
+    #[test]
+    fn parse_search_skills_with_short_flags() {
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "search-skills",
+            "rust testing",
+            "-t",
+            "0.5",
+            "-l",
+            "3",
+            "--format",
+            "json",
+        ])
+        .expect("search-skills with short flags should parse");
+
+        match cli.command {
+            Some(Commands::SearchSkills {
+                query,
+                threshold,
+                limit,
+                format,
+                ..
+            }) => {
+                assert_eq!(query, "rust testing");
+                assert!((threshold - 0.5).abs() < f64::EPSILON);
+                assert_eq!(limit, 3);
+                assert_eq!(format, OutputFormat::Json);
+            }
+            _ => panic!("expected SearchSkills command"),
+        }
+    }
+
+    #[test]
+    fn parse_recommend_requires_uri() {
+        let result = Cli::try_parse_from(["skrills", "recommend"]);
+        assert!(
+            result.is_err(),
+            "recommend subcommand requires a positional URI"
+        );
+    }
+
+    #[test]
+    fn tls_cert_requires_tls_key() {
+        let _guard = env_guard();
+        let _cert_env = set_env_var("SKRILLS_TLS_CERT", None);
+        let _key_env = set_env_var("SKRILLS_TLS_KEY", None);
+
+        let result = Cli::try_parse_from(["skrills", "serve", "--tls-cert", "/path/cert.pem"]);
+        assert!(
+            result.is_err(),
+            "providing --tls-cert without --tls-key should fail"
+        );
+    }
+
+    #[test]
+    fn tls_key_requires_tls_cert() {
+        let _guard = env_guard();
+        let _cert_env = set_env_var("SKRILLS_TLS_CERT", None);
+        let _key_env = set_env_var("SKRILLS_TLS_KEY", None);
+
+        let result = Cli::try_parse_from(["skrills", "serve", "--tls-key", "/path/key.pem"]);
+        assert!(
+            result.is_err(),
+            "providing --tls-key without --tls-cert should fail"
+        );
+    }
+
+    #[test]
+    fn parse_cert_status_subcommand() {
+        let cli = Cli::try_parse_from(["skrills", "cert", "status", "--format", "json"])
+            .expect("cert status should parse");
+
+        match cli.command {
+            Some(Commands::Cert(CertAction::Status { format })) => {
+                assert_eq!(format, OutputFormat::Json);
+            }
+            _ => panic!("expected Cert Status command"),
+        }
+    }
+
+    #[test]
+    fn parse_cert_renew_force() {
+        let cli = Cli::try_parse_from(["skrills", "cert", "renew", "--force"])
+            .expect("cert renew --force should parse");
+
+        match cli.command {
+            Some(Commands::Cert(CertAction::Renew { force })) => {
+                assert!(force);
+            }
+            _ => panic!("expected Cert Renew command"),
+        }
+    }
+
+    #[test]
+    fn parse_setup_arguments() {
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "setup",
+            "--client",
+            "claude",
+            "--bin-dir",
+            "/usr/local/bin",
+            "--reinstall",
+            "--yes",
+            "--universal",
+        ])
+        .expect("setup args should parse");
+
+        match cli.command {
+            Some(Commands::Setup {
+                client,
+                bin_dir,
+                reinstall,
+                uninstall,
+                add,
+                yes,
+                universal,
+                mirror_source,
+            }) => {
+                assert_eq!(client.as_deref(), Some("claude"));
+                assert_eq!(bin_dir, Some(PathBuf::from("/usr/local/bin")));
+                assert!(reinstall);
+                assert!(!uninstall);
+                assert!(!add);
+                assert!(yes);
+                assert!(universal);
+                assert!(mirror_source.is_none());
+            }
+            _ => panic!("expected Setup command"),
+        }
+    }
+
+    #[test]
+    fn parse_skill_import_arguments() {
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "skill-import",
+            "https://github.com/example/skill.git",
+            "--target",
+            "codex",
+            "--force",
+            "--dry-run",
+            "--format",
+            "json",
+        ])
+        .expect("skill-import args should parse");
+
+        match cli.command {
+            Some(Commands::SkillImport {
+                source,
+                target,
+                force,
+                dry_run,
+                format,
+            }) => {
+                assert_eq!(source, "https://github.com/example/skill.git");
+                assert!(matches!(target, SyncSource::Codex));
+                assert!(force);
+                assert!(dry_run);
+                assert_eq!(format, OutputFormat::Json);
+            }
+            _ => panic!("expected SkillImport command"),
+        }
+    }
+
+    #[test]
+    fn parse_skill_diff_arguments() {
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "skill-diff",
+            "commit",
+            "--format",
+            "json",
+            "-C",
+            "5",
+        ])
+        .expect("skill-diff args should parse");
+
+        match cli.command {
+            Some(Commands::SkillDiff {
+                name,
+                format,
+                context,
+            }) => {
+                assert_eq!(name, "commit");
+                assert_eq!(format, OutputFormat::Json);
+                assert_eq!(context, 5);
+            }
+            _ => panic!("expected SkillDiff command"),
+        }
+    }
+
+    #[test]
+    fn parse_export_analytics_defaults() {
+        let cli = Cli::try_parse_from(["skrills", "export-analytics"])
+            .expect("export-analytics with defaults should parse");
+
+        match cli.command {
+            Some(Commands::ExportAnalytics {
+                output,
+                force_rebuild,
+                format,
+            }) => {
+                assert!(output.is_none());
+                assert!(!force_rebuild);
+                assert_eq!(format, OutputFormat::Text);
+            }
+            _ => panic!("expected ExportAnalytics command"),
+        }
+    }
+
+    #[test]
+    fn import_analytics_requires_input_path() {
+        let result = Cli::try_parse_from(["skrills", "import-analytics"]);
+        assert!(
+            result.is_err(),
+            "import-analytics requires a positional input path"
+        );
+    }
+
+    #[test]
+    fn parse_serve_list_tools_flag() {
+        let _guard = env_guard();
+        let _env = set_env_var("SKRILLS_AUTH_TOKEN", None);
+
+        let cli = Cli::try_parse_from(["skrills", "serve", "--list-tools"])
+            .expect("serve --list-tools should parse");
+
+        match cli.command {
+            Some(Commands::Serve { list_tools, .. }) => {
+                assert!(list_tools);
+            }
+            _ => panic!("expected Serve command"),
         }
     }
 }

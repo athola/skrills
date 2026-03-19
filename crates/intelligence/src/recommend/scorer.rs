@@ -160,11 +160,9 @@ impl Scorer for RecommendationScorer {
                 }
                 RecommendationSignal::CoUsed { count } => {
                     // Logarithmic scaling for co-occurrence
-                    // Use log2(count + 1) to ensure: count=1 → 1.0, count=3 → 2.0, count=7 → 3.0
-                    // This avoids the edge case where count=0 and count=1 produce identical scores
+                    // log2(count + 1): count=1 → 1.0, count=3 → 2.0, count=7 → 3.0
                     if *count > 0 {
-                        breakdown.usage_score +=
-                            COUSED_WEIGHT * ((*count + 1) as f64).log2().max(1.0);
+                        breakdown.usage_score += COUSED_WEIGHT * ((*count + 1) as f64).log2();
                     }
                 }
                 RecommendationSignal::ProjectMatch { matched } => {
@@ -187,9 +185,13 @@ impl Scorer for RecommendationScorer {
             }
         }
 
-        // Add base quality score if available
-        if let Some(&quality) = self.quality_scores.get(uri) {
-            if breakdown.quality_score == 0.0 {
+        // Add base quality score if no HighQuality signal was present.
+        // Check signals (not breakdown value) to avoid overriding an explicit score of 0.0.
+        let has_quality_signal = signals
+            .iter()
+            .any(|s| matches!(s, RecommendationSignal::HighQuality { .. }));
+        if !has_quality_signal {
+            if let Some(&quality) = self.quality_scores.get(uri) {
                 breakdown.quality_score = quality * QUALITY_WEIGHT;
             }
         }

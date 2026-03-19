@@ -28,7 +28,7 @@
 //!
 //! ## Usage Pattern
 //!
-//! ```ignore
+//! ```text
 //! let cache: Arc<Mutex<SkillCache>> = Arc::new(Mutex::new(SkillCache::new(roots)));
 //!
 //! // Multiple handlers can share the cache
@@ -480,30 +480,7 @@ mod tests {
     use std::time::{Duration, Instant};
     use tempfile::tempdir;
 
-    struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(v) = &self.previous {
-                std::env::set_var(self.key, v);
-            } else {
-                std::env::remove_var(self.key);
-            }
-        }
-    }
-
-    fn set_env_var(key: &'static str, value: Option<&str>) -> EnvVarGuard {
-        let previous = std::env::var(key).ok();
-        if let Some(val) = value {
-            std::env::set_var(key, val);
-        } else {
-            std::env::remove_var(key);
-        }
-        EnvVarGuard { key, previous }
-    }
+    use crate::test_support::set_env_var;
 
     fn write_skill(root: &Path, name: &str) -> PathBuf {
         let skill_dir = root.join(name);

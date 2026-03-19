@@ -346,7 +346,7 @@ pub(crate) fn sync_skills_only_from_claude(
 ///
 /// Walks through the source directory and copies `SKILL.md` files to the destination,
 /// only copying if the file is new or has changed (based on hash comparison).
-#[allow(dead_code)] // legacy helper retained for backward-compat tests; current sync flows avoid ~/.codex/skills-mirror
+#[cfg(test)]
 pub(crate) fn sync_from_claude(
     claude_root: &Path,
     mirror_root: &Path,

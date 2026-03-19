@@ -280,38 +280,14 @@ pub async fn search_skills_advanced(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{env_guard, set_env_var};
     use reqwest::header::AUTHORIZATION;
     use serial_test::serial;
-    use std::env;
-
-    struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(v) = &self.previous {
-                env::set_var(self.key, v);
-            } else {
-                env::remove_var(self.key);
-            }
-        }
-    }
-
-    fn set_env_var(key: &'static str, value: Option<&str>) -> EnvVarGuard {
-        let previous = env::var(key).ok();
-        if let Some(v) = value {
-            env::set_var(key, v);
-        } else {
-            env::remove_var(key);
-        }
-        EnvVarGuard { key, previous }
-    }
 
     #[test]
     #[serial]
     fn test_build_raw_url_default() {
+        let _g = env_guard();
         let _raw_guard = set_env_var("GITHUB_RAW_BASE_URL", None);
         let url = build_raw_url("owner/repo", "skills/test/SKILL.md");
         assert_eq!(
@@ -323,6 +299,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_build_raw_url_with_custom_base() {
+        let _g = env_guard();
         let _raw_guard = set_env_var("GITHUB_RAW_BASE_URL", Some("http://localhost:8080"));
         let url = build_raw_url("owner/repo", "skills/test/SKILL.md");
         assert_eq!(
@@ -334,6 +311,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_github_api_base_default() {
+        let _g = env_guard();
         let _api_guard = set_env_var("GITHUB_API_BASE_URL", None);
         assert_eq!(github_api_base(), "https://api.github.com");
     }
@@ -341,6 +319,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_github_api_base_custom() {
+        let _g = env_guard();
         let _api_guard = set_env_var("GITHUB_API_BASE_URL", Some("http://localhost:9090"));
         assert_eq!(github_api_base(), "http://localhost:9090");
     }
@@ -348,6 +327,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_github_auth_header_set_when_token_present() {
+        let _g = env_guard();
         let _token_guard = set_env_var("GITHUB_TOKEN", Some("test-token"));
         let client = reqwest::Client::new();
         let request = apply_github_auth(client.get("https://api.github.com"))
@@ -360,6 +340,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_github_auth_header_absent_when_no_token() {
+        let _g = env_guard();
         let _token_guard = set_env_var("GITHUB_TOKEN", None);
         let client = reqwest::Client::new();
         let request = apply_github_auth(client.get("https://api.github.com"))
@@ -371,6 +352,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_github_auth_header_absent_when_empty_token() {
+        let _g = env_guard();
         let _token_guard = set_env_var("GITHUB_TOKEN", Some(""));
         let client = reqwest::Client::new();
         let request = apply_github_auth(client.get("https://api.github.com"))
@@ -382,6 +364,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_github_auth_header_absent_when_whitespace_only_token() {
+        let _g = env_guard();
         let _token_guard = set_env_var("GITHUB_TOKEN", Some("   \t\n  "));
         let client = reqwest::Client::new();
         let request = apply_github_auth(client.get("https://api.github.com"))
@@ -393,6 +376,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_github_auth_trims_token_whitespace() {
+        let _g = env_guard();
         let _token_guard = set_env_var("GITHUB_TOKEN", Some("  test-token  "));
         let client = reqwest::Client::new();
         let request = apply_github_auth(client.get("https://api.github.com"))
@@ -686,36 +670,11 @@ mod proptest_tests {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
+    use crate::test_support::set_env_var;
     use serde_json::json;
     use serial_test::serial;
-    use std::env;
     use wiremock::matchers::{method, path, query_param_contains};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(v) = &self.previous {
-                env::set_var(self.key, v);
-            } else {
-                env::remove_var(self.key);
-            }
-        }
-    }
-
-    fn set_env_var(key: &'static str, value: Option<&str>) -> EnvVarGuard {
-        let previous = env::var(key).ok();
-        if let Some(v) = value {
-            env::set_var(key, v);
-        } else {
-            env::remove_var(key);
-        }
-        EnvVarGuard { key, previous }
-    }
 
     #[tokio::test]
     #[serial]
@@ -1068,7 +1027,7 @@ This is a test skill."#;
         // Try to inject operators - they should be sanitized
         let result = search_github_skills("test repo:evil/repo stars:>10000", 10).await;
 
-        assert!(result.is_ok());
+        result.expect("search with sanitized injected operators should succeed");
     }
 
     #[tokio::test]
@@ -1096,7 +1055,7 @@ This is a test skill."#;
             .await;
 
         let result = search_github_skills("testing", 10).await;
-        assert!(result.is_ok());
+        result.expect("search with auth header should succeed");
     }
 
     #[tokio::test]

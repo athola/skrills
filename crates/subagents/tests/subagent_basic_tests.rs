@@ -446,8 +446,8 @@ mod async_functionality_tests {
 
         // Test success case
         let result = might_fail(false).await;
-        assert!(result.is_ok(), "Should succeed when not forced to fail");
-        assert_eq!(result.unwrap(), "Success");
+        let value = result.expect("should succeed when not forced to fail");
+        assert_eq!(value, "Success");
 
         // Test failure case
         let result = might_fail(true).await;

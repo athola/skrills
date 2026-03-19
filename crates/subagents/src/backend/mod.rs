@@ -5,10 +5,15 @@ pub mod config;
 
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{anyhow, Context as _, Result};
 use async_trait::async_trait;
+use reqwest::RequestBuilder;
+use serde_json::{json, Value};
+use time::OffsetDateTime;
 
-use crate::store::{BackendKind, RunId, RunRequest, RunStatus, RunStore, SubagentTemplate};
+use crate::store::{
+    BackendKind, RunEvent, RunId, RunRequest, RunState, RunStatus, RunStore, SubagentTemplate,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AdapterCapabilities {
@@ -27,6 +32,116 @@ pub trait BackendAdapter: Send + Sync {
     async fn status(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<Option<RunStatus>>;
     async fn stop(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<bool>;
     async fn history(&self, limit: usize, store: Arc<dyn RunStore>) -> Result<Vec<RunStatus>>;
+}
+
+pub(crate) async fn run_http_adapter(
+    run_id: RunId,
+    store: &Arc<dyn RunStore>,
+    api_key: &str,
+    api_key_error: &str,
+    error_label: &str,
+    build_request: impl FnOnce() -> RequestBuilder,
+    extract_text: impl FnOnce(&Value) -> Option<String>,
+) -> Result<()> {
+    store
+        .append_event(
+            run_id,
+            RunEvent {
+                ts: OffsetDateTime::now_utc(),
+                kind: "start".into(),
+                data: None,
+            },
+        )
+        .await?;
+
+    if api_key.is_empty() {
+        store
+            .update_status(
+                run_id,
+                RunStatus {
+                    state: RunState::Failed,
+                    message: Some(api_key_error.into()),
+                    updated_at: OffsetDateTime::now_utc(),
+                },
+            )
+            .await?;
+        return Err(anyhow!("{}", api_key_error));
+    }
+
+    let resp = build_request()
+        .send()
+        .await
+        .with_context(|| format!("calling {} API", error_label))?;
+
+    let status = resp.status();
+    let text = resp.text().await?;
+    let parsed: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({ "raw": text }));
+
+    if !status.is_success() {
+        let msg = parsed
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .unwrap_or(&format!("{} call failed", error_label.to_lowercase()))
+            .to_string();
+        store
+            .append_event(
+                run_id,
+                RunEvent {
+                    ts: OffsetDateTime::now_utc(),
+                    kind: "error".into(),
+                    data: Some(parsed.clone()),
+                },
+            )
+            .await?;
+        store
+            .update_status(
+                run_id,
+                RunStatus {
+                    state: RunState::Failed,
+                    message: Some(msg.clone()),
+                    updated_at: OffsetDateTime::now_utc(),
+                },
+            )
+            .await?;
+        return Err(anyhow!(msg));
+    }
+
+    let completion = extract_text(&parsed).unwrap_or_else(|| text.clone());
+    for token in completion.split_whitespace() {
+        store
+            .append_event(
+                run_id,
+                RunEvent {
+                    ts: OffsetDateTime::now_utc(),
+                    kind: "stream".into(),
+                    data: Some(json!({ "token": token })),
+                },
+            )
+            .await?;
+    }
+    store
+        .append_event(
+            run_id,
+            RunEvent {
+                ts: OffsetDateTime::now_utc(),
+                kind: "completion".into(),
+                data: Some(json!({ "text": completion })),
+            },
+        )
+        .await?;
+
+    store
+        .update_status(
+            run_id,
+            RunStatus {
+                state: RunState::Succeeded,
+                message: Some("completed".into()),
+                updated_at: OffsetDateTime::now_utc(),
+            },
+        )
+        .await?;
+    Ok(())
 }
 
 #[cfg(test)]

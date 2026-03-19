@@ -10,33 +10,9 @@ pub use skrills_state::runtime_overrides_path;
 mod tests {
     use super::runtime_overrides_path;
     use crate::test_support;
-    use std::env;
     use tempfile::tempdir;
 
-    struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(v) = &self.previous {
-                env::set_var(self.key, v);
-            } else {
-                env::remove_var(self.key);
-            }
-        }
-    }
-
-    fn set_env_var(key: &'static str, value: Option<&str>) -> EnvVarGuard {
-        let previous = env::var(key).ok();
-        if let Some(val) = value {
-            env::set_var(key, val);
-        } else {
-            env::remove_var(key);
-        }
-        EnvVarGuard { key, previous }
-    }
+    use crate::test_support::set_env_var;
 
     #[test]
     fn runtime_overrides_path_defaults_to_home() {

@@ -3,7 +3,6 @@
 //! These tests follow TDD/BDD principles, focusing on business logic and use cases.
 
 use super::*;
-use std::env;
 use std::fs;
 use tempfile::TempDir;
 
@@ -16,10 +15,11 @@ fn create_test_home() -> Result<TempDir> {
     TempDir::new().context("Failed to create temp dir")
 }
 
-/// Set HOME environment variable to test directory
+/// Set HOME environment variable to test directory, returning an RAII guard
+/// that restores the original value on drop.
 /// Note: dirs::home_dir() may not respect this on all platforms
-fn set_test_home(dir: &TempDir) {
-    env::set_var("HOME", dir.path());
+fn set_test_home(dir: &TempDir) -> skrills_test_utils::EnvVarGuard {
+    crate::test_support::set_env_var("HOME", Some(dir.path().to_str().unwrap()))
 }
 
 #[cfg(test)]
@@ -30,7 +30,7 @@ mod client_tests {
     fn test_client_base_dir_claude() -> Result<()> {
         let _guard = env_guard();
         let temp = create_test_home()?;
-        set_test_home(&temp);
+        let _home = set_test_home(&temp);
 
         let base_dir = Client::Claude.base_dir()?;
         assert!(base_dir.ends_with(".claude"));
@@ -41,7 +41,7 @@ mod client_tests {
     fn test_client_base_dir_codex() -> Result<()> {
         let _guard = env_guard();
         let temp = create_test_home()?;
-        set_test_home(&temp);
+        let _home = set_test_home(&temp);
 
         let base_dir = Client::Codex.base_dir()?;
         assert!(base_dir.ends_with(".codex"));
@@ -52,7 +52,7 @@ mod client_tests {
     fn test_client_default_bin_dir() -> Result<()> {
         let _guard = env_guard();
         let temp = create_test_home()?;
-        set_test_home(&temp);
+        let _home = set_test_home(&temp);
 
         let bin_dir = Client::Claude.default_bin_dir()?;
         assert!(bin_dir.ends_with(".claude/bin"));
@@ -60,17 +60,69 @@ mod client_tests {
     }
 
     #[test]
+    fn test_client_base_dir_copilot() -> Result<()> {
+        let _guard = env_guard();
+        let temp = create_test_home()?;
+        let _home = set_test_home(&temp);
+
+        // With no legacy .copilot dir, falls back to config dir or legacy path
+        let base_dir = Client::Copilot.base_dir()?;
+        // Should end with "copilot" regardless of XDG or legacy path
+        assert!(
+            base_dir.ends_with("copilot") || base_dir.ends_with(".copilot"),
+            "Copilot base_dir should end with copilot: {:?}",
+            base_dir
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_client_base_dir_copilot_legacy_takes_precedence() -> Result<()> {
+        let _guard = env_guard();
+        let temp = create_test_home()?;
+        let _home = set_test_home(&temp);
+
+        // Create legacy .copilot directory
+        fs::create_dir_all(temp.path().join(".copilot"))?;
+
+        let base_dir = Client::Copilot.base_dir()?;
+        assert!(
+            base_dir.ends_with(".copilot"),
+            "Legacy .copilot should take precedence: {:?}",
+            base_dir
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_client_base_dir_cursor() -> Result<()> {
+        let _guard = env_guard();
+        let temp = create_test_home()?;
+        let _home = set_test_home(&temp);
+
+        let base_dir = Client::Cursor.base_dir()?;
+        assert!(base_dir.ends_with(".cursor"));
+        Ok(())
+    }
+
+    #[test]
     fn test_client_as_str() {
         assert_eq!(Client::Claude.as_str(), "claude");
         assert_eq!(Client::Codex.as_str(), "codex");
+        assert_eq!(Client::Copilot.as_str(), "copilot");
+        assert_eq!(Client::Cursor.as_str(), "cursor");
     }
 
     #[test]
     fn test_client_from_str_valid() -> Result<()> {
         assert_eq!(Client::from_str("claude")?, Client::Claude);
         assert_eq!(Client::from_str("codex")?, Client::Codex);
+        assert_eq!(Client::from_str("copilot")?, Client::Copilot);
+        assert_eq!(Client::from_str("cursor")?, Client::Cursor);
         assert_eq!(Client::from_str("CLAUDE")?, Client::Claude);
         assert_eq!(Client::from_str("Codex")?, Client::Codex);
+        assert_eq!(Client::from_str("COPILOT")?, Client::Copilot);
+        assert_eq!(Client::from_str("Cursor")?, Client::Cursor);
         Ok(())
     }
 
@@ -78,6 +130,7 @@ mod client_tests {
     fn test_client_from_str_invalid() {
         assert!(Client::from_str("invalid").is_err());
         assert!(Client::from_str("").is_err());
+        assert!(Client::from_str("vscode").is_err());
     }
 }
 
@@ -89,7 +142,7 @@ mod detection_tests {
     fn test_is_setup_detects_fresh_install() -> Result<()> {
         let _guard = env_guard();
         let temp = create_test_home()?;
-        set_test_home(&temp);
+        let _home = set_test_home(&temp);
 
         // Fresh install - no setup
         assert!(!is_setup(Client::Claude)?);
@@ -104,7 +157,7 @@ mod detection_tests {
     fn test_is_first_run_no_setup() -> Result<()> {
         let _guard = env_guard();
         let temp = create_test_home()?;
-        set_test_home(&temp);
+        let _home = set_test_home(&temp);
 
         assert!(is_first_run()?);
         Ok(())
@@ -144,16 +197,47 @@ mod parse_tests {
     }
 
     #[test]
+    fn test_parse_clients_copilot() -> Result<()> {
+        let clients = parse_clients("copilot")?;
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0], Client::Copilot);
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_clients_cursor() -> Result<()> {
+        let clients = parse_clients("cursor")?;
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0], Client::Cursor);
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_clients_all() -> Result<()> {
+        let clients = parse_clients("all")?;
+        assert_eq!(clients.len(), 4);
+        assert!(clients.contains(&Client::Claude));
+        assert!(clients.contains(&Client::Codex));
+        assert!(clients.contains(&Client::Copilot));
+        assert!(clients.contains(&Client::Cursor));
+        Ok(())
+    }
+
+    #[test]
     fn test_parse_clients_case_insensitive() {
         assert!(parse_clients("CLAUDE").is_ok());
         assert!(parse_clients("Codex").is_ok());
         assert!(parse_clients("BOTH").is_ok());
+        assert!(parse_clients("ALL").is_ok());
+        assert!(parse_clients("Copilot").is_ok());
+        assert!(parse_clients("CURSOR").is_ok());
     }
 
     #[test]
     fn test_parse_clients_invalid() {
         assert!(parse_clients("invalid").is_err());
         assert!(parse_clients("").is_err());
+        assert!(parse_clients("vscode").is_err());
     }
 }
 
@@ -165,7 +249,7 @@ mod setup_config_tests {
     fn test_setup_config_creation() -> Result<()> {
         let _guard = env_guard();
         let temp = create_test_home()?;
-        set_test_home(&temp);
+        let _home = set_test_home(&temp);
 
         let config = SetupConfig {
             clients: vec![Client::Claude],
@@ -188,7 +272,7 @@ mod setup_config_tests {
     fn test_setup_config_with_universal() -> Result<()> {
         let _guard = env_guard();
         let temp = create_test_home()?;
-        set_test_home(&temp);
+        let _home = set_test_home(&temp);
 
         let config = SetupConfig {
             clients: vec![Client::Claude],
@@ -218,7 +302,7 @@ mod bdd_scenarios {
         // Given: A fresh system with no existing skrills setup
         let _guard = env_guard();
         let temp = create_test_home()?;
-        set_test_home(&temp);
+        let _home = set_test_home(&temp);
 
         // When: I check if setup exists
         let is_first = is_first_run()?;
@@ -252,7 +336,7 @@ mod bdd_scenarios {
         // Given: A user wants cross-agent skill sharing
         let _guard = env_guard();
         let temp = create_test_home()?;
-        set_test_home(&temp);
+        let _home = set_test_home(&temp);
 
         // When: Universal flag is set
         let config = SetupConfig {
@@ -280,7 +364,7 @@ mod is_setup_detection_tests {
     fn test_is_setup_claude_with_mcp_json() -> Result<()> {
         let _guard = env_guard();
         let temp = create_test_home()?;
-        set_test_home(&temp);
+        let _home = set_test_home(&temp);
 
         // Create .claude directory
         let claude_dir = temp.path().join(".claude");
@@ -302,7 +386,7 @@ mod is_setup_detection_tests {
     fn test_is_setup_claude_no_setup() -> Result<()> {
         let _guard = env_guard();
         let temp = create_test_home()?;
-        set_test_home(&temp);
+        let _home = set_test_home(&temp);
 
         // Create .claude directory but no setup files
         let claude_dir = temp.path().join(".claude");
@@ -317,7 +401,7 @@ mod is_setup_detection_tests {
     fn test_is_setup_codex_with_config_toml() -> Result<()> {
         let _guard = env_guard();
         let temp = create_test_home()?;
-        set_test_home(&temp);
+        let _home = set_test_home(&temp);
 
         // Create .codex directory
         let codex_dir = temp.path().join(".codex");
@@ -336,7 +420,7 @@ mod is_setup_detection_tests {
     fn test_is_setup_codex_no_setup() -> Result<()> {
         let _guard = env_guard();
         let temp = create_test_home()?;
-        set_test_home(&temp);
+        let _home = set_test_home(&temp);
 
         // Create .codex directory but no setup files
         let codex_dir = temp.path().join(".codex");
@@ -348,10 +432,80 @@ mod is_setup_detection_tests {
     }
 
     #[test]
+    fn test_is_setup_copilot_with_mcp_servers_json() -> Result<()> {
+        let _guard = env_guard();
+        let temp = create_test_home()?;
+        let _home = set_test_home(&temp);
+
+        // Create .copilot directory (legacy path, so base_dir finds it)
+        let copilot_dir = temp.path().join(".copilot");
+        fs::create_dir_all(&copilot_dir)?;
+
+        // Create mcp_servers.json with skrills entry
+        let mcp_path = copilot_dir.join("mcp_servers.json");
+        fs::write(
+            &mcp_path,
+            r#"{"mcpServers": {"skrills": {"command": "skrills"}}}"#,
+        )?;
+
+        assert!(is_setup(Client::Copilot)?);
+        Ok(())
+    }
+
+    #[test]
+    fn test_is_setup_copilot_no_setup() -> Result<()> {
+        let _guard = env_guard();
+        let temp = create_test_home()?;
+        let _home = set_test_home(&temp);
+
+        // Create .copilot directory but no setup files
+        let copilot_dir = temp.path().join(".copilot");
+        fs::create_dir_all(&copilot_dir)?;
+
+        assert!(!is_setup(Client::Copilot)?);
+        Ok(())
+    }
+
+    #[test]
+    fn test_is_setup_cursor_with_mcp_json() -> Result<()> {
+        let _guard = env_guard();
+        let temp = create_test_home()?;
+        let _home = set_test_home(&temp);
+
+        // Create .cursor directory
+        let cursor_dir = temp.path().join(".cursor");
+        fs::create_dir_all(&cursor_dir)?;
+
+        // Create mcp.json with skrills entry
+        let mcp_path = cursor_dir.join("mcp.json");
+        fs::write(
+            &mcp_path,
+            r#"{"mcpServers": {"skrills": {"command": "skrills"}}}"#,
+        )?;
+
+        assert!(is_setup(Client::Cursor)?);
+        Ok(())
+    }
+
+    #[test]
+    fn test_is_setup_cursor_no_setup() -> Result<()> {
+        let _guard = env_guard();
+        let temp = create_test_home()?;
+        let _home = set_test_home(&temp);
+
+        // Create .cursor directory but no setup files
+        let cursor_dir = temp.path().join(".cursor");
+        fs::create_dir_all(&cursor_dir)?;
+
+        assert!(!is_setup(Client::Cursor)?);
+        Ok(())
+    }
+
+    #[test]
     fn test_is_first_run_partial_setup() -> Result<()> {
         let _guard = env_guard();
         let temp = create_test_home()?;
-        set_test_home(&temp);
+        let _home = set_test_home(&temp);
 
         // Set up Claude only
         let claude_dir = temp.path().join(".claude");
@@ -386,7 +540,7 @@ mod register_claude_mcp_tests {
     fn test_register_claude_mcp_creates_new_file() -> Result<()> {
         let _guard = env_guard();
         let temp = create_test_home()?;
-        set_test_home(&temp);
+        let _home = set_test_home(&temp);
 
         let claude_dir = temp.path().join(".claude");
         fs::create_dir_all(&claude_dir)?;
@@ -413,7 +567,7 @@ mod register_claude_mcp_tests {
     fn test_register_claude_mcp_updates_existing() -> Result<()> {
         let _guard = env_guard();
         let temp = create_test_home()?;
-        set_test_home(&temp);
+        let _home = set_test_home(&temp);
 
         let claude_dir = temp.path().join(".claude");
         fs::create_dir_all(&claude_dir)?;
@@ -449,7 +603,7 @@ mod register_codex_mcp_tests {
     fn test_register_codex_mcp_new_file() -> Result<()> {
         let _guard = env_guard();
         let temp = create_test_home()?;
-        set_test_home(&temp);
+        let _home = set_test_home(&temp);
 
         let codex_dir = temp.path().join(".codex");
         fs::create_dir_all(&codex_dir)?;
@@ -471,7 +625,7 @@ mod register_codex_mcp_tests {
     fn test_register_codex_mcp_already_registered() -> Result<()> {
         let _guard = env_guard();
         let temp = create_test_home()?;
-        set_test_home(&temp);
+        let _home = set_test_home(&temp);
 
         let codex_dir = temp.path().join(".codex");
         fs::create_dir_all(&codex_dir)?;
@@ -504,7 +658,7 @@ mod uninstall_tests {
     fn test_uninstall_claude_removes_hook() -> Result<()> {
         let _guard = env_guard();
         let temp = create_test_home()?;
-        set_test_home(&temp);
+        let _home = set_test_home(&temp);
 
         let claude_dir = temp.path().join(".claude");
         fs::create_dir_all(claude_dir.join("hooks"))?;
@@ -524,7 +678,7 @@ mod uninstall_tests {
     fn test_uninstall_claude_removes_mcp() -> Result<()> {
         let _guard = env_guard();
         let temp = create_test_home()?;
-        set_test_home(&temp);
+        let _home = set_test_home(&temp);
 
         let claude_dir = temp.path().join(".claude");
         fs::create_dir_all(&claude_dir)?;
@@ -549,7 +703,7 @@ mod uninstall_tests {
     fn test_uninstall_codex_removes_agents_md_section() -> Result<()> {
         let _guard = env_guard();
         let temp = create_test_home()?;
-        set_test_home(&temp);
+        let _home = set_test_home(&temp);
 
         let codex_dir = temp.path().join(".codex");
         fs::create_dir_all(&codex_dir)?;
@@ -575,7 +729,7 @@ mod uninstall_tests {
     fn test_uninstall_codex_removes_config_toml_section() -> Result<()> {
         let _guard = env_guard();
         let temp = create_test_home()?;
-        set_test_home(&temp);
+        let _home = set_test_home(&temp);
 
         let codex_dir = temp.path().join(".codex");
         fs::create_dir_all(&codex_dir)?;
@@ -605,7 +759,7 @@ mod sync_universal_tests {
     fn test_sync_universal_no_source() -> Result<()> {
         let _guard = env_guard();
         let temp = create_test_home()?;
-        set_test_home(&temp);
+        let _home = set_test_home(&temp);
 
         let config = SetupConfig {
             clients: vec![Client::Claude],

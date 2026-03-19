@@ -73,30 +73,7 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
-    struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(v) = &self.previous {
-                std::env::set_var(self.key, v);
-            } else {
-                std::env::remove_var(self.key);
-            }
-        }
-    }
-
-    fn set_env_var(key: &'static str, value: Option<&str>) -> EnvVarGuard {
-        let previous = std::env::var(key).ok();
-        if let Some(v) = value {
-            std::env::set_var(key, v);
-        } else {
-            std::env::remove_var(key);
-        }
-        EnvVarGuard { key, previous }
-    }
+    use crate::test_support::set_env_var;
 
     fn create_skill(dir: &std::path::Path, name: &str, content: &str) {
         let skill_dir = dir.join(name);
@@ -155,7 +132,7 @@ A test skill.
             OutputFormat::Json,
         );
 
-        assert!(result.is_ok());
+        result.expect("resolve dependencies should succeed");
     }
 
     #[test]

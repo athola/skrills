@@ -467,7 +467,8 @@ impl BackendAdapter for CodexCliAdapter {
 
         // Spawn the execution in a background task
         let store_clone = store.clone();
-        tokio::spawn(async move {
+        let store_monitor = store.clone();
+        let handle = tokio::spawn(async move {
             if let Err(err) = adapter
                 .execute_run(run_id, request, store_clone.clone())
                 .await
@@ -510,6 +511,21 @@ impl BackendAdapter for CodexCliAdapter {
                 }
             }
         });
+        tokio::spawn(async move {
+            if let Err(join_err) = handle.await {
+                tracing::error!(%run_id, error = %join_err, "CLI backend task panicked");
+                let _ = store_monitor
+                    .update_status(
+                        run_id,
+                        RunStatus {
+                            state: RunState::Failed,
+                            message: Some("internal error: task panicked".into()),
+                            updated_at: OffsetDateTime::now_utc(),
+                        },
+                    )
+                    .await;
+            }
+        });
 
         Ok(run_id)
     }
@@ -548,7 +564,6 @@ impl BackendAdapter for CodexCliAdapter {
 mod tests {
     use super::*;
     use crate::store::MemRunStore;
-    use std::env;
     use std::sync::LazyLock;
     use tokio::sync::Mutex;
 
@@ -562,30 +577,7 @@ mod tests {
         ENV_LOCK.blocking_lock()
     }
 
-    struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(v) = &self.previous {
-                env::set_var(self.key, v);
-            } else {
-                env::remove_var(self.key);
-            }
-        }
-    }
-
-    fn set_env_var(key: &'static str, value: Option<&str>) -> EnvVarGuard {
-        let previous = env::var(key).ok();
-        if let Some(v) = value {
-            env::set_var(key, v);
-        } else {
-            env::remove_var(key);
-        }
-        EnvVarGuard { key, previous }
-    }
+    use skrills_test_utils::{set_env_var, EnvVarGuard};
 
     fn set_cli_env(client: Option<&str>, cli_binary: Option<&str>) -> Vec<EnvVarGuard> {
         vec![

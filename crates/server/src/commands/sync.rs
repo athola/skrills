@@ -110,8 +110,7 @@ mod tests {
         let tmp = tempdir()?;
         let home = tmp.path();
 
-        let original_home = std::env::var("HOME").ok();
-        std::env::set_var("HOME", home);
+        let _home_guard = crate::test_support::set_env_var("HOME", Some(home.to_str().unwrap()));
 
         let original_cwd = std::env::current_dir()?;
         std::env::set_current_dir(home)?;
@@ -127,12 +126,9 @@ mod tests {
 
         let result = handle_mirror_command(false, true, false);
 
-        // Restore cwd/HOME before assertions to avoid leaking state.
+        // Restore cwd before assertions to avoid leaking state.
         std::env::set_current_dir(original_cwd)?;
-        match original_home {
-            Some(val) => std::env::set_var("HOME", val),
-            None => std::env::remove_var("HOME"),
-        }
+        // HOME is restored by _home_guard on drop.
 
         result?;
 

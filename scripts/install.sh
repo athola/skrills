@@ -83,7 +83,8 @@ SELECT_ASSET_URL()
   target="$(TARGET)"
   # Try jq first (cleanest), fall back to awk for pure POSIX shell
   if command -v jq >/dev/null 2>&1; then
-    echo "$release_json" | jq -r --arg target "$target" '.assets[] | select(.name | contains($target)) | .browser_download_url' | head -n1
+    _jq_urls=$(echo "$release_json" | jq -r --arg target "$target" '.assets[] | select(.name | contains($target)) | .browser_download_url')
+    echo "$_jq_urls" | head -n1
   else
     # Pure awk fallback: find asset block with matching name, extract URL
     echo "$release_json" | awk -v target="$target" '
@@ -115,7 +116,8 @@ DOWNLOAD_AND_EXTRACT()
     mv "$tmpdir/out/$bin_name" "$bin_dir/$bin_name"
   else
     # try to find binary inside
-    found=$(find "$tmpdir/out" -type f -name "$bin_name" | head -n1)
+    _found_all=$(find "$tmpdir/out" -type f -name "$bin_name")
+    found=$(echo "$_found_all" | head -n1)
     [ -n "$found" ] || fail "binary $bin_name not found in archive"
     mv "$found" "$bin_dir/$bin_name"
   fi
@@ -134,12 +136,12 @@ install_hook_and_mcp()
     return
   fi
   # Use the installed binary's setup command
-  setup_args="--yes"
-  if [ "${SKRILLS_UNIVERSAL:-0}" != "0" ]; then
-    setup_args="$setup_args --universal"
-  fi
   echo "Running skrills setup..."
-  "$bin_dir/$bin_name" setup $setup_args
+  if [ "${SKRILLS_UNIVERSAL:-0}" != "0" ]; then
+    "$bin_dir/$bin_name" setup --yes --universal
+  else
+    "$bin_dir/$bin_name" setup --yes
+  fi
 }
 
 ensure_path_hint()

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -160,6 +160,11 @@ impl RunStore for MemRunStore {
             .ok_or(SubagentError::NotFound(run_id))?;
         record.updated_at = event.ts;
         record.events.push(event);
+        if record.events.len() > MAX_EVENTS_PER_RUN {
+            record
+                .events
+                .drain(..record.events.len() - MAX_EVENTS_PER_RUN);
+        }
         Ok(())
     }
 
@@ -203,6 +208,9 @@ impl RunStore for MemRunStore {
     }
 }
 
+/// Maximum events kept per run to bound memory usage for long-running subagents.
+const MAX_EVENTS_PER_RUN: usize = 10_000;
+
 /// Disk-backed store using the shared state directory.
 pub struct StateRunStore {
     path: PathBuf,
@@ -242,21 +250,29 @@ impl StateRunStore {
             runs.sort_by_key(|r| r.created_at);
             runs
         };
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create store directory: {}", parent.display())
-            })?;
-        }
         let data =
             serde_json::to_string_pretty(&runs).context("failed to serialize run records")?;
 
-        // Atomic write: write to temp file then rename to avoid partial writes on crash.
-        let temp_path = self.path.with_extension("tmp");
-        fs::write(&temp_path, &data)
-            .with_context(|| format!("failed to write temp file: {}", temp_path.display()))?;
-        fs::rename(&temp_path, &self.path)
-            .with_context(|| format!("failed to rename temp file to: {}", self.path.display()))?;
-        Ok(())
+        // Move filesystem I/O to the blocking threadpool to avoid starving
+        // the tokio async runtime under load.
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!("failed to create store directory: {}", parent.display())
+                })?;
+            }
+
+            // Atomic write: write to temp file then rename to avoid partial writes on crash.
+            let temp_path = path.with_extension("tmp");
+            fs::write(&temp_path, &data)
+                .with_context(|| format!("failed to write temp file: {}", temp_path.display()))?;
+            fs::rename(&temp_path, &path)
+                .with_context(|| format!("failed to rename temp file to: {}", path.display()))?;
+            Ok(())
+        })
+        .await
+        .context("persist task panicked")?
     }
 }
 
@@ -265,7 +281,7 @@ pub fn default_store_path() -> Result<PathBuf> {
     Ok(home_dir()?.join(".codex/subagents/runs.json"))
 }
 
-fn read_records(path: &PathBuf) -> Result<Vec<RunRecord>> {
+fn read_records(path: &Path) -> Result<Vec<RunRecord>> {
     if path.exists() {
         let text = fs::read_to_string(path)
             .with_context(|| format!("failed to read store file: {}", path.display()))?;
@@ -323,6 +339,11 @@ impl RunStore for StateRunStore {
                 .ok_or(SubagentError::NotFound(run_id))?;
             record.updated_at = event.ts;
             record.events.push(event);
+            if record.events.len() > MAX_EVENTS_PER_RUN {
+                record
+                    .events
+                    .drain(..record.events.len() - MAX_EVENTS_PER_RUN);
+            }
         }
         self.persist().await?;
         Ok(())
@@ -549,9 +570,12 @@ mod store_tests {
         assert!(!load_task.is_finished());
 
         let _ = release_tx.send(());
-        let result = tokio::time::timeout(Duration::from_secs(1), load_task).await;
-        assert!(result.is_ok());
-        assert!(result.unwrap().unwrap().is_ok());
+        let result = tokio::time::timeout(Duration::from_secs(1), load_task)
+            .await
+            .expect("load_from_disk should complete within timeout");
+        result
+            .expect("load task should not panic")
+            .expect("load_from_disk should succeed");
 
         let _ = lock_task.await;
     }

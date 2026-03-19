@@ -11,7 +11,7 @@
 [![Audit](https://img.shields.io/github/actions/workflow/status/athola/skrills/audit.yml?branch=master&label=audit)](https://github.com/athola/skrills/actions/workflows/audit.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Skills support engine for Claude Code, Codex CLI, and GitHub Copilot CLI.
+Skills support engine for Claude Code, Codex CLI, GitHub Copilot CLI, and Cursor.
 
 [Installation](book/src/installation.md) |
 [User Guide](https://athola.github.io/skrills/) |
@@ -20,19 +20,24 @@ Skills support engine for Claude Code, Codex CLI, and GitHub Copilot CLI.
 [FAQ](docs/FAQ.md) |
 [Changelog](book/src/changelog.md)
 
+> **What's new in 0.7.0** -- Cursor IDE support with bidirectional
+> `.mdc` rules sync, two new MCP tools (`sync-from-cursor`,
+> `sync-to-cursor`), and `--from cursor` / `--to cursor` CLI flags.
+> See [changelog](book/src/changelog.md).
+
 ## Features
 
 - **Cross-CLI validation** -- validates skills against Claude Code
-  (permissive), Codex CLI (strict), and Copilot CLI (strict) rules.
-  Auto-derives missing YAML frontmatter from file paths and content.
+  (permissive), Codex CLI (strict), Copilot CLI (strict), and Cursor
+  rules. Auto-derives missing YAML frontmatter from file paths and content.
 - **Multi-directional sync** -- syncs skills, commands, agents, MCP
-  servers, and preferences across all three environments. Uses file
+  servers, rules, and preferences across all four environments. Uses file
   hashing to respect manual edits so user changes are not overwritten.
 - **Token analytics** -- measures token usage per skill and suggests
   reductions to fit context windows.
 - **Dependency resolution** -- resolves skill dependencies with cycle
   detection and semantic versioning constraints.
-- **MCP server** -- 25 tools for validation, sync, intelligence, and
+- **MCP server** -- 27 tools for validation, sync, intelligence, and
   project-aware skill generation over stdio or HTTP transport.
 - **Session mining** -- parses Claude Code and Codex CLI session
   history to improve recommendations based on actual usage.
@@ -69,7 +74,7 @@ See [installation guide](book/src/installation.md) for HTTP transport setup, sys
 ## Quickstart
 
 ```bash
-# Validate skills for Codex/Copilot compatibility
+# Validate skills for Codex/Copilot/Cursor compatibility
 skrills validate --target both --autofix
 
 # Analyze token usage
@@ -77,6 +82,9 @@ skrills analyze --min-tokens 1000 --suggestions
 
 # Sync from Claude to all other CLIs
 skrills sync-all
+
+# Sync between specific environments
+skrills sync --from cursor --to claude
 
 # Start MCP server (browser dashboard at http://localhost:<port>)
 skrills serve
@@ -87,6 +95,27 @@ skrills tui
 
 See [CLI reference](book/src/cli.md) for all commands including
 skill lifecycle management.
+
+## Supported Environments
+
+Skrills syncs seven asset types across four CLI environments.
+Each cell reflects what the adapter reads and writes today:
+
+| Asset | Claude Code | Codex CLI | Copilot CLI | Cursor |
+|-------|:-----------:|:---------:|:-----------:|:------:|
+| Skills | Y | Y | Y | Y |
+| Commands | Y | Y | -- | Y |
+| Agents | Y | -- | Y | Y |
+| MCP Servers | Y | Y | Y | Y |
+| Hooks | Y | -- | -- | Y |
+| Instructions / Rules | Y | -- | Y | Y |
+| Preferences | Y | Y | Y | -- |
+
+Cursor rules (`.mdc` files) are mapped bidirectionally via mode
+derivation (`alwaysApply`, glob-scoped, agent-requested).
+See [ADR 0006](docs/adr/0006-cursor-rules-mapping.md) for the
+mapping strategy and [sync guide](book/src/sync-guide.md) for
+workflows.
 
 ## Skill Management
 
@@ -118,20 +147,26 @@ skrills skill-profile my-skill
 
 ## Limitations
 
-- **No runtime skill injection**: Skrills validates and syncs files; it does not inject skills into prompts at runtime
-- **Copilot command sync**: Copilot CLI does not support slash commands, so command sync is skipped
-- **Empirical mining**: Session history parsing works best with recent Claude Code / Codex CLI versions
-- **LLM generation**: Requires `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` for skill creation
+- **No runtime skill injection**: Skrills validates and syncs
+  files; it does not inject skills into prompts at runtime.
+- **Copilot command sync**: Copilot CLI does not support slash
+  commands, so command sync is skipped.
+- **Cursor preferences**: Cursor preferences are not yet mapped;
+  preference sync is skipped for Cursor targets.
+- **Empirical mining**: Session history parsing works best with
+  recent Claude Code / Codex CLI versions.
+- **LLM generation**: Requires `ANTHROPIC_API_KEY` or
+  `OPENAI_API_KEY` for skill creation.
 
 ## Architecture
 
 | Crate | Purpose |
 |-------|---------|
 | `server` | MCP server, CLI, HTTP transport, security middleware |
-| `validate` | Validation logic for Claude/Codex/Copilot compatibility |
+| `validate` | Validation logic for Claude/Codex/Copilot/Cursor compatibility |
 | `analyze` | Token counting, dependency analysis, optimization |
 | `intelligence` | Recommendations, project analysis, skill generation |
-| `sync` | Multi-directional sync with adapters for each CLI |
+| `sync` | Multi-directional sync with adapters for each CLI (Claude, Codex, Copilot, Cursor) |
 | `dashboard` | TUI and browser-based skill visualization |
 | `discovery` | Skill discovery and ranking |
 | `state` | Environment config, manifest settings, runtime overrides |
@@ -164,7 +199,7 @@ subcommand) and [FAQ](docs/FAQ.md) for environment variables.
 | [User Guide](https://athola.github.io/skrills/) | Primary documentation (mdBook) |
 | [CLI Reference](book/src/cli.md) | All commands with examples |
 | [MCP Tutorial](docs/tutorials/mcp.md) | Server setup and tool reference |
-| [Sync Guide](book/src/sync-guide.md) | Cross-CLI sync workflows |
+| [Sync Guide](book/src/sync-guide.md) | Cross-CLI sync workflows (Claude, Codex, Copilot, Cursor) |
 | [Token Optimization](book/src/mcp-token-optimization.md) | Context window management |
 | [FAQ](docs/FAQ.md) | Common questions |
 | [Security](docs/security.md) | Auth, TLS, threat model |

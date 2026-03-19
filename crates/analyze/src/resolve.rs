@@ -1458,7 +1458,7 @@ mod tests {
         let result = graph.resolve("parent");
 
         // Then prerelease constraint should match prerelease version
-        assert!(result.is_ok());
+        let _ = result.expect("prerelease constraint should match prerelease version");
     }
 
     #[test]
@@ -1481,8 +1481,8 @@ mod tests {
         let result = graph.resolve("parent");
 
         // Then version mismatch should be ignored
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().resolved.len(), 2);
+        let resolution = result.expect("version mismatch should be ignored with ignore_versions");
+        assert_eq!(resolution.resolved.len(), 2);
     }
 
     #[test]

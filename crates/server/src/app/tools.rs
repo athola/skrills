@@ -22,7 +22,11 @@ impl SkillService {
         {
             "claude" => TraceTarget::Claude,
             "codex" => TraceTarget::Codex,
-            _ => TraceTarget::Both,
+            "both" => TraceTarget::Both,
+            other => {
+                tracing::warn!(target = %other, "Unknown trace target, defaulting to Both");
+                TraceTarget::Both
+            }
         }
     }
 
@@ -573,16 +577,13 @@ impl SkillService {
     /// commands, skills, MCP servers, and preferences copied.
     pub(crate) fn sync_all_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
         use crate::sync::mirror_source_root;
-        use skrills_sync::{
-            parse_direction, ClaudeAdapter, CodexAdapter, SyncDirection, SyncOrchestrator,
-            SyncParams,
-        };
+        use skrills_sync::{default_target_for, sync_between, SyncParams};
 
         let from = args
             .get("from")
             .and_then(|v| v.as_str())
             .unwrap_or("claude");
-        let direction = parse_direction(from)?;
+        let to = default_target_for(from);
         let dry_run = args
             .get("dry_run")
             .and_then(|v| v.as_bool())
@@ -592,24 +593,28 @@ impl SkillService {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        // Sync skills first (Codex discovery root).
-        let skill_report = match direction {
-            SyncDirection::ClaudeToCodex if !dry_run => {
-                let home = home_dir()?;
-                let claude_root = mirror_source_root(&home);
-                let codex_skills_root = home.join(".codex/skills");
-                let report = crate::sync::sync_skills_only_from_claude(
-                    &claude_root,
-                    &codex_skills_root,
-                    include_marketplace,
-                )?;
-                let _ = crate::setup::ensure_codex_skills_feature_enabled(
-                    &home.join(".codex/config.toml"),
-                );
-                report
-            }
-            _ => crate::sync::SyncReport::default(),
+        let is_claude_to_codex = from == "claude" && to == "codex";
+
+        // Sync skills first (Codex discovery root) for Claude→Codex only.
+        let skill_report = if is_claude_to_codex && !dry_run {
+            let home = home_dir()?;
+            let claude_root = mirror_source_root(&home);
+            let codex_skills_root = home.join(".codex/skills");
+            let report = crate::sync::sync_skills_only_from_claude(
+                &claude_root,
+                &codex_skills_root,
+                include_marketplace,
+            )?;
+            let _ =
+                crate::setup::ensure_codex_skills_feature_enabled(&home.join(".codex/config.toml"));
+            report
+        } else {
+            crate::sync::SyncReport::default()
         };
+
+        // For Claude→Codex, skills are handled above via sync_skills_only_from_claude.
+        // For all other directions, let the orchestrator handle skills.
+        let sync_skills_via_orchestrator = !is_claude_to_codex;
 
         let skip_existing_commands = args
             .get("skip_existing_commands")
@@ -623,23 +628,12 @@ impl SkillService {
             skip_existing_commands,
             sync_mcp_servers: true,
             sync_preferences: true,
-            sync_skills: false, // Skills are handled above for Claude→Codex.
+            sync_skills: sync_skills_via_orchestrator,
             include_marketplace,
             ..Default::default()
         };
 
-        let report = match direction {
-            SyncDirection::ClaudeToCodex => {
-                let source = ClaudeAdapter::new()?;
-                let target = CodexAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            }
-            SyncDirection::CodexToClaude => {
-                let source = CodexAdapter::new()?;
-                let target = ClaudeAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            }
-        };
+        let report = sync_between(from, to, &params)?;
 
         Ok(CallToolResult {
             content: vec![Content::text(format!(
@@ -906,6 +900,8 @@ impl SkillService {
             sync_mcp_servers: true,
             sync_preferences: true,
             sync_skills: true,
+            sync_agents: true,
+            sync_instructions: true,
             ..Default::default()
         };
 
@@ -932,12 +928,12 @@ impl SkillService {
         })
     }
 
-    /// Sync to GitHub Copilot CLI from Claude or Codex.
+    /// Sync to GitHub Copilot CLI from Claude, Codex, or Cursor.
     ///
     /// # Arguments
     ///
     /// The `args` map accepts the following JSON keys:
-    /// - `from`: `"claude"` or `"codex"` (default: `"claude"`) - source CLI
+    /// - `from`: `"claude"`, `"codex"`, or `"cursor"` (default: `"claude"`) - source CLI
     /// - `dry_run`: `bool` (default: `false`) - preview changes without writing
     ///
     /// # Returns
@@ -965,6 +961,8 @@ impl SkillService {
             sync_mcp_servers: true,
             sync_preferences: true,
             sync_skills: true,
+            sync_agents: true,
+            sync_instructions: true,
             ..Default::default()
         };
 
@@ -972,6 +970,10 @@ impl SkillService {
         let report = if from == "codex" {
             use skrills_sync::CodexAdapter;
             let source = CodexAdapter::new()?;
+            SyncOrchestrator::new(source, target).sync(&params)?
+        } else if from == "cursor" {
+            use skrills_sync::CursorAdapter;
+            let source = CursorAdapter::new()?;
             SyncOrchestrator::new(source, target).sync(&params)?
         } else {
             let source = ClaudeAdapter::new()?;
@@ -991,13 +993,130 @@ impl SkillService {
         })
     }
 
-    /// Syncs skills between Claude, Codex, and Copilot.
+    /// Sync from Cursor IDE to Claude, Codex, or Copilot.
+    pub(crate) fn sync_from_cursor_tool(
+        &self,
+        args: JsonMap<String, Value>,
+    ) -> Result<CallToolResult> {
+        use skrills_sync::{
+            ClaudeAdapter, CodexAdapter, CopilotAdapter, CursorAdapter, SyncOrchestrator,
+            SyncParams,
+        };
+
+        let to = args.get("to").and_then(|v| v.as_str()).unwrap_or("claude");
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let params = SyncParams {
+            from: Some("cursor".to_string()),
+            dry_run,
+            sync_commands: true,
+            sync_mcp_servers: true,
+            sync_preferences: true,
+            sync_skills: true,
+            sync_agents: true,
+            sync_instructions: true,
+            ..Default::default()
+        };
+
+        let source = CursorAdapter::new()?;
+        let report = match to {
+            "codex" => {
+                let target = CodexAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            }
+            "copilot" => {
+                let target = CopilotAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            }
+            _ => {
+                let target = ClaudeAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            }
+        };
+
+        Ok(CallToolResult {
+            content: vec![Content::text(report.summary.clone())],
+            is_error: Some(!report.success),
+            structured_content: Some(json!({
+                "from": "cursor",
+                "to": to,
+                "dry_run": dry_run,
+                "report": report
+            })),
+            meta: None,
+        })
+    }
+
+    /// Sync to Cursor IDE from Claude, Codex, or Copilot.
+    pub(crate) fn sync_to_cursor_tool(
+        &self,
+        args: JsonMap<String, Value>,
+    ) -> Result<CallToolResult> {
+        use skrills_sync::{
+            ClaudeAdapter, CodexAdapter, CopilotAdapter, CursorAdapter, SyncOrchestrator,
+            SyncParams,
+        };
+
+        let from = args
+            .get("from")
+            .and_then(|v| v.as_str())
+            .unwrap_or("claude");
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let params = SyncParams {
+            from: Some(from.to_string()),
+            dry_run,
+            sync_commands: true,
+            sync_mcp_servers: true,
+            sync_preferences: true,
+            sync_skills: true,
+            sync_agents: true,
+            sync_instructions: true,
+            ..Default::default()
+        };
+
+        let target = CursorAdapter::new()?;
+        let report = match from {
+            "codex" => {
+                let source = CodexAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            }
+            "copilot" => {
+                let source = CopilotAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            }
+            _ => {
+                let source = ClaudeAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            }
+        };
+
+        Ok(CallToolResult {
+            content: vec![Content::text(report.summary.clone())],
+            is_error: Some(!report.success),
+            structured_content: Some(json!({
+                "from": from,
+                "to": "cursor",
+                "dry_run": dry_run,
+                "report": report
+            })),
+            meta: None,
+        })
+    }
+
+    /// Syncs skills between Claude, Codex, Copilot, and Cursor.
     ///
     /// # Arguments
     ///
     /// The `args` map accepts the following JSON keys:
-    /// - `from`: `"claude"`, `"codex"`, or `"copilot"` (default: `"claude"`) - source CLI
-    /// - `to`: `"claude"`, `"codex"`, or `"copilot"` (default based on from) - target CLI
+    /// - `from`: `"claude"`, `"codex"`, `"copilot"`, or `"cursor"` (default: `"claude"`) - source CLI
+    /// - `to`: `"claude"`, `"codex"`, `"copilot"`, or `"cursor"` (default based on from) - target CLI
     /// - `dry_run`: `bool` (default: `false`) - preview changes without writing
     /// - `include_marketplace`: `bool` (default: `false`) - include marketplace skills
     ///
@@ -1006,7 +1125,8 @@ impl SkillService {
     /// A `CallToolResult` with sync summary and structured report.
     pub(crate) fn sync_skills_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
         use skrills_sync::{
-            ClaudeAdapter, CodexAdapter, CopilotAdapter, SyncOrchestrator, SyncParams,
+            ClaudeAdapter, CodexAdapter, CopilotAdapter, CursorAdapter, SyncOrchestrator,
+            SyncParams,
         };
 
         let from = args
@@ -1079,9 +1199,39 @@ impl SkillService {
                 let target = CodexAdapter::new()?;
                 SyncOrchestrator::new(source, target).sync(&params)?
             }
+            ("cursor", "claude") => {
+                let source = CursorAdapter::new()?;
+                let target = ClaudeAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            }
+            ("cursor", "codex") => {
+                let source = CursorAdapter::new()?;
+                let target = CodexAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            }
+            ("cursor", "copilot") => {
+                let source = CursorAdapter::new()?;
+                let target = CopilotAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            }
+            ("claude", "cursor") => {
+                let source = ClaudeAdapter::new()?;
+                let target = CursorAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            }
+            ("codex", "cursor") => {
+                let source = CodexAdapter::new()?;
+                let target = CursorAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            }
+            ("copilot", "cursor") => {
+                let source = CopilotAdapter::new()?;
+                let target = CursorAdapter::new()?;
+                SyncOrchestrator::new(source, target).sync(&params)?
+            }
             _ => {
                 return Err(anyhow::anyhow!(
-                    "Invalid sync direction: {} -> {}. Valid options are: claude, codex, copilot",
+                    "Invalid sync direction: {} -> {}. Valid options are: claude, codex, copilot, cursor",
                     from,
                     to
                 ));

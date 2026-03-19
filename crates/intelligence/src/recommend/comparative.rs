@@ -398,7 +398,8 @@ pub fn compute_deviation_score(
     );
 
     if !expected.baseline_metrics.success_indicators.is_empty() {
-        let keyword_deviation = (success_matches as f64 * 0.1) - (failure_matches as f64 * 0.15);
+        let keyword_deviation =
+            ((success_matches as f64 * 0.1) - (failure_matches as f64 * 0.15)).clamp(-1.0, 1.0);
         deviation_components.push(format!(
             "Keywords: {} success, {} failure (deviation: {:.2})",
             success_matches, failure_matches, keyword_deviation

@@ -17,6 +17,10 @@ TEST_THREADS ?= 1
 CARGO_CMD = CARGO_HOME=$(CARGO_HOME) $(CARGO)
 DEMO_RUN = HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH)
 
+define get_version
+$(shell grep '^version' crates/cli/Cargo.toml | head -1 | cut -d'=' -f2 | cut -d'#' -f1 | tr -d " \"'")
+endef
+
 CARGO_GUARD_TARGETS := fmt fmt-check lint check test test-unit test-integration test-setup \
 	test-coverage build build-min serve-help install coverage docs book book-serve \
 	clean security deny deps-update
@@ -58,7 +62,7 @@ endef
 # Phony targets: core developer flow
 .PHONY: all help version verify fmt fmt-check lint lint-md check test test-unit test-integration test-setup test-install \
 	build build-min serve-help install status coverage test-coverage dogfood dogfood-readme ci precommit \
-	clean clean-demo githooks hooks require-cargo security deny deps-update check-deps \
+	clean clean-demo hooks require-cargo security deny deps-update check-deps \
 	quick watch bench release
 # Phony targets: docs
 .PHONY: docs book book-serve
@@ -66,7 +70,7 @@ endef
 .PHONY: demo-fixtures demo-doctor demo-empirical demo-http demo-cli demo-all demo-setup-claude demo-setup-codex \
 	demo-setup-both demo-setup-uninstall demo-setup-reinstall \
 	demo-setup-universal demo-setup-first-run demo-setup-all \
-	demo-analytics demo-gateway
+	demo-analytics demo-gateway demo-cert demo-skill-lifecycle
 .NOTPARALLEL: demo-all demo-setup-all
 .SILENT: demo-doctor demo-empirical demo-cli demo-all demo-setup-claude demo-setup-codex demo-setup-both \
 	demo-setup-uninstall demo-setup-reinstall demo-setup-universal demo-setup-first-run \
@@ -78,7 +82,7 @@ all: fmt lint test build
 	@echo "==> Full build complete"
 
 version:
-	@grep '^version' crates/cli/Cargo.toml | head -1 | cut -d'=' -f2 | cut -d'#' -f1 | tr -d " \"'"
+	@echo "$(call get_version)"
 
 verify: fmt-check lint lint-md test test-install
 	@echo "==> All verification checks passed"
@@ -90,18 +94,18 @@ help:
 	@printf "  %-23s %s\n" "version" "print current version"
 	@printf "  %-23s %s\n" "verify" "run all verification checks"
 	@printf "  %-23s %s\n" "fmt | fmt-check" "format workspace or check only"
-	@printf "  %-23s %s\n" "lint" "clippy with -D warnings"
+	@printf "  %-23s %s\n" "lint" "clippy --all-features with -D warnings"
 	@printf "  %-23s %s\n" "lint-md" "lint markdown files"
 	@printf "  %-23s %s\n" "check" "cargo check all targets"
 	@printf "  %-23s %s\n" "test | test-unit | test-integration" "run tests"
 	@printf "  %-23s %s\n" "test-setup" "run setup module tests"
 	@printf "  %-23s %s\n" "test-install" "test install.sh helper functions"
-	@printf "  %-23s %s\n" "test-coverage" "run tests with coverage report"
+	@printf "  %-23s %s\n" "test-coverage" "coverage via cargo-llvm-cov (precise)"
 	@printf "  %-23s %s\n" "build | build-min" "release builds"
 	@printf "  %-23s %s\n" "install" "install skrills to $(CARGO_HOME)/bin"
 	@printf "  %-23s %s\n" "serve-help" "binary --help smoke check"
 	@printf "  %-23s %s\n" "status" "show project status and environment"
-	@printf "  %-23s %s\n" "coverage" "generate test coverage report"
+	@printf "  %-23s %s\n" "coverage" "coverage via cargo-tarpaulin (fast)"
 	@printf "  %-23s %s\n" "dogfood" "full dogfood (doctor + README validation)"
 	@printf "  %-23s %s\n" "dogfood-readme" "validate README CLI examples only"
 	@printf "  %-23s %s\n" "ci | precommit" "run common pipelines"
@@ -145,8 +149,10 @@ fmt:
 fmt-check:
 	$(CARGO_CMD) fmt --all -- --check
 
+# NOTE: CI (.github/workflows/ci.yml) duplicates these cargo commands directly
+# rather than calling make targets. Keep both in sync when changing flags.
 lint:
-	$(CARGO_CMD) clippy --workspace --all-targets -- -D warnings
+	$(CARGO_CMD) clippy --workspace --all-targets --all-features -- -D warnings
 
 lint-md:
 	$(SHELL) ./scripts/lint-markdown.sh
@@ -190,8 +196,7 @@ serve-help:
 
 status:
 	@echo "=== Skrills Status ==="
-	@version=$$(grep '^version' crates/cli/Cargo.toml | head -1 | cut -d'=' -f2 | cut -d'#' -f1 | tr -d " \"'"); \
-	echo "Version: $$version"
+	@echo "Version: $(call get_version)"
 	@echo "Rust: $$(rustc --version)"
 	@echo "Cargo: $$(cargo --version)"
 	@echo "Branch: $$(git rev-parse --abbrev-ref HEAD)"
@@ -200,9 +205,6 @@ status:
 
 install:
 	$(CARGO_CMD) install --path crates/cli --locked
-
-githooks:
-	./scripts/install-git-hooks.sh
 
 coverage:
 	$(CARGO_CMD) tarpaulin --workspace --all-features --out Html
@@ -292,10 +294,9 @@ demo-analytics: demo-fixtures build
 
 demo-gateway: build
 	@echo "==> Demo: MCP Gateway Tools (unit tests)"
-	$(CARGO_CMD) test --package skrills-server --lib -- mcp_gateway --test-threads=1
-	$(CARGO_CMD) test --package skrills-server --lib -- list_mcp_tools --test-threads=1
-	$(CARGO_CMD) test --package skrills-server --lib -- describe_mcp_tool --test-threads=1
-	$(CARGO_CMD) test --package skrills-server --lib -- get_context_stats --test-threads=1
+	@for filter in mcp_gateway list_mcp_tools describe_mcp_tool get_context_stats; do \
+		$(CARGO_CMD) test --package skrills-server --lib -- $$filter --test-threads=1; \
+	done
 	@echo "==> Gateway demo complete"
 
 demo-fixtures:
@@ -310,10 +311,10 @@ demo-fixtures:
 	@ln -sf $(CURDIR)/target/release/skrills $(HOME_DIR)/.codex/bin/skrills 2>/dev/null || cp $(CURDIR)/target/release/skrills $(HOME_DIR)/.codex/bin/skrills 2>/dev/null || true
 	@# Create mock Claude session data for empirical demo
 	@mkdir -p $(HOME_DIR)/.claude/projects/demo-project
-	@for i in 1 2 3 4 5 6 7 8 9 10 11 12; do \
-		echo '{"message":{"role":"user","content":[{"type":"text","text":"help me write code"}]},"timestamp":"2025-01-0'$$i'T10:00:00Z"}' > $(HOME_DIR)/.claude/projects/demo-project/session-$$i.jsonl; \
-		echo '{"message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"commit"}}]},"timestamp":"2025-01-0'$$i'T10:01:00Z"}' >> $(HOME_DIR)/.claude/projects/demo-project/session-$$i.jsonl; \
-		echo '{"message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/path/to/skills/test/SKILL.md"}}]},"timestamp":"2025-01-0'$$i'T10:02:00Z"}' >> $(HOME_DIR)/.claude/projects/demo-project/session-$$i.jsonl; \
+	@for i in 01 02 03 04 05 06 07 08 09 10 11 12; do \
+		echo '{"message":{"role":"user","content":[{"type":"text","text":"help me write code"}]},"timestamp":"2025-01-'$$i'T10:00:00Z"}' > $(HOME_DIR)/.claude/projects/demo-project/session-$$i.jsonl; \
+		echo '{"message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"commit"}}]},"timestamp":"2025-01-'$$i'T10:01:00Z"}' >> $(HOME_DIR)/.claude/projects/demo-project/session-$$i.jsonl; \
+		echo '{"message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/path/to/skills/test/SKILL.md"}}]},"timestamp":"2025-01-'$$i'T10:02:00Z"}' >> $(HOME_DIR)/.claude/projects/demo-project/session-$$i.jsonl; \
 	done
 	@echo "Prepared demo HOME at $(HOME_DIR)"
 
@@ -382,7 +383,7 @@ demo-cli: demo-fixtures build
 	$(DEMO_RUN) setup --help >/dev/null
 	@echo "==> All CLI commands tested successfully"
 
-demo-all: demo-fixtures build demo-doctor demo-empirical demo-cli demo-setup-all
+demo-all: demo-fixtures build demo-doctor demo-empirical demo-cli demo-setup-all demo-cert demo-skill-lifecycle
 	@echo "==> All demos completed successfully"
 	@echo "    Note: demo-http excluded (blocking server)"
 

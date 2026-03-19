@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use skrills_sync::{
     adapters::traits::AgentAdapter,
     adapters::{ClaudeAdapter, CodexAdapter},
-    common::Command,
+    common::{Command, ContentFormat},
     orchestrator::{SyncOrchestrator, SyncParams},
     report::SkipReason,
 };
@@ -90,6 +90,7 @@ impl SyncTestContext {
             modified: SystemTime::now(),
             hash,
             modules: Vec::new(),
+            content_format: ContentFormat::default(),
         }
     }
 }

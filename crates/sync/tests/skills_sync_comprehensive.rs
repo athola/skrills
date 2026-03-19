@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use skrills_sync::{
     adapters::traits::AgentAdapter,
     adapters::{ClaudeAdapter, CodexAdapter},
-    common::Command,
+    common::{Command, ContentFormat},
     orchestrator::{SyncOrchestrator, SyncParams},
     validation::{
         skill_is_codex_compatible, validate_skill_for_sync, validate_skills_for_sync,
@@ -100,6 +100,7 @@ impl SkillSyncTestContext {
             modified: SystemTime::now(),
             hash,
             modules: Vec::new(),
+            content_format: ContentFormat::default(),
         }
     }
 
@@ -1076,6 +1077,8 @@ mod negative_tests {
             modified: SystemTime::now(),
             hash: "test".to_string(),
             modules: Vec::new(),
+
+            content_format: ContentFormat::default(),
         };
 
         // WHEN: Validating

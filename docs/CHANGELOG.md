@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.0 - 2026-03-19
+- **NEW: Cursor IDE Support**: Full bidirectional sync for Cursor IDE (`.cursor/`).
+  - Rules: Sync between Cursor `.mdc` files and Claude `CLAUDE.md` / Copilot `*.instructions.md` with mode derivation (`alwaysApply`, globs, agent-requested).
+  - Skills: Sync to/from `.cursor/skills/{name}/SKILL.md`.
+  - Commands: Sync to/from `.cursor/commands/{name}.md`.
+  - Agents: Sync with field translation (`background` ↔ `is_background`).
+  - Hooks: Sync with event name translation (`PascalCase` ↔ `camelCase`).
+  - MCP: Sync via `.cursor/mcp.json`.
+- **NEW: CLI Flags**: Added `--from cursor` and `--to cursor` for sync-all and sync-* commands.
+- **NEW: MCP Tools**: `sync-from-cursor` and `sync-to-cursor` (25 → 27 tools total).
+- **NEW: Slash Commands**: `/sync-from-cursor` and `/sync-to-cursor` for plugin users.
+- **Refactor: Shared Adapter Utilities**: Extracted common sync logic from per-adapter modules into `crates/sync/src/adapters/utils.rs` and `traits.rs`.
+- **Refactor: Orchestrator**: Reworked sync orchestrator to support four-way sync routing.
+- **Refactor: Subagent Backends**: Simplified Claude and Codex backend implementations.
+- **Architecture**: Added ADR 0006 documenting the Cursor rules mapping strategy.
+- **Internal**: Bumped all workspace crate versions from 0.6.1 to 0.7.0.
+
 ## 0.6.1 - 2026-03-05
 - **Fix**: Tests that relied on case-only filename differences (`MySkill`/`myskill`/`MYSKILL`) now use distinct names to avoid collisions on case-insensitive filesystems (macOS APFS/HFS+).
 - **Fix**: Validation test uses `Skills.md` instead of `skill.md` for wrong-casing detection, preventing false passes on case-insensitive filesystems.

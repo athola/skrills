@@ -447,7 +447,7 @@ impl SubagentService {
         let limit = args
             .and_then(|m| m.get("limit"))
             .and_then(|v| v.as_u64())
-            .map(|v| v as usize)
+            .map(|v| usize::try_from(v).unwrap_or(usize::MAX))
             .unwrap_or(20);
         let runs = self.store.history(limit).await?;
         Ok(CallToolResult {
@@ -555,9 +555,7 @@ mod tests {
     use super::*;
     use crate::store::{MemRunStore, RunEvent, RunRequest, RunState};
     use skrills_discovery::{SkillRoot, SkillSource};
-    use std::env;
     use std::fs;
-    use std::sync::Mutex;
     use tempfile::tempdir;
     use time::OffsetDateTime;
 
@@ -567,36 +565,7 @@ mod tests {
         fs::write(agents_dir.join(name), content).unwrap();
     }
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(v) = &self.previous {
-                env::set_var(self.key, v);
-            } else {
-                env::remove_var(self.key);
-            }
-        }
-    }
-
-    fn set_env_var(key: &'static str, value: Option<&str>) -> EnvVarGuard {
-        let previous = env::var(key).ok();
-        if let Some(v) = value {
-            env::set_var(key, v);
-        } else {
-            env::remove_var(key);
-        }
-        EnvVarGuard { key, previous }
-    }
+    use skrills_test_utils::{env_guard, set_env_var};
 
     #[tokio::test]
     async fn tools_include_core_and_extended() {
@@ -1179,8 +1148,8 @@ You are a CLI agent."#,
 
         // Should succeed - routed to CLI adapter (though spawn may fail if codex isn't installed)
         // The important thing is that routing works and returns a run_id
-        assert!(result.is_ok(), "should route to CLI adapter: {:?}", result);
-        let content = result.unwrap().structured_content.unwrap();
+        let result = result.expect("should route to CLI adapter");
+        let content = result.structured_content.unwrap();
         assert!(content.get("run_id").is_some(), "should have run_id");
     }
 

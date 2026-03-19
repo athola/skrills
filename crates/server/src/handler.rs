@@ -35,14 +35,11 @@ use skrills_state::home_dir;
 use std::fs;
 
 /// Common arguments for sync tool requests.
-#[allow(dead_code)]
 struct SyncToolArgs {
     from: String,
     dry_run: bool,
     include_marketplace: bool,
     skip_existing_commands: bool,
-    skip_existing_instructions: bool,
-    force: bool,
 }
 
 impl SyncToolArgs {
@@ -64,14 +61,6 @@ impl SyncToolArgs {
                 .unwrap_or(false),
             skip_existing_commands: args
                 .and_then(|obj| obj.get("skip_existing_commands"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            skip_existing_instructions: args
-                .and_then(|obj| obj.get("skip_existing_instructions"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            force: args
-                .and_then(|obj| obj.get("force"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
         }
@@ -256,17 +245,30 @@ impl ServerHandler for SkillService {
                         let args = request.arguments.clone().unwrap_or_default();
                         self.sync_to_copilot_tool(args)
                     }
+                    // Cursor-specific sync tools
+                    "sync-from-cursor" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.sync_from_cursor_tool(args)
+                    }
+                    "sync-to-cursor" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.sync_to_cursor_tool(args)
+                    }
                     // Cross-agent sync tools
                     "sync-skills" => {
                         let args = request.arguments.clone().unwrap_or_default();
                         self.sync_skills_tool(args)
                     }
                     "sync-commands" => {
-                        use skrills_sync::{
-                            ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams,
-                        };
+                        use skrills_sync::{default_target_for, sync_between, SyncParams};
 
                         let args = SyncToolArgs::from_request(&request);
+                        let to = request
+                            .arguments
+                            .as_ref()
+                            .and_then(|obj| obj.get("to"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_else(|| default_target_for(&args.from));
 
                         let params = SyncParams {
                             from: Some(args.from.clone()),
@@ -276,24 +278,20 @@ impl ServerHandler for SkillService {
                             sync_mcp_servers: false,
                             sync_preferences: false,
                             sync_skills: false,
+                            sync_agents: false,
+                            sync_instructions: false,
                             include_marketplace: args.include_marketplace,
                             ..Default::default()
                         };
 
-                        let report = if args.from == "claude" {
-                            let source = ClaudeAdapter::new()?;
-                            let target = CodexAdapter::new()?;
-                            SyncOrchestrator::new(source, target).sync(&params)?
-                        } else {
-                            let source = CodexAdapter::new()?;
-                            let target = ClaudeAdapter::new()?;
-                            SyncOrchestrator::new(source, target).sync(&params)?
-                        };
+                        let report = sync_between(&args.from, to, &params)?;
 
                         Ok(CallToolResult {
                             content: vec![Content::text(report.summary.clone())],
                             is_error: Some(false),
                             structured_content: Some(json!({
+                                "from": args.from,
+                                "to": to,
                                 "report": report,
                                 "dry_run": args.dry_run,
                                 "skip_existing_commands": args.skip_existing_commands
@@ -302,11 +300,15 @@ impl ServerHandler for SkillService {
                         })
                     }
                     "sync-mcp-servers" => {
-                        use skrills_sync::{
-                            ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams,
-                        };
+                        use skrills_sync::{default_target_for, sync_between, SyncParams};
 
                         let args = SyncToolArgs::from_request(&request);
+                        let to = request
+                            .arguments
+                            .as_ref()
+                            .and_then(|obj| obj.get("to"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_else(|| default_target_for(&args.from));
 
                         let params = SyncParams {
                             from: Some(args.from.clone()),
@@ -315,23 +317,19 @@ impl ServerHandler for SkillService {
                             sync_mcp_servers: true,
                             sync_preferences: false,
                             sync_skills: false,
+                            sync_agents: false,
+                            sync_instructions: false,
                             ..Default::default()
                         };
 
-                        let report = if args.from == "claude" {
-                            let source = ClaudeAdapter::new()?;
-                            let target = CodexAdapter::new()?;
-                            SyncOrchestrator::new(source, target).sync(&params)?
-                        } else {
-                            let source = CodexAdapter::new()?;
-                            let target = ClaudeAdapter::new()?;
-                            SyncOrchestrator::new(source, target).sync(&params)?
-                        };
+                        let report = sync_between(&args.from, to, &params)?;
 
                         Ok(CallToolResult {
                             content: vec![Content::text(report.summary.clone())],
                             is_error: Some(false),
                             structured_content: Some(json!({
+                                "from": args.from,
+                                "to": to,
                                 "report": report,
                                 "dry_run": args.dry_run
                             })),
@@ -339,11 +337,15 @@ impl ServerHandler for SkillService {
                         })
                     }
                     "sync-preferences" => {
-                        use skrills_sync::{
-                            ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams,
-                        };
+                        use skrills_sync::{default_target_for, sync_between, SyncParams};
 
                         let args = SyncToolArgs::from_request(&request);
+                        let to = request
+                            .arguments
+                            .as_ref()
+                            .and_then(|obj| obj.get("to"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_else(|| default_target_for(&args.from));
 
                         let params = SyncParams {
                             from: Some(args.from.clone()),
@@ -352,23 +354,19 @@ impl ServerHandler for SkillService {
                             sync_mcp_servers: false,
                             sync_preferences: true,
                             sync_skills: false,
+                            sync_agents: false,
+                            sync_instructions: false,
                             ..Default::default()
                         };
 
-                        let report = if args.from == "claude" {
-                            let source = ClaudeAdapter::new()?;
-                            let target = CodexAdapter::new()?;
-                            SyncOrchestrator::new(source, target).sync(&params)?
-                        } else {
-                            let source = CodexAdapter::new()?;
-                            let target = ClaudeAdapter::new()?;
-                            SyncOrchestrator::new(source, target).sync(&params)?
-                        };
+                        let report = sync_between(&args.from, to, &params)?;
 
                         Ok(CallToolResult {
                             content: vec![Content::text(report.summary.clone())],
                             is_error: Some(false),
                             structured_content: Some(json!({
+                                "from": args.from,
+                                "to": to,
                                 "report": report,
                                 "dry_run": args.dry_run
                             })),
@@ -380,10 +378,7 @@ impl ServerHandler for SkillService {
                         self.sync_all_tool(args)
                     }
                     "sync-status" => {
-                        use skrills_sync::{
-                            ClaudeAdapter, CodexAdapter, CopilotAdapter, SyncOrchestrator,
-                            SyncParams,
-                        };
+                        use skrills_sync::{default_target_for, sync_between, SyncParams};
 
                         let args = SyncToolArgs::from_request(&request);
 
@@ -391,7 +386,8 @@ impl ServerHandler for SkillService {
                             .arguments
                             .as_ref()
                             .and_then(|obj| obj.get("to"))
-                            .and_then(|v| v.as_str());
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_else(|| default_target_for(&args.from));
 
                         let params = SyncParams {
                             from: Some(args.from.clone()),
@@ -400,67 +396,23 @@ impl ServerHandler for SkillService {
                             sync_mcp_servers: true,
                             sync_preferences: true,
                             sync_skills: true,
+                            sync_agents: true,
+                            sync_instructions: true,
                             ..Default::default()
                         };
 
-                        // Determine target based on from (if not specified)
-                        let from = args.from.as_str();
-                        let target = to.unwrap_or(match from {
-                            "claude" => "codex",
-                            "codex" => "claude",
-                            "copilot" => "claude",
-                            _ => "codex",
-                        });
-
-                        let report = match (from, target) {
-                            ("claude", "codex") => {
-                                let source = ClaudeAdapter::new()?;
-                                let target = CodexAdapter::new()?;
-                                SyncOrchestrator::new(source, target).sync(&params)?
-                            }
-                            ("claude", "copilot") => {
-                                let source = ClaudeAdapter::new()?;
-                                let target = CopilotAdapter::new()?;
-                                SyncOrchestrator::new(source, target).sync(&params)?
-                            }
-                            ("codex", "claude") => {
-                                let source = CodexAdapter::new()?;
-                                let target = ClaudeAdapter::new()?;
-                                SyncOrchestrator::new(source, target).sync(&params)?
-                            }
-                            ("codex", "copilot") => {
-                                let source = CodexAdapter::new()?;
-                                let target = CopilotAdapter::new()?;
-                                SyncOrchestrator::new(source, target).sync(&params)?
-                            }
-                            ("copilot", "claude") => {
-                                let source = CopilotAdapter::new()?;
-                                let target = ClaudeAdapter::new()?;
-                                SyncOrchestrator::new(source, target).sync(&params)?
-                            }
-                            ("copilot", "codex") => {
-                                let source = CopilotAdapter::new()?;
-                                let target = CodexAdapter::new()?;
-                                SyncOrchestrator::new(source, target).sync(&params)?
-                            }
-                            _ => {
-                                // Default: claude → codex
-                                let source = ClaudeAdapter::new()?;
-                                let target = CodexAdapter::new()?;
-                                SyncOrchestrator::new(source, target).sync(&params)?
-                            }
-                        };
+                        let report = sync_between(&args.from, to, &params)?;
 
                         Ok(CallToolResult {
                             content: vec![Content::text(format!(
                                 "Sync Preview ({} → {})\n{}",
-                                from, target, report.summary
+                                args.from, to, report.summary
                             ))],
                             is_error: Some(false),
                             structured_content: Some(json!({
                                 "preview": true,
-                                "from": from,
-                                "to": target,
+                                "from": args.from,
+                                "to": to,
                                 "report": report
                             })),
                             meta: None,
@@ -481,7 +433,7 @@ impl ServerHandler for SkillService {
                         let min_tokens = args
                             .get("min_tokens")
                             .and_then(|v| v.as_u64())
-                            .map(|v| v as usize);
+                            .map(|v| usize::try_from(v).unwrap_or(usize::MAX));
                         let include_suggestions = args
                             .get("include_suggestions")
                             .and_then(|v| v.as_bool())
@@ -671,7 +623,7 @@ impl ServerHandler for SkillService {
                         let limit = args
                             .get("limit")
                             .and_then(|v| v.as_u64())
-                            .map(|v| v as usize)
+                            .map(|v| usize::try_from(v).unwrap_or(usize::MAX))
                             .unwrap_or(10);
 
                         let include_quality = args
@@ -812,30 +764,7 @@ mod tests {
             .expect("service should build")
     }
 
-    struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(v) = &self.previous {
-                std::env::set_var(self.key, v);
-            } else {
-                std::env::remove_var(self.key);
-            }
-        }
-    }
-
-    fn set_env_var(key: &'static str, value: Option<&str>) -> EnvVarGuard {
-        let previous = std::env::var(key).ok();
-        if let Some(val) = value {
-            std::env::set_var(key, val);
-        } else {
-            std::env::remove_var(key);
-        }
-        EnvVarGuard { key, previous }
-    }
+    use crate::test_support::set_env_var;
 
     fn run_async<T>(future: impl Future<Output = T>) -> T {
         let runtime = tokio::runtime::Builder::new_current_thread()

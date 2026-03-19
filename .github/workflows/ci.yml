@@ -54,8 +54,9 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
 
+      # NOTE: Keep flags in sync with Makefile `lint` target
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Tests (all features)
         run: cargo test --workspace --all-features
@@ -110,8 +111,7 @@ jobs:
           export GIT_DIR="$git_root/.git"
           export GIT_WORK_TREE="$git_root"
           if ! cargo +nightly public-api diff --deny removed --deny changed origin/master..HEAD; then
-            echo "Skipping public API check: cargo-public-api failed (likely missing git history)";
-            exit 0;
+            echo "::warning::Public API diff detected changes or tool failure — review manually"
           fi
 
   release-build-check:

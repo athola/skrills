@@ -1,6 +1,6 @@
 [package]
 name = "skrills"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2021"
 description = "A command-line interface and MCP server for managing local SKILL.md files."
 license = "MIT"
@@ -19,9 +19,10 @@ subagents = ["skrills-server/subagents"]
 http-transport = ["skrills-server/http-transport"]
 
 [dependencies]
-skrills-server = { path = "../server", version = "0.6.1" }
+skrills-server = { path = "../server", version = "0.7.0" }
 anyhow.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 scopeguard = "1.2"
+skrills_test_utils = { path = "../test-utils", version = "0.7.0" }

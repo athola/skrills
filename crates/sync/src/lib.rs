@@ -1,7 +1,8 @@
 //! Cross-agent configuration sync for skrills.
 //!
-//! Syncs commands, MCP servers, preferences, and skills between
-//! Claude Code and Codex using a pluggable adapter architecture.
+//! Syncs commands, skills, MCP servers, preferences, hooks, agents,
+//! and instructions between Claude Code, Codex, Copilot, and Cursor
+//! using a pluggable adapter architecture.
 //!
 //! Includes validation to ensure skills are compatible with their
 //! target CLI before syncing.
@@ -134,11 +135,15 @@ pub mod orchestrator;
 pub mod report;
 pub mod validation;
 
-pub use adapters::{AgentAdapter, ClaudeAdapter, CodexAdapter, CopilotAdapter, FieldSupport};
-pub use common::{Command, CommonConfig, McpServer, Preferences, SyncMeta};
+pub use adapters::{
+    AgentAdapter, ClaudeAdapter, CodexAdapter, CopilotAdapter, CursorAdapter, FieldSupport,
+};
+pub use common::{Command, CommonConfig, ContentFormat, McpServer, Preferences};
 pub use models::transform_model;
+#[allow(deprecated)]
 pub use orchestrator::{
-    parse_direction, SyncDirection, SyncOrchestrator, SyncParams, SyncParamsBuilder,
+    create_adapter, default_target_for, is_valid_platform, parse_direction, sync_between,
+    SyncDirection, SyncOrchestrator, SyncParams,
 };
 pub use report::{SkipReason, SyncReport, WriteReport};
 pub use validation::{

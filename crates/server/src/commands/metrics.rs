@@ -315,7 +315,7 @@ A test skill.
         let result = handle_metrics_command(vec![skill_dir], OutputFormat::Text, false);
 
         // THEN it should succeed (prints "No skills found.")
-        assert!(result.is_ok());
+        result.expect("metrics command on empty dir should succeed");
     }
 
     #[test]
@@ -334,7 +334,7 @@ A test skill.
         let result = handle_metrics_command(vec![skill_dir], OutputFormat::Json, false);
 
         // THEN it should succeed
-        assert!(result.is_ok());
+        result.expect("metrics command with single skill should succeed");
     }
 
     #[test]
@@ -353,7 +353,7 @@ A test skill.
         let result = handle_metrics_command(vec![skill_dir], OutputFormat::Text, true);
 
         // THEN it should succeed
-        assert!(result.is_ok());
+        result.expect("metrics command with validation should succeed");
     }
 
     #[test]
@@ -399,7 +399,7 @@ skill(high-quality)
         let result = handle_metrics_command(vec![skill_dir], OutputFormat::Text, false);
 
         // THEN it should succeed and process all 3 skills
-        assert!(result.is_ok());
+        result.expect("metrics command with multiple skills should succeed");
     }
 
     #[test]

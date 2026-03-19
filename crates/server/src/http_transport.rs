@@ -23,7 +23,7 @@ use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
 };
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use tower_http::cors::{Any, CorsLayer};
@@ -291,14 +291,11 @@ where
     // Build CORS layer (passes auth status for security warnings)
     let cors_layer = build_cors_layer(&security.cors_origins, security.has_auth());
 
-    // Extract TLS config before potential move of auth_token
-    let tls_config = if security.has_tls() {
-        Some((
-            security.tls_cert.clone().unwrap(),
-            security.tls_key.clone().unwrap(),
-        ))
-    } else {
-        None
+    // Extract TLS config before potential move of auth_token.
+    // Uses pattern matching instead of unwrap() to avoid relying on has_tls() invariant.
+    let tls_config = match (&security.tls_cert, &security.tls_key) {
+        (Some(cert), Some(key)) => Some((cert.clone(), key.clone())),
+        _ => None,
     };
 
     // Build dashboard and API routes
@@ -312,7 +309,13 @@ where
     });
 
     // Discover rules for rules API
-    let home = dirs::home_dir().unwrap_or_default();
+    let home = dirs::home_dir().unwrap_or_else(|| {
+        tracing::warn!(
+            target: "skrills::http",
+            "Could not determine home directory; rule discovery may miss user-level rules"
+        );
+        PathBuf::new()
+    });
     let project_dir = std::env::current_dir().ok();
     let rules = skrills_discovery::discover_rules(&home, project_dir.as_deref());
     let rules_state = Arc::new(RulesState {

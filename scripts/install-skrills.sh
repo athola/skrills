@@ -11,6 +11,9 @@
 #                          When set, installs systemd user service and configures MCP with URL.
 set -euo pipefail
 
+_SKRILLS_TMP=$(mktemp -d)
+trap 'rm -rf "$_SKRILLS_TMP"' EXIT INT TERM
+
 UNIVERSAL=0
 UNIVERSAL_ONLY=0
 for arg in "$@"; do
@@ -31,12 +34,15 @@ HTTP_ADDR="${SKRILLS_HTTP:-}"
 
 detect_client_from_base() {
   local base_hint="$1"
-  shopt -s nocasematch 2>/dev/null || true
-  case "$base_hint" in
-    *".claude"*|*"/claude"*|*"claude"*) echo "claude"; return ;;
-    *".codex"*|*"/codex"*|*"codex"*) echo "codex"; return ;;
+  # Lowercase the input to avoid nocasematch/eval dance
+  local lower
+  lower=$(echo "$base_hint" | tr '[:upper:]' '[:lower:]')
+  local result=""
+  case "$lower" in
+    *".claude"*|*"/claude"*|*"claude"*) result="claude" ;;
+    *".codex"*|*"/codex"*|*"codex"*) result="codex" ;;
   esac
-  echo ""
+  echo "$result"
 }
 
 probe_signature_files() {
@@ -114,7 +120,7 @@ clean_invalid_claude_model() {
   # Remove invalid model settings from Claude config.toml (e.g., gpt-5.1-codex-max)
   if [ "$CLIENT" = "claude" ] && [ -f "$CONFIG_TOML" ]; then
     if grep -q '^model[[:space:]]*=[[:space:]]*"gpt-' "$CONFIG_TOML"; then
-      tmp=$(mktemp)
+      tmp=$(mktemp "$_SKRILLS_TMP/tmp.XXXXXX")
       # Remove lines with invalid GPT model settings
       sed '/^model[[:space:]]*=[[:space:]]*"gpt-/d' "$CONFIG_TOML" > "$tmp"
       if mv "$tmp" "$CONFIG_TOML"; then
@@ -149,7 +155,7 @@ clean_legacy_artifacts() {
   # Clean legacy entries from .mcp.json
   if [ -f "$MCP_PATH" ]; then
     if command -v jq >/dev/null 2>&1; then
-      tmp=$(mktemp)
+      tmp=$(mktemp "$_SKRILLS_TMP/tmp.XXXXXX")
       jq 'del(.mcpServers["codex-mcp-skills"])' "$MCP_PATH" > "$tmp" \
         && mv "$tmp" "$MCP_PATH" \
         && echo "Removed codex-mcp-skills from $MCP_PATH" \
@@ -177,7 +183,7 @@ PY
 
   # Remove MCP server entries from config.toml (now only in .mcp.json)
   if [ "$CLIENT" = "claude" ] && [ -f "$CONFIG_TOML" ]; then
-    tmp=$(mktemp)
+    tmp=$(mktemp "$_SKRILLS_TMP/tmp.XXXXXX")
     awk '
       BEGIN { skip = 0 }
       /^\[mcp_servers\./ { skip = 1; next }
@@ -201,7 +207,7 @@ PY
   # Remove legacy autoload instructions from AGENTS.md
   local agents_md="$BASE_DIR/AGENTS.md"
   if [ -f "$agents_md" ] && grep -q '<!-- skrills-integration-start -->' "$agents_md" 2>/dev/null; then
-    tmp=$(mktemp)
+    tmp=$(mktemp "$_SKRILLS_TMP/tmp.XXXXXX")
     awk '
       /<!-- skrills-integration-start -->/{ skip=1; next }
       /<!-- skrills-integration-end -->/{ skip=0; next }
@@ -464,11 +470,11 @@ if [ "$CLIENT" = "claude" ]; then
         mkdir -p "$(dirname "$MCP_PATH")"
         if command -v jq >/dev/null 2>&1; then
           if [ -f "$MCP_PATH" ]; then
-            tmp=$(mktemp)
+            tmp=$(mktemp "$_SKRILLS_TMP/tmp.XXXXXX")
             jq --arg url "$MCP_URL" '.mcpServers."skrills" = {"type": "http", "url": $url}' "$MCP_PATH" > "$tmp"
             mv "$tmp" "$MCP_PATH" && echo "Updated skrills MCP server (HTTP) in $MCP_PATH" || rm -f "$tmp"
           else
-            tmp=$(mktemp)
+            tmp=$(mktemp "$_SKRILLS_TMP/tmp.XXXXXX")
             jq -n --arg url "$MCP_URL" '{mcpServers: {skrills: {type: "http", url: $url}}}' > "$tmp"
             mv "$tmp" "$MCP_PATH" && echo "Created $MCP_PATH with skrills MCP server (HTTP)" || rm -f "$tmp"
           fi
@@ -512,8 +518,8 @@ PY
         mkdir -p "$(dirname "$MCP_PATH")"
         if command -v jq >/dev/null 2>&1; then
           if [ -f "$MCP_PATH" ]; then
-            tmp=$(mktemp)
-            jq '.mcpServers."skrills" = {"type": "stdio", "command": "'"$BIN_PATH"'", "args": ["serve"]}' "$MCP_PATH" > "$tmp"
+            tmp=$(mktemp "$_SKRILLS_TMP/tmp.XXXXXX")
+            jq --arg bin "$BIN_PATH" '.mcpServers."skrills" = {"type": "stdio", "command": $bin, "args": ["serve"]}' "$MCP_PATH" > "$tmp"
             if mv "$tmp" "$MCP_PATH"; then
               echo "Updated skrills MCP server in $MCP_PATH"
             else
@@ -521,7 +527,7 @@ PY
               rm -f "$tmp"
             fi
           else
-            tmp=$(mktemp)
+            tmp=$(mktemp "$_SKRILLS_TMP/tmp.XXXXXX")
             jq -n --arg bin "$BIN_PATH" '{mcpServers: {skrills: {type: "stdio", command: $bin, args: ["serve"]}}}' > "$tmp"
             if mv "$tmp" "$MCP_PATH"; then
               echo "Created $MCP_PATH with skrills MCP server"
@@ -573,7 +579,7 @@ if [ "$CLIENT" = "codex" ]; then
     # Remove any existing stdio config and add HTTP config
     if [ -f "$CONFIG_TOML" ]; then
       # Remove existing skrills entry
-      tmp=$(mktemp)
+      tmp=$(mktemp "$_SKRILLS_TMP/tmp.XXXXXX")
       awk '
         BEGIN { skip = 0 }
         /^\[mcp_servers\.skrills\]/ { skip = 1; next }
@@ -584,7 +590,7 @@ if [ "$CLIENT" = "codex" ]; then
 
     # Add HTTP MCP server entry
     mkdir -p "$(dirname "$CONFIG_TOML")"
-    tmp=$(mktemp)
+    tmp=$(mktemp "$_SKRILLS_TMP/tmp.XXXXXX")
     cat > "$tmp" <<MCP_ENTRY
 # Skrills MCP server for skill sync, validation, and analysis (HTTP transport)
 [mcp_servers.skrills]
@@ -608,7 +614,7 @@ MCP_ENTRY
           inside && /^[[:space:]]*type[[:space:]]*=/{found=1}
           END{exit(found?0:1)}
         ' "$CONFIG_TOML"; then
-          tmp=$(mktemp)
+          tmp=$(mktemp "$_SKRILLS_TMP/tmp.XXXXXX")
           awk '
             BEGIN{inside=0;added=0}
             /^\[mcp_servers\.skrills\]/{inside=1}
@@ -633,7 +639,7 @@ MCP_ENTRY
         fi
       else
         # Add skrills MCP server entry
-        tmp=$(mktemp)
+        tmp=$(mktemp "$_SKRILLS_TMP/tmp.XXXXXX")
         cat > "$tmp" <<MCP_ENTRY
 # Skrills MCP server for skill sync, validation, and analysis
 [mcp_servers.skrills]

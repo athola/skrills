@@ -60,13 +60,13 @@ fn sync_schema() -> Arc<JsonMap<String, serde_json::Value>> {
         json!({
             "from": {
                 "type": "string",
-                "enum": ["claude", "codex", "copilot"],
-                "description": "Source agent: 'claude', 'codex', or 'copilot'"
+                "enum": ["claude", "codex", "copilot", "cursor"],
+                "description": "Source agent: 'claude', 'codex', 'copilot', or 'cursor'"
             },
             "to": {
                 "type": "string",
-                "enum": ["claude", "codex", "copilot"],
-                "description": "Target agent: 'claude', 'codex', or 'copilot'. Defaults to codex (for claude source) or claude (for codex/copilot source)"
+                "enum": ["claude", "codex", "copilot", "cursor"],
+                "description": "Target agent: 'claude', 'codex', 'copilot', or 'cursor'. Defaults to codex (for claude source) or claude (for others)"
             },
             "dry_run": {
                 "type": "boolean",
@@ -122,6 +122,32 @@ pub(crate) fn sync_tools() -> Vec<Tool> {
             title: Some("Sync to GitHub Copilot CLI".into()),
             description: Some(
                 "Sync skills and instructions from Claude or Codex to GitHub Copilot CLI (~/.config/github-copilot)."
+                    .into(),
+            ),
+            input_schema: sync_schema.clone(),
+            output_schema: None,
+            annotations: Some(ToolAnnotations::default()),
+            icons: None,
+            meta: None,
+        },
+        Tool {
+            name: "sync-from-cursor".into(),
+            title: Some("Sync from Cursor IDE".into()),
+            description: Some(
+                "Sync skills, commands, agents, hooks, rules, and MCP servers from Cursor (~/.cursor) to Claude or Codex."
+                    .into(),
+            ),
+            input_schema: sync_schema.clone(),
+            output_schema: None,
+            annotations: Some(ToolAnnotations::default()),
+            icons: None,
+            meta: None,
+        },
+        Tool {
+            name: "sync-to-cursor".into(),
+            title: Some("Sync to Cursor IDE".into()),
+            description: Some(
+                "Sync skills, commands, agents, hooks, rules (.mdc), and MCP servers from Claude or Codex to Cursor (~/.cursor)."
                     .into(),
             ),
             input_schema: sync_schema.clone(),
@@ -822,8 +848,8 @@ mod tests {
     #[test]
     fn test_all_tools_returns_expected_count() {
         let tools = all_tools();
-        // 9 sync + 3 validation + 1 dependency + 1 recommend + 1 metrics + 4 trace + 6 intelligence = 25 tools
-        assert_eq!(tools.len(), 25);
+        // 11 sync + 3 validation + 1 dependency + 1 recommend + 1 metrics + 4 trace + 6 intelligence = 27 tools
+        assert_eq!(tools.len(), 27);
     }
 
     #[test]
@@ -838,7 +864,7 @@ mod tests {
 
     #[test]
     fn test_sync_tools_count() {
-        assert_eq!(sync_tools().len(), 9);
+        assert_eq!(sync_tools().len(), 11);
     }
 
     #[test]

@@ -314,10 +314,9 @@ mod tests {
         let path = tmp.path().join("skills-history.json");
         fs::write(&path, "").unwrap();
 
-        // Empty file should fail JSON parsing but not panic
-        let result = parse_codex_skills_history(&path);
-        // Should return empty vec or handle gracefully
-        assert!(result.is_ok() || result.is_err());
+        // Empty file should fail JSON parsing but not panic.
+        // Reaching this point without a panic proves graceful handling.
+        let _result = parse_codex_skills_history(&path);
     }
 
     #[test]
