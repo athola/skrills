@@ -40,6 +40,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Adapter for Cursor IDE configuration.
+#[derive(Debug)]
 pub struct CursorAdapter {
     root: PathBuf,
 }

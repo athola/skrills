@@ -100,6 +100,7 @@ pub struct SyncReport {
     pub mcp_servers: WriteReport,
     pub preferences: WriteReport,
     pub agents: WriteReport,
+    pub hooks: WriteReport,
     pub instructions: WriteReport,
     /// Overall success status
     pub success: bool,
@@ -123,6 +124,7 @@ impl SyncReport {
             + self.mcp_servers.written
             + self.preferences.written
             + self.agents.written
+            + self.hooks.written
             + self.instructions.written
     }
 
@@ -133,6 +135,7 @@ impl SyncReport {
             + self.mcp_servers.skipped.len()
             + self.preferences.skipped.len()
             + self.agents.skipped.len()
+            + self.hooks.skipped.len()
             + self.instructions.skipped.len()
     }
 
@@ -164,6 +167,11 @@ impl SyncReport {
             "  Agents:       {} synced, {} skipped\n",
             self.agents.written,
             self.agents.skipped.len()
+        ));
+        out.push_str(&format!(
+            "  Hooks:        {} synced, {} skipped\n",
+            self.hooks.written,
+            self.hooks.skipped.len()
         ));
         out.push_str(&format!(
             "  Instructions: {} synced, {} skipped\n",

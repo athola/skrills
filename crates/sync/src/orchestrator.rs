@@ -66,6 +66,9 @@ pub struct SyncParams {
     /// Sync agents (subagents)
     #[serde(default = "default_true")]
     pub sync_agents: bool,
+    /// Sync hooks (lifecycle events)
+    #[serde(default = "default_true")]
+    pub sync_hooks: bool,
     /// Sync instructions (CLAUDE.md → *.instructions.md)
     #[serde(default = "default_true")]
     pub sync_instructions: bool,
@@ -89,6 +92,7 @@ impl Default for SyncParams {
             sync_mcp_servers: true,
             sync_preferences: true,
             sync_agents: true,
+            sync_hooks: true,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -286,6 +290,22 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 report.agents = self.target.write_agents(&agents)?;
             } else {
                 report.agents.written = agents.len();
+            }
+        }
+
+        // Sync hooks (lifecycle events)
+        if params.sync_hooks {
+            if !target_support.hooks {
+                tracing::debug!(
+                    target = %self.target.name(),
+                    "Target does not natively support hooks; delegating to adapter"
+                );
+            }
+            let hooks = self.source.read_hooks()?;
+            if !params.dry_run {
+                report.hooks = self.target.write_hooks(&hooks)?;
+            } else {
+                report.hooks.written = hooks.len();
             }
         }
 

@@ -1014,7 +1014,7 @@ impl SkillService {
             dry_run,
             sync_commands: true,
             sync_mcp_servers: true,
-            sync_preferences: true,
+            sync_preferences: false, // Cursor preferences are not yet mapped
             sync_skills: true,
             sync_agents: true,
             sync_instructions: true,
@@ -1074,7 +1074,7 @@ impl SkillService {
             dry_run,
             sync_commands: true,
             sync_mcp_servers: true,
-            sync_preferences: true,
+            sync_preferences: false, // Cursor preferences are not yet mapped
             sync_skills: true,
             sync_agents: true,
             sync_instructions: true,

@@ -205,6 +205,7 @@ fn claude_to_cursor_syncs_skills_with_frontmatter_stripping() {
         sync_mcp_servers: false,
         sync_preferences: false,
         sync_agents: false,
+        sync_hooks: false,
         sync_instructions: false,
         ..Default::default()
     };
@@ -246,6 +247,7 @@ fn claude_to_cursor_syncs_commands() {
         sync_mcp_servers: false,
         sync_preferences: false,
         sync_agents: false,
+        sync_hooks: false,
         sync_instructions: false,
         ..Default::default()
     };
@@ -272,6 +274,7 @@ fn claude_to_cursor_translates_agent_frontmatter() {
 
     let params = SyncParams {
         sync_agents: true,
+        sync_hooks: false,
         sync_skills: false,
         sync_commands: false,
         sync_mcp_servers: false,
@@ -318,6 +321,7 @@ fn claude_to_cursor_generates_mdc_rules() {
         sync_mcp_servers: false,
         sync_preferences: false,
         sync_agents: false,
+        sync_hooks: false,
         ..Default::default()
     };
 
@@ -360,6 +364,7 @@ fn claude_to_cursor_syncs_mcp() {
         sync_commands: false,
         sync_preferences: false,
         sync_agents: false,
+        sync_hooks: false,
         sync_instructions: false,
         ..Default::default()
     };
@@ -393,6 +398,7 @@ fn cursor_to_claude_syncs_skills() {
         sync_mcp_servers: false,
         sync_preferences: false,
         sync_agents: false,
+        sync_hooks: false,
         sync_instructions: false,
         ..Default::default()
     };
@@ -465,6 +471,7 @@ fn round_trip_commands_claude_to_cursor_to_claude() {
         sync_mcp_servers: false,
         sync_preferences: false,
         sync_agents: false,
+        sync_hooks: false,
         sync_instructions: false,
         ..Default::default()
     };
@@ -510,6 +517,7 @@ fn round_trip_mcp_claude_to_cursor_to_claude() {
         sync_commands: false,
         sync_preferences: false,
         sync_agents: false,
+        sync_hooks: false,
         sync_instructions: false,
         ..Default::default()
     };

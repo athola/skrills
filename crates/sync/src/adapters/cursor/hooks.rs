@@ -141,7 +141,20 @@ pub fn write_hooks(root: &Path, hooks: &[Command]) -> Result<WriteReport> {
     let path = hooks_path(root);
     let mut config = if path.exists() {
         let content = fs::read_to_string(&path)?;
-        serde_json::from_str::<CursorHooksConfig>(&content).unwrap_or_default()
+        match serde_json::from_str::<CursorHooksConfig>(&content) {
+            Ok(config) => config,
+            Err(e) => {
+                warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "Existing hooks.json has invalid JSON; starting fresh"
+                );
+                report
+                    .warnings
+                    .push(format!("Existing hooks.json could not be parsed: {}", e));
+                CursorHooksConfig::default()
+            }
+        }
     } else {
         CursorHooksConfig::default()
     };
@@ -173,8 +186,23 @@ pub fn write_hooks(root: &Path, hooks: &[Command]) -> Result<WriteReport> {
         // Parse hook content based on its declared format
         let content_str = String::from_utf8_lossy(&hook.content);
         let entries: Vec<HookEntry> = if hook.content_format == ContentFormat::Json {
-            // Trusted JSON source — parse directly
-            serde_json::from_str(&content_str)?
+            // JSON source — attempt parse, skip gracefully on failure
+            match serde_json::from_str(&content_str) {
+                Ok(e) => e,
+                Err(e) => {
+                    warn!(
+                        event = %hook.name,
+                        error = %e,
+                        "Skipping hook with malformed JSON content"
+                    );
+                    report.skipped.push(SkipReason::AgentSpecificFeature {
+                        item: hook.name.clone(),
+                        feature: "Hook content is not valid JSON".to_string(),
+                        suggestion: "Hook content must be a JSON array of hook entries".to_string(),
+                    });
+                    continue;
+                }
+            }
         } else {
             // Markdown/plain text — try JSON first, skip if unparseable
             match serde_json::from_str(&content_str) {
@@ -344,5 +372,97 @@ mod tests {
         assert!(names.contains(&"PreToolUse"));
         // afterFileEdit has no Claude equivalent, preserved as-is
         assert!(names.contains(&"afterFileEdit"));
+    }
+
+    #[test]
+    fn hooks_write_read_roundtrip() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Write hooks with Claude PascalCase names
+        let hooks = vec![
+            crate::common::Command {
+                name: "PreToolUse".to_string(),
+                content: br#"[{"command": "./lint.sh", "type": "command"}]"#.to_vec(),
+                source_path: std::path::PathBuf::from("/test"),
+                modified: std::time::SystemTime::UNIX_EPOCH,
+                hash: "test".to_string(),
+                modules: vec![],
+                content_format: ContentFormat::Json,
+            },
+            crate::common::Command {
+                name: "PostToolUse".to_string(),
+                content: br#"[{"command": "./format.sh", "type": "command"}]"#.to_vec(),
+                source_path: std::path::PathBuf::from("/test"),
+                modified: std::time::SystemTime::UNIX_EPOCH,
+                hash: "test".to_string(),
+                modules: vec![],
+                content_format: ContentFormat::Json,
+            },
+        ];
+
+        let write_report = write_hooks(root, &hooks).unwrap();
+        assert_eq!(write_report.written, 2);
+
+        // Read back — should get Claude PascalCase names
+        let read_back = read_hooks(root).unwrap();
+        let names: Vec<&str> = read_back.iter().map(|h| h.name.as_str()).collect();
+        assert!(
+            names.contains(&"PreToolUse"),
+            "PreToolUse should survive roundtrip"
+        );
+        assert!(
+            names.contains(&"PostToolUse"),
+            "PostToolUse should survive roundtrip"
+        );
+    }
+
+    #[test]
+    fn write_hooks_gracefully_skips_malformed_json_content() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+
+        let hooks = vec![crate::common::Command {
+            name: "PreToolUse".to_string(),
+            content: b"{not valid json}".to_vec(),
+            source_path: std::path::PathBuf::from("/test"),
+            modified: std::time::SystemTime::UNIX_EPOCH,
+            hash: "test".to_string(),
+            modules: vec![],
+            content_format: ContentFormat::Json,
+        }];
+
+        // Should NOT error — should gracefully skip
+        let report = write_hooks(root, &hooks).unwrap();
+        assert_eq!(report.written, 0);
+        assert_eq!(report.skipped.len(), 1);
+    }
+
+    #[test]
+    fn write_hooks_warns_on_malformed_existing_hooks_json() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Write malformed hooks.json
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::write(hooks_path(root), "{ this is not valid json }").unwrap();
+
+        let hooks = vec![crate::common::Command {
+            name: "PreToolUse".to_string(),
+            content: br#"[{"command": "./lint.sh", "type": "command"}]"#.to_vec(),
+            source_path: std::path::PathBuf::from("/test"),
+            modified: std::time::SystemTime::UNIX_EPOCH,
+            hash: "test".to_string(),
+            modules: vec![],
+            content_format: ContentFormat::Json,
+        }];
+
+        // Should NOT error — should warn and proceed with fresh config
+        let report = write_hooks(root, &hooks).unwrap();
+        assert_eq!(report.written, 1);
+        assert!(
+            !report.warnings.is_empty(),
+            "Should have a warning about malformed JSON"
+        );
     }
 }

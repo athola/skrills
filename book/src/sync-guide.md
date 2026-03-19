@@ -149,8 +149,19 @@ Cursor-only frontmatter fields (`globs`, `alwaysApply`) are preserved in content
 ### Cursor Hooks
 
 Hook event names are translated between Claude's PascalCase and Cursor's camelCase conventions:
-- `PreToolUse` ↔ `beforeToolUse`
-- `PostToolUse` ↔ `afterToolUse`
+
+| Claude (PascalCase) | Cursor (camelCase) |
+|---------------------|--------------------|
+| `PreToolUse` | `preToolUse` |
+| `PostToolUse` | `postToolUse` |
+| `SessionStart` | `sessionStart` |
+| `SessionEnd` | `sessionEnd` |
+| `Stop` | `stop` |
+| `SubagentStop` | `subagentStop` |
+| `UserPromptSubmit` | `beforeSubmitPrompt` |
+| `PreCompact` | `preCompact` |
+
+The `Notification` event has no Cursor equivalent and is skipped during sync. See [ADR 0006](../docs/adr/0006-cursor-rules-mapping.md) for the full mapping rationale.
 
 Cursor-only events (`afterFileEdit`, `beforeShellExecution`) are preserved in raw content during Cursor-to-Claude sync.
 

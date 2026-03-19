@@ -22,25 +22,53 @@ pub fn is_hidden_path(path: &Path) -> bool {
 /// Checks whether `target_path` stays within `base_dir` after resolution.
 ///
 /// Returns `true` if the path is contained, `false` if it escapes (path traversal).
-/// For files that don't exist yet, canonicalizes the parent directory instead.
+/// For files that don't exist yet, canonicalizes the base directory and checks
+/// that the relative path has no `..` components that escape the base.
 pub fn is_path_contained(target_path: &Path, base_dir: &Path) -> bool {
-    let resolved = target_path.canonicalize().or_else(|_| {
-        // File doesn't exist yet — canonicalize the parent instead
-        target_path
-            .parent()
-            .and_then(|p| p.canonicalize().ok())
-            .map(|p| p.join(target_path.file_name().unwrap_or_default()))
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no parent"))
-    });
-    match resolved {
-        Ok(resolved) => {
-            let canonical_base = base_dir
-                .canonicalize()
-                .unwrap_or_else(|_| base_dir.to_path_buf());
-            resolved.starts_with(&canonical_base)
-        }
-        Err(_) => true, // Cannot resolve — allow (dir may not exist yet)
+    // Fast path: if both exist on disk, use canonical resolution
+    if let (Ok(resolved), Ok(canonical_base)) =
+        (target_path.canonicalize(), base_dir.canonicalize())
+    {
+        return resolved.starts_with(&canonical_base);
     }
+
+    // Target doesn't exist yet — try canonicalizing the parent chain
+    let resolved = target_path
+        .parent()
+        .and_then(|p| p.canonicalize().ok())
+        .map(|p| p.join(target_path.file_name().unwrap_or_default()));
+
+    if let Some(resolved) = resolved {
+        let canonical_base = base_dir
+            .canonicalize()
+            .unwrap_or_else(|_| base_dir.to_path_buf());
+        return resolved.starts_with(&canonical_base);
+    }
+
+    // Neither target nor its parent exist — check if base_dir exists and
+    // verify that the relative path between them has no traversal
+    let canonical_base = match base_dir.canonicalize() {
+        Ok(b) => b,
+        Err(_) => return false, // Base doesn't exist — deny
+    };
+
+    // If target_path starts with base_dir, strip the prefix and check for ..
+    if let Ok(relative) = target_path.strip_prefix(base_dir) {
+        // No component should be ".."
+        return !relative
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir));
+    }
+
+    // If target_path is absolute but doesn't start with base_dir, try the
+    // canonical base
+    if let Ok(relative) = target_path.strip_prefix(&canonical_base) {
+        return !relative
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir));
+    }
+
+    false // Cannot determine containment — deny (fail-closed)
 }
 
 /// Computes a SHA-256 hash of the given content, returning a lowercase hex string.

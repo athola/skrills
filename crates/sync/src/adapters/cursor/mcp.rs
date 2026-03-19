@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Cursor's MCP config structure (mirrors Claude's format).
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -56,6 +56,15 @@ pub fn read_mcp_servers(root: &Path) -> Result<HashMap<String, McpServer>> {
 
     let mut servers = HashMap::new();
     for (name, entry) in config.mcp_servers {
+        // Skip entries with neither command nor URL — they produce broken configs
+        if entry.command.is_none() && entry.url.is_none() {
+            warn!(
+                name = %name,
+                "Skipping MCP entry with neither command nor url"
+            );
+            continue;
+        }
+
         let transport = if entry.url.is_some() {
             McpTransport::Http
         } else {

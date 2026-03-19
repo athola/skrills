@@ -157,10 +157,11 @@ fn derive_rule_mode(
         return (fields, body.to_string());
     }
 
-    // CLAUDE.md, CLAUDE, or claude-instructions → always apply
+    // CLAUDE.md, CLAUDE, claude-md (read-back form), or claude-instructions → always apply
     let name_lower = name.to_lowercase();
     if name_lower == "claude"
         || name_lower == "claude.md"
+        || name_lower == "claude-md"
         || name_lower.contains("claude-instruction")
     {
         fields.insert("alwaysApply".to_string(), "true".to_string());
@@ -201,6 +202,18 @@ mod tests {
         assert_eq!(fields.get("globs").unwrap(), "\"**/*.test.ts\"");
         assert_eq!(fields.get("alwaysApply").unwrap(), "false");
         assert!(body.starts_with("# Test Guidelines"));
+    }
+
+    #[test]
+    fn derive_claude_md_readback_form_as_always_apply() {
+        // After roundtrip: CLAUDE.md → claude-md.mdc → read back as "claude-md"
+        let (fields, _body) =
+            derive_rule_mode("claude-md", "# Project Instructions\n\nDo things.\n");
+        assert_eq!(
+            fields.get("alwaysApply").unwrap(),
+            "true",
+            "claude-md (read-back form) should be alwaysApply"
+        );
     }
 
     #[test]

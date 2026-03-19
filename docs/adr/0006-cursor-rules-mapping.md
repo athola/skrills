@@ -56,7 +56,7 @@ This polymorphic reuse avoids adding a Cursor-specific trait method.
 
 ## Consequences
 
-- Name-based heuristic (`claude`, `claude-instructions`) for always-apply mode
+- Name-based heuristic (`claude`, `claude-md`, `claude-instruction`) for always-apply mode
   is fragile but covers the primary use case.
 - Cursor-only frontmatter fields (`globs`, `alwaysApply`) have no Claude
   equivalent; they are preserved in content bytes during Cursor-to-Claude sync
