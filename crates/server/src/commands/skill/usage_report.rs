@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -68,7 +69,7 @@ pub(crate) fn handle_skill_usage_report_command(
 
     let total: u64 = skill_counts.values().sum();
     let mut sorted: Vec<_> = skill_counts.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.sort_by_key(|b| Reverse(b.1));
 
     let skills: Vec<UsageStats> = sorted
         .into_iter()
@@ -130,6 +131,7 @@ pub(crate) fn handle_skill_usage_report_command(
 #[cfg(test)]
 mod tests {
     use super::super::{UsageReportResult, UsageStats};
+    use std::cmp::Reverse;
     use std::collections::HashMap;
 
     // GIVEN no analytics data
@@ -188,7 +190,7 @@ mod tests {
 
         let total: u64 = skill_counts.values().sum();
         let mut sorted: Vec<_> = skill_counts.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.sort_by_key(|b| Reverse(b.1));
 
         let skills: Vec<UsageStats> = sorted
             .into_iter()

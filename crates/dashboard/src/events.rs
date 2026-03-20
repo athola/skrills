@@ -42,15 +42,15 @@ impl EventHandler {
                 tokio::select! {
                     maybe_event = reader.next() => {
                         match maybe_event {
-                            Some(Ok(CrosstermEvent::Key(key))) => {
-                                if tx_clone.send(Event::Key(key)).await.is_err() {
-                                    break;
-                                }
+                            Some(Ok(CrosstermEvent::Key(key)))
+                                if tx_clone.send(Event::Key(key)).await.is_err() =>
+                            {
+                                break;
                             }
-                            Some(Ok(CrosstermEvent::Resize(w, h))) => {
-                                if tx_clone.send(Event::Resize(w, h)).await.is_err() {
-                                    break;
-                                }
+                            Some(Ok(CrosstermEvent::Resize(w, h)))
+                                if tx_clone.send(Event::Resize(w, h)).await.is_err() =>
+                            {
+                                break;
                             }
                             Some(Err(e)) => {
                                 tracing::warn!(error = %e, "crossterm event stream error, stopping event loop");

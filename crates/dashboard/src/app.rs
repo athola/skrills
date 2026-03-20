@@ -239,13 +239,11 @@ impl App {
                 self.skill_index = 0;
                 self.skill_list_state.select(Some(0));
             }
-            KeyCode::End => {
-                if !self.skills.is_empty() {
-                    // End loads all skills and jumps to the last one
-                    self.visible_count = self.skills.len();
-                    self.skill_index = self.skills.len() - 1;
-                    self.skill_list_state.select(Some(self.skill_index));
-                }
+            KeyCode::End if !self.skills.is_empty() => {
+                // End loads all skills and jumps to the last one
+                self.visible_count = self.skills.len();
+                self.skill_index = self.skills.len() - 1;
+                self.skill_list_state.select(Some(self.skill_index));
             }
             _ => {}
         }

@@ -83,6 +83,18 @@ pub enum DependencyDirection {
     Dependents,
 }
 
+/// Backend for multi-CLI agent routing.
+#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+pub enum AgentBackend {
+    /// Auto-detect the best available backend.
+    #[default]
+    Auto,
+    /// Use Claude Code CLI.
+    Claude,
+    /// Use Codex CLI.
+    Codex,
+}
+
 /// Creation method for new skills.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum CreateSkillMethod {
@@ -231,6 +243,11 @@ pub enum Commands {
         /// List all available MCP tools and exit.
         #[arg(long, default_value_t = false)]
         list_tools: bool,
+
+        /// Open the dashboard in the default browser after the HTTP server starts.
+        /// Only applies when `--http` is specified.
+        #[arg(long, default_value_t = false)]
+        open: bool,
     },
     /// Mirrors Claude assets (skills, agents, commands, MCP prefs) into Codex defaults and refreshes AGENTS.md.
     Mirror {
@@ -250,6 +267,24 @@ pub enum Commands {
         #[arg(required = true)]
         agent: String,
         /// Additional agent directories (repeatable).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+        /// Only print the resolved command without executing it.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+    },
+    /// Launches an agent with multi-CLI backend routing.
+    ///
+    /// Tries the primary backend first and falls back to alternatives if
+    /// the primary is unavailable. Supports claude, codex, and auto-detect.
+    MultiCliAgent {
+        /// Agent name or unique substring to launch.
+        #[arg(required = true)]
+        agent: String,
+        /// Primary backend: claude or codex.
+        #[arg(long, value_enum, default_value_t = AgentBackend::Auto)]
+        backend: AgentBackend,
+        /// Additional skill directories (repeatable).
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
         /// Only print the resolved command without executing it.
@@ -815,6 +850,7 @@ mod tests {
                 tls_key,
                 cors_origins,
                 tls_auto,
+                open,
             }) => {
                 assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/skills")]);
                 assert_eq!(cache_ttl_ms, Some(1500));
@@ -828,6 +864,7 @@ mod tests {
                 assert!(tls_key.is_none());
                 assert!(cors_origins.is_empty());
                 assert!(!tls_auto);
+                assert!(!open);
             }
             _ => panic!("expected Serve command"),
         }

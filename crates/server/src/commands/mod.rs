@@ -6,6 +6,7 @@ mod cert;
 mod diff;
 mod intelligence;
 mod metrics;
+mod multi_cli_agent;
 mod recommend;
 mod resolve;
 mod serve;
@@ -28,6 +29,7 @@ pub(crate) use intelligence::{
     handle_search_skills_github_command, handle_suggest_new_skills_command,
 };
 pub(crate) use metrics::handle_metrics_command;
+pub(crate) use multi_cli_agent::handle_multi_cli_agent_command;
 pub(crate) use recommend::handle_recommend_command;
 pub(crate) use resolve::handle_resolve_dependencies_command;
 pub(crate) use serve::handle_serve_command;

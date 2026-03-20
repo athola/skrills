@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::cmp::Reverse;
 use std::collections::HashMap;
 
 use crate::cli::OutputFormat;
@@ -72,7 +73,7 @@ pub(crate) fn handle_skill_profile_command(
 
     let total: u64 = skill_counts.values().sum();
     let mut sorted: Vec<_> = skill_counts.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.sort_by_key(|b| Reverse(b.1));
 
     let top_skills: Vec<SkillStats> = sorted
         .into_iter()
@@ -118,6 +119,7 @@ pub(crate) fn handle_skill_profile_command(
 #[cfg(test)]
 mod tests {
     use super::super::{ProfileResult, SkillStats};
+    use std::cmp::Reverse;
     use std::collections::HashMap;
 
     // GIVEN an empty analytics cache
@@ -187,7 +189,7 @@ mod tests {
         let mut counts: Vec<(String, u64)> = (0..15)
             .map(|i| (format!("skill-{}", i), i as u64))
             .collect();
-        counts.sort_by(|a, b| b.1.cmp(&a.1));
+        counts.sort_by_key(|b| Reverse(b.1));
         let top: Vec<SkillStats> = counts
             .into_iter()
             .take(10)

@@ -305,20 +305,16 @@ impl SkillService {
                 if let Some(c) = content {
                     let path_str = meta.path.display().to_string();
                     match meta.source {
-                        SkillSource::Claude | SkillSource::Marketplace | SkillSource::Cache => {
-                            if claude_skill.is_none() {
-                                claude_skill = Some((path_str, c));
-                            }
+                        SkillSource::Claude | SkillSource::Marketplace | SkillSource::Cache
+                            if claude_skill.is_none() =>
+                        {
+                            claude_skill = Some((path_str, c));
                         }
-                        SkillSource::Codex | SkillSource::Mirror => {
-                            if codex_skill.is_none() {
-                                codex_skill = Some((path_str, c));
-                            }
+                        SkillSource::Codex | SkillSource::Mirror if codex_skill.is_none() => {
+                            codex_skill = Some((path_str, c));
                         }
-                        SkillSource::Copilot => {
-                            if copilot_skill.is_none() {
-                                copilot_skill = Some((path_str, c));
-                            }
+                        SkillSource::Copilot if copilot_skill.is_none() => {
+                            copilot_skill = Some((path_str, c));
                         }
                         _ => {}
                     }

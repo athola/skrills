@@ -232,6 +232,7 @@ where
         bind_addr,
         HttpSecurityConfig::default(),
         vec![],
+        false,
     )
     .await
 }
@@ -248,6 +249,7 @@ pub async fn serve_http_with_security<F>(
     bind_addr: &str,
     security: HttpSecurityConfig,
     skill_dirs: Vec<std::path::PathBuf>,
+    open_browser: bool,
 ) -> Result<()>
 where
     F: Fn() -> Result<SkillService, std::io::Error> + Send + Sync + 'static,
@@ -369,21 +371,87 @@ where
     if let Some((cert_path, key_path)) = tls_config {
         serve_with_tls(app, addr, &cert_path, &key_path).await
     } else {
-        serve_without_tls(app, addr).await
+        serve_without_tls(app, addr, open_browser).await
+    }
+}
+
+/// Try to bind to the given address, falling back to the next few ports on conflict.
+async fn bind_with_fallback(addr: SocketAddr) -> Result<(tokio::net::TcpListener, SocketAddr)> {
+    const MAX_PORT_ATTEMPTS: u16 = 10;
+
+    // Try the requested port first
+    match tokio::net::TcpListener::bind(addr).await {
+        Ok(listener) => return Ok((listener, addr)),
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            tracing::warn!(
+                target: "skrills::http",
+                bind = %addr,
+                "Port {} in use, trying alternatives",
+                addr.port()
+            );
+        }
+        Err(e) => return Err(e).with_context(|| format!("failed to bind to {addr}")),
+    }
+
+    // Try subsequent ports
+    for offset in 1..MAX_PORT_ATTEMPTS {
+        let try_port = addr.port().wrapping_add(offset);
+        let try_addr = SocketAddr::new(addr.ip(), try_port);
+        match tokio::net::TcpListener::bind(try_addr).await {
+            Ok(listener) => {
+                tracing::info!(
+                    target: "skrills::http",
+                    original = %addr.port(),
+                    actual = %try_port,
+                    "Bound to fallback port"
+                );
+                return Ok((listener, try_addr));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => continue,
+            Err(e) => return Err(e).with_context(|| format!("failed to bind to {try_addr}")),
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "could not bind to {} or any of the next {} ports",
+        addr,
+        MAX_PORT_ATTEMPTS - 1
+    ))
+}
+
+/// Open a URL in the default browser.
+fn open_in_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let cmd = "open";
+    #[cfg(target_os = "linux")]
+    let cmd = "xdg-open";
+    #[cfg(target_os = "windows")]
+    let cmd = "explorer";
+
+    if let Err(e) = std::process::Command::new(cmd).arg(url).spawn() {
+        tracing::warn!(
+            target: "skrills::http",
+            error = %e,
+            url,
+            "Failed to open browser — open manually"
+        );
     }
 }
 
 /// Serve HTTP without TLS.
-async fn serve_without_tls(app: axum::Router, addr: SocketAddr) -> Result<()> {
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("failed to bind to {addr}"))?;
+async fn serve_without_tls(app: axum::Router, addr: SocketAddr, open_browser: bool) -> Result<()> {
+    let (listener, actual_addr) = bind_with_fallback(addr).await?;
 
     tracing::info!(
         target: "skrills::http",
-        bind = %addr,
+        bind = %actual_addr,
         "MCP HTTP server listening"
     );
+
+    if open_browser {
+        let url = format!("http://{actual_addr}");
+        open_in_browser(&url);
+    }
 
     axum::serve(listener, app)
         .await
