@@ -1698,4 +1698,94 @@ mod tests {
             _ => panic!("expected Serve command"),
         }
     }
+
+    #[test]
+    fn parse_serve_with_open_flag() {
+        let cli = Cli::try_parse_from(["skrills", "serve", "--http", "127.0.0.1:3000", "--open"])
+            .expect("serve with --open should parse");
+
+        match cli.command {
+            Some(Commands::Serve { open, http, .. }) => {
+                assert!(open);
+                assert_eq!(http, Some("127.0.0.1:3000".to_string()));
+            }
+            _ => panic!("expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn parse_multi_cli_agent_defaults() {
+        let cli = Cli::try_parse_from(["skrills", "multi-cli-agent", "my-agent"])
+            .expect("multi-cli-agent should parse");
+
+        match cli.command {
+            Some(Commands::MultiCliAgent {
+                agent,
+                backend,
+                skill_dirs,
+                dry_run,
+            }) => {
+                assert_eq!(agent, "my-agent");
+                assert!(matches!(backend, AgentBackend::Auto));
+                assert!(skill_dirs.is_empty());
+                assert!(!dry_run);
+            }
+            _ => panic!("expected MultiCliAgent command"),
+        }
+    }
+
+    #[test]
+    fn parse_multi_cli_agent_full_args() {
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "multi-cli-agent",
+            "test-agent",
+            "--backend",
+            "codex",
+            "--skill-dir",
+            "/tmp/skills",
+            "--dry-run",
+        ])
+        .expect("multi-cli-agent with full args should parse");
+
+        match cli.command {
+            Some(Commands::MultiCliAgent {
+                agent,
+                backend,
+                skill_dirs,
+                dry_run,
+            }) => {
+                assert_eq!(agent, "test-agent");
+                assert!(matches!(backend, AgentBackend::Codex));
+                assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/skills")]);
+                assert!(dry_run);
+            }
+            _ => panic!("expected MultiCliAgent command"),
+        }
+    }
+
+    #[test]
+    fn parse_multi_cli_agent_requires_agent_name() {
+        let result = Cli::try_parse_from(["skrills", "multi-cli-agent"]);
+        assert!(result.is_err(), "multi-cli-agent requires agent argument");
+    }
+
+    #[test]
+    fn parse_multi_cli_agent_backend_claude() {
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "multi-cli-agent",
+            "my-agent",
+            "--backend",
+            "claude",
+        ])
+        .expect("multi-cli-agent with claude backend should parse");
+
+        match cli.command {
+            Some(Commands::MultiCliAgent { backend, .. }) => {
+                assert!(matches!(backend, AgentBackend::Claude));
+            }
+            _ => panic!("expected MultiCliAgent command"),
+        }
+    }
 }

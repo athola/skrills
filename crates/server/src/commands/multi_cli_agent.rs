@@ -131,3 +131,64 @@ pub(crate) fn handle_multi_cli_agent_command(
         _ => Err(anyhow!("unknown backend: {backend_name}")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_backends_claude_prefers_claude_first() {
+        let backends = resolve_backends(AgentBackend::Claude);
+        assert_eq!(backends[0].0, "claude");
+        assert_eq!(backends[1].0, "codex");
+    }
+
+    #[test]
+    fn resolve_backends_codex_prefers_codex_first() {
+        let backends = resolve_backends(AgentBackend::Codex);
+        assert_eq!(backends[0].0, "codex");
+        assert_eq!(backends[1].0, "claude");
+    }
+
+    #[test]
+    fn resolve_backends_auto_defaults_to_claude_first() {
+        let backends = resolve_backends(AgentBackend::Auto);
+        assert_eq!(backends[0].0, "claude");
+        assert_eq!(backends[1].0, "codex");
+    }
+
+    #[test]
+    fn resolve_backends_always_returns_two_entries() {
+        for variant in [
+            AgentBackend::Auto,
+            AgentBackend::Claude,
+            AgentBackend::Codex,
+        ] {
+            let backends = resolve_backends(variant);
+            assert_eq!(backends.len(), 2, "should always have two backend entries");
+        }
+    }
+
+    #[test]
+    fn find_binary_returns_none_for_nonexistent() {
+        let result = find_binary(&["absolutely-nonexistent-binary-12345"]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn find_binary_returns_first_available() {
+        // "sh" should exist on any Unix system
+        let result = find_binary(&["absolutely-nonexistent-binary-12345", "sh"]);
+        assert_eq!(result, Some("sh"));
+    }
+
+    #[test]
+    fn is_available_returns_false_for_nonexistent() {
+        assert!(!is_available("absolutely-nonexistent-binary-12345"));
+    }
+
+    #[test]
+    fn is_available_returns_true_for_sh() {
+        assert!(is_available("sh"));
+    }
+}

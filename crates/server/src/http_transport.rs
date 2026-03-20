@@ -739,5 +739,39 @@ mod tests {
             };
             assert!(config.has_tls());
         }
+
+        #[tokio::test]
+        async fn bind_with_fallback_binds_to_free_port() {
+            // Grab an ephemeral port to discover a free one, then release it
+            let tmp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = tmp.local_addr().unwrap();
+            drop(tmp);
+
+            let (listener, actual) = bind_with_fallback(addr).await.unwrap();
+            assert_eq!(actual, addr, "should bind to the original port when free");
+            drop(listener);
+        }
+
+        #[tokio::test]
+        async fn bind_with_fallback_falls_back_when_port_occupied() {
+            // Occupy a port
+            let blocker = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let blocked_addr = blocker.local_addr().unwrap();
+
+            // Ask for the occupied port — should fall back to blocked_port + 1..+9
+            let (listener, actual) = bind_with_fallback(blocked_addr).await.unwrap();
+            assert_ne!(
+                actual.port(),
+                blocked_addr.port(),
+                "should NOT bind to the occupied port"
+            );
+            assert!(
+                actual.port() > blocked_addr.port() && actual.port() <= blocked_addr.port() + 10,
+                "fallback port should be within +1..+10 range"
+            );
+
+            drop(listener);
+            drop(blocker);
+        }
     }
 }
