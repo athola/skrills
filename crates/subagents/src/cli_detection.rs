@@ -18,6 +18,9 @@ pub(crate) fn client_hint_from_env() -> Option<&'static str> {
         if client.eq_ignore_ascii_case("claude") {
             return Some("claude");
         }
+        if client.eq_ignore_ascii_case("cursor") {
+            return Some("cursor");
+        }
     }
 
     if std::env::var("CLAUDE_CODE_SESSION").is_ok()
@@ -33,6 +36,10 @@ pub(crate) fn client_hint_from_env() -> Option<&'static str> {
         || std::env::var("CODEX_HOME").is_ok()
     {
         return Some("codex");
+    }
+
+    if std::env::var("CURSOR_PROJECT_DIR").is_ok() || std::env::var("CURSOR_VERSION").is_ok() {
+        return Some("cursor");
     }
 
     None
@@ -52,6 +59,9 @@ pub(crate) fn client_hint_from_exe_path() -> Option<&'static str> {
         if part == OsStr::new(".claude") {
             return Some("claude");
         }
+        if part == OsStr::new(".cursor") {
+            return Some("cursor");
+        }
     }
     None
 }
@@ -69,50 +79,20 @@ pub(crate) fn default_cli_binary() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(v) = &self.previous {
-                env::set_var(self.key, v);
-            } else {
-                env::remove_var(self.key);
-            }
-        }
-    }
-
-    fn set_env(key: &'static str, value: Option<&str>) -> EnvVarGuard {
-        let previous = env::var(key).ok();
-        if let Some(val) = value {
-            env::set_var(key, val);
-        } else {
-            env::remove_var(key);
-        }
-        EnvVarGuard { key, previous }
-    }
+    use skrills_test_utils::{env_guard, set_env_var, EnvVarGuard};
 
     fn clear_client_env() -> Vec<EnvVarGuard> {
         vec![
-            set_env("SKRILLS_CLIENT", None),
-            set_env("CLAUDE_CODE_SESSION", None),
-            set_env("CLAUDE_CLI", None),
-            set_env("__CLAUDE_MCP_SERVER", None),
-            set_env("CLAUDE_CODE_ENTRYPOINT", None),
-            set_env("CODEX_CLI", None),
-            set_env("CODEX_SESSION_ID", None),
-            set_env("CODEX_HOME", None),
+            set_env_var("SKRILLS_CLIENT", None),
+            set_env_var("CLAUDE_CODE_SESSION", None),
+            set_env_var("CLAUDE_CLI", None),
+            set_env_var("__CLAUDE_MCP_SERVER", None),
+            set_env_var("CLAUDE_CODE_ENTRYPOINT", None),
+            set_env_var("CODEX_CLI", None),
+            set_env_var("CODEX_SESSION_ID", None),
+            set_env_var("CODEX_HOME", None),
+            set_env_var("CURSOR_PROJECT_DIR", None),
+            set_env_var("CURSOR_VERSION", None),
         ]
     }
 
@@ -142,8 +122,8 @@ mod tests {
         */
         let _guard = env_guard();
         let _clear = clear_client_env();
-        let _skrills = set_env("SKRILLS_CLIENT", Some("codex"));
-        let _claude = set_env("CLAUDE_CODE_SESSION", Some("1"));
+        let _skrills = set_env_var("SKRILLS_CLIENT", Some("codex"));
+        let _claude = set_env_var("CLAUDE_CODE_SESSION", Some("1"));
 
         assert_eq!(client_hint_from_env(), Some("codex"));
     }
@@ -157,7 +137,7 @@ mod tests {
         */
         let _guard = env_guard();
         let _clear = clear_client_env();
-        let _claude = set_env("CLAUDE_CODE_SESSION", Some("1"));
+        let _claude = set_env_var("CLAUDE_CODE_SESSION", Some("1"));
 
         assert_eq!(client_hint_from_env(), Some("claude"));
     }
@@ -171,7 +151,7 @@ mod tests {
         */
         let _guard = env_guard();
         let _clear = clear_client_env();
-        let _skrills = set_env("SKRILLS_CLIENT", Some("codex"));
+        let _skrills = set_env_var("SKRILLS_CLIENT", Some("codex"));
 
         assert_eq!(default_cli_binary(), "codex".to_string());
     }

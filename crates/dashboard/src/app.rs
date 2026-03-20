@@ -460,13 +460,19 @@ impl Dashboard {
 
     /// Restore terminal to normal state.
     fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) {
-        let _ = disable_raw_mode();
-        let _ = execute!(
+        if let Err(e) = disable_raw_mode() {
+            eprintln!("Warning: failed to disable raw mode: {e}");
+        }
+        if let Err(e) = execute!(
             terminal.backend_mut(),
             LeaveAlternateScreen,
             DisableMouseCapture
-        );
-        let _ = terminal.show_cursor();
+        ) {
+            eprintln!("Warning: failed to leave alternate screen: {e}");
+        }
+        if let Err(e) = terminal.show_cursor() {
+            eprintln!("Warning: failed to show cursor: {e}");
+        }
     }
 
     /// Run the dashboard.
@@ -632,7 +638,9 @@ impl Dashboard {
         }
 
         for (idx, base_name) in seen_order.into_iter().enumerate() {
-            let entries = grouped.remove(&base_name).unwrap();
+            let entries = grouped
+                .remove(&base_name)
+                .expect("base_name present in grouped by seen_order construction");
 
             // Primary entry is the first (highest-priority) occurrence
             let primary = &entries[0];

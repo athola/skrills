@@ -55,6 +55,6 @@ mod tests {
         let result =
             handle_sync_pull_command(None, None, SyncSource::Claude, false, OutputFormat::Json);
 
-        assert!(result.is_ok(), "sync-pull should succeed (placeholder)");
+        result.expect("sync-pull should succeed (placeholder)");
     }
 }

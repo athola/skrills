@@ -296,30 +296,7 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
-    struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(v) = &self.previous {
-                std::env::set_var(self.key, v);
-            } else {
-                std::env::remove_var(self.key);
-            }
-        }
-    }
-
-    fn set_env_var(key: &'static str, value: Option<&str>) -> EnvVarGuard {
-        let previous = std::env::var(key).ok();
-        if let Some(v) = value {
-            std::env::set_var(key, v);
-        } else {
-            std::env::remove_var(key);
-        }
-        EnvVarGuard { key, previous }
-    }
+    use crate::test_support::set_env_var;
 
     fn create_skill(dir: &std::path::Path, name: &str, content: &str) {
         let skill_dir = dir.join(name);
@@ -382,7 +359,7 @@ A test skill.
             vec![skill_dir],
         );
 
-        assert!(result.is_ok());
+        result.expect("recommend-skills-smart should succeed");
     }
 
     #[test]
@@ -417,7 +394,7 @@ A test skill.
             vec![skill_dir],
         );
 
-        assert!(result.is_ok());
+        result.expect("suggest-new-skills should succeed");
     }
 
     #[test]
@@ -437,7 +414,7 @@ A test skill.
             true, // force_rebuild
             OutputFormat::Text,
         );
-        assert!(result.is_ok(), "Export should succeed");
+        result.expect("Export should succeed");
         assert!(export_path.exists(), "Export file should exist");
 
         // Read exported file to verify JSON structure
@@ -447,7 +424,7 @@ A test skill.
 
         // Import the exported analytics
         let result = handle_import_analytics_command(export_path.clone(), true);
-        assert!(result.is_ok(), "Import should succeed");
+        result.expect("Import should succeed");
 
         // Verify cache was created
         let cache_path = skrills_dir.join("analytics_cache.json");
@@ -490,7 +467,7 @@ A test skill.
             vec![skill_dir],
         );
 
-        assert!(result.is_ok(), "Command should succeed");
+        result.expect("Command should succeed");
         assert!(cache_path.exists(), "Cache should exist after auto-persist");
 
         // Verify cache contains valid JSON
@@ -536,7 +513,7 @@ A test skill.
             vec![skill_dir],
         );
 
-        assert!(result.is_ok(), "Command should succeed");
+        result.expect("Command should succeed");
         assert!(
             cache_path.exists(),
             "Cache should exist after env var auto-persist"

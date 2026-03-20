@@ -52,7 +52,9 @@ pub fn build_analytics(events: Vec<SkillUsageEvent>) -> UsageAnalytics {
         // Track prompt -> skill mapping with occurrence counts
         if let Some(ref prompt) = event.prompt_context {
             let keywords = extract_keywords(prompt);
-            for keyword in keywords {
+            // Deduplicate keywords per event to avoid inflating occurrence counts
+            let unique_keywords: HashSet<_> = keywords.into_iter().collect();
+            for keyword in unique_keywords {
                 let stats = keyword_stats.entry(keyword).or_default();
                 stats.skills.insert(event.skill_path.clone());
                 stats.occurrence_count += 1;
@@ -170,10 +172,11 @@ pub fn recency_score(analytics: &UsageAnalytics, skill: &str, now: u64) -> f64 {
         if last_used == 0 || now == 0 {
             return 0.0;
         }
-        // Score decays over 30 days
+        // Score decays with a 30-day e-folding time (score ≈ 0.37 at 30 days).
+        // True half-life is ~20.8 days (30 * ln(2)).
         let age_seconds = now.saturating_sub(last_used);
         let age_days = age_seconds as f64 / 86400.0;
-        let decay_factor = 30.0; // Half-life of 30 days
+        let decay_factor = 30.0;
         (-(age_days / decay_factor)).exp()
     } else {
         0.0

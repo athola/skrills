@@ -6,13 +6,17 @@ use super::{
     DependencyInfo, LanguageInfo, ProjectProfile, ProjectType,
 };
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use walkdir::WalkDir;
 
 /// Maximum directory depth when scanning for language files.
 const MAX_DIRECTORY_SCAN_DEPTH: usize = 8;
+/// Default number of recent git commits to analyze for keywords.
+const DEFAULT_COMMIT_LIMIT: usize = 50;
+/// Default maximum number of languages to include in results.
+const DEFAULT_MAX_LANGUAGES: usize = 10;
 /// Language extension mappings.
 const LANGUAGE_EXTENSIONS: &[(&str, &str)] = &[
     ("rs", "Rust"),
@@ -98,8 +102,8 @@ impl Default for AnalyzeProjectOptions {
     fn default() -> Self {
         Self {
             include_git: true,
-            commit_limit: 50,
-            max_languages: 10,
+            commit_limit: DEFAULT_COMMIT_LIMIT,
+            max_languages: DEFAULT_MAX_LANGUAGES,
         }
     }
 }
@@ -169,7 +173,7 @@ pub fn analyze_project_with_options(
 
 /// Detect programming languages from file extensions.
 pub fn detect_languages(root: &Path) -> Result<HashMap<String, LanguageInfo>> {
-    let mut counts: HashMap<String, (usize, Vec<String>)> = HashMap::new();
+    let mut counts: HashMap<String, (usize, HashSet<String>)> = HashMap::new();
 
     for entry in WalkDir::new(root)
         .max_depth(MAX_DIRECTORY_SCAN_DEPTH)
@@ -190,9 +194,7 @@ pub fn detect_languages(root: &Path) -> Result<HashMap<String, LanguageInfo>> {
                     if ext.eq_ignore_ascii_case(lang_ext) {
                         let entry = counts.entry((*lang_name).to_string()).or_default();
                         entry.0 += 1;
-                        if !entry.1.contains(&ext.to_lowercase()) {
-                            entry.1.push(ext.to_lowercase());
-                        }
+                        entry.1.insert(ext.to_lowercase());
                         break;
                     }
                 }
@@ -210,7 +212,7 @@ pub fn detect_languages(root: &Path) -> Result<HashMap<String, LanguageInfo>> {
                 name,
                 LanguageInfo {
                     file_count: count,
-                    extensions: exts,
+                    extensions: exts.into_iter().collect(),
                     primary: count == max_count && max_count > 0,
                 },
             )
@@ -1611,9 +1613,7 @@ This is the real description.
         };
 
         let result = analyze_project_with_options(tmp.path(), options);
-        assert!(result.is_ok(), "Empty directory should succeed");
-
-        let profile = result.unwrap();
+        let profile = result.expect("empty directory should succeed");
         assert!(profile.languages.is_empty());
     }
 

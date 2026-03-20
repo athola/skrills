@@ -1,3 +1,4 @@
+#![deny(unsafe_code)]
 //! Skill recommendations based on usage patterns and project context.
 //!
 //! This crate provides intelligent skill discovery and creation:

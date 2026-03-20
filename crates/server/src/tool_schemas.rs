@@ -60,13 +60,13 @@ fn sync_schema() -> Arc<JsonMap<String, serde_json::Value>> {
         json!({
             "from": {
                 "type": "string",
-                "enum": ["claude", "codex", "copilot"],
-                "description": "Source agent: 'claude', 'codex', or 'copilot'"
+                "enum": ["claude", "codex", "copilot", "cursor"],
+                "description": "Source agent: 'claude', 'codex', 'copilot', or 'cursor'"
             },
             "to": {
                 "type": "string",
-                "enum": ["claude", "codex", "copilot"],
-                "description": "Target agent: 'claude', 'codex', or 'copilot'. Defaults to codex (for claude source) or claude (for codex/copilot source)"
+                "enum": ["claude", "codex", "copilot", "cursor"],
+                "description": "Target agent: 'claude', 'codex', 'copilot', or 'cursor'. Defaults to codex (for claude source) or claude (for others)"
             },
             "dry_run": {
                 "type": "boolean",
@@ -131,10 +131,36 @@ pub(crate) fn sync_tools() -> Vec<Tool> {
             meta: None,
         },
         Tool {
+            name: "sync-from-cursor".into(),
+            title: Some("Sync from Cursor IDE".into()),
+            description: Some(
+                "Sync skills, commands, agents, hooks, rules, and MCP servers from Cursor (~/.cursor) to Claude or Codex."
+                    .into(),
+            ),
+            input_schema: sync_schema.clone(),
+            output_schema: None,
+            annotations: Some(ToolAnnotations::default()),
+            icons: None,
+            meta: None,
+        },
+        Tool {
+            name: "sync-to-cursor".into(),
+            title: Some("Sync to Cursor IDE".into()),
+            description: Some(
+                "Sync skills, commands, agents, hooks, rules (.mdc), and MCP servers from Claude or Codex to Cursor (~/.cursor)."
+                    .into(),
+            ),
+            input_schema: sync_schema.clone(),
+            output_schema: None,
+            annotations: Some(ToolAnnotations::default()),
+            icons: None,
+            meta: None,
+        },
+        Tool {
             name: "sync-skills".into(),
             title: Some("Sync skills between agents".into()),
             description: Some(
-                "Sync SKILL.md files between Claude, Codex, and Copilot. Use --from and --to to specify source and target."
+                "Sync SKILL.md files between Claude, Codex, Copilot, and Cursor. Use --from and --to to specify source and target."
                     .into(),
             ),
             input_schema: sync_schema.clone(),
@@ -146,7 +172,7 @@ pub(crate) fn sync_tools() -> Vec<Tool> {
         Tool {
             name: "sync-commands".into(),
             title: Some("Sync slash commands between agents".into()),
-            description: Some("Sync slash command definitions between Claude, Codex, and Copilot.".into()),
+            description: Some("Sync slash command definitions between Claude, Codex, Copilot, and Cursor.".into()),
             input_schema: sync_schema.clone(),
             output_schema: None,
             annotations: Some(ToolAnnotations::default()),
@@ -156,7 +182,7 @@ pub(crate) fn sync_tools() -> Vec<Tool> {
         Tool {
             name: "sync-mcp-servers".into(),
             title: Some("Sync MCP server configurations".into()),
-            description: Some("Sync MCP server configurations between Claude, Codex, and Copilot.".into()),
+            description: Some("Sync MCP server configurations between Claude, Codex, Copilot, and Cursor.".into()),
             input_schema: sync_schema.clone(),
             output_schema: None,
             annotations: Some(ToolAnnotations::default()),
@@ -167,7 +193,7 @@ pub(crate) fn sync_tools() -> Vec<Tool> {
             name: "sync-preferences".into(),
             title: Some("Sync preferences between agents".into()),
             description: Some(
-                "Sync compatible settings/preferences between Claude, Codex, and Copilot.".into(),
+                "Sync compatible settings/preferences between Claude, Codex, Copilot, and Cursor.".into(),
             ),
             input_schema: sync_schema.clone(),
             output_schema: None,
@@ -179,7 +205,7 @@ pub(crate) fn sync_tools() -> Vec<Tool> {
             name: "sync-all".into(),
             title: Some("Sync all configurations".into()),
             description: Some(
-                "Sync skills, commands, MCP servers, and preferences between Claude, Codex, and Copilot in one operation.".into(),
+                "Sync skills, commands, hooks, MCP servers, and preferences between Claude, Codex, Copilot, and Cursor in one operation.".into(),
             ),
             input_schema: sync_schema.clone(),
             output_schema: None,
@@ -752,7 +778,7 @@ pub(crate) fn intelligence_tools() -> Vec<Tool> {
             meta: None,
         },
         Tool {
-            name: "search-skills".into(),
+            name: "search-skills-fuzzy".into(),
             title: Some("Search installed skills".into()),
             description: Some(
                 "Search installed skills using trigram-based fuzzy matching. \
@@ -822,8 +848,8 @@ mod tests {
     #[test]
     fn test_all_tools_returns_expected_count() {
         let tools = all_tools();
-        // 9 sync + 3 validation + 1 dependency + 1 recommend + 1 metrics + 4 trace + 6 intelligence = 25 tools
-        assert_eq!(tools.len(), 25);
+        // 11 sync + 3 validation + 1 dependency + 1 recommend + 1 metrics + 4 trace + 6 intelligence = 27 tools
+        assert_eq!(tools.len(), 27);
     }
 
     #[test]
@@ -838,7 +864,7 @@ mod tests {
 
     #[test]
     fn test_sync_tools_count() {
-        assert_eq!(sync_tools().len(), 9);
+        assert_eq!(sync_tools().len(), 11);
     }
 
     #[test]

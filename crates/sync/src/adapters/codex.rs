@@ -8,8 +8,8 @@
 //! This allows agent functionality to be preserved until Codex adds official support.
 
 use super::traits::{AgentAdapter, FieldSupport};
-use super::utils::{hash_content, is_hidden_path};
-use crate::common::{Command, McpServer, McpTransport, ModuleFile, Preferences};
+use super::utils::{collect_module_files, hash_content, is_hidden_path, sanitize_name};
+use crate::common::{Command, ContentFormat, McpServer, McpTransport, Preferences};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use anyhow::Context;
@@ -149,53 +149,6 @@ impl CodexAdapter {
 
         Ok(changed)
     }
-
-    /// Collects companion files from a skill directory (files other than SKILL.md).
-    fn collect_module_files(&self, skill_dir: &std::path::Path) -> Vec<ModuleFile> {
-        let mut modules = Vec::new();
-
-        for entry in WalkDir::new(skill_dir)
-            .min_depth(1)
-            .max_depth(10)
-            .follow_links(false)
-        {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-
-            let path = entry.path();
-
-            if !path.is_file() {
-                continue;
-            }
-
-            // Skip SKILL.md (the main skill file) - we want companion/module files only.
-            // Note: We treat any .md file in the skill directory (other than SKILL.md)
-            // as a module file. If a .md file should be a standalone skill, it should
-            // be placed in its own directory with a SKILL.md file instead.
-            if path.file_name().is_some_and(|n| n == "SKILL.md") {
-                continue;
-            }
-
-            if let Ok(rel_path) = path.strip_prefix(skill_dir) {
-                if is_hidden_path(rel_path) {
-                    continue;
-                }
-
-                if let Ok(content) = fs::read(path) {
-                    let hash = hash_content(&content);
-                    modules.push(ModuleFile {
-                        relative_path: rel_path.to_path_buf(),
-                        content,
-                        hash,
-                    });
-                }
-            }
-        }
-
-        modules
-    }
 }
 
 // Note: We intentionally do not implement Default for CodexAdapter because
@@ -253,6 +206,7 @@ impl AgentAdapter for CodexAdapter {
                     modified,
                     hash,
                     modules: Vec::new(),
+                    content_format: ContentFormat::default(),
                 });
             }
         }
@@ -395,7 +349,7 @@ impl AgentAdapter for CodexAdapter {
             // Collect module files for SKILL.md based skills
             let modules = if is_skill_md {
                 let skill_dir = path.parent().unwrap_or(path);
-                self.collect_module_files(skill_dir)
+                collect_module_files(skill_dir)
             } else {
                 Vec::new()
             };
@@ -407,6 +361,7 @@ impl AgentAdapter for CodexAdapter {
                 modified,
                 hash,
                 modules,
+                content_format: ContentFormat::default(),
             });
         }
         Ok(skills)
@@ -553,6 +508,13 @@ impl AgentAdapter for CodexAdapter {
             let skill_dir = dir.join(&safe_rel_dir);
             for module in &skill.modules {
                 let module_path = skill_dir.join(&module.relative_path);
+                if !super::utils::is_path_contained(&module_path, &skill_dir) {
+                    tracing::debug!(
+                        path = %module.relative_path.display(),
+                        "Skipping module with path outside skill directory"
+                    );
+                    continue;
+                }
                 if let Some(parent) = module_path.parent() {
                     fs::create_dir_all(parent)?;
                 }
@@ -621,7 +583,7 @@ impl AgentAdapter for CodexAdapter {
             let hash = hash_content(&content);
 
             let skill_dir = path.parent().unwrap_or(path);
-            let modules = self.collect_module_files(skill_dir);
+            let modules = collect_module_files(skill_dir);
 
             agents.push(Command {
                 name: agent_name,
@@ -630,6 +592,7 @@ impl AgentAdapter for CodexAdapter {
                 modified,
                 hash,
                 modules,
+                content_format: ContentFormat::default(),
             });
         }
 
@@ -681,6 +644,13 @@ impl AgentAdapter for CodexAdapter {
             let skill_dir = dir.join(&safe_name);
             for module in &agent.modules {
                 let module_path = skill_dir.join(&module.relative_path);
+                if !super::utils::is_path_contained(&module_path, &skill_dir) {
+                    tracing::debug!(
+                        path = %module.relative_path.display(),
+                        "Skipping module with path outside skill directory"
+                    );
+                    continue;
+                }
                 if let Some(parent) = module_path.parent() {
                     fs::create_dir_all(parent)?;
                 }
@@ -704,28 +674,11 @@ impl AgentAdapter for CodexAdapter {
     }
 }
 
-/// Sanitizes a command/skill name to prevent path traversal attacks.
-/// Only allows alphanumeric characters, hyphens, and underscores.
-fn sanitize_name(name: &str) -> String {
-    name.chars()
-        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::ModuleFile;
     use tempfile::tempdir;
-
-    #[test]
-    fn sanitize_name_removes_path_traversal() {
-        assert_eq!(sanitize_name("../../../etc/passwd"), "etcpasswd");
-        assert_eq!(sanitize_name("valid-name_123"), "valid-name_123");
-        assert_eq!(sanitize_name("../../malicious"), "malicious");
-        assert_eq!(sanitize_name("normal"), "normal");
-        assert_eq!(sanitize_name("with spaces"), "withspaces");
-        assert_eq!(sanitize_name("has/slashes"), "hasslashes");
-    }
 
     #[test]
     fn codex_adapter_name() {
@@ -769,6 +722,8 @@ mod tests {
             modified: SystemTime::now(),
             hash: "abc123".to_string(),
             modules: Vec::new(),
+
+            content_format: ContentFormat::default(),
         }];
 
         let report = adapter.write_commands(&commands).unwrap();
@@ -790,6 +745,8 @@ mod tests {
             modified: SystemTime::now(),
             hash: "hash123".to_string(),
             modules: Vec::new(),
+
+            content_format: ContentFormat::default(),
         }];
 
         adapter.write_commands(&commands).unwrap();
@@ -888,6 +845,8 @@ mod tests {
             modified: SystemTime::now(),
             hash: "hash".to_string(),
             modules: Vec::new(),
+
+            content_format: ContentFormat::default(),
         };
 
         let report = adapter.write_skills(&[skill]).unwrap();
@@ -907,6 +866,8 @@ mod tests {
             modified: SystemTime::now(),
             hash: "hash".to_string(),
             modules: Vec::new(),
+
+            content_format: ContentFormat::default(),
         };
 
         adapter.write_skills(&[skill]).unwrap();
@@ -985,6 +946,8 @@ mod tests {
                     hash: "h2".to_string(),
                 },
             ],
+
+            content_format: ContentFormat::default(),
         };
 
         let report = adapter.write_skills(&[skill]).unwrap();
@@ -1019,6 +982,7 @@ mod tests {
                 modified: SystemTime::now(),
                 hash: "hash1".to_string(),
                 modules: Vec::new(),
+                content_format: ContentFormat::default(),
             },
             Command {
                 name: "test-writer".to_string(),
@@ -1028,6 +992,7 @@ mod tests {
                 modified: SystemTime::now(),
                 hash: "hash2".to_string(),
                 modules: Vec::new(),
+                content_format: ContentFormat::default(),
             },
         ];
 
@@ -1139,6 +1104,8 @@ mod tests {
             modified: SystemTime::now(),
             hash: "hash".to_string(),
             modules: Vec::new(),
+
+            content_format: ContentFormat::default(),
         }];
 
         adapter.write_agents(&agents).unwrap();

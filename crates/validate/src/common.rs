@@ -461,4 +461,99 @@ mod tests {
             assert_ne!(ValidationTarget::Both, ValidationTarget::All);
         }
     }
+
+    // ==========================================
+    // Property-based tests (proptest)
+    // ==========================================
+
+    mod proptest_properties {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Strategy to generate an arbitrary Severity value.
+        fn arb_severity() -> impl Strategy<Value = Severity> {
+            prop_oneof![
+                Just(Severity::Error),
+                Just(Severity::Warning),
+                Just(Severity::Info),
+            ]
+        }
+
+        /// Strategy to generate an arbitrary ValidationTarget.
+        fn arb_target() -> impl Strategy<Value = ValidationTarget> {
+            prop_oneof![
+                Just(ValidationTarget::Claude),
+                Just(ValidationTarget::Codex),
+                Just(ValidationTarget::Copilot),
+                Just(ValidationTarget::Both),
+                Just(ValidationTarget::All),
+            ]
+        }
+
+        proptest! {
+            #[test]
+            fn add_issue_only_errors_change_validity(
+                severity in arb_severity(),
+                target in arb_target(),
+                msg in "[a-zA-Z ]{1,40}",
+            ) {
+                let mut result = ValidationResult::new("test.md".into(), "test".to_string());
+                let issue = match severity {
+                    Severity::Error => ValidationIssue::error(target, &msg),
+                    Severity::Warning => ValidationIssue::warning(target, &msg),
+                    Severity::Info => ValidationIssue::info(target, &msg),
+                };
+                result.add_issue(issue);
+
+                if severity != Severity::Error {
+                    // Warnings and info never invalidate
+                    assert!(result.is_claude_valid());
+                    assert!(result.is_codex_valid());
+                    assert!(result.is_copilot_valid());
+                }
+            }
+
+            #[test]
+            fn error_count_equals_number_of_errors_added(
+                severities in prop::collection::vec(arb_severity(), 0..20),
+            ) {
+                let mut result = ValidationResult::new("test.md".into(), "test".to_string());
+                let expected_errors = severities.iter()
+                    .filter(|s| **s == Severity::Error)
+                    .count();
+
+                for sev in &severities {
+                    let issue = match sev {
+                        Severity::Error => ValidationIssue::error(ValidationTarget::Claude, "e"),
+                        Severity::Warning => ValidationIssue::warning(ValidationTarget::Claude, "w"),
+                        Severity::Info => ValidationIssue::info(ValidationTarget::Claude, "i"),
+                    };
+                    result.add_issue(issue);
+                }
+
+                assert_eq!(result.error_count(), expected_errors);
+            }
+
+            #[test]
+            fn warning_count_equals_number_of_warnings_added(
+                severities in prop::collection::vec(arb_severity(), 0..20),
+            ) {
+                let mut result = ValidationResult::new("test.md".into(), "test".to_string());
+                let expected_warnings = severities.iter()
+                    .filter(|s| **s == Severity::Warning)
+                    .count();
+
+                for sev in &severities {
+                    let issue = match sev {
+                        Severity::Error => ValidationIssue::error(ValidationTarget::Claude, "e"),
+                        Severity::Warning => ValidationIssue::warning(ValidationTarget::Claude, "w"),
+                        Severity::Info => ValidationIssue::info(ValidationTarget::Claude, "i"),
+                    };
+                    result.add_issue(issue);
+                }
+
+                assert_eq!(result.warning_count(), expected_warnings);
+            }
+        }
+    }
 }

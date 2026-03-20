@@ -12,6 +12,7 @@ use skrills_sync::{
     adapters::traits::AgentAdapter,
     adapters::{ClaudeAdapter, CodexAdapter, CopilotAdapter},
     orchestrator::{SyncOrchestrator, SyncParams},
+    ContentFormat,
 };
 use std::fs;
 use tempfile::TempDir;
@@ -201,6 +202,7 @@ mod copilot_to_claude_tests {
             sync_preferences: true,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -209,8 +211,7 @@ mod copilot_to_claude_tests {
         let orchestrator = SyncOrchestrator::new(source, target);
         let result = orchestrator.sync(&params);
 
-        assert!(result.is_ok(), "Copilot to Claude sync should succeed");
-        let report = result.unwrap();
+        let report = result.expect("Copilot to Claude sync should succeed");
 
         // Skills should be synced
         assert!(
@@ -252,6 +253,7 @@ mod copilot_to_claude_tests {
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -260,8 +262,7 @@ mod copilot_to_claude_tests {
         let orchestrator = SyncOrchestrator::new(source, target);
         let result = orchestrator.sync(&params);
 
-        assert!(result.is_ok(), "MCP server sync should succeed");
-        let report = result.unwrap();
+        let report = result.expect("MCP server sync should succeed");
 
         // MCP servers should be synced
         assert!(
@@ -296,6 +297,7 @@ mod copilot_to_claude_tests {
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -304,8 +306,7 @@ mod copilot_to_claude_tests {
         let orchestrator = SyncOrchestrator::new(source, target);
         let result = orchestrator.sync(&params);
 
-        assert!(result.is_ok(), "Sync should succeed even with no commands");
-        let report = result.unwrap();
+        let report = result.expect("Sync should succeed even with no commands");
 
         // No commands should be written (Copilot doesn't support them)
         assert_eq!(
@@ -344,6 +345,7 @@ mod claude_to_copilot_tests {
             sync_preferences: true,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -352,8 +354,7 @@ mod claude_to_copilot_tests {
         let orchestrator = SyncOrchestrator::new(source, target);
         let result = orchestrator.sync(&params);
 
-        assert!(result.is_ok(), "Claude to Copilot sync should succeed");
-        let report = result.unwrap();
+        let report = result.expect("Claude to Copilot sync should succeed");
 
         // Skills should be synced
         assert!(
@@ -394,6 +395,7 @@ mod claude_to_copilot_tests {
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -402,8 +404,7 @@ mod claude_to_copilot_tests {
         let orchestrator = SyncOrchestrator::new(source, target);
         let result = orchestrator.sync(&params);
 
-        assert!(result.is_ok(), "MCP sync to Copilot should succeed");
-        let report = result.unwrap();
+        let report = result.expect("MCP sync to Copilot should succeed");
 
         // MCP servers should be written
         assert!(
@@ -444,6 +445,7 @@ mod claude_to_copilot_tests {
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -452,8 +454,7 @@ mod claude_to_copilot_tests {
         let orchestrator = SyncOrchestrator::new(source, target);
         let result = orchestrator.sync(&params);
 
-        assert!(result.is_ok(), "Sync should succeed");
-        let report = result.unwrap();
+        let report = result.expect("Sync should succeed");
 
         // Commands should now be written as prompts
         assert!(
@@ -496,6 +497,7 @@ mod copilot_to_codex_tests {
             sync_preferences: true,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -504,8 +506,7 @@ mod copilot_to_codex_tests {
         let orchestrator = SyncOrchestrator::new(source, target);
         let result = orchestrator.sync(&params);
 
-        assert!(result.is_ok(), "Copilot to Codex sync should succeed");
-        let report = result.unwrap();
+        let report = result.expect("Copilot to Codex sync should succeed");
 
         // Skills should be synced
         assert!(
@@ -540,6 +541,7 @@ mod copilot_to_codex_tests {
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -548,8 +550,7 @@ mod copilot_to_codex_tests {
         let orchestrator = SyncOrchestrator::new(source, target);
         let result = orchestrator.sync(&params);
 
-        assert!(result.is_ok(), "Codex to Copilot sync should succeed");
-        let report = result.unwrap();
+        let report = result.expect("Codex to Copilot sync should succeed");
 
         // Skills should be synced
         assert!(
@@ -589,6 +590,7 @@ mod copilot_dry_run_tests {
             sync_preferences: true,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -597,8 +599,7 @@ mod copilot_dry_run_tests {
         let orchestrator = SyncOrchestrator::new(source, target);
         let result = orchestrator.sync(&params);
 
-        assert!(result.is_ok(), "Dry run should succeed");
-        let report = result.unwrap();
+        let report = result.expect("Dry run should succeed");
 
         // Should report what would be synced
         assert!(
@@ -671,14 +672,13 @@ mod copilot_security_tests {
             modified: SystemTime::now(),
             hash: "abc123".to_string(),
             modules: Vec::new(),
+
+            content_format: ContentFormat::default(),
         };
 
         // Write the skill
         let result = adapter.write_skills(&[malicious_skill]);
-        assert!(
-            result.is_ok(),
-            "Write should succeed (traversal is sanitized)"
-        );
+        let _ = result.expect("Write should succeed (traversal is sanitized)");
 
         // Verify the skill was written to a SAFE location, not /etc/passwd
         // The sanitize_name function should have stripped the traversal
@@ -718,10 +718,12 @@ mod copilot_security_tests {
             modified: SystemTime::now(),
             hash: "def456".to_string(),
             modules: Vec::new(),
+
+            content_format: ContentFormat::default(),
         };
 
         let result = adapter.write_skills(&[nested_skill]);
-        assert!(result.is_ok(), "Write should succeed");
+        let _ = result.expect("Write should succeed");
 
         // Verify nested structure is preserved
         let nested_path = tmp.path().join("skills/category/my-skill/SKILL.md");
@@ -749,10 +751,12 @@ mod copilot_security_tests {
             modified: SystemTime::now(),
             hash: "ghi789".to_string(),
             modules: Vec::new(),
+
+            content_format: ContentFormat::default(),
         };
 
         let result = adapter.write_skills(&[mixed_skill]);
-        assert!(result.is_ok(), "Write should succeed");
+        let _ = result.expect("Write should succeed");
 
         // The sanitized path should be "category/other/skill" (traversal removed)
         let safe_path = tmp.path().join("skills/category/other/skill/SKILL.md");
@@ -859,6 +863,7 @@ This is a test agent for Copilot.
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: true, // Enable agent sync
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -867,11 +872,7 @@ This is a test agent for Copilot.
         let orchestrator = SyncOrchestrator::new(source, target);
         let result = orchestrator.sync(&params);
 
-        assert!(
-            result.is_ok(),
-            "Claude to Copilot agent sync should succeed"
-        );
-        let report = result.unwrap();
+        let report = result.expect("Claude to Copilot agent sync should succeed");
 
         // Agents should be synced
         assert!(
@@ -932,6 +933,7 @@ This is a test agent for Copilot.
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: true,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -940,11 +942,7 @@ This is a test agent for Copilot.
         let orchestrator = SyncOrchestrator::new(source, target);
         let result = orchestrator.sync(&params);
 
-        assert!(
-            result.is_ok(),
-            "Copilot to Claude agent sync should succeed"
-        );
-        let report = result.unwrap();
+        let report = result.expect("Copilot to Claude agent sync should succeed");
 
         assert!(
             report.agents.written > 0,
@@ -988,6 +986,7 @@ This is a test agent for Copilot.
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: false, // Explicitly disabled
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -996,8 +995,7 @@ This is a test agent for Copilot.
         let orchestrator = SyncOrchestrator::new(source, target);
         let result = orchestrator.sync(&params);
 
-        assert!(result.is_ok(), "Sync should succeed");
-        let report = result.unwrap();
+        let report = result.expect("Sync should succeed");
 
         // Agents should NOT be synced
         assert_eq!(
@@ -1039,6 +1037,7 @@ This is a test agent for Copilot.
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: true,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -1047,8 +1046,7 @@ This is a test agent for Copilot.
         let orchestrator = SyncOrchestrator::new(source, target);
         let result = orchestrator.sync(&params);
 
-        assert!(result.is_ok(), "Dry run should succeed");
-        let report = result.unwrap();
+        let report = result.expect("Dry run should succeed");
 
         // Should report what would be synced
         assert!(
@@ -1090,6 +1088,7 @@ This is a test agent for Copilot.
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: true, // Sync agents (will be converted to skills)
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -1098,8 +1097,7 @@ This is a test agent for Copilot.
         let orchestrator = SyncOrchestrator::new(source, target);
         let result = orchestrator.sync(&params);
 
-        assert!(result.is_ok(), "Sync should succeed");
-        let report = result.unwrap();
+        let report = result.expect("Sync should succeed");
 
         // Agents should be written (converted to skills)
         assert_eq!(
@@ -1145,6 +1143,7 @@ This is a test agent for Copilot.
             sync_preferences: true,
             skip_existing_commands: false,
             sync_agents: true,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -1153,8 +1152,7 @@ This is a test agent for Copilot.
         let orchestrator = SyncOrchestrator::new(source, target);
         let result = orchestrator.sync(&params);
 
-        assert!(result.is_ok(), "Full sync should succeed");
-        let report = result.unwrap();
+        let report = result.expect("Full sync should succeed");
 
         // All fields should be synced
         assert!(report.skills.written > 0, "Skills should be synced");
@@ -1209,7 +1207,7 @@ This skill evaluates hook implementations.
         let orchestrator = SyncOrchestrator::new(claude, copilot);
 
         let result = orchestrator.sync(&SyncParams::default());
-        assert!(result.is_ok(), "Sync should succeed: {:?}", result.err());
+        let _ = result.expect("Sync should succeed");
 
         // Verify the skill was written to the correct location
         // Should be ~/.copilot/skills/hooks-eval/SKILL.md

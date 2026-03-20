@@ -913,6 +913,93 @@ name: duplicate
         }
     }
 
+    // ============================================================
+    // Property-based tests (proptest)
+    // ============================================================
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn parse_frontmatter_never_panics_on_arbitrary_input(s in "\\PC*") {
+            let _ = parse_frontmatter(&s);
+        }
+
+        #[test]
+        fn parse_frontmatter_never_panics_on_binary_data(data in prop::collection::vec(any::<u8>(), 0..1024)) {
+            if let Ok(s) = String::from_utf8(data) {
+                let _ = parse_frontmatter(&s);
+            }
+        }
+
+        #[test]
+        fn valid_yaml_frontmatter_always_parses(
+            name in "[a-z][a-z0-9-]{0,20}",
+            desc in "[A-Za-z][A-Za-z0-9 ]{0,48}[A-Za-z0-9]",
+        ) {
+            let content = format!("---\nname: {}\ndescription: {}\n---\n# Content\nBody.", name, desc);
+            let parsed = parse_frontmatter(&content).unwrap();
+            let fm = parsed.frontmatter.unwrap();
+            assert_eq!(fm.name, Some(name));
+            assert_eq!(fm.description, Some(desc));
+        }
+
+        #[test]
+        fn names_within_length_limit_pass_codex_validation(
+            name in "[a-z][a-z0-9-]{0,98}",
+            desc in "[A-Za-z][A-Za-z0-9]{0,49}",
+        ) {
+            let content = format!(
+                "---\nname: {}\ndescription: {}\n---\n# Content\nBody.",
+                name, desc,
+            );
+            let result = crate::codex::validate_codex(
+                std::path::Path::new("test.md"),
+                &content,
+            );
+            // Name is within 100 chars, desc within 500 chars, so no length errors
+            let has_length_error = result.issues.iter().any(|i| {
+                i.message.contains("exceeds maximum length")
+            });
+            assert!(!has_length_error);
+        }
+
+        #[test]
+        fn descriptions_within_length_limit_pass_codex_validation(
+            desc in "[A-Za-z][A-Za-z0-9]{0,498}",
+        ) {
+            let content = format!(
+                "---\nname: test-skill\ndescription: {}\n---\n# Content\nBody.",
+                desc,
+            );
+            let result = crate::codex::validate_codex(
+                std::path::Path::new("test.md"),
+                &content,
+            );
+            let has_desc_length_error = result.issues.iter().any(|i| {
+                i.message.contains("'description' exceeds maximum length")
+            });
+            assert!(!has_desc_length_error);
+        }
+
+        #[test]
+        fn split_frontmatter_never_panics(s in "\\PC*") {
+            let _ = split_frontmatter(&s);
+        }
+
+        #[test]
+        fn generate_frontmatter_roundtrips(
+            name in "[a-z][a-z0-9-]{0,20}",
+            desc in "[A-Za-z][A-Za-z0-9 ]{0,48}[A-Za-z0-9]",
+        ) {
+            let generated = generate_frontmatter(&name, &desc);
+            let parsed = parse_frontmatter(&generated).unwrap();
+            let fm = parsed.frontmatter.unwrap();
+            assert_eq!(fm.name, Some(name));
+            assert_eq!(fm.description, Some(desc));
+        }
+    }
+
     #[test]
     fn test_error_format_branches() {
         // Integration test verifying both error format branches exist in code.

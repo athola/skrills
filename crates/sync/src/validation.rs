@@ -202,6 +202,7 @@ pub fn apply_autofix_to_skill(skill: &Command) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::ContentFormat;
     use std::time::SystemTime;
 
     fn make_skill(name: &str, content: &str) -> Command {
@@ -212,6 +213,7 @@ mod tests {
             modified: SystemTime::now(),
             hash: "test".to_string(),
             modules: Vec::new(),
+            content_format: ContentFormat::default(),
         }
     }
 

@@ -1,12 +1,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::backend::{config::AdapterConfig, AdapterCapabilities, BackendAdapter};
+use crate::backend::{
+    config::AdapterConfig, run_http_adapter, AdapterCapabilities, BackendAdapter,
+};
 use crate::store::{
     BackendKind, RunEvent, RunId, RunRecord, RunRequest, RunState, RunStatus, RunStore,
     SubagentTemplate,
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reqwest::Url;
 use serde::Serialize;
@@ -56,119 +58,24 @@ impl CodexAdapter {
         request: RunRequest,
         store: Arc<dyn RunStore>,
     ) -> Result<()> {
-        store
-            .append_event(
-                run_id,
-                RunEvent {
-                    ts: OffsetDateTime::now_utc(),
-                    kind: "start".into(),
-                    data: None,
-                },
-            )
-            .await?;
-
-        if self.config.api_key.is_empty() {
-            let error_msg = API_KEY_ERROR;
-            store
-                .update_status(
-                    run_id,
-                    RunStatus {
-                        state: RunState::Failed,
-                        message: Some(error_msg.into()),
-                        updated_at: OffsetDateTime::now_utc(),
-                    },
-                )
-                .await?;
-            return Err(anyhow!(error_msg));
-        }
-
         let body = build_openai_body(&self.config.model, &request);
         let url = self
             .config
             .base_url
             .join("chat/completions")
             .unwrap_or_else(|_| self.config.base_url.clone());
+        let api_key = self.config.api_key.clone();
 
-        let resp = self
-            .client
-            .post(url)
-            .bearer_auth(&self.config.api_key)
-            .json(&body)
-            .send()
-            .await
-            .context("calling Codex API")?;
-
-        let status = resp.status();
-        let text = resp.text().await?;
-        let parsed: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({ "raw": text }));
-
-        if !status.is_success() {
-            let msg = parsed
-                .get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .unwrap_or("codex call failed")
-                .to_string();
-            store
-                .append_event(
-                    run_id,
-                    RunEvent {
-                        ts: OffsetDateTime::now_utc(),
-                        kind: "error".into(),
-                        data: Some(parsed.clone()),
-                    },
-                )
-                .await?;
-            store
-                .update_status(
-                    run_id,
-                    RunStatus {
-                        state: RunState::Failed,
-                        message: Some(msg.clone()),
-                        updated_at: OffsetDateTime::now_utc(),
-                    },
-                )
-                .await?;
-            return Err(anyhow!(msg));
-        }
-
-        let completion = extract_openai_text(&parsed).unwrap_or_else(|| text.clone());
-        // Simulate streaming events by chunking the completion into words.
-        for token in completion.split_whitespace() {
-            store
-                .append_event(
-                    run_id,
-                    RunEvent {
-                        ts: OffsetDateTime::now_utc(),
-                        kind: "stream".into(),
-                        data: Some(json!({ "token": token })),
-                    },
-                )
-                .await?;
-        }
-        store
-            .append_event(
-                run_id,
-                RunEvent {
-                    ts: OffsetDateTime::now_utc(),
-                    kind: "completion".into(),
-                    data: Some(json!({ "text": completion })),
-                },
-            )
-            .await?;
-
-        store
-            .update_status(
-                run_id,
-                RunStatus {
-                    state: RunState::Succeeded,
-                    message: Some("completed".into()),
-                    updated_at: OffsetDateTime::now_utc(),
-                },
-            )
-            .await?;
-
-        Ok(())
+        run_http_adapter(
+            run_id,
+            &store,
+            &self.config.api_key,
+            API_KEY_ERROR,
+            "Codex",
+            || self.client.post(url).bearer_auth(&api_key).json(&body),
+            extract_openai_text,
+        )
+        .await
     }
 }
 
@@ -220,7 +127,7 @@ fn build_openai_body(model: &str, request: &RunRequest) -> OpenAiBody {
             content: request.prompt.clone(),
         }],
         response_format,
-        stream: Some(request.async_mode),
+        stream: None, // streaming not currently supported; do not conflate with async_mode
         metadata,
     }
 }
@@ -295,9 +202,10 @@ impl BackendAdapter for CodexAdapter {
             .await?;
 
         let cloned = self.clone();
-        tokio::spawn(async move {
+        let store_monitor = store.clone();
+        let handle = tokio::spawn(async move {
             if let Err(err) = cloned.execute_run(run_id, request, store.clone()).await {
-                let _ = store
+                if let Err(e) = store
                     .append_event(
                         run_id,
                         RunEvent {
@@ -306,13 +214,34 @@ impl BackendAdapter for CodexAdapter {
                             data: Some(json!({"message": err.to_string()})),
                         },
                     )
-                    .await;
-                let _ = store
+                    .await
+                {
+                    tracing::warn!(error = %e, %run_id, "Failed to record error event");
+                }
+                if let Err(e) = store
                     .update_status(
                         run_id,
                         RunStatus {
                             state: RunState::Failed,
                             message: Some(err.to_string()),
+                            updated_at: OffsetDateTime::now_utc(),
+                        },
+                    )
+                    .await
+                {
+                    tracing::warn!(error = %e, %run_id, "Failed to update run status to failed");
+                }
+            }
+        });
+        tokio::spawn(async move {
+            if let Err(join_err) = handle.await {
+                tracing::error!(%run_id, error = %join_err, "Codex backend task panicked");
+                let _ = store_monitor
+                    .update_status(
+                        run_id,
+                        RunStatus {
+                            state: RunState::Failed,
+                            message: Some("internal error: task panicked".into()),
                             updated_at: OffsetDateTime::now_utc(),
                         },
                     )
@@ -340,8 +269,10 @@ impl BackendAdapter for CodexAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
+    #[serial]
     fn test_codex_adapter_new() {
         let adapter = CodexAdapter::new("gpt-4".to_string()).unwrap();
         assert_eq!(adapter.config.model, "gpt-4");
@@ -368,12 +299,14 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_codex_adapter_backend() {
         let adapter = CodexAdapter::new("gpt-4".to_string()).unwrap();
         assert_eq!(adapter.backend(), BackendKind::Codex);
     }
 
     #[test]
+    #[serial]
     fn test_codex_capabilities() {
         let adapter = CodexAdapter::new("gpt-4".to_string()).unwrap();
         let capabilities = adapter.capabilities();
@@ -385,6 +318,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_codex_list_templates() {
         let adapter = CodexAdapter::new("gpt-4".to_string()).unwrap();
         let templates = adapter.list_templates().await.unwrap();
@@ -416,7 +350,7 @@ mod tests {
         assert_eq!(body.messages.len(), 1);
         assert_eq!(body.messages[0].role, "user");
         assert_eq!(body.messages[0].content, "Hello, world!");
-        assert_eq!(body.stream, Some(false));
+        assert_eq!(body.stream, None); // streaming not supported
         assert!(body.response_format.is_none());
         assert!(body.metadata.is_none());
     }
@@ -440,7 +374,7 @@ mod tests {
 
         let body = build_openai_body("gpt-4", &request);
 
-        assert_eq!(body.stream, Some(true));
+        assert_eq!(body.stream, None); // streaming not supported
         assert!(body.response_format.is_some());
         assert!(body.metadata.is_some());
 
@@ -643,12 +577,14 @@ mod tests {
 
     // Integration-style tests that demonstrate usage patterns
     #[tokio::test]
+    #[serial]
     async fn test_codex_run_creates_record() {
-        // This test demonstrates the run flow without actually calling Codex API
+        // Isolate from host env to prevent leaking real API keys into the assertion
+        let _key_guard = skrills_test_utils::set_env_var("OPENAI_API_KEY", None);
+        let _codex_guard = skrills_test_utils::set_env_var("CODEX_API_KEY", None);
+
         let adapter = CodexAdapter::new("gpt-4".to_string()).unwrap();
 
-        // Note: This test shows the intended usage pattern
-        // In practice, you'd need an implementation of RunStore
         let _request = RunRequest {
             backend: BackendKind::Codex,
             prompt: "Test prompt".to_string(),
@@ -658,15 +594,10 @@ mod tests {
             async_mode: false,
         };
 
-        // The run method would:
-        // 1. Create a run record in the store
-        // 2. Update status to Running
-        // 3. Spawn a task to execute the run
-        // 4. Return the run ID
-
-        // Note: Actual execution requires a valid API key
         assert!(
-            adapter.config.api_key.is_empty() || adapter.config.api_key == "skrills_codex_api_key"
+            adapter.config.api_key.is_empty(),
+            "API key should be empty when env vars are cleared, got: '{}'",
+            adapter.config.api_key
         );
     }
 

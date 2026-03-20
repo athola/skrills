@@ -116,8 +116,8 @@ static OPENAI_TO_CLAUDE: LazyLock<HashMap<OpenAiModel, ClaudeModel>> = LazyLock:
 ///
 /// # Arguments
 /// * `model` - The model name to transform
-/// * `source` - Source adapter name ("claude" or "codex")
-/// * `target` - Target adapter name ("claude" or "codex")
+/// * `source` - Source adapter name ("claude", "codex", "copilot", or "cursor")
+/// * `target` - Target adapter name ("claude", "codex", "copilot", or "cursor")
 pub fn transform_model(model: &str, source: &str, target: &str) -> Option<String> {
     // Same platform = no transformation needed
     if source == target {
@@ -125,15 +125,47 @@ pub fn transform_model(model: &str, source: &str, target: &str) -> Option<String
     }
 
     match (source, target) {
-        ("claude", "codex") => {
+        ("claude", "codex") | ("claude", "copilot") => {
             let claude_model = ClaudeModel::parse(model)?;
             let openai_model = CLAUDE_TO_OPENAI.get(&claude_model)?;
             Some(openai_model.as_str().to_string())
         }
-        ("codex", "claude") => {
+        ("codex", "claude") | ("copilot", "claude") => {
             let openai_model = OpenAiModel::parse(model)?;
             let claude_model = OPENAI_TO_CLAUDE.get(&openai_model)?;
             Some(claude_model.as_str().to_string())
+        }
+        // Cursor accepts Claude model IDs directly — pass through
+        ("claude", "cursor") => Some(model.to_string()),
+        // Cursor special values: "inherit" = use parent model, "fast" = lightweight model
+        ("cursor", "claude") => match model {
+            "inherit" => None, // No model preference — let target decide
+            "fast" => Some("haiku".to_string()),
+            _ => {
+                // Cursor may use Claude model IDs directly
+                if ClaudeModel::parse(model).is_some() {
+                    Some(model.to_string())
+                } else {
+                    None
+                }
+            }
+        },
+        // Cursor ↔ Codex: route through Claude as intermediate
+        ("cursor", "codex") | ("cursor", "copilot") => {
+            // First try to parse as Claude model (Cursor often uses Claude IDs)
+            if let Some(claude_model) = ClaudeModel::parse(model) {
+                let openai_model = CLAUDE_TO_OPENAI.get(&claude_model)?;
+                Some(openai_model.as_str().to_string())
+            } else {
+                match model {
+                    "fast" => Some("gpt-4o-mini".to_string()),
+                    _ => None,
+                }
+            }
+        }
+        ("codex", "cursor") | ("copilot", "cursor") => {
+            // OpenAI model → pass through (Cursor accepts various model IDs)
+            Some(model.to_string())
         }
         _ => None,
     }
@@ -208,5 +240,92 @@ mod tests {
     fn unknown_model_returns_none() {
         assert_eq!(transform_model("unknown-model", "claude", "codex"), None);
         assert_eq!(transform_model("davinci", "codex", "claude"), None);
+    }
+
+    #[test]
+    fn claude_to_cursor_passthrough() {
+        // Cursor accepts Claude model IDs directly
+        assert_eq!(
+            transform_model("sonnet", "claude", "cursor"),
+            Some("sonnet".to_string())
+        );
+        assert_eq!(
+            transform_model("claude-opus-4-6", "claude", "cursor"),
+            Some("claude-opus-4-6".to_string())
+        );
+    }
+
+    #[test]
+    fn cursor_to_claude_special_values() {
+        assert_eq!(transform_model("inherit", "cursor", "claude"), None);
+        assert_eq!(
+            transform_model("fast", "cursor", "claude"),
+            Some("haiku".to_string())
+        );
+        // Cursor using Claude model IDs passes through
+        assert_eq!(
+            transform_model("sonnet", "cursor", "claude"),
+            Some("sonnet".to_string())
+        );
+        // Unknown Cursor model returns None
+        assert_eq!(transform_model("unknown", "cursor", "claude"), None);
+    }
+
+    #[test]
+    fn cursor_to_codex_routes_through_claude() {
+        // Cursor with Claude model → OpenAI equivalent
+        assert_eq!(
+            transform_model("opus", "cursor", "codex"),
+            Some("gpt-4o".to_string())
+        );
+        assert_eq!(
+            transform_model("fast", "cursor", "codex"),
+            Some("gpt-4o-mini".to_string())
+        );
+        assert_eq!(transform_model("inherit", "cursor", "codex"), None);
+    }
+
+    #[test]
+    fn codex_to_cursor_passthrough() {
+        assert_eq!(
+            transform_model("gpt-4o", "codex", "cursor"),
+            Some("gpt-4o".to_string())
+        );
+    }
+
+    #[test]
+    fn cursor_same_platform_passthrough() {
+        assert_eq!(
+            transform_model("sonnet", "cursor", "cursor"),
+            Some("sonnet".to_string())
+        );
+    }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn claude_parse_never_panics(s in "\\PC*") {
+                // Should return Some or None, never panic
+                let _ = ClaudeModel::parse(&s);
+            }
+
+            #[test]
+            fn openai_parse_never_panics(s in "\\PC*") {
+                let _ = OpenAiModel::parse(&s);
+            }
+
+            #[test]
+            fn transform_model_never_panics(
+                model in "\\PC{0,100}",
+                source in prop::sample::select(vec!["claude", "codex", "copilot", "cursor", "unknown"]),
+                target in prop::sample::select(vec!["claude", "codex", "copilot", "cursor", "unknown"]),
+            ) {
+                // Should return Some or None, never panic
+                let _ = transform_model(&model, source, target);
+            }
+        }
     }
 }

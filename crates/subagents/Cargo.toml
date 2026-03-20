@@ -1,6 +1,6 @@
 [package]
 name = "skrills-subagents"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2021"
 description = "Subagent MCP tools for the skrills server with pluggable backends."
 license = "MIT"
@@ -28,14 +28,15 @@ thiserror.workspace = true
 tempfile.workspace = true
 toml.workspace = true
 
-skrills-discovery = { path = "../discovery", version = "0.6.1" }
-skrills-state = { path = "../state", version = "0.6.1" }
+skrills-discovery = { path = "../discovery", version = "0.7.0" }
+skrills-state = { path = "../state", version = "0.7.0" }
 
 [dev-dependencies]
 wiremock = "0.6"
 futures = "0.3"
 regex = "1.0"
 serial_test = "3.0"
+skrills_test_utils = { path = "../test-utils" }
 
 [features]
 default = []

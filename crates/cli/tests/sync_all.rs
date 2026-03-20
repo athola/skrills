@@ -2,29 +2,21 @@
 //!
 //! Verifies end-to-end argument plumbing copies Codex skills into Claude.
 
-use std::env;
 use std::fs;
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use scopeguard::guard;
 
 #[test]
 fn given_codex_skill_when_sync_all_from_codex_then_skill_is_copied_into_claude() -> Result<()> {
-    // GIVEN a Codex skill exists under ~/.codex/skills
-    let original_home = env::var("HOME").ok();
+    let _g = skrills_test_utils::env_guard();
 
+    // GIVEN a Codex skill exists under ~/.codex/skills
     // Isolate filesystem side effects - tempdir will auto-clean on drop
     let tmp = tempfile::tempdir()?;
 
-    // Restore HOME when test exits (even on panic)
-    let _home_guard = guard(original_home, |original_home| match original_home {
-        Some(home) => env::set_var("HOME", home),
-        None => env::remove_var("HOME"),
-    });
-
-    // Set HOME to temp directory
-    env::set_var("HOME", tmp.path());
+    // Set HOME to temp directory (restored automatically on guard drop)
+    let _home_guard = skrills_test_utils::set_env_var("HOME", Some(tmp.path().to_str().unwrap()));
 
     // Seed a Codex skill
     let codex_skills = tmp.path().join(".codex/skills");

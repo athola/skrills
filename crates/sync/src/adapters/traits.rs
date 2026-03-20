@@ -92,3 +92,58 @@ pub trait AgentAdapter: Send + Sync {
     /// Write instructions to native format (e.g., CLAUDE.md, *.instructions.md)
     fn write_instructions(&self, instructions: &[Command]) -> Result<WriteReport>;
 }
+
+/// Blanket impl so `Box<dyn AgentAdapter>` can be used with `SyncOrchestrator`.
+impl AgentAdapter for Box<dyn AgentAdapter> {
+    fn name(&self) -> &str {
+        (**self).name()
+    }
+    fn config_root(&self) -> PathBuf {
+        (**self).config_root()
+    }
+    fn supported_fields(&self) -> FieldSupport {
+        (**self).supported_fields()
+    }
+    fn read_commands(&self, include_marketplace: bool) -> Result<Vec<Command>> {
+        (**self).read_commands(include_marketplace)
+    }
+    fn read_mcp_servers(&self) -> Result<HashMap<String, McpServer>> {
+        (**self).read_mcp_servers()
+    }
+    fn read_preferences(&self) -> Result<Preferences> {
+        (**self).read_preferences()
+    }
+    fn read_skills(&self) -> Result<Vec<Command>> {
+        (**self).read_skills()
+    }
+    fn read_hooks(&self) -> Result<Vec<Command>> {
+        (**self).read_hooks()
+    }
+    fn read_agents(&self) -> Result<Vec<Command>> {
+        (**self).read_agents()
+    }
+    fn read_instructions(&self) -> Result<Vec<Command>> {
+        (**self).read_instructions()
+    }
+    fn write_commands(&self, commands: &[Command]) -> Result<WriteReport> {
+        (**self).write_commands(commands)
+    }
+    fn write_mcp_servers(&self, servers: &HashMap<String, McpServer>) -> Result<WriteReport> {
+        (**self).write_mcp_servers(servers)
+    }
+    fn write_preferences(&self, prefs: &Preferences) -> Result<WriteReport> {
+        (**self).write_preferences(prefs)
+    }
+    fn write_skills(&self, skills: &[Command]) -> Result<WriteReport> {
+        (**self).write_skills(skills)
+    }
+    fn write_hooks(&self, hooks: &[Command]) -> Result<WriteReport> {
+        (**self).write_hooks(hooks)
+    }
+    fn write_agents(&self, agents: &[Command]) -> Result<WriteReport> {
+        (**self).write_agents(agents)
+    }
+    fn write_instructions(&self, instructions: &[Command]) -> Result<WriteReport> {
+        (**self).write_instructions(instructions)
+    }
+}

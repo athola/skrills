@@ -1,9 +1,8 @@
 //! Commands (prompts) reading and writing for Copilot adapter.
 
 use super::paths::prompts_dir;
-use super::utils::sanitize_name;
-use crate::adapters::utils::{hash_content, is_hidden_path};
-use crate::common::Command;
+use crate::adapters::utils::{hash_content, is_hidden_path, sanitize_name_segments};
+use crate::common::{Command, ContentFormat};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use anyhow::Context;
@@ -70,6 +69,7 @@ pub fn read_commands(root: &Path, _include_marketplace: bool) -> Result<Vec<Comm
             modified,
             hash,
             modules: Vec::new(),
+            content_format: ContentFormat::default(),
         });
     }
     Ok(commands)
@@ -85,7 +85,7 @@ pub fn write_commands(root: &Path, commands: &[Command]) -> Result<WriteReport> 
     let mut report = WriteReport::default();
 
     for cmd in commands {
-        let safe_name = sanitize_name(&cmd.name);
+        let safe_name = sanitize_name_segments(&cmd.name);
         let path = dir.join(format!("{}.prompts.md", safe_name));
 
         if path.exists() {

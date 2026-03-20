@@ -1,6 +1,6 @@
 [package]
 name = "skrills-state"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2021"
 description = "State management for skrills runtime options, pins, and persisted overrides."
 license = "MIT"
@@ -20,3 +20,6 @@ serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 dirs.workspace = true
+
+[dev-dependencies]
+skrills_test_utils = { path = "../test-utils" }

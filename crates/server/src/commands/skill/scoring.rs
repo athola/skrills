@@ -107,7 +107,7 @@ pub(crate) fn handle_skill_score_command(
         }
 
         let token_score = {
-            let estimated_tokens = content.len() / 4;
+            let estimated_tokens = skrills_analyze::estimate_tokens(content.len());
             if estimated_tokens < 500 {
                 25u8
             } else if estimated_tokens < 1000 {
@@ -218,7 +218,7 @@ mod tests {
             None,
         );
 
-        assert!(result.is_ok(), "score command should succeed");
+        result.expect("score command should succeed");
     }
 
     #[test]
@@ -241,7 +241,7 @@ mod tests {
             None,
         );
 
-        assert!(result.is_ok());
+        result.expect("score filter by name should succeed");
     }
 
     #[test]
@@ -287,6 +287,6 @@ mod tests {
             Some(50),
         );
 
-        assert!(result.is_ok());
+        result.expect("score filter by threshold should succeed");
     }
 }

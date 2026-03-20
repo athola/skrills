@@ -132,6 +132,7 @@ mod sync_direction_tests {
             sync_preferences: true,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -141,8 +142,7 @@ mod sync_direction_tests {
         let orchestrator = SyncOrchestrator::new(source, target);
         let result = orchestrator.sync(&params);
 
-        assert!(result.is_ok(), "Sync should complete successfully");
-        let report = result.unwrap();
+        let report = result.expect("Sync should complete successfully");
 
         // Verify components were synced
         assert!(report.skills.written > 0, "Skills should be written");
@@ -185,6 +185,7 @@ mod sync_direction_tests {
             sync_preferences: true,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -193,8 +194,7 @@ mod sync_direction_tests {
         let orchestrator = SyncOrchestrator::new(source, target);
         let result = orchestrator.sync(&params);
 
-        assert!(result.is_ok(), "Reverse sync should succeed");
-        let report = result.unwrap();
+        let report = result.expect("Reverse sync should succeed");
 
         // Verify sync occurred in reverse
         assert!(
@@ -239,6 +239,7 @@ mod sync_skip_existing_tests {
             sync_mcp_servers: false,
             sync_preferences: false,
             sync_agents: false,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -259,8 +260,7 @@ mod sync_skip_existing_tests {
         let orchestrator = SyncOrchestrator::new(source, target);
         let result = orchestrator.sync(&params);
 
-        assert!(result.is_ok(), "Sync with skip_existing should succeed");
-        let report = result.unwrap();
+        let report = result.expect("Sync with skip_existing should succeed");
 
         // Should write new commands but skip existing ones
         assert!(
@@ -308,6 +308,7 @@ mod sync_dry_run_tests {
             sync_preferences: true,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -316,8 +317,7 @@ mod sync_dry_run_tests {
         let orchestrator = SyncOrchestrator::new(source, target);
         let result = orchestrator.sync(&params);
 
-        assert!(result.is_ok(), "Dry run should succeed");
-        let report = result.unwrap();
+        let report = result.expect("Dry run should succeed");
 
         // Should report what would be synced
         assert!(
@@ -378,6 +378,7 @@ mod sync_force_overwrite_tests {
             sync_preferences: false,
             skip_existing_commands: false, // Should be ignored due to force
             sync_agents: false,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -386,8 +387,7 @@ mod sync_force_overwrite_tests {
         let orchestrator = SyncOrchestrator::new(source, target);
         let result = orchestrator.sync(&params);
 
-        assert!(result.is_ok(), "Force sync should succeed");
-        let report = result.unwrap();
+        let report = result.expect("Force sync should succeed");
 
         // Force should write all commands regardless of existing
         assert!(
@@ -427,6 +427,7 @@ mod sync_error_handling_tests {
             sync_preferences: true,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -436,10 +437,7 @@ mod sync_error_handling_tests {
         let result = orchestrator.sync(&params);
 
         // Should succeed even with missing directories (create as needed)
-        assert!(
-            result.is_ok(),
-            "Should handle missing directories gracefully"
-        );
+        let _ = result.expect("Should handle missing directories gracefully");
     }
 
     #[test]
@@ -472,6 +470,7 @@ mod sync_error_handling_tests {
             sync_preferences: true,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,

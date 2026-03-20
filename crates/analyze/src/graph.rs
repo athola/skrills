@@ -21,6 +21,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 pub struct RelationshipGraph {
     /// Adjacency list: skill URI → set of dependency URIs
     edges: HashMap<String, HashSet<String>>,
+    /// Reverse adjacency list: dependency URI → set of dependent URIs
+    #[serde(default)]
+    reverse_edges: HashMap<String, HashSet<String>>,
 }
 
 impl RelationshipGraph {
@@ -34,7 +37,8 @@ impl RelationshipGraph {
     /// If the skill already exists, this is a no-op.
     pub fn add_skill(&mut self, uri: impl Into<String>) {
         let uri = uri.into();
-        self.edges.entry(uri).or_default();
+        self.edges.entry(uri.clone()).or_default();
+        self.reverse_edges.entry(uri).or_default();
     }
 
     /// Add a dependency edge from one skill to another.
@@ -45,8 +49,12 @@ impl RelationshipGraph {
         let from = from_uri.into();
         let to = to_uri.into();
 
-        self.edges.entry(from).or_default().insert(to.clone());
-        self.edges.entry(to).or_default();
+        self.edges
+            .entry(from.clone())
+            .or_default()
+            .insert(to.clone());
+        self.edges.entry(to.clone()).or_default();
+        self.reverse_edges.entry(to).or_default().insert(from);
     }
 
     /// Add multiple dependencies for a skill at once.
@@ -108,16 +116,14 @@ impl RelationshipGraph {
     /// Find all skills that depend on the given skill.
     ///
     /// Returns skills that directly depend on this skill.
+    /// Uses pre-computed reverse edges for O(1) lookup.
     #[must_use]
     pub fn dependents(&self, uri: &str) -> Vec<String> {
-        let mut result = Vec::new();
-
-        for (skill, deps) in &self.edges {
-            if deps.contains(uri) && skill != uri {
-                result.push(skill.clone());
-            }
-        }
-
+        let mut result: Vec<String> = self
+            .reverse_edges
+            .get(uri)
+            .map(|deps| deps.iter().cloned().collect())
+            .unwrap_or_default();
         result.sort();
         result
     }
@@ -125,29 +131,31 @@ impl RelationshipGraph {
     /// Find all skills that transitively depend on the given skill.
     ///
     /// Returns all skills that depend on this skill, directly or indirectly.
+    /// Uses pre-computed reverse edges for O(V+E) traversal.
     #[must_use]
     pub fn transitive_dependents(&self, uri: &str) -> Vec<String> {
         let mut visited = HashSet::new();
         let mut result = Vec::new();
         let mut queue = VecDeque::new();
 
-        // Start with direct dependents
-        for dependent in self.dependents(uri) {
-            queue.push_back(dependent);
+        // Seed with direct reverse-edge dependents
+        if let Some(deps) = self.reverse_edges.get(uri) {
+            for dep in deps {
+                queue.push_back(dep.clone());
+            }
         }
 
         while let Some(current) = queue.pop_front() {
-            if visited.contains(&current) {
+            if !visited.insert(current.clone()) {
                 continue;
             }
-
-            visited.insert(current.clone());
             result.push(current.clone());
 
-            // Add transitive dependents
-            for dependent in self.dependents(&current) {
-                if !visited.contains(&dependent) {
-                    queue.push_back(dependent);
+            if let Some(deps) = self.reverse_edges.get(&current) {
+                for dep in deps {
+                    if !visited.contains(dep) {
+                        queue.push_back(dep.clone());
+                    }
                 }
             }
         }

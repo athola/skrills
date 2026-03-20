@@ -7,11 +7,96 @@
 #![cfg(feature = "http-transport")]
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chromiumoxide::browser::{Browser, BrowserConfig};
+use chromiumoxide::Page;
 use futures::StreamExt;
 use serial_test::serial;
+
+/// Returns true if a Chrome/Chromium binary is available on the system.
+fn chrome_available() -> bool {
+    use std::process::Command;
+    // Try common Chrome binary names
+    for bin in &[
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "chrome",
+    ] {
+        if Command::new(bin)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    // Also check CHROME_PATH env var
+    if let Ok(path) = std::env::var("CHROME_PATH") {
+        return std::path::Path::new(&path).exists();
+    }
+    false
+}
+
+/// Skip the test at runtime if Chrome is not installed.
+/// Returns true if the test should be skipped.
+macro_rules! skip_without_chrome {
+    () => {
+        if !chrome_available() {
+            eprintln!("Skipping: Chrome not found on this system");
+            return;
+        }
+    };
+}
+
+/// Poll the page until `js_expr` (a JS expression returning a boolean) evaluates to `true`.
+/// Returns `Ok(())` on success, or an error message on timeout.
+async fn wait_for_element(page: &Page, selector: &str, timeout: Duration) -> anyhow::Result<()> {
+    let js = format!("document.querySelector('{}') !== null", selector);
+    let start = Instant::now();
+    loop {
+        let found: bool = page
+            .evaluate(js.as_str())
+            .await
+            .map(|v| v.into_value().unwrap_or(false))
+            .unwrap_or(false);
+        if found {
+            return Ok(());
+        }
+        if start.elapsed() > timeout {
+            anyhow::bail!("Timeout waiting for element: {}", selector);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Poll the page until `js_expr` evaluates to `true`.
+/// Use this for conditions more complex than simple element existence.
+async fn wait_for_condition(
+    page: &Page,
+    js_expr: &str,
+    description: &str,
+    timeout: Duration,
+) -> anyhow::Result<()> {
+    let start = Instant::now();
+    loop {
+        let met: bool = page
+            .evaluate(js_expr)
+            .await
+            .map(|v| v.into_value().unwrap_or(false))
+            .unwrap_or(false);
+        if met {
+            return Ok(());
+        }
+        if start.elapsed() > timeout {
+            anyhow::bail!("Timeout waiting for condition: {}", description);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
 
 /// Create a test skill directory with sample SKILL.md files.
 fn create_test_skills(dir: &std::path::Path) {
@@ -59,12 +144,20 @@ async fn start_test_server(skill_dirs: Vec<PathBuf>) -> (String, tokio::task::Jo
         .await;
     });
 
-    // Wait for server to be ready
+    // Poll until the server is accepting connections (up to 10s)
     let client = reqwest::Client::new();
-    for _ in 0..30 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
+    let start = Instant::now();
+    let server_timeout = Duration::from_secs(10);
+    loop {
+        tokio::time::sleep(Duration::from_millis(50)).await;
         if client.get(&base_url).send().await.is_ok() {
             break;
+        }
+        if start.elapsed() > server_timeout {
+            panic!(
+                "Timeout: test server at {} did not become ready within {:?}",
+                base_url, server_timeout
+            );
         }
     }
 
@@ -94,8 +187,8 @@ async fn launch_browser() -> (Browser, tokio::task::JoinHandle<()>) {
 
 #[tokio::test]
 #[serial]
-#[ignore = "requires Chrome installed"]
 async fn browser_loads_dashboard_page() {
+    skip_without_chrome!();
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());
 
@@ -103,7 +196,9 @@ async fn browser_loads_dashboard_page() {
     let (browser, browser_handle) = launch_browser().await;
 
     let page = browser.new_page(&base_url).await.unwrap();
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    wait_for_element(&page, "header h1", Duration::from_secs(5))
+        .await
+        .expect("header h1 should appear after page load");
 
     // Check page title
     let title = page.get_title().await.unwrap().unwrap_or_default();
@@ -127,8 +222,8 @@ async fn browser_loads_dashboard_page() {
 
 #[tokio::test]
 #[serial]
-#[ignore = "requires Chrome installed"]
 async fn browser_renders_three_panels() {
+    skip_without_chrome!();
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());
 
@@ -136,7 +231,9 @@ async fn browser_renders_three_panels() {
     let (browser, browser_handle) = launch_browser().await;
 
     let page = browser.new_page(&base_url).await.unwrap();
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    wait_for_element(&page, ".skills-panel", Duration::from_secs(5))
+        .await
+        .expect("skills-panel should appear after page load");
 
     let skills_panel: bool = page
         .evaluate("document.querySelector('.skills-panel') !== null")
@@ -170,8 +267,8 @@ async fn browser_renders_three_panels() {
 
 #[tokio::test]
 #[serial]
-#[ignore = "requires Chrome installed"]
 async fn browser_fetches_and_renders_skills() {
+    skip_without_chrome!();
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());
 
@@ -179,8 +276,15 @@ async fn browser_fetches_and_renders_skills() {
     let (browser, browser_handle) = launch_browser().await;
 
     let page = browser.new_page(&base_url).await.unwrap();
-    // Give JS time to fetch and render
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // Wait for JS to fetch skills and render them into the DOM
+    wait_for_condition(
+        &page,
+        "document.querySelectorAll('.skill-item').length === 3",
+        "3 skill items to be rendered",
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("skill items should be rendered after data fetch");
 
     // Check skill count in header
     let skill_count: String = page
@@ -231,8 +335,8 @@ async fn browser_fetches_and_renders_skills() {
 
 #[tokio::test]
 #[serial]
-#[ignore = "requires Chrome installed"]
 async fn browser_updates_last_update_timestamp() {
+    skip_without_chrome!();
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());
 
@@ -240,7 +344,15 @@ async fn browser_updates_last_update_timestamp() {
     let (browser, browser_handle) = launch_browser().await;
 
     let page = browser.new_page(&base_url).await.unwrap();
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // Wait until the last-update element is populated (changes from initial '-')
+    wait_for_condition(
+        &page,
+        "(document.getElementById('last-update')?.textContent || '-') !== '-'",
+        "last-update timestamp to be populated",
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("last-update element should be updated after data fetch");
 
     let last_update: String = page
         .evaluate("document.getElementById('last-update')?.textContent || ''")
@@ -263,8 +375,8 @@ async fn browser_updates_last_update_timestamp() {
 
 #[tokio::test]
 #[serial]
-#[ignore = "requires Chrome installed"]
 async fn browser_click_skill_shows_details() {
+    skip_without_chrome!();
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());
 
@@ -272,14 +384,24 @@ async fn browser_click_skill_shows_details() {
     let (browser, browser_handle) = launch_browser().await;
 
     let page = browser.new_page(&base_url).await.unwrap();
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    wait_for_element(&page, ".skill-item", Duration::from_secs(5))
+        .await
+        .expect("at least one skill item should appear before clicking");
 
     // Click the first skill item
     page.evaluate("document.querySelector('.skill-item')?.click()")
         .await
         .unwrap();
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Wait for the metrics panel to update after the click
+    wait_for_condition(
+        &page,
+        "!(document.getElementById('metrics-content')?.textContent || '').includes('Select a skill')",
+        "metrics panel to show skill details after click",
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("metrics panel should update after clicking a skill");
 
     // Check that metrics panel now shows skill details
     let metrics_content: String = page
@@ -309,8 +431,8 @@ async fn browser_click_skill_shows_details() {
 
 #[tokio::test]
 #[serial]
-#[ignore = "requires Chrome installed"]
 async fn browser_css_loaded_and_applied() {
+    skip_without_chrome!();
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());
 
@@ -318,7 +440,15 @@ async fn browser_css_loaded_and_applied() {
     let (browser, browser_handle) = launch_browser().await;
 
     let page = browser.new_page(&base_url).await.unwrap();
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // Wait until CSS is loaded: body background should not be transparent
+    wait_for_condition(
+        &page,
+        "getComputedStyle(document.body).backgroundColor !== 'rgba(0, 0, 0, 0)'",
+        "CSS to load and apply background color",
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("CSS should be loaded and applied");
 
     // Verify CSS is loaded by checking computed styles
     let bg_color: String = page
@@ -351,8 +481,8 @@ async fn browser_css_loaded_and_applied() {
 
 #[tokio::test]
 #[serial]
-#[ignore = "requires Chrome installed"]
 async fn browser_panels_have_correct_layout() {
+    skip_without_chrome!();
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());
 
@@ -360,7 +490,14 @@ async fn browser_panels_have_correct_layout() {
     let (browser, browser_handle) = launch_browser().await;
 
     let page = browser.new_page(&base_url).await.unwrap();
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    wait_for_condition(
+        &page,
+        "document.querySelectorAll('.panel').length === 3",
+        "3 panel elements to be present",
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("all 3 panel elements should appear");
 
     // Check that all 3 panels are visible
     let panel_count: i64 = page
@@ -390,8 +527,8 @@ async fn browser_panels_have_correct_layout() {
 
 #[tokio::test]
 #[serial]
-#[ignore = "requires Chrome installed"]
 async fn browser_empty_skills_shows_no_skills_found() {
+    skip_without_chrome!();
     let tmp = tempfile::TempDir::new().unwrap();
     // Don't create any skills
 
@@ -399,7 +536,15 @@ async fn browser_empty_skills_shows_no_skills_found() {
     let (browser, browser_handle) = launch_browser().await;
 
     let page = browser.new_page(&base_url).await.unwrap();
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // Wait for the empty state to render (skill-count shows "0")
+    wait_for_condition(
+        &page,
+        "(document.getElementById('skill-count')?.textContent || '') === '0'",
+        "skill count to show '0' for empty state",
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("skill count should show 0 when no skills exist");
 
     let skill_count: String = page
         .evaluate("document.getElementById('skill-count')?.textContent || ''")
@@ -429,8 +574,8 @@ async fn browser_empty_skills_shows_no_skills_found() {
 
 #[tokio::test]
 #[serial]
-#[ignore = "requires Chrome installed"]
 async fn browser_header_shows_stats() {
+    skip_without_chrome!();
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());
 
@@ -438,7 +583,9 @@ async fn browser_header_shows_stats() {
     let (browser, browser_handle) = launch_browser().await;
 
     let page = browser.new_page(&base_url).await.unwrap();
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    wait_for_element(&page, ".stats", Duration::from_secs(5))
+        .await
+        .expect("stats element should appear in header");
 
     let header_text: String = page
         .evaluate("document.querySelector('.stats')?.textContent || ''")
@@ -464,15 +611,17 @@ async fn browser_header_shows_stats() {
 
 #[tokio::test]
 #[serial]
-#[ignore = "requires Chrome installed"]
 async fn browser_footer_exists() {
+    skip_without_chrome!();
     let tmp = tempfile::TempDir::new().unwrap();
 
     let (base_url, server_handle) = start_test_server(vec![tmp.path().to_path_buf()]).await;
     let (browser, browser_handle) = launch_browser().await;
 
     let page = browser.new_page(&base_url).await.unwrap();
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    wait_for_element(&page, "footer", Duration::from_secs(5))
+        .await
+        .expect("footer element should appear after page load");
 
     let footer_exists: bool = page
         .evaluate("document.querySelector('footer') !== null")
@@ -490,8 +639,8 @@ async fn browser_footer_exists() {
 
 #[tokio::test]
 #[serial]
-#[ignore = "requires Chrome installed"]
 async fn browser_metrics_panel_shows_select_prompt() {
+    skip_without_chrome!();
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());
 
@@ -499,7 +648,9 @@ async fn browser_metrics_panel_shows_select_prompt() {
     let (browser, browser_handle) = launch_browser().await;
 
     let page = browser.new_page(&base_url).await.unwrap();
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    wait_for_element(&page, "#metrics-content", Duration::from_secs(5))
+        .await
+        .expect("metrics-content element should appear");
 
     let metrics_text: String = page
         .evaluate("document.getElementById('metrics-content')?.textContent || ''")
@@ -521,8 +672,8 @@ async fn browser_metrics_panel_shows_select_prompt() {
 
 #[tokio::test]
 #[serial]
-#[ignore = "requires Chrome installed"]
 async fn browser_skill_items_show_source() {
+    skip_without_chrome!();
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());
 
@@ -530,7 +681,14 @@ async fn browser_skill_items_show_source() {
     let (browser, browser_handle) = launch_browser().await;
 
     let page = browser.new_page(&base_url).await.unwrap();
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    wait_for_condition(
+        &page,
+        "document.querySelectorAll('.skill-source').length === 3",
+        "3 skill-source elements to be rendered",
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("all skill source elements should appear after data fetch");
 
     // Each skill item should have a source span
     let source_count: i64 = page
@@ -553,8 +711,8 @@ async fn browser_skill_items_show_source() {
 
 #[tokio::test]
 #[serial]
-#[ignore = "requires Chrome installed"]
 async fn browser_sort_button_toggles_order() {
+    skip_without_chrome!();
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());
 
@@ -562,7 +720,18 @@ async fn browser_sort_button_toggles_order() {
     let (browser, browser_handle) = launch_browser().await;
 
     let page = browser.new_page(&base_url).await.unwrap();
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // Wait for skills to load so the sort button is functional
+    wait_for_element(&page, "#sort-btn", Duration::from_secs(5))
+        .await
+        .expect("sort button should appear");
+    wait_for_condition(
+        &page,
+        "document.querySelectorAll('.skill-item').length === 3",
+        "3 skill items to be rendered before sorting",
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("skill items should be rendered before testing sort");
 
     // Default sort label
     let sort_text: String = page
@@ -580,7 +749,14 @@ async fn browser_sort_button_toggles_order() {
     page.evaluate("document.getElementById('sort-btn')?.click()")
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    wait_for_condition(
+        &page,
+        "(document.getElementById('sort-btn')?.textContent || '') === 'Sort: A-Z'",
+        "sort button text to change to 'Sort: A-Z'",
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("sort button should update after click");
 
     let sort_text: String = page
         .evaluate("document.getElementById('sort-btn')?.textContent || ''")
@@ -615,7 +791,14 @@ async fn browser_sort_button_toggles_order() {
     page.evaluate("document.getElementById('sort-btn')?.click()")
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    wait_for_condition(
+        &page,
+        "(document.getElementById('sort-btn')?.textContent || '') === 'Sort: Discovery'",
+        "sort button text to change back to 'Sort: Discovery'",
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("sort button should toggle back after second click");
 
     let sort_text: String = page
         .evaluate("document.getElementById('sort-btn')?.textContent || ''")
@@ -636,8 +819,8 @@ async fn browser_sort_button_toggles_order() {
 
 #[tokio::test]
 #[serial]
-#[ignore = "requires Chrome installed"]
 async fn browser_has_scroll_sentinel() {
+    skip_without_chrome!();
     let tmp = tempfile::TempDir::new().unwrap();
     create_test_skills(tmp.path());
 
@@ -645,7 +828,9 @@ async fn browser_has_scroll_sentinel() {
     let (browser, browser_handle) = launch_browser().await;
 
     let page = browser.new_page(&base_url).await.unwrap();
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    wait_for_element(&page, "#skill-sentinel", Duration::from_secs(5))
+        .await
+        .expect("scroll sentinel element should appear after skills load");
 
     let sentinel_exists: bool = page
         .evaluate("document.getElementById('skill-sentinel') !== null")

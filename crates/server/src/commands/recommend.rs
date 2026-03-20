@@ -292,7 +292,7 @@ A test skill.
             true,
         );
 
-        assert!(result.is_ok());
+        result.expect("recommend on empty dir should succeed");
     }
 
     #[test]
@@ -310,7 +310,7 @@ A test skill.
             true,
         );
 
-        assert!(result.is_ok());
+        result.expect("recommend for not-found skill should succeed");
     }
 
     #[test]
@@ -340,6 +340,6 @@ A test skill.
             true,
         );
 
-        assert!(result.is_ok());
+        result.expect("recommend with dependencies should succeed");
     }
 }

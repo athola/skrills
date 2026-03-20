@@ -1,39 +1,5 @@
 //! Utility functions for Copilot adapter.
 
-/// Sanitizes a skill name to prevent path traversal attacks.
-///
-/// # Security Rationale
-///
-/// This function is **critical for security** because skill names are used to construct
-/// file paths. Without sanitization, a malicious skill name like `../../../etc/passwd`
-/// could escape the intended directory and read/write arbitrary files on the filesystem.
-///
-/// The sanitization prevents:
-/// - **Directory traversal**: `..` segments that could escape the skill directory
-/// - **Absolute paths**: Would be split and lose the leading `/`
-/// - **Hidden files**: Dots at segment start are preserved but traversal is blocked
-///
-/// # Behavior
-///
-/// Preserves forward slashes for nested skill directories (e.g., `category/my-skill`)
-/// while preventing path traversal attacks (e.g., `../../../etc/passwd`).
-///
-/// Each path segment is sanitized to only allow alphanumeric characters, hyphens,
-/// and underscores. Empty segments and `.` or `..` are removed.
-pub fn sanitize_name(name: &str) -> String {
-    name.split('/')
-        .filter(|segment| !segment.is_empty() && *segment != "." && *segment != "..")
-        .map(|segment| {
-            segment
-                .chars()
-                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-                .collect::<String>()
-        })
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
 /// Transforms a Claude agent's content to Copilot agent format.
 ///
 /// Transformations:
@@ -91,56 +57,6 @@ pub fn transform_agent_for_copilot(content: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_sanitize_path_traversal_attack() {
-        assert_eq!(sanitize_name("../../../etc/passwd"), "etc/passwd");
-    }
-
-    #[test]
-    fn test_sanitize_double_dot_alone() {
-        assert_eq!(sanitize_name(".."), "");
-    }
-
-    #[test]
-    fn test_sanitize_single_dot_alone() {
-        assert_eq!(sanitize_name("."), "");
-    }
-
-    #[test]
-    fn test_sanitize_strips_dotdot_segment() {
-        assert_eq!(sanitize_name("foo/../bar"), "foo/bar");
-    }
-
-    #[test]
-    fn test_sanitize_strips_dot_segment() {
-        assert_eq!(sanitize_name("foo/./bar"), "foo/bar");
-    }
-
-    #[test]
-    fn test_sanitize_normal_name() {
-        assert_eq!(sanitize_name("my-skill"), "my-skill");
-    }
-
-    #[test]
-    fn test_sanitize_nested_valid_name() {
-        assert_eq!(sanitize_name("category/my-skill"), "category/my-skill");
-    }
-
-    #[test]
-    fn test_sanitize_empty_string() {
-        assert_eq!(sanitize_name(""), "");
-    }
-
-    #[test]
-    fn test_sanitize_special_chars() {
-        assert_eq!(sanitize_name("my skill!@#"), "myskill");
-    }
-
-    #[test]
-    fn test_sanitize_multiple_slashes() {
-        assert_eq!(sanitize_name("foo///bar"), "foo/bar");
-    }
 
     #[test]
     fn test_transform_no_frontmatter() {

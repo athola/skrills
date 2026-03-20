@@ -1,7 +1,5 @@
 //! Common schema types for cross-agent configuration sync.
 
-#![allow(dead_code)] // Types will be used by adapters in subsequent tasks
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -18,13 +16,27 @@ pub struct ModuleFile {
     pub hash: String,
 }
 
+/// Describes the format of a [`Command`]'s content bytes.
+///
+/// Used to avoid ambiguous parse-and-fallback when content could be either
+/// structured data (JSON) or plain text (markdown/shell commands).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ContentFormat {
+    /// Markdown or plain text (default for commands, skills, instructions).
+    #[default]
+    Markdown,
+    /// JSON-structured content (e.g., hook entries serialized as a JSON array).
+    Json,
+}
+
 /// A slash command that can be synced between agents.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Command {
     /// Command name without leading slash (e.g., "commit-msg")
     pub name: String,
-    /// Raw Markdown content (bytes) of the command. Stored as bytes so we
-    /// don't choke on non-UTF-8 files (common in multilingual skills).
+    /// Raw content bytes. Stored as bytes so we don't choke on non-UTF-8
+    /// files (common in multilingual skills).
     pub content: Vec<u8>,
     /// Original file path (for reference)
     pub source_path: PathBuf,
@@ -36,6 +48,11 @@ pub struct Command {
     /// Empty for commands; populated for directory-based skills.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub modules: Vec<ModuleFile>,
+    /// Format of the content bytes. Defaults to [`ContentFormat::Markdown`].
+    /// Hook adapters should set this to [`ContentFormat::Json`] when the
+    /// content is a serialized JSON array of hook entries.
+    #[serde(default)]
+    pub content_format: ContentFormat,
 }
 
 /// Transport type for MCP server connection.
@@ -101,12 +118,4 @@ pub struct CommonConfig {
     pub hooks: Vec<Command>,
     pub agents: Vec<Command>,
     pub instructions: Vec<Command>,
-}
-
-/// Metadata about a sync operation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncMeta {
-    pub source_agent: String,
-    pub target_agent: String,
-    pub synced_at: SystemTime,
 }

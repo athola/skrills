@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::adapters::utils::hash_content;
-use crate::common::{McpServer, McpTransport, Preferences};
+use crate::adapters::utils::test_helpers::make_command;
+use crate::common::{ContentFormat, McpServer, McpTransport, Preferences};
 use std::collections::HashMap;
 use std::fs;
 use std::time::SystemTime;
@@ -75,14 +76,10 @@ fn write_commands_creates_prompts_files() {
     let tmp = tempdir().unwrap();
     let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
 
-    let commands = vec![Command {
-        name: "review".to_string(),
-        content: b"# Review Prompt\n\nReview this code.".to_vec(),
-        source_path: PathBuf::from("/tmp/review.md"),
-        modified: SystemTime::now(),
-        hash: "abc".to_string(),
-        modules: Vec::new(),
-    }];
+    let commands = vec![make_command(
+        "review",
+        "# Review Prompt\n\nReview this code.",
+    )];
 
     let report = adapter.write_commands(&commands).unwrap();
     assert_eq!(report.written, 1);
@@ -101,14 +98,8 @@ fn write_commands_skips_unchanged() {
     fs::write(prompts_dir.join("test.prompts.md"), content).unwrap();
 
     let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
-    let commands = vec![Command {
-        name: "test".to_string(),
-        content: content.to_vec(),
-        source_path: PathBuf::from("/tmp/test.md"),
-        modified: SystemTime::now(),
-        hash: hash_content(content),
-        modules: Vec::new(),
-    }];
+    let content_str = std::str::from_utf8(content).unwrap();
+    let commands = vec![make_command("test", content_str)];
 
     let report = adapter.write_commands(&commands).unwrap();
     assert_eq!(report.written, 0);
@@ -120,14 +111,7 @@ fn commands_roundtrip() {
     let tmp = tempdir().unwrap();
     let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
 
-    let commands = vec![Command {
-        name: "commit-msg".to_string(),
-        content: b"# Commit Message Generator".to_vec(),
-        source_path: PathBuf::from("/tmp/commit-msg.md"),
-        modified: SystemTime::now(),
-        hash: "hash123".to_string(),
-        modules: Vec::new(),
-    }];
+    let commands = vec![make_command("commit-msg", "# Commit Message Generator")];
 
     adapter.write_commands(&commands).unwrap();
     let read_back = adapter.read_commands(false).unwrap();
@@ -223,6 +207,8 @@ fn write_skills_creates_directories() {
         modified: SystemTime::now(),
         hash: "hash".to_string(),
         modules: Vec::new(),
+
+        content_format: ContentFormat::default(),
     };
 
     let report = adapter.write_skills(&[skill]).unwrap();
@@ -246,6 +232,8 @@ fn write_skills_skips_unchanged() {
         modified: SystemTime::now(),
         hash: hash_content(content),
         modules: Vec::new(),
+
+        content_format: ContentFormat::default(),
     };
 
     let report = adapter.write_skills(&[skill]).unwrap();
@@ -265,6 +253,8 @@ fn write_skills_no_config_toml_created() {
         modified: SystemTime::now(),
         hash: "hash".to_string(),
         modules: Vec::new(),
+
+        content_format: ContentFormat::default(),
     };
 
     adapter.write_skills(&[skill]).unwrap();
@@ -559,32 +549,38 @@ fn write_preferences_invalid_existing_json_returns_error() {
 
 #[test]
 fn sanitize_name_removes_path_traversal() {
-    use super::utils::sanitize_name;
+    use crate::adapters::utils::sanitize_name_segments;
 
     // Path traversal attacks are blocked
-    assert_eq!(sanitize_name("../../../etc/passwd"), "etc/passwd");
-    assert_eq!(sanitize_name("../../malicious"), "malicious");
+    assert_eq!(sanitize_name_segments("../../../etc/passwd"), "etc/passwd");
+    assert_eq!(sanitize_name_segments("../../malicious"), "malicious");
 
     // Valid names pass through unchanged
-    assert_eq!(sanitize_name("valid-name_123"), "valid-name_123");
-    assert_eq!(sanitize_name("normal"), "normal");
+    assert_eq!(sanitize_name_segments("valid-name_123"), "valid-name_123");
+    assert_eq!(sanitize_name_segments("normal"), "normal");
 
     // Spaces and special chars are removed within segments
-    assert_eq!(sanitize_name("with spaces"), "withspaces");
+    assert_eq!(sanitize_name_segments("with spaces"), "withspaces");
 
     // Nested skill paths are preserved (key fix for review feedback)
-    assert_eq!(sanitize_name("category/my-skill"), "category/my-skill");
-    assert_eq!(sanitize_name("deep/nested/skill"), "deep/nested/skill");
+    assert_eq!(
+        sanitize_name_segments("category/my-skill"),
+        "category/my-skill"
+    );
+    assert_eq!(
+        sanitize_name_segments("deep/nested/skill"),
+        "deep/nested/skill"
+    );
 
     // Mixed: nested paths with traversal attempts
     assert_eq!(
-        sanitize_name("category/../other/skill"),
+        sanitize_name_segments("category/../other/skill"),
         "category/other/skill"
     );
-    assert_eq!(sanitize_name("./relative/./path"), "relative/path");
+    assert_eq!(sanitize_name_segments("./relative/./path"), "relative/path");
 
     // Empty segments are collapsed
-    assert_eq!(sanitize_name("a//b///c"), "a/b/c");
+    assert_eq!(sanitize_name_segments("a//b///c"), "a/b/c");
 }
 
 // ==========================================
@@ -603,6 +599,8 @@ fn skills_roundtrip() {
         modified: SystemTime::now(),
         hash: "hash123".to_string(),
         modules: Vec::new(),
+
+        content_format: ContentFormat::default(),
     };
 
     adapter.write_skills(&[skill]).unwrap();
@@ -710,6 +708,8 @@ fn write_agents_creates_agent_files() {
         modified: SystemTime::now(),
         hash: "abc".to_string(),
         modules: Vec::new(),
+
+        content_format: ContentFormat::default(),
     }];
 
     let report = adapter.write_agents(&agents).unwrap();
@@ -737,6 +737,8 @@ fn write_agents_skips_unchanged() {
         modified: SystemTime::now(),
         hash: "abc".to_string(),
         modules: Vec::new(),
+
+        content_format: ContentFormat::default(),
     }];
 
     // Write once
@@ -801,9 +803,7 @@ fn resolve_config_root_prefers_xdg_if_exists() {
     // We can't easily test the env var without process isolation,
     // but we verify the resolve_config_root function exists and works.
     let result = CopilotAdapter::resolve_config_root();
-    assert!(result.is_ok(), "resolve_config_root should succeed");
-
-    let path = result.unwrap();
+    let path = result.expect("resolve_config_root should succeed");
     // Path should end with "copilot" or ".copilot"
     let filename = path.file_name().unwrap().to_str().unwrap();
     assert!(
@@ -848,6 +848,8 @@ fn write_skills_sanitizes_path_traversal_in_names() {
         modified: SystemTime::now(),
         hash: "evil".to_string(),
         modules: Vec::new(),
+
+        content_format: ContentFormat::default(),
     };
 
     adapter.write_skills(&[malicious_skill]).unwrap();
@@ -875,6 +877,8 @@ fn write_skills_sanitizes_absolute_paths() {
         modified: SystemTime::now(),
         hash: "abs".to_string(),
         modules: Vec::new(),
+
+        content_format: ContentFormat::default(),
     };
 
     adapter.write_skills(&[skill]).unwrap();

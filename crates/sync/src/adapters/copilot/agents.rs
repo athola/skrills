@@ -1,9 +1,9 @@
 //! Agents, instructions, and hooks for Copilot adapter.
 
 use super::paths::{agents_dir, instructions_dir};
-use super::utils::{sanitize_name, transform_agent_for_copilot};
-use crate::adapters::utils::{hash_content, is_hidden_path};
-use crate::common::Command;
+use super::utils::transform_agent_for_copilot;
+use crate::adapters::utils::{hash_content, is_hidden_path, sanitize_name_segments};
+use crate::common::{Command, ContentFormat};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use anyhow::Context;
@@ -76,6 +76,7 @@ pub fn read_agents(root: &Path) -> Result<Vec<Command>> {
             modified,
             hash,
             modules: Vec::new(),
+            content_format: ContentFormat::default(),
         });
     }
 
@@ -91,7 +92,7 @@ pub fn write_agents(root: &Path, agents: &[Command]) -> Result<WriteReport> {
     let mut report = WriteReport::default();
 
     for agent in agents {
-        let safe_name = sanitize_name(&agent.name);
+        let safe_name = sanitize_name_segments(&agent.name);
         let path = dir.join(format!("{}.agent.md", safe_name));
 
         // Transform the content: Claude format -> Copilot format
@@ -171,6 +172,7 @@ pub fn read_instructions(root: &Path) -> Result<Vec<Command>> {
             modified,
             hash,
             modules: Vec::new(),
+            content_format: ContentFormat::default(),
         });
     }
 
@@ -189,7 +191,7 @@ pub fn write_instructions(root: &Path, instructions: &[Command]) -> Result<Write
     let mut report = WriteReport::default();
 
     for instruction in instructions {
-        let safe_name = sanitize_name(&instruction.name);
+        let safe_name = sanitize_name_segments(&instruction.name);
         let path = dir.join(format!("{}.instructions.md", safe_name));
 
         if path.exists() {

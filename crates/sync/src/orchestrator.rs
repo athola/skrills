@@ -8,14 +8,24 @@ use anyhow::bail;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-/// Direction of sync operation.
+/// Source platform for sync operation.
+///
+/// **Deprecated**: Use [`sync_between`] with string platform names instead.
+/// This enum grows quadratically with the number of platforms and will be
+/// removed in a future release.
+#[deprecated(
+    since = "0.7.0",
+    note = "Use sync_between(from, to, params) with string platform names instead"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum SyncDirection {
-    /// Sync from Claude to Codex
     ClaudeToCodex,
-    /// Sync from Codex to Claude
     CodexToClaude,
+    ClaudeToCopilot,
+    CopilotToClaude,
+    ClaudeToCursor,
+    CursorToClaude,
 }
 
 /// Parameters for a sync operation.
@@ -33,7 +43,10 @@ pub struct SyncParams {
     pub from: Option<String>,
     /// Perform dry run (preview only)
     pub dry_run: bool,
-    /// Skip confirmation prompts
+    /// Skip confirmation prompts and override `skip_existing_*` flags.
+    ///
+    /// When `force` is true, `skip_existing_commands` and `skip_existing_instructions`
+    /// are ignored — all items are written regardless.
     pub force: bool,
     /// Sync skills
     #[serde(default = "default_true")]
@@ -53,6 +66,9 @@ pub struct SyncParams {
     /// Sync agents (subagents)
     #[serde(default = "default_true")]
     pub sync_agents: bool,
+    /// Sync hooks (lifecycle events)
+    #[serde(default = "default_true")]
+    pub sync_hooks: bool,
     /// Sync instructions (CLAUDE.md → *.instructions.md)
     #[serde(default = "default_true")]
     pub sync_instructions: bool,
@@ -76,119 +92,11 @@ impl Default for SyncParams {
             sync_mcp_servers: true,
             sync_preferences: true,
             sync_agents: true,
+            sync_hooks: true,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
         }
-    }
-}
-
-impl SyncParams {
-    /// Creates a new builder for SyncParams.
-    pub fn builder() -> SyncParamsBuilder {
-        SyncParamsBuilder::default()
-    }
-}
-
-/// Builder for SyncParams with fluent API.
-///
-/// ```
-/// use skrills_sync::SyncParamsBuilder;
-///
-/// let params = SyncParamsBuilder::new()
-///     .dry_run(true)
-///     .sync_skills(true)
-///     .sync_commands(false)
-///     .build();
-/// assert!(params.dry_run);
-/// assert!(!params.sync_commands);
-/// ```
-#[derive(Debug, Clone, Default)]
-pub struct SyncParamsBuilder {
-    params: SyncParams,
-}
-
-impl SyncParamsBuilder {
-    /// Creates a new builder with default values.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Sets the source agent name.
-    pub fn from(mut self, from: impl Into<String>) -> Self {
-        self.params.from = Some(from.into());
-        self
-    }
-
-    /// Sets dry run mode (preview only).
-    pub fn dry_run(mut self, dry_run: bool) -> Self {
-        self.params.dry_run = dry_run;
-        self
-    }
-
-    /// Sets force mode (skip confirmation prompts).
-    pub fn force(mut self, force: bool) -> Self {
-        self.params.force = force;
-        self
-    }
-
-    /// Sets whether to sync skills.
-    pub fn sync_skills(mut self, sync: bool) -> Self {
-        self.params.sync_skills = sync;
-        self
-    }
-
-    /// Sets whether to sync commands.
-    pub fn sync_commands(mut self, sync: bool) -> Self {
-        self.params.sync_commands = sync;
-        self
-    }
-
-    /// Sets whether to skip existing commands.
-    pub fn skip_existing_commands(mut self, skip: bool) -> Self {
-        self.params.skip_existing_commands = skip;
-        self
-    }
-
-    /// Sets whether to sync MCP servers.
-    pub fn sync_mcp_servers(mut self, sync: bool) -> Self {
-        self.params.sync_mcp_servers = sync;
-        self
-    }
-
-    /// Sets whether to sync preferences.
-    pub fn sync_preferences(mut self, sync: bool) -> Self {
-        self.params.sync_preferences = sync;
-        self
-    }
-
-    /// Sets whether to sync agents.
-    pub fn sync_agents(mut self, sync: bool) -> Self {
-        self.params.sync_agents = sync;
-        self
-    }
-
-    /// Sets whether to sync instructions.
-    pub fn sync_instructions(mut self, sync: bool) -> Self {
-        self.params.sync_instructions = sync;
-        self
-    }
-
-    /// Sets whether to skip existing instructions.
-    pub fn skip_existing_instructions(mut self, skip: bool) -> Self {
-        self.params.skip_existing_instructions = skip;
-        self
-    }
-
-    /// Sets whether to include marketplace content.
-    pub fn include_marketplace(mut self, include: bool) -> Self {
-        self.params.include_marketplace = include;
-        self
-    }
-
-    /// Builds the SyncParams.
-    pub fn build(self) -> SyncParams {
-        self.params
     }
 }
 
@@ -209,7 +117,7 @@ fn sync_items<Item>(
     read_existing: impl FnOnce() -> Result<Vec<Item>>,
     write_items: impl FnOnce(&[Item]) -> Result<WriteReport>,
 ) -> Result<WriteReport> {
-    if force {
+    if force || !skip_existing {
         if dry_run {
             return Ok(WriteReport {
                 written: items.len(),
@@ -219,17 +127,7 @@ fn sync_items<Item>(
         return write_items(&items);
     }
 
-    if !skip_existing {
-        if dry_run {
-            return Ok(WriteReport {
-                written: items.len(),
-                ..Default::default()
-            });
-        }
-        return write_items(&items);
-    }
-
-    // skip_existing is true: partition into new vs existing
+    // skip_existing is true (and not forced): partition into new vs existing
     let existing: HashSet<String> = read_existing()?
         .into_iter()
         .map(|item| get_name(&item))
@@ -283,24 +181,25 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
         Self { source, target }
     }
 
-    /// Returns the source adapter name.
-    pub fn source_name(&self) -> &str {
-        self.source.name()
-    }
-
-    /// Returns the target adapter name.
-    pub fn target_name(&self) -> &str {
-        self.target.name()
-    }
-
     /// Performs the sync operation.
+    ///
+    /// Logs [`crate::adapters::traits::FieldSupport`] mismatches for observability but always delegates
+    /// to the target adapter — adapters may implement creative mappings for
+    /// fields they don't "natively" support (e.g., Copilot maps commands to
+    /// prompts, Codex converts agents to skills).
     pub fn sync(&self, params: &SyncParams) -> Result<SyncReport> {
         let mut report = SyncReport::new();
+        let target_support = self.target.supported_fields();
 
         // Sync commands
         if params.sync_commands {
+            if !target_support.commands {
+                tracing::debug!(
+                    target = %self.target.name(),
+                    "Target does not natively support commands; delegating to adapter"
+                );
+            }
             let commands = self.source.read_commands(params.include_marketplace)?;
-
             let include_marketplace = params.include_marketplace;
             report.commands = sync_items(
                 commands,
@@ -312,8 +211,15 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 |items| self.target.write_commands(items),
             )?;
         }
+
         // Sync skills
         if params.sync_skills {
+            if !target_support.skills {
+                tracing::debug!(
+                    target = %self.target.name(),
+                    "Target does not natively support skills; delegating to adapter"
+                );
+            }
             let skills = self.source.read_skills()?;
             if !params.dry_run {
                 report.skills = self.target.write_skills(&skills)?;
@@ -324,6 +230,12 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
 
         // Sync MCP servers
         if params.sync_mcp_servers {
+            if !target_support.mcp_servers {
+                tracing::debug!(
+                    target = %self.target.name(),
+                    "Target does not natively support MCP servers; delegating to adapter"
+                );
+            }
             let servers = self.source.read_mcp_servers()?;
             if !params.dry_run {
                 report.mcp_servers = self.target.write_mcp_servers(&servers)?;
@@ -334,6 +246,12 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
 
         // Sync preferences (with model transformation)
         if params.sync_preferences {
+            if !target_support.preferences {
+                tracing::debug!(
+                    target = %self.target.name(),
+                    "Target does not natively support preferences; delegating to adapter"
+                );
+            }
             let mut prefs = self.source.read_preferences()?;
 
             // Transform model name to target platform equivalent
@@ -343,7 +261,6 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 {
                     prefs.model = Some(transformed);
                 } else {
-                    // Unknown model - keep original but log it
                     tracing::debug!(
                         model = %model,
                         source = %self.source.name(),
@@ -355,16 +272,19 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
 
             if !params.dry_run {
                 report.preferences = self.target.write_preferences(&prefs)?;
-            } else {
-                // Count non-empty preferences
-                if prefs.model.is_some() {
-                    report.preferences.written += 1;
-                }
+            } else if prefs.model.is_some() {
+                report.preferences.written += 1;
             }
         }
 
         // Sync agents (subagents)
         if params.sync_agents {
+            if !target_support.agents {
+                tracing::debug!(
+                    target = %self.target.name(),
+                    "Target does not natively support agents; delegating to adapter"
+                );
+            }
             let agents = self.source.read_agents()?;
             if !params.dry_run {
                 report.agents = self.target.write_agents(&agents)?;
@@ -373,10 +293,31 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
             }
         }
 
-        // Sync instructions (CLAUDE.md → *.instructions.md)
-        if params.sync_instructions {
-            let instructions = self.source.read_instructions()?;
+        // Sync hooks (lifecycle events)
+        if params.sync_hooks {
+            if !target_support.hooks {
+                tracing::debug!(
+                    target = %self.target.name(),
+                    "Target does not natively support hooks; delegating to adapter"
+                );
+            }
+            let hooks = self.source.read_hooks()?;
+            if !params.dry_run {
+                report.hooks = self.target.write_hooks(&hooks)?;
+            } else {
+                report.hooks.written = hooks.len();
+            }
+        }
 
+        // Sync instructions (CLAUDE.md → *.instructions.md / .cursor/rules/*.mdc)
+        if params.sync_instructions {
+            if !target_support.instructions {
+                tracing::debug!(
+                    target = %self.target.name(),
+                    "Target does not natively support instructions; delegating to adapter"
+                );
+            }
+            let instructions = self.source.read_instructions()?;
             report.instructions = sync_items(
                 instructions,
                 params.force,
@@ -395,20 +336,91 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
     }
 }
 
-/// Determines sync direction from string input.
+/// Determines sync direction from string input (legacy API).
+///
+/// **Deprecated**: Use [`sync_between`] with [`default_target_for`] instead.
 ///
 /// ```
+/// #[allow(deprecated)]
 /// use skrills_sync::{parse_direction, SyncDirection};
 ///
-/// assert_eq!(parse_direction("claude").unwrap(), SyncDirection::ClaudeToCodex);
-/// assert_eq!(parse_direction("codex").unwrap(), SyncDirection::CodexToClaude);
-/// assert!(parse_direction("invalid").is_err());
+/// #[allow(deprecated)]
+/// {
+///     assert_eq!(parse_direction("claude").unwrap(), SyncDirection::ClaudeToCodex);
+///     assert_eq!(parse_direction("codex").unwrap(), SyncDirection::CodexToClaude);
+///     assert!(parse_direction("invalid").is_err());
+/// }
 /// ```
+#[deprecated(
+    since = "0.7.0",
+    note = "Use sync_between(from, to, params) with default_target_for(from) instead"
+)]
+#[allow(deprecated)]
 pub fn parse_direction(from: &str) -> Result<SyncDirection> {
     match from.to_lowercase().as_str() {
         "claude" => Ok(SyncDirection::ClaudeToCodex),
         "codex" => Ok(SyncDirection::CodexToClaude),
-        _ => bail!("Unknown source '{}'. Use 'claude' or 'codex'", from),
+        "copilot" => Ok(SyncDirection::CopilotToClaude),
+        "cursor" => Ok(SyncDirection::CursorToClaude),
+        _ => bail!(
+            "Unknown source '{}'. Use 'claude', 'codex', 'copilot', or 'cursor'",
+            from
+        ),
+    }
+}
+
+/// Returns the default target platform for a given source.
+///
+/// Used when a sync tool needs to infer the target from only the source name.
+pub fn default_target_for(from: &str) -> &'static str {
+    match from {
+        "claude" => "codex",
+        "codex" => "claude",
+        "copilot" => "claude",
+        "cursor" => "claude",
+        _ => "codex",
+    }
+}
+
+/// Runs a sync between two named platforms using `create_adapter`.
+///
+/// This avoids the combinatorial match arm explosion that occurs when each
+/// (from, to) pair is constructed explicitly.
+pub fn sync_between(from: &str, to: &str, params: &SyncParams) -> Result<SyncReport> {
+    let source = create_adapter(from)?;
+    let target = create_adapter(to)?;
+    SyncOrchestrator::new(source, target).sync(params)
+}
+
+/// Validates that a platform name is recognized.
+///
+/// ```
+/// use skrills_sync::orchestrator::is_valid_platform;
+///
+/// assert!(is_valid_platform("claude"));
+/// assert!(is_valid_platform("cursor"));
+/// assert!(!is_valid_platform("vscode"));
+/// ```
+pub fn is_valid_platform(name: &str) -> bool {
+    matches!(
+        name.to_lowercase().as_str(),
+        "claude" | "codex" | "copilot" | "cursor"
+    )
+}
+
+/// Creates an adapter for the given platform name.
+///
+/// Returns a boxed `AgentAdapter` for the specified platform.
+pub fn create_adapter(platform: &str) -> Result<Box<dyn AgentAdapter>> {
+    match platform.to_lowercase().as_str() {
+        "claude" => Ok(Box::new(crate::adapters::ClaudeAdapter::new()?)),
+        "codex" => Ok(Box::new(crate::adapters::CodexAdapter::new()?)),
+        "copilot" => Ok(Box::new(crate::adapters::CopilotAdapter::new()?)),
+        "cursor" => Ok(Box::new(crate::adapters::CursorAdapter::new()?)),
+        _ => bail!(
+            "Unknown platform '{}'. Use 'claude', 'codex', 'copilot', or 'cursor'",
+            platform
+        ),
     }
 }
 
@@ -591,34 +603,24 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn parse_direction_claude() {
         let dir = parse_direction("claude").unwrap();
         assert_eq!(dir, SyncDirection::ClaudeToCodex);
     }
 
     #[test]
+    #[allow(deprecated)]
     fn parse_direction_codex() {
         let dir = parse_direction("codex").unwrap();
         assert_eq!(dir, SyncDirection::CodexToClaude);
     }
 
     #[test]
+    #[allow(deprecated)]
     fn parse_direction_invalid() {
         let result = parse_direction("invalid");
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn orchestrator_names() {
-        let src_dir = tempdir().unwrap();
-        let tgt_dir = tempdir().unwrap();
-
-        let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
-        let target = CodexAdapter::with_root(tgt_dir.path().to_path_buf());
-
-        let orchestrator = SyncOrchestrator::new(source, target);
-        assert_eq!(orchestrator.source_name(), "claude");
-        assert_eq!(orchestrator.target_name(), "codex");
     }
 
     #[test]
@@ -965,5 +967,32 @@ mod tests {
         let report = orchestrator.sync(&params).unwrap();
         assert_eq!(report.commands.written, 0);
         assert_eq!(report.commands.skipped.len(), 1);
+    }
+
+    #[test]
+    fn default_target_for_all_platforms() {
+        assert_eq!(default_target_for("claude"), "codex");
+        assert_eq!(default_target_for("codex"), "claude");
+        assert_eq!(default_target_for("copilot"), "claude");
+        assert_eq!(default_target_for("cursor"), "claude");
+        assert_eq!(default_target_for("unknown"), "codex");
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn parse_direction_cursor() {
+        let dir = parse_direction("cursor").unwrap();
+        assert_eq!(dir, SyncDirection::CursorToClaude);
+    }
+
+    #[test]
+    fn create_adapter_all_platforms() {
+        // These only verify the adapter constructs; the actual root may not exist
+        // on the test machine, but with_root tests cover that path.
+        assert_eq!(create_adapter("claude").unwrap().name(), "claude");
+        assert_eq!(create_adapter("codex").unwrap().name(), "codex");
+        assert_eq!(create_adapter("copilot").unwrap().name(), "copilot");
+        assert_eq!(create_adapter("cursor").unwrap().name(), "cursor");
+        assert!(create_adapter("vscode").is_err());
     }
 }

@@ -146,7 +146,7 @@ mod tests {
             OutputFormat::Json,
         );
 
-        assert!(result.is_ok(), "import should succeed");
+        result.expect("import should succeed");
 
         let target = fixture.claude_skills.join("source-skill.md");
         assert!(target.exists(), "imported skill should exist at target");
@@ -170,7 +170,7 @@ mod tests {
             OutputFormat::Json,
         );
 
-        assert!(result.is_ok(), "dry run should succeed");
+        result.expect("dry run should succeed");
 
         let target = fixture.claude_skills.join("dry-run-skill.md");
         assert!(!target.exists(), "dry run should not create file");
@@ -197,7 +197,7 @@ mod tests {
             OutputFormat::Json,
         );
 
-        assert!(result.is_ok(), "force import should succeed");
+        result.expect("force import should succeed");
 
         let content = std::fs::read_to_string(&existing).expect("read");
         assert_eq!(content, "new content", "content should be overwritten");
@@ -224,7 +224,7 @@ mod tests {
             OutputFormat::Json,
         );
 
-        assert!(result.is_ok());
+        result.expect("import without force should succeed");
 
         let content = std::fs::read_to_string(&existing).expect("read");
         assert_eq!(content, "keep this", "content should not be overwritten");

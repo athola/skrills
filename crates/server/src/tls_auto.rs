@@ -152,9 +152,9 @@ pub(crate) fn generate_self_signed_cert() -> Result<(String, String)> {
 
     // Set Subject Alternative Names for localhost
     params.subject_alt_names = vec![
-        SanType::DnsName("localhost".try_into().unwrap()),
-        SanType::DnsName("127.0.0.1".try_into().unwrap()),
-        SanType::DnsName("::1".try_into().unwrap()),
+        SanType::DnsName("localhost".try_into().expect("static DNS literal")),
+        SanType::DnsName("127.0.0.1".try_into().expect("static DNS literal")),
+        SanType::DnsName("::1".try_into().expect("static DNS literal")),
         SanType::IpAddress(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1))),
         SanType::IpAddress(std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)),
     ];
@@ -182,8 +182,7 @@ mod tests {
     #[test]
     fn tls_dir_returns_expected_path() {
         let result = tls_dir();
-        assert!(result.is_ok());
-        let path = result.unwrap();
+        let path = result.expect("tls_dir should return a valid path");
         assert!(path.ends_with(".skrills/tls"));
     }
 
@@ -191,8 +190,7 @@ mod tests {
     #[cfg(feature = "http-transport")]
     fn generate_cert_produces_valid_pem() {
         let result = generate_self_signed_cert();
-        assert!(result.is_ok());
-        let (cert, key) = result.unwrap();
+        let (cert, key) = result.expect("generate_self_signed_cert should succeed");
 
         // Verify PEM format
         assert!(cert.starts_with("-----BEGIN CERTIFICATE-----"));

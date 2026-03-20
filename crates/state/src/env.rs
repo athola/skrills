@@ -120,40 +120,8 @@ pub fn cache_ttl(settings: &dyn Fn() -> Result<ManifestSettings>) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
-    use std::sync::Mutex;
+    use skrills_test_utils::{env_guard, set_env_var};
     use tempfile::tempdir;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(v) = &self.previous {
-                env::set_var(self.key, v);
-            } else {
-                env::remove_var(self.key);
-            }
-        }
-    }
-
-    fn set_env_var(key: &'static str, value: Option<&str>) -> EnvVarGuard {
-        let previous = env::var(key).ok();
-        if let Some(v) = value {
-            env::set_var(key, v);
-        } else {
-            env::remove_var(key);
-        }
-        EnvVarGuard { key, previous }
-    }
 
     #[test]
     fn extra_dirs_from_env_splits_colon_paths() {

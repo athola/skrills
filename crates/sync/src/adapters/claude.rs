@@ -1,8 +1,8 @@
 //! Claude Code adapter for reading/writing ~/.claude configuration.
 
 use super::traits::{AgentAdapter, FieldSupport};
-use super::utils::{hash_content, is_hidden_path};
-use crate::common::{Command, McpServer, McpTransport, ModuleFile, Preferences};
+use super::utils::{collect_module_files, hash_content, is_hidden_path, sanitize_name};
+use crate::common::{Command, ContentFormat, McpServer, McpTransport, ModuleFile, Preferences};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use anyhow::Context;
@@ -55,57 +55,6 @@ impl ClaudeAdapter {
         self.root.join("CLAUDE.md")
     }
 
-    /// Collects companion files from a skill directory (files other than SKILL.md).
-    fn collect_module_files(&self, skill_dir: &std::path::Path) -> Vec<ModuleFile> {
-        let mut modules = Vec::new();
-
-        // Walk the skill directory looking for companion files
-        for entry in WalkDir::new(skill_dir)
-            .min_depth(1)
-            .max_depth(10)
-            .follow_links(false)
-        {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-
-            let path = entry.path();
-
-            // Skip non-files
-            if !path.is_file() {
-                continue;
-            }
-
-            // Skip SKILL.md (the main skill file) - we want companion/module files only.
-            // Note: We treat any .md file in the skill directory (other than SKILL.md)
-            // as a module file. If a .md file should be a standalone skill, it should
-            // be placed in its own directory with a SKILL.md file instead.
-            if path.file_name().is_some_and(|n| n == "SKILL.md") {
-                continue;
-            }
-
-            // Skip hidden files
-            if let Ok(rel_path) = path.strip_prefix(skill_dir) {
-                if is_hidden_path(rel_path) {
-                    continue;
-                }
-
-                // Read the file content
-                if let Ok(content) = fs::read(path) {
-                    let hash = hash_content(&content);
-                    modules.push(ModuleFile {
-                        relative_path: rel_path.to_path_buf(),
-                        content,
-                        hash,
-                    });
-                }
-            }
-        }
-
-        modules
-    }
-
     fn collect_commands_from_dir(
         &self,
         dir: &PathBuf,
@@ -150,6 +99,7 @@ impl ClaudeAdapter {
                 modified,
                 hash,
                 modules: Vec::new(),
+                content_format: ContentFormat::default(),
             });
         }
 
@@ -242,6 +192,7 @@ impl AgentAdapter for ClaudeAdapter {
                     modified,
                     hash,
                     modules: Vec::new(),
+                    content_format: ContentFormat::default(),
                 });
             }
         }
@@ -373,6 +324,8 @@ impl AgentAdapter for ClaudeAdapter {
                 modified,
                 hash,
                 modules,
+
+                content_format: ContentFormat::default(),
             };
 
             // Keep the most recently modified version
@@ -420,7 +373,7 @@ impl AgentAdapter for ClaudeAdapter {
                         .to_string();
                     // Collect companion files from the skill directory
                     let skill_dir = path.parent().unwrap_or(path);
-                    let modules = self.collect_module_files(skill_dir);
+                    let modules = collect_module_files(skill_dir);
                     (name, modules)
                 } else {
                     let name = path
@@ -470,7 +423,7 @@ impl AgentAdapter for ClaudeAdapter {
                         .to_string();
                     // Collect companion files from the skill directory
                     let skill_dir = path.parent().unwrap_or(path);
-                    let modules = self.collect_module_files(skill_dir);
+                    let modules = collect_module_files(skill_dir);
                     (name, modules)
                 } else {
                     let name = path
@@ -663,6 +616,13 @@ impl AgentAdapter for ClaudeAdapter {
             let skill_dir = dir.join(&safe_rel_dir);
             for module in &skill.modules {
                 let module_path = skill_dir.join(&module.relative_path);
+                if !super::utils::is_path_contained(&module_path, &skill_dir) {
+                    tracing::debug!(
+                        path = %module.relative_path.display(),
+                        "Skipping module with path outside skill directory"
+                    );
+                    continue;
+                }
                 if let Some(parent) = module_path.parent() {
                     fs::create_dir_all(parent)?;
                 }
@@ -693,6 +653,8 @@ impl AgentAdapter for ClaudeAdapter {
                 modified,
                 hash,
                 modules: Vec::new(),
+
+                content_format: ContentFormat::default(),
             };
 
             match hooks_map.get(&name) {
@@ -794,6 +756,8 @@ impl AgentAdapter for ClaudeAdapter {
                 modified,
                 hash,
                 modules: Vec::new(),
+
+                content_format: ContentFormat::default(),
             };
 
             match agents_map.get(&name) {
@@ -956,6 +920,8 @@ impl AgentAdapter for ClaudeAdapter {
             modified,
             hash,
             modules: Vec::new(),
+
+            content_format: ContentFormat::default(),
         }])
     }
 
@@ -1008,29 +974,11 @@ impl AgentAdapter for ClaudeAdapter {
     }
 }
 
-/// Sanitizes a command/skill name to prevent path traversal attacks.
-/// Only allows alphanumeric characters, hyphens, and underscores.
-fn sanitize_name(name: &str) -> String {
-    name.chars()
-        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
     use tempfile::tempdir;
-
-    #[test]
-    fn sanitize_name_removes_path_traversal() {
-        assert_eq!(sanitize_name("../../../etc/passwd"), "etcpasswd");
-        assert_eq!(sanitize_name("valid-name_123"), "valid-name_123");
-        assert_eq!(sanitize_name("../../malicious"), "malicious");
-        assert_eq!(sanitize_name("normal"), "normal");
-        assert_eq!(sanitize_name("with spaces"), "withspaces");
-        assert_eq!(sanitize_name("has/slashes"), "hasslashes");
-    }
 
     #[test]
     fn read_commands_empty_dir() {
@@ -1125,6 +1073,8 @@ mod tests {
             modified: SystemTime::now(),
             hash: "abc123".to_string(),
             modules: Vec::new(),
+
+            content_format: ContentFormat::default(),
         }];
 
         let report = adapter.write_commands(&commands).unwrap();
@@ -1150,6 +1100,8 @@ mod tests {
             modified: SystemTime::now(),
             hash: hash.clone(),
             modules: Vec::new(),
+
+            content_format: ContentFormat::default(),
         }];
         adapter.write_commands(&commands).unwrap();
 
@@ -1161,6 +1113,8 @@ mod tests {
             modified: SystemTime::now(),
             hash,
             modules: Vec::new(),
+
+            content_format: ContentFormat::default(),
         }];
         let report = adapter.write_commands(&commands2).unwrap();
 
@@ -1281,6 +1235,8 @@ mod tests {
             modified: SystemTime::now(),
             hash: "hash".to_string(),
             modules: Vec::new(),
+
+            content_format: ContentFormat::default(),
         };
 
         let report = adapter.write_skills(&[skill]).unwrap();

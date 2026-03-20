@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use skrills_sync::{
     adapters::traits::AgentAdapter,
     adapters::{ClaudeAdapter, CodexAdapter},
-    common::Command,
+    common::{Command, ContentFormat},
     orchestrator::{SyncOrchestrator, SyncParams},
     validation::{
         skill_is_codex_compatible, validate_skill_for_sync, validate_skills_for_sync,
@@ -100,6 +100,7 @@ impl SkillSyncTestContext {
             modified: SystemTime::now(),
             hash,
             modules: Vec::new(),
+            content_format: ContentFormat::default(),
         }
     }
 
@@ -228,6 +229,7 @@ mod basic_sync_tests {
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -265,6 +267,7 @@ mod basic_sync_tests {
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -307,6 +310,7 @@ mod basic_sync_tests {
             sync_preferences: false,
             skip_existing_commands: false, // Only affects commands, not skills
             sync_agents: false,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -346,6 +350,7 @@ mod basic_sync_tests {
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -387,6 +392,7 @@ mod basic_sync_tests {
             sync_preferences: false,
             skip_existing_commands: true, // Should be ignored due to force
             sync_agents: false,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -427,6 +433,7 @@ mod basic_sync_tests {
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
@@ -1076,6 +1083,8 @@ mod negative_tests {
             modified: SystemTime::now(),
             hash: "test".to_string(),
             modules: Vec::new(),
+
+            content_format: ContentFormat::default(),
         };
 
         // WHEN: Validating
@@ -1331,6 +1340,7 @@ mod case_sensitivity_tests {
             sync_preferences: false,
             skip_existing_commands: false,
             sync_agents: false,
+            sync_hooks: false,
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,

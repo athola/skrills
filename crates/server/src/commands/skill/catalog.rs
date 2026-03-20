@@ -133,7 +133,7 @@ mod tests {
             OutputFormat::Json,
         );
 
-        assert!(result.is_ok(), "catalog command should succeed");
+        result.expect("catalog command should succeed");
     }
 
     #[test]
@@ -158,6 +158,6 @@ mod tests {
             OutputFormat::Json,
         );
 
-        assert!(result.is_ok(), "filtered catalog should succeed");
+        result.expect("filtered catalog should succeed");
     }
 }

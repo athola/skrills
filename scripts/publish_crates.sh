@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 set -euo pipefail
 
@@ -10,7 +10,7 @@ require_token() {
 }
 
 crate_version() {
-  python -c '
+  python3 -c '
 import json, sys, subprocess
 crate = sys.argv[1]
 meta = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"]))
@@ -24,9 +24,14 @@ sys.exit(1)
 }
 
 already_published() {
-  crate="$1"
-  version="$2"
-  cargo search "$crate" --limit 1 | grep -q "$crate = \"$version\""
+  local crate="$1"
+  local version="$2"
+  local output
+  output=$(cargo search "$crate" --limit 1) || {
+    echo "ERROR: cargo search failed for $crate (network issue or rate limit?)" >&2
+    exit 1
+  }
+  echo "$output" | grep -qF "$crate = \"$version\""
 }
 
 publish_one() {

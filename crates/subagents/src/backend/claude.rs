@@ -1,14 +1,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reqwest::Url;
 use serde::Serialize;
 use serde_json::{json, Value};
 use time::OffsetDateTime;
 
-use crate::backend::{config::AdapterConfig, AdapterCapabilities, BackendAdapter};
+use crate::backend::{
+    config::AdapterConfig, run_http_adapter, AdapterCapabilities, BackendAdapter,
+};
 use crate::store::{
     BackendKind, RunEvent, RunId, RunRecord, RunRequest, RunState, RunStatus, RunStore,
     SubagentTemplate,
@@ -58,118 +60,30 @@ impl ClaudeAdapter {
         request: RunRequest,
         store: Arc<dyn RunStore>,
     ) -> Result<()> {
-        store
-            .append_event(
-                run_id,
-                RunEvent {
-                    ts: OffsetDateTime::now_utc(),
-                    kind: "start".into(),
-                    data: None,
-                },
-            )
-            .await?;
-
-        if self.config.api_key.is_empty() {
-            let error_msg = API_KEY_ERROR;
-            store
-                .update_status(
-                    run_id,
-                    RunStatus {
-                        state: RunState::Failed,
-                        message: Some(error_msg.into()),
-                        updated_at: OffsetDateTime::now_utc(),
-                    },
-                )
-                .await?;
-            return Err(anyhow!(error_msg));
-        }
-
         let url = self
             .config
             .base_url
             .join("messages")
             .unwrap_or_else(|_| self.config.base_url.clone());
         let body = build_anthropic_body(&self.config.model, &request);
+        let api_key = self.config.api_key.clone();
 
-        let resp = self
-            .client
-            .post(url)
-            .header("x-api-key", &self.config.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .json(&body)
-            .send()
-            .await
-            .context("calling Claude API")?;
-
-        let status = resp.status();
-        let text = resp.text().await?;
-        let parsed: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({ "raw": text }));
-
-        if !status.is_success() {
-            let msg = parsed
-                .get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .unwrap_or("claude call failed")
-                .to_string();
-            store
-                .append_event(
-                    run_id,
-                    RunEvent {
-                        ts: OffsetDateTime::now_utc(),
-                        kind: "error".into(),
-                        data: Some(parsed.clone()),
-                    },
-                )
-                .await?;
-            store
-                .update_status(
-                    run_id,
-                    RunStatus {
-                        state: RunState::Failed,
-                        message: Some(msg.clone()),
-                        updated_at: OffsetDateTime::now_utc(),
-                    },
-                )
-                .await?;
-            return Err(anyhow!(msg));
-        }
-
-        let completion = extract_anthropic_text(&parsed).unwrap_or_else(|| text.clone());
-        for token in completion.split_whitespace() {
-            store
-                .append_event(
-                    run_id,
-                    RunEvent {
-                        ts: OffsetDateTime::now_utc(),
-                        kind: "stream".into(),
-                        data: Some(json!({ "token": token })),
-                    },
-                )
-                .await?;
-        }
-        store
-            .append_event(
-                run_id,
-                RunEvent {
-                    ts: OffsetDateTime::now_utc(),
-                    kind: "completion".into(),
-                    data: Some(json!({ "text": completion })),
-                },
-            )
-            .await?;
-
-        store
-            .update_status(
-                run_id,
-                RunStatus {
-                    state: RunState::Succeeded,
-                    message: Some("completed".into()),
-                    updated_at: OffsetDateTime::now_utc(),
-                },
-            )
-            .await?;
-        Ok(())
+        run_http_adapter(
+            run_id,
+            &store,
+            &self.config.api_key,
+            API_KEY_ERROR,
+            "Claude",
+            || {
+                self.client
+                    .post(url)
+                    .header("x-api-key", &api_key)
+                    .header("anthropic-version", ANTHROPIC_VERSION)
+                    .json(&body)
+            },
+            extract_anthropic_text,
+        )
+        .await
     }
 }
 
@@ -214,7 +128,7 @@ fn build_anthropic_body(model: &str, request: &RunRequest) -> AnthropicBody {
             content: request.prompt.clone(),
         }],
         max_tokens: 1024,
-        stream: Some(request.async_mode),
+        stream: None, // streaming not currently supported; do not conflate with async_mode
         metadata,
         response_format,
     }
@@ -283,9 +197,10 @@ impl BackendAdapter for ClaudeAdapter {
             .await?;
 
         let cloned = self.clone();
-        tokio::spawn(async move {
+        let store_monitor = store.clone();
+        let handle = tokio::spawn(async move {
             if let Err(err) = cloned.execute_run(run_id, request, store.clone()).await {
-                let _ = store
+                if let Err(e) = store
                     .append_event(
                         run_id,
                         RunEvent {
@@ -294,13 +209,36 @@ impl BackendAdapter for ClaudeAdapter {
                             data: Some(json!({"message": err.to_string()})),
                         },
                     )
-                    .await;
-                let _ = store
+                    .await
+                {
+                    tracing::warn!(error = %e, %run_id, "Failed to record error event");
+                }
+                if let Err(e) = store
                     .update_status(
                         run_id,
                         RunStatus {
                             state: RunState::Failed,
                             message: Some(err.to_string()),
+                            updated_at: OffsetDateTime::now_utc(),
+                        },
+                    )
+                    .await
+                {
+                    tracing::warn!(error = %e, %run_id, "Failed to update run status to failed");
+                }
+            }
+        });
+        // Monitor the spawned task: if it panics, mark the run as failed so it
+        // does not stay orphaned in Running state.
+        tokio::spawn(async move {
+            if let Err(join_err) = handle.await {
+                tracing::error!(%run_id, error = %join_err, "Claude backend task panicked");
+                let _ = store_monitor
+                    .update_status(
+                        run_id,
+                        RunStatus {
+                            state: RunState::Failed,
+                            message: Some("internal error: task panicked".into()),
                             updated_at: OffsetDateTime::now_utc(),
                         },
                     )
@@ -405,7 +343,7 @@ mod tests {
         assert_eq!(body.messages[0].role, "user");
         assert_eq!(body.messages[0].content, "Hello, world!");
         assert_eq!(body.max_tokens, 1024);
-        assert_eq!(body.stream, Some(false));
+        assert_eq!(body.stream, None); // streaming not supported
         assert!(body.metadata.is_none());
         assert!(body.response_format.is_none());
     }
@@ -429,7 +367,7 @@ mod tests {
 
         let body = build_anthropic_body("claude-3-haiku-20240307", &request);
 
-        assert_eq!(body.stream, Some(true));
+        assert_eq!(body.stream, None); // streaming not supported
         assert!(body.metadata.is_some());
         assert!(body.response_format.is_some());
 

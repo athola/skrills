@@ -452,8 +452,7 @@ mod tests {
     #[test]
     fn tls_dir_returns_expected_path() {
         let result = tls_dir();
-        assert!(result.is_ok());
-        let path = result.unwrap();
+        let path = result.expect("tls_dir should return a valid path");
         assert!(path.ends_with(".skrills/tls"));
     }
 

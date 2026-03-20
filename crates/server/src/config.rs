@@ -133,8 +133,15 @@ pub fn apply_config_to_env() {
 }
 
 /// Applies serve configuration to environment variables.
+///
+/// # Safety note (Rust 2024 edition)
+///
+/// `std::env::set_var` becomes `unsafe` in Rust 2024 edition because it mutates
+/// global state that may race with other threads. This function must be called
+/// during single-threaded startup, before the tokio runtime is initialized.
 fn apply_serve_config_to_env(serve: &ServeConfig) {
-    // Helper to set env var only if not already set
+    // Helper to set env var only if not already set.
+    // SAFETY: Called during single-threaded startup before any async runtime.
     fn set_if_absent(key: &str, value: &str) {
         if std::env::var(key).is_err() {
             std::env::set_var(key, value);
@@ -220,17 +227,14 @@ mod tests {
         // This test relies on the config file not existing in a typical CI environment
         // In practice, we'd mock the filesystem
         let result = load_config();
-        assert!(result.is_ok());
+        let _ = result.expect("load_config should not error");
         // Config may or may not exist depending on environment
     }
 
     #[test]
     fn apply_config_respects_existing_env_vars() {
-        // Save and restore env vars
-        let original = std::env::var("SKRILLS_AUTH_TOKEN").ok();
-
-        // Set an env var
-        std::env::set_var("SKRILLS_AUTH_TOKEN", "env-token");
+        let _g = crate::test_support::env_guard();
+        let _token = crate::test_support::set_env_var("SKRILLS_AUTH_TOKEN", Some("env-token"));
 
         // Create config with different value
         let serve = ServeConfig {
@@ -247,12 +251,5 @@ mod tests {
             "env-token",
             "Config should not override existing env var"
         );
-
-        // Restore original
-        if let Some(orig) = original {
-            std::env::set_var("SKRILLS_AUTH_TOKEN", orig);
-        } else {
-            std::env::remove_var("SKRILLS_AUTH_TOKEN");
-        }
     }
 }

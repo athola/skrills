@@ -164,7 +164,7 @@ fn test_recommend_skills_smart_tool_defaults() {
     let result = service.recommend_skills_smart_tool(args);
 
     // Should not error even with no skills
-    assert!(result.is_ok());
+    result.expect("recommend_skills_smart_tool with defaults should succeed");
 }
 
 // -------------------------------------------------------------------------
@@ -574,7 +574,7 @@ fn test_analyze_project_context_respects_options() {
     .unwrap();
 
     let result = service.analyze_project_context_tool(args);
-    assert!(result.is_ok());
+    result.expect("analyze_project_context_tool should respect options");
 }
 
 // -------------------------------------------------------------------------

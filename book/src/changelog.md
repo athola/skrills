@@ -1,5 +1,14 @@
 # Changelog Highlights
 
+## 0.7.0 (2026-03-19)
+
+- **NEW: Cursor IDE Support**: Full bidirectional sync for `.cursor/` (rules, skills, commands, agents, hooks, MCP).
+- **NEW: Rules Sync**: Maps Cursor `.mdc` files with mode derivation (`alwaysApply`, glob-scoped, agent-requested) to/from Claude and Copilot instruction formats.
+- **NEW: MCP Tools**: `sync-from-cursor` and `sync-to-cursor` (25 → 27 tools).
+- **NEW: CLI Flags**: `--from cursor` and `--to cursor` for sync commands.
+- **Refactor**: Extracted shared adapter utilities and reworked orchestrator for four-way sync routing.
+- **Architecture**: ADR 0006 documents the Cursor rules mapping strategy.
+
 ## 0.6.1 (2026-03-05)
 
 - **Fix**: Tests now use distinct filenames instead of case-only differences to avoid collisions on case-insensitive filesystems (macOS APFS/HFS+).

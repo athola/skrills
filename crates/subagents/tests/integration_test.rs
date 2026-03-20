@@ -432,9 +432,8 @@ You are a CLI agent with full tool access."#,
         let result = service.handle_call("run-subagent", args.as_ref()).await;
 
         // Should succeed (routing works even if CLI spawn fails)
-        assert!(result.is_ok(), "routing should succeed");
+        let result = result.expect("routing should succeed");
         let run_id = result
-            .unwrap()
             .structured_content
             .and_then(|v| v.get("run_id").and_then(|v| v.as_str()).map(String::from));
         assert!(run_id.is_some(), "should have run_id from CLI adapter");

@@ -949,7 +949,7 @@ mod tests {
     #[test]
     fn skill_roots_excludes_claude_when_env_disabled() {
         let _guard = env_guard();
-        std::env::set_var("SKRILLS_INCLUDE_CLAUDE", "0");
+        let _include = crate::test_support::set_env_var("SKRILLS_INCLUDE_CLAUDE", Some("0"));
         let roots = skill_roots(&[]).unwrap();
         let labels: Vec<_> = roots.iter().map(|r| r.source.label()).collect();
         assert!(
@@ -958,7 +958,6 @@ mod tests {
                 && !labels.contains(&"cache".to_string()),
             "Claude-derived roots should be excluded when SKRILLS_INCLUDE_CLAUDE=0"
         );
-        std::env::remove_var("SKRILLS_INCLUDE_CLAUDE");
     }
 
     #[test]
@@ -1138,32 +1137,30 @@ mod tests {
     #[test]
     fn detect_cli_type_defaults_to_codex() {
         let _guard = env_guard();
-        std::env::remove_var(ENV_CLI_TYPE);
+        let _cli = crate::test_support::set_env_var(ENV_CLI_TYPE, None);
         assert_eq!(detect_cli_type(), CliType::Codex);
     }
 
     #[test]
     fn detect_cli_type_respects_env_var() {
         let _guard = env_guard();
-
-        std::env::set_var(ENV_CLI_TYPE, "claude");
+        let _cli = crate::test_support::set_env_var(ENV_CLI_TYPE, Some("claude"));
         assert_eq!(detect_cli_type(), CliType::Claude);
 
+        // Re-set within the same guard scope
         std::env::set_var(ENV_CLI_TYPE, "gemini");
         assert_eq!(detect_cli_type(), CliType::Gemini);
 
         std::env::set_var(ENV_CLI_TYPE, "qwen");
         assert_eq!(detect_cli_type(), CliType::Qwen);
-
-        std::env::remove_var(ENV_CLI_TYPE);
+        // _cli guard restores the original value on drop
     }
 
     #[test]
     fn detect_cli_type_defaults_on_invalid_value() {
         let _guard = env_guard();
-        std::env::set_var(ENV_CLI_TYPE, "invalid-cli");
+        let _cli = crate::test_support::set_env_var(ENV_CLI_TYPE, Some("invalid-cli"));
         assert_eq!(detect_cli_type(), CliType::Codex);
-        std::env::remove_var(ENV_CLI_TYPE);
     }
 
     #[test]
