@@ -22,4 +22,4 @@ tempfile.workspace = true
 dirs.workspace = true
 
 [dev-dependencies]
-skrills_test_utils = { path = "../test-utils", version = "0.7.0" }
+skrills_test_utils = { path = "../test-utils" }

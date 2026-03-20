@@ -36,7 +36,7 @@ wiremock = "0.6"
 futures = "0.3"
 regex = "1.0"
 serial_test = "3.0"
-skrills_test_utils = { path = "../test-utils", version = "0.7.0" }
+skrills_test_utils = { path = "../test-utils" }
 
 [features]
 default = []

@@ -25,4 +25,4 @@ anyhow.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 scopeguard = "1.2"
-skrills_test_utils = { path = "../test-utils", version = "0.7.0" }
+skrills_test_utils = { path = "../test-utils" }
