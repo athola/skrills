@@ -183,7 +183,7 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
 
     /// Performs the sync operation.
     ///
-    /// Logs [`FieldSupport`] mismatches for observability but always delegates
+    /// Logs [`crate::adapters::traits::FieldSupport`] mismatches for observability but always delegates
     /// to the target adapter — adapters may implement creative mappings for
     /// fields they don't "natively" support (e.g., Copilot maps commands to
     /// prompts, Codex converts agents to skills).
