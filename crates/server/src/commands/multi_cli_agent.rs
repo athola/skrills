@@ -191,4 +191,38 @@ mod tests {
     fn is_available_returns_true_for_sh() {
         assert!(is_available("sh"));
     }
+
+    #[test]
+    fn find_binary_returns_none_for_empty_candidates() {
+        let result = find_binary(&[]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn find_binary_returns_first_when_all_available() {
+        // Both "sh" and "bash" should exist — first one wins
+        let result = find_binary(&["sh", "bash"]);
+        assert_eq!(result, Some("sh"));
+    }
+
+    #[test]
+    fn resolve_backends_each_entry_has_nonempty_candidates() {
+        for variant in [
+            AgentBackend::Auto,
+            AgentBackend::Claude,
+            AgentBackend::Codex,
+        ] {
+            for (name, candidates) in resolve_backends(variant) {
+                assert!(
+                    !candidates.is_empty(),
+                    "backend '{name}' should have at least one candidate binary"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn agent_backend_default_is_auto() {
+        assert!(matches!(AgentBackend::default(), AgentBackend::Auto));
+    }
 }

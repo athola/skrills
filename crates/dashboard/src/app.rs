@@ -1110,4 +1110,22 @@ mod tests {
         // With fewer skills than PAGE_SIZE, visible_skill_count is just the total
         assert_eq!(app.visible_skill_count(), 10);
     }
+
+    #[test]
+    fn test_end_key_on_empty_skills_is_noop() {
+        let mut app = App::new();
+        // No skills loaded — End should not panic or change state
+        assert!(app.skills.is_empty());
+        app.on_key(KeyCode::End);
+        assert_eq!(app.skill_index, 0);
+        assert_eq!(app.visible_count, PAGE_SIZE);
+    }
+
+    #[test]
+    fn test_home_key_on_empty_skills_is_noop() {
+        let mut app = App::new();
+        assert!(app.skills.is_empty());
+        app.on_key(KeyCode::Home);
+        assert_eq!(app.skill_index, 0);
+    }
 }

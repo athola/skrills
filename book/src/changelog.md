@@ -1,5 +1,13 @@
 # Changelog Highlights
 
+## 0.7.1 (2026-03-21)
+
+- **NEW: `multi-cli-agent` Command**: Agent launching with automatic Claude/Codex backend routing.
+- **NEW: `--open` Flag**: Auto-launch browser dashboard on `skrills serve`.
+- **HTTP Transport**: Port fallback (up to 10 consecutive ports) when default port is busy.
+- **Dashboard**: Light-mode support for the browser dashboard.
+- **Testing**: Edge-case coverage for dashboard navigation, CLI backend resolution, and port binding.
+
 ## 0.7.0 (2026-03-19)
 
 - **NEW: Cursor IDE Support**: Full bidirectional sync for `.cursor/` (rules, skills, commands, agents, hooks, MCP).

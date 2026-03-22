@@ -168,7 +168,8 @@ skrills skill-profile my-skill
 
 | Crate | Purpose |
 |-------|---------|
-| `server` | MCP server, CLI, HTTP transport, security middleware |
+| `cli` | Binary entry point, argument parsing, command dispatch |
+| `server` | MCP server, HTTP transport, security middleware |
 | `validate` | Validation logic for Claude/Codex/Copilot/Cursor compatibility |
 | `analyze` | Token counting, dependency analysis, optimization |
 | `intelligence` | Recommendations, project analysis, skill generation |

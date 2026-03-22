@@ -773,5 +773,29 @@ mod tests {
             drop(listener);
             drop(blocker);
         }
+
+        #[tokio::test]
+        async fn bind_with_fallback_errors_when_all_ports_occupied() {
+            // Occupy 10 consecutive ports (the original + 9 fallbacks)
+            let base = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base_addr = base.local_addr().unwrap();
+
+            let mut blockers = vec![base];
+            for offset in 1..10u16 {
+                let port = base_addr.port() + offset;
+                let addr = SocketAddr::new(base_addr.ip(), port);
+                if let Ok(l) = tokio::net::TcpListener::bind(addr).await {
+                    blockers.push(l);
+                }
+            }
+
+            let result = bind_with_fallback(base_addr).await;
+            assert!(
+                result.is_err(),
+                "should error when original port and all fallbacks are occupied"
+            );
+
+            drop(blockers);
+        }
     }
 }
