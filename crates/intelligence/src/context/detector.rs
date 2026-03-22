@@ -131,7 +131,7 @@ pub fn analyze_project_with_options(
     {
         // Sort by file count and take top N
         let mut sorted: Vec<_> = all_languages.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.file_count.cmp(&a.1.file_count));
+        sorted.sort_by_key(|b| std::cmp::Reverse(b.1.file_count));
         sorted.truncate(options.max_languages);
         sorted.into_iter().collect()
     } else {

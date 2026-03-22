@@ -332,6 +332,28 @@ footer {
     z-index: 10;
 }
 
+/* ── Light mode ──────────────────────────────── */
+@media (prefers-color-scheme: light) {
+    :root {
+        --bg-deep:      #f5f3f0;
+        --bg-surface:   #ffffff;
+        --bg-panel:     #fafaf8;
+        --bg-card:      #f0eeeb;
+        --bg-hover:     #e8e5e0;
+        --text-primary: #1a1a1a;
+        --text-muted:   #6b7280;
+        --accent:       #c4623a;
+        --accent-dim:   #a8503a;
+        --teal:         #0d7d78;
+        --teal-dim:     #0a605c;
+        --success:      #16a34a;
+        --error:        #dc2626;
+        --warning:      #ca8a04;
+        --border:       #e5e2dd;
+        --border-focus: #c4623a44;
+    }
+}
+
 /* ── Responsive ──────────────────────────────── */
 @media (max-width: 1024px) {
     main {

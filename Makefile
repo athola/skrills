@@ -70,11 +70,12 @@ endef
 .PHONY: demo-fixtures demo-doctor demo-empirical demo-http demo-cli demo-all demo-setup-claude demo-setup-codex \
 	demo-setup-both demo-setup-uninstall demo-setup-reinstall \
 	demo-setup-universal demo-setup-first-run demo-setup-all \
-	demo-analytics demo-gateway demo-cert demo-skill-lifecycle
+	demo-analytics demo-gateway demo-cert demo-skill-lifecycle \
+	demo-multi-cli-agent
 .NOTPARALLEL: demo-all demo-setup-all
 .SILENT: demo-doctor demo-empirical demo-cli demo-all demo-setup-claude demo-setup-codex demo-setup-both \
 	demo-setup-uninstall demo-setup-reinstall demo-setup-universal demo-setup-first-run \
-	demo-setup-all
+	demo-setup-all demo-multi-cli-agent
 
 $(CARGO_GUARD_TARGETS): require-cargo
 
@@ -133,6 +134,7 @@ help:
 	@printf "  %-23s %s\n" "demo-skill-lifecycle" "test skill lifecycle commands"
 	@printf "  %-23s %s\n" "demo-analytics" "test analytics export/import"
 	@printf "  %-23s %s\n" "demo-gateway" "test MCP gateway tools"
+	@printf "  %-23s %s\n" "demo-multi-cli-agent" "test multi-CLI agent routing"
 	@printf "  %-23s %s\n" "demo-setup-all" "run all setup flow demos"
 	@printf "  %-23s %s\n" "demo-setup-{claude,codex,both}" "client setup demos"
 	@printf "  %-23s %s\n" "demo-setup-{uninstall,reinstall}" "lifecycle demos"
@@ -299,6 +301,16 @@ demo-gateway: build
 	done
 	@echo "==> Gateway demo complete"
 
+demo-multi-cli-agent: demo-fixtures build
+	@echo "==> Demo: Multi-CLI Agent Routing"
+	@echo "--- multi-cli-agent --help"
+	$(DEMO_RUN) multi-cli-agent --help >/dev/null
+	@echo "--- multi-cli-agent dry-run (agent not found expected)"
+	$(DEMO_RUN) multi-cli-agent test-agent --dry-run 2>&1 | grep -q "not found" || true
+	@echo "--- multi-cli-agent unit tests"
+	$(CARGO_CMD) test --package skrills-server --lib multi_cli_agent --all-features -- --test-threads=1
+	@echo "==> Multi-CLI agent demo complete"
+
 demo-fixtures:
 	@mkdir -p $(HOME_DIR)/.codex/skills/demo
 	@mkdir -p $(HOME_DIR)/.codex/bin
@@ -379,11 +391,13 @@ demo-cli: demo-fixtures build
 	@test -f $(HOME_DIR)/analytics-cli-test.json && echo "    Export succeeded" || echo "    Export failed (expected on fresh install)"
 	@echo "--- import-analytics (if export exists)"
 	@test -f $(HOME_DIR)/analytics-cli-test.json && $(DEMO_RUN) import-analytics $(HOME_DIR)/analytics-cli-test.json --overwrite || true
+	@echo "--- multi-cli-agent --dry-run (agent not found expected)"
+	$(DEMO_RUN) multi-cli-agent test-agent --dry-run 2>&1 | grep -q "not found" || true
 	@echo "--- setup --help"
 	$(DEMO_RUN) setup --help >/dev/null
 	@echo "==> All CLI commands tested successfully"
 
-demo-all: demo-fixtures build demo-doctor demo-empirical demo-cli demo-setup-all demo-cert demo-skill-lifecycle
+demo-all: demo-fixtures build demo-doctor demo-empirical demo-cli demo-setup-all demo-cert demo-skill-lifecycle demo-multi-cli-agent
 	@echo "==> All demos completed successfully"
 	@echo "    Note: demo-http excluded (blocking server)"
 

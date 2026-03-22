@@ -148,7 +148,7 @@ pub(crate) fn handle_skill_score_command(
         });
     }
 
-    results.sort_by(|a, b| a.total_score.cmp(&b.total_score));
+    results.sort_by_key(|a| a.total_score);
 
     if format.is_json() {
         println!("{}", serde_json::to_string_pretty(&results)?);

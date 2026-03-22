@@ -20,9 +20,11 @@ Skills support engine for Claude Code, Codex CLI, GitHub Copilot CLI, and Cursor
 [FAQ](docs/FAQ.md) |
 [Changelog](book/src/changelog.md)
 
-> **What's new in 0.7.0** -- Cursor IDE support with bidirectional
-> `.mdc` rules sync, two new MCP tools (`sync-from-cursor`,
-> `sync-to-cursor`), and `--from cursor` / `--to cursor` CLI flags.
+> **What's new in 0.7.1** -- `multi-cli-agent` command for
+> agent launching with automatic Claude/Codex backend routing,
+> `--open` flag to auto-launch the browser dashboard,
+> port fallback when the default port is busy, and light-mode
+> support for the browser dashboard.
 > See [changelog](book/src/changelog.md).
 
 ## Features
@@ -42,7 +44,8 @@ Skills support engine for Claude Code, Codex CLI, GitHub Copilot CLI, and Cursor
 - **Session mining** -- parses Claude Code and Codex CLI session
   history to improve recommendations based on actual usage.
 - **Visualization** -- TUI and browser dashboard showing discovered
-  skills, validation status, and usage metrics.
+  skills, validation status, and usage metrics. The browser dashboard
+  supports light and dark modes.
 - **Discovery deduplication** -- frontmatter identity matching
   consolidates the same skill installed in multiple locations.
 
@@ -86,11 +89,14 @@ skrills sync-all
 # Sync between specific environments
 skrills sync --from cursor --to claude
 
-# Start MCP server (browser dashboard at http://localhost:<port>)
-skrills serve
+# Start MCP server and open the browser dashboard
+skrills serve --http --open
 
 # Interactive TUI dashboard
 skrills tui
+
+# Launch an agent with automatic backend routing (Claude → Codex fallback)
+skrills multi-cli-agent my-agent
 ```
 
 See [CLI reference](book/src/cli.md) for all commands including
@@ -162,7 +168,8 @@ skrills skill-profile my-skill
 
 | Crate | Purpose |
 |-------|---------|
-| `server` | MCP server, CLI, HTTP transport, security middleware |
+| `cli` | Binary entry point, argument parsing, command dispatch |
+| `server` | MCP server, HTTP transport, security middleware |
 | `validate` | Validation logic for Claude/Codex/Copilot/Cursor compatibility |
 | `analyze` | Token counting, dependency analysis, optimization |
 | `intelligence` | Recommendations, project analysis, skill generation |

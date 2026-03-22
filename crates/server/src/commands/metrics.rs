@@ -9,6 +9,7 @@ use crate::discovery::merge_extra_dirs;
 use anyhow::Result;
 use skrills_analyze::RelationshipGraph;
 use skrills_discovery::{discover_skills, extra_skill_roots};
+use std::cmp::Reverse;
 use std::collections::HashMap;
 
 /// Handle the `metrics` command.
@@ -131,7 +132,7 @@ pub(crate) fn handle_metrics_command(
     }
 
     // Sort hubs by dependent count (descending) and take top 5
-    hub_counts.sort_by(|a, b| b.1.cmp(&a.1));
+    hub_counts.sort_by_key(|b| Reverse(b.1));
     let hub_skills: Vec<HubSkill> = hub_counts
         .into_iter()
         .take(5)
@@ -148,11 +149,7 @@ pub(crate) fn handle_metrics_command(
         0.0
     };
 
-    let avg_tokens = if skill_count > 0 {
-        total_tokens / skill_count
-    } else {
-        0
-    };
+    let avg_tokens = total_tokens.checked_div(skill_count).unwrap_or(0);
 
     let validation_summary = if include_validation {
         Some(MetricsValidationSummary {

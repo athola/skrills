@@ -543,7 +543,7 @@ fn extract_trigger_keywords(events: &[&&BehavioralEvent], _pattern: &[String]) -
 
     // Return top keywords
     let mut sorted: Vec<_> = keywords.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
     sorted.into_iter().take(10).map(|(k, _)| k).collect()
 }
 

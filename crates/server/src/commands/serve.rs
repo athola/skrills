@@ -76,6 +76,7 @@ pub(crate) fn handle_serve_command(
     tls_key: Option<PathBuf>,
     cors_origins: Vec<String>,
     tls_auto: bool,
+    open_browser: bool,
 ) -> Result<()> {
     // Handle --list-tools: print tool names and exit
     if list_tools {
@@ -153,6 +154,7 @@ pub(crate) fn handle_serve_command(
                     &bind_addr,
                     security,
                     merge_extra_dirs(&api_skill_dirs),
+                    open_browser,
                 )
                 .await
             });
