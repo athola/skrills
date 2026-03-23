@@ -244,6 +244,7 @@ where
 /// * `bind_addr` - Socket address to bind (e.g., "127.0.0.1:3000")
 /// * `security` - Security configuration (auth, TLS, CORS)
 /// * `skill_dirs` - Directories to scan for skills (used by dashboard API)
+/// * `open_browser` - Whether to open the dashboard in the default browser after binding
 pub async fn serve_http_with_security<F>(
     service_factory: F,
     bind_addr: &str,
@@ -369,13 +370,13 @@ where
 
     // Serve with or without TLS
     if let Some((cert_path, key_path)) = tls_config {
-        serve_with_tls(app, addr, &cert_path, &key_path).await
+        serve_with_tls(app, addr, &cert_path, &key_path, open_browser).await
     } else {
         serve_without_tls(app, addr, open_browser).await
     }
 }
 
-/// Try to bind to the given address, falling back to the next few ports on conflict.
+/// Try to bind to the given address, falling back to up to 9 subsequent ports on conflict.
 async fn bind_with_fallback(addr: SocketAddr) -> Result<(tokio::net::TcpListener, SocketAddr)> {
     const MAX_PORT_ATTEMPTS: u16 = 10;
 
@@ -395,7 +396,10 @@ async fn bind_with_fallback(addr: SocketAddr) -> Result<(tokio::net::TcpListener
 
     // Try subsequent ports
     for offset in 1..MAX_PORT_ATTEMPTS {
-        let try_port = addr.port().wrapping_add(offset);
+        let try_port = match addr.port().checked_add(offset) {
+            Some(p) => p,
+            None => break,
+        };
         let try_addr = SocketAddr::new(addr.ip(), try_port);
         match tokio::net::TcpListener::bind(try_addr).await {
             Ok(listener) => {
@@ -427,14 +431,41 @@ fn open_in_browser(url: &str) {
     let cmd = "xdg-open";
     #[cfg(target_os = "windows")]
     let cmd = "explorer";
-
-    if let Err(e) = std::process::Command::new(cmd).arg(url).spawn() {
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
         tracing::warn!(
             target: "skrills::http",
-            error = %e,
             url,
-            "Failed to open browser — open manually"
+            "Cannot open browser: unsupported platform"
         );
+        return;
+    }
+
+    match std::process::Command::new(cmd).arg(url).spawn() {
+        Ok(mut child) => {
+            // Check if the browser command exits with an error (e.g., no DISPLAY)
+            std::thread::spawn(move || {
+                if let Ok(status) = child.wait() {
+                    if !status.success() {
+                        eprintln!(
+                            "Browser command exited with {}",
+                            status
+                                .code()
+                                .map(|c| format!("code {c}"))
+                                .unwrap_or_else(|| "signal".to_string())
+                        );
+                    }
+                }
+            });
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "skrills::http",
+                error = %e,
+                url,
+                "Failed to open browser — open manually"
+            );
+        }
     }
 }
 
@@ -466,6 +497,7 @@ async fn serve_with_tls(
     addr: SocketAddr,
     cert_path: &Path,
     key_path: &Path,
+    open_browser: bool,
 ) -> Result<()> {
     use axum_server::tls_rustls::RustlsConfig;
 
@@ -485,6 +517,10 @@ async fn serve_with_tls(
         cert = %cert_path.display(),
         "MCP HTTPS server listening (TLS enabled)"
     );
+
+    if open_browser {
+        open_in_browser(&format!("https://{addr}"));
+    }
 
     axum_server::bind_rustls(addr, tls_config)
         .serve(app.into_make_service())

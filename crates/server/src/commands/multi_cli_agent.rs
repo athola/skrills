@@ -15,13 +15,18 @@ const CODEX_BINS: &[&str] = &["codex"];
 
 /// Check whether a CLI binary is available on `$PATH`.
 fn is_available(bin: &str) -> bool {
-    Command::new("which")
+    match Command::new("which")
         .arg(bin)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    {
+        Ok(s) => s.success(),
+        Err(e) => {
+            eprintln!("warning: failed to run `which {bin}`: {e}");
+            false
+        }
+    }
 }
 
 /// Find the first available binary from a list of candidates.
@@ -52,8 +57,11 @@ fn run_with_claude(bin: &str, agent_path: &str) -> Result<()> {
         Ok(())
     } else {
         Err(anyhow!(
-            "claude agent exited with status {:?}",
-            status.code()
+            "claude agent exited with {}",
+            status
+                .code()
+                .map(|c| format!("code {c}"))
+                .unwrap_or_else(|| "signal (killed)".to_string())
         ))
     }
 }
@@ -72,12 +80,21 @@ fn run_with_codex(bin: &str, agent_path: &str) -> Result<()> {
         Ok(())
     } else {
         Err(anyhow!(
-            "codex agent exited with status {:?}",
-            status.code()
+            "codex agent exited with {}",
+            status
+                .code()
+                .map(|c| format!("code {c}"))
+                .unwrap_or_else(|| "signal (killed)".to_string())
         ))
     }
 }
 
+/// Run an agent across available CLI backends with automatic fallback.
+///
+/// Resolves the agent spec, probes for available backends in priority order
+/// (determined by the `backend` preference), and dispatches execution.
+/// When an explicit backend is requested but unavailable, a warning is emitted
+/// before falling back to the next available backend.
 pub(crate) fn handle_multi_cli_agent_command(
     agent_spec: String,
     backend: AgentBackend,
@@ -96,6 +113,7 @@ pub(crate) fn handle_multi_cli_agent_command(
     );
 
     let backends = resolve_backends(backend);
+    let preferred_name = backends[0].0;
 
     // Find the first available backend
     let mut selected = None;
@@ -116,6 +134,13 @@ pub(crate) fn handle_multi_cli_agent_command(
                 .join(", ")
         )
     })?;
+
+    // Warn when an explicit backend preference was overridden by fallback
+    if !matches!(backend, AgentBackend::Auto) && backend_name != preferred_name {
+        eprintln!(
+            "warning: requested backend '{preferred_name}' is not available, falling back to '{backend_name}'"
+        );
+    }
 
     println!("Backend: {backend_name} ({bin})");
 

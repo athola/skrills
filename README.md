@@ -90,7 +90,7 @@ skrills sync-all
 skrills sync --from cursor --to claude
 
 # Start MCP server and open the browser dashboard
-skrills serve --http --open
+skrills serve --http 127.0.0.1:3000 --open
 
 # Interactive TUI dashboard
 skrills tui
@@ -168,7 +168,7 @@ skrills skill-profile my-skill
 
 | Crate | Purpose |
 |-------|---------|
-| `cli` | Binary entry point, argument parsing, command dispatch |
+| `cli` | Binary entry point (delegates to `server` crate) |
 | `server` | MCP server, HTTP transport, security middleware |
 | `validate` | Validation logic for Claude/Codex/Copilot/Cursor compatibility |
 | `analyze` | Token counting, dependency analysis, optimization |

@@ -281,7 +281,7 @@ pub enum Commands {
         /// Agent name or unique substring to launch.
         #[arg(required = true)]
         agent: String,
-        /// Primary backend: claude or codex.
+        ///// Primary backend: auto, claude, or codex (default: auto).
         #[arg(long, value_enum, default_value_t = AgentBackend::Auto)]
         backend: AgentBackend,
         /// Additional skill directories (repeatable).

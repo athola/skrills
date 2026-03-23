@@ -235,7 +235,7 @@ impl App {
             KeyCode::BackTab => self.focus = self.focus.prev(),
             KeyCode::Up | KeyCode::Char('k') => self.select_prev(),
             KeyCode::Down | KeyCode::Char('j') => self.select_next(),
-            KeyCode::Home => {
+            KeyCode::Home if !self.skills.is_empty() => {
                 self.skill_index = 0;
                 self.skill_list_state.select(Some(0));
             }
