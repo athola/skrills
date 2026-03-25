@@ -45,7 +45,7 @@ pub fn read_rules(root: &Path) -> Result<Vec<Command>> {
         let entry = match entry {
             Ok(e) => e,
             Err(e) => {
-                tracing::debug!(
+                tracing::warn!(
                     error = %e,
                     "Skipping rules directory entry due to traversal error"
                 );

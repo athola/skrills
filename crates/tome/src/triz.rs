@@ -1,8 +1,8 @@
 //! TRIZ inventive principles and contradiction matrix adapted for software.
 //!
-//! The 40 TRIZ inventive principles are mapped to software/tech domains.
-//! Given parameters X (want to improve) and Y (degrades), the matrix
-//! suggests applicable inventive principles.
+//! A subset of the 40 TRIZ inventive principles (13 of 40) mapped to
+//! software/tech domains. Given parameters X (want to improve) and
+//! Y (degrades), the matrix suggests applicable inventive principles.
 
 use serde::{Deserialize, Serialize};
 

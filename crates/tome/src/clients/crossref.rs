@@ -1,10 +1,14 @@
 //! CrossRef API client for DOI resolution.
-//! API: https://api.crossref.org
+//! API: <https://api.crossref.org>
 
 use crate::models::DoiMetadata;
 use crate::TomeResult;
 
 const BASE_URL: &str = "https://api.crossref.org";
+
+fn encode_doi(doi: &str) -> String {
+    url::form_urlencoded::byte_serialize(doi.as_bytes()).collect()
+}
 
 pub struct CrossRefClient {
     http: reqwest::Client,
@@ -16,7 +20,10 @@ impl CrossRefClient {
             http: reqwest::Client::builder()
                 .user_agent("skrills-tome/0.1 (https://github.com/athola/skrills; mailto:research@skrills.dev)")
                 .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "CrossRef client builder failed, falling back without User-Agent");
+                    reqwest::Client::new()
+                }),
         }
     }
 
@@ -24,7 +31,7 @@ impl CrossRefClient {
     pub async fn resolve_doi(&self, doi: &str) -> TomeResult<DoiMetadata> {
         let resp = self
             .http
-            .get(&format!("{BASE_URL}/works/{doi}"))
+            .get(&format!("{BASE_URL}/works/{}", encode_doi(doi)))
             .send()
             .await?;
 

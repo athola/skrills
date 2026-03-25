@@ -1,5 +1,5 @@
 //! Semantic Scholar API client.
-//! API: https://api.semanticscholar.org
+//! API: <https://api.semanticscholar.org>
 
 use crate::models::Paper;
 use crate::TomeResult;
@@ -41,8 +41,13 @@ impl SemanticScholarClient {
         let body: serde_json::Value = resp.json().await?;
         let papers = body["data"]
             .as_array()
-            .map(|arr| arr.iter().filter_map(|p| parse_s2_paper(p)).collect())
-            .unwrap_or_default();
+            .ok_or_else(|| crate::TomeError::Api {
+                api: "semantic_scholar".to_string(),
+                message: "response missing 'data' array".to_string(),
+            })?
+            .iter()
+            .filter_map(|p| parse_s2_paper(p))
+            .collect();
 
         Ok(papers)
     }

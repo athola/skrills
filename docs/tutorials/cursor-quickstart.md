@@ -16,7 +16,7 @@ The difference: an agent that can read your codebase, edit files, and run comman
 ## Setup (5 minutes)
 
 1. **Download Cursor** from cursor.com (macOS/Linux/Windows)
-2. **Sign in**: free tier gives you limited requests, Pro is $20/mo. We have a Cursor account you can sign in with using your webai.com email.
+2. **Sign in**: free tier gives you limited requests, Pro plans offer higher limits. See [cursor.com/pricing](https://cursor.com/pricing) for details.
 3. **Open your project**: `File > Open Folder` or `cursor .` from terminal
 
 That's it. If you have VS Code settings, Cursor imports them automatically.
@@ -208,18 +208,3 @@ Use Claude Code for deep backend work, multi-step automations, and when you want
 fine-grained control over the agent's behavior through skills and hooks.
 
 ---
-
-## How to Post This as a Slack Canvas
-
-1. Open the Slack channel where you want to share this
-2. Click the **+** button in the message composer
-3. Select **Canvas**
-4. Give it a title: "Cursor AI: Developer Quickstart"
-5. Copy everything from "What Cursor Actually Is" onwards and paste it in — Slack will preserve headers, bold, code blocks, and lists automatically
-6. Review the formatting — you may need to re-apply code blocks (select text > click `<>` in the toolbar) since paste sometimes loses them
-7. Click **Share** in the top right to post the canvas to the channel
-
-**Tips:**
-- Pin the canvas message so it doesn't get buried
-- Anyone in the channel can find it later via the channel's **Canvases** tab (bookmark bar)
-- Canvases are editable — team members can suggest updates directly

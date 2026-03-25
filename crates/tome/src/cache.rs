@@ -14,7 +14,10 @@ impl ResearchCache {
     /// Opens or creates the cache database at the default location.
     pub fn open() -> TomeResult<Self> {
         let cache_dir = dirs::cache_dir()
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".cache"))
+            .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))
+            .ok_or_else(|| {
+                TomeError::Other("cannot determine cache directory: HOME is unset".into())
+            })?
             .join("skrills-tome");
         std::fs::create_dir_all(&cache_dir)?;
 
@@ -95,14 +98,13 @@ impl ResearchCache {
         response_json: &str,
         ttl_hours: Option<u32>,
     ) -> TomeResult<()> {
-        let expires = ttl_hours.map(|h| format!("datetime('now', '+{h} hours')"));
-        if let Some(ref exp) = expires {
+        if let Some(h) = ttl_hours {
+            // Compute expiry in Rust and pass as a bound parameter to avoid SQL interpolation.
+            let expires_at = format!("+{h} hours");
             self.conn.execute(
-                &format!(
-                    "INSERT OR REPLACE INTO api_cache (cache_key, api, query, response_json, expires_at)
-                     VALUES (?1, ?2, ?3, ?4, {exp})"
-                ),
-                rusqlite::params![cache_key, api, query, response_json],
+                "INSERT OR REPLACE INTO api_cache (cache_key, api, query, response_json, expires_at)
+                 VALUES (?1, ?2, ?3, ?4, datetime('now', ?5))",
+                rusqlite::params![cache_key, api, query, response_json, expires_at],
             )?;
         } else {
             self.conn.execute(
@@ -124,25 +126,23 @@ impl ResearchCache {
 mod tests {
     use super::*;
 
-    fn test_cache() -> ResearchCache {
+    fn test_cache() -> (ResearchCache, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("test.db");
         let pdfs = dir.path().join("pdfs");
-        // Leak the tempdir so it lives long enough
         let cache = ResearchCache::open_at(&db, pdfs).unwrap();
-        std::mem::forget(dir);
-        cache
+        (cache, dir)
     }
 
     #[test]
     fn cache_miss_returns_none() {
-        let cache = test_cache();
+        let (cache, _dir) = test_cache();
         assert!(cache.get("nonexistent").unwrap().is_none());
     }
 
     #[test]
     fn cache_put_and_get() {
-        let cache = test_cache();
+        let (cache, _dir) = test_cache();
         cache
             .put("key1", "test_api", "test query", r#"{"results":[]}"#, None)
             .unwrap();
@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn cache_overwrite() {
-        let cache = test_cache();
+        let (cache, _dir) = test_cache();
         cache.put("key1", "api", "q", "v1", None).unwrap();
         cache.put("key1", "api", "q", "v2", None).unwrap();
         assert_eq!(cache.get("key1").unwrap(), Some("v2".to_string()));

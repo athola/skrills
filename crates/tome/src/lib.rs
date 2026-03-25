@@ -1,12 +1,14 @@
-//! Tome — research API orchestration, caching, and PDF serving.
+//! Tome — research API orchestration, caching, and knowledge graph.
 //!
-//! Provides MCP server tools for unified academic/technical research:
-//! - `search-papers`: Unified search across Semantic Scholar, arXiv, OpenAlex
-//! - `search-discussions`: Search HN Algolia, aggregate community discussions
-//! - `search-code`: GitHub code search with rate limiting
-//! - `fetch-pdf`: Download PDFs by URL or DOI (via Unpaywall)
-//! - `get-research-history`: Retrieve past research sessions
-//! - `resolve-doi`: Resolve DOI to metadata via CrossRef
+//! Provides clients for academic and technical research:
+//! - Semantic Scholar, arXiv, OpenAlex paper search
+//! - Hacker News (Algolia) discussion search
+//! - CrossRef DOI resolution
+//! - Unpaywall open-access PDF lookup
+//! - SQLite-backed caching with TTL
+//! - Persistent knowledge graph for cross-session research
+//! - Citation tracking for forward/backward traversal
+//! - TRIZ inventive principles adapted for software
 
 pub mod cache;
 pub mod citations;

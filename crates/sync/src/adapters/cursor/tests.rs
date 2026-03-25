@@ -435,10 +435,7 @@ fn rules_skip_unchanged_on_second_write() {
     let tmp = TempDir::new().unwrap();
     let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
 
-    let instructions = vec![make_command(
-        "CLAUDE.md",
-        "# Instructions\n\nDo things.\n",
-    )];
+    let instructions = vec![make_command("CLAUDE.md", "# Instructions\n\nDo things.\n")];
 
     let first = adapter.write_instructions(&instructions).unwrap();
     assert_eq!(first.written, 1);

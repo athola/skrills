@@ -79,7 +79,7 @@ impl RateLimiter {
             return Ok(()); // No limit configured
         };
 
-        let mut history = self.history.lock().unwrap();
+        let mut history = self.history.lock().unwrap_or_else(|p| p.into_inner());
         let timestamps = history.entry(api.to_string()).or_default();
 
         let now = Instant::now();

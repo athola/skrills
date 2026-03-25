@@ -1,5 +1,5 @@
 //! arXiv API client.
-//! API: https://export.arxiv.org/api/query
+//! API: <https://export.arxiv.org/api/query>
 
 use crate::models::{Paper, PaperSource};
 use crate::TomeResult;
@@ -29,6 +29,13 @@ impl ArxivClient {
             ])
             .send()
             .await?;
+
+        if !resp.status().is_success() {
+            return Err(crate::TomeError::Api {
+                api: "arxiv".to_string(),
+                message: format!("HTTP {}", resp.status()),
+            });
+        }
 
         let body = resp.text().await?;
         Ok(parse_arxiv_atom(&body))

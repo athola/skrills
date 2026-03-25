@@ -1,5 +1,5 @@
 //! Hacker News Algolia API client.
-//! API: https://hn.algolia.com/api/v1
+//! API: <https://hn.algolia.com/api/v1>
 
 use crate::models::{Discussion, DiscussionSource};
 use crate::TomeResult;
@@ -40,8 +40,13 @@ impl HnAlgoliaClient {
         let body: serde_json::Value = resp.json().await?;
         let discussions = body["hits"]
             .as_array()
-            .map(|arr| arr.iter().filter_map(|h| parse_hit(h)).collect())
-            .unwrap_or_default();
+            .ok_or_else(|| crate::TomeError::Api {
+                api: "hn_algolia".to_string(),
+                message: "response missing 'hits' array".to_string(),
+            })?
+            .iter()
+            .filter_map(|h| parse_hit(h))
+            .collect();
 
         Ok(discussions)
     }

@@ -95,7 +95,9 @@ impl KnowledgeGraph {
 
     fn init_schema(&self) -> TomeResult<()> {
         self.conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS nodes (
+            "PRAGMA foreign_keys = ON;
+
+            CREATE TABLE IF NOT EXISTS nodes (
                 id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL,
                 label TEXT NOT NULL,
@@ -265,7 +267,10 @@ fn parse_node_kind(s: &str) -> NodeKind {
         "paper" => NodeKind::Paper,
         "implementation" => NodeKind::Implementation,
         "discussion" => NodeKind::Discussion,
-        _ => NodeKind::Topic,
+        other => {
+            tracing::warn!(value = other, "unknown NodeKind, defaulting to Topic");
+            NodeKind::Topic
+        }
     }
 }
 
@@ -276,7 +281,10 @@ fn parse_edge_kind(s: &str) -> EdgeKind {
         "contradicts" => EdgeKind::Contradicts,
         "extends" => EdgeKind::Extends,
         "analogous_to" => EdgeKind::AnalogousTo,
-        _ => EdgeKind::Extends,
+        other => {
+            tracing::warn!(value = other, "unknown EdgeKind, defaulting to Extends");
+            EdgeKind::Extends
+        }
     }
 }
 

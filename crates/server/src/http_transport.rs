@@ -812,16 +812,25 @@ mod tests {
 
         #[tokio::test]
         async fn bind_with_fallback_errors_when_all_ports_occupied() {
-            // Occupy 10 consecutive ports (the original + 9 fallbacks)
-            let base = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let base_addr = base.local_addr().unwrap();
+            // Occupy 10 consecutive ports (the original + 9 fallbacks).
+            // Use a fixed high port to avoid ephemeral-range race conditions.
+            // If we can't block all 10, skip — another process holds one.
+            let base_port: u16 = 19_100;
+            let base_addr = SocketAddr::new("127.0.0.1".parse().unwrap(), base_port);
 
-            let mut blockers = vec![base];
-            for offset in 1..10u16 {
-                let port = base_addr.port() + offset;
-                let addr = SocketAddr::new(base_addr.ip(), port);
-                if let Ok(l) = tokio::net::TcpListener::bind(addr).await {
-                    blockers.push(l);
+            let mut blockers = Vec::with_capacity(10);
+            for offset in 0..10u16 {
+                let addr = SocketAddr::new(base_addr.ip(), base_port + offset);
+                match tokio::net::TcpListener::bind(addr).await {
+                    Ok(l) => blockers.push(l),
+                    Err(_) => {
+                        // Can't block all ports — skip test rather than flake
+                        eprintln!(
+                            "skipping: port {} already in use by another process",
+                            base_port + offset
+                        );
+                        return;
+                    }
                 }
             }
 

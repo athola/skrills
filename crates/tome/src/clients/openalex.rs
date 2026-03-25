@@ -1,5 +1,5 @@
 //! OpenAlex API client.
-//! API: https://api.openalex.org
+//! API: <https://api.openalex.org>
 
 use crate::models::{Paper, PaperSource};
 use crate::TomeResult;
@@ -16,7 +16,10 @@ impl OpenAlexClient {
             http: reqwest::Client::builder()
                 .user_agent("skrills-tome/0.1 (https://github.com/athola/skrills)")
                 .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "OpenAlex client builder failed, falling back without User-Agent");
+                    reqwest::Client::new()
+                }),
         }
     }
 
@@ -39,8 +42,13 @@ impl OpenAlexClient {
         let body: serde_json::Value = resp.json().await?;
         let papers = body["results"]
             .as_array()
-            .map(|arr| arr.iter().filter_map(|w| parse_work(w)).collect())
-            .unwrap_or_default();
+            .ok_or_else(|| crate::TomeError::Api {
+                api: "openalex".to_string(),
+                message: "response missing 'results' array".to_string(),
+            })?
+            .iter()
+            .filter_map(|w| parse_work(w))
+            .collect();
 
         Ok(papers)
     }

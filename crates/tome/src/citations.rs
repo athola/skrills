@@ -36,7 +36,9 @@ impl CitationTracker {
 
     fn init_schema(&self) -> TomeResult<()> {
         self.conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS tracked_papers (
+            "PRAGMA foreign_keys = ON;
+
+            CREATE TABLE IF NOT EXISTS tracked_papers (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 doi TEXT,

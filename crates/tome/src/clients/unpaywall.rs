@@ -1,5 +1,5 @@
 //! Unpaywall API client for open-access PDF lookup.
-//! API: https://api.unpaywall.org
+//! API: <https://api.unpaywall.org>
 
 use crate::TomeResult;
 
@@ -21,13 +21,23 @@ impl UnpaywallClient {
     pub async fn find_pdf_url(&self, doi: &str) -> TomeResult<Option<String>> {
         let resp = self
             .http
-            .get(&format!("{BASE_URL}/{doi}"))
+            .get(&format!(
+                "{BASE_URL}/{}",
+                url::form_urlencoded::byte_serialize(doi.as_bytes()).collect::<String>()
+            ))
             .query(&[("email", EMAIL)])
             .send()
             .await?;
 
-        if !resp.status().is_success() {
-            return Ok(None); // Not found is not an error
+        let status = resp.status();
+        if !status.is_success() {
+            if status == reqwest::StatusCode::NOT_FOUND {
+                return Ok(None);
+            }
+            return Err(crate::TomeError::Api {
+                api: "unpaywall".to_string(),
+                message: format!("HTTP {status}"),
+            });
         }
 
         let body: serde_json::Value = resp.json().await?;
