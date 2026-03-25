@@ -140,6 +140,7 @@ async fn start_test_server(skill_dirs: Vec<PathBuf>) -> (String, tokio::task::Jo
             &bind,
             skrills_server::http_transport::HttpSecurityConfig::default(),
             skill_dirs_for_api,
+            false,
         )
         .await;
     });

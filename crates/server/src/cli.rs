@@ -83,6 +83,18 @@ pub enum DependencyDirection {
     Dependents,
 }
 
+/// Backend for multi-CLI agent routing.
+#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+pub enum AgentBackend {
+    /// Auto-detect the best available backend.
+    #[default]
+    Auto,
+    /// Use Claude Code CLI.
+    Claude,
+    /// Use Codex CLI.
+    Codex,
+}
+
 /// Creation method for new skills.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum CreateSkillMethod {
@@ -231,6 +243,11 @@ pub enum Commands {
         /// List all available MCP tools and exit.
         #[arg(long, default_value_t = false)]
         list_tools: bool,
+
+        /// Open the dashboard in the default browser after the HTTP server starts.
+        /// Only applies when `--http` is specified.
+        #[arg(long, default_value_t = false)]
+        open: bool,
     },
     /// Mirrors Claude assets (skills, agents, commands, MCP prefs) into Codex defaults and refreshes AGENTS.md.
     Mirror {
@@ -250,6 +267,24 @@ pub enum Commands {
         #[arg(required = true)]
         agent: String,
         /// Additional agent directories (repeatable).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+        /// Only print the resolved command without executing it.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+    },
+    /// Launches an agent with multi-CLI backend routing.
+    ///
+    /// Tries the primary backend first and falls back to alternatives if
+    /// the primary is unavailable. Supports claude, codex, and auto-detect.
+    MultiCliAgent {
+        /// Agent name or unique substring to launch.
+        #[arg(required = true)]
+        agent: String,
+        ///// Primary backend: auto, claude, or codex (default: auto).
+        #[arg(long, value_enum, default_value_t = AgentBackend::Auto)]
+        backend: AgentBackend,
+        /// Additional skill directories (repeatable).
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
         /// Only print the resolved command without executing it.
@@ -815,6 +850,7 @@ mod tests {
                 tls_key,
                 cors_origins,
                 tls_auto,
+                open,
             }) => {
                 assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/skills")]);
                 assert_eq!(cache_ttl_ms, Some(1500));
@@ -828,6 +864,7 @@ mod tests {
                 assert!(tls_key.is_none());
                 assert!(cors_origins.is_empty());
                 assert!(!tls_auto);
+                assert!(!open);
             }
             _ => panic!("expected Serve command"),
         }
@@ -1659,6 +1696,96 @@ mod tests {
                 assert!(list_tools);
             }
             _ => panic!("expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn parse_serve_with_open_flag() {
+        let cli = Cli::try_parse_from(["skrills", "serve", "--http", "127.0.0.1:3000", "--open"])
+            .expect("serve with --open should parse");
+
+        match cli.command {
+            Some(Commands::Serve { open, http, .. }) => {
+                assert!(open);
+                assert_eq!(http, Some("127.0.0.1:3000".to_string()));
+            }
+            _ => panic!("expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn parse_multi_cli_agent_defaults() {
+        let cli = Cli::try_parse_from(["skrills", "multi-cli-agent", "my-agent"])
+            .expect("multi-cli-agent should parse");
+
+        match cli.command {
+            Some(Commands::MultiCliAgent {
+                agent,
+                backend,
+                skill_dirs,
+                dry_run,
+            }) => {
+                assert_eq!(agent, "my-agent");
+                assert!(matches!(backend, AgentBackend::Auto));
+                assert!(skill_dirs.is_empty());
+                assert!(!dry_run);
+            }
+            _ => panic!("expected MultiCliAgent command"),
+        }
+    }
+
+    #[test]
+    fn parse_multi_cli_agent_full_args() {
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "multi-cli-agent",
+            "test-agent",
+            "--backend",
+            "codex",
+            "--skill-dir",
+            "/tmp/skills",
+            "--dry-run",
+        ])
+        .expect("multi-cli-agent with full args should parse");
+
+        match cli.command {
+            Some(Commands::MultiCliAgent {
+                agent,
+                backend,
+                skill_dirs,
+                dry_run,
+            }) => {
+                assert_eq!(agent, "test-agent");
+                assert!(matches!(backend, AgentBackend::Codex));
+                assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/skills")]);
+                assert!(dry_run);
+            }
+            _ => panic!("expected MultiCliAgent command"),
+        }
+    }
+
+    #[test]
+    fn parse_multi_cli_agent_requires_agent_name() {
+        let result = Cli::try_parse_from(["skrills", "multi-cli-agent"]);
+        assert!(result.is_err(), "multi-cli-agent requires agent argument");
+    }
+
+    #[test]
+    fn parse_multi_cli_agent_backend_claude() {
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "multi-cli-agent",
+            "my-agent",
+            "--backend",
+            "claude",
+        ])
+        .expect("multi-cli-agent with claude backend should parse");
+
+        match cli.command {
+            Some(Commands::MultiCliAgent { backend, .. }) => {
+                assert!(matches!(backend, AgentBackend::Claude));
+            }
+            _ => panic!("expected MultiCliAgent command"),
         }
     }
 }

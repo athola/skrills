@@ -24,13 +24,13 @@ use crate::commands::{
     handle_agent_command, handle_analyze_command, handle_analyze_project_context_command,
     handle_cert_install_command, handle_cert_renew_command, handle_cert_status_command,
     handle_create_skill_command, handle_export_analytics_command, handle_import_analytics_command,
-    handle_metrics_command, handle_mirror_command, handle_pre_commit_validate_command,
-    handle_recommend_command, handle_recommend_skills_smart_command,
-    handle_resolve_dependencies_command, handle_search_skills_command,
-    handle_search_skills_github_command, handle_serve_command, handle_setup_command,
-    handle_skill_catalog_command, handle_skill_deprecate_command, handle_skill_diff_command,
-    handle_skill_import_command, handle_skill_profile_command, handle_skill_rollback_command,
-    handle_skill_score_command, handle_skill_usage_report_command,
+    handle_metrics_command, handle_mirror_command, handle_multi_cli_agent_command,
+    handle_pre_commit_validate_command, handle_recommend_command,
+    handle_recommend_skills_smart_command, handle_resolve_dependencies_command,
+    handle_search_skills_command, handle_search_skills_github_command, handle_serve_command,
+    handle_setup_command, handle_skill_catalog_command, handle_skill_deprecate_command,
+    handle_skill_diff_command, handle_skill_import_command, handle_skill_profile_command,
+    handle_skill_rollback_command, handle_skill_score_command, handle_skill_usage_report_command,
     handle_suggest_new_skills_command, handle_sync_agents_command, handle_sync_command,
     handle_sync_pull_command, handle_validate_command,
 };
@@ -56,6 +56,7 @@ use skrills_discovery::{DuplicateInfo, SkillMeta, SkillRoot};
 use skrills_state::{cache_ttl, home_dir, load_manifest_settings};
 #[cfg(feature = "subagents")]
 use skrills_subagents::SubagentService;
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -561,7 +562,7 @@ impl SkillService {
         }
 
         // Sort hubs by dependent count (descending) and take top 5
-        hub_counts.sort_by(|a, b| b.1.cmp(&a.1));
+        hub_counts.sort_by_key(|b| Reverse(b.1));
         let hub_skills: Vec<HubSkill> = hub_counts
             .into_iter()
             .take(5)
@@ -578,11 +579,7 @@ impl SkillService {
             0.0
         };
 
-        let avg_tokens = if skill_count > 0 {
-            total_tokens / skill_count
-        } else {
-            0
-        };
+        let avg_tokens = total_tokens.checked_div(skill_count).unwrap_or(0);
 
         let validation_summary = if include_validation {
             Some(MetricsValidationSummary {
@@ -930,6 +927,7 @@ pub fn run() -> Result<()> {
         tls_key: None,
         cors_origins: Vec::new(),
         tls_auto: false,
+        open: false,
     }) {
         Commands::Serve {
             skill_dirs,
@@ -944,6 +942,7 @@ pub fn run() -> Result<()> {
             tls_key,
             cors_origins,
             tls_auto,
+            open,
         } => handle_serve_command(
             skill_dirs,
             cache_ttl_ms,
@@ -957,6 +956,7 @@ pub fn run() -> Result<()> {
             tls_key,
             cors_origins,
             tls_auto,
+            open,
         ),
         Commands::Mirror {
             dry_run,
@@ -968,6 +968,12 @@ pub fn run() -> Result<()> {
             skill_dirs,
             dry_run,
         } => handle_agent_command(agent, skill_dirs, dry_run),
+        Commands::MultiCliAgent {
+            agent,
+            backend,
+            skill_dirs,
+            dry_run,
+        } => handle_multi_cli_agent_command(agent, backend, skill_dirs, dry_run),
         Commands::SyncAgents { path, skill_dirs } => handle_sync_agents_command(path, skill_dirs),
         Commands::Sync {
             include_marketplace,

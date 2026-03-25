@@ -1,6 +1,6 @@
 [package]
 name = "skrills-server"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 description = "Core library for the skrills MCP server: discovery, filtering, manifest generation, and runtime control."
 license = "MIT"
@@ -45,16 +45,16 @@ rcgen = { version = "0.14", optional = true }
 x509-parser = { version = "0.18", optional = true }
 time.workspace = true
 
-skrills-subagents = { path = "../subagents", version = "0.7.0", optional = true }
+skrills-subagents = { path = "../subagents", version = "0.7.1", optional = true }
 
-skrills-discovery = { path = "../discovery", version = "0.7.0" }
-skrills-state = { path = "../state", version = "0.7.0" }
-skrills_sync = { path = "../sync", version = "0.7.0" }
-skrills-validate = { path = "../validate", version = "0.7.0" }
-skrills-analyze = { path = "../analyze", version = "0.7.0" }
-skrills-intelligence = { path = "../intelligence", version = "0.7.0" }
-skrills-metrics = { path = "../metrics", version = "0.7.0" }
-skrills-dashboard = { path = "../dashboard", version = "0.7.0", optional = true }
+skrills-discovery = { path = "../discovery", version = "0.7.1" }
+skrills-state = { path = "../state", version = "0.7.1" }
+skrills_sync = { path = "../sync", version = "0.7.1" }
+skrills-validate = { path = "../validate", version = "0.7.1" }
+skrills-analyze = { path = "../analyze", version = "0.7.1" }
+skrills-intelligence = { path = "../intelligence", version = "0.7.1" }
+skrills-metrics = { path = "../metrics", version = "0.7.1" }
+skrills-dashboard = { path = "../dashboard", version = "0.7.1", optional = true }
 shellexpand = "3"
 regex = "1"
 sha2.workspace = true

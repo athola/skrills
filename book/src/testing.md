@@ -9,6 +9,9 @@ Integration tests, located under `crates/server/tests/`, cover the MCP server fu
 - **Analysis**: Tests cover token counting and dependency analysis.
 - **Sync Operations**: Tests validate cross-agent sync functionality between Claude and Codex.
 - **Subagent Integration**: Tests cover subagent service integration and backend communication.
+- **Dashboard Navigation**: Tests verify keyboard navigation edge cases including empty skill lists and lazy-loading boundaries.
+- **CLI Backend Resolution**: Tests cover `multi-cli-agent` backend selection, binary probing, and fallback ordering.
+- **HTTP Transport**: Tests verify port binding, TLS configuration, CORS setup, auth middleware, and port fallback exhaustion.
 
 Shared test utilities are available in the test modules for managing temporary directories, constructing test configurations, and handling test data.
 

@@ -82,7 +82,7 @@ fn extract_keywords_from_commits(commits: &str) -> Vec<String> {
 
     // Sort by frequency and take top keywords
     let mut keywords: Vec<_> = word_counts.into_iter().collect();
-    keywords.sort_by(|a, b| b.1.cmp(&a.1));
+    keywords.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     keywords
         .into_iter()

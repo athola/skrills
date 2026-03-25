@@ -235,17 +235,15 @@ impl App {
             KeyCode::BackTab => self.focus = self.focus.prev(),
             KeyCode::Up | KeyCode::Char('k') => self.select_prev(),
             KeyCode::Down | KeyCode::Char('j') => self.select_next(),
-            KeyCode::Home => {
+            KeyCode::Home if !self.skills.is_empty() => {
                 self.skill_index = 0;
                 self.skill_list_state.select(Some(0));
             }
-            KeyCode::End => {
-                if !self.skills.is_empty() {
-                    // End loads all skills and jumps to the last one
-                    self.visible_count = self.skills.len();
-                    self.skill_index = self.skills.len() - 1;
-                    self.skill_list_state.select(Some(self.skill_index));
-                }
+            KeyCode::End if !self.skills.is_empty() => {
+                // End loads all skills and jumps to the last one
+                self.visible_count = self.skills.len();
+                self.skill_index = self.skills.len() - 1;
+                self.skill_list_state.select(Some(self.skill_index));
             }
             _ => {}
         }
@@ -1111,5 +1109,23 @@ mod tests {
 
         // With fewer skills than PAGE_SIZE, visible_skill_count is just the total
         assert_eq!(app.visible_skill_count(), 10);
+    }
+
+    #[test]
+    fn test_end_key_on_empty_skills_is_noop() {
+        let mut app = App::new();
+        // No skills loaded — End should not panic or change state
+        assert!(app.skills.is_empty());
+        app.on_key(KeyCode::End);
+        assert_eq!(app.skill_index, 0);
+        assert_eq!(app.visible_count, PAGE_SIZE);
+    }
+
+    #[test]
+    fn test_home_key_on_empty_skills_is_noop() {
+        let mut app = App::new();
+        assert!(app.skills.is_empty());
+        app.on_key(KeyCode::Home);
+        assert_eq!(app.skill_index, 0);
     }
 }

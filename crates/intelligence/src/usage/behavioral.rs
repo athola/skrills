@@ -571,7 +571,7 @@ pub fn extract_common_ngrams(
         .filter(|(_, count)| *count >= min_count)
         .collect();
 
-    common.sort_by(|a, b| b.1.cmp(&a.1));
+    common.sort_by_key(|b| std::cmp::Reverse(b.1));
     common
 }
 

@@ -1,6 +1,7 @@
 //! Context usage statistics tracking.
 
 use serde::{Deserialize, Serialize};
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -40,7 +41,7 @@ impl ToolUsageStats {
             .iter()
             .map(|(k, v)| (k.as_str(), *v))
             .collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.sort_by_key(|b| Reverse(b.1));
         sorted.truncate(limit);
         sorted
     }
