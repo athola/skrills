@@ -12,6 +12,7 @@ members = [
     "crates/metrics",
     "crates/dashboard",
     "crates/test-utils",
+    "crates/tome",
 ]
 resolver = "2"
 

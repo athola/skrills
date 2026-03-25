@@ -201,22 +201,20 @@ pub fn sanitize_name_kebab(name: &str) -> String {
 /// Test helper functions for adapter tests.
 #[cfg(test)]
 pub(crate) mod test_helpers {
-    use crate::common::{Command, ContentFormat};
+    use crate::common::Command;
     use std::path::PathBuf;
     use std::time::SystemTime;
 
     /// Create a Command with minimal boilerplate. Uses deterministic defaults
     /// for source_path, modified, and hash so tests are reproducible.
     pub fn make_command(name: &str, content: &str) -> Command {
-        Command {
-            name: name.to_string(),
-            content: content.as_bytes().to_vec(),
-            source_path: PathBuf::from(format!("/test/{name}.md")),
-            modified: SystemTime::UNIX_EPOCH,
-            hash: super::hash_content(content.as_bytes()),
-            modules: vec![],
-            content_format: ContentFormat::default(),
-        }
+        let mut cmd = Command::new(
+            name.to_string(),
+            content.as_bytes().to_vec(),
+            PathBuf::from(format!("/test/{name}.md")),
+        );
+        cmd.modified = SystemTime::UNIX_EPOCH;
+        cmd
     }
 }
 

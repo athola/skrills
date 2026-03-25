@@ -41,6 +41,7 @@ pub(crate) fn handle_skill_catalog_command(
                     SyncSource::Claude => path_str.contains("claude"),
                     SyncSource::Codex => path_str.contains("codex"),
                     SyncSource::Copilot => path_str.contains("copilot"),
+                    SyncSource::Cursor => path_str.contains("cursor"),
                 }
             } else {
                 true

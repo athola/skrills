@@ -2,21 +2,9 @@
 
 use super::*;
 use crate::adapters::traits::AgentAdapter;
-use crate::common::{Command, ContentFormat, McpServer, McpTransport, ModuleFile};
-use std::time::SystemTime;
+use crate::adapters::utils::test_helpers::make_command;
+use crate::common::{McpServer, McpTransport, ModuleFile};
 use tempfile::TempDir;
-
-fn make_command(name: &str, content: &str) -> Command {
-    Command {
-        name: name.to_string(),
-        content: content.as_bytes().to_vec(),
-        source_path: std::path::PathBuf::from(format!("/test/{}.md", name)),
-        modified: SystemTime::UNIX_EPOCH,
-        hash: "test-hash".to_string(),
-        modules: vec![],
-        content_format: ContentFormat::default(),
-    }
-}
 
 fn make_skill_with_frontmatter(name: &str) -> Command {
     let content = format!(
@@ -341,6 +329,123 @@ fn skills_hidden_directories_skipped_on_read() {
     let skills = adapter.read_skills().unwrap();
     assert_eq!(skills.len(), 1, "Hidden directories should be skipped");
     assert_eq!(skills[0].name, "visible-skill");
+}
+
+// S5: Verify read_agents returns empty vec when agents directory doesn't exist
+#[test]
+fn agents_empty_directory() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let agents = adapter.read_agents().unwrap();
+    assert!(
+        agents.is_empty(),
+        "read_agents should return empty vec when agents directory doesn't exist"
+    );
+}
+
+// S6: Verify alwaysApply: true is preserved in a round-trip through rules
+#[test]
+fn rules_always_apply_true_passthrough() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let content =
+        "---\nalwaysApply: true\ndescription: Important rule\n---\n\n# Always Active\n\nThis rule always applies.\n";
+    let instructions = vec![make_command("always-on", content)];
+
+    let report = adapter.write_instructions(&instructions).unwrap();
+    assert_eq!(report.written, 1);
+
+    let read_back = adapter.read_instructions().unwrap();
+    assert_eq!(read_back.len(), 1);
+    let read_content = String::from_utf8_lossy(&read_back[0].content);
+    assert!(
+        read_content.contains("alwaysApply: true"),
+        "alwaysApply: true should be preserved in round-trip, got: {}",
+        read_content
+    );
+}
+
+// --- Skip-unchanged tests ---
+
+#[test]
+fn commands_skip_unchanged_on_second_write() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let commands = vec![make_command("greet", "# Greet\n\nSay hello.\n")];
+
+    let first = adapter.write_commands(&commands).unwrap();
+    assert_eq!(first.written, 1);
+    assert!(first.skipped.is_empty());
+
+    let second = adapter.write_commands(&commands).unwrap();
+    assert_eq!(second.written, 0, "unchanged command should be skipped");
+    assert_eq!(second.skipped.len(), 1);
+}
+
+#[test]
+fn commands_overwrite_when_content_changes() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let v1 = vec![make_command("greet", "# V1\n")];
+    let first = adapter.write_commands(&v1).unwrap();
+    assert_eq!(first.written, 1);
+
+    let v2 = vec![make_command("greet", "# V2\n")];
+    let second = adapter.write_commands(&v2).unwrap();
+    assert_eq!(second.written, 1, "changed command should be written");
+    assert!(second.skipped.is_empty());
+}
+
+#[test]
+fn skills_skip_unchanged_on_second_write() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let skills = vec![make_skill_with_frontmatter("repeat-skill")];
+
+    let first = adapter.write_skills(&skills).unwrap();
+    assert_eq!(first.written, 1);
+
+    let second = adapter.write_skills(&skills).unwrap();
+    assert_eq!(second.written, 0, "unchanged skill should be skipped");
+    assert_eq!(second.skipped.len(), 1);
+}
+
+#[test]
+fn agents_skip_unchanged_on_second_write() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let agent_content = "---\nname: helper\nmodel: opus\n---\n\nHelp out.\n";
+    let agents = vec![make_command("helper", agent_content)];
+
+    let first = adapter.write_agents(&agents).unwrap();
+    assert_eq!(first.written, 1);
+
+    let second = adapter.write_agents(&agents).unwrap();
+    assert_eq!(second.written, 0, "unchanged agent should be skipped");
+    assert_eq!(second.skipped.len(), 1);
+}
+
+#[test]
+fn rules_skip_unchanged_on_second_write() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let instructions = vec![make_command(
+        "CLAUDE.md",
+        "# Instructions\n\nDo things.\n",
+    )];
+
+    let first = adapter.write_instructions(&instructions).unwrap();
+    assert_eq!(first.written, 1);
+
+    let second = adapter.write_instructions(&instructions).unwrap();
+    assert_eq!(second.written, 0, "unchanged rule should be skipped");
+    assert_eq!(second.skipped.len(), 1);
 }
 
 // --- MCP ---

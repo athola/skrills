@@ -17,14 +17,15 @@ Skills support engine for Claude Code, Codex CLI, GitHub Copilot CLI, and Cursor
 [User Guide](https://athola.github.io/skrills/) |
 [CLI Reference](book/src/cli.md) |
 [MCP Tutorial](docs/tutorials/mcp.md) |
+[Cursor Quickstart](docs/tutorials/cursor-quickstart.md) |
 [FAQ](docs/FAQ.md) |
 [Changelog](book/src/changelog.md)
 
-> **What's new in 0.7.1** -- `multi-cli-agent` command for
-> agent launching with automatic Claude/Codex backend routing,
-> `--open` flag to auto-launch the browser dashboard,
-> port fallback when the default port is busy, and light-mode
-> support for the browser dashboard.
+> **What's new in 0.7.2** -- Cursor adapter fixes for
+> bidirectional sync reliability, new `sync-from-cursor`,
+> `sync-from-claude`, and `sync-from-copilot` shorthand
+> commands, and the `tome` research crate for academic paper
+> search and PDF retrieval.
 > See [changelog](book/src/changelog.md).
 
 ## Features
@@ -179,6 +180,7 @@ skrills skill-profile my-skill
 | `state` | Environment config, manifest settings, runtime overrides |
 | `metrics` | SQLite-based telemetry for invocations, validations, sync |
 | `subagents` | Shared subagent runtime and backends |
+| `tome` | Research API orchestration, caching, PDF serving |
 | `test-utils` | Shared test infrastructure (fixtures, RAII guards, temp dirs) |
 
 See [architecture docs](docs/architecture.md) for details.
@@ -206,6 +208,7 @@ subcommand) and [FAQ](docs/FAQ.md) for environment variables.
 | [User Guide](https://athola.github.io/skrills/) | Primary documentation (mdBook) |
 | [CLI Reference](book/src/cli.md) | All commands with examples |
 | [MCP Tutorial](docs/tutorials/mcp.md) | Server setup and tool reference |
+| [Cursor Quickstart](docs/tutorials/cursor-quickstart.md) | Getting productive with Cursor fast |
 | [Sync Guide](book/src/sync-guide.md) | Cross-CLI sync workflows (Claude, Codex, Copilot, Cursor) |
 | [Token Optimization](book/src/mcp-token-optimization.md) | Context window management |
 | [FAQ](docs/FAQ.md) | Common questions |

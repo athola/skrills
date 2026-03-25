@@ -27,15 +27,17 @@ pub enum SyncSource {
     Codex,
     /// GitHub Copilot CLI.
     Copilot,
+    /// Cursor IDE.
+    Cursor,
 }
 
 impl SyncSource {
     /// Returns the default target for a given source.
-    /// Claude → Codex, Codex/Copilot → Claude.
+    /// Claude → Codex, Codex/Copilot/Cursor → Claude.
     pub fn default_target(self) -> Self {
         match self {
             Self::Claude => Self::Codex,
-            Self::Codex | Self::Copilot => Self::Claude,
+            Self::Codex | Self::Copilot | Self::Cursor => Self::Claude,
         }
     }
 
@@ -54,12 +56,18 @@ impl SyncSource {
         matches!(self, Self::Copilot)
     }
 
+    /// Returns true if this source is Cursor.
+    pub fn is_cursor(self) -> bool {
+        matches!(self, Self::Cursor)
+    }
+
     /// Returns the string name for this source.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Copilot => "copilot",
+            Self::Cursor => "cursor",
         }
     }
 
@@ -67,9 +75,10 @@ impl SyncSource {
     /// Used when `--to` is not specified to sync to all other CLIs.
     pub fn other_targets(self) -> Vec<Self> {
         match self {
-            Self::Claude => vec![Self::Codex, Self::Copilot],
-            Self::Codex => vec![Self::Claude, Self::Copilot],
-            Self::Copilot => vec![Self::Claude, Self::Codex],
+            Self::Claude => vec![Self::Codex, Self::Copilot, Self::Cursor],
+            Self::Codex => vec![Self::Claude, Self::Copilot, Self::Cursor],
+            Self::Copilot => vec![Self::Claude, Self::Codex, Self::Cursor],
+            Self::Cursor => vec![Self::Claude, Self::Codex, Self::Copilot],
         }
     }
 }
@@ -84,7 +93,7 @@ pub enum DependencyDirection {
 }
 
 /// Backend for multi-CLI agent routing.
-#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
 pub enum AgentBackend {
     /// Auto-detect the best available backend.
     #[default]
@@ -93,6 +102,17 @@ pub enum AgentBackend {
     Claude,
     /// Use Codex CLI.
     Codex,
+}
+
+impl AgentBackend {
+    /// Return a human-readable name for the backend.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AgentBackend::Auto => "auto",
+            AgentBackend::Claude => "claude",
+            AgentBackend::Codex => "codex",
+        }
+    }
 }
 
 /// Creation method for new skills.
@@ -245,8 +265,8 @@ pub enum Commands {
         list_tools: bool,
 
         /// Open the dashboard in the default browser after the HTTP server starts.
-        /// Only applies when `--http` is specified.
-        #[arg(long, default_value_t = false)]
+        /// Requires `--http`.
+        #[arg(long, default_value_t = false, requires = "http")]
         open: bool,
     },
     /// Mirrors Claude assets (skills, agents, commands, MCP prefs) into Codex defaults and refreshes AGENTS.md.
@@ -307,12 +327,12 @@ pub enum Commands {
         #[arg(long, env = "SKRILLS_INCLUDE_MARKETPLACE", default_value_t = false)]
         include_marketplace: bool,
     },
-    /// Syncs slash commands between AI CLI tools (Claude, Codex, Copilot).
+    /// Syncs slash commands between AI CLI tools (Claude, Codex, Copilot, Cursor).
     SyncCommands {
-        /// Source CLI: claude, codex, or copilot.
+        /// Source CLI: claude, codex, copilot, or cursor.
         #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
         from: SyncSource,
-        /// Target CLI: claude, codex, or copilot. If not specified, defaults to codex (for claude source) or claude (for codex/copilot source).
+        /// Target CLI: claude, codex, copilot, or cursor. If not specified, defaults to codex (for claude source) or claude (for others).
         #[arg(long, value_enum)]
         to: Option<SyncSource>,
         /// Preview changes without writing.
@@ -327,10 +347,10 @@ pub enum Commands {
     },
     /// Syncs MCP server configurations between AI CLI tools.
     SyncMcpServers {
-        /// Source CLI: claude, codex, or copilot.
+        /// Source CLI: claude, codex, copilot, or cursor.
         #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
         from: SyncSource,
-        /// Target CLI: claude, codex, or copilot.
+        /// Target CLI: claude, codex, copilot, or cursor.
         #[arg(long, value_enum)]
         to: Option<SyncSource>,
         /// Preview changes without writing.
@@ -339,10 +359,10 @@ pub enum Commands {
     },
     /// Syncs preferences between AI CLI tools.
     SyncPreferences {
-        /// Source CLI: claude, codex, or copilot.
+        /// Source CLI: claude, codex, copilot, or cursor.
         #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
         from: SyncSource,
-        /// Target CLI: claude, codex, or copilot.
+        /// Target CLI: claude, codex, copilot, or cursor.
         #[arg(long, value_enum)]
         to: Option<SyncSource>,
         /// Preview changes without writing.
@@ -351,10 +371,10 @@ pub enum Commands {
     },
     /// Syncs all configurations (commands, MCP servers, preferences, skills).
     SyncAll {
-        /// Source CLI: claude, codex, or copilot.
+        /// Source CLI: claude, codex, copilot, or cursor.
         #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
         from: SyncSource,
-        /// Target CLI: claude, codex, or copilot. If omitted, syncs to ALL other CLIs.
+        /// Target CLI: claude, codex, copilot, or cursor. If omitted, syncs to ALL other CLIs.
         #[arg(long, value_enum)]
         to: Option<SyncSource>,
         /// Preview changes without writing.
@@ -375,10 +395,10 @@ pub enum Commands {
     },
     /// Shows sync status and configuration differences.
     SyncStatus {
-        /// Source CLI: claude, codex, or copilot.
+        /// Source CLI: claude, codex, copilot, or cursor.
         #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
         from: SyncSource,
-        /// Target CLI: claude, codex, or copilot.
+        /// Target CLI: claude, codex, copilot, or cursor.
         #[arg(long, value_enum)]
         to: Option<SyncSource>,
     },
@@ -620,7 +640,7 @@ pub enum Commands {
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
     },
-    /// Compare a skill across Claude, Codex, and Copilot to show differences.
+    /// Compare a skill across Claude, Codex, Copilot, and Cursor to show differences.
     SkillDiff {
         /// Skill name to compare (e.g., "commit", "review-pr").
         #[arg(required = true)]
@@ -632,9 +652,9 @@ pub enum Commands {
         #[arg(long, short = 'C', default_value = "3")]
         context: usize,
     },
-    /// Sets up skrills for Claude Code, Codex, or Copilot (hooks, MCP, directories).
+    /// Sets up skrills for Claude Code, Codex, Copilot, or Cursor (hooks, MCP, directories).
     Setup {
-        /// Client to set up for (claude, codex, copilot, or all). If not specified, prompts interactively.
+        /// Client to set up for (claude, codex, copilot, cursor, or all). If not specified, prompts interactively.
         #[arg(long)]
         client: Option<String>,
         /// Binary installation directory. If not specified, uses default or prompts.
@@ -1714,6 +1734,15 @@ mod tests {
     }
 
     #[test]
+    fn parse_serve_open_without_http_is_error() {
+        let result = Cli::try_parse_from(["skrills", "serve", "--open"]);
+        assert!(
+            result.is_err(),
+            "--open without --http should be a parse error"
+        );
+    }
+
+    #[test]
     fn parse_multi_cli_agent_defaults() {
         let cli = Cli::try_parse_from(["skrills", "multi-cli-agent", "my-agent"])
             .expect("multi-cli-agent should parse");
@@ -1787,5 +1816,110 @@ mod tests {
             }
             _ => panic!("expected MultiCliAgent command"),
         }
+    }
+
+    #[test]
+    fn parse_sync_all_claude_to_cursor_dry_run() {
+        let _guard = env_guard();
+        let _env = set_env_var("SKRILLS_INCLUDE_MARKETPLACE", None);
+
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "sync-all",
+            "--from",
+            "claude",
+            "--to",
+            "cursor",
+            "--dry-run",
+        ])
+        .expect("sync-all --from claude --to cursor --dry-run should parse");
+
+        match cli.command {
+            Some(Commands::SyncAll {
+                from, to, dry_run, ..
+            }) => {
+                assert!(matches!(from, SyncSource::Claude));
+                assert_eq!(to, Some(SyncSource::Cursor));
+                assert!(dry_run);
+            }
+            _ => panic!("expected SyncAll command"),
+        }
+    }
+
+    // --- SyncSource enum method tests ---
+
+    #[test]
+    fn sync_source_as_str_returns_expected_names() {
+        assert_eq!(SyncSource::Claude.as_str(), "claude");
+        assert_eq!(SyncSource::Codex.as_str(), "codex");
+        assert_eq!(SyncSource::Copilot.as_str(), "copilot");
+        assert_eq!(SyncSource::Cursor.as_str(), "cursor");
+    }
+
+    #[test]
+    fn sync_source_is_predicates() {
+        assert!(SyncSource::Claude.is_claude());
+        assert!(!SyncSource::Claude.is_codex());
+
+        assert!(SyncSource::Codex.is_codex());
+        assert!(!SyncSource::Codex.is_claude());
+
+        assert!(SyncSource::Copilot.is_copilot());
+        assert!(!SyncSource::Copilot.is_cursor());
+
+        assert!(SyncSource::Cursor.is_cursor());
+        assert!(!SyncSource::Cursor.is_copilot());
+    }
+
+    #[test]
+    fn sync_source_default_target() {
+        assert!(matches!(
+            SyncSource::Claude.default_target(),
+            SyncSource::Codex
+        ));
+        assert!(matches!(
+            SyncSource::Codex.default_target(),
+            SyncSource::Claude
+        ));
+        assert!(matches!(
+            SyncSource::Copilot.default_target(),
+            SyncSource::Claude
+        ));
+        assert!(matches!(
+            SyncSource::Cursor.default_target(),
+            SyncSource::Claude
+        ));
+    }
+
+    #[test]
+    fn sync_source_other_targets_excludes_self() {
+        for source in [
+            SyncSource::Claude,
+            SyncSource::Codex,
+            SyncSource::Copilot,
+            SyncSource::Cursor,
+        ] {
+            let targets = source.other_targets();
+            assert_eq!(targets.len(), 3, "{:?} should have 3 other targets", source);
+            assert!(
+                !targets.iter().any(|t| t.as_str() == source.as_str()),
+                "{:?} should not include itself in other_targets",
+                source,
+            );
+        }
+    }
+
+    // --- AgentBackend enum method tests ---
+
+    #[test]
+    fn agent_backend_as_str() {
+        assert_eq!(AgentBackend::Auto.as_str(), "auto");
+        assert_eq!(AgentBackend::Claude.as_str(), "claude");
+        assert_eq!(AgentBackend::Codex.as_str(), "codex");
+    }
+
+    #[test]
+    fn agent_backend_default_is_auto() {
+        assert_eq!(AgentBackend::default(), AgentBackend::Auto);
     }
 }

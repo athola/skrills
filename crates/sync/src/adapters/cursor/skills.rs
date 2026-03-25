@@ -19,7 +19,7 @@ use super::paths::skills_dir;
 use super::utils::{sanitize_name, strip_frontmatter};
 use crate::adapters::utils::{collect_module_files, hash_content};
 use crate::common::{Command, ContentFormat};
-use crate::report::WriteReport;
+use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use std::fs;
 use std::path::Path;
@@ -105,6 +105,16 @@ pub fn write_skills(root: &Path, skills: &[Command]) -> Result<WriteReport> {
         let content_str = String::from_utf8_lossy(&skill.content);
         let body = strip_frontmatter(&content_str);
         let skill_path = skill_dir.join("SKILL.md");
+
+        if skill_path.exists() {
+            let existing = fs::read(&skill_path)?;
+            if hash_content(&existing) == hash_content(body.as_bytes()) {
+                report.skipped.push(SkipReason::Unchanged {
+                    item: skill.name.clone(),
+                });
+                continue;
+            }
+        }
 
         debug!(name = %name, path = ?skill_path, "Writing Cursor skill");
         fs::write(&skill_path, body.as_bytes())?;

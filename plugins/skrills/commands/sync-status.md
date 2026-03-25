@@ -1,6 +1,6 @@
 ---
 description: Preview what would be synced between AI coding assistants without making changes.
-argument-hint: "[--from claude|codex|copilot] [--to claude|codex|copilot]"
+argument-hint: "[--from claude|codex|copilot|cursor] [--to claude|codex|copilot|cursor]"
 triggers: sync preview, what would sync, sync differences, compare skills, sync dry run
 ---
 
@@ -9,7 +9,7 @@ triggers: sync preview, what would sync, sync differences, compare skills, sync 
 Show sync status and preview changes using the skrills MCP server.
 
 Use the `mcp__plugin_skrills_skrills__sync-status` tool with:
-- `from`: Source agent (claude, codex, or copilot)
+- `from`: Source agent (claude, codex, copilot, or cursor)
 - `to`: Target agent
 - `dry_run`: Always true for status checks
 
@@ -25,5 +25,5 @@ Report:
 
 Handle errors:
 - If MCP server unavailable: Report connection error
-- If source/target invalid: List valid options (claude, codex, copilot)
+- If source/target invalid: List valid options (claude, codex, copilot, cursor)
 - If no skills found in source: Report empty state

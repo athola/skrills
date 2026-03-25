@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.2 - 2026-03-25
+- **Fix: Cursor Sync Reliability**: Improved bidirectional sync for Cursor adapter — agents, commands, rules, skills, and utility modules hardened with better error handling and edge-case coverage.
+- **NEW: Shorthand Sync Commands**: Added `/sync-from-cursor`, `/sync-from-claude`, and `/sync-from-copilot` slash commands for quick one-direction syncs.
+- **NEW: `tome` Research Crate**: Academic paper search, citation extraction, knowledge graph, PDF retrieval, rate limiting, and caching (`skrills-tome`).
+- **NEW: Cursor Quickstart Tutorial**: Getting-started guide for Cursor IDE users (`docs/tutorials/cursor-quickstart.md`).
+- **CLI**: `--open` flag now enforces `--http` as a prerequisite via clap `requires`. All sync commands updated to include Cursor as a valid source/target.
+- **Testing**: Extended Cursor adapter test coverage; added `parse_serve_open_without_http_is_error` CLI test.
+- **Internal**: Bumped all workspace crate versions from 0.7.1 to 0.7.2.
+
 ## 0.7.1 - 2026-03-21
 - **NEW: `multi-cli-agent` Command**: Launch agents via Claude or Codex CLI with automatic backend detection and fallback routing.
 - **NEW: `--open` Flag**: Auto-launch the browser dashboard on `skrills serve`.

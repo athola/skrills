@@ -55,6 +55,22 @@ pub struct Command {
     pub content_format: ContentFormat,
 }
 
+impl Command {
+    /// Creates a new Command with auto-computed SHA-256 hash.
+    pub fn new(name: String, content: Vec<u8>, source_path: PathBuf) -> Self {
+        let hash = crate::adapters::utils::hash_content(&content);
+        Self {
+            name,
+            content,
+            source_path,
+            modified: SystemTime::now(),
+            hash,
+            modules: vec![],
+            content_format: ContentFormat::default(),
+        }
+    }
+}
+
 /// Transport type for MCP server connection.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -118,4 +134,42 @@ pub struct CommonConfig {
     pub hooks: Vec<Command>,
     pub agents: Vec<Command>,
     pub instructions: Vec<Command>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn command_new_computes_hash() {
+        let cmd = Command::new(
+            "test-cmd".to_string(),
+            b"hello world".to_vec(),
+            PathBuf::from("/test/cmd.md"),
+        );
+        assert_eq!(cmd.name, "test-cmd");
+        assert_eq!(cmd.content, b"hello world");
+        assert_eq!(cmd.source_path, PathBuf::from("/test/cmd.md"));
+        assert!(!cmd.hash.is_empty(), "hash should be auto-computed");
+        assert!(cmd.modules.is_empty());
+        assert_eq!(cmd.content_format, ContentFormat::Markdown);
+    }
+
+    #[test]
+    fn command_new_same_content_produces_same_hash() {
+        let a = Command::new("a".into(), b"same".to_vec(), PathBuf::from("a.md"));
+        let b = Command::new("b".into(), b"same".to_vec(), PathBuf::from("b.md"));
+        assert_eq!(a.hash, b.hash, "same content should produce same hash");
+    }
+
+    #[test]
+    fn command_new_different_content_produces_different_hash() {
+        let a = Command::new("a".into(), b"alpha".to_vec(), PathBuf::from("a.md"));
+        let b = Command::new("b".into(), b"beta".to_vec(), PathBuf::from("b.md"));
+        assert_ne!(
+            a.hash, b.hash,
+            "different content should produce different hash"
+        );
+    }
 }

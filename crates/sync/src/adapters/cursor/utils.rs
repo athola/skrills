@@ -6,45 +6,70 @@
 
 use std::collections::HashMap;
 
+/// Splits content into raw frontmatter string and body.
+///
+/// Frontmatter is delimited by `---` on its own line at the start of the file.
+/// Returns `(Some(raw_frontmatter), body)` if frontmatter is found,
+/// or `(None, full_content)` if not.
+///
+/// This is the single source of truth for frontmatter delimiter scanning.
+pub fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") {
+        return (None, content);
+    }
+
+    // Find the closing `---`
+    // Strip the line ending after the opening `---` (handles both \n and \r\n)
+    let after_open = &trimmed[3..];
+    let after_open = after_open
+        .strip_prefix("\r\n")
+        .or_else(|| after_open.strip_prefix('\n'))
+        .unwrap_or(after_open);
+
+    if let Some(close_pos) = after_open.find("\n---") {
+        let frontmatter_str = &after_open[..close_pos];
+        // Trim trailing \r from frontmatter (last line before \n---)
+        let frontmatter_str = frontmatter_str
+            .strip_suffix('\r')
+            .unwrap_or(frontmatter_str);
+        let body_start = close_pos + 4; // skip "\n---"
+        let body = &after_open[body_start..];
+        let body = body.trim_start_matches(['\n', '\r']);
+
+        (Some(frontmatter_str), body)
+    } else {
+        // No closing delimiter — treat entire content as body
+        (None, content)
+    }
+}
+
 /// Parses YAML frontmatter from content, returning (frontmatter_fields, body).
 ///
 /// Frontmatter is delimited by `---` on its own line at the start of the file.
 /// Returns `(empty_map, full_content)` if no frontmatter is found.
 pub fn parse_frontmatter(content: &str) -> (HashMap<String, String>, &str) {
-    let trimmed = content.trim_start();
-    if !trimmed.starts_with("---") {
-        return (HashMap::new(), content);
-    }
+    let (raw, body) = split_frontmatter(content);
 
-    // Find the closing `---`
-    let after_open = &trimmed[3..];
-    let after_open = after_open.strip_prefix('\n').unwrap_or(after_open);
+    let Some(frontmatter_str) = raw else {
+        return (HashMap::new(), body);
+    };
 
-    if let Some(close_pos) = after_open.find("\n---") {
-        let frontmatter_str = &after_open[..close_pos];
-        let body_start = close_pos + 4; // skip "\n---"
-        let body = &after_open[body_start..];
-        let body = body.trim_start_matches(['\n', '\r']);
-
-        // Parse simple key: value pairs from frontmatter
-        let mut fields = HashMap::new();
-        for line in frontmatter_str.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            if let Some((key, rest)) = line.split_once(':') {
-                let key = key.trim().to_string();
-                let value = rest.trim().to_string();
-                fields.insert(key, value);
-            }
+    // Parse simple key: value pairs from frontmatter
+    let mut fields = HashMap::new();
+    for line in frontmatter_str.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
         }
-
-        (fields, body)
-    } else {
-        // No closing delimiter — treat entire content as body
-        (HashMap::new(), content)
+        if let Some((key, rest)) = line.split_once(':') {
+            let key = key.trim().to_string();
+            let value = rest.trim().to_string();
+            fields.insert(key, value);
+        }
     }
+
+    (fields, body)
 }
 
 /// Strips YAML frontmatter from content, returning only the body.
@@ -145,6 +170,38 @@ mod tests {
         let fields = HashMap::new();
         let body = "# Just body\n";
         assert_eq!(render_frontmatter(&fields, body), body);
+    }
+
+    #[test]
+    fn parse_frontmatter_crlf_line_endings() {
+        let content =
+            "---\r\nname: test-skill\r\ndescription: A test\r\n---\r\n\r\n# Body\r\n\r\nContent here.\r\n";
+        let (fields, body) = parse_frontmatter(content);
+        assert_eq!(fields.get("name").unwrap(), "test-skill");
+        assert_eq!(fields.get("description").unwrap(), "A test");
+        assert!(
+            body.starts_with("# Body"),
+            "Body should start with '# Body', got: {:?}",
+            body
+        );
+    }
+
+    #[test]
+    fn split_frontmatter_crlf_line_endings() {
+        let content = "---\r\nname: test\r\n---\r\n\r\n# Body\r\n";
+        let (raw, body) = split_frontmatter(content);
+        assert!(raw.is_some(), "Should find frontmatter with CRLF endings");
+        let fm = raw.unwrap();
+        assert!(
+            fm.contains("name: test"),
+            "Frontmatter should contain 'name: test', got: {:?}",
+            fm
+        );
+        assert!(
+            body.starts_with("# Body"),
+            "Body should start with '# Body', got: {:?}",
+            body
+        );
     }
 
     #[test]

@@ -50,8 +50,8 @@ graph TD
 |-------|---------|
 | `cli` | Thin binary wrapper |
 | `server` | MCP server, CLI commands, HTTP transport, REST API |
-| `sync` | Bidirectional Claude/Codex/Copilot sync |
-| `validate` | Skill validation (Claude/Codex/Copilot) |
+| `sync` | Bidirectional Claude/Codex/Copilot/Cursor sync |
+| `validate` | Skill validation (Claude/Codex/Copilot/Cursor) |
 | `analyze` | Token counting, dependencies |
 | `intelligence` | Recommendations, project analysis, skill generation |
 | `discovery` | Skill/agent discovery, ranking |
@@ -62,7 +62,7 @@ graph TD
 
 ## Design Principles
 
-Leaf crates like `validate`, `discovery`, and `state` have no internal dependencies to prevent cycles. `AgentAdapter` allows pluggable adapters for Claude, Codex, and Copilot, while `SyncOrchestrator<S, T>` uses compile-time dispatch for type safety. We gate features like `subagents` behind flags to minimize binary size.
+Leaf crates like `validate`, `discovery`, and `state` have no internal dependencies to prevent cycles. `AgentAdapter` allows pluggable adapters for Claude, Codex, Copilot, and Cursor, while `SyncOrchestrator<S, T>` uses compile-time dispatch for type safety. We gate features like `subagents` behind flags to minimize binary size.
 
 ## Module Organization
 

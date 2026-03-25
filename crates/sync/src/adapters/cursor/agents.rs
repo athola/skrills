@@ -8,10 +8,10 @@
 //! - Model names translated via `transform_model`
 
 use super::paths::agents_dir;
-use super::utils::sanitize_name;
+use super::utils::{sanitize_name, split_frontmatter};
 use crate::adapters::utils::hash_content;
 use crate::common::{Command, ContentFormat};
-use crate::report::WriteReport;
+use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use std::fs;
 use std::path::Path;
@@ -96,6 +96,16 @@ pub fn write_agents(root: &Path, agents: &[Command]) -> Result<WriteReport> {
         let content_str = String::from_utf8_lossy(&agent.content);
         let translated = translate_agent_frontmatter(&content_str);
 
+        if path.exists() {
+            let existing = fs::read(&path)?;
+            if hash_content(&existing) == hash_content(translated.as_bytes()) {
+                report.skipped.push(SkipReason::Unchanged {
+                    item: agent.name.clone(),
+                });
+                continue;
+            }
+        }
+
         debug!(name = %name, path = ?path, "Writing Cursor agent");
         fs::write(&path, translated.as_bytes())?;
         report.written += 1;
@@ -110,21 +120,11 @@ pub fn write_agents(root: &Path, agents: &[Command]) -> Result<WriteReport> {
 /// - Strips `tools` and `isolation` fields (not supported by Cursor)
 /// - Passes through all other fields unchanged
 fn translate_agent_frontmatter(content: &str) -> String {
-    let trimmed = content.trim_start();
-    if !trimmed.starts_with("---") {
+    let (raw_frontmatter, body) = split_frontmatter(content);
+
+    let Some(frontmatter_str) = raw_frontmatter else {
         return content.to_string();
-    }
-
-    let after_open = &trimmed[3..];
-    let after_open = after_open.strip_prefix('\n').unwrap_or(after_open);
-
-    let close_pos = match after_open.find("\n---") {
-        Some(pos) => pos,
-        None => return content.to_string(),
     };
-
-    let frontmatter_str = &after_open[..close_pos];
-    let body = &after_open[close_pos + 4..];
 
     let mut translated_lines = Vec::new();
     let mut skipping_block = false;
@@ -162,8 +162,11 @@ fn translate_agent_frontmatter(content: &str) -> String {
 
     let mut result = String::from("---\n");
     result.push_str(&translated_lines.join("\n"));
-    result.push_str("\n---");
-    result.push_str(body);
+    result.push_str("\n---\n");
+    if !body.is_empty() {
+        result.push('\n');
+        result.push_str(body);
+    }
     result
 }
 

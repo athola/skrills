@@ -20,7 +20,7 @@ use super::paths::rules_dir;
 use super::utils::{parse_frontmatter, render_frontmatter, sanitize_name};
 use crate::adapters::utils::hash_content;
 use crate::common::{Command, ContentFormat};
-use crate::report::WriteReport;
+use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use std::fs;
 use std::path::Path;
@@ -115,6 +115,17 @@ pub fn write_rules(root: &Path, instructions: &[Command]) -> Result<WriteReport>
         let mdc_content = render_frontmatter(&frontmatter, &body);
 
         let path = dir.join(format!("{}.mdc", name));
+
+        if path.exists() {
+            let existing = fs::read(&path)?;
+            if hash_content(&existing) == hash_content(mdc_content.as_bytes()) {
+                report.skipped.push(SkipReason::Unchanged {
+                    item: instruction.name.clone(),
+                });
+                continue;
+            }
+        }
+
         debug!(name = %name, path = ?path, "Writing Cursor rule");
         fs::write(&path, mdc_content.as_bytes())?;
         report.written += 1;
