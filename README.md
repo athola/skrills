@@ -215,6 +215,13 @@ subcommand) and [FAQ](docs/FAQ.md) for environment variables.
 | [Security](docs/security.md) | Auth, TLS, threat model |
 | [Changelog](book/src/changelog.md) | Release history |
 
+## Plugin Marketplaces
+
+Skrills validates, analyzes, and syncs skills from these exemplar plugin marketplaces:
+
+- [superpowers](https://github.com/obra/superpowers) — Opinionated skill pack for Claude Code covering TDD, code review, planning, debugging, and development workflows.
+- [claude-night-market](https://github.com/athola/claude-night-market) — Plugin marketplace for Claude Code with skills, agents, hooks, and commands across multiple domains.
+
 ## Development
 
 ```bash
