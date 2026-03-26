@@ -55,6 +55,7 @@ publish_one skrills-state
 publish_one skrills-discovery
 publish_one skrills-intelligence
 publish_one skrills-metrics
+publish_one skrills-tome
 
 # Level 1: depend on leaf crates only
 publish_one skrills_sync
