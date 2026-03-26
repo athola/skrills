@@ -4,12 +4,11 @@
 //! near-identical to Claude Code commands.
 
 use super::paths::commands_dir;
-use super::utils::{parse_frontmatter, render_frontmatter, sanitize_name};
+use super::utils::{sanitize_name, strip_frontmatter};
 use crate::adapters::utils::hash_content;
 use crate::common::{Command, ContentFormat};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
-use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
@@ -85,21 +84,12 @@ pub fn write_commands(root: &Path, commands: &[Command]) -> Result<WriteReport> 
         let name = sanitize_name(&cmd.name);
         let path = dir.join(format!("{}.md", name));
 
-        // Translate Claude frontmatter to Cursor format:
-        // Keep only `description`; strip Claude-specific fields like
-        // `allowed-tools`, `disable-model-invocation`, etc.
+        // Strip all frontmatter — Cursor commands don't support YAML frontmatter.
+        // Frontmatter fields (allowed-tools, description, etc.) cause Cursor to
+        // display "--- (user)" instead of the command description.
         let content_str = String::from_utf8_lossy(&cmd.content);
-        let (fields, body) = parse_frontmatter(&content_str);
-        let cursor_content = if fields.is_empty() {
-            content_str.into_owned()
-        } else {
-            let mut cursor_fields = HashMap::new();
-            if let Some(desc) = fields.get("description") {
-                cursor_fields.insert("description".to_string(), desc.clone());
-            }
-            render_frontmatter(&cursor_fields, body)
-        };
-        let cursor_bytes = cursor_content.as_bytes();
+        let body = strip_frontmatter(&content_str);
+        let cursor_bytes = body.as_bytes();
 
         if path.exists() {
             let existing = fs::read(&path)?;
