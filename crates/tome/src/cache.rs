@@ -26,7 +26,10 @@ impl ResearchCache {
         std::fs::create_dir_all(&pdf_dir)?;
 
         let conn = Connection::open(&db_path)?;
-        let cache = Self { conn: std::sync::Mutex::new(conn), pdf_dir };
+        let cache = Self {
+            conn: std::sync::Mutex::new(conn),
+            pdf_dir,
+        };
         cache.init_schema()?;
         Ok(cache)
     }
@@ -35,7 +38,10 @@ impl ResearchCache {
     pub fn open_at(db_path: &std::path::Path, pdf_dir: PathBuf) -> TomeResult<Self> {
         std::fs::create_dir_all(&pdf_dir)?;
         let conn = Connection::open(db_path)?;
-        let cache = Self { conn: std::sync::Mutex::new(conn), pdf_dir };
+        let cache = Self {
+            conn: std::sync::Mutex::new(conn),
+            pdf_dir,
+        };
         cache.init_schema()?;
         Ok(cache)
     }

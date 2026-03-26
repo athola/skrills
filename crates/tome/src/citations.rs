@@ -22,14 +22,18 @@ impl CitationTracker {
     /// Opens or creates the citation database.
     pub fn open(db_path: &std::path::Path) -> TomeResult<Self> {
         let conn = Connection::open(db_path)?;
-        let ct = Self { conn: std::sync::Mutex::new(conn) };
+        let ct = Self {
+            conn: std::sync::Mutex::new(conn),
+        };
         ct.init_schema()?;
         Ok(ct)
     }
 
     pub fn open_in_memory() -> TomeResult<Self> {
         let conn = Connection::open_in_memory()?;
-        let ct = Self { conn: std::sync::Mutex::new(conn) };
+        let ct = Self {
+            conn: std::sync::Mutex::new(conn),
+        };
         ct.init_schema()?;
         Ok(ct)
     }
@@ -99,8 +103,8 @@ impl CitationTracker {
     /// Forward citations: "who cited this paper?"
     pub fn forward_citations(&self, paper_id: &str) -> TomeResult<Vec<Citation>> {
         let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
-        let mut stmt = conn
-            .prepare("SELECT citing_id, cited_id, context FROM citations WHERE cited_id = ?1")?;
+        let mut stmt =
+            conn.prepare("SELECT citing_id, cited_id, context FROM citations WHERE cited_id = ?1")?;
         let rows = stmt.query_map([paper_id], |row| {
             Ok(Citation {
                 citing_paper_id: row.get(0)?,
@@ -142,10 +146,9 @@ impl CitationTracker {
     /// Count tracked papers and citation links.
     pub fn stats(&self) -> TomeResult<(usize, usize)> {
         let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
-        let papers: i64 = conn
-            .query_row("SELECT COUNT(*) FROM tracked_papers", [], |r| r.get(0))?;
-        let citations: i64 = conn
-            .query_row("SELECT COUNT(*) FROM citations", [], |r| r.get(0))?;
+        let papers: i64 =
+            conn.query_row("SELECT COUNT(*) FROM tracked_papers", [], |r| r.get(0))?;
+        let citations: i64 = conn.query_row("SELECT COUNT(*) FROM citations", [], |r| r.get(0))?;
         Ok((papers as usize, citations as usize))
     }
 }

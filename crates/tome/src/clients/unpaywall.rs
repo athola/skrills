@@ -13,7 +13,10 @@ pub struct UnpaywallClient {
 impl UnpaywallClient {
     pub fn new() -> Self {
         Self {
-            http: reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap_or_else(|_| reqwest::Client::new()),
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
         }
     }
 

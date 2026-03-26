@@ -256,11 +256,7 @@ pub fn autofix_frontmatter(
             }
 
             if modified {
-                format!(
-                    "{}{}",
-                    generate_frontmatter(&name, &description),
-                    body
-                )
+                format!("{}{}", generate_frontmatter(&name, &description), body)
             } else {
                 content.to_string()
             }
@@ -421,23 +417,16 @@ mod tests {
             autofix_frontmatter(Path::new("/test/cool-skill.md"), content, &options).unwrap();
         assert!(result.modified);
         assert!(result.content.contains("## Instructions"));
-        assert!(result
-            .changes
-            .iter()
-            .any(|c| c.contains("Instructions")));
+        assert!(result.changes.iter().any(|c| c.contains("Instructions")));
     }
 
     #[test]
     fn test_autofix_normalizes_name_to_kebab() {
         let content = "---\nname: My Cool Skill\ndescription: a skill\n---\n\nLots of content here to avoid scaffolding. This body has enough words to pass the minimum threshold for body completeness checks.";
         let options = AutofixOptions::default();
-        let result =
-            autofix_frontmatter(Path::new("/test/skill.md"), content, &options).unwrap();
+        let result = autofix_frontmatter(Path::new("/test/skill.md"), content, &options).unwrap();
         assert!(result.modified);
         assert!(result.content.contains("name: my-cool-skill"));
-        assert!(result
-            .changes
-            .iter()
-            .any(|c| c.contains("kebab-case")));
+        assert!(result.changes.iter().any(|c| c.contains("kebab-case")));
     }
 }

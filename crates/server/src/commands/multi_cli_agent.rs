@@ -58,8 +58,14 @@ fn resolve_backends(preference: AgentBackend) -> Vec<(AgentBackend, &'static [&'
 /// Launch an agent via the Claude CLI.
 fn run_with_claude(bin: &str, agent_path: &str) -> Result<()> {
     // Validate agent path contains only safe characters to prevent prompt injection
-    if agent_path.chars().any(|c| matches!(c, '\n' | '\r' | '\0' | '`' | '$' | '{' | '}')) {
-        return Err(anyhow!("agent path contains invalid characters: {}", agent_path));
+    if agent_path
+        .chars()
+        .any(|c| matches!(c, '\n' | '\r' | '\0' | '`' | '$' | '{' | '}'))
+    {
+        return Err(anyhow!(
+            "agent path contains invalid characters: {}",
+            agent_path
+        ));
     }
     let prompt = format!(
         "Load agent spec at {} and execute its instructions",
@@ -82,8 +88,14 @@ fn run_with_claude(bin: &str, agent_path: &str) -> Result<()> {
 /// Launch an agent via the Codex CLI.
 fn run_with_codex(bin: &str, agent_path: &str) -> Result<()> {
     // Validate agent path contains only safe characters to prevent prompt injection
-    if agent_path.chars().any(|c| matches!(c, '\n' | '\r' | '\0' | '`' | '$' | '{' | '}')) {
-        return Err(anyhow!("agent path contains invalid characters: {}", agent_path));
+    if agent_path
+        .chars()
+        .any(|c| matches!(c, '\n' | '\r' | '\0' | '`' | '$' | '{' | '}'))
+    {
+        return Err(anyhow!(
+            "agent path contains invalid characters: {}",
+            agent_path
+        ));
     }
     let prompt = format!(
         "Load agent spec at {} and execute its instructions",

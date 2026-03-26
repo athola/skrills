@@ -66,7 +66,11 @@ pub fn read_rules(root: &Path) -> Result<Vec<Command>> {
         let name = path
             .strip_prefix(&dir)
             .ok()
-            .and_then(|rel| rel.with_extension("").to_str().map(|s| s.replace(std::path::MAIN_SEPARATOR, "-")))
+            .and_then(|rel| {
+                rel.with_extension("")
+                    .to_str()
+                    .map(|s| s.replace(std::path::MAIN_SEPARATOR, "-"))
+            })
             .unwrap_or_else(|| {
                 path.file_stem()
                     .and_then(|s| s.to_str())

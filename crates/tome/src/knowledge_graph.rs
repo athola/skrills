@@ -80,7 +80,9 @@ impl KnowledgeGraph {
     /// Opens or creates the knowledge graph database.
     pub fn open(db_path: &std::path::Path) -> TomeResult<Self> {
         let conn = Connection::open(db_path)?;
-        let kg = Self { conn: std::sync::Mutex::new(conn) };
+        let kg = Self {
+            conn: std::sync::Mutex::new(conn),
+        };
         kg.init_schema()?;
         Ok(kg)
     }
@@ -88,7 +90,9 @@ impl KnowledgeGraph {
     /// Opens an in-memory graph (for testing).
     pub fn open_in_memory() -> TomeResult<Self> {
         let conn = Connection::open_in_memory()?;
-        let kg = Self { conn: std::sync::Mutex::new(conn) };
+        let kg = Self {
+            conn: std::sync::Mutex::new(conn),
+        };
         kg.init_schema()?;
         Ok(kg)
     }
@@ -264,10 +268,8 @@ impl KnowledgeGraph {
     /// Count total nodes and edges.
     pub fn stats(&self) -> TomeResult<(usize, usize)> {
         let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
-        let nodes: i64 = conn
-            .query_row("SELECT COUNT(*) FROM nodes", [], |r| r.get(0))?;
-        let edges: i64 = conn
-            .query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))?;
+        let nodes: i64 = conn.query_row("SELECT COUNT(*) FROM nodes", [], |r| r.get(0))?;
+        let edges: i64 = conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))?;
         Ok((nodes as usize, edges as usize))
     }
 }
@@ -278,7 +280,9 @@ fn parse_node_kind(s: &str) -> TomeResult<NodeKind> {
         "paper" => Ok(NodeKind::Paper),
         "implementation" => Ok(NodeKind::Implementation),
         "discussion" => Ok(NodeKind::Discussion),
-        other => Err(TomeError::Other(format!("unknown NodeKind: {other}").into())),
+        other => Err(TomeError::Other(
+            format!("unknown NodeKind: {other}").into(),
+        )),
     }
 }
 
@@ -289,7 +293,9 @@ fn parse_edge_kind(s: &str) -> TomeResult<EdgeKind> {
         "contradicts" => Ok(EdgeKind::Contradicts),
         "extends" => Ok(EdgeKind::Extends),
         "analogous_to" => Ok(EdgeKind::AnalogousTo),
-        other => Err(TomeError::Other(format!("unknown EdgeKind: {other}").into())),
+        other => Err(TomeError::Other(
+            format!("unknown EdgeKind: {other}").into(),
+        )),
     }
 }
 
