@@ -10,6 +10,12 @@ pub struct HnAlgoliaClient {
     http: reqwest::Client,
 }
 
+impl Default for HnAlgoliaClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HnAlgoliaClient {
     pub fn new() -> Self {
         Self {
@@ -24,7 +30,7 @@ impl HnAlgoliaClient {
     pub async fn search(&self, query: &str, limit: usize) -> TomeResult<Vec<Discussion>> {
         let resp = self
             .http
-            .get(&format!("{BASE_URL}/search"))
+            .get(format!("{BASE_URL}/search"))
             .query(&[
                 ("query", query),
                 ("tags", "story"),
@@ -48,7 +54,7 @@ impl HnAlgoliaClient {
                 message: "response missing 'hits' array".to_string(),
             })?
             .iter()
-            .filter_map(|h| parse_hit(h))
+            .filter_map(parse_hit)
             .collect();
 
         Ok(discussions)

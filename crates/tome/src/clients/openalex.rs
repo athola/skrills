@@ -10,6 +10,12 @@ pub struct OpenAlexClient {
     http: reqwest::Client,
 }
 
+impl Default for OpenAlexClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OpenAlexClient {
     pub fn new() -> Self {
         Self {
@@ -29,7 +35,7 @@ impl OpenAlexClient {
         let limit = limit.min(200);
         let resp = self
             .http
-            .get(&format!("{BASE_URL}/works"))
+            .get(format!("{BASE_URL}/works"))
             .query(&[("search", query), ("per_page", &limit.to_string())])
             .send()
             .await?;
@@ -49,7 +55,7 @@ impl OpenAlexClient {
                 message: "response missing 'results' array".to_string(),
             })?
             .iter()
-            .filter_map(|w| parse_work(w))
+            .filter_map(parse_work)
             .collect();
 
         Ok(papers)

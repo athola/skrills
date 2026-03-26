@@ -10,6 +10,12 @@ pub struct SemanticScholarClient {
     http: reqwest::Client,
 }
 
+impl Default for SemanticScholarClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SemanticScholarClient {
     pub fn new() -> Self {
         Self {
@@ -30,7 +36,7 @@ impl SemanticScholarClient {
         let url = format!("{BASE_URL}/paper/search");
         let resp = self
             .http
-            .get(&url)
+            .get(url)
             .query(&[("query", query), ("limit", &limit.to_string())])
             .query(&[(
                 "fields",
@@ -54,7 +60,7 @@ impl SemanticScholarClient {
                 message: "response missing 'data' array".to_string(),
             })?
             .iter()
-            .filter_map(|p| parse_s2_paper(p))
+            .filter_map(parse_s2_paper)
             .collect();
 
         Ok(papers)

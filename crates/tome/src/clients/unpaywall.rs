@@ -10,6 +10,12 @@ pub struct UnpaywallClient {
     http: reqwest::Client,
 }
 
+impl Default for UnpaywallClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UnpaywallClient {
     pub fn new() -> Self {
         Self {
@@ -24,7 +30,7 @@ impl UnpaywallClient {
     pub async fn find_pdf_url(&self, doi: &str) -> TomeResult<Option<String>> {
         let resp = self
             .http
-            .get(&format!(
+            .get(format!(
                 "{BASE_URL}/{}",
                 url::form_urlencoded::byte_serialize(doi.as_bytes()).collect::<String>()
             ))

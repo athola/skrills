@@ -10,6 +10,12 @@ pub struct ArxivClient {
     http: reqwest::Client,
 }
 
+impl Default for ArxivClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ArxivClient {
     pub fn new() -> Self {
         Self {

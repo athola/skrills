@@ -280,9 +280,7 @@ fn parse_node_kind(s: &str) -> TomeResult<NodeKind> {
         "paper" => Ok(NodeKind::Paper),
         "implementation" => Ok(NodeKind::Implementation),
         "discussion" => Ok(NodeKind::Discussion),
-        other => Err(TomeError::Other(
-            format!("unknown NodeKind: {other}").into(),
-        )),
+        other => Err(TomeError::Other(format!("unknown NodeKind: {other}"))),
     }
 }
 
@@ -293,9 +291,7 @@ fn parse_edge_kind(s: &str) -> TomeResult<EdgeKind> {
         "contradicts" => Ok(EdgeKind::Contradicts),
         "extends" => Ok(EdgeKind::Extends),
         "analogous_to" => Ok(EdgeKind::AnalogousTo),
-        other => Err(TomeError::Other(
-            format!("unknown EdgeKind: {other}").into(),
-        )),
+        other => Err(TomeError::Other(format!("unknown EdgeKind: {other}"))),
     }
 }
 

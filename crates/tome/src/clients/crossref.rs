@@ -14,6 +14,12 @@ pub struct CrossRefClient {
     http: reqwest::Client,
 }
 
+impl Default for CrossRefClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CrossRefClient {
     pub fn new() -> Self {
         Self {
@@ -32,7 +38,7 @@ impl CrossRefClient {
     pub async fn resolve_doi(&self, doi: &str) -> TomeResult<DoiMetadata> {
         let resp = self
             .http
-            .get(&format!("{BASE_URL}/works/{}", encode_doi(doi)))
+            .get(format!("{BASE_URL}/works/{}", encode_doi(doi)))
             .send()
             .await?;
 

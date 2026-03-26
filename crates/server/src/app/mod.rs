@@ -841,11 +841,7 @@ fn run_sync_with_adapters(
     }
 
     // Delegate to sync_between which handles adapter creation for all platforms
-    Ok(skrills_sync::orchestrator::sync_between(
-        from.as_str(),
-        to.as_str(),
-        params,
-    )?)
+    skrills_sync::orchestrator::sync_between(from.as_str(), to.as_str(), params)
 }
 
 /// Main application entry point.
