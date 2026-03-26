@@ -128,11 +128,14 @@ skrills mirror --dry-run                 # Preview changes (hashes sources, repo
 
 ### serve
 
-Start skrills as an MCP server (used by Claude Code and Codex CLI):
+Start skrills as an MCP server (used by Claude Code, Codex CLI, Copilot CLI, and Cursor):
 
 ```bash
-skrills serve                             # Standard startup
-skrills serve --watch                     # Auto-reload on file changes (requires watch feature)
+skrills serve                             # MCP server over stdio
+skrills serve --http --open               # Browser dashboard with auto-launch
+skrills serve --http --port 3000          # HTTP on specific port
+skrills serve --http --tls-auto           # HTTPS with auto-generated cert
+skrills serve --watch                     # Auto-reload on file changes
 skrills serve --cache-ttl-ms 300000       # 5-minute cache
 skrills serve --skill-dir ~/.custom/skills  # Custom skill directory
 ```
@@ -141,11 +144,17 @@ skrills serve --skill-dir ~/.custom/skills  # Custom skill directory
 
 | Option | Purpose |
 |--------|---------|
+| `--http` | Enable HTTP transport with REST API and browser dashboard |
+| `--port <N>` | HTTP server port (default: auto-select, fallback up to 10 ports) |
+| `--open` | Auto-launch the browser dashboard after starting |
+| `--tls-auto` | Generate self-signed TLS cert for HTTPS in development |
 | `--skill-dir <DIR>` | Additional skill directory to include |
 | `--cache-ttl-ms <N>` | Discovery cache TTL in milliseconds |
 | `--watch` | Enable live filesystem invalidation |
 
-The MCP server exposes validation, analysis, sync, and recommendation tools directly to your AI assistant.
+The MCP server exposes 27 tools for validation, analysis, sync, intelligence, and research directly to your AI assistant. The HTTP mode serves a browser dashboard with skills explorer, metrics, and activity feed.
+
+Skrills also ships a self-contained HTML portal (`skrills-portal.html`) that works offline without a running server. It includes a skills browser, validator with autofix, token analyzer, cross-CLI converter, and full CLI/MCP reference. Open it directly in any browser or upload it into AI application portals.
 
 ## Working with Subagents
 

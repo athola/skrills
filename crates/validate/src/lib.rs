@@ -37,7 +37,7 @@ pub mod common;
 pub mod copilot;
 pub mod frontmatter;
 
-pub use autofix::{autofix_frontmatter, AutofixOptions, AutofixResult};
+pub use autofix::{autofix_frontmatter, scaffold_body, to_kebab_case, AutofixOptions, AutofixResult};
 pub use common::{Severity, ValidationIssue, ValidationResult, ValidationTarget};
 pub use frontmatter::{
     generate_frontmatter, has_frontmatter, parse_frontmatter, ParsedSkill, SkillFrontmatter,
