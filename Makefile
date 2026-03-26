@@ -480,7 +480,10 @@ clean-demo:
 
 ci: fmt lint test
 
-precommit: fmt-check lint lint-md test test-install
+verify-publish:
+	@bash scripts/verify_publish_order.sh
+
+precommit: fmt-check lint lint-md test test-install verify-publish
 
 hooks:
 	@git config core.hooksPath githooks

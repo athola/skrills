@@ -20,4 +20,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 step "cargo test --workspace --all-features --quiet"
 cargo test --workspace --all-features --quiet
 
+step "scripts/verify_publish_order.sh"
+bash scripts/verify_publish_order.sh
+
 step "pre-commit checks completed"
