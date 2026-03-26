@@ -89,6 +89,9 @@ pub struct WriteReport {
     pub skipped: Vec<SkipReason>,
     /// Non-fatal warnings
     pub warnings: Vec<String>,
+    /// Number of duplicate items dropped before sync
+    #[serde(default)]
+    pub duplicates: usize,
 }
 
 /// Complete sync report across all artifact types.
@@ -141,43 +144,40 @@ impl SyncReport {
 
     /// Generates a formatted summary for display.
     pub fn format_summary(&self, source: &str, target: &str) -> String {
+        fn line(label: &str, r: &WriteReport) -> String {
+            let mut s = format!(
+                "  {label:<14}{} synced, {} skipped",
+                r.written,
+                r.skipped.len()
+            );
+            if r.duplicates > 0 {
+                s.push_str(&format!(", {} duplicates dropped", r.duplicates));
+            }
+            s.push('\n');
+            s
+        }
+
         let mut out = String::new();
         out.push_str(&format!("Sync Complete: {} → {}\n", source, target));
-        out.push_str(&format!(
-            "  Skills:       {} synced, {} skipped\n",
-            self.skills.written,
-            self.skills.skipped.len()
-        ));
-        out.push_str(&format!(
-            "  Commands:     {} synced, {} skipped\n",
-            self.commands.written,
-            self.commands.skipped.len()
-        ));
-        out.push_str(&format!(
-            "  MCP Servers:  {} synced, {} skipped\n",
-            self.mcp_servers.written,
-            self.mcp_servers.skipped.len()
-        ));
-        out.push_str(&format!(
-            "  Preferences:  {} synced, {} skipped\n",
-            self.preferences.written,
-            self.preferences.skipped.len()
-        ));
-        out.push_str(&format!(
-            "  Agents:       {} synced, {} skipped\n",
-            self.agents.written,
-            self.agents.skipped.len()
-        ));
-        out.push_str(&format!(
-            "  Hooks:        {} synced, {} skipped\n",
-            self.hooks.written,
-            self.hooks.skipped.len()
-        ));
-        out.push_str(&format!(
-            "  Instructions: {} synced, {} skipped\n",
-            self.instructions.written,
-            self.instructions.skipped.len()
-        ));
+        out.push_str(&line("Skills:", &self.skills));
+        out.push_str(&line("Commands:", &self.commands));
+        out.push_str(&line("MCP Servers:", &self.mcp_servers));
+        out.push_str(&line("Preferences:", &self.preferences));
+        out.push_str(&line("Agents:", &self.agents));
+        out.push_str(&line("Hooks:", &self.hooks));
+        out.push_str(&line("Instructions:", &self.instructions));
+
+        let total_dups = self.skills.duplicates
+            + self.commands.duplicates
+            + self.agents.duplicates
+            + self.hooks.duplicates
+            + self.instructions.duplicates;
+        if total_dups > 0 {
+            out.push_str(&format!(
+                "\n  ⚠ {} duplicate name(s) detected — first occurrence kept, others dropped.\n    Run with RUST_LOG=warn for details.\n",
+                total_dups
+            ));
+        }
         out
     }
 }
@@ -395,6 +395,7 @@ mod tests {
                     item: "x".to_string(),
                 }],
                 warnings: vec!["Warning 1".to_string()],
+                duplicates: 0,
             };
 
             assert_eq!(report.written, 5);
