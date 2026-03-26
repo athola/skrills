@@ -4,11 +4,12 @@
 //! near-identical to Claude Code commands.
 
 use super::paths::commands_dir;
-use super::utils::sanitize_name;
+use super::utils::{parse_frontmatter, render_frontmatter, sanitize_name};
 use crate::adapters::utils::hash_content;
 use crate::common::{Command, ContentFormat};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
@@ -84,9 +85,25 @@ pub fn write_commands(root: &Path, commands: &[Command]) -> Result<WriteReport> 
         let name = sanitize_name(&cmd.name);
         let path = dir.join(format!("{}.md", name));
 
+        // Translate Claude frontmatter to Cursor format:
+        // Keep only `description`; strip Claude-specific fields like
+        // `allowed-tools`, `disable-model-invocation`, etc.
+        let content_str = String::from_utf8_lossy(&cmd.content);
+        let (fields, body) = parse_frontmatter(&content_str);
+        let cursor_content = if fields.is_empty() {
+            content_str.into_owned()
+        } else {
+            let mut cursor_fields = HashMap::new();
+            if let Some(desc) = fields.get("description") {
+                cursor_fields.insert("description".to_string(), desc.clone());
+            }
+            render_frontmatter(&cursor_fields, body)
+        };
+        let cursor_bytes = cursor_content.as_bytes();
+
         if path.exists() {
             let existing = fs::read(&path)?;
-            if hash_content(&existing) == hash_content(&cmd.content) {
+            if hash_content(&existing) == hash_content(cursor_bytes) {
                 report.skipped.push(SkipReason::Unchanged {
                     item: cmd.name.clone(),
                 });
@@ -95,7 +112,7 @@ pub fn write_commands(root: &Path, commands: &[Command]) -> Result<WriteReport> 
         }
 
         debug!(name = %name, path = ?path, "Writing Cursor command");
-        fs::write(&path, &cmd.content)?;
+        fs::write(&path, cursor_bytes)?;
         report.written += 1;
     }
 
