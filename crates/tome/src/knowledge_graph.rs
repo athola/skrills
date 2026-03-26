@@ -73,14 +73,14 @@ pub struct Edge {
 
 /// SQLite-backed knowledge graph.
 pub struct KnowledgeGraph {
-    conn: Connection,
+    conn: std::sync::Mutex<Connection>,
 }
 
 impl KnowledgeGraph {
     /// Opens or creates the knowledge graph database.
     pub fn open(db_path: &std::path::Path) -> TomeResult<Self> {
         let conn = Connection::open(db_path)?;
-        let kg = Self { conn };
+        let kg = Self { conn: std::sync::Mutex::new(conn) };
         kg.init_schema()?;
         Ok(kg)
     }
@@ -88,13 +88,14 @@ impl KnowledgeGraph {
     /// Opens an in-memory graph (for testing).
     pub fn open_in_memory() -> TomeResult<Self> {
         let conn = Connection::open_in_memory()?;
-        let kg = Self { conn };
+        let kg = Self { conn: std::sync::Mutex::new(conn) };
         kg.init_schema()?;
         Ok(kg)
     }
 
     fn init_schema(&self) -> TomeResult<()> {
-        self.conn.execute_batch(
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        conn.execute_batch(
             "PRAGMA foreign_keys = ON;
 
             CREATE TABLE IF NOT EXISTS nodes (
@@ -133,7 +134,8 @@ impl KnowledgeGraph {
         label: &str,
         metadata_json: Option<&str>,
     ) -> TomeResult<()> {
-        self.conn.execute(
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        conn.execute(
             "INSERT OR REPLACE INTO nodes (id, kind, label, metadata_json) VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![id, kind.as_str(), label, metadata_json],
         )?;
@@ -149,7 +151,8 @@ impl KnowledgeGraph {
         weight: f64,
         metadata_json: Option<&str>,
     ) -> TomeResult<()> {
-        self.conn.execute(
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        conn.execute(
             "INSERT OR REPLACE INTO edges (source_id, target_id, kind, weight, metadata_json) VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![source_id, target_id, kind.as_str(), weight, metadata_json],
         )?;
@@ -158,13 +161,15 @@ impl KnowledgeGraph {
 
     /// Get a node by ID.
     pub fn get_node(&self, id: &str) -> TomeResult<Option<Node>> {
-        let result = self.conn.query_row(
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        let result = conn.query_row(
             "SELECT id, kind, label, metadata_json, created_at FROM nodes WHERE id = ?1",
             [id],
             |row| {
                 Ok(Node {
                     id: row.get(0)?,
-                    kind: parse_node_kind(row.get::<_, String>(1)?.as_str()),
+                    kind: parse_node_kind(row.get::<_, String>(1)?.as_str())
+                        .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
                     label: row.get(2)?,
                     metadata_json: row.get(3)?,
                     created_at: row.get(4)?,
@@ -180,16 +185,18 @@ impl KnowledgeGraph {
 
     /// Query: "what do I know about X?" -- find nodes matching a label pattern.
     pub fn search_nodes(&self, query: &str, kind: Option<NodeKind>) -> TomeResult<Vec<Node>> {
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
         let pattern = format!("%{query}%");
         let sql = match kind {
             Some(k) => {
-                let mut stmt = self.conn.prepare(
+                let mut stmt = conn.prepare(
                     "SELECT id, kind, label, metadata_json, created_at FROM nodes WHERE label LIKE ?1 AND kind = ?2 ORDER BY created_at DESC"
                 )?;
                 let rows = stmt.query_map(rusqlite::params![pattern, k.as_str()], |row| {
                     Ok(Node {
                         id: row.get(0)?,
-                        kind: parse_node_kind(row.get::<_, String>(1)?.as_str()),
+                        kind: parse_node_kind(row.get::<_, String>(1)?.as_str())
+                        .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
                         label: row.get(2)?,
                         metadata_json: row.get(3)?,
                         created_at: row.get(4)?,
@@ -199,11 +206,12 @@ impl KnowledgeGraph {
             }
             None => "SELECT id, kind, label, metadata_json, created_at FROM nodes WHERE label LIKE ?1 ORDER BY created_at DESC",
         };
-        let mut stmt = self.conn.prepare(sql)?;
+        let mut stmt = conn.prepare(sql)?;
         let rows = stmt.query_map([&pattern], |row| {
             Ok(Node {
                 id: row.get(0)?,
-                kind: parse_node_kind(row.get::<_, String>(1)?.as_str()),
+                kind: parse_node_kind(row.get::<_, String>(1)?.as_str())
+                    .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
                 label: row.get(2)?,
                 metadata_json: row.get(3)?,
                 created_at: row.get(4)?,
@@ -215,14 +223,16 @@ impl KnowledgeGraph {
 
     /// Find all edges from a node (outgoing connections).
     pub fn edges_from(&self, node_id: &str) -> TomeResult<Vec<Edge>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        let mut stmt = conn.prepare(
             "SELECT source_id, target_id, kind, weight, metadata_json FROM edges WHERE source_id = ?1"
         )?;
         let rows = stmt.query_map([node_id], |row| {
             Ok(Edge {
                 source_id: row.get(0)?,
                 target_id: row.get(1)?,
-                kind: parse_edge_kind(row.get::<_, String>(2)?.as_str()),
+                kind: parse_edge_kind(row.get::<_, String>(2)?.as_str())
+                    .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
                 weight: row.get(3)?,
                 metadata_json: row.get(4)?,
             })
@@ -233,14 +243,16 @@ impl KnowledgeGraph {
 
     /// Find all edges to a node (incoming connections).
     pub fn edges_to(&self, node_id: &str) -> TomeResult<Vec<Edge>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        let mut stmt = conn.prepare(
             "SELECT source_id, target_id, kind, weight, metadata_json FROM edges WHERE target_id = ?1"
         )?;
         let rows = stmt.query_map([node_id], |row| {
             Ok(Edge {
                 source_id: row.get(0)?,
                 target_id: row.get(1)?,
-                kind: parse_edge_kind(row.get::<_, String>(2)?.as_str()),
+                kind: parse_edge_kind(row.get::<_, String>(2)?.as_str())
+                    .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
                 weight: row.get(3)?,
                 metadata_json: row.get(4)?,
             })
@@ -251,40 +263,33 @@ impl KnowledgeGraph {
 
     /// Count total nodes and edges.
     pub fn stats(&self) -> TomeResult<(usize, usize)> {
-        let nodes: i64 = self
-            .conn
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        let nodes: i64 = conn
             .query_row("SELECT COUNT(*) FROM nodes", [], |r| r.get(0))?;
-        let edges: i64 = self
-            .conn
+        let edges: i64 = conn
             .query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))?;
         Ok((nodes as usize, edges as usize))
     }
 }
 
-fn parse_node_kind(s: &str) -> NodeKind {
+fn parse_node_kind(s: &str) -> TomeResult<NodeKind> {
     match s {
-        "topic" => NodeKind::Topic,
-        "paper" => NodeKind::Paper,
-        "implementation" => NodeKind::Implementation,
-        "discussion" => NodeKind::Discussion,
-        other => {
-            tracing::warn!(value = other, "unknown NodeKind, defaulting to Topic");
-            NodeKind::Topic
-        }
+        "topic" => Ok(NodeKind::Topic),
+        "paper" => Ok(NodeKind::Paper),
+        "implementation" => Ok(NodeKind::Implementation),
+        "discussion" => Ok(NodeKind::Discussion),
+        other => Err(TomeError::Other(format!("unknown NodeKind: {other}").into())),
     }
 }
 
-fn parse_edge_kind(s: &str) -> EdgeKind {
+fn parse_edge_kind(s: &str) -> TomeResult<EdgeKind> {
     match s {
-        "cites" => EdgeKind::Cites,
-        "implements" => EdgeKind::Implements,
-        "contradicts" => EdgeKind::Contradicts,
-        "extends" => EdgeKind::Extends,
-        "analogous_to" => EdgeKind::AnalogousTo,
-        other => {
-            tracing::warn!(value = other, "unknown EdgeKind, defaulting to Extends");
-            EdgeKind::Extends
-        }
+        "cites" => Ok(EdgeKind::Cites),
+        "implements" => Ok(EdgeKind::Implements),
+        "contradicts" => Ok(EdgeKind::Contradicts),
+        "extends" => Ok(EdgeKind::Extends),
+        "analogous_to" => Ok(EdgeKind::AnalogousTo),
+        other => Err(TomeError::Other(format!("unknown EdgeKind: {other}").into())),
     }
 }
 

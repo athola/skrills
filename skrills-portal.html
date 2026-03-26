@@ -1595,7 +1595,7 @@ Skill instructions..."></textarea>
     overlay.innerHTML =
       '<div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);padding:1.5rem;max-width:500px;width:90%;">' +
         '<div style="font-weight:600;font-size:0.9rem;color:var(--text-primary);margin-bottom:0.75rem;">Open this link in your browser</div>' +
-        '<input id="link-overlay-url" type="text" value="' + url.replace(/"/g, '&quot;') + '" readonly style="width:100%;background:var(--bg-card);color:var(--teal);border:1px solid var(--border);border-radius:6px;padding:0.5rem 0.75rem;font-family:var(--mono);font-size:0.8rem;margin-bottom:0.75rem;">' +
+        '<input id="link-overlay-url" type="text" value="' + esc(url) + '" readonly style="width:100%;background:var(--bg-card);color:var(--teal);border:1px solid var(--border);border-radius:6px;padding:0.5rem 0.75rem;font-family:var(--mono);font-size:0.8rem;margin-bottom:0.75rem;">' +
         '<div style="display:flex;gap:0.5rem;">' +
           '<button id="link-overlay-copy" class="btn" style="flex:1;">Copy URL</button>' +
           '<button id="link-overlay-close" class="btn btn-secondary" style="flex:1;">Close</button>' +
@@ -1883,7 +1883,7 @@ Skill instructions..."></textarea>
       card.innerHTML =
         '<div class="skill-card-header">' +
           '<span class="skill-card-name">' + esc(skill.name) + '</span>' +
-          '<span class="skill-card-source source-' + (skill.source||skill.plugin) + '">' + esc(skill.source||skill.plugin||'') + '</span>' +
+          '<span class="skill-card-source source-' + cssClass(skill.source||skill.plugin) + '">' + esc(skill.source||skill.plugin||'') + '</span>' +
         '</div>' +
         '<div class="skill-card-desc">' + esc(skill.description || '') + '</div>';
       card.addEventListener('click', () => {
@@ -2361,7 +2361,7 @@ Skill instructions..."></textarea>
       html += '<div style="background: var(--bg-card); border-left: 3px solid ' + color + '; border-radius: 6px; padding: 0.5rem 0.75rem; margin-bottom: 0.375rem;">' +
         '<div style="display: flex; justify-content: space-between; align-items: center;">' +
           '<strong style="font-size: 0.8125rem;">' + esc(r.name) + '</strong>' +
-          '<span class="skill-card-source source-' + r.source + '">' + esc(r.source) + '</span>' +
+          '<span class="skill-card-source source-' + cssClass(r.source) + '">' + esc(r.source) + '</span>' +
         '</div>';
       if (r.allPass) {
         html += '<div style="font-size: 0.75rem; color: var(--success);">All 4 targets pass</div>';
@@ -2422,7 +2422,7 @@ Skill instructions..."></textarea>
           '<strong style="font-size: 0.8125rem;">' + esc(a.name) + '</strong>' +
           '<span style="font-size: 0.75rem; font-weight: 600; color: var(--' + catClass + ');">' + a.tokens.toLocaleString() + ' tokens (' + a.cat + ')</span>' +
         '</div>' +
-        '<div class="token-bar" style="height: 16px; margin: 0;"><div class="token-fill ' + a.cat.toLowerCase().replace(' ', '') + '" style="width: ' + pct + '%; font-size: 0;">&nbsp;</div></div>' +
+        '<div class="token-bar" style="height: 16px; margin: 0;"><div class="token-fill ' + cssClass(a.cat.toLowerCase()) + '" style="width: ' + pct + '%; font-size: 0;">&nbsp;</div></div>' +
       '</div>';
     });
 
@@ -2740,6 +2740,9 @@ Skill instructions..."></textarea>
       });
     }
   }
+
+  // ── CSS class sanitizer ────────────────────
+  function cssClass(s) { return String(s).replace(/[^a-z0-9_-]/gi, '-'); }
 
   // ── HTML escape ────────────────────────────
   function esc(s) {

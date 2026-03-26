@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 /// Cache for API responses and downloaded PDFs.
 pub struct ResearchCache {
-    conn: Connection,
+    conn: std::sync::Mutex<Connection>,
     pdf_dir: PathBuf,
 }
 
@@ -26,7 +26,7 @@ impl ResearchCache {
         std::fs::create_dir_all(&pdf_dir)?;
 
         let conn = Connection::open(&db_path)?;
-        let cache = Self { conn, pdf_dir };
+        let cache = Self { conn: std::sync::Mutex::new(conn), pdf_dir };
         cache.init_schema()?;
         Ok(cache)
     }
@@ -35,13 +35,14 @@ impl ResearchCache {
     pub fn open_at(db_path: &std::path::Path, pdf_dir: PathBuf) -> TomeResult<Self> {
         std::fs::create_dir_all(&pdf_dir)?;
         let conn = Connection::open(db_path)?;
-        let cache = Self { conn, pdf_dir };
+        let cache = Self { conn: std::sync::Mutex::new(conn), pdf_dir };
         cache.init_schema()?;
         Ok(cache)
     }
 
     fn init_schema(&self) -> TomeResult<()> {
-        self.conn.execute_batch(
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS api_cache (
                 cache_key TEXT PRIMARY KEY,
                 api TEXT NOT NULL,
@@ -75,7 +76,8 @@ impl ResearchCache {
 
     /// Get a cached API response by key.
     pub fn get(&self, cache_key: &str) -> TomeResult<Option<String>> {
-        let result = self.conn.query_row(
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        let result = conn.query_row(
             "SELECT response_json FROM api_cache
              WHERE cache_key = ?1
              AND (expires_at IS NULL OR expires_at > datetime('now'))",
@@ -98,16 +100,17 @@ impl ResearchCache {
         response_json: &str,
         ttl_hours: Option<u32>,
     ) -> TomeResult<()> {
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(h) = ttl_hours {
             // Compute expiry in Rust and pass as a bound parameter to avoid SQL interpolation.
             let expires_at = format!("+{h} hours");
-            self.conn.execute(
+            conn.execute(
                 "INSERT OR REPLACE INTO api_cache (cache_key, api, query, response_json, expires_at)
                  VALUES (?1, ?2, ?3, ?4, datetime('now', ?5))",
                 rusqlite::params![cache_key, api, query, response_json, expires_at],
             )?;
         } else {
-            self.conn.execute(
+            conn.execute(
                 "INSERT OR REPLACE INTO api_cache (cache_key, api, query, response_json)
                  VALUES (?1, ?2, ?3, ?4)",
                 rusqlite::params![cache_key, api, query, response_json],

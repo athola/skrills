@@ -86,7 +86,7 @@ pub fn write_commands(root: &Path, commands: &[Command]) -> Result<WriteReport> 
 
         if path.exists() {
             let existing = fs::read(&path)?;
-            if hash_content(&existing) == cmd.hash {
+            if hash_content(&existing) == hash_content(&cmd.content) {
                 report.skipped.push(SkipReason::Unchanged {
                     item: cmd.name.clone(),
                 });

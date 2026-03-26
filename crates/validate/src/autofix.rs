@@ -214,14 +214,14 @@ pub fn autofix_frontmatter(
             };
 
             // Truncate if needed
-            let name = if name.len() > MAX_NAME_LENGTH {
+            let name = if name.chars().count() > MAX_NAME_LENGTH {
                 changes.push(format!(
                     "Truncated name from {} to {} chars",
-                    name.len(),
+                    name.chars().count(),
                     MAX_NAME_LENGTH
                 ));
                 modified = true;
-                name[..MAX_NAME_LENGTH].to_string()
+                name.chars().take(MAX_NAME_LENGTH).collect::<String>()
             } else {
                 name
             };

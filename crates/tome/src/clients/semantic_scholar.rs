@@ -13,12 +13,20 @@ pub struct SemanticScholarClient {
 impl SemanticScholarClient {
     pub fn new() -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .user_agent("skrills-tome/0.1 (https://github.com/athola/skrills)")
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "SemanticScholar client builder failed, using default");
+                    reqwest::Client::new()
+                }),
         }
     }
 
     /// Search for papers by query string.
     pub async fn search(&self, query: &str, limit: usize) -> TomeResult<Vec<Paper>> {
+        let limit = limit.min(100);
         let url = format!("{BASE_URL}/paper/search");
         let resp = self
             .http

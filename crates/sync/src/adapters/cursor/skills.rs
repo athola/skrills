@@ -106,18 +106,24 @@ pub fn write_skills(root: &Path, skills: &[Command]) -> Result<WriteReport> {
         let body = strip_frontmatter(&content_str);
         let skill_path = skill_dir.join("SKILL.md");
 
-        if skill_path.exists() {
+        let skill_unchanged = if skill_path.exists() {
             let existing = fs::read(&skill_path)?;
-            if hash_content(&existing) == hash_content(body.as_bytes()) {
-                report.skipped.push(SkipReason::Unchanged {
-                    item: skill.name.clone(),
-                });
-                continue;
-            }
+            hash_content(&existing) == hash_content(body.as_bytes())
+        } else {
+            false
+        };
+
+        if skill_unchanged && skill.modules.is_empty() {
+            report.skipped.push(SkipReason::Unchanged {
+                item: skill.name.clone(),
+            });
+            continue;
         }
 
-        debug!(name = %name, path = ?skill_path, "Writing Cursor skill");
-        fs::write(&skill_path, body.as_bytes())?;
+        if !skill_unchanged {
+            debug!(name = %name, path = ?skill_path, "Writing Cursor skill");
+            fs::write(&skill_path, body.as_bytes())?;
+        }
 
         // Write companion/module files (with path containment check)
         for module in &skill.modules {

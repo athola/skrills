@@ -64,10 +64,15 @@ pub fn read_rules(root: &Path) -> Result<Vec<Command>> {
         }
 
         let name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unknown")
-            .to_string();
+            .strip_prefix(&dir)
+            .ok()
+            .and_then(|rel| rel.with_extension("").to_str().map(|s| s.replace(std::path::MAIN_SEPARATOR, "-")))
+            .unwrap_or_else(|| {
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string()
+            });
 
         let content = fs::read(path)?;
         let hash = hash_content(&content);

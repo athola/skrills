@@ -349,6 +349,14 @@ where
             .merge(static_router)
             .fallback_service(http_service)
             .layer(cors_layer)
+            .layer(axum::middleware::from_fn(|req: axum::extract::Request, next: axum::middleware::Next| async move {
+                let mut response = next.run(req).await;
+                response.headers_mut().insert(
+                    axum::http::header::CONTENT_SECURITY_POLICY,
+                    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'".parse().unwrap(),
+                );
+                response
+            }))
             .layer(axum::middleware::from_fn(move |req, next| {
                 let token = token.clone();
                 auth_middleware(token, req, next)
@@ -364,6 +372,14 @@ where
             .merge(static_router)
             .fallback_service(http_service)
             .layer(cors_layer)
+            .layer(axum::middleware::from_fn(|req: axum::extract::Request, next: axum::middleware::Next| async move {
+                let mut response = next.run(req).await;
+                response.headers_mut().insert(
+                    axum::http::header::CONTENT_SECURITY_POLICY,
+                    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'".parse().unwrap(),
+                );
+                response
+            }))
             .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
             .layer(SetRequestIdLayer::new(request_id_header, MakeRequestUuid))
     };

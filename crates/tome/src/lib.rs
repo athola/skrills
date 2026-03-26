@@ -16,7 +16,6 @@ pub mod clients;
 pub mod error;
 pub mod knowledge_graph;
 pub mod models;
-pub mod rate_limit;
 pub mod triz;
 
 pub use error::{TomeError, TomeResult};

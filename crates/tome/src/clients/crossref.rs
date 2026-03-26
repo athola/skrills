@@ -19,6 +19,7 @@ impl CrossRefClient {
         Self {
             http: reqwest::Client::builder()
                 .user_agent("skrills-tome/0.1 (https://github.com/athola/skrills; mailto:research@skrills.dev)")
+                .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .unwrap_or_else(|e| {
                     tracing::warn!(error = %e, "CrossRef client builder failed, falling back without User-Agent");

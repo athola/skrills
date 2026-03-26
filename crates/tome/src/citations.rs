@@ -15,27 +15,28 @@ pub struct Citation {
 
 /// Persistent citation tracker.
 pub struct CitationTracker {
-    conn: Connection,
+    conn: std::sync::Mutex<Connection>,
 }
 
 impl CitationTracker {
     /// Opens or creates the citation database.
     pub fn open(db_path: &std::path::Path) -> TomeResult<Self> {
         let conn = Connection::open(db_path)?;
-        let ct = Self { conn };
+        let ct = Self { conn: std::sync::Mutex::new(conn) };
         ct.init_schema()?;
         Ok(ct)
     }
 
     pub fn open_in_memory() -> TomeResult<Self> {
         let conn = Connection::open_in_memory()?;
-        let ct = Self { conn };
+        let ct = Self { conn: std::sync::Mutex::new(conn) };
         ct.init_schema()?;
         Ok(ct)
     }
 
     fn init_schema(&self) -> TomeResult<()> {
-        self.conn.execute_batch(
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        conn.execute_batch(
             "PRAGMA foreign_keys = ON;
 
             CREATE TABLE IF NOT EXISTS tracked_papers (
@@ -65,7 +66,8 @@ impl CitationTracker {
 
     /// Track a paper for citation monitoring.
     pub fn track_paper(&self, paper: &Paper) -> TomeResult<()> {
-        self.conn.execute(
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        conn.execute(
             "INSERT OR REPLACE INTO tracked_papers (id, title, doi, year, citation_count)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![
@@ -86,7 +88,8 @@ impl CitationTracker {
         cited_id: &str,
         context: Option<&str>,
     ) -> TomeResult<()> {
-        self.conn.execute(
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        conn.execute(
             "INSERT OR IGNORE INTO citations (citing_id, cited_id, context) VALUES (?1, ?2, ?3)",
             rusqlite::params![citing_id, cited_id, context],
         )?;
@@ -95,8 +98,8 @@ impl CitationTracker {
 
     /// Forward citations: "who cited this paper?"
     pub fn forward_citations(&self, paper_id: &str) -> TomeResult<Vec<Citation>> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        let mut stmt = conn
             .prepare("SELECT citing_id, cited_id, context FROM citations WHERE cited_id = ?1")?;
         let rows = stmt.query_map([paper_id], |row| {
             Ok(Citation {
@@ -111,8 +114,8 @@ impl CitationTracker {
 
     /// Backward citations: "what does this paper cite?"
     pub fn backward_citations(&self, paper_id: &str) -> TomeResult<Vec<Citation>> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        let mut stmt = conn
             .prepare("SELECT citing_id, cited_id, context FROM citations WHERE citing_id = ?1")?;
         let rows = stmt.query_map([paper_id], |row| {
             Ok(Citation {
@@ -127,7 +130,8 @@ impl CitationTracker {
 
     /// Get all tracked papers.
     pub fn tracked_papers(&self) -> TomeResult<Vec<(String, String, Option<u32>)>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        let mut stmt = conn.prepare(
             "SELECT id, title, citation_count FROM tracked_papers ORDER BY citation_count DESC",
         )?;
         let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
@@ -137,11 +141,10 @@ impl CitationTracker {
 
     /// Count tracked papers and citation links.
     pub fn stats(&self) -> TomeResult<(usize, usize)> {
-        let papers: i64 = self
-            .conn
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        let papers: i64 = conn
             .query_row("SELECT COUNT(*) FROM tracked_papers", [], |r| r.get(0))?;
-        let citations: i64 = self
-            .conn
+        let citations: i64 = conn
             .query_row("SELECT COUNT(*) FROM citations", [], |r| r.get(0))?;
         Ok((papers as usize, citations as usize))
     }

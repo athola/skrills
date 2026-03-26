@@ -15,6 +15,7 @@ impl OpenAlexClient {
         Self {
             http: reqwest::Client::builder()
                 .user_agent("skrills-tome/0.1 (https://github.com/athola/skrills)")
+                .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .unwrap_or_else(|e| {
                     tracing::warn!(error = %e, "OpenAlex client builder failed, falling back without User-Agent");
@@ -25,6 +26,7 @@ impl OpenAlexClient {
 
     /// Search for works (papers) via the OpenAlex API.
     pub async fn search(&self, query: &str, limit: usize) -> TomeResult<Vec<Paper>> {
+        let limit = limit.min(200);
         let resp = self
             .http
             .get(&format!("{BASE_URL}/works"))

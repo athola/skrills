@@ -13,17 +13,39 @@ pub struct ArxivClient {
 impl ArxivClient {
     pub fn new() -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .user_agent("skrills-tome/0.1 (https://github.com/athola/skrills)")
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "ArXiv client builder failed, using default");
+                    reqwest::Client::new()
+                }),
         }
     }
 
     /// Search arXiv for papers. Returns parsed Atom XML results.
     pub async fn search(&self, query: &str, limit: usize) -> TomeResult<Vec<Paper>> {
+        let limit = limit.min(100);
+        // Sanitize query: strip arXiv field-prefix syntax to prevent injection
+        let sanitized = query
+            .split_whitespace()
+            .map(|word| {
+                // Strip field prefixes like "ti:", "au:", "abs:", "all:", etc.
+                if let Some((_prefix, rest)) = word.split_once(':') {
+                    rest
+                } else {
+                    word
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
         let resp = self
             .http
             .get(BASE_URL)
             .query(&[
-                ("search_query", &format!("all:{query}")),
+                ("search_query", &format!("all:{sanitized}")),
                 ("max_results", &limit.to_string()),
                 ("sortBy", &"relevance".to_string()),
             ])

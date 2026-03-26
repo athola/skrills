@@ -7,6 +7,7 @@
 - **NEW: Cursor Quickstart Tutorial**: Getting-started guide for Cursor IDE users (`docs/tutorials/cursor-quickstart.md`).
 - **CLI**: `--open` flag now enforces `--http` as a prerequisite via clap `requires`. All sync commands updated to include Cursor as a valid source/target.
 - **Testing**: Extended Cursor adapter test coverage; added `parse_serve_open_without_http_is_error` CLI test.
+- **Known behavior**: First sync to Cursor will rewrite all empty-body agent files due to frontmatter format normalization (trailing `\n---\n` vs `\n---`). This is a one-time operation with no data loss.
 - **Internal**: Bumped all workspace crate versions from 0.7.1 to 0.7.2.
 
 ## 0.7.1 - 2026-03-21
