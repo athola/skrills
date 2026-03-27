@@ -5,7 +5,6 @@
 - **Fix: Cursor Sync Reliability**: Hardened bidirectional sync for Cursor adapter across agents, commands, rules, and skills.
 - **NEW: Shorthand Sync Commands**: `/sync-from-cursor`, `/sync-from-claude`, `/sync-from-copilot` slash commands.
 - **NEW: `tome` Research Crate**: Academic paper search, citation extraction, knowledge graph, and PDF retrieval.
-- **NEW: Cursor Quickstart Tutorial**: Getting-started guide for Cursor IDE users.
 - **CLI**: `--open` enforces `--http`; all sync commands accept Cursor as source/target.
 - **Testing**: Extended Cursor adapter and CLI test coverage.
 

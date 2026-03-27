@@ -8,8 +8,7 @@ This directory contains tutorial documentation with accompanying GIF demos.
 docs/tutorials/
 ├── README.md              # This file
 ├── quickstart.md          # Getting started tutorial
-├── mcp.md                 # MCP server setup tutorial
-└── cursor-quickstart.md   # Cursor IDE developer quickstart
+└── mcp.md                 # MCP server setup tutorial
 
 assets/
 ├── tapes/              # VHS tape files for terminal recordings

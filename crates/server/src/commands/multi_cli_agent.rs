@@ -13,6 +13,32 @@ use std::process::Command;
 const CLAUDE_BINS: &[&str] = &["claude"];
 const CODEX_BINS: &[&str] = &["codex"];
 
+/// A validated agent path that is safe for embedding in LLM prompts.
+///
+/// Rejects characters that could enable prompt injection when the path
+/// is interpolated into a prompt string.
+struct AgentPath(String);
+
+impl AgentPath {
+    /// Create a new `AgentPath`, validating that it contains no prompt-injection characters.
+    fn new(path: String) -> Result<Self> {
+        if path
+            .chars()
+            .any(|c| matches!(c, '\n' | '\r' | '\0' | '`' | '$' | '{' | '}'))
+        {
+            return Err(anyhow!(
+                "agent path contains invalid characters: {}",
+                path
+            ));
+        }
+        Ok(Self(path))
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Check whether a CLI binary is available on `$PATH`.
 fn is_available(bin: &str) -> bool {
     match Command::new("which")
@@ -56,20 +82,10 @@ fn resolve_backends(preference: AgentBackend) -> Vec<(AgentBackend, &'static [&'
 }
 
 /// Launch an agent via the Claude CLI.
-fn run_with_claude(bin: &str, agent_path: &str) -> Result<()> {
-    // Validate agent path contains only safe characters to prevent prompt injection
-    if agent_path
-        .chars()
-        .any(|c| matches!(c, '\n' | '\r' | '\0' | '`' | '$' | '{' | '}'))
-    {
-        return Err(anyhow!(
-            "agent path contains invalid characters: {}",
-            agent_path
-        ));
-    }
+fn run_with_claude(bin: &str, agent_path: &AgentPath) -> Result<()> {
     let prompt = format!(
         "Load agent spec at {} and execute its instructions",
-        agent_path
+        agent_path.as_str()
     );
     let status = Command::new(bin).args(["--print", &prompt]).status()?;
     if status.success() {
@@ -86,20 +102,10 @@ fn run_with_claude(bin: &str, agent_path: &str) -> Result<()> {
 }
 
 /// Launch an agent via the Codex CLI.
-fn run_with_codex(bin: &str, agent_path: &str) -> Result<()> {
-    // Validate agent path contains only safe characters to prevent prompt injection
-    if agent_path
-        .chars()
-        .any(|c| matches!(c, '\n' | '\r' | '\0' | '`' | '$' | '{' | '}'))
-    {
-        return Err(anyhow!(
-            "agent path contains invalid characters: {}",
-            agent_path
-        ));
-    }
+fn run_with_codex(bin: &str, agent_path: &AgentPath) -> Result<()> {
     let prompt = format!(
         "Load agent spec at {} and execute its instructions",
-        agent_path
+        agent_path.as_str()
     );
     let status = Command::new(bin)
         .args(["--yolo", "exec", "--timeout_ms", "1800000"])
@@ -132,13 +138,13 @@ pub(crate) fn handle_multi_cli_agent_command(
 ) -> Result<()> {
     let agents = collect_agents(&merge_extra_dirs(&skill_dirs))?;
     let agent = resolve_agent(&agent_spec, &agents)?;
-    let agent_path = agent.path.display().to_string();
+    let agent_path = AgentPath::new(agent.path.display().to_string())?;
 
     println!(
         "Agent: {} (source: {}, path: {})",
         agent.name,
         agent.source.label(),
-        agent.path.display()
+        agent_path.as_str()
     );
 
     let backends = resolve_backends(backend);
@@ -177,7 +183,7 @@ pub(crate) fn handle_multi_cli_agent_command(
     println!("Backend: {backend_label} ({bin})");
 
     if dry_run {
-        println!("Agent path: {agent_path}");
+        println!("Agent path: {}", agent_path.as_str());
         println!("Would run with: {backend_label}");
         return Ok(());
     }

@@ -17,7 +17,6 @@ Skills support engine for Claude Code, Codex CLI, GitHub Copilot CLI, and Cursor
 [User Guide](https://athola.github.io/skrills/) |
 [CLI Reference](book/src/cli.md) |
 [MCP Tutorial](docs/tutorials/mcp.md) |
-[Cursor Quickstart](docs/tutorials/cursor-quickstart.md) |
 [FAQ](docs/FAQ.md) |
 [Changelog](book/src/changelog.md)
 
@@ -46,7 +45,10 @@ Skills support engine for Claude Code, Codex CLI, GitHub Copilot CLI, and Cursor
   history to improve recommendations based on actual usage.
 - **Visualization** -- TUI and browser dashboard showing discovered
   skills, validation status, and usage metrics. The browser dashboard
-  supports light and dark modes.
+  supports light and dark modes. The standalone
+  [`skrills-portal.html`](skrills-portal.html) can be opened directly
+  in a browser or uploaded to integration platforms without a running
+  server.
 - **Discovery deduplication** -- frontmatter identity matching
   consolidates the same skill installed in multiple locations.
 
@@ -208,7 +210,6 @@ subcommand) and [FAQ](docs/FAQ.md) for environment variables.
 | [User Guide](https://athola.github.io/skrills/) | Primary documentation (mdBook) |
 | [CLI Reference](book/src/cli.md) | All commands with examples |
 | [MCP Tutorial](docs/tutorials/mcp.md) | Server setup and tool reference |
-| [Cursor Quickstart](docs/tutorials/cursor-quickstart.md) | Getting productive with Cursor fast |
 | [Sync Guide](book/src/sync-guide.md) | Cross-CLI sync workflows (Claude, Codex, Copilot, Cursor) |
 | [Token Optimization](book/src/mcp-token-optimization.md) | Context window management |
 | [FAQ](docs/FAQ.md) | Common questions |
