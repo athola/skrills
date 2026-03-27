@@ -16,7 +16,7 @@
 //! that originated in Claude.
 
 use super::paths::skills_dir;
-use super::utils::{sanitize_name, strip_frontmatter};
+use super::utils::{extract_model_hint, sanitize_name, strip_frontmatter, trim_skill_body};
 use crate::adapters::utils::{collect_module_files, hash_content};
 use crate::common::{Command, ContentFormat};
 use crate::report::{SkipReason, WriteReport};
@@ -103,7 +103,20 @@ pub fn write_skills(root: &Path, skills: &[Command]) -> Result<WriteReport> {
 
         // Strip Claude frontmatter when writing to Cursor
         let content_str = String::from_utf8_lossy(&skill.content);
-        let body = strip_frontmatter(&content_str);
+
+        // Extract model_hint before stripping frontmatter
+        let model_hint = extract_model_hint(&content_str);
+
+        // Strip frontmatter and trim non-essential sections
+        let raw_body = strip_frontmatter(&content_str);
+        let trimmed = trim_skill_body(raw_body);
+
+        // Inject model_hint as a comment at the top if present
+        let body = match model_hint {
+            Some(hint) => format!("<!-- model_hint: {hint} -->\n\n{trimmed}"),
+            None => trimmed,
+        };
+
         let skill_path = skill_dir.join("SKILL.md");
 
         let skill_unchanged = if skill_path.exists() {

@@ -1,4 +1,5 @@
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
+use indexmap::IndexMap;
 use std::path::PathBuf;
 
 /// Validation target for skills.
@@ -93,7 +94,7 @@ pub enum DependencyDirection {
 }
 
 /// Backend for multi-CLI agent routing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ValueEnum, Default)]
 pub enum AgentBackend {
     /// Auto-detect the best available backend.
     #[default]
@@ -104,6 +105,10 @@ pub enum AgentBackend {
     Codex,
 }
 
+/// CLI binary names to probe for availability.
+const CLAUDE_BINS: &[&str] = &["claude"];
+const CODEX_BINS: &[&str] = &["codex"];
+
 impl AgentBackend {
     /// Return a human-readable name for the backend.
     pub fn as_str(self) -> &'static str {
@@ -111,6 +116,22 @@ impl AgentBackend {
             AgentBackend::Auto => "auto",
             AgentBackend::Claude => "claude",
             AgentBackend::Codex => "codex",
+        }
+    }
+
+    /// Return an ordered map of backends to try, with this preference first.
+    ///
+    /// Iteration order encodes fallback priority.
+    pub fn backends(self) -> IndexMap<AgentBackend, &'static [&'static str]> {
+        match self {
+            AgentBackend::Claude | AgentBackend::Auto => IndexMap::from([
+                (AgentBackend::Claude, CLAUDE_BINS),
+                (AgentBackend::Codex, CODEX_BINS),
+            ]),
+            AgentBackend::Codex => IndexMap::from([
+                (AgentBackend::Codex, CODEX_BINS),
+                (AgentBackend::Claude, CLAUDE_BINS),
+            ]),
         }
     }
 }

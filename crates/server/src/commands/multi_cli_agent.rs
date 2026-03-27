@@ -9,10 +9,6 @@ use anyhow::{anyhow, Result};
 use std::path::PathBuf;
 use std::process::Command;
 
-/// CLI binary names to probe for availability.
-const CLAUDE_BINS: &[&str] = &["claude"];
-const CODEX_BINS: &[&str] = &["codex"];
-
 /// A validated agent path that is safe for embedding in LLM prompts.
 ///
 /// Rejects characters that could enable prompt injection when the path
@@ -26,10 +22,7 @@ impl AgentPath {
             .chars()
             .any(|c| matches!(c, '\n' | '\r' | '\0' | '`' | '$' | '{' | '}'))
         {
-            return Err(anyhow!(
-                "agent path contains invalid characters: {}",
-                path
-            ));
+            return Err(anyhow!("agent path contains invalid characters: {}", path));
         }
         Ok(Self(path))
     }
@@ -58,27 +51,6 @@ fn is_available(bin: &str) -> bool {
 /// Find the first available binary from a list of candidates.
 fn find_binary<'a>(candidates: &'a [&'a str]) -> Option<&'a str> {
     candidates.iter().copied().find(|bin| is_available(bin))
-}
-
-/// Determine the ordered list of backends to try based on the user's preference.
-fn resolve_backends(preference: AgentBackend) -> Vec<(AgentBackend, &'static [&'static str])> {
-    match preference {
-        AgentBackend::Claude => vec![
-            (AgentBackend::Claude, CLAUDE_BINS),
-            (AgentBackend::Codex, CODEX_BINS),
-        ],
-        AgentBackend::Codex => vec![
-            (AgentBackend::Codex, CODEX_BINS),
-            (AgentBackend::Claude, CLAUDE_BINS),
-        ],
-        AgentBackend::Auto => {
-            // Prefer whichever is available, Claude first
-            vec![
-                (AgentBackend::Claude, CLAUDE_BINS),
-                (AgentBackend::Codex, CODEX_BINS),
-            ]
-        }
-    }
 }
 
 /// Launch an agent via the Claude CLI.
@@ -147,8 +119,8 @@ pub(crate) fn handle_multi_cli_agent_command(
         agent_path.as_str()
     );
 
-    let backends = resolve_backends(backend);
-    let preferred = backends[0].0;
+    let backends = backend.backends();
+    let preferred = *backends.keys().next().unwrap();
 
     // Find the first available backend
     let mut selected: Option<(AgentBackend, &str)> = None;
@@ -201,23 +173,23 @@ mod tests {
 
     #[test]
     fn resolve_backends_claude_prefers_claude_first() {
-        let backends = resolve_backends(AgentBackend::Claude);
-        assert_eq!(backends[0].0, AgentBackend::Claude);
-        assert_eq!(backends[1].0, AgentBackend::Codex);
+        let backends = AgentBackend::Claude.backends();
+        let keys: Vec<_> = backends.keys().collect();
+        assert_eq!(keys, vec![&AgentBackend::Claude, &AgentBackend::Codex]);
     }
 
     #[test]
     fn resolve_backends_codex_prefers_codex_first() {
-        let backends = resolve_backends(AgentBackend::Codex);
-        assert_eq!(backends[0].0, AgentBackend::Codex);
-        assert_eq!(backends[1].0, AgentBackend::Claude);
+        let backends = AgentBackend::Codex.backends();
+        let keys: Vec<_> = backends.keys().collect();
+        assert_eq!(keys, vec![&AgentBackend::Codex, &AgentBackend::Claude]);
     }
 
     #[test]
     fn resolve_backends_auto_defaults_to_claude_first() {
-        let backends = resolve_backends(AgentBackend::Auto);
-        assert_eq!(backends[0].0, AgentBackend::Claude);
-        assert_eq!(backends[1].0, AgentBackend::Codex);
+        let backends = AgentBackend::Auto.backends();
+        let keys: Vec<_> = backends.keys().collect();
+        assert_eq!(keys, vec![&AgentBackend::Claude, &AgentBackend::Codex]);
     }
 
     #[test]
@@ -227,7 +199,7 @@ mod tests {
             AgentBackend::Claude,
             AgentBackend::Codex,
         ] {
-            let backends = resolve_backends(variant);
+            let backends = variant.backends();
             assert_eq!(backends.len(), 2, "should always have two backend entries");
         }
     }
@@ -275,7 +247,7 @@ mod tests {
             AgentBackend::Claude,
             AgentBackend::Codex,
         ] {
-            for (backend_kind, candidates) in resolve_backends(variant) {
+            for (backend_kind, candidates) in &variant.backends() {
                 assert!(
                     !candidates.is_empty(),
                     "backend '{}' should have at least one candidate binary",

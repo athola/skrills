@@ -2187,6 +2187,194 @@ Skill instructions..."></textarea>
       '</ul>';
   }
 
+  // ── Validator ──────────────────────────────
+  const sampleSkill = '---\nname: example-skill\ndescription: A sample skill for validation testing\nversion: 1.0.0\n---\n\n## Instructions\n\nThis is an example skill that demonstrates proper frontmatter structure.\n\nUse this as a starting point for your own skills.\n';
+
+  function parseFrontmatter(text) {
+    const fm = {};
+    const match = text.match(/^---\s*\n([\s\S]*?)\n---/);
+    if (match) {
+      match[1].split('\n').forEach(l => {
+        const kv = l.match(/^(\w[\w-]*)\s*:\s*(.+)/);
+        if (kv) fm[kv[1].trim()] = kv[2].trim().replace(/^['"]|['"]$/g, '');
+      });
+    }
+    return { fm, hasFm: !!match, raw: match ? match[1] : '' };
+  }
+
+  function validateSkillContent(content, target) {
+    const { fm, hasFm } = parseFrontmatter(content);
+    const hasName = !!fm.name;
+    const hasDesc = !!fm.description;
+    const hasVersion = !!fm.version;
+    const hasGlobs = content.includes('globs:') || content.includes('alwaysApply:');
+    const isKebab = !fm.name || /^[a-z0-9]+(-[a-z0-9]+)*$/.test(fm.name);
+    const hasBody = content.replace(/^---\s*\n[\s\S]*?\n---/, '').trim().length > 0;
+
+    const checks = {};
+
+    const common = [
+      { id: 'frontmatter', label: 'YAML frontmatter block', pass: hasFm },
+      { id: 'name', label: 'name field present', pass: hasName },
+      { id: 'name-kebab', label: 'name is kebab-case', pass: isKebab },
+      { id: 'description', label: 'description field present', pass: hasDesc },
+      { id: 'body', label: 'Skill body (instructions) present', pass: hasBody },
+    ];
+
+    checks.claude = [
+      ...common,
+      { id: 'claude-ok', label: 'Claude Code accepts most valid markdown', pass: hasFm && hasDesc },
+    ];
+
+    checks.codex = [
+      ...common,
+      { id: 'codex-name', label: 'name required for Codex', pass: hasFm && hasName },
+      { id: 'codex-desc', label: 'description required for Codex', pass: hasFm && hasDesc },
+    ];
+
+    checks.copilot = [
+      ...common,
+      { id: 'copilot-version', label: 'version field required for Copilot', pass: hasVersion },
+    ];
+
+    checks.cursor = [
+      ...common,
+      { id: 'cursor-globs', label: 'globs or alwaysApply required for Cursor .mdc', pass: hasGlobs },
+    ];
+
+    const targets = target === 'all' ? ['claude', 'codex', 'copilot', 'cursor'] : [target];
+    const results = {};
+    targets.forEach(t => { results[t] = checks[t]; });
+    return { results, fm, hasFm };
+  }
+
+  function renderValidationResults(results) {
+    const panel = document.getElementById('validate-results');
+    let html = '';
+    let totalPass = 0, totalFail = 0;
+
+    Object.entries(results).forEach(([cli, checks]) => {
+      const pass = checks.filter(c => c.pass).length;
+      const fail = checks.filter(c => !c.pass).length;
+      totalPass += pass;
+      totalFail += fail;
+      const allPass = fail === 0;
+      const color = allPass ? 'var(--success)' : 'var(--error)';
+
+      html += '<div style="background: var(--bg-card); border-left: 3px solid ' + color + '; border-radius: 6px; padding: 0.5rem 0.75rem; margin-bottom: 0.5rem;">' +
+        '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.375rem;">' +
+          '<strong style="font-size: 0.875rem; text-transform: capitalize;">' + esc(cli) + '</strong>' +
+          '<span style="font-size: 0.75rem; color: ' + color + ';">' + pass + '/' + checks.length + ' pass</span>' +
+        '</div>';
+
+      checks.forEach(c => {
+        const icon = c.pass ? '\u2713' : '\u2717';
+        const clr = c.pass ? 'var(--success)' : 'var(--error)';
+        html += '<div style="font-size: 0.8125rem; color: ' + clr + '; margin-left: 0.25rem;">' + icon + ' ' + esc(c.label) + '</div>';
+      });
+      html += '</div>';
+    });
+
+    panel.innerHTML = html;
+
+    // Quality score
+    const total = totalPass + totalFail;
+    const score = total > 0 ? Math.round((totalPass / total) * 100) : 0;
+    const scoreColor = score >= 80 ? 'var(--success)' : score >= 50 ? 'var(--warning)' : 'var(--error)';
+    const qPanel = document.getElementById('quality-score-panel');
+    qPanel.innerHTML = '<div class="panel-title">Quality Score</div>' +
+      '<div style="text-align: center; padding: 0.5rem 0;">' +
+        '<div style="font-size: 2rem; font-weight: 700; color: ' + scoreColor + ';">' + score + '</div>' +
+        '<div style="font-size: 0.75rem; color: var(--text-muted);">' + totalPass + ' of ' + total + ' checks passed</div>' +
+      '</div>';
+
+    return { totalPass, totalFail, score };
+  }
+
+  document.getElementById('btn-validate').addEventListener('click', () => {
+    const content = document.getElementById('validate-input').value.trim();
+    if (!content) { toast('Paste skill content first'); return; }
+    const target = document.getElementById('validate-target').value;
+    const { results } = validateSkillContent(content, target);
+    const { score } = renderValidationResults(results);
+    toast('Validation complete \u2014 score: ' + score + '/100');
+  });
+
+  document.getElementById('btn-autofix').addEventListener('click', () => {
+    let content = document.getElementById('validate-input').value.trim();
+    if (!content) { toast('Paste skill content first'); return; }
+
+    const { fm, hasFm } = parseFrontmatter(content);
+    let fixed = false;
+
+    if (!hasFm) {
+      // Add frontmatter block
+      const name = 'my-skill';
+      content = '---\nname: ' + name + '\ndescription: TODO - add description\nversion: 1.0.0\n---\n\n' + content;
+      fixed = true;
+    } else {
+      // Fix individual fields
+      let fmBlock = content.match(/^---\s*\n([\s\S]*?)\n---/)[1];
+      let newFm = fmBlock;
+
+      if (!fm.name) {
+        newFm += '\nname: my-skill';
+        fixed = true;
+      } else if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(fm.name)) {
+        // Convert to kebab-case
+        const kebab = fm.name.replace(/([a-z])([A-Z])/g, '$1-$2').replace(/[\s_]+/g, '-').toLowerCase().replace(/[^a-z0-9-]/g, '');
+        newFm = newFm.replace(/^(name\s*:\s*).*$/m, '$1' + kebab);
+        fixed = true;
+      }
+      if (!fm.description) {
+        newFm += '\ndescription: TODO - add description';
+        fixed = true;
+      }
+      if (!fm.version) {
+        newFm += '\nversion: 1.0.0';
+        fixed = true;
+      }
+
+      const target = document.getElementById('validate-target').value;
+      if ((target === 'all' || target === 'cursor') && !content.includes('globs:') && !content.includes('alwaysApply:')) {
+        newFm += '\nalwaysApply: false';
+        fixed = true;
+      }
+
+      if (fixed) {
+        content = content.replace(/^---\s*\n[\s\S]*?\n---/, '---\n' + newFm + '\n---');
+      }
+    }
+
+    if (fixed) {
+      document.getElementById('validate-input').value = content;
+      toast('Autofix applied \u2014 click Validate to verify');
+      // Auto-validate after fix
+      document.getElementById('btn-validate').click();
+    } else {
+      toast('Nothing to fix \u2014 all checks look good');
+    }
+  });
+
+  document.getElementById('btn-load-sample').addEventListener('click', () => {
+    document.getElementById('validate-input').value = sampleSkill;
+    toast('Sample skill loaded');
+  });
+
+  document.getElementById('btn-download-validated').addEventListener('click', () => {
+    const content = document.getElementById('validate-input').value.trim();
+    if (!content) { toast('Nothing to download'); return; }
+    const { fm } = parseFrontmatter(content);
+    const filename = (fm.name || 'skill') + '.md';
+    const blob = new Blob([content], { type: 'text/markdown' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast('Downloaded ' + filename);
+  });
+
   // ── Sync Matrix ────────────────────────────
   function renderSyncMatrix() {
     const container = document.getElementById('sync-matrix-container');

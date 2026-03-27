@@ -436,8 +436,7 @@ mod tests {
              to pass the minimum threshold for body completeness checks."
         );
         let options = AutofixOptions::default();
-        let result =
-            autofix_frontmatter(Path::new("/test/skill.md"), &content, &options).unwrap();
+        let result = autofix_frontmatter(Path::new("/test/skill.md"), &content, &options).unwrap();
         assert!(result.modified);
         assert!(result.changes.iter().any(|c| c.contains("Truncated name")));
         // Verify the truncated name is valid UTF-8 and within limits

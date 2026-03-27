@@ -27,12 +27,15 @@ pub(crate) fn handle_metrics_command(
 
     if skills.is_empty() {
         if format.is_json() {
-            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                "total_skills": 0,
-                "skills_by_source": {},
-                "quality": {"high": 0, "medium": 0, "low": 0},
-                "tokens": {"total": 0}
-            }))?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "total_skills": 0,
+                    "skills_by_source": {},
+                    "quality": {"high": 0, "medium": 0, "low": 0},
+                    "tokens": {"total": 0}
+                }))?
+            );
         } else {
             println!("No skills found.");
         }

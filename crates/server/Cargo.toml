@@ -59,6 +59,7 @@ shellexpand = "3"
 regex = "1"
 sha2.workspace = true
 hex = "0.4.3"
+indexmap = "2.13.0"
 
 [features]
 # Enable subagents and HTTP transport by default so MCP exposes subagent tools
