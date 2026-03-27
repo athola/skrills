@@ -79,6 +79,7 @@ pub fn default_priority() -> Vec<SkillSource> {
         SkillSource::Mirror,
         SkillSource::Claude,
         SkillSource::Copilot,
+        SkillSource::Cursor,
         SkillSource::Marketplace,
         SkillSource::Cache,
         SkillSource::Agent,
@@ -131,6 +132,19 @@ pub fn load_priority_override(
 /// Checks if a `DirEntry` is a `SKILL.md` file.
 fn is_skill_file(entry: &walkdir::DirEntry) -> bool {
     entry.file_type().is_file() && entry.file_name() == "SKILL.md"
+}
+
+/// Checks if a `DirEntry` is a Cursor rule file (`.mdc` or `.md` in a rules directory).
+fn is_cursor_rule_file(entry: &walkdir::DirEntry) -> bool {
+    if !entry.file_type().is_file() {
+        return false;
+    }
+    let ext = entry
+        .path()
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    ext == "mdc" || ext == "md"
 }
 
 /// Checks if a `DirEntry` is an agent file (any markdown under an `agents` directory).
@@ -286,16 +300,31 @@ fn collect_skills_from(
                 true
             })
             .filter_map(|e| e.ok())
-            .filter(is_skill_file)
+            .filter(|e| {
+                if root_cfg.source == SkillSource::Cursor {
+                    is_cursor_rule_file(e)
+                } else {
+                    is_skill_file(e)
+                }
+            })
             .collect();
 
         let metas: Vec<_> = entries
             .par_iter()
             .map(|entry| {
                 let path = entry.path().to_path_buf();
-                let name = diff_paths(&path, root)
+                let raw_name = diff_paths(&path, root)
                     .and_then(|p| p.to_str().map(|s| s.to_owned()))
                     .unwrap_or_else(|| path.to_string_lossy().into_owned());
+                // For Cursor .mdc files, use the file stem as the name
+                let name = if root_cfg.source == SkillSource::Cursor {
+                    path.file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(&raw_name)
+                        .to_string()
+                } else {
+                    raw_name
+                };
                 let hash = file_hash(&path)?;
                 // Extract frontmatter identity (best-effort, log errors)
                 let (frontmatter_name, description) = match fs::read_to_string(&path) {
@@ -584,6 +613,8 @@ pub fn skill_roots_or_default(custom: &[PathBuf]) -> Vec<SkillRoot> {
                     SkillSource::Codex
                 } else if has_component(".copilot") || has_component("copilot") {
                     SkillSource::Copilot
+                } else if has_component(".cursor") {
+                    SkillSource::Cursor
                 } else {
                     SkillSource::Extra(u32::try_from(i).unwrap_or(u32::MAX))
                 };
@@ -1061,6 +1092,7 @@ mod tests {
                 "mirror",
                 "claude",
                 "copilot",
+                "cursor",
                 "marketplace",
                 "cache",
                 "agent"
@@ -1072,16 +1104,17 @@ mod tests {
     fn test_priority_labels_and_rank_map() {
         let (labels, rank_map) = priority_labels_and_rank_map();
 
-        assert_eq!(labels.len(), 7);
-        assert_eq!(rank_map.len(), 7);
+        assert_eq!(labels.len(), 8);
+        assert_eq!(rank_map.len(), 8);
 
         assert_eq!(rank_map.get("codex").unwrap(), 1);
         assert_eq!(rank_map.get("mirror").unwrap(), 2);
         assert_eq!(rank_map.get("claude").unwrap(), 3);
         assert_eq!(rank_map.get("copilot").unwrap(), 4);
-        assert_eq!(rank_map.get("marketplace").unwrap(), 5);
-        assert_eq!(rank_map.get("cache").unwrap(), 6);
-        assert_eq!(rank_map.get("agent").unwrap(), 7);
+        assert_eq!(rank_map.get("cursor").unwrap(), 5);
+        assert_eq!(rank_map.get("marketplace").unwrap(), 6);
+        assert_eq!(rank_map.get("cache").unwrap(), 7);
+        assert_eq!(rank_map.get("agent").unwrap(), 8);
     }
 
     #[test]

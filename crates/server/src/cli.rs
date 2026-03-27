@@ -194,7 +194,8 @@ impl OutputFormat {
 #[derive(Debug, Parser)]
 #[command(
     name = "skrills",
-    about = "Skills support engine for Claude Code and Codex CLI"
+    about = "Skills support engine for Claude Code and Codex CLI",
+    version
 )]
 pub struct Cli {
     #[command(subcommand)]

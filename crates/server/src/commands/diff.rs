@@ -3,7 +3,7 @@
 use crate::cli::OutputFormat;
 use anyhow::{anyhow, Result};
 use serde_json::json;
-use skrills_discovery::{default_roots, discover_skills, SkillSource};
+use skrills_discovery::{default_roots, discover_skills, SkillRoot, SkillSource};
 use skrills_state::home_dir;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -18,7 +18,17 @@ pub(crate) fn handle_skill_diff_command(
     // This ensures we find ALL versions of a skill across different CLIs.
     // Use default_roots which includes all CLIs (Codex, Claude, Copilot).
     let home = home_dir()?;
-    let roots = default_roots(&home);
+    let mut roots = default_roots(&home);
+    // Add Cursor rules from current working directory (project-local)
+    let cursor_rules = std::env::current_dir()
+        .unwrap_or_default()
+        .join(".cursor/rules");
+    if cursor_rules.exists() {
+        roots.push(SkillRoot {
+            root: cursor_rules,
+            source: SkillSource::Cursor,
+        });
+    }
     let search_name = normalize_skill_name(&name);
     let mut versions: HashMap<SkillSource, (PathBuf, String)> = HashMap::new();
 

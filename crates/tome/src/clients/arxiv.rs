@@ -33,19 +33,7 @@ impl ArxivClient {
     /// Search arXiv for papers. Returns parsed Atom XML results.
     pub async fn search(&self, query: &str, limit: usize) -> TomeResult<Vec<Paper>> {
         let limit = limit.min(100);
-        // Sanitize query: strip arXiv field-prefix syntax to prevent injection
-        let sanitized = query
-            .split_whitespace()
-            .map(|word| {
-                // Strip field prefixes like "ti:", "au:", "abs:", "all:", etc.
-                if let Some((_prefix, rest)) = word.split_once(':') {
-                    rest
-                } else {
-                    word
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
+        let sanitized = sanitize_query(query);
 
         let resp = self
             .http
@@ -119,4 +107,69 @@ fn extract_authors(entry: &str) -> Vec<String> {
         .skip(1)
         .filter_map(|a| extract_tag(a, "name"))
         .collect()
+}
+
+/// Strip arXiv field-prefix syntax (e.g. `ti:`, `au:`) from a query string
+/// to prevent users from altering search semantics.
+fn sanitize_query(query: &str) -> String {
+    query
+        .split_whitespace()
+        .map(|word| {
+            if let Some((_prefix, rest)) = word.split_once(':') {
+                rest
+            } else {
+                word
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_strips_field_prefixes() {
+        assert_eq!(sanitize_query("ti:quantum au:einstein"), "quantum einstein");
+        assert_eq!(sanitize_query("abs:neural all:network"), "neural network");
+    }
+
+    #[test]
+    fn sanitize_preserves_plain_queries() {
+        assert_eq!(sanitize_query("machine learning"), "machine learning");
+        assert_eq!(sanitize_query("rust async runtime"), "rust async runtime");
+    }
+
+    #[test]
+    fn sanitize_handles_edge_cases() {
+        assert_eq!(sanitize_query(""), "");
+        assert_eq!(sanitize_query("ti:"), "");
+        assert_eq!(sanitize_query("word:with:colons"), "with:colons");
+    }
+
+    #[test]
+    fn parse_arxiv_atom_empty() {
+        assert!(parse_arxiv_atom("").is_empty());
+        assert!(parse_arxiv_atom("<feed></feed>").is_empty());
+    }
+
+    #[test]
+    fn parse_arxiv_atom_single_entry() {
+        let xml = r#"<feed>
+            <entry>
+                <id>http://arxiv.org/abs/2301.00001v1</id>
+                <title>Test Paper Title</title>
+                <summary>A test abstract.</summary>
+                <published>2023-01-01T00:00:00Z</published>
+                <author><name>Test Author</name></author>
+            </entry>
+        </feed>"#;
+        let papers = parse_arxiv_atom(xml);
+        assert_eq!(papers.len(), 1);
+        assert_eq!(papers[0].title, "Test Paper Title");
+        assert_eq!(papers[0].id, "2301.00001v1");
+        assert_eq!(papers[0].authors, vec!["Test Author"]);
+        assert_eq!(papers[0].year, Some(2023));
+    }
 }

@@ -421,6 +421,34 @@ mod tests {
     }
 
     #[test]
+    fn test_truncate_name_multibyte_utf8() {
+        // A name with multi-byte UTF-8 characters that exceeds MAX_NAME_LENGTH chars.
+        // The old byte-index slice `name[..MAX_NAME_LENGTH]` would panic at a non-char
+        // boundary; the fixed `chars().take()` must handle this safely.
+        let prefix = "skill-";
+        let multibyte_padding = "あ".repeat(MAX_NAME_LENGTH); // each あ is 3 bytes
+        let long_name = format!("{prefix}{multibyte_padding}");
+        assert!(long_name.chars().count() > MAX_NAME_LENGTH);
+
+        let content = format!(
+            "---\nname: {long_name}\ndescription: test multibyte\n---\n\n\
+             Lots of content here to avoid scaffolding. This body has enough words \
+             to pass the minimum threshold for body completeness checks."
+        );
+        let options = AutofixOptions::default();
+        let result =
+            autofix_frontmatter(Path::new("/test/skill.md"), &content, &options).unwrap();
+        assert!(result.modified);
+        assert!(result.changes.iter().any(|c| c.contains("Truncated name")));
+        // Verify the truncated name is valid UTF-8 and within limits
+        let fm_start = result.content.find("name: ").unwrap() + 6;
+        let fm_end = result.content[fm_start..].find('\n').unwrap() + fm_start;
+        let truncated_name = &result.content[fm_start..fm_end];
+        assert!(truncated_name.chars().count() <= MAX_NAME_LENGTH);
+        assert!(truncated_name.is_ascii() || truncated_name.contains('あ'));
+    }
+
+    #[test]
     fn test_autofix_normalizes_name_to_kebab() {
         let content = "---\nname: My Cool Skill\ndescription: a skill\n---\n\nLots of content here to avoid scaffolding. This body has enough words to pass the minimum threshold for body completeness checks.";
         let options = AutofixOptions::default();

@@ -86,4 +86,4 @@ Your prompt instructions here...
 
 ### What are the security considerations?
 
-Skrills is designed with security in mind. The server communicates over standard I/O and operates with minimal file access privileges. It does not bundle any secrets, and you retain control over which skill directories are exposed. Always review third-party skills before using them.
+The server communicates over standard I/O and operates with minimal file access privileges. It does not bundle any secrets, and you retain control over which skill directories are exposed. Always review third-party skills before using them.

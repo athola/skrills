@@ -170,7 +170,7 @@
 - **NEW: Smart Routing**: Automatic backend selection based on `agent_id` parameter.
 - **NEW: Model Mapping**: Cross-platform model preference sync for consistent agent configuration.
 - **Error Handling**: Structured `CliError` enum with better error messages; logging for silent failures.
-- **Testing**: Comprehensive integration tests for subagent workflow.
+- **Testing**: Integration tests for subagent workflow.
 
 ## 0.3.4 (2025-12-19)
 
@@ -200,14 +200,14 @@
 - **NEW: CLI Commands**: Added `skrills validate` and `skrills analyze` commands for skill quality assurance.
 - **NEW: MCP Tools**: Added `validate-skills` and `analyze-skills` tools to the MCP server.
 - **Architecture Pivot**: Removed redundant skill-serving functionality now that Claude Code and Codex CLI have native skill support. Skrills now focuses on validation, analysis, and sync.
-- **Comprehensive Tests**: Added 53 tests for bidirectional skill sync.
+- **Tests**: Added 53 tests for bidirectional skill sync.
 - **REMOVED**: Autoload functionality (`autoload.rs`, `emit.rs`).
 - **REMOVED**: CLI commands: `list`, `list-pinned`, `pin`, `unpin`, `auto-pin`, `history`, `emit-autoload`, `render-preview`.
 - **REMOVED**: MCP tools: `list-skills`, `autoload-snippet`, `render-preview`, `runtime-status`, `set-runtime-options`, `pin-skills`, `unpin-skills`, `refresh-cache`.
 
 ## 0.3.0 (2025-12-12)
 
-- **NEW: Subagents Module**: Comprehensive subagent functionality with MCP server support via `list-subagents`, `run-subagent`, and `get-run-status` tools.
+- **NEW: Subagents Module**: Subagent functionality with MCP server support via `list-subagents`, `run-subagent`, and `get-run-status` tools.
 - **NEW: Backend Support**: Dual backend support for both Claude-style and Codex-style subagent execution.
 - **NEW: Sync Infrastructure**: Cross-agent sync orchestration with `SyncOrchestrator` and adapters for Claude/Codex.
 - **Documentation**: Added AGENTS.md with subagent usage examples.
