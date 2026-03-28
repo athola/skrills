@@ -20,6 +20,8 @@ pub enum SkillSource {
     Cache,
     /// Codex mirror directory (`~/.codex/skills-mirror`).
     Mirror,
+    /// Cursor IDE rules directory (`.cursor/rules`).
+    Cursor,
     /// Universal agent skills (`~/.agent/skills`).
     Agent,
     /// Extra user-specified directories (indexed).
@@ -39,6 +41,7 @@ impl SkillSource {
             SkillSource::Codex => "codex".into(),
             SkillSource::Claude => "claude".into(),
             SkillSource::Copilot => "copilot".into(),
+            SkillSource::Cursor => "cursor".into(),
             SkillSource::Marketplace => "marketplace".into(),
             SkillSource::Cache => "cache".into(),
             SkillSource::Mirror => "mirror".into(),
@@ -60,6 +63,7 @@ impl SkillSource {
             | SkillSource::Marketplace
             | SkillSource::Cache
             | SkillSource::Mirror => "global",
+            SkillSource::Cursor => "project",
             SkillSource::Agent => "universal",
             SkillSource::Extra(_) => "project",
         }
@@ -88,6 +92,8 @@ pub fn parse_source_key(key: &str) -> Option<SkillSource> {
         Some(SkillSource::Cache)
     } else if key.eq_ignore_ascii_case("mirror") {
         Some(SkillSource::Mirror)
+    } else if key.eq_ignore_ascii_case("cursor") {
+        Some(SkillSource::Cursor)
     } else if key.eq_ignore_ascii_case("agent") {
         Some(SkillSource::Agent)
     } else {

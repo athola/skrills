@@ -832,48 +832,16 @@ fn run_sync_with_adapters(
     to: SyncSource,
     params: &skrills_sync::SyncParams,
 ) -> Result<skrills_sync::SyncReport> {
-    use skrills_sync::{ClaudeAdapter, CodexAdapter, CopilotAdapter, SyncOrchestrator};
-
-    // Create adapters based on source and target
-    match (from, to) {
-        (SyncSource::Claude, SyncSource::Codex) => {
-            let source = ClaudeAdapter::new()?;
-            let target = CodexAdapter::new()?;
-            Ok(SyncOrchestrator::new(source, target).sync(params)?)
-        }
-        (SyncSource::Claude, SyncSource::Copilot) => {
-            let source = ClaudeAdapter::new()?;
-            let target = CopilotAdapter::new()?;
-            Ok(SyncOrchestrator::new(source, target).sync(params)?)
-        }
-        (SyncSource::Codex, SyncSource::Claude) => {
-            let source = CodexAdapter::new()?;
-            let target = ClaudeAdapter::new()?;
-            Ok(SyncOrchestrator::new(source, target).sync(params)?)
-        }
-        (SyncSource::Codex, SyncSource::Copilot) => {
-            let source = CodexAdapter::new()?;
-            let target = CopilotAdapter::new()?;
-            Ok(SyncOrchestrator::new(source, target).sync(params)?)
-        }
-        (SyncSource::Copilot, SyncSource::Claude) => {
-            let source = CopilotAdapter::new()?;
-            let target = ClaudeAdapter::new()?;
-            Ok(SyncOrchestrator::new(source, target).sync(params)?)
-        }
-        (SyncSource::Copilot, SyncSource::Codex) => {
-            let source = CopilotAdapter::new()?;
-            let target = CodexAdapter::new()?;
-            Ok(SyncOrchestrator::new(source, target).sync(params)?)
-        }
-        // Same source and target - error
-        (SyncSource::Claude, SyncSource::Claude)
-        | (SyncSource::Codex, SyncSource::Codex)
-        | (SyncSource::Copilot, SyncSource::Copilot) => Err(anyhow!(
+    // Same source and target - error
+    if from == to {
+        return Err(anyhow!(
             "Source and target cannot be the same: {}",
             from.as_str()
-        )),
+        ));
     }
+
+    // Delegate to sync_between which handles adapter creation for all platforms
+    skrills_sync::orchestrator::sync_between(from.as_str(), to.as_str(), params)
 }
 
 /// Main application entry point.
@@ -1195,12 +1163,18 @@ pub fn run() -> Result<()> {
                 SyncSource::Claude => mirror_source_root(&home),
                 SyncSource::Codex => home.join(".codex/skills"),
                 SyncSource::Copilot => {
-                    // Use CopilotAdapter to get the correct XDG-compliant path
                     use skrills_sync::adapters::traits::AgentAdapter;
                     use skrills_sync::CopilotAdapter;
                     CopilotAdapter::new()
                         .map(|a| a.config_root().join("skills"))
                         .unwrap_or_else(|_| home.join(".copilot/skills"))
+                }
+                SyncSource::Cursor => {
+                    use skrills_sync::adapters::traits::AgentAdapter;
+                    use skrills_sync::CursorAdapter;
+                    CursorAdapter::new()
+                        .map(|a| a.config_root().join("skills"))
+                        .unwrap_or_else(|_| home.join(".cursor/skills"))
                 }
             };
             if source_root.exists() {

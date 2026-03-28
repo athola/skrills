@@ -4,10 +4,10 @@
 //! near-identical to Claude Code commands.
 
 use super::paths::commands_dir;
-use super::utils::sanitize_name;
+use super::utils::{sanitize_name, strip_frontmatter};
 use crate::adapters::utils::hash_content;
 use crate::common::{Command, ContentFormat};
-use crate::report::WriteReport;
+use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use std::fs;
 use std::path::Path;
@@ -84,8 +84,25 @@ pub fn write_commands(root: &Path, commands: &[Command]) -> Result<WriteReport> 
         let name = sanitize_name(&cmd.name);
         let path = dir.join(format!("{}.md", name));
 
+        // Strip all frontmatter — Cursor commands don't support YAML frontmatter.
+        // Frontmatter fields (allowed-tools, description, etc.) cause Cursor to
+        // display "--- (user)" instead of the command description.
+        let content_str = String::from_utf8_lossy(&cmd.content);
+        let body = strip_frontmatter(&content_str);
+        let cursor_bytes = body.as_bytes();
+
+        if path.exists() {
+            let existing = fs::read(&path)?;
+            if hash_content(&existing) == hash_content(cursor_bytes) {
+                report.skipped.push(SkipReason::Unchanged {
+                    item: cmd.name.clone(),
+                });
+                continue;
+            }
+        }
+
         debug!(name = %name, path = ?path, "Writing Cursor command");
-        fs::write(&path, &cmd.content)?;
+        fs::write(&path, cursor_bytes)?;
         report.written += 1;
     }
 

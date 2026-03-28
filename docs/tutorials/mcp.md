@@ -175,7 +175,7 @@ Run `skrills serve --list-tools` to see all available tools:
 
 | Tool | Description |
 |------|-------------|
-| `validate-skills` | Validate for Claude/Codex/Copilot compatibility |
+| `validate-skills` | Validate for Claude/Codex/Copilot/Cursor compatibility |
 | `analyze-skills` | Analyze token usage and optimization |
 
 ### Intelligence Tools (6)

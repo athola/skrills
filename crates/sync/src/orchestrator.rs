@@ -6,7 +6,7 @@ use crate::report::{SkipReason, SyncReport, WriteReport};
 use crate::Result;
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Source platform for sync operation.
 ///
@@ -169,6 +169,41 @@ fn sync_items<Item>(
     Ok(report)
 }
 
+/// Detects duplicate names in a collection, warns about each collision, and deduplicates
+/// by keeping the first occurrence (highest-priority source).
+///
+/// Returns the deduplicated list and the count of dropped duplicates.
+fn dedup_by_name<Item>(
+    items: Vec<Item>,
+    kind: &str,
+    get_name: impl Fn(&Item) -> String,
+    get_source: impl Fn(&Item) -> String,
+) -> (Vec<Item>, usize) {
+    let mut seen: HashMap<String, String> = HashMap::new();
+    let mut deduped = Vec::with_capacity(items.len());
+    let mut dup_count = 0;
+
+    for item in items {
+        let name = get_name(&item);
+        let source = get_source(&item);
+        if let Some(first_source) = seen.get(&name) {
+            tracing::warn!(
+                kind = kind,
+                name = %name,
+                kept = %first_source,
+                dropped = %source,
+                "Duplicate {kind} /{name}: keeping from {first_source}, dropping from {source}",
+            );
+            dup_count += 1;
+        } else {
+            seen.insert(name, source);
+            deduped.push(item);
+        }
+    }
+
+    (deduped, dup_count)
+}
+
 /// Orchestrates sync operations between agents.
 pub struct SyncOrchestrator<S: AgentAdapter, T: AgentAdapter> {
     source: S,
@@ -200,6 +235,12 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 );
             }
             let commands = self.source.read_commands(params.include_marketplace)?;
+            let (commands, cmd_dups) = dedup_by_name(
+                commands,
+                "command",
+                |c| c.name.clone(),
+                |c| c.source_path.display().to_string(),
+            );
             let include_marketplace = params.include_marketplace;
             report.commands = sync_items(
                 commands,
@@ -210,6 +251,7 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 || self.target.read_commands(include_marketplace),
                 |items| self.target.write_commands(items),
             )?;
+            report.commands.duplicates = cmd_dups;
         }
 
         // Sync skills
@@ -221,11 +263,18 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 );
             }
             let skills = self.source.read_skills()?;
+            let (skills, skill_dups) = dedup_by_name(
+                skills,
+                "skill",
+                |s| s.name.clone(),
+                |s| s.source_path.display().to_string(),
+            );
             if !params.dry_run {
                 report.skills = self.target.write_skills(&skills)?;
             } else {
                 report.skills.written = skills.len();
             }
+            report.skills.duplicates = skill_dups;
         }
 
         // Sync MCP servers

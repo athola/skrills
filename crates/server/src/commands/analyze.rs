@@ -17,7 +17,11 @@ pub(crate) fn handle_analyze_command(
     let skills = discover_skills(&roots, None)?;
 
     if skills.is_empty() {
-        println!("No skills found to analyze.");
+        if format.is_json() {
+            println!("[]");
+        } else {
+            println!("No skills found to analyze.");
+        }
         return Ok(());
     }
 

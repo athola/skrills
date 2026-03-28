@@ -18,7 +18,7 @@ The installer:
 1. Downloads the correct binary for your system
 2. Installs it to `~/.codex/bin` (or detects your setup)
 3. Registers skrills as an MCP server
-4. Syncs your Claude skills to Codex (if both exist)
+4. Syncs your skills across detected CLIs (Claude, Codex, Copilot, Cursor)
 
 ## Verify Installation
 

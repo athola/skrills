@@ -1,5 +1,5 @@
 ---
-description: Compare a skill across Claude, Codex, and Copilot to show differences.
+description: Compare a skill across Claude, Codex, Copilot, and Cursor to show differences.
 argument-hint: "<skill-name> [--context <lines>]"
 triggers: skill diff, compare skill, skill differences, skill versions, skill comparison
 ---

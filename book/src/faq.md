@@ -22,14 +22,14 @@ If the error persists with a third-party MCP server, consider proxying problemat
 
 ### How does `skrills` compare to other skill management tools?
 
-`skrills` focuses on skill quality and portability. It checks skills for compatibility across Claude Code, Codex CLI, and GitHub Copilot CLI, analyzes token usage to identify optimization opportunities, and keeps configurations in sync between all three environments. For a detailed comparison, see the [Project Comparison](./comparison.md).
+`skrills` focuses on skill quality and portability. It checks skills for compatibility across Claude Code, Codex CLI, GitHub Copilot CLI, and Cursor, analyzes token usage to identify optimization opportunities, and keeps configurations in sync between all four environments. For a detailed comparison, see the [Project Comparison](./comparison.md).
 
-### Is it possible to automatically synchronize skills between Claude, Codex, and Copilot?
+### Is it possible to automatically synchronize skills between Claude, Codex, Copilot, and Cursor?
 
 Yes. Use `skrills sync-all` to sync everything (skills, commands, MCP servers, preferences):
 
 ```bash
-# Claude → ALL other CLIs (Codex + Copilot) - no flags needed
+# Claude → ALL other CLIs (Codex + Copilot + Cursor) - no flags needed
 skrills sync-all
 
 # Claude → specific CLI only
@@ -86,4 +86,4 @@ Your prompt instructions here...
 
 ### What are the security considerations?
 
-Skrills is designed with security in mind. The server communicates over standard I/O and operates with minimal file access privileges. It does not bundle any secrets, and you retain control over which skill directories are exposed. Always review third-party skills before using them.
+The server communicates over standard I/O and operates with minimal file access privileges. It does not bundle any secrets, and you retain control over which skill directories are exposed. Always review third-party skills before using them.

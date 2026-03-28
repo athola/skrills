@@ -26,7 +26,19 @@ pub(crate) fn handle_metrics_command(
     let skills = discover_skills(&roots, None)?;
 
     if skills.is_empty() {
-        println!("No skills found.");
+        if format.is_json() {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "total_skills": 0,
+                    "skills_by_source": {},
+                    "quality": {"high": 0, "medium": 0, "low": 0},
+                    "tokens": {"total": 0}
+                }))?
+            );
+        } else {
+            println!("No skills found.");
+        }
         return Ok(());
     }
 

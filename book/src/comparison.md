@@ -1,6 +1,6 @@
 # Project Comparison
 
-This table compares `skrills` against alternative approaches for managing and deploying skills across Claude Code and Codex CLI.
+This table compares `skrills` against alternative approaches for managing and deploying skills across Claude Code, Codex CLI, GitHub Copilot CLI, and Cursor.
 
 | Project Type | Key Components | Transport/Runtime | Automation Interface | Key Strengths | Distinguishing Gaps (vs. `skrills`) |
 |---|---|---|---|---|---|
@@ -14,7 +14,7 @@ This table compares `skrills` against alternative approaches for managing and de
 ## Core Differentiators
 
 ### Validation Engine
-Skrills validates skills against two targets with distinct requirements. Claude Code is permissive, accepting any markdown with optional frontmatter. Codex CLI is strict, requiring YAML frontmatter with `name` and `description` fields. The `--autofix` flag automatically derives and adds missing frontmatter from the file path and content.
+Skrills validates skills against four targets with distinct requirements. Claude Code is permissive, accepting any markdown with optional frontmatter. Codex CLI and Copilot CLI are strict, requiring YAML frontmatter with `name` and `description` fields. Cursor uses `.mdc` rule files with `description` and mode fields (`globs` or `alwaysApply`). The `--autofix` flag automatically derives missing frontmatter, normalizes names to kebab-case, and scaffolds body sections when content is too short.
 
 ### Token Analysis
 Skrills analyzes skills to estimate token usage and track dependencies. It provides optimization suggestions for large skills, helping to maintain an efficient context window.
@@ -27,4 +27,4 @@ Future work includes signed artifacts and version pinning for synced skills to i
 
 ## Summary
 
-Skrills is a skills support engine focused on quality and portability. It validates skills for cross-CLI compatibility, analyzes token usage, and synchronizes configurations bidirectionally. The MCP server enables integration with both Claude Code and Codex CLI environments.
+Skrills is a skills support engine focused on quality and portability. It validates skills for cross-CLI compatibility across Claude Code, Codex CLI, Copilot CLI, and Cursor. It analyzes token usage, synchronizes configurations bidirectionally between all four environments, and provides both a browser dashboard and a self-contained HTML portal for offline exploration.

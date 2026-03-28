@@ -23,3 +23,5 @@ lcov.info
 rustc-ice-*.txt
 commit_msg.txt
 .claude/session-state.md
+.cursorignore
+.cursorindexingignore

@@ -1,12 +1,15 @@
 //! Auto-fix functionality for skills.
 //!
-//! Provides utilities to automatically add or fix frontmatter
-//! to make skills compatible with Codex CLI.
+//! Provides utilities to automatically fix frontmatter and body content
+//! to make skills compatible with Codex CLI, Copilot CLI, and Cursor.
 
 use crate::codex::{MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH};
 use crate::frontmatter::{generate_frontmatter, has_frontmatter, parse_frontmatter};
 use std::fs;
 use std::path::Path;
+
+/// Minimum word count for a skill body to be considered complete.
+const MIN_BODY_WORDS: usize = 30;
 
 /// Result of an autofix operation.
 #[derive(Debug, Clone)]
@@ -99,6 +102,78 @@ fn truncate_description(desc: &str) -> String {
     }
 }
 
+/// Normalize a name to kebab-case.
+pub fn to_kebab_case(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// Scaffold body sections when content is too short.
+///
+/// Adds Overview, Instructions, When to Use, and Output Format sections
+/// based on the skill's description.
+pub fn scaffold_body(body: &str, description: &str) -> (String, Vec<String>) {
+    let words: usize = body.split_whitespace().count();
+    if words >= MIN_BODY_WORDS {
+        return (body.to_string(), vec![]);
+    }
+
+    let mut changes = Vec::new();
+    let mut result = body.trim().to_string();
+
+    let has_heading = body.lines().any(|l| l.starts_with('#'));
+    let has_instructions = body.to_lowercase().contains("instructions")
+        || body.to_lowercase().contains("steps")
+        || body.to_lowercase().contains("workflow");
+    let has_when = body.to_lowercase().contains("when to use")
+        || body.to_lowercase().contains("triggers")
+        || body.to_lowercase().contains("use when");
+    let has_output = body.to_lowercase().contains("output")
+        || body.to_lowercase().contains("format")
+        || body.to_lowercase().contains("response");
+
+    if !has_heading {
+        result.push_str("\n\n## Overview\n\n");
+        result.push_str(description);
+        result.push('\n');
+        changes.push("Added Overview section from description".to_string());
+    }
+
+    if !has_instructions {
+        result.push_str("\n## Instructions\n\n");
+        result.push_str("1. Analyze the context and requirements\n");
+        result.push_str("2. Apply the skill logic\n");
+        result.push_str("3. Validate the output\n");
+        changes.push("Added Instructions section template".to_string());
+    }
+
+    let desc_lower = description.to_lowercase();
+    if !has_when {
+        result.push_str("\n## When to Use\n\n");
+        result.push_str(&format!("Use this skill when you need to {desc_lower}.\n"));
+        changes.push("Added When to Use section".to_string());
+    }
+
+    if !has_output {
+        result.push_str("\n## Output Format\n\n");
+        result.push_str("Provide clear, structured output appropriate to the task.\n");
+        changes.push("Added Output Format section template".to_string());
+    }
+
+    (result, changes)
+}
+
 /// Add or update frontmatter to make a skill Codex-compatible.
 pub fn autofix_frontmatter(
     path: &Path,
@@ -127,15 +202,26 @@ pub fn autofix_frontmatter(
                 .or(options.suggested_description.clone())
                 .unwrap_or_else(|| derive_description_from_content(&parsed.content));
 
+            // Normalize name to kebab-case
+            let kebab = to_kebab_case(&name);
+            let name_normalized = kebab != name;
+            let name = if name_normalized {
+                changes.push(format!("Normalized name to kebab-case: {kebab}"));
+                modified = true;
+                kebab
+            } else {
+                name
+            };
+
             // Truncate if needed
-            let name = if name.len() > MAX_NAME_LENGTH {
+            let name = if name.chars().count() > MAX_NAME_LENGTH {
                 changes.push(format!(
                     "Truncated name from {} to {} chars",
-                    name.len(),
+                    name.chars().count(),
                     MAX_NAME_LENGTH
                 ));
                 modified = true;
-                name[..MAX_NAME_LENGTH].to_string()
+                name.chars().take(MAX_NAME_LENGTH).collect::<String>()
             } else {
                 name
             };
@@ -162,12 +248,15 @@ pub fn autofix_frontmatter(
                 modified = true;
             }
 
+            // Scaffold body if too short
+            let (body, body_changes) = scaffold_body(&parsed.content, &description);
+            if !body_changes.is_empty() {
+                changes.extend(body_changes);
+                modified = true;
+            }
+
             if modified {
-                format!(
-                    "{}{}",
-                    generate_frontmatter(&name, &description),
-                    parsed.content
-                )
+                format!("{}{}", generate_frontmatter(&name, &description), body)
             } else {
                 content.to_string()
             }
@@ -176,10 +265,12 @@ pub fn autofix_frontmatter(
         }
     } else {
         // No frontmatter - add it
-        let name = options
-            .suggested_name
-            .clone()
-            .unwrap_or_else(|| derive_name_from_path(path));
+        let name = to_kebab_case(
+            &options
+                .suggested_name
+                .clone()
+                .unwrap_or_else(|| derive_name_from_path(path)),
+        );
 
         let description = options
             .suggested_description
@@ -189,7 +280,11 @@ pub fn autofix_frontmatter(
         changes.push(format!("Added frontmatter with name: {name}"));
         modified = true;
 
-        format!("{}\n{}", generate_frontmatter(&name, &description), content)
+        // Scaffold body if too short
+        let (body, body_changes) = scaffold_body(content, &description);
+        changes.extend(body_changes);
+
+        format!("{}\n{}", generate_frontmatter(&name, &description), body)
     };
 
     let mut result = AutofixResult {
@@ -270,5 +365,95 @@ mod tests {
         let truncated = truncate_description(&long);
         assert_eq!(truncated.len(), MAX_DESCRIPTION_LENGTH);
         assert!(truncated.ends_with("..."));
+    }
+
+    #[test]
+    fn test_to_kebab_case() {
+        assert_eq!(to_kebab_case("My Cool Skill"), "my-cool-skill");
+        assert_eq!(to_kebab_case("already-kebab"), "already-kebab");
+        assert_eq!(to_kebab_case("CamelCase"), "camelcase");
+        assert_eq!(to_kebab_case("with  spaces"), "with-spaces");
+        assert_eq!(to_kebab_case("--leading-trailing--"), "leading-trailing");
+    }
+
+    #[test]
+    fn test_scaffold_body_short_content() {
+        let body = "Some skill stuff.";
+        let (scaffolded, changes) = scaffold_body(body, "do something useful");
+        assert!(!changes.is_empty());
+        assert!(scaffolded.contains("## Overview"));
+        assert!(scaffolded.contains("## Instructions"));
+        assert!(scaffolded.contains("## When to Use"));
+        assert!(scaffolded.contains("## Output Format"));
+        assert!(scaffolded.contains("do something useful"));
+    }
+
+    #[test]
+    fn test_scaffold_body_already_complete() {
+        let body = "This is a well-written skill with plenty of content. \
+            It has many words already and does not need scaffolding. \
+            The body is long enough to pass the minimum word count threshold easily.";
+        let (scaffolded, changes) = scaffold_body(body, "test");
+        assert!(changes.is_empty());
+        assert_eq!(scaffolded, body);
+    }
+
+    #[test]
+    fn test_scaffold_preserves_existing_sections() {
+        let body = "## Instructions\n\n1. Do the thing\n2. Check the result";
+        let (scaffolded, changes) = scaffold_body(body, "a skill");
+        // Should add When to Use and Output Format but NOT Instructions or Overview (has heading)
+        assert!(scaffolded.contains("## When to Use"));
+        assert!(scaffolded.contains("## Output Format"));
+        assert!(!changes.iter().any(|c| c.contains("Instructions")));
+        assert!(!changes.iter().any(|c| c.contains("Overview")));
+    }
+
+    #[test]
+    fn test_autofix_scaffolds_short_body() {
+        let content = "---\nname: cool-skill\ndescription: does everything\n---\n\nShort body.";
+        let options = AutofixOptions::default();
+        let result =
+            autofix_frontmatter(Path::new("/test/cool-skill.md"), content, &options).unwrap();
+        assert!(result.modified);
+        assert!(result.content.contains("## Instructions"));
+        assert!(result.changes.iter().any(|c| c.contains("Instructions")));
+    }
+
+    #[test]
+    fn test_truncate_name_multibyte_utf8() {
+        // A name with multi-byte UTF-8 characters that exceeds MAX_NAME_LENGTH chars.
+        // The old byte-index slice `name[..MAX_NAME_LENGTH]` would panic at a non-char
+        // boundary; the fixed `chars().take()` must handle this safely.
+        let prefix = "skill-";
+        let multibyte_padding = "あ".repeat(MAX_NAME_LENGTH); // each あ is 3 bytes
+        let long_name = format!("{prefix}{multibyte_padding}");
+        assert!(long_name.chars().count() > MAX_NAME_LENGTH);
+
+        let content = format!(
+            "---\nname: {long_name}\ndescription: test multibyte\n---\n\n\
+             Lots of content here to avoid scaffolding. This body has enough words \
+             to pass the minimum threshold for body completeness checks."
+        );
+        let options = AutofixOptions::default();
+        let result = autofix_frontmatter(Path::new("/test/skill.md"), &content, &options).unwrap();
+        assert!(result.modified);
+        assert!(result.changes.iter().any(|c| c.contains("Truncated name")));
+        // Verify the truncated name is valid UTF-8 and within limits
+        let fm_start = result.content.find("name: ").unwrap() + 6;
+        let fm_end = result.content[fm_start..].find('\n').unwrap() + fm_start;
+        let truncated_name = &result.content[fm_start..fm_end];
+        assert!(truncated_name.chars().count() <= MAX_NAME_LENGTH);
+        assert!(truncated_name.is_ascii() || truncated_name.contains('あ'));
+    }
+
+    #[test]
+    fn test_autofix_normalizes_name_to_kebab() {
+        let content = "---\nname: My Cool Skill\ndescription: a skill\n---\n\nLots of content here to avoid scaffolding. This body has enough words to pass the minimum threshold for body completeness checks.";
+        let options = AutofixOptions::default();
+        let result = autofix_frontmatter(Path::new("/test/skill.md"), content, &options).unwrap();
+        assert!(result.modified);
+        assert!(result.content.contains("name: my-cool-skill"));
+        assert!(result.changes.iter().any(|c| c.contains("kebab-case")));
     }
 }

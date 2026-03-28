@@ -29,7 +29,11 @@ pub(crate) fn handle_validate_command(
     let skills = discover_skills(&roots, None)?;
 
     if skills.is_empty() {
-        println!("No skills found to validate.");
+        if format.is_json() {
+            println!("[]");
+        } else {
+            println!("No skills found to validate.");
+        }
         return Ok(());
     }
 

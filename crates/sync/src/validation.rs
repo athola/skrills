@@ -202,19 +202,17 @@ pub fn apply_autofix_to_skill(skill: &Command) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::ContentFormat;
+    use std::path::PathBuf;
     use std::time::SystemTime;
 
     fn make_skill(name: &str, content: &str) -> Command {
-        Command {
-            name: name.to_string(),
-            content: content.as_bytes().to_vec(),
-            source_path: format!("{}.md", name).into(),
-            modified: SystemTime::now(),
-            hash: "test".to_string(),
-            modules: Vec::new(),
-            content_format: ContentFormat::default(),
-        }
+        let mut cmd = Command::new(
+            name.to_string(),
+            content.as_bytes().to_vec(),
+            PathBuf::from(format!("{name}.md")),
+        );
+        cmd.modified = SystemTime::UNIX_EPOCH;
+        cmd
     }
 
     #[test]

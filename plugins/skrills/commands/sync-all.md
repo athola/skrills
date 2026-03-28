@@ -1,6 +1,6 @@
 ---
-description: Sync skills, commands, MCP servers, and preferences between Claude, Codex, and Copilot in one operation.
-argument-hint: "[--from claude|codex|copilot] [--to claude|codex|copilot] [--dry-run]"
+description: Sync skills, commands, MCP servers, and preferences between Claude, Codex, Copilot, and Cursor in one operation.
+argument-hint: "[--from claude|codex|copilot|cursor] [--to claude|codex|copilot|cursor] [--dry-run]"
 triggers: sync skills, synchronize, copy to codex, copy to copilot, transfer skills, migrate skills
 ---
 
@@ -9,7 +9,7 @@ triggers: sync skills, synchronize, copy to codex, copy to copilot, transfer ski
 Sync all configurations between AI coding assistants using the skrills MCP server.
 
 Use the `mcp__plugin_skrills_skrills__sync-all` tool with these parameters:
-- `from`: Source agent (claude, codex, or copilot). Default: claude
+- `from`: Source agent (claude, codex, copilot, or cursor). Default: claude
 - `to`: Target agent. Default: codex (for claude source) or claude (for others)
 - `dry_run`: Set to true to preview changes without writing
 - `force`: Set to true to skip confirmation prompts
@@ -30,5 +30,5 @@ Report sync results including:
 
 Handle errors:
 - If MCP server unavailable: Report connection error with troubleshooting steps
-- If source/target invalid: List valid options (claude, codex, copilot)
+- If source/target invalid: List valid options (claude, codex, copilot, cursor)
 - If conflicts detected: Show conflicts and prompt for resolution strategy

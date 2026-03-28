@@ -19,6 +19,7 @@ pub(crate) fn handle_skill_import_command(
         SyncSource::Claude => home.join(".claude/skills"),
         SyncSource::Codex => home.join(".codex/skills"),
         SyncSource::Copilot => home.join(".copilot/skills"),
+        SyncSource::Cursor => home.join(".cursor/skills"),
     };
 
     if !dry_run {

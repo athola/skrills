@@ -36,30 +36,17 @@ pub(crate) fn handle_skill_catalog_command(
         })
         .filter(|s| {
             if let Some(ref src) = source {
-                let path_str = s.path.to_string_lossy().to_lowercase();
-                match src {
-                    SyncSource::Claude => path_str.contains("claude"),
-                    SyncSource::Codex => path_str.contains("codex"),
-                    SyncSource::Copilot => path_str.contains("copilot"),
-                }
+                s.source.label() == src.as_str()
             } else {
                 true
             }
         })
         .take(limit)
         .map(|s| {
-            let source_name = if s.path.to_string_lossy().contains("claude") {
-                "claude"
-            } else if s.path.to_string_lossy().contains("codex") {
-                "codex"
-            } else if s.path.to_string_lossy().contains("copilot") {
-                "copilot"
-            } else {
-                "local"
-            };
+            let source_name = s.source.label();
             CatalogEntry {
                 name: s.name.clone(),
-                source: source_name.to_string(),
+                source: source_name,
                 description: s.description.clone(),
                 path: s.path.clone(),
                 deprecated: false,

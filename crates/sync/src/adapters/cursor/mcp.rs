@@ -4,7 +4,7 @@
 
 use super::paths::mcp_config_path;
 use crate::common::{McpServer, McpTransport};
-use crate::report::WriteReport;
+use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -115,15 +115,28 @@ pub fn write_mcp_servers(root: &Path, servers: &HashMap<String, McpServer>) -> R
 
         debug!(name = %name, "Writing Cursor MCP server");
         config.mcp_servers.insert(name.clone(), entry);
-        report.written += 1;
     }
 
+    let json = serde_json::to_string_pretty(&config)?;
+
+    // Skip write if existing config matches
     let path = mcp_config_path(root);
+    if path.exists() {
+        if let Ok(existing) = fs::read_to_string(&path) {
+            if existing == json {
+                report.skipped.push(SkipReason::Unchanged {
+                    item: "mcp.json".to_string(),
+                });
+                return Ok(report);
+            }
+        }
+    }
+
+    report.written = servers.len();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let json = serde_json::to_string_pretty(&config)?;
-    fs::write(&path, json)?;
+    fs::write(&path, &json)?;
 
     Ok(report)
 }

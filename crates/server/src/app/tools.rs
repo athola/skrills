@@ -579,7 +579,10 @@ impl SkillService {
             .get("from")
             .and_then(|v| v.as_str())
             .unwrap_or("claude");
-        let to = default_target_for(from);
+        let to = args
+            .get("to")
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| default_target_for(from));
         let dry_run = args
             .get("dry_run")
             .and_then(|v| v.as_bool())

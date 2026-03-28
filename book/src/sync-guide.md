@@ -99,6 +99,19 @@ Options:
 - `--validate`: Run validation after sync
 - `--autofix`: Auto-fix validation issues
 
+### Shorthand Sync Commands
+
+For convenience, shorthand commands sync from a specific CLI to all others:
+
+```bash
+skrills sync-from-claude     # Claude as source of truth
+skrills sync-from-codex      # Codex as source of truth
+skrills sync-from-copilot    # Copilot as source of truth
+skrills sync-from-cursor     # Cursor as source of truth (converts .mdc back to SKILL.md)
+```
+
+These are equivalent to `skrills sync-all --from <cli>`.
+
 ## Preview Changes
 
 Before syncing, preview what will change:
