@@ -456,4 +456,59 @@ mod tests {
         assert!(result.content.contains("name: my-cool-skill"));
         assert!(result.changes.iter().any(|c| c.contains("kebab-case")));
     }
+
+    /// Verifies autofix creates backups with the `.md.bak` naming convention.
+    ///
+    /// Given: A skill file that needs fixing, with create_backup and write_changes enabled
+    /// When: autofix_frontmatter is called
+    /// Then: A backup file is created with `.md.bak` extension
+    #[test]
+    fn test_autofix_backup_uses_md_bak_extension() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let skill_path = temp_dir.path().join("SKILL.md");
+
+        // Write a skill that needs fixing (missing description for Codex)
+        let content = "# My Skill\nShort body only.";
+        fs::write(&skill_path, content).unwrap();
+
+        let options = AutofixOptions {
+            create_backup: true,
+            write_changes: true,
+            ..Default::default()
+        };
+
+        let result = autofix_frontmatter(&skill_path, content, &options).unwrap();
+        assert!(result.modified, "Autofix should modify the skill");
+        assert!(
+            result.backup_path.is_some(),
+            "Backup path should be set when create_backup is true"
+        );
+
+        let backup_path = result.backup_path.unwrap();
+        assert!(
+            backup_path.exists(),
+            "Backup file should exist on disk at {:?}",
+            backup_path
+        );
+
+        let backup_ext = backup_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        assert!(
+            backup_ext.ends_with(".md.bak"),
+            "Backup should use .md.bak extension, got: {}",
+            backup_ext
+        );
+
+        // Verify backup contains original content
+        let backup_content = fs::read_to_string(&backup_path).unwrap();
+        assert_eq!(
+            backup_content, content,
+            "Backup should contain the original content"
+        );
+    }
 }

@@ -315,4 +315,36 @@ mod tests {
         let result = trim_skill_body(body);
         assert!(!result.contains("\n\n\n"));
     }
+
+    /// T4: split_frontmatter with unclosed `---` returns (None, full_content).
+    ///
+    /// Given: Input starts with `---` but has no closing `---`
+    /// When: split_frontmatter is called
+    /// Then: Returns (None, full_content) treating it as body
+    #[test]
+    fn split_frontmatter_unclosed_delimiter_returns_none() {
+        let content = "---\nkey: val\n";
+        let (raw, body) = split_frontmatter(content);
+        assert!(
+            raw.is_none(),
+            "Unclosed frontmatter should return None, got: {:?}",
+            raw
+        );
+        assert_eq!(
+            body, content,
+            "Full content should be returned as body when frontmatter is unclosed"
+        );
+    }
+
+    /// T4 additional: unclosed frontmatter with more content after.
+    #[test]
+    fn split_frontmatter_unclosed_with_body_content() {
+        let content = "---\nname: test\ndescription: something\n\n# Body\nHere.\n";
+        let (raw, body) = split_frontmatter(content);
+        assert!(
+            raw.is_none(),
+            "Unclosed frontmatter should return None"
+        );
+        assert_eq!(body, content);
+    }
 }

@@ -286,8 +286,9 @@ pub enum Commands {
         #[arg(long, default_value_t = false)]
         list_tools: bool,
 
-        /// Open the dashboard in the default browser after the HTTP server starts.
-        /// Requires `--http`.
+        /// Automatically open the dashboard in the default browser after starting
+        /// the HTTP server. Requires `--http` because there is no browser endpoint
+        /// to open in stdio-only mode.
         #[arg(long, default_value_t = false, requires = "http")]
         open: bool,
     },
