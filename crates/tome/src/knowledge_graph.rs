@@ -140,7 +140,8 @@ impl KnowledgeGraph {
     ) -> TomeResult<()> {
         let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
         conn.execute(
-            "INSERT OR REPLACE INTO nodes (id, kind, label, metadata_json) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO nodes (id, kind, label, metadata_json) VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, label=excluded.label, metadata_json=excluded.metadata_json",
             rusqlite::params![id, kind.as_str(), label, metadata_json],
         )?;
         Ok(())
@@ -358,6 +359,23 @@ mod tests {
         let results = kg.search_nodes("learning", Some(NodeKind::Topic)).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].kind, NodeKind::Topic);
+    }
+
+    #[test]
+    fn upsert_preserves_created_at() {
+        let kg = KnowledgeGraph::open_in_memory().unwrap();
+        kg.add_node("p-1", NodeKind::Paper, "Original Label", None)
+            .unwrap();
+        let original = kg.get_node("p-1").unwrap().unwrap();
+
+        // Update the label; created_at should be preserved
+        kg.add_node("p-1", NodeKind::Paper, "Updated Label", Some(r#"{"key":"val"}"#))
+            .unwrap();
+        let updated = kg.get_node("p-1").unwrap().unwrap();
+
+        assert_eq!(updated.label, "Updated Label");
+        assert_eq!(updated.metadata_json.as_deref(), Some(r#"{"key":"val"}"#));
+        assert_eq!(updated.created_at, original.created_at);
     }
 
     #[test]

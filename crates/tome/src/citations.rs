@@ -58,7 +58,9 @@ impl CitationTracker {
                 cited_id TEXT NOT NULL,
                 context TEXT,
                 discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
-                PRIMARY KEY (citing_id, cited_id)
+                PRIMARY KEY (citing_id, cited_id),
+                FOREIGN KEY (citing_id) REFERENCES tracked_papers(id),
+                FOREIGN KEY (cited_id) REFERENCES tracked_papers(id)
             );
 
             CREATE INDEX IF NOT EXISTS idx_citations_citing ON citations(citing_id);

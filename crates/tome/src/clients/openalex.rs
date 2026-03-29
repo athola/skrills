@@ -62,7 +62,7 @@ impl OpenAlexClient {
     }
 }
 
-fn parse_work(v: &serde_json::Value) -> Option<Paper> {
+pub(crate) fn parse_work(v: &serde_json::Value) -> Option<Paper> {
     Some(Paper {
         id: v["id"].as_str()?.to_string(),
         title: v["title"].as_str()?.to_string(),
@@ -82,4 +82,83 @@ fn parse_work(v: &serde_json::Value) -> Option<Paper> {
         citation_count: v["cited_by_count"].as_u64().map(|c| c as u32),
         pdf_url: v["open_access"]["oa_url"].as_str().map(String::from),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_work_full() {
+        let v = serde_json::json!({
+            "id": "https://openalex.org/W12345",
+            "title": "Deep Learning Survey",
+            "authorships": [
+                {"author": {"display_name": "Yann LeCun"}},
+                {"author": {"display_name": "Geoffrey Hinton"}}
+            ],
+            "publication_year": 2015,
+            "doi": "https://doi.org/10.1234/deep",
+            "cited_by_count": 5000,
+            "open_access": {"oa_url": "https://arxiv.org/pdf/1234.pdf"}
+        });
+        let p = parse_work(&v).unwrap();
+        assert_eq!(p.id, "https://openalex.org/W12345");
+        assert_eq!(p.title, "Deep Learning Survey");
+        assert_eq!(p.authors, vec!["Yann LeCun", "Geoffrey Hinton"]);
+        assert_eq!(p.year, Some(2015));
+        assert_eq!(p.doi.as_deref(), Some("10.1234/deep"));
+        assert_eq!(p.citation_count, Some(5000));
+        assert_eq!(p.source, PaperSource::OpenAlex);
+        assert_eq!(p.pdf_url.as_deref(), Some("https://arxiv.org/pdf/1234.pdf"));
+    }
+
+    #[test]
+    fn parse_work_missing_id_returns_none() {
+        let v = serde_json::json!({"title": "No ID"});
+        assert!(parse_work(&v).is_none());
+    }
+
+    #[test]
+    fn parse_work_missing_title_returns_none() {
+        let v = serde_json::json!({"id": "https://openalex.org/W1"});
+        assert!(parse_work(&v).is_none());
+    }
+
+    #[test]
+    fn parse_work_minimal() {
+        let v = serde_json::json!({
+            "id": "https://openalex.org/W1",
+            "title": "Minimal"
+        });
+        let p = parse_work(&v).unwrap();
+        assert_eq!(p.title, "Minimal");
+        assert!(p.authors.is_empty());
+        assert!(p.year.is_none());
+        assert!(p.doi.is_none());
+        assert!(p.citation_count.is_none());
+        assert!(p.pdf_url.is_none());
+    }
+
+    #[test]
+    fn parse_work_strips_doi_prefix() {
+        let v = serde_json::json!({
+            "id": "https://openalex.org/W1",
+            "title": "DOI Test",
+            "doi": "https://doi.org/10.5555/test"
+        });
+        let p = parse_work(&v).unwrap();
+        assert_eq!(p.doi.as_deref(), Some("10.5555/test"));
+    }
+
+    #[test]
+    fn parse_work_empty_authorships() {
+        let v = serde_json::json!({
+            "id": "https://openalex.org/W1",
+            "title": "Test",
+            "authorships": []
+        });
+        let p = parse_work(&v).unwrap();
+        assert!(p.authors.is_empty());
+    }
 }
