@@ -8,8 +8,8 @@
 //! - Model names translated via `transform_model`
 
 use super::paths::agents_dir;
-use super::utils::{sanitize_name, split_frontmatter};
-use crate::adapters::utils::hash_content;
+use super::utils::sanitize_name;
+use crate::adapters::utils::{hash_content, split_frontmatter};
 use crate::common::{Command, ContentFormat};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
