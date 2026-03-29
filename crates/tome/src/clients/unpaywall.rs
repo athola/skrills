@@ -4,25 +4,27 @@
 use crate::TomeResult;
 
 const BASE_URL: &str = "https://api.unpaywall.org/v2";
-const EMAIL: &str = "research@skrills.dev";
+const DEFAULT_EMAIL: &str = "research@skrills.dev";
 
 pub struct UnpaywallClient {
     http: reqwest::Client,
+    email: String,
 }
 
 impl Default for UnpaywallClient {
     fn default() -> Self {
-        Self::new()
+        Self::new(DEFAULT_EMAIL.to_string())
     }
 }
 
 impl UnpaywallClient {
-    pub fn new() -> Self {
+    pub fn new(email: String) -> Self {
         Self {
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
+            email,
         }
     }
 
@@ -34,7 +36,7 @@ impl UnpaywallClient {
                 "{BASE_URL}/{}",
                 url::form_urlencoded::byte_serialize(doi.as_bytes()).collect::<String>()
             ))
-            .query(&[("email", EMAIL)])
+            .query(&[("email", &self.email)])
             .send()
             .await?;
 

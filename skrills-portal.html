@@ -2570,12 +2570,19 @@ Skill instructions..."></textarea>
   }
 
   function runAnalyzeAll() {
+    // Simple deterministic hash of a string to a number in [0, range)
+    function nameHash(str, range) {
+      let h = 0;
+      for (let i = 0; i < str.length; i++) { h = (h * 31 + str.charCodeAt(i)) | 0; }
+      return ((h < 0 ? -h : h) % range);
+    }
+
     // Estimate tokens for each demo skill based on description length (simulated)
     const analysis = allAssets.skill.map(s => {
       // Simulated: real analysis would read full file content
       // Use description + name as proxy, scaled to realistic skill sizes
       const baseWords = (s.description || '').split(/\s+/).length;
-      const simWords = baseWords * 12 + Math.floor(Math.random() * 200) + 80; // simulate full skill body
+      const simWords = baseWords * 12 + nameHash(s.name, 200) + 80; // deterministic estimate of full skill body
       const tokens = Math.ceil(simWords * 1.3);
       let cat;
       if (tokens < 500) cat = 'Small';
@@ -2609,7 +2616,7 @@ Skill instructions..."></textarea>
       html += '<div style="background: var(--bg-card); border-radius: 6px; padding: 0.5rem 0.75rem; margin-bottom: 0.375rem;">' +
         '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem;">' +
           '<strong style="font-size: 0.8125rem;">' + esc(a.name) + '</strong>' +
-          '<span style="font-size: 0.75rem; font-weight: 600; color: var(--' + catClass + ');">' + a.tokens.toLocaleString() + ' tokens (' + a.cat + ')</span>' +
+          '<span style="font-size: 0.75rem; font-weight: 600; color: var(--' + catClass + ');">\u2248' + a.tokens.toLocaleString() + ' tokens (' + a.cat + ')</span>' +
         '</div>' +
         '<div class="token-bar" style="height: 16px; margin: 0;"><div class="token-fill ' + cssClass(a.cat.toLowerCase()) + '" style="width: ' + pct + '%; font-size: 0;">&nbsp;</div></div>' +
       '</div>';
@@ -2618,7 +2625,7 @@ Skill instructions..."></textarea>
     container.innerHTML = html;
     document.querySelector('[data-view="dashboard"]').click();
     parent.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    toast('Analyzed ' + allAssets.skill.length + ' skills: ' + totalTokens.toLocaleString() + ' total estimated tokens');
+    toast('Analyzed ' + allAssets.skill.length + ' skills: ~' + totalTokens.toLocaleString() + ' total estimated tokens');
   }
 
   // ── Sync actions ────────────────────────────

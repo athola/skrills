@@ -10,6 +10,7 @@
 //! - `trace` - Skill loading status, trace instrumentation
 //! - `intelligence` - Smart recommendations, skill creation, GitHub search
 //! - `mcp` - MCP registry, tool operations, context stats
+//! - `sync` - Sync error paths and parameter handling
 
 mod config;
 mod dependency;
@@ -17,5 +18,6 @@ mod intelligence;
 mod mcp;
 mod resource;
 mod search;
+mod sync;
 mod trace;
 mod validation;

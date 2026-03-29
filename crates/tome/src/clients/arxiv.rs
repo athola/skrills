@@ -172,4 +172,71 @@ mod tests {
         assert_eq!(papers[0].authors, vec!["Test Author"]);
         assert_eq!(papers[0].year, Some(2023));
     }
+
+    #[test]
+    fn parse_arxiv_atom_multiple_entries() {
+        let xml = r#"<feed>
+            <entry>
+                <id>http://arxiv.org/abs/2301.00001v1</id>
+                <title>First Paper</title>
+                <summary>Abstract one.</summary>
+                <published>2023-01-01T00:00:00Z</published>
+                <author><name>Author A</name></author>
+            </entry>
+            <entry>
+                <id>http://arxiv.org/abs/2301.00002v1</id>
+                <title>Second Paper</title>
+                <summary>Abstract two.</summary>
+                <published>2024-06-15T00:00:00Z</published>
+                <author><name>Author B</name></author>
+                <author><name>Author C</name></author>
+            </entry>
+        </feed>"#;
+        let papers = parse_arxiv_atom(xml);
+        assert_eq!(papers.len(), 2);
+        assert_eq!(papers[1].title, "Second Paper");
+        assert_eq!(papers[1].authors, vec!["Author B", "Author C"]);
+        assert_eq!(papers[1].year, Some(2024));
+    }
+
+    #[test]
+    fn parse_arxiv_atom_missing_summary() {
+        let xml = r#"<feed>
+            <entry>
+                <id>http://arxiv.org/abs/2301.00001v1</id>
+                <title>No Abstract</title>
+                <published>2023-01-01T00:00:00Z</published>
+                <author><name>Author</name></author>
+            </entry>
+        </feed>"#;
+        let papers = parse_arxiv_atom(xml);
+        assert_eq!(papers.len(), 1);
+        assert!(papers[0].abstract_text.is_none());
+    }
+
+    #[test]
+    fn parse_arxiv_atom_entry_missing_id_skipped() {
+        let xml = r#"<feed>
+            <entry>
+                <title>No ID Paper</title>
+                <summary>Some text.</summary>
+            </entry>
+        </feed>"#;
+        let papers = parse_arxiv_atom(xml);
+        assert!(papers.is_empty());
+    }
+
+    #[test]
+    fn parse_arxiv_pdf_url_generated() {
+        let xml = r#"<feed>
+            <entry>
+                <id>http://arxiv.org/abs/2301.99999v2</id>
+                <title>PDF Test</title>
+                <published>2023-01-01T00:00:00Z</published>
+                <author><name>A</name></author>
+            </entry>
+        </feed>"#;
+        let papers = parse_arxiv_atom(xml);
+        assert_eq!(papers[0].pdf_url.as_deref(), Some("https://arxiv.org/pdf/2301.99999v2"));
+    }
 }

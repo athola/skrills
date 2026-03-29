@@ -1,6 +1,7 @@
 //! Data models for research results.
 
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 
 /// A research paper from any source.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,7 +39,8 @@ pub struct Discussion {
     pub points: Option<u32>,
     pub comment_count: Option<u32>,
     pub source: DiscussionSource,
-    pub created_at: Option<String>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub created_at: Option<OffsetDateTime>,
 }
 
 /// Source of the discussion.

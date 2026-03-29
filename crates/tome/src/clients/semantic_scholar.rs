@@ -67,7 +67,7 @@ impl SemanticScholarClient {
     }
 }
 
-fn parse_s2_paper(v: &serde_json::Value) -> Option<Paper> {
+pub(crate) fn parse_s2_paper(v: &serde_json::Value) -> Option<Paper> {
     Some(Paper {
         id: v["paperId"].as_str()?.to_string(),
         title: v["title"].as_str()?.to_string(),
@@ -90,4 +90,89 @@ fn parse_s2_paper(v: &serde_json::Value) -> Option<Paper> {
         citation_count: v["citationCount"].as_u64().map(|c| c as u32),
         pdf_url: v["openAccessPdf"]["url"].as_str().map(String::from),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::PaperSource;
+
+    #[test]
+    fn parse_s2_paper_full() {
+        let v = serde_json::json!({
+            "paperId": "abc123",
+            "title": "Attention Is All You Need",
+            "authors": [
+                {"name": "Ashish Vaswani"},
+                {"name": "Noam Shazeer"}
+            ],
+            "abstract": "The dominant sequence transduction models...",
+            "year": 2017,
+            "externalIds": {"DOI": "10.5555/3295222.3295349"},
+            "citationCount": 90000,
+            "openAccessPdf": {"url": "https://arxiv.org/pdf/1706.03762.pdf"}
+        });
+        let p = parse_s2_paper(&v).unwrap();
+        assert_eq!(p.id, "abc123");
+        assert_eq!(p.title, "Attention Is All You Need");
+        assert_eq!(p.authors, vec!["Ashish Vaswani", "Noam Shazeer"]);
+        assert_eq!(p.abstract_text.as_deref(), Some("The dominant sequence transduction models..."));
+        assert_eq!(p.year, Some(2017));
+        assert_eq!(p.doi.as_deref(), Some("10.5555/3295222.3295349"));
+        assert_eq!(p.url.as_deref(), Some("https://www.semanticscholar.org/paper/abc123"));
+        assert_eq!(p.source, PaperSource::SemanticScholar);
+        assert_eq!(p.citation_count, Some(90000));
+        assert_eq!(p.pdf_url.as_deref(), Some("https://arxiv.org/pdf/1706.03762.pdf"));
+    }
+
+    #[test]
+    fn parse_s2_paper_missing_id_returns_none() {
+        let v = serde_json::json!({"title": "No ID Paper"});
+        assert!(parse_s2_paper(&v).is_none());
+    }
+
+    #[test]
+    fn parse_s2_paper_missing_title_returns_none() {
+        let v = serde_json::json!({"paperId": "abc"});
+        assert!(parse_s2_paper(&v).is_none());
+    }
+
+    #[test]
+    fn parse_s2_paper_minimal() {
+        let v = serde_json::json!({
+            "paperId": "xyz",
+            "title": "Minimal Paper"
+        });
+        let p = parse_s2_paper(&v).unwrap();
+        assert_eq!(p.id, "xyz");
+        assert_eq!(p.title, "Minimal Paper");
+        assert!(p.authors.is_empty());
+        assert!(p.abstract_text.is_none());
+        assert!(p.year.is_none());
+        assert!(p.doi.is_none());
+        assert!(p.citation_count.is_none());
+        assert!(p.pdf_url.is_none());
+    }
+
+    #[test]
+    fn parse_s2_paper_empty_authors() {
+        let v = serde_json::json!({
+            "paperId": "p1",
+            "title": "Test",
+            "authors": []
+        });
+        let p = parse_s2_paper(&v).unwrap();
+        assert!(p.authors.is_empty());
+    }
+
+    #[test]
+    fn parse_s2_paper_null_abstract() {
+        let v = serde_json::json!({
+            "paperId": "p1",
+            "title": "Test",
+            "abstract": null
+        });
+        let p = parse_s2_paper(&v).unwrap();
+        assert!(p.abstract_text.is_none());
+    }
 }
