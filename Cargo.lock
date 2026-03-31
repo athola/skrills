@@ -4289,6 +4289,7 @@ dependencies = [
  "ratatui",
  "skrills-discovery",
  "skrills-metrics",
+ "skrills_sync",
  "tempfile",
  "thiserror 2.0.18",
  "time",

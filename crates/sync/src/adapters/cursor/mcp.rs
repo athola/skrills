@@ -34,6 +34,18 @@ struct McpServerEntry {
     headers: Option<HashMap<String, String>>,
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     enabled: bool,
+    #[serde(
+        rename = "allowedTools",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    allowed_tools: Vec<String>,
+    #[serde(
+        rename = "disabledTools",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    disabled_tools: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -82,6 +94,8 @@ pub fn read_mcp_servers(root: &Path) -> Result<HashMap<String, McpServer>> {
                 url: entry.url,
                 headers: entry.headers.clone(),
                 enabled: entry.enabled,
+                allowed_tools: entry.allowed_tools,
+                disabled_tools: entry.disabled_tools,
             },
         );
     }
@@ -111,6 +125,8 @@ pub fn write_mcp_servers(root: &Path, servers: &HashMap<String, McpServer>) -> R
             url: server.url.clone(),
             headers: server.headers.clone(),
             enabled: server.enabled,
+            allowed_tools: server.allowed_tools.clone(),
+            disabled_tools: server.disabled_tools.clone(),
         };
 
         debug!(name = %name, "Writing Cursor MCP server");

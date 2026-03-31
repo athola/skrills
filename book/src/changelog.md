@@ -2,11 +2,13 @@
 
 ## 0.7.3 (2026-03-29)
 
+- **NEW: MCP Tool Filtering**: `allowed_tools`/`disabled_tools` fields on `McpServer` synced across all four adapters.
+- **NEW: MCP Servers Dashboard**: TUI and browser dashboards show MCP server name, source, transport, and tool filters. New `/api/mcp-servers` REST endpoint.
 - **Fix: Configurable Unpaywall Email**: `UnpaywallClient::new()` accepts a custom email, replacing the hardcoded default.
 - **Fix: `OffsetDateTime` for Discussions**: `Discussion::created_at` uses `time::OffsetDateTime` with RFC 3339 serde instead of a raw string.
-- **Fix: SQL Upsert**: Knowledge graph `INSERT OR REPLACE` replaced with `ON CONFLICT DO UPDATE` to preserve `created_at` timestamps.
+- **Fix: SQL Upsert**: Knowledge graph and citation tracker `INSERT OR REPLACE` replaced with `ON CONFLICT DO UPDATE` to preserve timestamps and metadata.
 - **Refactor**: Promoted `split_frontmatter` to shared adapter utilities for cross-adapter reuse.
-- **Testing**: Parser tests for five `tome` API clients, Cursor adapter edge cases, sync error paths, and serde roundtrip tests.
+- **Testing**: Parser tests for five `tome` API clients, Cursor adapter edge cases, sync error paths, serde roundtrip tests, MCP tool-filtering roundtrip tests, dashboard MCP panel tests, and API integration tests.
 
 ## 0.7.2 (2026-03-25)
 

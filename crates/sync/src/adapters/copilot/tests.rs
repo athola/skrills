@@ -355,6 +355,8 @@ fn write_mcp_servers_creates_mcp_config_json() {
             url: None,
             headers: None,
             enabled: true,
+            allowed_tools: vec![],
+            disabled_tools: vec![],
         },
     );
 
@@ -396,6 +398,8 @@ fn write_mcp_servers_preserves_existing_structure() {
             url: None,
             headers: None,
             enabled: true,
+            allowed_tools: vec![],
+            disabled_tools: vec![],
         },
     );
 
@@ -627,6 +631,8 @@ fn mcp_servers_roundtrip() {
             url: None,
             headers: None,
             enabled: true,
+            allowed_tools: vec![],
+            disabled_tools: vec![],
         },
     );
 
@@ -920,6 +926,8 @@ fn mcp_servers_handles_special_chars_in_env() {
             url: None,
             headers: None,
             enabled: true,
+            allowed_tools: vec![],
+            disabled_tools: vec![],
         },
     );
 
@@ -1115,4 +1123,95 @@ fn mcp_servers_warns_on_wrong_env_type() {
     let server = servers.get("test").unwrap();
     assert_eq!(server.command, "/bin/test");
     assert!(server.env.is_empty(), "Wrong type env should be empty");
+}
+
+#[test]
+fn read_mcp_servers_with_tool_configs() {
+    let tmp = tempdir().unwrap();
+    let mcp_config_path = tmp.path().join("mcp-config.json");
+    fs::write(
+        &mcp_config_path,
+        r#"{
+        "mcpServers": {
+            "restricted-server": {
+                "command": "/usr/bin/mcp-server",
+                "args": ["--port", "3000"],
+                "allowedTools": ["read_file", "search_*"],
+                "disabledTools": ["delete_file", "write_file"]
+            }
+        }
+    }"#,
+    )
+    .unwrap();
+
+    let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+    let servers = adapter.read_mcp_servers().unwrap();
+
+    let server = servers.get("restricted-server").unwrap();
+    assert_eq!(server.allowed_tools, vec!["read_file", "search_*"]);
+    assert_eq!(server.disabled_tools, vec!["delete_file", "write_file"]);
+}
+
+#[test]
+fn write_mcp_servers_preserves_tool_configs() {
+    let tmp = tempdir().unwrap();
+    let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+
+    let mut servers = HashMap::new();
+    servers.insert(
+        "my-server".to_string(),
+        McpServer {
+            name: "my-server".to_string(),
+            transport: McpTransport::Stdio,
+            command: "/bin/server".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            url: None,
+            headers: None,
+            enabled: true,
+            allowed_tools: vec!["tool_a".to_string(), "tool_b".to_string()],
+            disabled_tools: vec!["tool_c".to_string()],
+        },
+    );
+
+    adapter.write_mcp_servers(&servers).unwrap();
+
+    let read_back = adapter.read_mcp_servers().unwrap();
+    let server = read_back.get("my-server").unwrap();
+    assert_eq!(
+        server.allowed_tools,
+        vec!["tool_a".to_string(), "tool_b".to_string()]
+    );
+    assert_eq!(server.disabled_tools, vec!["tool_c".to_string()]);
+}
+
+#[test]
+fn mcp_servers_empty_tool_configs_omitted_from_json() {
+    let tmp = tempdir().unwrap();
+    let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+
+    let mut servers = HashMap::new();
+    servers.insert(
+        "clean-server".to_string(),
+        McpServer {
+            name: "clean-server".to_string(),
+            transport: McpTransport::Stdio,
+            command: "/bin/server".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            url: None,
+            headers: None,
+            enabled: true,
+            allowed_tools: vec![],
+            disabled_tools: vec![],
+        },
+    );
+
+    adapter.write_mcp_servers(&servers).unwrap();
+
+    let content = fs::read_to_string(tmp.path().join("mcp-config.json")).unwrap();
+    let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let server_json = &settings["mcpServers"]["clean-server"];
+    assert!(server_json.get("allowedTools").is_none());
+    assert!(server_json.get("disabledTools").is_none());
 }

@@ -5,13 +5,15 @@
 </p>
 
 [![Crates.io](https://img.shields.io/crates/v/skrills.svg)](https://crates.io/crates/skrills)
+[![Downloads](https://img.shields.io/crates/d/skrills.svg)](https://crates.io/crates/skrills)
 [![Docs](https://img.shields.io/github/actions/workflow/status/athola/skrills/book-pages.yml?branch=master&label=docs)](https://athola.github.io/skrills/)
 [![CI](https://img.shields.io/github/actions/workflow/status/athola/skrills/ci.yml?branch=master&label=ci)](https://github.com/athola/skrills/actions/workflows/ci.yml)
 [![Coverage](https://img.shields.io/github/actions/workflow/status/athola/skrills/coverage.yml?branch=master&label=coverage)](https://github.com/athola/skrills/actions/workflows/coverage.yml)
 [![Audit](https://img.shields.io/github/actions/workflow/status/athola/skrills/audit.yml?branch=master&label=audit)](https://github.com/athola/skrills/actions/workflows/audit.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Skills support engine for Claude Code, Codex CLI, GitHub Copilot CLI, and Cursor.
+Skills support engine for Claude Code, Codex CLI, GitHub Copilot CLI,
+and Cursor.
 
 [Installation](book/src/installation.md) |
 [User Guide](https://athola.github.io/skrills/) |
@@ -20,20 +22,36 @@ Skills support engine for Claude Code, Codex CLI, GitHub Copilot CLI, and Cursor
 [FAQ](docs/FAQ.md) |
 [Changelog](book/src/changelog.md)
 
-> **What's new in 0.7.3** -- Configurable Unpaywall email,
-> `OffsetDateTime` for discussion timestamps, SQL upsert fix
-> for knowledge graph, shared `split_frontmatter` utility, and
-> parser tests across five `tome` API clients.
+> **What's new in 0.7.3** -- MCP tool filtering
+> (`allowed_tools`/`disabled_tools`) synced across all adapters,
+> MCP servers panel in TUI and browser dashboards,
+> `/api/mcp-servers` REST endpoint, configurable Unpaywall email,
+> `OffsetDateTime` for discussion timestamps, and SQL upsert fix.
 > See [changelog](book/src/changelog.md).
+
+## Demo
+
+![Skrills Demo](assets/gifs/quickstart.gif)
+
+**TUI dashboard** -- navigate skills, activity, and metrics with
+keyboard shortcuts:
+
+![TUI Dashboard](assets/gifs/tui.gif)
+
+See the [quickstart tutorial](docs/tutorials/quickstart.md) for a
+walkthrough, or the [MCP tutorial](docs/tutorials/mcp.md) for server
+setup.
 
 ## Features
 
 - **Cross-CLI validation** -- validates skills against Claude Code
   (permissive), Codex CLI (strict), Copilot CLI (strict), and Cursor
-  rules. Auto-derives missing YAML frontmatter from file paths and content.
+  rules. Auto-derives missing YAML frontmatter from file paths and
+  content.
 - **Multi-directional sync** -- syncs skills, commands, agents, MCP
-  servers, rules, and preferences across all four environments. Uses file
-  hashing to respect manual edits so user changes are not overwritten.
+  servers, rules, and preferences across all four environments. Uses
+  file hashing to respect manual edits so user changes are not
+  overwritten.
 - **Token analytics** -- measures token usage per skill and suggests
   reductions to fit context windows.
 - **Dependency resolution** -- resolves skill dependencies with cycle
@@ -43,21 +61,14 @@ Skills support engine for Claude Code, Codex CLI, GitHub Copilot CLI, and Cursor
 - **Session mining** -- parses Claude Code and Codex CLI session
   history to improve recommendations based on actual usage.
 - **Visualization** -- TUI and browser dashboard showing discovered
-  skills, validation status, and usage metrics. The browser dashboard
+  skills, validation status, usage metrics, and MCP server
+  configurations with tool filter indicators. The browser dashboard
   supports light and dark modes. The standalone
   [`skrills-portal.html`](skrills-portal.html) can be opened directly
   in a browser or uploaded to integration platforms without a running
   server.
 - **Discovery deduplication** -- frontmatter identity matching
   consolidates the same skill installed in multiple locations.
-
-## Demo
-
-![Skrills Demo](assets/gifs/quickstart.gif)
-
-See the [quickstart tutorial](docs/tutorials/quickstart.md) for a
-walkthrough, or the [MCP tutorial](docs/tutorials/mcp.md) for server
-setup.
 
 ## Installation
 
@@ -74,7 +85,8 @@ powershell -ExecutionPolicy Bypass -NoLogo -NoProfile -Command ^
 
 **crates.io:** `cargo install skrills`
 
-See [installation guide](book/src/installation.md) for HTTP transport setup, systemd services, and advanced options.
+See [installation guide](book/src/installation.md) for HTTP transport
+setup, systemd services, and advanced options.
 
 ## Quickstart
 
@@ -97,7 +109,7 @@ skrills serve --http 127.0.0.1:3000 --open
 # Interactive TUI dashboard
 skrills tui
 
-# Launch an agent with automatic backend routing (Claude → Codex fallback)
+# Launch an agent with automatic backend routing (Claude -> Codex fallback)
 skrills multi-cli-agent my-agent
 ```
 
@@ -127,44 +139,17 @@ workflows.
 
 ## Skill Management
 
-Beyond validation and analysis, Skrills provides tools for managing skill lifecycles:
-
 ```bash
-# Deprecate a skill with migration guidance
-skrills skill-deprecate old-skill --replacement "new-skill" --message "Replaced by more efficient version"
-
-# Rollback a skill to a previous version
+# Deprecate, rollback, import, or score skills
+skrills skill-deprecate old-skill --replacement "new-skill"
 skrills skill-rollback my-skill --version abc123
-
-# Import skills from external sources
 skrills skill-import https://example.com/skill.md
-skrills skill-import ~/local/skills/
-
-# Generate usage reports
-skrills skill-usage-report --format json > report.json
-
-# Calculate quality scores
 skrills skill-score
-
-# Browse and search available skills
-skrills skill-catalog --filter "python"
-
-# View skill performance metrics
-skrills skill-profile my-skill
 ```
 
-## Limitations
-
-- **No runtime skill injection**: Skrills validates and syncs
-  files; it does not inject skills into prompts at runtime.
-- **Copilot command sync**: Copilot CLI does not support slash
-  commands, so command sync is skipped.
-- **Cursor preferences**: Cursor preferences are not yet mapped;
-  preference sync is skipped for Cursor targets.
-- **Empirical mining**: Session history parsing works best with
-  recent Claude Code / Codex CLI versions.
-- **LLM generation**: Requires `ANTHROPIC_API_KEY` or
-  `OPENAI_API_KEY` for skill creation.
+See [CLI reference](book/src/cli.md) for the full set of
+`skill-*` subcommands (`skill-catalog`, `skill-profile`,
+`skill-usage-report`).
 
 ## Architecture
 
@@ -184,7 +169,8 @@ skrills skill-profile my-skill
 | `tome` | Research API orchestration, caching, PDF serving |
 | `test-utils` | Shared test infrastructure (fixtures, RAII guards, temp dirs) |
 
-See [architecture docs](docs/architecture.md) for details.
+See [architecture docs](docs/architecture.md) for the crate
+dependency graph and runtime flow.
 
 ## Configuration
 
@@ -215,12 +201,30 @@ subcommand) and [FAQ](docs/FAQ.md) for environment variables.
 | [Security](docs/security.md) | Auth, TLS, threat model |
 | [Changelog](book/src/changelog.md) | Release history |
 
+## Limitations
+
+- **No runtime skill injection**: Skrills validates and syncs
+  files; it does not inject skills into prompts at runtime.
+- **Copilot command sync**: Copilot CLI does not support slash
+  commands, so command sync is skipped.
+- **Cursor preferences**: Cursor preferences are not yet mapped;
+  preference sync is skipped for Cursor targets.
+- **Empirical mining**: Session history parsing works best with
+  recent Claude Code / Codex CLI versions.
+- **LLM generation**: Requires `ANTHROPIC_API_KEY` or
+  `OPENAI_API_KEY` for skill creation.
+
 ## Plugin Marketplaces
 
-Skrills validates, analyzes, and syncs skills from these exemplar plugin marketplaces:
+Skrills validates, analyzes, and syncs skills from these exemplar
+plugin marketplaces:
 
-- [superpowers](https://github.com/obra/superpowers) — Opinionated skill pack for Claude Code covering TDD, code review, planning, debugging, and development workflows.
-- [claude-night-market](https://github.com/athola/claude-night-market) — Plugin marketplace for Claude Code with skills, agents, hooks, and commands across multiple domains.
+- [superpowers](https://github.com/obra/superpowers) -- Opinionated
+  skill pack for Claude Code covering TDD, code review, planning,
+  debugging, and development workflows.
+- [claude-night-market](https://github.com/athola/claude-night-market)
+  -- Plugin marketplace for Claude Code with skills, agents, hooks,
+  and commands across multiple domains.
 
 ## Development
 
@@ -228,13 +232,18 @@ Skrills validates, analyzes, and syncs skills from these exemplar plugin marketp
 make lint test --quiet
 ```
 
-Requires Rust 1.75+. See [development guide](book/src/development.md) for test coverage, CI, and contribution workflow.
+Requires Rust 1.75+. See [development guide](book/src/development.md)
+for test coverage, CI, and contribution workflow.
 
 ## Contributing
 
-- **Security issues**: See [security policy](docs/security.md) and [threat model](docs/threat-model.md)
-- **Bug reports**: Include OS, `skrills --version`, and logs (`--trace-wire` for MCP)
-- **Pull requests**: Follow [process guidelines](docs/process-guidelines.md); update docs/tests with code
+- **Security issues**: See [security policy](docs/security.md) and
+  [threat model](docs/threat-model.md)
+- **Bug reports**: Include OS, `skrills --version`, and logs
+  (`--trace-wire` for MCP)
+- **Pull requests**: Follow
+  [process guidelines](docs/process-guidelines.md); update docs/tests
+  with code
 
 ## License
 

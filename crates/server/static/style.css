@@ -72,6 +72,7 @@ main {
     flex: 1;
     display: grid;
     grid-template-columns: 1fr 1fr 1fr;
+    grid-template-rows: 1fr auto;
     gap: 0.75rem;
     padding: 0.75rem;
     min-height: 0;
@@ -379,4 +380,104 @@ footer {
         position: sticky;
         top: calc(var(--header-h) + 0.75rem);
     }
+
+    .mcp-panel {
+        order: 2;
+        max-height: 250px;
+    }
+}
+
+/* ── MCP Servers Panel ─────────────────────── */
+.mcp-panel {
+    grid-column: 1 / -1;
+}
+
+.mcp-panel #mcp-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 0.5rem;
+    overflow-y: auto;
+    max-height: 220px;
+}
+
+.mcp-server-item {
+    background: var(--bg-card);
+    border-radius: 6px;
+    padding: 0.625rem;
+    border: 1px solid transparent;
+    transition: border-color 0.15s;
+}
+
+.mcp-server-item:hover {
+    border-color: var(--teal-dim);
+}
+
+.mcp-server-header {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    margin-bottom: 0.25rem;
+    flex-wrap: wrap;
+}
+
+.mcp-server-name {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.mcp-server-source,
+.mcp-server-transport {
+    font-size: 0.625rem;
+    padding: 0.1rem 0.375rem;
+    border-radius: 3px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.mcp-server-source {
+    background: var(--teal-dim);
+    color: var(--bg-deep);
+}
+
+.mcp-server-transport {
+    background: var(--bg-hover);
+    color: var(--text-muted);
+}
+
+.mcp-server-disabled {
+    font-size: 0.625rem;
+    padding: 0.1rem 0.375rem;
+    border-radius: 3px;
+    background: var(--error);
+    color: var(--bg-deep);
+    font-weight: 600;
+}
+
+.mcp-server-cmd {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.mcp-server-tools {
+    font-size: 0.6875rem;
+    margin-top: 0.25rem;
+    padding: 0.2rem 0.375rem;
+    border-radius: 4px;
+    line-height: 1.3;
+}
+
+.mcp-tools-allowed {
+    background: rgba(107, 201, 143, 0.1);
+    color: var(--success);
+}
+
+.mcp-tools-disabled {
+    background: rgba(224, 96, 96, 0.1);
+    color: var(--error);
 }

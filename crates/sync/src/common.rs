@@ -108,6 +108,14 @@ pub struct McpServer {
     /// Whether the server is enabled
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Tool names/patterns explicitly allowed (whitelist).
+    /// When set, only these tools are available from the server.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_tools: Vec<String>,
+    /// Tool names/patterns explicitly disabled (blacklist).
+    /// These tools are hidden from the model even if the server exposes them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_tools: Vec<String>,
 }
 
 fn default_true() -> bool {

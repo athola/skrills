@@ -74,7 +74,11 @@ pub(crate) fn parse_hit(v: &serde_json::Value) -> Option<Discussion> {
         comment_count: v["num_comments"].as_u64().map(|c| c as u32),
         source: DiscussionSource::HackerNews,
         created_at: v["created_at"].as_str().and_then(|s| {
-            time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok()
+            time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
+                .inspect_err(|e| {
+                    tracing::debug!("failed to parse created_at timestamp {:?}: {}", s, e);
+                })
+                .ok()
         }),
     })
 }

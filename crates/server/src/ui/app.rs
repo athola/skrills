@@ -24,7 +24,7 @@ pub fn App() -> impl IntoView {
     }
 }
 
-/// Dashboard layout with skills panel, activity panel, and metrics panel.
+/// Dashboard layout with skills panel, activity panel, metrics panel, and MCP servers panel.
 #[component]
 pub fn Dashboard() -> impl IntoView {
     view! {
@@ -32,6 +32,7 @@ pub fn Dashboard() -> impl IntoView {
             <h1>"Skrills Dashboard"</h1>
             <div class="stats">
                 <span>"Skills: "<strong id="skill-count">"0"</strong></span>
+                <span>"MCP: "<strong id="mcp-count">"0"</strong></span>
                 <span>"Invocations: "<strong id="invocation-count">"0"</strong></span>
                 <span>"Events: "<strong id="event-count">"0"</strong></span>
                 <span id="last-update">"-"</span>
@@ -42,6 +43,7 @@ pub fn Dashboard() -> impl IntoView {
             <SkillsPanel/>
             <ActivityPanel/>
             <MetricsPanel/>
+            <McpServersPanel/>
         </main>
 
         <footer>
@@ -87,6 +89,19 @@ pub fn MetricsPanel() -> impl IntoView {
             <h2>"Metrics"</h2>
             <div id="metrics-content">
                 <div class="empty">"Select a skill to view details"</div>
+            </div>
+        </section>
+    }
+}
+
+/// MCP servers panel.
+#[component]
+pub fn McpServersPanel() -> impl IntoView {
+    view! {
+        <section class="panel mcp-panel">
+            <h2>"MCP Servers"</h2>
+            <div id="mcp-list">
+                <div class="empty">"Loading MCP servers..."</div>
             </div>
         </section>
     }

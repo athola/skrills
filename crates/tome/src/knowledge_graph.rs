@@ -158,7 +158,8 @@ impl KnowledgeGraph {
     ) -> TomeResult<()> {
         let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
         conn.execute(
-            "INSERT OR REPLACE INTO edges (source_id, target_id, kind, weight, metadata_json) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO edges (source_id, target_id, kind, weight, metadata_json) VALUES (?1, ?2, ?3, ?4, ?5) \
+             ON CONFLICT(source_id, target_id, kind) DO UPDATE SET weight=excluded.weight, metadata_json=excluded.metadata_json",
             rusqlite::params![source_id, target_id, kind.as_str(), weight, metadata_json],
         )?;
         Ok(())

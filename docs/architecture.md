@@ -49,7 +49,7 @@ graph TD
 | Crate | Purpose |
 |-------|---------|
 | `cli` | Thin binary wrapper |
-| `server` | MCP server, CLI commands, HTTP transport, REST API |
+| `server` | MCP server, CLI commands, HTTP transport, REST API (`/api/mcp-servers`) |
 | `sync` | Bidirectional Claude/Codex/Copilot/Cursor sync |
 | `validate` | Skill validation (Claude/Codex/Copilot/Cursor) |
 | `analyze` | Token counting, dependencies |

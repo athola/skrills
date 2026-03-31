@@ -14,6 +14,7 @@ use std::sync::Arc;
 use tower::ServiceExt;
 
 use skrills_server::api::dashboard_routes;
+use skrills_server::api::mcp_servers::mcp_servers_routes;
 use skrills_server::api::metrics::{metrics_routes, MetricsState};
 use skrills_server::api::rules::{rules_routes, RuleResponse, RulesState};
 use skrills_server::api::skills::{skills_routes, ApiState, PaginatedResponse, SkillResponse};
@@ -896,5 +897,143 @@ async fn get_rule_not_found_returns_404() {
         response.status(),
         StatusCode::NOT_FOUND,
         "Should return 404 for nonexistent rule"
+    );
+}
+
+// ── MCP Servers API Tests ──
+
+#[tokio::test]
+async fn mcp_servers_endpoint_returns_json() {
+    let app = mcp_servers_routes();
+
+    let req = Request::builder()
+        .uri("/api/mcp-servers")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = body_string(response.into_body()).await;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&body).expect("Response should be valid JSON");
+
+    assert!(
+        parsed.get("servers").is_some(),
+        "Response should have 'servers' field"
+    );
+    assert!(
+        parsed.get("total").is_some(),
+        "Response should have 'total' field"
+    );
+    assert!(parsed["servers"].is_array(), "'servers' should be an array");
+
+    let total = parsed["total"].as_u64().unwrap();
+    let servers = parsed["servers"].as_array().unwrap();
+    assert_eq!(
+        total as usize,
+        servers.len(),
+        "'total' should match servers array length"
+    );
+}
+
+#[tokio::test]
+async fn mcp_servers_entries_have_required_fields() {
+    let app = mcp_servers_routes();
+
+    let req = Request::builder()
+        .uri("/api/mcp-servers")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.oneshot(req).await.unwrap();
+    let body = body_string(response.into_body()).await;
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let servers = parsed["servers"].as_array().unwrap();
+
+    for server in servers {
+        assert!(server.get("name").is_some(), "Server should have 'name'");
+        assert!(
+            server.get("source").is_some(),
+            "Server should have 'source'"
+        );
+        assert!(
+            server.get("transport").is_some(),
+            "Server should have 'transport'"
+        );
+        assert!(
+            server.get("command").is_some(),
+            "Server should have 'command'"
+        );
+        assert!(
+            server.get("enabled").is_some(),
+            "Server should have 'enabled'"
+        );
+        assert!(
+            server.get("allowed_tools").is_some(),
+            "Server should have 'allowed_tools'"
+        );
+        assert!(
+            server.get("disabled_tools").is_some(),
+            "Server should have 'disabled_tools'"
+        );
+
+        let source = server["source"].as_str().unwrap();
+        assert!(
+            ["claude", "codex", "copilot", "cursor"].contains(&source),
+            "Source should be a known adapter: got '{}'",
+            source
+        );
+
+        let transport = server["transport"].as_str().unwrap();
+        assert!(
+            ["stdio", "http"].contains(&transport),
+            "Transport should be stdio or http: got '{}'",
+            transport
+        );
+    }
+}
+
+// ── Dashboard HTML MCP Panel Test ──
+
+#[tokio::test]
+async fn dashboard_html_includes_mcp_panel() {
+    let app = dashboard_routes();
+
+    let req = Request::builder().uri("/").body(Body::empty()).unwrap();
+
+    let response = app.oneshot(req).await.unwrap();
+    let body = body_string(response.into_body()).await;
+
+    assert!(
+        body.contains("mcp-list"),
+        "Dashboard HTML should contain MCP servers list element"
+    );
+    assert!(
+        body.contains("MCP Servers"),
+        "Dashboard HTML should contain MCP Servers heading"
+    );
+    assert!(
+        body.contains("mcp-count"),
+        "Dashboard HTML should contain MCP count element"
+    );
+}
+
+#[tokio::test]
+async fn dashboard_js_fetches_mcp_servers() {
+    let app = dashboard_routes();
+
+    let req = Request::builder().uri("/").body(Body::empty()).unwrap();
+
+    let response = app.oneshot(req).await.unwrap();
+    let body = body_string(response.into_body()).await;
+
+    assert!(
+        body.contains("fetch('/api/mcp-servers')"),
+        "Dashboard JS should fetch MCP servers API"
+    );
+    assert!(
+        body.contains("renderMcpServers"),
+        "Dashboard JS should include MCP server rendering function"
     );
 }

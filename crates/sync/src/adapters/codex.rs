@@ -260,6 +260,24 @@ impl AgentAdapter for CodexAdapter {
                         .and_then(|v| v.as_bool())
                         .map(|d| !d)
                         .unwrap_or(true),
+                    allowed_tools: config
+                        .get("allowedTools")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    disabled_tools: config
+                        .get("disabledTools")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                 };
                 servers.insert(name.clone(), server);
             }
@@ -418,6 +436,18 @@ impl AgentAdapter for CodexAdapter {
             }
             if !server.enabled {
                 server_config.insert("disabled".into(), serde_json::json!(true));
+            }
+            if !server.allowed_tools.is_empty() {
+                server_config.insert(
+                    "allowedTools".into(),
+                    serde_json::json!(server.allowed_tools),
+                );
+            }
+            if !server.disabled_tools.is_empty() {
+                server_config.insert(
+                    "disabledTools".into(),
+                    serde_json::json!(server.disabled_tools),
+                );
             }
             mcp_obj.insert(name.clone(), serde_json::Value::Object(server_config));
             report.written += 1;
@@ -801,6 +831,8 @@ mod tests {
                 url: None,
                 headers: None,
                 enabled: true,
+                allowed_tools: vec![],
+                disabled_tools: vec![],
             },
         );
 
@@ -1157,6 +1189,8 @@ mod tests {
                 url: None,
                 headers: None,
                 enabled: true,
+                allowed_tools: vec![],
+                disabled_tools: vec![],
             },
         );
 
@@ -1178,5 +1212,96 @@ mod tests {
 
         let result = adapter.write_preferences(&prefs);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn read_mcp_servers_with_tool_configs() {
+        let tmp = tempdir().unwrap();
+        let config_path = tmp.path().join("config.json");
+        fs::write(
+            &config_path,
+            r#"{
+            "mcpServers": {
+                "restricted-server": {
+                    "command": "/usr/bin/mcp-server",
+                    "args": ["--port", "3000"],
+                    "allowedTools": ["read_file", "search_*"],
+                    "disabledTools": ["delete_file", "write_file"]
+                }
+            }
+        }"#,
+        )
+        .unwrap();
+
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let servers = adapter.read_mcp_servers().unwrap();
+
+        let server = servers.get("restricted-server").unwrap();
+        assert_eq!(server.allowed_tools, vec!["read_file", "search_*"]);
+        assert_eq!(server.disabled_tools, vec!["delete_file", "write_file"]);
+    }
+
+    #[test]
+    fn write_mcp_servers_preserves_tool_configs() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        let mut servers = HashMap::new();
+        servers.insert(
+            "my-server".to_string(),
+            McpServer {
+                name: "my-server".to_string(),
+                transport: McpTransport::Stdio,
+                command: "/bin/server".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+                url: None,
+                headers: None,
+                enabled: true,
+                allowed_tools: vec!["tool_a".to_string(), "tool_b".to_string()],
+                disabled_tools: vec!["tool_c".to_string()],
+            },
+        );
+
+        adapter.write_mcp_servers(&servers).unwrap();
+
+        let read_back = adapter.read_mcp_servers().unwrap();
+        let server = read_back.get("my-server").unwrap();
+        assert_eq!(
+            server.allowed_tools,
+            vec!["tool_a".to_string(), "tool_b".to_string()]
+        );
+        assert_eq!(server.disabled_tools, vec!["tool_c".to_string()]);
+    }
+
+    #[test]
+    fn mcp_servers_empty_tool_configs_omitted_from_json() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        let mut servers = HashMap::new();
+        servers.insert(
+            "clean-server".to_string(),
+            McpServer {
+                name: "clean-server".to_string(),
+                transport: McpTransport::Stdio,
+                command: "/bin/server".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+                url: None,
+                headers: None,
+                enabled: true,
+                allowed_tools: vec![],
+                disabled_tools: vec![],
+            },
+        );
+
+        adapter.write_mcp_servers(&servers).unwrap();
+
+        let content = fs::read_to_string(tmp.path().join("config.json")).unwrap();
+        let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let server_json = &settings["mcpServers"]["clean-server"];
+        assert!(server_json.get("allowedTools").is_none());
+        assert!(server_json.get("disabledTools").is_none());
     }
 }

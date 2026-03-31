@@ -15,6 +15,7 @@ publish = true
 [dependencies]
 skrills-metrics = { path = "../metrics", version = "0.7.3" }
 skrills-discovery = { path = "../discovery", version = "0.7.3" }
+skrills_sync = { path = "../sync", version = "0.7.3" }
 
 # TUI
 ratatui = "0.30"

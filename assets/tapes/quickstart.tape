@@ -1,5 +1,5 @@
 # Skrills Quickstart Demo
-# Bidirectional skill sync for Claude Code ↔ Codex
+# Cross-CLI skill sync for Claude Code, Codex, Copilot, and Cursor
 # Run: vhs assets/tapes/quickstart.tape
 
 Output assets/gifs/quickstart.gif
@@ -13,13 +13,13 @@ Set TypingSpeed 50ms
 Set Shell "bash"
 
 # Set up environment - use demo skills from repo
-Env PATH "/home/alext/.local/bin:/home/alext/skrills/target/release:/usr/local/bin:/usr/bin:/bin"
-Env SKRILLS_SKILL_DIR "/home/alext/skrills/assets/demo-skills"
+Env PATH "/Users/alex.thola/skrills/target/release:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+Env SKRILLS_SKILL_DIR "/Users/alex.thola/skrills/assets/demo-skills"
 Env SKRILLS_INCLUDE_CLAUDE "1"
 Env HOME "/tmp/skrills-demo"
 
 # Title
-Type "# Skrills: Unified Skills for Claude Code & Codex"
+Type "# Skrills: Unified Skills across Claude, Codex, Copilot & Cursor"
 Enter
 Sleep 800ms
 Type "clear"
@@ -30,7 +30,7 @@ Sleep 400ms
 Type "# Set up demo environment with sample skills"
 Enter
 Sleep 300ms
-Type "mkdir -p ~/.claude/skills ~/.codex/skills"
+Type "mkdir -p ~/.claude/skills ~/.codex/skills ~/.copilot/skills"
 Enter
 Sleep 300ms
 Type "cp -r $SKRILLS_SKILL_DIR/* ~/.claude/skills/"
@@ -49,16 +49,16 @@ Type "ls ~/.claude/skills"
 Enter
 Sleep 2s
 
-# Validate skills
-Type "# Validate skills for Claude Code and Codex compatibility"
+# Validate skills across all four CLIs
+Type "# Validate skills for Claude, Codex, Copilot, and Cursor"
 Enter
 Sleep 500ms
-Type "skrills validate"
+Type "skrills validate --target both --autofix"
 Enter
 Sleep 3s
 
 # Analyze skills for token usage
-Type "# Analyze skills for token usage and quality"
+Type "# Analyze token usage and get optimization suggestions"
 Enter
 Sleep 500ms
 Type "skrills analyze --suggestions"
@@ -73,31 +73,23 @@ Type "skrills metrics"
 Enter
 Sleep 4s
 
-# Show sync status
-Type "# Check sync status between Claude Code and Codex"
+# Sync skills to all CLIs
+Type "# Sync skills from Claude Code to all other CLIs"
 Enter
 Sleep 500ms
-Type "skrills sync-status"
-Enter
-Sleep 3s
-
-# Sync skills to Codex
-Type "# Sync skills from Claude Code to Codex"
-Enter
-Sleep 500ms
-Type "skrills sync"
+Type "skrills sync-all"
 Enter
 Sleep 3s
 
 # Verify sync
-Type "# Verify skills were synced to ~/.codex/skills"
+Type "# Verify skills synced to Codex and Copilot"
 Enter
 Sleep 500ms
-Type "find ~/.codex/skills -name 'SKILL.md' | head -5"
+Type "find ~/.codex/skills ~/.copilot/skills -name 'SKILL.md' 2>/dev/null | head -5"
 Enter
 Sleep 2s
 
 # Final message
-Type "echo '# Skills now work seamlessly on both platforms!'"
+Type "echo '# Skills now work across all four platforms!'"
 Enter
 Sleep 2s

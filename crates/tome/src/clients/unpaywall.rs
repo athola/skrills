@@ -19,6 +19,9 @@ impl Default for UnpaywallClient {
 
 impl UnpaywallClient {
     pub fn new(email: String) -> Self {
+        if email.is_empty() {
+            tracing::warn!("UnpaywallClient created with empty email; API requests may fail");
+        }
         Self {
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
