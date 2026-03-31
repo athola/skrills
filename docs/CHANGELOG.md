@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.3 - 2026-03-29
+- **Fix: Configurable Unpaywall Email**: `UnpaywallClient::new()` accepts a custom email parameter instead of a hardcoded default, enabling users to comply with Unpaywall's polite pool requirements.
+- **Fix: `OffsetDateTime` for Discussions**: `Discussion::created_at` changed from `Option<String>` to `Option<OffsetDateTime>` with RFC 3339 serde, replacing stringly-typed timestamps with proper date-time values.
+- **Fix: SQL Upsert for Knowledge Graph**: `INSERT OR REPLACE` replaced with `INSERT ... ON CONFLICT DO UPDATE` to preserve `created_at` timestamps during node updates.
+- **Fix: Portal Estimates**: Improved estimate display in `skrills-portal.html`.
+- **Fix: Validate Comment Docs**: Clarified `ValidationSummary::all_valid` doc comment to specify it is the intersection of all target validations.
+- **Refactor: Shared `split_frontmatter`**: Promoted `split_frontmatter` from the Cursor adapter to `crates/sync/src/adapters/utils.rs` for cross-adapter reuse.
+- **Testing**: Added parser tests for arXiv, CrossRef, HN Algolia, OpenAlex, and Semantic Scholar clients. Added Cursor adapter tests for subdirectory rule collisions and agent frontmatter output format. Added sync error path tests for same-source rejection. Added serde roundtrip tests for `Discussion` and `UnpaywallClient` constructor tests.
+
 ## 0.7.2 - 2026-03-25
 - **Fix: Cursor Sync Reliability**: Improved bidirectional sync for Cursor adapter — agents, commands, rules, skills, and utility modules hardened with better error handling and edge-case coverage.
 - **NEW: Shorthand Sync Commands**: Added `/sync-from-cursor`, `/sync-from-claude`, and `/sync-from-copilot` slash commands for quick one-direction syncs.

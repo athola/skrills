@@ -57,3 +57,26 @@ impl UnpaywallClient {
             .map(String::from))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_creates_client_with_default_email() {
+        let client = UnpaywallClient::default();
+        assert_eq!(client.email, DEFAULT_EMAIL);
+    }
+
+    #[test]
+    fn new_accepts_custom_email() {
+        let client = UnpaywallClient::new("user@example.com".to_string());
+        assert_eq!(client.email, "user@example.com");
+    }
+
+    #[test]
+    fn new_accepts_empty_email() {
+        let client = UnpaywallClient::new(String::new());
+        assert_eq!(client.email, "");
+    }
+}

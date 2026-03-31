@@ -1,5 +1,13 @@
 # Changelog Highlights
 
+## 0.7.3 (2026-03-29)
+
+- **Fix: Configurable Unpaywall Email**: `UnpaywallClient::new()` accepts a custom email, replacing the hardcoded default.
+- **Fix: `OffsetDateTime` for Discussions**: `Discussion::created_at` uses `time::OffsetDateTime` with RFC 3339 serde instead of a raw string.
+- **Fix: SQL Upsert**: Knowledge graph `INSERT OR REPLACE` replaced with `ON CONFLICT DO UPDATE` to preserve `created_at` timestamps.
+- **Refactor**: Promoted `split_frontmatter` to shared adapter utilities for cross-adapter reuse.
+- **Testing**: Parser tests for five `tome` API clients, Cursor adapter edge cases, sync error paths, and serde roundtrip tests.
+
 ## 0.7.2 (2026-03-25)
 
 - **Fix: Cursor Sync Reliability**: Hardened bidirectional sync for Cursor adapter across agents, commands, rules, and skills.

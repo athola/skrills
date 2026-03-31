@@ -116,13 +116,22 @@ mod tests {
         assert_eq!(p.id, "abc123");
         assert_eq!(p.title, "Attention Is All You Need");
         assert_eq!(p.authors, vec!["Ashish Vaswani", "Noam Shazeer"]);
-        assert_eq!(p.abstract_text.as_deref(), Some("The dominant sequence transduction models..."));
+        assert_eq!(
+            p.abstract_text.as_deref(),
+            Some("The dominant sequence transduction models...")
+        );
         assert_eq!(p.year, Some(2017));
         assert_eq!(p.doi.as_deref(), Some("10.5555/3295222.3295349"));
-        assert_eq!(p.url.as_deref(), Some("https://www.semanticscholar.org/paper/abc123"));
+        assert_eq!(
+            p.url.as_deref(),
+            Some("https://www.semanticscholar.org/paper/abc123")
+        );
         assert_eq!(p.source, PaperSource::SemanticScholar);
         assert_eq!(p.citation_count, Some(90000));
-        assert_eq!(p.pdf_url.as_deref(), Some("https://arxiv.org/pdf/1706.03762.pdf"));
+        assert_eq!(
+            p.pdf_url.as_deref(),
+            Some("https://arxiv.org/pdf/1706.03762.pdf")
+        );
     }
 
     #[test]

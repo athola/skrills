@@ -341,10 +341,7 @@ mod tests {
     fn split_frontmatter_unclosed_with_body_content() {
         let content = "---\nname: test\ndescription: something\n\n# Body\nHere.\n";
         let (raw, body) = split_frontmatter(content);
-        assert!(
-            raw.is_none(),
-            "Unclosed frontmatter should return None"
-        );
+        assert!(raw.is_none(), "Unclosed frontmatter should return None");
         assert_eq!(body, content);
     }
 }

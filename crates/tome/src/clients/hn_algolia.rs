@@ -73,9 +73,9 @@ pub(crate) fn parse_hit(v: &serde_json::Value) -> Option<Discussion> {
         points: v["points"].as_u64().map(|p| p as u32),
         comment_count: v["num_comments"].as_u64().map(|c| c as u32),
         source: DiscussionSource::HackerNews,
-        created_at: v["created_at"]
-            .as_str()
-            .and_then(|s| time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok()),
+        created_at: v["created_at"].as_str().and_then(|s| {
+            time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok()
+        }),
     })
 }
 

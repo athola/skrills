@@ -233,7 +233,8 @@ mod tests {
     /// ---\nfield: value\n---\n\nbody
     #[test]
     fn translate_agent_frontmatter_output_format() {
-        let input = "---\nname: test-agent\ndescription: A test agent\nmodel: opus\n---\n\nDo the work.\n";
+        let input =
+            "---\nname: test-agent\ndescription: A test agent\nmodel: opus\n---\n\nDo the work.\n";
         let output = translate_agent_frontmatter(input);
 
         // Must start with opening delimiter
@@ -253,9 +254,18 @@ mod tests {
 
         // Extract frontmatter between delimiters
         let fm = &after_open[..close_pos.unwrap()];
-        assert!(fm.contains("name: test-agent"), "Frontmatter must preserve name");
-        assert!(fm.contains("description: A test agent"), "Frontmatter must preserve description");
-        assert!(fm.contains("model: opus"), "Frontmatter must preserve model");
+        assert!(
+            fm.contains("name: test-agent"),
+            "Frontmatter must preserve name"
+        );
+        assert!(
+            fm.contains("description: A test agent"),
+            "Frontmatter must preserve description"
+        );
+        assert!(
+            fm.contains("model: opus"),
+            "Frontmatter must preserve model"
+        );
 
         // Body must follow after the closing delimiter
         let body_start = close_pos.unwrap() + 5; // skip "\n---\n"

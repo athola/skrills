@@ -20,11 +20,10 @@ Skills support engine for Claude Code, Codex CLI, GitHub Copilot CLI, and Cursor
 [FAQ](docs/FAQ.md) |
 [Changelog](book/src/changelog.md)
 
-> **What's new in 0.7.2** -- Cursor adapter fixes for
-> bidirectional sync reliability, new `sync-from-cursor`,
-> `sync-from-claude`, and `sync-from-copilot` shorthand
-> commands, and the `tome` research crate for academic paper
-> search and PDF retrieval.
+> **What's new in 0.7.3** -- Configurable Unpaywall email,
+> `OffsetDateTime` for discussion timestamps, SQL upsert fix
+> for knowledge graph, shared `split_frontmatter` utility, and
+> parser tests across five `tome` API clients.
 > See [changelog](book/src/changelog.md).
 
 ## Features

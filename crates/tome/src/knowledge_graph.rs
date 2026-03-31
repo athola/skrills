@@ -369,8 +369,13 @@ mod tests {
         let original = kg.get_node("p-1").unwrap().unwrap();
 
         // Update the label; created_at should be preserved
-        kg.add_node("p-1", NodeKind::Paper, "Updated Label", Some(r#"{"key":"val"}"#))
-            .unwrap();
+        kg.add_node(
+            "p-1",
+            NodeKind::Paper,
+            "Updated Label",
+            Some(r#"{"key":"val"}"#),
+        )
+        .unwrap();
         let updated = kg.get_node("p-1").unwrap().unwrap();
 
         assert_eq!(updated.label, "Updated Label");

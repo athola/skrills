@@ -62,6 +62,72 @@ pub struct DoiMetadata {
     pub journal: Option<String>,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discussion_roundtrip_with_created_at() {
+        let ts = time::OffsetDateTime::parse(
+            "2024-06-15T10:30:00Z",
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap();
+
+        let d = Discussion {
+            id: "1".to_string(),
+            title: "Test".to_string(),
+            url: "https://example.com".to_string(),
+            points: Some(42),
+            comment_count: Some(10),
+            source: DiscussionSource::HackerNews,
+            created_at: Some(ts),
+        };
+
+        let json = serde_json::to_string(&d).unwrap();
+        assert!(
+            json.contains("2024-06-15T10:30:00Z"),
+            "JSON should contain RFC 3339 timestamp"
+        );
+
+        let roundtripped: Discussion = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtripped.created_at, Some(ts));
+    }
+
+    #[test]
+    fn discussion_roundtrip_with_none_created_at() {
+        let d = Discussion {
+            id: "2".to_string(),
+            title: "No Date".to_string(),
+            url: "https://example.com".to_string(),
+            points: None,
+            comment_count: None,
+            source: DiscussionSource::HackerNews,
+            created_at: None,
+        };
+
+        let json = serde_json::to_string(&d).unwrap();
+        let roundtripped: Discussion = serde_json::from_str(&json).unwrap();
+        assert!(roundtripped.created_at.is_none());
+    }
+
+    #[test]
+    fn paper_source_serde_snake_case() {
+        let json = serde_json::to_string(&PaperSource::SemanticScholar).unwrap();
+        assert_eq!(json, "\"semantic_scholar\"");
+        let roundtripped: PaperSource = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtripped, PaperSource::SemanticScholar);
+    }
+
+    #[test]
+    fn discussion_source_serde_snake_case() {
+        let json = serde_json::to_string(&DiscussionSource::HackerNews).unwrap();
+        assert_eq!(json, "\"hacker_news\"");
+        let roundtripped: DiscussionSource = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtripped, DiscussionSource::HackerNews);
+    }
+}
+
 /// A cached research session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchSession {

@@ -237,6 +237,9 @@ mod tests {
             </entry>
         </feed>"#;
         let papers = parse_arxiv_atom(xml);
-        assert_eq!(papers[0].pdf_url.as_deref(), Some("https://arxiv.org/pdf/2301.99999v2"));
+        assert_eq!(
+            papers[0].pdf_url.as_deref(),
+            Some("https://arxiv.org/pdf/2301.99999v2")
+        );
     }
 }
