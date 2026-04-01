@@ -7,6 +7,7 @@ Terminal UI and browser dashboard for skrills skill visualization and metrics.
 - Real-time skill invocation metrics
 - Validation status overview
 - Sync operation tracking
+- MCP server panel showing discovered servers, transport type, and tool filters (`allowed_tools`/`disabled_tools`)
 - TUI built with Ratatui for terminal rendering
 - Browser UI rendered via Leptos SSR, served alongside MCP on the HTTP transport
 

@@ -8,8 +8,8 @@
 //! - Model names translated via `transform_model`
 
 use super::paths::agents_dir;
-use super::utils::{sanitize_name, split_frontmatter};
-use crate::adapters::utils::hash_content;
+use super::utils::sanitize_name;
+use crate::adapters::utils::{hash_content, split_frontmatter};
 use crate::common::{Command, ContentFormat};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
@@ -227,5 +227,53 @@ mod tests {
         let input = "# Just markdown\n\nNo frontmatter here.\n";
         let output = translate_agent_frontmatter(input);
         assert_eq!(output, input);
+    }
+
+    /// T3: translate_agent_frontmatter produces the expected output format:
+    /// ---\nfield: value\n---\n\nbody
+    #[test]
+    fn translate_agent_frontmatter_output_format() {
+        let input =
+            "---\nname: test-agent\ndescription: A test agent\nmodel: opus\n---\n\nDo the work.\n";
+        let output = translate_agent_frontmatter(input);
+
+        // Must start with opening delimiter
+        assert!(
+            output.starts_with("---\n"),
+            "Output must start with '---\\n', got: {:?}",
+            &output[..20.min(output.len())]
+        );
+
+        // Must have closing delimiter
+        let after_open = &output[4..]; // skip "---\n"
+        let close_pos = after_open.find("\n---\n");
+        assert!(
+            close_pos.is_some(),
+            "Output must contain closing '\\n---\\n' delimiter"
+        );
+
+        // Extract frontmatter between delimiters
+        let fm = &after_open[..close_pos.unwrap()];
+        assert!(
+            fm.contains("name: test-agent"),
+            "Frontmatter must preserve name"
+        );
+        assert!(
+            fm.contains("description: A test agent"),
+            "Frontmatter must preserve description"
+        );
+        assert!(
+            fm.contains("model: opus"),
+            "Frontmatter must preserve model"
+        );
+
+        // Body must follow after the closing delimiter
+        let body_start = close_pos.unwrap() + 5; // skip "\n---\n"
+        let body = &after_open[body_start..];
+        assert!(
+            body.contains("Do the work."),
+            "Body must be preserved after frontmatter, got: {:?}",
+            body
+        );
     }
 }

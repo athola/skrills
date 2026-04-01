@@ -6,7 +6,9 @@
 use crossterm::event::KeyCode;
 use ratatui::{backend::TestBackend, Terminal};
 
-use skrills_dashboard::app::{App, FocusPanel, SkillInfo, SkillLocation, SortOrder, PAGE_SIZE};
+use skrills_dashboard::app::{
+    App, FocusPanel, McpServerInfo, SkillInfo, SkillLocation, SortOrder, PAGE_SIZE,
+};
 use skrills_dashboard::ui;
 use skrills_metrics::{MetricEvent, RuleOutcome, SyncOperation, SyncStatus};
 
@@ -797,4 +799,125 @@ fn full_dashboard_snapshot() {
     assert!(output.contains("commit"), "Skill names present");
     assert!(output.contains("[INV]"), "Activity events present");
     assert!(output.contains("Invocations: 42"), "Skill metrics present");
+}
+
+// ── MCP Servers Panel Tests ──
+
+#[test]
+fn mcp_panel_hidden_when_no_servers() {
+    let mut terminal = test_terminal(120, 25);
+    let mut app = App::new();
+
+    terminal
+        .draw(|f| ui::draw(f, &mut app))
+        .expect("draw failed");
+
+    let output = render_to_string(&terminal);
+
+    assert!(
+        !output.contains("MCP Servers"),
+        "MCP panel should not appear when no servers exist"
+    );
+}
+
+#[test]
+fn mcp_panel_shows_servers() {
+    let mut terminal = test_terminal(120, 30);
+    let mut app = App::new();
+
+    app.mcp_servers = vec![
+        McpServerInfo {
+            name: "test-server".to_string(),
+            source: "claude".to_string(),
+            transport: "stdio".to_string(),
+            command: "/usr/bin/mcp-test".to_string(),
+            enabled: true,
+            allowed_tools: vec![],
+            disabled_tools: vec![],
+        },
+        McpServerInfo {
+            name: "restricted-server".to_string(),
+            source: "codex".to_string(),
+            transport: "http".to_string(),
+            command: "/bin/restricted".to_string(),
+            enabled: true,
+            allowed_tools: vec!["read_file".to_string()],
+            disabled_tools: vec!["delete_file".to_string()],
+        },
+    ];
+
+    terminal
+        .draw(|f| ui::draw(f, &mut app))
+        .expect("draw failed");
+
+    let output = render_to_string(&terminal);
+
+    assert!(
+        output.contains("MCP Servers (2)"),
+        "MCP panel title should show server count"
+    );
+    assert!(output.contains("test-server"), "Should display server name");
+    assert!(output.contains("[claude]"), "Should display server source");
+    assert!(
+        output.contains("allow:read_file"),
+        "Should display allowed tools"
+    );
+    assert!(
+        output.contains("deny:delete_file"),
+        "Should display disabled tools"
+    );
+}
+
+#[test]
+fn mcp_panel_shows_disabled_server() {
+    let mut terminal = test_terminal(120, 30);
+    let mut app = App::new();
+
+    app.mcp_servers = vec![McpServerInfo {
+        name: "off-server".to_string(),
+        source: "cursor".to_string(),
+        transport: "stdio".to_string(),
+        command: "/bin/off".to_string(),
+        enabled: false,
+        allowed_tools: vec![],
+        disabled_tools: vec![],
+    }];
+
+    terminal
+        .draw(|f| ui::draw(f, &mut app))
+        .expect("draw failed");
+
+    let output = render_to_string(&terminal);
+
+    assert!(
+        output.contains("- off-server"),
+        "Disabled server should show '-' prefix"
+    );
+}
+
+#[test]
+fn header_shows_mcp_count_when_servers_present() {
+    let mut terminal = test_terminal(130, 25);
+    let mut app = App::new();
+
+    app.mcp_servers = vec![McpServerInfo {
+        name: "s1".to_string(),
+        source: "claude".to_string(),
+        transport: "stdio".to_string(),
+        command: "/bin/s".to_string(),
+        enabled: true,
+        allowed_tools: vec![],
+        disabled_tools: vec![],
+    }];
+
+    terminal
+        .draw(|f| ui::draw(f, &mut app))
+        .expect("draw failed");
+
+    let output = render_to_string(&terminal);
+
+    assert!(
+        output.contains("MCP: 1"),
+        "Header should show MCP server count when servers present"
+    );
 }

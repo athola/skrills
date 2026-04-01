@@ -8,43 +8,11 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-/// Splits content into raw frontmatter string and body.
+/// Re-exports `split_frontmatter` from the shared adapter utilities.
 ///
-/// Frontmatter is delimited by `---` on its own line at the start of the file.
-/// Returns `(Some(raw_frontmatter), body)` if frontmatter is found,
-/// or `(None, full_content)` if not.
-///
-/// This is the single source of truth for frontmatter delimiter scanning.
-pub fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
-    let trimmed = content.trim_start();
-    if !trimmed.starts_with("---") {
-        return (None, content);
-    }
-
-    // Find the closing `---`
-    // Strip the line ending after the opening `---` (handles both \n and \r\n)
-    let after_open = &trimmed[3..];
-    let after_open = after_open
-        .strip_prefix("\r\n")
-        .or_else(|| after_open.strip_prefix('\n'))
-        .unwrap_or(after_open);
-
-    if let Some(close_pos) = after_open.find("\n---") {
-        let frontmatter_str = &after_open[..close_pos];
-        // Trim trailing \r from frontmatter (last line before \n---)
-        let frontmatter_str = frontmatter_str
-            .strip_suffix('\r')
-            .unwrap_or(frontmatter_str);
-        let body_start = close_pos + 4; // skip "\n---"
-        let body = &after_open[body_start..];
-        let body = body.trim_start_matches(['\n', '\r']);
-
-        (Some(frontmatter_str), body)
-    } else {
-        // No closing delimiter — treat entire content as body
-        (None, content)
-    }
-}
+/// This is a cross-adapter primitive for splitting YAML frontmatter delimiters.
+/// Kept here for backwards compatibility with callers in the cursor adapter.
+pub use crate::adapters::utils::split_frontmatter;
 
 /// Parses YAML frontmatter from content, returning (frontmatter_fields, body).
 ///
@@ -346,5 +314,34 @@ mod tests {
         let body = "Line 1\n\n\n\n\nLine 2\n";
         let result = trim_skill_body(body);
         assert!(!result.contains("\n\n\n"));
+    }
+
+    /// T4: split_frontmatter with unclosed `---` returns (None, full_content).
+    ///
+    /// Given: Input starts with `---` but has no closing `---`
+    /// When: split_frontmatter is called
+    /// Then: Returns (None, full_content) treating it as body
+    #[test]
+    fn split_frontmatter_unclosed_delimiter_returns_none() {
+        let content = "---\nkey: val\n";
+        let (raw, body) = split_frontmatter(content);
+        assert!(
+            raw.is_none(),
+            "Unclosed frontmatter should return None, got: {:?}",
+            raw
+        );
+        assert_eq!(
+            body, content,
+            "Full content should be returned as body when frontmatter is unclosed"
+        );
+    }
+
+    /// T4 additional: unclosed frontmatter with more content after.
+    #[test]
+    fn split_frontmatter_unclosed_with_body_content() {
+        let content = "---\nname: test\ndescription: something\n\n# Body\nHere.\n";
+        let (raw, body) = split_frontmatter(content);
+        assert!(raw.is_none(), "Unclosed frontmatter should return None");
+        assert_eq!(body, content);
     }
 }

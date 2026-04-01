@@ -26,7 +26,10 @@ if [[ ! -f "${PUBLISH_SCRIPT}" ]]; then
   exit 1
 fi
 
-mapfile -t ORDER < <(awk '/^[[:space:]]*publish_one[[:space:]]+/ {print $2}' "${PUBLISH_SCRIPT}")
+ORDER=()
+while IFS= read -r entry; do
+  ORDER+=("${entry}")
+done < <(awk '/^[[:space:]]*publish_one[[:space:]]+/ {print $2}' "${PUBLISH_SCRIPT}")
 if [[ ${#ORDER[@]} -eq 0 ]]; then
   echo "No publish_one entries found in scripts/publish_crates.sh" >&2
   exit 1

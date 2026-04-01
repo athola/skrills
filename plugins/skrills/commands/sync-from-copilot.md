@@ -1,7 +1,7 @@
 ---
-description: Sync skills and instructions from GitHub Copilot CLI to Claude or Codex.
-argument-hint: "[--to claude|codex] [--dry-run]"
-triggers: copilot import, import from copilot, copilot to claude, copilot migration
+description: Sync skills and instructions from GitHub Copilot CLI to Claude, Codex, or Cursor.
+argument-hint: "[--to claude|codex|cursor] [--dry-run]"
+triggers: copilot import, import from copilot, copilot to claude, copilot to cursor, copilot migration
 ---
 
 # Sync from Copilot
@@ -9,7 +9,7 @@ triggers: copilot import, import from copilot, copilot to claude, copilot migrat
 Sync from GitHub Copilot CLI using the skrills MCP server.
 
 Use the `mcp__plugin_skrills_skrills__sync-from-copilot` tool with:
-- `to`: Target agent (claude or codex). Default: claude
+- `to`: Target agent (`claude`, `codex`, or `cursor`). Default: `claude`
 - `dry_run`: Preview changes without writing
 
 Parse `$ARGUMENTS` for:
@@ -25,4 +25,4 @@ Report:
 
 Handle errors:
 - If Copilot directory doesn't exist: Report and exit cleanly
-- If target invalid: List valid options (claude, codex)
+- If target invalid: List valid options (claude, codex, cursor)

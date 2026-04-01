@@ -4,25 +4,30 @@
 use crate::TomeResult;
 
 const BASE_URL: &str = "https://api.unpaywall.org/v2";
-const EMAIL: &str = "research@skrills.dev";
+const DEFAULT_EMAIL: &str = "research@skrills.dev";
 
 pub struct UnpaywallClient {
     http: reqwest::Client,
+    email: String,
 }
 
 impl Default for UnpaywallClient {
     fn default() -> Self {
-        Self::new()
+        Self::new(DEFAULT_EMAIL.to_string())
     }
 }
 
 impl UnpaywallClient {
-    pub fn new() -> Self {
+    pub fn new(email: String) -> Self {
+        if email.is_empty() {
+            tracing::warn!("UnpaywallClient created with empty email; API requests may fail");
+        }
         Self {
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
+            email,
         }
     }
 
@@ -34,7 +39,7 @@ impl UnpaywallClient {
                 "{BASE_URL}/{}",
                 url::form_urlencoded::byte_serialize(doi.as_bytes()).collect::<String>()
             ))
-            .query(&[("email", EMAIL)])
+            .query(&[("email", &self.email)])
             .send()
             .await?;
 
@@ -53,5 +58,28 @@ impl UnpaywallClient {
         Ok(body["best_oa_location"]["url_for_pdf"]
             .as_str()
             .map(String::from))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_creates_client_with_default_email() {
+        let client = UnpaywallClient::default();
+        assert_eq!(client.email, DEFAULT_EMAIL);
+    }
+
+    #[test]
+    fn new_accepts_custom_email() {
+        let client = UnpaywallClient::new("user@example.com".to_string());
+        assert_eq!(client.email, "user@example.com");
+    }
+
+    #[test]
+    fn new_accepts_empty_email() {
+        let client = UnpaywallClient::new(String::new());
+        assert_eq!(client.email, "");
     }
 }

@@ -481,7 +481,7 @@ clean-demo:
 ci: fmt lint test
 
 verify-publish:
-	@bash scripts/verify_publish_order.sh
+	@if bash -c 'declare -A x 2>/dev/null'; then bash scripts/verify_publish_order.sh; else echo "[SKIP] verify-publish requires bash 4+ (found $$(bash --version | head -1))"; fi
 
 precommit: fmt-check lint lint-md test test-install verify-publish
 

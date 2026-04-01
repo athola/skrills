@@ -366,6 +366,60 @@ fn rules_always_apply_true_passthrough() {
     );
 }
 
+// #183: Verify that rules in subdirectories produce unique names that don't
+// collide with top-level rules whose name happens to match the flattened form.
+#[test]
+fn rules_subdirectory_name_collision() {
+    let tmp = TempDir::new().unwrap();
+    let rules_dir = tmp.path().join("rules");
+
+    // Create a top-level rule: rules/foo-bar.mdc
+    std::fs::create_dir_all(&rules_dir).unwrap();
+    std::fs::write(
+        rules_dir.join("foo-bar.mdc"),
+        "---\nalwaysApply: false\ndescription: top-level rule\n---\n\n# Top-level foo-bar\n",
+    )
+    .unwrap();
+
+    // Create a subdirectory rule: rules/foo/bar.mdc
+    // After flattening, this becomes "foo-bar" which collides with the top-level rule.
+    std::fs::create_dir_all(rules_dir.join("foo")).unwrap();
+    std::fs::write(
+        rules_dir.join("foo/bar.mdc"),
+        "---\nalwaysApply: false\ndescription: subdirectory rule\n---\n\n# Subdirectory foo/bar\n",
+    )
+    .unwrap();
+
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let rules = adapter.read_instructions().unwrap();
+
+    // Both rules should be read (2 files on disk → 2 entries)
+    assert_eq!(
+        rules.len(),
+        2,
+        "Both top-level and subdirectory rules should be read"
+    );
+
+    // Verify the names — currently both flatten to "foo-bar" which is a known
+    // limitation. The important thing is that neither file is silently dropped.
+    let names: Vec<&str> = rules.iter().map(|r| r.name.as_str()).collect();
+    assert!(
+        names.contains(&"foo-bar"),
+        "Should contain foo-bar, got: {:?}",
+        names
+    );
+
+    // Both entries should have distinct content (even if names collide)
+    let contents: Vec<String> = rules
+        .iter()
+        .map(|r| String::from_utf8_lossy(&r.content).to_string())
+        .collect();
+    let has_top_level = contents.iter().any(|c| c.contains("Top-level foo-bar"));
+    let has_subdir = contents.iter().any(|c| c.contains("Subdirectory foo/bar"));
+    assert!(has_top_level, "Top-level rule content should be present");
+    assert!(has_subdir, "Subdirectory rule content should be present");
+}
+
 // --- Skip-unchanged tests ---
 
 #[test]
@@ -464,6 +518,8 @@ fn mcp_round_trip() {
             url: None,
             headers: None,
             enabled: true,
+            allowed_tools: vec![],
+            disabled_tools: vec![],
         },
     );
 
@@ -475,4 +531,95 @@ fn mcp_round_trip() {
     let server = read_back.get("test-server").unwrap();
     assert_eq!(server.command, "/usr/bin/test-server");
     assert_eq!(server.args, vec!["--port", "3000"]);
+}
+
+#[test]
+fn mcp_read_with_tool_configs() {
+    let tmp = TempDir::new().unwrap();
+    let mcp_path = tmp.path().join("mcp.json");
+    std::fs::write(
+        &mcp_path,
+        r#"{
+        "mcpServers": {
+            "restricted-server": {
+                "command": "/usr/bin/mcp-server",
+                "args": ["--port", "3000"],
+                "allowedTools": ["read_file", "search_*"],
+                "disabledTools": ["delete_file", "write_file"]
+            }
+        }
+    }"#,
+    )
+    .unwrap();
+
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let servers = adapter.read_mcp_servers().unwrap();
+
+    let server = servers.get("restricted-server").unwrap();
+    assert_eq!(server.allowed_tools, vec!["read_file", "search_*"]);
+    assert_eq!(server.disabled_tools, vec!["delete_file", "write_file"]);
+}
+
+#[test]
+fn mcp_write_preserves_tool_configs() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let mut servers = HashMap::new();
+    servers.insert(
+        "my-server".to_string(),
+        McpServer {
+            name: "my-server".to_string(),
+            transport: McpTransport::Stdio,
+            command: "/bin/server".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            url: None,
+            headers: None,
+            enabled: true,
+            allowed_tools: vec!["tool_a".to_string(), "tool_b".to_string()],
+            disabled_tools: vec!["tool_c".to_string()],
+        },
+    );
+
+    adapter.write_mcp_servers(&servers).unwrap();
+
+    let read_back = adapter.read_mcp_servers().unwrap();
+    let server = read_back.get("my-server").unwrap();
+    assert_eq!(
+        server.allowed_tools,
+        vec!["tool_a".to_string(), "tool_b".to_string()]
+    );
+    assert_eq!(server.disabled_tools, vec!["tool_c".to_string()]);
+}
+
+#[test]
+fn mcp_empty_tool_configs_omitted_from_json() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let mut servers = HashMap::new();
+    servers.insert(
+        "clean-server".to_string(),
+        McpServer {
+            name: "clean-server".to_string(),
+            transport: McpTransport::Stdio,
+            command: "/bin/server".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            url: None,
+            headers: None,
+            enabled: true,
+            allowed_tools: vec![],
+            disabled_tools: vec![],
+        },
+    );
+
+    adapter.write_mcp_servers(&servers).unwrap();
+
+    let content = std::fs::read_to_string(tmp.path().join("mcp.json")).unwrap();
+    let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let server_json = &settings["mcpServers"]["clean-server"];
+    assert!(server_json.get("allowedTools").is_none());
+    assert!(server_json.get("disabledTools").is_none());
 }

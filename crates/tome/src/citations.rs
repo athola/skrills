@@ -58,7 +58,9 @@ impl CitationTracker {
                 cited_id TEXT NOT NULL,
                 context TEXT,
                 discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
-                PRIMARY KEY (citing_id, cited_id)
+                PRIMARY KEY (citing_id, cited_id),
+                FOREIGN KEY (citing_id) REFERENCES tracked_papers(id),
+                FOREIGN KEY (cited_id) REFERENCES tracked_papers(id)
             );
 
             CREATE INDEX IF NOT EXISTS idx_citations_citing ON citations(citing_id);
@@ -72,8 +74,9 @@ impl CitationTracker {
     pub fn track_paper(&self, paper: &Paper) -> TomeResult<()> {
         let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
         conn.execute(
-            "INSERT OR REPLACE INTO tracked_papers (id, title, doi, year, citation_count)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO tracked_papers (id, title, doi, year, citation_count)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET title=excluded.title, doi=excluded.doi, year=excluded.year, citation_count=excluded.citation_count",
             rusqlite::params![
                 paper.id,
                 paper.title,
@@ -93,10 +96,15 @@ impl CitationTracker {
         context: Option<&str>,
     ) -> TomeResult<()> {
         let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
-        conn.execute(
+        let rows = conn.execute(
             "INSERT OR IGNORE INTO citations (citing_id, cited_id, context) VALUES (?1, ?2, ?3)",
             rusqlite::params![citing_id, cited_id, context],
         )?;
+        if rows == 0 {
+            tracing::debug!(
+                "citation {citing_id} -> {cited_id} not inserted (duplicate or FK violation)"
+            );
+        }
         Ok(())
     }
 

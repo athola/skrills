@@ -120,6 +120,24 @@ pub fn read_mcp_servers(root: &Path) -> Result<HashMap<String, McpServer>> {
                     .and_then(|v| v.as_bool())
                     .map(|d| !d)
                     .unwrap_or(true),
+                allowed_tools: server_config
+                    .get("allowedTools")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                disabled_tools: server_config
+                    .get("disabledTools")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             };
             servers.insert(name.clone(), server);
         }
@@ -156,6 +174,18 @@ pub fn write_mcp_servers(root: &Path, servers: &HashMap<String, McpServer>) -> R
         }
         if !server.enabled {
             server_config.insert("disabled".into(), serde_json::json!(true));
+        }
+        if !server.allowed_tools.is_empty() {
+            server_config.insert(
+                "allowedTools".into(),
+                serde_json::json!(server.allowed_tools),
+            );
+        }
+        if !server.disabled_tools.is_empty() {
+            server_config.insert(
+                "disabledTools".into(),
+                serde_json::json!(server.disabled_tools),
+            );
         }
         mcp_obj.insert(name.clone(), serde_json::Value::Object(server_config));
         report.written += 1;

@@ -21,18 +21,23 @@ fn focused_border_style(focused: bool) -> Style {
 
 /// Draw the dashboard UI.
 pub fn draw(f: &mut Frame, app: &mut App) {
+    let mcp_height = if app.mcp_servers.is_empty() { 0 } else { 6 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Min(10),   // Main content
-            Constraint::Length(3), // Footer
+            Constraint::Length(3),          // Header
+            Constraint::Min(10),            // Main content
+            Constraint::Length(mcp_height), // MCP servers
+            Constraint::Length(3),          // Footer
         ])
         .split(f.area());
 
     draw_header(f, app, chunks[0]);
     draw_main(f, app, chunks[1]);
-    draw_footer(f, app, chunks[2]);
+    if !app.mcp_servers.is_empty() {
+        draw_mcp_panel(f, app, chunks[2]);
+    }
+    draw_footer(f, app, chunks[3]);
 
     if app.show_help {
         draw_help_overlay(f);
@@ -40,9 +45,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
+    let mcp_section = if app.mcp_servers.is_empty() {
+        String::new()
+    } else {
+        format!(" | MCP: {}", app.mcp_servers.len())
+    };
     let text = format!(
-        " skrills dashboard | Skills: {} | Invocations: {} | Success: {:.1}% | Valid: {} | Invalid: {} | Last: {}",
+        " skrills dashboard | Skills: {}{} | Invocations: {} | Success: {:.1}% | Valid: {} | Invalid: {} | Last: {}",
         app.total_skills,
+        mcp_section,
         app.total_invocations,
         app.overall_success_rate,
         app.valid_skills,
@@ -245,6 +256,44 @@ fn draw_metrics_panel(f: &mut Frame, app: &App, area: Rect) {
     );
 
     f.render_widget(paragraph, area);
+}
+
+fn draw_mcp_panel(f: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = app
+        .mcp_servers
+        .iter()
+        .map(|s| {
+            let status = if s.enabled { "+" } else { "-" };
+            let style = if s.enabled {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+
+            let mut text = format!(
+                "{} {} [{}] {} {}",
+                status, s.name, s.source, s.transport, s.command
+            );
+
+            if !s.allowed_tools.is_empty() {
+                text.push_str(&format!(" allow:{}", s.allowed_tools.join(",")));
+            }
+            if !s.disabled_tools.is_empty() {
+                text.push_str(&format!(" deny:{}", s.disabled_tools.join(",")));
+            }
+
+            ListItem::new(text).style(style)
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .title(format!(" MCP Servers ({}) ", app.mcp_servers.len()))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+
+    f.render_widget(list, area);
 }
 
 fn draw_footer(f: &mut Frame, _app: &App, area: Rect) {

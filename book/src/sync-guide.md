@@ -63,10 +63,14 @@ skrills sync-commands --from claude --to codex --skip-existing-commands
 MCP server definitions are synchronized between configuration files:
 - **Claude/Codex**: Share similar MCP configuration format
 - **Copilot**: Uses `mcp-config.json` (separate from main config)
+- **Cursor**: Uses `.cursor/mcp.json`
+
+Tool filtering fields (`allowedTools`/`disabledTools`) are preserved during sync. When set, `allowed_tools` restricts which tools are available from a server and `disabled_tools` hides specific tools from the model.
 
 ```bash
 skrills sync-mcp-servers --from claude --to codex
 skrills sync-mcp-servers --from claude --to copilot
+skrills sync-mcp-servers --from claude --to cursor
 ```
 
 ### User Preferences

@@ -92,5 +92,31 @@ pub(crate) fn tui_flow(_extra_dirs: &[PathBuf]) -> Result<()> {
         sync_report.mcp_servers.written,
     );
 
+    // Show MCP servers with tool filtering info if any were synced
+    if sync_report.mcp_servers.written > 0 {
+        use skrills_sync::adapters::traits::AgentAdapter;
+        if let Ok(target_adapter) = CodexAdapter::new() {
+            if let Ok(servers) = target_adapter.read_mcp_servers() {
+                let filtered: Vec<_> = servers
+                    .values()
+                    .filter(|s| !s.allowed_tools.is_empty() || !s.disabled_tools.is_empty())
+                    .collect();
+                if !filtered.is_empty() {
+                    println!("  MCP tool filters:");
+                    for s in filtered {
+                        let mut info = format!("    {}", s.name);
+                        if !s.allowed_tools.is_empty() {
+                            info.push_str(&format!(" allow:[{}]", s.allowed_tools.join(",")));
+                        }
+                        if !s.disabled_tools.is_empty() {
+                            info.push_str(&format!(" deny:[{}]", s.disabled_tools.join(",")));
+                        }
+                        println!("{info}");
+                    }
+                }
+            }
+        }
+    }
+
     Ok(())
 }

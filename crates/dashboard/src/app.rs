@@ -88,6 +88,25 @@ pub struct SkillInfo {
     pub invocations: u64,
 }
 
+/// MCP server display info for the dashboard.
+#[derive(Debug, Clone)]
+pub struct McpServerInfo {
+    /// Server name.
+    pub name: String,
+    /// CLI source (claude, codex, copilot, cursor).
+    pub source: String,
+    /// Transport type.
+    pub transport: String,
+    /// Command to run the server.
+    pub command: String,
+    /// Whether the server is enabled.
+    pub enabled: bool,
+    /// Allowed tool names/patterns.
+    pub allowed_tools: Vec<String>,
+    /// Disabled tool names/patterns.
+    pub disabled_tools: Vec<String>,
+}
+
 /// A single activity feed entry with dedup support.
 #[derive(Debug, Clone)]
 pub struct ActivityEntry {
@@ -186,6 +205,8 @@ pub struct App {
     pub overall_success_rate: f64,
     /// Latest validation detail for the currently selected skill.
     pub selected_validation: Option<ValidationDetail>,
+    /// MCP servers discovered from all adapters.
+    pub mcp_servers: Vec<McpServerInfo>,
 }
 
 impl Default for App {
@@ -208,6 +229,7 @@ impl Default for App {
             total_invocations: 0,
             overall_success_rate: 0.0,
             selected_validation: None,
+            mcp_servers: Vec::new(),
         }
     }
 }
@@ -708,6 +730,9 @@ impl Dashboard {
             }
         }
 
+        // Refresh MCP servers from all adapters
+        self.refresh_mcp_servers(app);
+
         // Update timestamp
         let now =
             time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
@@ -719,6 +744,65 @@ impl Dashboard {
             "refresh".into(),
             format!("Refreshed: {} skills discovered", app.total_skills),
         );
+    }
+
+    fn refresh_mcp_servers(&self, app: &mut App) {
+        use skrills_sync::adapters::traits::AgentAdapter;
+        use skrills_sync::common::McpTransport;
+
+        app.mcp_servers.clear();
+
+        let adapters: Vec<(&str, Box<dyn AgentAdapter>)> = [
+            (
+                "claude",
+                skrills_sync::ClaudeAdapter::new()
+                    .ok()
+                    .map(|a| Box::new(a) as Box<dyn AgentAdapter>),
+            ),
+            (
+                "codex",
+                skrills_sync::CodexAdapter::new()
+                    .ok()
+                    .map(|a| Box::new(a) as Box<dyn AgentAdapter>),
+            ),
+            (
+                "copilot",
+                skrills_sync::CopilotAdapter::new()
+                    .ok()
+                    .map(|a| Box::new(a) as Box<dyn AgentAdapter>),
+            ),
+            (
+                "cursor",
+                skrills_sync::CursorAdapter::new()
+                    .ok()
+                    .map(|a| Box::new(a) as Box<dyn AgentAdapter>),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(name, adapter)| adapter.map(|a| (name, a)))
+        .collect();
+
+        for (source, adapter) in &adapters {
+            if let Ok(servers) = adapter.read_mcp_servers() {
+                for (name, server) in servers {
+                    app.mcp_servers.push(McpServerInfo {
+                        name,
+                        source: source.to_string(),
+                        transport: match server.transport {
+                            McpTransport::Stdio => "stdio".to_string(),
+                            McpTransport::Http => "http".to_string(),
+                        },
+                        command: server.command,
+                        enabled: server.enabled,
+                        allowed_tools: server.allowed_tools,
+                        disabled_tools: server.disabled_tools,
+                    });
+                }
+            }
+        }
+
+        app.mcp_servers
+            .sort_by(|a, b| a.source.cmp(&b.source).then(a.name.cmp(&b.name)));
     }
 }
 

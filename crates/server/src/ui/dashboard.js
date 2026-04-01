@@ -2,6 +2,7 @@
 (function() {
     let skills = [];
     let events = [];
+    let mcpServers = [];
     let selectedSkill = null;
     let skillsTotal = 0;
     let loadingMore = false;
@@ -67,6 +68,16 @@
             if (initialized) renderSkills();
         } catch (e) {
             console.error('Failed to fetch top skills:', e);
+        }
+
+        try {
+            const res = await fetch('/api/mcp-servers');
+            const data = await res.json();
+            mcpServers = data.servers || [];
+            document.getElementById('mcp-count').textContent = data.total || 0;
+            renderMcpServers();
+        } catch (e) {
+            console.error('Failed to fetch MCP servers:', e);
         }
 
         document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
@@ -357,6 +368,74 @@
         const btn = document.getElementById('sort-btn');
         if (btn) btn.textContent = sortOrder === 'alpha' ? 'Sort: A-Z' : 'Sort: Discovery';
         renderSkills();
+    }
+
+    function renderMcpServers() {
+        const list = document.getElementById('mcp-list');
+        if (!list) return;
+        list.replaceChildren();
+
+        if (mcpServers.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'empty';
+            empty.textContent = 'No MCP servers found';
+            list.appendChild(empty);
+            return;
+        }
+
+        mcpServers.forEach(server => {
+            const div = document.createElement('div');
+            div.className = 'mcp-server-item';
+
+            const header = document.createElement('div');
+            header.className = 'mcp-server-header';
+
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'mcp-server-name';
+            nameSpan.textContent = server.name;
+
+            const sourceBadge = document.createElement('span');
+            sourceBadge.className = 'mcp-server-source';
+            sourceBadge.textContent = server.source;
+
+            const transportBadge = document.createElement('span');
+            transportBadge.className = 'mcp-server-transport';
+            transportBadge.textContent = server.transport;
+
+            header.appendChild(nameSpan);
+            header.appendChild(sourceBadge);
+            header.appendChild(transportBadge);
+
+            if (!server.enabled) {
+                const disabledBadge = document.createElement('span');
+                disabledBadge.className = 'mcp-server-disabled';
+                disabledBadge.textContent = 'disabled';
+                header.appendChild(disabledBadge);
+            }
+
+            div.appendChild(header);
+
+            const cmdDiv = document.createElement('div');
+            cmdDiv.className = 'mcp-server-cmd';
+            cmdDiv.textContent = server.command + (server.args.length ? ' ' + server.args.join(' ') : '');
+            div.appendChild(cmdDiv);
+
+            if (server.allowed_tools.length > 0) {
+                const allowed = document.createElement('div');
+                allowed.className = 'mcp-server-tools mcp-tools-allowed';
+                allowed.textContent = 'Allowed: ' + server.allowed_tools.join(', ');
+                div.appendChild(allowed);
+            }
+
+            if (server.disabled_tools.length > 0) {
+                const disabled = document.createElement('div');
+                disabled.className = 'mcp-server-tools mcp-tools-disabled';
+                disabled.textContent = 'Disabled: ' + server.disabled_tools.join(', ');
+                div.appendChild(disabled);
+            }
+
+            list.appendChild(div);
+        });
     }
 
     // Initialize once

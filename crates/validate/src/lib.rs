@@ -167,7 +167,8 @@ pub struct ValidationSummary {
     pub codex_valid: usize,
     /// Number of skills valid for GitHub Copilot CLI.
     pub copilot_valid: usize,
-    /// Number of skills valid for all targets (Claude, Codex, and Copilot).
+    /// Number of skills that pass validation for all targets simultaneously
+    /// (intersection of claude_valid, codex_valid, and copilot_valid).
     pub all_valid: usize,
     /// Total number of error-level issues.
     pub error_count: usize,

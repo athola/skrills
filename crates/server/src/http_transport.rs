@@ -10,7 +10,7 @@
 //! - **CORS**: Configurable Cross-Origin Resource Sharing for browser clients
 
 use crate::api::{
-    dashboard_routes,
+    dashboard_routes, mcp_servers_routes,
     metrics::{metrics_routes, MetricsState},
     rules::{rules_routes, RulesState},
     skills::{skills_routes, ApiState},
@@ -346,6 +346,7 @@ where
             .merge(skills_routes(api_state))
             .merge(metrics_routes(metrics_state))
             .merge(rules_routes(rules_state))
+            .merge(mcp_servers_routes())
             .merge(static_router)
             .fallback_service(http_service)
             .layer(cors_layer)
@@ -369,6 +370,7 @@ where
             .merge(skills_routes(api_state))
             .merge(metrics_routes(metrics_state))
             .merge(rules_routes(rules_state))
+            .merge(mcp_servers_routes())
             .merge(static_router)
             .fallback_service(http_service)
             .layer(cors_layer)

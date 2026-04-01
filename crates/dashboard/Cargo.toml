@@ -1,6 +1,6 @@
 [package]
 name = "skrills-dashboard"
-version = "0.7.2"
+version = "0.7.3"
 edition.workspace = true
 description = "Terminal UI dashboard for skrills metrics and monitoring"
 license = "MIT"
@@ -13,8 +13,9 @@ categories = ["development-tools", "visualization"]
 publish = true
 
 [dependencies]
-skrills-metrics = { path = "../metrics", version = "0.7.2" }
-skrills-discovery = { path = "../discovery", version = "0.7.2" }
+skrills-metrics = { path = "../metrics", version = "0.7.3" }
+skrills-discovery = { path = "../discovery", version = "0.7.3" }
+skrills_sync = { path = "../sync", version = "0.7.3" }
 
 # TUI
 ratatui = "0.30"
