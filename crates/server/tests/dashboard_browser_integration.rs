@@ -493,21 +493,21 @@ async fn browser_panels_have_correct_layout() {
     let page = browser.new_page(&base_url).await.unwrap();
     wait_for_condition(
         &page,
-        "document.querySelectorAll('.panel').length === 3",
-        "3 panel elements to be present",
+        "document.querySelectorAll('.panel').length === 4",
+        "4 panel elements to be present",
         Duration::from_secs(5),
     )
     .await
-    .expect("all 3 panel elements should appear");
+    .expect("all 4 panel elements should appear");
 
-    // Check that all 3 panels are visible
+    // Check that all 4 panels are visible (skills, activity, metrics, MCP servers)
     let panel_count: i64 = page
         .evaluate("document.querySelectorAll('.panel').length")
         .await
         .unwrap()
         .into_value()
         .unwrap_or(0);
-    assert_eq!(panel_count, 3, "Should have 3 panel elements");
+    assert_eq!(panel_count, 4, "Should have 4 panel elements");
 
     // Check panels have non-zero dimensions
     let panels_visible: bool = page
