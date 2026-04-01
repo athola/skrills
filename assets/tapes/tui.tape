@@ -1,8 +1,8 @@
-# Skrills TUI Dashboard Demo
-# Interactive skill dashboard with panels for Skills, Activity, Metrics
+# Skrills Dashboard TUI Demo
+# Interactive skill dashboard with panels for Skills, Activity, Metrics, MCP
 # Run: vhs assets/tapes/tui.tape
 
-Output assets/gifs/tui.gif
+Output assets/gifs/dashboard.gif
 
 Set FontSize 13
 Set Width 1200
@@ -26,8 +26,13 @@ Type `echo '{"mcpServers":{"skrills":{}}}' > ~/.claude/.mcp.json`
 Enter
 Sleep 300ms
 
-# Launch the TUI
-Type "skrills tui"
+# First run sync to populate data (auto-accept defaults)
+Type "yes | skrills tui 2>/dev/null || true"
+Enter
+Sleep 3s
+
+# Launch the dashboard TUI
+Type "skrills dashboard --skill-dir ~/.claude/skills"
 Enter
 Sleep 3s
 

@@ -36,7 +36,7 @@ and Cursor.
 **TUI dashboard** -- navigate skills, activity, and metrics with
 keyboard shortcuts:
 
-![TUI Dashboard](assets/gifs/tui.gif)
+![TUI Dashboard](assets/gifs/dashboard.gif)
 
 See the [quickstart tutorial](docs/tutorials/quickstart.md) for a
 walkthrough, or the [MCP tutorial](docs/tutorials/mcp.md) for server
