@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.4 - 2026-04-02
+- **NEW: Research MCP Tools**: 9 tools exposing the `tome` crate over MCP: `search-papers`, `search-discussions`, `resolve-doi`, `fetch-pdf`, `query-knowledge-graph`, `add-knowledge-node`, `link-knowledge`, `track-citations`, and `resolve-contradiction` (27 → 36 tools total).
+- **Fix: Paper Model Refinements**: Improved `Paper` model fields and research handler argument parsing.
+
 ## 0.7.3 - 2026-03-29
 - **NEW: MCP Tool Filtering**: `McpServer` now carries `allowed_tools` and `disabled_tools` fields. All four adapters (Claude, Codex, Copilot, Cursor) read and write these fields, enabling per-server tool whitelists and blacklists during sync.
 - **NEW: MCP Servers Dashboard Panel**: The TUI dashboard displays a dedicated MCP servers panel showing server name, source adapter, transport type, command, and tool filter indicators. The browser dashboard includes a matching panel fetched from `/api/mcp-servers`.

@@ -11,11 +11,13 @@
 //! - `intelligence` - Smart recommendations, skill creation, GitHub search
 //! - `mcp` - MCP registry, tool operations, context stats
 //! - `sync` - Sync error paths and parameter handling
+//! - `research` - Knowledge graph, citation tracking, TRIZ resolution
 
 mod config;
 mod dependency;
 mod intelligence;
 mod mcp;
+mod research;
 mod resource;
 mod search;
 mod sync;

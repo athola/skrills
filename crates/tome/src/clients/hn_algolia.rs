@@ -22,7 +22,10 @@ impl HnAlgoliaClient {
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "HnAlgolia client builder failed, using default");
+                    reqwest::Client::new()
+                }),
         }
     }
 

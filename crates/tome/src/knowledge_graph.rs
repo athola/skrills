@@ -97,6 +97,9 @@ impl KnowledgeGraph {
         Ok(kg)
     }
 
+    // NOTE: CREATE TABLE IF NOT EXISTS means FK constraints only apply to new
+    // databases. Pre-existing databases keep the old schema without FKs.
+    // Acceptable pre-1.0; a migration step should be added before 1.0 release.
     fn init_schema(&self) -> TomeResult<()> {
         let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
         conn.execute_batch(
