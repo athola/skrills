@@ -188,6 +188,23 @@ impl ServerHandler for SkillService {
                     let args = request.arguments.clone().unwrap_or_default();
                     self.search_skills_github_tool(args).await
                 }
+                // Research tools (async — require HTTP calls to external APIs)
+                "search-papers" => {
+                    let args = request.arguments.clone().unwrap_or_default();
+                    self.search_papers_tool(args).await
+                }
+                "search-discussions" => {
+                    let args = request.arguments.clone().unwrap_or_default();
+                    self.search_discussions_tool(args).await
+                }
+                "resolve-doi" => {
+                    let args = request.arguments.clone().unwrap_or_default();
+                    self.resolve_doi_tool(args).await
+                }
+                "fetch-pdf" => {
+                    let args = request.arguments.clone().unwrap_or_default();
+                    self.fetch_pdf_tool(args).await
+                }
                 _ => (|| -> Result<CallToolResult> {
                     match request.name.as_ref() {
                     "sync-from-claude" => {
@@ -714,6 +731,27 @@ impl ServerHandler for SkillService {
                         // Return current context stats from the real tracker
                         let stats = self.context_stats.snapshot();
                         crate::mcp_gateway::get_context_stats(stats)
+                    }
+                    // Research tools (sync — local database operations)
+                    "query-knowledge-graph" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.query_knowledge_graph_tool(args)
+                    }
+                    "add-knowledge-node" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.add_knowledge_node_tool(args)
+                    }
+                    "link-knowledge" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.link_knowledge_tool(args)
+                    }
+                    "track-citations" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.track_citations_tool(args)
+                    }
+                    "resolve-contradiction" => {
+                        let args = request.arguments.clone().unwrap_or_default();
+                        self.resolve_contradiction_tool(args)
                     }
                     other => Err(anyhow!("unknown tool {other}")),
                 }

@@ -4391,6 +4391,7 @@ dependencies = [
  "skrills-metrics",
  "skrills-state",
  "skrills-subagents",
+ "skrills-tome",
  "skrills-validate",
  "skrills_sync",
  "skrills_test_utils",

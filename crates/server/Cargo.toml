@@ -54,6 +54,8 @@ skrills-validate = { path = "../validate", version = "0.7.3" }
 skrills-analyze = { path = "../analyze", version = "0.7.3" }
 skrills-intelligence = { path = "../intelligence", version = "0.7.3" }
 skrills-metrics = { path = "../metrics", version = "0.7.3" }
+skrills-tome = { path = "../tome", version = "0.7.3" }
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 skrills-dashboard = { path = "../dashboard", version = "0.7.3", optional = true }
 shellexpand = "3"
 regex = "1"
