@@ -164,7 +164,10 @@ mod tests {
             "discussion_count": 0
         }"#;
         let result = serde_json::from_str::<ResearchSession>(old_json);
-        assert!(result.is_err(), "Old 'timestamp' field should not deserialize into new struct");
+        assert!(
+            result.is_err(),
+            "Old 'timestamp' field should not deserialize into new struct"
+        );
     }
 }
 

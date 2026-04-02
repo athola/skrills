@@ -137,10 +137,7 @@ impl SkillService {
             .get("query")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("Missing required parameter: query"))?;
-        let limit = args
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(10) as usize;
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
         let client = HnAlgoliaClient::new();
         let discussions = client.search(query, limit).await?;
@@ -235,7 +232,9 @@ impl SkillService {
             .ok_or_else(|| anyhow!("No open-access PDF found for DOI: {doi}"))?;
 
         let cache = ResearchCache::open()?;
-        let pdf_path = cache.pdf_dir().join(format!("{}.pdf", doi.replace('/', "_")));
+        let pdf_path = cache
+            .pdf_dir()
+            .join(format!("{}.pdf", doi.replace('/', "_")));
 
         // Download if not already cached
         if !pdf_path.exists() {
@@ -421,10 +420,7 @@ impl SkillService {
             .get("kind")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("Missing required parameter: kind"))?;
-        let weight = args
-            .get("weight")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(1.0);
+        let weight = args.get("weight").and_then(|v| v.as_f64()).unwrap_or(1.0);
         let metadata = args.get("metadata").map(|v| v.to_string());
 
         let kind = match kind_str {
@@ -476,12 +472,9 @@ impl SkillService {
 
         match action {
             "track" => {
-                let title = args
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        anyhow!("Missing required parameter: title (for track action)")
-                    })?;
+                let title = args.get("title").and_then(|v| v.as_str()).ok_or_else(|| {
+                    anyhow!("Missing required parameter: title (for track action)")
+                })?;
                 let doi = args.get("doi").and_then(|v| v.as_str()).map(String::from);
 
                 let paper = Paper {
