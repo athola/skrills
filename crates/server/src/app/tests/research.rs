@@ -649,10 +649,7 @@ fn query_knowledge_graph_search_by_query() {
     service.add_knowledge_node_tool(args).unwrap();
 
     // Search by query
-    let args = json!({"query": "Searchable"})
-        .as_object()
-        .cloned()
-        .unwrap();
+    let args = json!({"query": "Searchable"}).as_object().cloned().unwrap();
     let result = service.query_knowledge_graph_tool(args).unwrap();
     assert!(!result.is_error.unwrap_or(true));
 
@@ -794,7 +791,13 @@ fn link_knowledge_accepts_all_edge_kinds() {
     add("tgt-ext");
     add("tgt-analog");
 
-    let all_kinds = ["cites", "implements", "contradicts", "extends", "analogous_to"];
+    let all_kinds = [
+        "cites",
+        "implements",
+        "contradicts",
+        "extends",
+        "analogous_to",
+    ];
     let targets = [
         "tgt-cites",
         "tgt-impl",
@@ -869,7 +872,10 @@ fn query_knowledge_graph_direction_to() {
 
     let edges_from = structured.get("edges_from").unwrap().as_array().unwrap();
     let edges_to = structured.get("edges_to").unwrap().as_array().unwrap();
-    assert!(edges_from.is_empty(), "direction=to should have no outgoing edges");
+    assert!(
+        edges_from.is_empty(),
+        "direction=to should have no outgoing edges"
+    );
     assert_eq!(edges_to.len(), 1);
     assert_eq!(edges_to[0].get("source").unwrap(), "incoming-source");
 }

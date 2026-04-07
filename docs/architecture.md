@@ -29,6 +29,7 @@ graph TD
     server --> subagents[subagents]
     server --> dashboard[dashboard<br/>TUI + browser UI]
     server --> metrics[metrics<br/>SQLite telemetry]
+    server --> tome[tome<br/>research APIs, caching]
     sync --> validate
     analyze --> validate
     analyze --> discovery
@@ -41,6 +42,7 @@ graph TD
         validate
         metrics
         dashboard
+        tome
     end
 ```
 
@@ -59,6 +61,8 @@ graph TD
 | `subagents` | Multi-backend agent runtime |
 | `dashboard` | TUI and browser-based skill visualization (Leptos SSR) |
 | `metrics` | SQLite-based telemetry for invocations, validations, sync |
+| `tome` | Research API orchestration, knowledge graph, citation tracking, caching |
+| `test-utils` | Shared test infrastructure (fixtures, RAII guards, temp dirs) |
 
 ## Design Principles
 

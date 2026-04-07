@@ -23,11 +23,9 @@ and Cursor.
 [FAQ](docs/FAQ.md) |
 [Changelog](book/src/changelog.md)
 
-> **What's new in 0.7.4** -- 9 research MCP tools
-> (`search-papers`, `search-discussions`, `resolve-doi`, `fetch-pdf`,
-> `query-knowledge-graph`, `add-knowledge-node`, `link-knowledge`,
-> `track-citations`, `resolve-contradiction`) exposing the `tome`
-> crate over MCP (27 → 36 tools total).
+> **What's new in 0.7.5** -- Serde-based enum parsing, hardened error
+> handling for research MCP tools, `OffsetDateTime` timestamps in the
+> knowledge graph, and new round-trip tests for `NodeKind`/`EdgeKind`.
 > See [changelog](book/src/changelog.md).
 
 ## Demo

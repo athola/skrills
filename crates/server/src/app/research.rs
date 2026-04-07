@@ -13,8 +13,7 @@ use skrills_tome::cache::ResearchCache;
 use skrills_tome::citations::CitationTracker;
 use skrills_tome::clients::{
     arxiv::ArxivClient, crossref::CrossRefClient, hn_algolia::HnAlgoliaClient,
-    openalex::OpenAlexClient, semantic_scholar::SemanticScholarClient,
-    unpaywall::UnpaywallClient,
+    openalex::OpenAlexClient, semantic_scholar::SemanticScholarClient, unpaywall::UnpaywallClient,
 };
 use skrills_tome::knowledge_graph::{EdgeKind, KnowledgeGraph, NodeKind};
 use skrills_tome::models::{Paper, PaperSource};

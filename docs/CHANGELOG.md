@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.5 - 2026-04-07
+- **Refactor: Research Handlers**: Hoisted function-level imports to module scope in `research.rs`, reducing per-call overhead and improving readability.
+- **Refactor: Serde-Based Parsing**: Replaced manual `match` arms for `NodeKind`, `EdgeKind`, and `Parameter` parsing with `serde_json::from_value`, eliminating duplication between enum definitions and parsers.
+- **Fix: Search Papers Error Reporting**: `search_papers_tool` now sets `is_error: true` when all sources fail, instead of silently returning an empty result.
+- **Fix: Discussion Limit Clamping**: `search_discussions_tool` clamps the `limit` parameter to 100 to prevent excessive API requests.
+- **Fix: PDF Download Hardening**: `fetch_pdf_tool` adds a 30-second timeout and HTTP status check before writing downloaded PDFs.
+- **Fix: Unpaywall Error Logging**: `resolve_doi_tool` logs Unpaywall lookup failures via `tracing::warn` instead of silently swallowing errors.
+- **Refactor: Cache Directory**: Extracted `ResearchCache::cache_dir()` as the canonical source for the skrills-tome cache path, replacing duplicated logic in the server crate.
+- **Refactor: Knowledge Graph Timestamps**: Changed `Node.created_at` from `String` to `OffsetDateTime` with RFC 3339 serde, ensuring type-safe timestamp handling.
+- **Refactor: Enum Helpers**: Added `NodeKind::all()` and `EdgeKind::all()` for exhaustive enumeration, used by schema sync tests.
+- **Testing**: Added `cache_dir_creates_directory`, `node_kind_all_covers_every_variant`, and `edge_kind_all_covers_every_variant` tests in the tome crate.
+
 ## 0.7.4 - 2026-04-02
 - **NEW: Research MCP Tools**: 9 tools exposing the `tome` crate over MCP: `search-papers`, `search-discussions`, `resolve-doi`, `fetch-pdf`, `query-knowledge-graph`, `add-knowledge-node`, `link-knowledge`, `track-citations`, and `resolve-contradiction` (27 → 36 tools total).
 - **Fix: Paper Model Refinements**: Improved `Paper` model fields and research handler argument parsing.

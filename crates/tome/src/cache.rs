@@ -181,4 +181,27 @@ mod tests {
         cache.put("key1", "api", "q", "v2", None).unwrap();
         assert_eq!(cache.get("key1").unwrap(), Some("v2".to_string()));
     }
+
+    /// GIVEN a valid HOME directory
+    /// WHEN ResearchCache::cache_dir() is called
+    /// THEN it returns a path ending in "skrills-tome" and creates the directory
+    #[test]
+    fn cache_dir_creates_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        // Temporarily override HOME so cache_dir() uses our temp dir
+        let prev = std::env::var("HOME").ok();
+        std::env::set_var("HOME", temp.path());
+
+        let result = ResearchCache::cache_dir();
+
+        // Restore HOME
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+
+        let dir = result.unwrap();
+        assert!(dir.ends_with("skrills-tome"));
+        assert!(dir.exists(), "cache_dir should create the directory");
+    }
 }

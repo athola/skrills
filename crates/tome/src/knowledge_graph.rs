@@ -29,7 +29,12 @@ impl NodeKind {
     }
 
     pub fn all() -> &'static [NodeKind] {
-        &[Self::Topic, Self::Paper, Self::Implementation, Self::Discussion]
+        &[
+            Self::Topic,
+            Self::Paper,
+            Self::Implementation,
+            Self::Discussion,
+        ]
     }
 }
 
@@ -56,7 +61,13 @@ impl EdgeKind {
     }
 
     pub fn all() -> &'static [EdgeKind] {
-        &[Self::Cites, Self::Implements, Self::Contradicts, Self::Extends, Self::AnalogousTo]
+        &[
+            Self::Cites,
+            Self::Implements,
+            Self::Contradicts,
+            Self::Extends,
+            Self::AnalogousTo,
+        ]
     }
 }
 
@@ -412,6 +423,36 @@ mod tests {
         );
         let roundtripped: Node = serde_json::from_str(&json).unwrap();
         assert_eq!(roundtripped.created_at, node.created_at);
+    }
+
+    /// GIVEN NodeKind::all()
+    /// WHEN each variant is round-tripped through as_str + parse
+    /// THEN all variants are covered and parseable
+    #[test]
+    fn node_kind_all_covers_every_variant() {
+        let all = NodeKind::all();
+        // Verify each entry round-trips through serde
+        for kind in all {
+            let s = kind.as_str();
+            let parsed = parse_node_kind(s).unwrap();
+            assert_eq!(*kind, parsed, "NodeKind round-trip failed for '{s}'");
+        }
+        // Verify count matches the enum variants (4 variants)
+        assert_eq!(all.len(), 4, "NodeKind::all() should have 4 variants");
+    }
+
+    /// GIVEN EdgeKind::all()
+    /// WHEN each variant is round-tripped through as_str + parse
+    /// THEN all variants are covered and parseable
+    #[test]
+    fn edge_kind_all_covers_every_variant() {
+        let all = EdgeKind::all();
+        for kind in all {
+            let s = kind.as_str();
+            let parsed = parse_edge_kind(s).unwrap();
+            assert_eq!(*kind, parsed, "EdgeKind round-trip failed for '{s}'");
+        }
+        assert_eq!(all.len(), 5, "EdgeKind::all() should have 5 variants");
     }
 
     #[test]
