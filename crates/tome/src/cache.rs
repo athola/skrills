@@ -129,6 +129,21 @@ impl ResearchCache {
     pub fn pdf_dir(&self) -> &std::path::Path {
         &self.pdf_dir
     }
+
+    /// Returns the canonical skrills-tome cache directory, creating it if needed.
+    ///
+    /// Other modules (knowledge graph, citations) should use this instead of
+    /// duplicating the path logic.
+    pub fn cache_dir() -> TomeResult<std::path::PathBuf> {
+        let base = dirs::cache_dir()
+            .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))
+            .ok_or_else(|| {
+                TomeError::Other("cannot determine cache directory: HOME is unset".into())
+            })?;
+        let dir = base.join("skrills-tome");
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
 }
 
 #[cfg(test)]

@@ -578,6 +578,15 @@ fn research_tool_schemas_have_correct_required_fields() {
     assert!(required.contains(&json!("target_id")));
     assert!(required.contains(&json!("kind")));
 
+    // track-citations requires only "paper_id" (T4: title is optional — only needed for track action)
+    let schema = tool_map["track-citations"].input_schema.as_ref();
+    let required = schema.get("required").unwrap().as_array().unwrap();
+    assert!(required.contains(&json!("paper_id")));
+    assert!(
+        !required.contains(&json!("title")),
+        "title should not be in required — only needed for action=track"
+    );
+
     // resolve-contradiction requires "improve", "degrades"
     let schema = tool_map["resolve-contradiction"].input_schema.as_ref();
     let required = schema.get("required").unwrap().as_array().unwrap();
@@ -613,6 +622,378 @@ fn research_tools_has_all_expected_names() {
             "Expected tool '{}' in research_tools, found: {:?}",
             name,
             names
+        );
+    }
+}
+
+// -------------------------------------------------------------------------
+// T1: query_knowledge_graph_tool search-by-query branch
+// -------------------------------------------------------------------------
+
+/// GIVEN nodes in the knowledge graph
+/// WHEN query_knowledge_graph_tool is called with a query string
+/// THEN it returns matching nodes
+#[test]
+fn query_knowledge_graph_search_by_query() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempfile::tempdir().unwrap();
+    let _home = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
+
+    // Add a node
+    let args = json!({"id": "topic-search-test", "kind": "topic", "label": "Searchable Topic"})
+        .as_object()
+        .cloned()
+        .unwrap();
+    service.add_knowledge_node_tool(args).unwrap();
+
+    // Search by query
+    let args = json!({"query": "Searchable"})
+        .as_object()
+        .cloned()
+        .unwrap();
+    let result = service.query_knowledge_graph_tool(args).unwrap();
+    assert!(!result.is_error.unwrap_or(true));
+
+    let structured = result.structured_content.unwrap();
+    let nodes = structured.get("nodes").unwrap().as_array().unwrap();
+    assert!(!nodes.is_empty(), "Should find at least one node");
+    assert_eq!(nodes[0].get("id").unwrap(), "topic-search-test");
+}
+
+/// GIVEN nodes in the knowledge graph
+/// WHEN query_knowledge_graph_tool is called with query + kind filter
+/// THEN it filters by kind
+#[test]
+fn query_knowledge_graph_search_with_kind_filter() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempfile::tempdir().unwrap();
+    let _home = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
+
+    let args = json!({"id": "paper-filter", "kind": "paper", "label": "Filter Test Paper"})
+        .as_object()
+        .cloned()
+        .unwrap();
+    service.add_knowledge_node_tool(args).unwrap();
+
+    let args = json!({"id": "topic-filter", "kind": "topic", "label": "Filter Test Topic"})
+        .as_object()
+        .cloned()
+        .unwrap();
+    service.add_knowledge_node_tool(args).unwrap();
+
+    // Search with kind=paper filter
+    let args = json!({"query": "Filter", "kind": "paper"})
+        .as_object()
+        .cloned()
+        .unwrap();
+    let result = service.query_knowledge_graph_tool(args).unwrap();
+    let structured = result.structured_content.unwrap();
+    let nodes = structured.get("nodes").unwrap().as_array().unwrap();
+
+    for node in nodes {
+        assert_eq!(node.get("kind").unwrap(), "paper");
+    }
+}
+
+/// GIVEN a query with an unknown kind
+/// WHEN query_knowledge_graph_tool is called
+/// THEN it returns an error (I3)
+#[test]
+fn query_knowledge_graph_rejects_unknown_kind() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempfile::tempdir().unwrap();
+    let _home = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
+
+    let args = json!({"query": "anything", "kind": "banana"})
+        .as_object()
+        .cloned()
+        .unwrap();
+    let err = service.query_knowledge_graph_tool(args).unwrap_err();
+    assert!(
+        err.to_string().contains("Unknown node kind"),
+        "Should reject unknown kind, got: {err}"
+    );
+}
+
+// -------------------------------------------------------------------------
+// T3: track_citations_tool backward action
+// -------------------------------------------------------------------------
+
+/// GIVEN a tracked paper
+/// WHEN track_citations_tool is called with action=backward
+/// THEN it returns backward citations (empty for new paper)
+#[test]
+fn track_citations_backward_empty() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempfile::tempdir().unwrap();
+    let _home = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
+
+    // Track a paper first
+    let args = json!({
+        "paper_id": "paper-back-001",
+        "action": "track",
+        "title": "Backward Test Paper"
+    })
+    .as_object()
+    .cloned()
+    .unwrap();
+    service.track_citations_tool(args).unwrap();
+
+    // Query backward citations
+    let args = json!({
+        "paper_id": "paper-back-001",
+        "action": "backward"
+    })
+    .as_object()
+    .cloned()
+    .unwrap();
+
+    let result = service.track_citations_tool(args).unwrap();
+    assert!(!result.is_error.unwrap_or(true));
+
+    let structured = result.structured_content.unwrap();
+    assert_eq!(structured.get("count").unwrap(), 0);
+    assert_eq!(structured.get("direction").unwrap(), "backward");
+}
+
+// -------------------------------------------------------------------------
+// T5: More edge kinds and direction filters
+// -------------------------------------------------------------------------
+
+/// GIVEN two nodes
+/// WHEN linked with each of the 5 edge kinds
+/// THEN all are accepted
+#[test]
+fn link_knowledge_accepts_all_edge_kinds() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempfile::tempdir().unwrap();
+    let _home = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
+
+    // Add source and target nodes
+    let add = |id: &str| {
+        let args = json!({"id": id, "kind": "topic", "label": id})
+            .as_object()
+            .cloned()
+            .unwrap();
+        service.add_knowledge_node_tool(args).unwrap();
+    };
+    add("src-node");
+    add("tgt-cites");
+    add("tgt-impl");
+    add("tgt-contra");
+    add("tgt-ext");
+    add("tgt-analog");
+
+    let all_kinds = ["cites", "implements", "contradicts", "extends", "analogous_to"];
+    let targets = [
+        "tgt-cites",
+        "tgt-impl",
+        "tgt-contra",
+        "tgt-ext",
+        "tgt-analog",
+    ];
+
+    for (kind, target) in all_kinds.iter().zip(targets.iter()) {
+        let args = json!({
+            "source_id": "src-node",
+            "target_id": target,
+            "kind": kind,
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+
+        let result = service.link_knowledge_tool(args);
+        assert!(
+            result.is_ok(),
+            "Edge kind '{}' should be accepted, got: {:?}",
+            kind,
+            result.err()
+        );
+    }
+}
+
+/// GIVEN a node with both incoming and outgoing edges
+/// WHEN query_knowledge_graph_tool is called with direction="to"
+/// THEN only incoming edges are returned
+#[test]
+fn query_knowledge_graph_direction_to() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempfile::tempdir().unwrap();
+    let _home = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
+
+    let add = |id: &str| {
+        let args = json!({"id": id, "kind": "topic", "label": id})
+            .as_object()
+            .cloned()
+            .unwrap();
+        service.add_knowledge_node_tool(args).unwrap();
+    };
+    add("center");
+    add("outgoing-target");
+    add("incoming-source");
+
+    // center -> outgoing-target
+    let args = json!({"source_id": "center", "target_id": "outgoing-target", "kind": "cites"})
+        .as_object()
+        .cloned()
+        .unwrap();
+    service.link_knowledge_tool(args).unwrap();
+
+    // incoming-source -> center
+    let args = json!({"source_id": "incoming-source", "target_id": "center", "kind": "extends"})
+        .as_object()
+        .cloned()
+        .unwrap();
+    service.link_knowledge_tool(args).unwrap();
+
+    // Query with direction="to" — should get only incoming edges
+    let args = json!({"node_id": "center", "direction": "to"})
+        .as_object()
+        .cloned()
+        .unwrap();
+    let result = service.query_knowledge_graph_tool(args).unwrap();
+    let structured = result.structured_content.unwrap();
+
+    let edges_from = structured.get("edges_from").unwrap().as_array().unwrap();
+    let edges_to = structured.get("edges_to").unwrap().as_array().unwrap();
+    assert!(edges_from.is_empty(), "direction=to should have no outgoing edges");
+    assert_eq!(edges_to.len(), 1);
+    assert_eq!(edges_to[0].get("source").unwrap(), "incoming-source");
+}
+
+// -------------------------------------------------------------------------
+// I5: Enum sync test — verify TRIZ parameter, NodeKind, and EdgeKind
+//     enums are consistent between schema and handler
+// -------------------------------------------------------------------------
+
+/// GIVEN the resolve-contradiction schema enum values
+/// WHEN compared against Parameter::all() (canonical source)
+/// THEN they match exactly
+#[test]
+fn triz_parameter_enum_matches_schema() {
+    use crate::tool_schemas::research_tools;
+    use skrills_tome::triz::Parameter;
+
+    let tools = research_tools();
+    let tool = tools
+        .iter()
+        .find(|t| t.name.as_ref() == "resolve-contradiction")
+        .unwrap();
+
+    let schema = tool.input_schema.as_ref();
+    let props = schema.get("properties").unwrap();
+    let improve_enum = props
+        .get("improve")
+        .unwrap()
+        .get("enum")
+        .unwrap()
+        .as_array()
+        .unwrap();
+
+    let schema_values: Vec<&str> = improve_enum.iter().filter_map(|v| v.as_str()).collect();
+    let enum_values: Vec<&str> = Parameter::all().iter().map(|p| p.as_str()).collect();
+
+    assert_eq!(
+        schema_values.len(),
+        enum_values.len(),
+        "Schema enum count ({}) != Parameter::all() count ({})",
+        schema_values.len(),
+        enum_values.len()
+    );
+    for val in &enum_values {
+        assert!(
+            schema_values.contains(val),
+            "Parameter::all() has '{}' but schema enum does not include it",
+            val
+        );
+    }
+}
+
+/// GIVEN the add-knowledge-node schema enum values
+/// WHEN compared against NodeKind::all() (canonical source)
+/// THEN they match exactly
+#[test]
+fn node_kind_enum_matches_schema() {
+    use crate::tool_schemas::research_tools;
+    use skrills_tome::knowledge_graph::NodeKind;
+
+    let tools = research_tools();
+    let tool = tools
+        .iter()
+        .find(|t| t.name.as_ref() == "add-knowledge-node")
+        .unwrap();
+
+    let schema = tool.input_schema.as_ref();
+    let kind_enum = schema
+        .get("properties")
+        .unwrap()
+        .get("kind")
+        .unwrap()
+        .get("enum")
+        .unwrap()
+        .as_array()
+        .unwrap();
+
+    let schema_values: Vec<&str> = kind_enum.iter().filter_map(|v| v.as_str()).collect();
+    let enum_values: Vec<&str> = NodeKind::all().iter().map(|k| k.as_str()).collect();
+
+    assert_eq!(schema_values.len(), enum_values.len());
+    for val in &enum_values {
+        assert!(
+            schema_values.contains(val),
+            "NodeKind::all() has '{}' but schema enum does not",
+            val
+        );
+    }
+}
+
+/// GIVEN the link-knowledge schema enum values
+/// WHEN compared against EdgeKind::all() (canonical source)
+/// THEN they match exactly
+#[test]
+fn edge_kind_enum_matches_schema() {
+    use crate::tool_schemas::research_tools;
+    use skrills_tome::knowledge_graph::EdgeKind;
+
+    let tools = research_tools();
+    let tool = tools
+        .iter()
+        .find(|t| t.name.as_ref() == "link-knowledge")
+        .unwrap();
+
+    let schema = tool.input_schema.as_ref();
+    let kind_enum = schema
+        .get("properties")
+        .unwrap()
+        .get("kind")
+        .unwrap()
+        .get("enum")
+        .unwrap()
+        .as_array()
+        .unwrap();
+
+    let schema_values: Vec<&str> = kind_enum.iter().filter_map(|v| v.as_str()).collect();
+    let enum_values: Vec<&str> = EdgeKind::all().iter().map(|k| k.as_str()).collect();
+
+    assert_eq!(schema_values.len(), enum_values.len());
+    for val in &enum_values {
+        assert!(
+            schema_values.contains(val),
+            "EdgeKind::all() has '{}' but schema enum does not",
+            val
         );
     }
 }

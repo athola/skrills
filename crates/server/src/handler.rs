@@ -179,32 +179,17 @@ impl ServerHandler for SkillService {
                     }
                 }
             }
+            let args = request.arguments.clone().unwrap_or_default();
             let result = match request.name.as_ref() {
-                "create-skill" => {
-                    let args = request.arguments.clone().unwrap_or_default();
-                    self.create_skill_tool(args).await
-                }
-                "search-skills-github" => {
-                    let args = request.arguments.clone().unwrap_or_default();
-                    self.search_skills_github_tool(args).await
-                }
+                "create-skill" => self.create_skill_tool(args).await,
+                "search-skills-github" => self.search_skills_github_tool(args).await,
                 // Research tools (async — require HTTP calls to external APIs)
-                "search-papers" => {
-                    let args = request.arguments.clone().unwrap_or_default();
-                    self.search_papers_tool(args).await
-                }
-                "search-discussions" => {
-                    let args = request.arguments.clone().unwrap_or_default();
+                "search-papers" | "search_papers" => self.search_papers_tool(args).await,
+                "search-discussions" | "search_discussions" => {
                     self.search_discussions_tool(args).await
                 }
-                "resolve-doi" => {
-                    let args = request.arguments.clone().unwrap_or_default();
-                    self.resolve_doi_tool(args).await
-                }
-                "fetch-pdf" => {
-                    let args = request.arguments.clone().unwrap_or_default();
-                    self.fetch_pdf_tool(args).await
-                }
+                "resolve-doi" | "resolve_doi" => self.resolve_doi_tool(args).await,
+                "fetch-pdf" | "fetch_pdf" => self.fetch_pdf_tool(args).await,
                 _ => (|| -> Result<CallToolResult> {
                     match request.name.as_ref() {
                     "sync-from-claude" => {
@@ -733,23 +718,23 @@ impl ServerHandler for SkillService {
                         crate::mcp_gateway::get_context_stats(stats)
                     }
                     // Research tools (sync — local database operations)
-                    "query-knowledge-graph" => {
+                    "query-knowledge-graph" | "query_knowledge_graph" => {
                         let args = request.arguments.clone().unwrap_or_default();
                         self.query_knowledge_graph_tool(args)
                     }
-                    "add-knowledge-node" => {
+                    "add-knowledge-node" | "add_knowledge_node" => {
                         let args = request.arguments.clone().unwrap_or_default();
                         self.add_knowledge_node_tool(args)
                     }
-                    "link-knowledge" => {
+                    "link-knowledge" | "link_knowledge" => {
                         let args = request.arguments.clone().unwrap_or_default();
                         self.link_knowledge_tool(args)
                     }
-                    "track-citations" => {
+                    "track-citations" | "track_citations" => {
                         let args = request.arguments.clone().unwrap_or_default();
                         self.track_citations_tool(args)
                     }
-                    "resolve-contradiction" => {
+                    "resolve-contradiction" | "resolve_contradiction" => {
                         let args = request.arguments.clone().unwrap_or_default();
                         self.resolve_contradiction_tool(args)
                     }
