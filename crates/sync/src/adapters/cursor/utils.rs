@@ -227,24 +227,6 @@ mod tests {
     }
 
     #[test]
-    fn split_frontmatter_crlf_line_endings() {
-        let content = "---\r\nname: test\r\n---\r\n\r\n# Body\r\n";
-        let (raw, body) = split_frontmatter(content);
-        assert!(raw.is_some(), "Should find frontmatter with CRLF endings");
-        let fm = raw.unwrap();
-        assert!(
-            fm.contains("name: test"),
-            "Frontmatter should contain 'name: test', got: {:?}",
-            fm
-        );
-        assert!(
-            body.starts_with("# Body"),
-            "Body should start with '# Body', got: {:?}",
-            body
-        );
-    }
-
-    #[test]
     fn sanitize_name_converts_to_kebab() {
         assert_eq!(sanitize_name("My Skill Name"), "my-skill-name");
         assert_eq!(

@@ -1,5 +1,10 @@
 # Changelog Highlights
 
+## 0.7.4 (2026-04-02)
+
+- **NEW: Research MCP Tools**: 9 tools expose the `tome` crate over MCP -- `search-papers`, `search-discussions`, `resolve-doi`, `fetch-pdf`, `query-knowledge-graph`, `add-knowledge-node`, `link-knowledge`, `track-citations`, `resolve-contradiction` (27 → 36 tools).
+- **Fix: Paper Model**: Refined `Paper` model fields and research handler argument parsing.
+
 ## 0.7.3 (2026-03-29)
 
 - **NEW: MCP Tool Filtering**: `allowed_tools`/`disabled_tools` fields on `McpServer` synced across all four adapters.

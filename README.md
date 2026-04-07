@@ -11,6 +11,7 @@
 [![Coverage](https://img.shields.io/github/actions/workflow/status/athola/skrills/coverage.yml?branch=master&label=coverage)](https://github.com/athola/skrills/actions/workflows/coverage.yml)
 [![Audit](https://img.shields.io/github/actions/workflow/status/athola/skrills/audit.yml?branch=master&label=audit)](https://github.com/athola/skrills/actions/workflows/audit.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Mentioned in Awesome Codex CLI](https://awesome.re/mentioned-badge.svg)](https://github.com/RoggeOhta/awesome-codex-cli)
 
 Skills support engine for Claude Code, Codex CLI, GitHub Copilot CLI,
 and Cursor.
@@ -22,11 +23,11 @@ and Cursor.
 [FAQ](docs/FAQ.md) |
 [Changelog](book/src/changelog.md)
 
-> **What's new in 0.7.3** -- MCP tool filtering
-> (`allowed_tools`/`disabled_tools`) synced across all adapters,
-> MCP servers panel in TUI and browser dashboards,
-> `/api/mcp-servers` REST endpoint, configurable Unpaywall email,
-> `OffsetDateTime` for discussion timestamps, and SQL upsert fix.
+> **What's new in 0.7.4** -- 9 research MCP tools
+> (`search-papers`, `search-discussions`, `resolve-doi`, `fetch-pdf`,
+> `query-knowledge-graph`, `add-knowledge-node`, `link-knowledge`,
+> `track-citations`, `resolve-contradiction`) exposing the `tome`
+> crate over MCP (27 → 36 tools total).
 > See [changelog](book/src/changelog.md).
 
 ## Demo
@@ -56,8 +57,9 @@ setup.
   reductions to fit context windows.
 - **Dependency resolution** -- resolves skill dependencies with cycle
   detection and semantic versioning constraints.
-- **MCP server** -- 27 tools for validation, sync, intelligence, and
-  project-aware skill generation over stdio or HTTP transport.
+- **MCP server** -- 36 tools for validation, sync, intelligence,
+  research, and project-aware skill generation over stdio or HTTP
+  transport.
 - **Session mining** -- parses Claude Code and Codex CLI session
   history to improve recommendations based on actual usage.
 - **Visualization** -- TUI and browser dashboard showing discovered

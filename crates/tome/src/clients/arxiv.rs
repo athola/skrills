@@ -61,6 +61,7 @@ impl ArxivClient {
 /// Minimal Atom XML parser for arXiv results (no XML crate dependency).
 fn parse_arxiv_atom(xml: &str) -> Vec<Paper> {
     let mut papers = Vec::new();
+    let mut skipped = 0u32;
 
     for entry in xml.split("<entry>").skip(1) {
         let title = extract_tag(entry, "title").map(|t| t.replace('\n', " ").trim().to_string());
@@ -70,8 +71,6 @@ fn parse_arxiv_atom(xml: &str) -> Vec<Paper> {
 
         if let (Some(title), Some(id)) = (title, id) {
             let year = published.and_then(|p| p.get(..4).and_then(|y| y.parse().ok()));
-
-            // Extract arXiv ID from URL
             let arxiv_id = id.rsplit('/').next().unwrap_or(&id).to_string();
 
             papers.push(Paper {
@@ -86,7 +85,13 @@ fn parse_arxiv_atom(xml: &str) -> Vec<Paper> {
                 citation_count: None,
                 pdf_url: Some(format!("https://arxiv.org/pdf/{arxiv_id}")),
             });
+        } else {
+            skipped += 1;
         }
+    }
+
+    if skipped > 0 {
+        tracing::debug!(count = skipped, "skipped arXiv entries missing id or title");
     }
 
     papers

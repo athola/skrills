@@ -13,6 +13,7 @@
 //! Keep this file under ~2500 LOC; split modules if needed.
 
 mod intelligence;
+mod research;
 mod tools;
 
 #[cfg(test)]

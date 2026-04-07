@@ -2577,9 +2577,10 @@ Skill instructions..."></textarea>
 
   function runAnalyzeAll() {
     // Simple deterministic hash of a string to a number in [0, range)
-    function nameHash(str, range) {
+    function nameHash(input, range) {
+      if (range === 0) return 0;
       let h = 0;
-      for (let i = 0; i < str.length; i++) { h = (h * 31 + str.charCodeAt(i)) | 0; }
+      for (let i = 0; i < input.length; i++) { h = (h * 31 + input.charCodeAt(i)) | 0; }
       return ((h < 0 ? -h : h) % range);
     }
 

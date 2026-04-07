@@ -126,6 +126,49 @@ mod tests {
         let roundtripped: DiscussionSource = serde_json::from_str(&json).unwrap();
         assert_eq!(roundtripped, DiscussionSource::HackerNews);
     }
+
+    #[test]
+    fn research_session_roundtrip() {
+        let ts = time::OffsetDateTime::parse(
+            "2024-06-15T10:30:00Z",
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap();
+
+        let session = ResearchSession {
+            id: "sess-1".to_string(),
+            query: "rust async".to_string(),
+            created_at: ts,
+            paper_count: 5,
+            discussion_count: 3,
+        };
+
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(json.contains("2024-06-15T10:30:00Z"));
+
+        let roundtripped: ResearchSession = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtripped.created_at, ts);
+        assert_eq!(roundtripped.paper_count, 5);
+    }
+
+    #[test]
+    fn research_session_legacy_timestamp_field_rejected() {
+        // Old format used field name "timestamp" with a plain string.
+        // After migration to created_at: OffsetDateTime, old JSON is
+        // a breaking change — verify it fails cleanly rather than panicking.
+        let old_json = r#"{
+            "id": "sess-old",
+            "query": "test",
+            "timestamp": "2024-01-01 00:00:00",
+            "paper_count": 1,
+            "discussion_count": 0
+        }"#;
+        let result = serde_json::from_str::<ResearchSession>(old_json);
+        assert!(
+            result.is_err(),
+            "Old 'timestamp' field should not deserialize into new struct"
+        );
+    }
 }
 
 /// A cached research session.
@@ -133,7 +176,8 @@ mod tests {
 pub struct ResearchSession {
     pub id: String,
     pub query: String,
-    pub timestamp: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
     pub paper_count: usize,
     pub discussion_count: usize,
 }

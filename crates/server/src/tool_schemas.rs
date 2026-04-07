@@ -826,6 +826,354 @@ pub(crate) fn intelligence_tools() -> Vec<Tool> {
     ]
 }
 
+/// Returns research tools for academic paper search, knowledge graphs, and TRIZ.
+///
+/// Tools: search-papers, search-discussions, resolve-doi, fetch-pdf,
+/// query-knowledge-graph, add-knowledge-node, link-knowledge, track-citations,
+/// resolve-contradiction
+pub(crate) fn research_tools() -> Vec<Tool> {
+    vec![
+        // --- #168 Tools (Research API) ---
+        Tool {
+            name: "search-papers".into(),
+            title: Some("Search academic papers".into()),
+            description: Some(
+                "Search for academic papers across Semantic Scholar, arXiv, and OpenAlex. Deduplicates results by DOI.".into(),
+            ),
+            input_schema: Arc::new({
+                let mut schema = JsonMap::new();
+                schema.insert("type".into(), json!("object"));
+                schema.insert(
+                    "properties".into(),
+                    json!({
+                        "query": {
+                            "type": "string",
+                            "description": "Search query for academic papers"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "default": 10,
+                            "maximum": 100,
+                            "description": "Maximum number of results to return (default 10, max 100)"
+                        },
+                        "sources": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": ["arxiv", "semantic_scholar", "openalex"]
+                            },
+                            "description": "Paper sources to search (defaults to all)"
+                        }
+                    }),
+                );
+                schema.insert("required".into(), json!(["query"]));
+                schema.insert("additionalProperties".into(), json!(false));
+                schema
+            }),
+            output_schema: None,
+            annotations: Some(ToolAnnotations::default()),
+            icons: None,
+            meta: None,
+        },
+        Tool {
+            name: "search-discussions".into(),
+            title: Some("Search community discussions".into()),
+            description: Some(
+                "Search Hacker News for community discussions about a topic.".into(),
+            ),
+            input_schema: Arc::new({
+                let mut schema = JsonMap::new();
+                schema.insert("type".into(), json!("object"));
+                schema.insert(
+                    "properties".into(),
+                    json!({
+                        "query": {
+                            "type": "string",
+                            "description": "Search query for discussions"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "default": 10,
+                            "description": "Maximum number of results to return"
+                        }
+                    }),
+                );
+                schema.insert("required".into(), json!(["query"]));
+                schema.insert("additionalProperties".into(), json!(false));
+                schema
+            }),
+            output_schema: None,
+            annotations: Some(ToolAnnotations::default()),
+            icons: None,
+            meta: None,
+        },
+        Tool {
+            name: "resolve-doi".into(),
+            title: Some("Resolve DOI metadata".into()),
+            description: Some(
+                "Resolve a DOI to full metadata via CrossRef, with open-access PDF URL from Unpaywall.".into(),
+            ),
+            input_schema: Arc::new({
+                let mut schema = JsonMap::new();
+                schema.insert("type".into(), json!("object"));
+                schema.insert(
+                    "properties".into(),
+                    json!({
+                        "doi": {
+                            "type": "string",
+                            "description": "DOI to resolve (e.g., '10.1234/example')"
+                        }
+                    }),
+                );
+                schema.insert("required".into(), json!(["doi"]));
+                schema.insert("additionalProperties".into(), json!(false));
+                schema
+            }),
+            output_schema: None,
+            annotations: Some(ToolAnnotations::default()),
+            icons: None,
+            meta: None,
+        },
+        Tool {
+            name: "fetch-pdf".into(),
+            title: Some("Download and cache academic PDF".into()),
+            description: Some(
+                "Download the open-access PDF for a DOI via Unpaywall and cache it locally. Returns the local file path.".into(),
+            ),
+            input_schema: Arc::new({
+                let mut schema = JsonMap::new();
+                schema.insert("type".into(), json!("object"));
+                schema.insert(
+                    "properties".into(),
+                    json!({
+                        "doi": {
+                            "type": "string",
+                            "description": "DOI of the paper to fetch PDF for"
+                        }
+                    }),
+                );
+                schema.insert("required".into(), json!(["doi"]));
+                schema.insert("additionalProperties".into(), json!(false));
+                schema
+            }),
+            output_schema: None,
+            annotations: Some(ToolAnnotations::default()),
+            icons: None,
+            meta: None,
+        },
+        // --- #169 Tools (Advanced Features) ---
+        Tool {
+            name: "query-knowledge-graph".into(),
+            title: Some("Search and traverse knowledge graph".into()),
+            description: Some(
+                "Search nodes or traverse edges in the research knowledge graph. Provide query to search, or node_id to get connections.".into(),
+            ),
+            input_schema: Arc::new({
+                let mut schema = JsonMap::new();
+                schema.insert("type".into(), json!("object"));
+                schema.insert(
+                    "properties".into(),
+                    json!({
+                        "query": {
+                            "type": "string",
+                            "description": "Text query to search nodes"
+                        },
+                        "node_id": {
+                            "type": "string",
+                            "description": "Node ID to get connections for"
+                        },
+                        "direction": {
+                            "type": "string",
+                            "enum": ["from", "to", "both"],
+                            "description": "Edge traversal direction when using node_id"
+                        },
+                        "kind": {
+                            "type": "string",
+                            "enum": ["topic", "paper", "implementation", "discussion"],
+                            "description": "Filter by node kind"
+                        }
+                    }),
+                );
+                schema.insert("additionalProperties".into(), json!(false));
+                schema
+            }),
+            output_schema: None,
+            annotations: Some(ToolAnnotations::default()),
+            icons: None,
+            meta: None,
+        },
+        Tool {
+            name: "add-knowledge-node".into(),
+            title: Some("Add a node to the knowledge graph".into()),
+            description: Some(
+                "Add a node to the persistent research knowledge graph.".into(),
+            ),
+            input_schema: Arc::new({
+                let mut schema = JsonMap::new();
+                schema.insert("type".into(), json!("object"));
+                schema.insert(
+                    "properties".into(),
+                    json!({
+                        "id": {
+                            "type": "string",
+                            "description": "Unique node identifier"
+                        },
+                        "kind": {
+                            "type": "string",
+                            "enum": ["topic", "paper", "implementation", "discussion"],
+                            "description": "Node kind"
+                        },
+                        "label": {
+                            "type": "string",
+                            "description": "Human-readable node label"
+                        },
+                        "metadata": {
+                            "type": "object",
+                            "description": "Optional metadata for the node"
+                        }
+                    }),
+                );
+                schema.insert("required".into(), json!(["id", "kind", "label"]));
+                schema.insert("additionalProperties".into(), json!(false));
+                schema
+            }),
+            output_schema: None,
+            annotations: Some(ToolAnnotations::default()),
+            icons: None,
+            meta: None,
+        },
+        Tool {
+            name: "link-knowledge".into(),
+            title: Some("Connect nodes in the knowledge graph".into()),
+            description: Some(
+                "Create a directed edge between two nodes in the knowledge graph.".into(),
+            ),
+            input_schema: Arc::new({
+                let mut schema = JsonMap::new();
+                schema.insert("type".into(), json!("object"));
+                schema.insert(
+                    "properties".into(),
+                    json!({
+                        "source_id": {
+                            "type": "string",
+                            "description": "Source node ID"
+                        },
+                        "target_id": {
+                            "type": "string",
+                            "description": "Target node ID"
+                        },
+                        "kind": {
+                            "type": "string",
+                            "enum": ["cites", "implements", "contradicts", "extends", "analogous_to"],
+                            "description": "Edge relationship kind"
+                        },
+                        "weight": {
+                            "type": "number",
+                            "default": 1.0,
+                            "description": "Edge weight (default 1.0)"
+                        },
+                        "metadata": {
+                            "type": "object",
+                            "description": "Optional metadata for the edge"
+                        }
+                    }),
+                );
+                schema.insert("required".into(), json!(["source_id", "target_id", "kind"]));
+                schema.insert("additionalProperties".into(), json!(false));
+                schema
+            }),
+            output_schema: None,
+            annotations: Some(ToolAnnotations::default()),
+            icons: None,
+            meta: None,
+        },
+        Tool {
+            name: "track-citations".into(),
+            title: Some("Track paper citations".into()),
+            description: Some(
+                "Track a paper for citation monitoring, or query forward/backward citations.".into(),
+            ),
+            input_schema: Arc::new({
+                let mut schema = JsonMap::new();
+                schema.insert("type".into(), json!("object"));
+                schema.insert(
+                    "properties".into(),
+                    json!({
+                        "paper_id": {
+                            "type": "string",
+                            "description": "Paper identifier (e.g., Semantic Scholar ID)"
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "Paper title for display"
+                        },
+                        "doi": {
+                            "type": "string",
+                            "description": "Optional DOI for cross-referencing"
+                        },
+                        "action": {
+                            "type": "string",
+                            "enum": ["track", "forward", "backward"],
+                            "default": "track",
+                            "description": "Action: 'track' to monitor, 'forward' for citing papers, 'backward' for referenced papers"
+                        }
+                    }),
+                );
+                schema.insert("required".into(), json!(["paper_id", "title"]));
+                schema.insert("additionalProperties".into(), json!(false));
+                schema
+            }),
+            output_schema: None,
+            annotations: Some(ToolAnnotations::default()),
+            icons: None,
+            meta: None,
+        },
+        Tool {
+            name: "resolve-contradiction".into(),
+            title: Some("TRIZ contradiction resolution".into()),
+            description: Some(
+                "Apply TRIZ inventive principles to resolve a contradiction between two parameters. Returns applicable principles with software examples.".into(),
+            ),
+            input_schema: Arc::new({
+                let mut schema = JsonMap::new();
+                schema.insert("type".into(), json!("object"));
+                schema.insert(
+                    "properties".into(),
+                    json!({
+                        "improve": {
+                            "type": "string",
+                            "enum": [
+                                "performance", "reliability", "maintainability", "scalability",
+                                "security", "usability", "testability", "deployability",
+                                "cost_efficiency", "development_speed", "code_complexity",
+                                "memory_usage", "latency", "throughput", "availability"
+                            ],
+                            "description": "Parameter to improve"
+                        },
+                        "degrades": {
+                            "type": "string",
+                            "enum": [
+                                "performance", "reliability", "maintainability", "scalability",
+                                "security", "usability", "testability", "deployability",
+                                "cost_efficiency", "development_speed", "code_complexity",
+                                "memory_usage", "latency", "throughput", "availability"
+                            ],
+                            "description": "Parameter that would degrade"
+                        }
+                    }),
+                );
+                schema.insert("required".into(), json!(["improve", "degrades"]));
+                schema.insert("additionalProperties".into(), json!(false));
+                schema
+            }),
+            output_schema: None,
+            annotations: Some(ToolAnnotations::default()),
+            icons: None,
+            meta: None,
+        },
+    ]
+}
+
 /// Returns all MCP tools.
 ///
 /// This combines all tool groups and is used by the `list_tools()` handler.
@@ -838,6 +1186,7 @@ pub(crate) fn all_tools() -> Vec<Tool> {
     tools.extend(metrics_tools());
     tools.extend(trace_tools());
     tools.extend(intelligence_tools());
+    tools.extend(research_tools());
     tools
 }
 
@@ -848,8 +1197,13 @@ mod tests {
     #[test]
     fn test_all_tools_returns_expected_count() {
         let tools = all_tools();
-        // 11 sync + 3 validation + 1 dependency + 1 recommend + 1 metrics + 4 trace + 6 intelligence = 27 tools
-        assert_eq!(tools.len(), 27);
+        // 11 sync + 3 validation + 1 dependency + 1 recommend + 1 metrics + 4 trace + 6 intelligence + 9 research = 36 tools
+        assert_eq!(tools.len(), 36);
+    }
+
+    #[test]
+    fn test_research_tools_count() {
+        assert_eq!(research_tools().len(), 9);
     }
 
     #[test]

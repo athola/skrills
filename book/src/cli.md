@@ -152,7 +152,7 @@ skrills serve --skill-dir ~/.custom/skills  # Custom skill directory
 | `--cache-ttl-ms <N>` | Discovery cache TTL in milliseconds |
 | `--watch` | Enable live filesystem invalidation |
 
-The MCP server exposes 27 tools for validation, analysis, sync, intelligence, and research directly to your AI assistant. The HTTP mode serves a browser dashboard with skills explorer, metrics, and activity feed.
+The MCP server exposes 36 tools for validation, analysis, sync, intelligence, and research directly to your AI assistant. The HTTP mode serves a browser dashboard with skills explorer, metrics, and activity feed.
 
 Skrills also ships a self-contained HTML portal (`skrills-portal.html`) that works offline without a running server. It includes a skills browser, validator with autofix, token analyzer, cross-CLI converter, and full CLI/MCP reference. Open it directly in any browser or upload it into AI application portals.
 
