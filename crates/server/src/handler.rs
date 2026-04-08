@@ -179,19 +179,20 @@ impl ServerHandler for SkillService {
                     }
                 }
             }
+            // Normalize snake_case tool names to kebab-case so callers can
+            // use either convention (e.g. "search_papers" -> "search-papers").
+            let canonical_name = request.name.replace('_', "-");
             let args = request.arguments.clone().unwrap_or_default();
-            let result = match request.name.as_ref() {
+            let result = match canonical_name.as_str() {
                 "create-skill" => self.create_skill_tool(args).await,
                 "search-skills-github" => self.search_skills_github_tool(args).await,
                 // Research tools (async — require HTTP calls to external APIs)
-                "search-papers" | "search_papers" => self.search_papers_tool(args).await,
-                "search-discussions" | "search_discussions" => {
-                    self.search_discussions_tool(args).await
-                }
-                "resolve-doi" | "resolve_doi" => self.resolve_doi_tool(args).await,
-                "fetch-pdf" | "fetch_pdf" => self.fetch_pdf_tool(args).await,
+                "search-papers" => self.search_papers_tool(args).await,
+                "search-discussions" => self.search_discussions_tool(args).await,
+                "resolve-doi" => self.resolve_doi_tool(args).await,
+                "fetch-pdf" => self.fetch_pdf_tool(args).await,
                 _ => (|| -> Result<CallToolResult> {
-                    match request.name.as_ref() {
+                    match canonical_name.as_str() {
                     "sync-from-claude" => {
                         let include_marketplace = request
                             .arguments
@@ -692,13 +693,13 @@ impl ServerHandler for SkillService {
                         self.search_skills_fuzzy_tool(args)
                     }
                     // MCP Gateway tools for context optimization
-                    "list-mcp-tools" | "list_mcp_tools" => {
+                    "list-mcp-tools" => {
                         // Get tool entries from the real registry
                         let registry = self.mcp_registry.lock();
                         let entries: Vec<_> = registry.list_all();
                         crate::mcp_gateway::list_mcp_tools(request.arguments.as_ref(), entries)
                     }
-                    "describe-mcp-tool" | "describe_mcp_tool" => {
+                    "describe-mcp-tool" => {
                         // Track schema load for context stats
                         self.context_stats.record_schema_load();
 
@@ -712,29 +713,29 @@ impl ServerHandler for SkillService {
                                 .or_else(|| gateway_tools.iter().find(|t| t.name.as_ref() == name).cloned())
                         })
                     }
-                    "get-context-stats" | "get_context_stats" => {
+                    "get-context-stats" => {
                         // Return current context stats from the real tracker
                         let stats = self.context_stats.snapshot();
                         crate::mcp_gateway::get_context_stats(stats)
                     }
                     // Research tools (sync — local database operations)
-                    "query-knowledge-graph" | "query_knowledge_graph" => {
+                    "query-knowledge-graph" => {
                         let args = request.arguments.clone().unwrap_or_default();
                         self.query_knowledge_graph_tool(args)
                     }
-                    "add-knowledge-node" | "add_knowledge_node" => {
+                    "add-knowledge-node" => {
                         let args = request.arguments.clone().unwrap_or_default();
                         self.add_knowledge_node_tool(args)
                     }
-                    "link-knowledge" | "link_knowledge" => {
+                    "link-knowledge" => {
                         let args = request.arguments.clone().unwrap_or_default();
                         self.link_knowledge_tool(args)
                     }
-                    "track-citations" | "track_citations" => {
+                    "track-citations" => {
                         let args = request.arguments.clone().unwrap_or_default();
                         self.track_citations_tool(args)
                     }
-                    "resolve-contradiction" | "resolve_contradiction" => {
+                    "resolve-contradiction" => {
                         let args = request.arguments.clone().unwrap_or_default();
                         self.resolve_contradiction_tool(args)
                     }
@@ -908,7 +909,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // Snake-case tool alias dispatch tests (#199)
+    // Snake-case tool name normalization tests
     // -------------------------------------------------------------------------
 
     /// GIVEN a sync research tool called via snake_case name

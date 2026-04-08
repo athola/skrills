@@ -13,14 +13,7 @@ pub struct ResearchCache {
 impl ResearchCache {
     /// Opens or creates the cache database at the default location.
     pub fn open() -> TomeResult<Self> {
-        let cache_dir = dirs::cache_dir()
-            .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))
-            .ok_or_else(|| {
-                TomeError::Other("cannot determine cache directory: HOME is unset".into())
-            })?
-            .join("skrills-tome");
-        std::fs::create_dir_all(&cache_dir)?;
-
+        let cache_dir = Self::cache_dir()?;
         let db_path = cache_dir.join("research.db");
         let pdf_dir = cache_dir.join("pdfs");
         std::fs::create_dir_all(&pdf_dir)?;
@@ -188,19 +181,20 @@ mod tests {
     #[test]
     fn cache_dir_creates_directory() {
         let temp = tempfile::tempdir().unwrap();
-        // Temporarily override HOME so cache_dir() uses our temp dir
         let prev = std::env::var("HOME").ok();
-        std::env::set_var("HOME", temp.path());
 
-        let result = ResearchCache::cache_dir();
+        // Run inside catch_unwind so HOME is always restored even on panic
+        let result = std::panic::catch_unwind(|| {
+            std::env::set_var("HOME", temp.path());
+            ResearchCache::cache_dir()
+        });
 
-        // Restore HOME
         match prev {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),
         }
 
-        let dir = result.unwrap();
+        let dir = result.expect("test panicked").unwrap();
         assert!(dir.ends_with("skrills-tome"));
         assert!(dir.exists(), "cache_dir should create the directory");
     }

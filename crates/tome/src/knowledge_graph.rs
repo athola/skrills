@@ -28,6 +28,8 @@ impl NodeKind {
         }
     }
 
+    /// Returns all variants in declaration order.  Update this list when
+    /// adding a new variant.
     pub fn all() -> &'static [NodeKind] {
         &[
             Self::Topic,
@@ -60,6 +62,8 @@ impl EdgeKind {
         }
     }
 
+    /// Returns all variants in declaration order.  Update this list when
+    /// adding a new variant.
     pub fn all() -> &'static [EdgeKind] {
         &[
             Self::Cites,
@@ -306,9 +310,21 @@ impl KnowledgeGraph {
     }
 }
 
+/// Parse a timestamp string from SQLite TEXT storage into `OffsetDateTime`.
+///
+/// Accepts RFC 3339 (`2026-04-08T12:00:00Z`) and falls back to SQLite's
+/// `datetime('now')` format (`2026-04-08 12:00:00`) for databases created
+/// before the 0.7.5 migration.  Fallback timestamps are treated as UTC.
 fn parse_rfc3339(s: &str) -> TomeResult<OffsetDateTime> {
-    OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
-        .map_err(|e| TomeError::Other(format!("invalid RFC 3339 timestamp '{s}': {e}")))
+    OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).or_else(|_| {
+        // Legacy SQLite datetime format: "YYYY-MM-DD HH:MM:SS" (no timezone)
+        let fmt = time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]")
+            .expect("static format description");
+        tracing::warn!("Parsing legacy timestamp format: '{s}' — consider re-inserting the node to migrate");
+        time::PrimitiveDateTime::parse(s, &fmt)
+            .map(|dt| dt.assume_utc())
+    })
+    .map_err(|e| TomeError::Other(format!("invalid timestamp '{s}': {e}")))
 }
 
 fn parse_node_kind(s: &str) -> TomeResult<NodeKind> {
@@ -453,6 +469,30 @@ mod tests {
             assert_eq!(*kind, parsed, "EdgeKind round-trip failed for '{s}'");
         }
         assert_eq!(all.len(), 5, "EdgeKind::all() should have 5 variants");
+    }
+
+    /// GIVEN a timestamp in SQLite's datetime('now') format
+    /// WHEN parse_rfc3339 is called
+    /// THEN it falls back to the legacy format and returns a valid OffsetDateTime
+    #[test]
+    fn parse_rfc3339_accepts_legacy_sqlite_format() {
+        let legacy = "2025-12-15 10:30:00";
+        let dt = parse_rfc3339(legacy).expect("should parse legacy format");
+        assert_eq!(dt.year(), 2025);
+        assert_eq!(dt.month() as u8, 12);
+        assert_eq!(dt.day(), 15);
+        assert_eq!(dt.hour(), 10);
+        assert_eq!(dt.minute(), 30);
+    }
+
+    /// GIVEN a timestamp in RFC 3339 format
+    /// WHEN parse_rfc3339 is called
+    /// THEN it parses without falling back
+    #[test]
+    fn parse_rfc3339_accepts_rfc3339_format() {
+        let rfc = "2026-04-08T12:00:00Z";
+        let dt = parse_rfc3339(rfc).expect("should parse RFC 3339");
+        assert_eq!(dt.year(), 2026);
     }
 
     #[test]
