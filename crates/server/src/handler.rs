@@ -906,4 +906,122 @@ mod tests {
             "error message should mention unknown tool"
         );
     }
+
+    // -------------------------------------------------------------------------
+    // Snake-case tool alias dispatch tests (#199)
+    // -------------------------------------------------------------------------
+
+    /// GIVEN a sync research tool called via snake_case name
+    /// WHEN call_tool dispatches the request
+    /// THEN it routes to the correct handler (same as kebab-case)
+    #[test]
+    fn snake_case_aliases_route_sync_research_tools() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var(
+            "HOME",
+            Some(
+                temp.path()
+                    .to_str()
+                    .expect("temp home should be valid utf-8"),
+            ),
+        );
+
+        let service = build_service(&temp);
+
+        // Test resolve_contradiction (snake_case) returns principles, not "unknown tool"
+        let result = run_async(async {
+            let (running, context, _client) = service_with_context(service);
+            running
+                .service()
+                .call_tool(
+                    CallToolRequestParam {
+                        name: "resolve_contradiction".into(),
+                        arguments: Some(
+                            serde_json::json!({
+                                "improve": "performance",
+                                "degrades": "reliability"
+                            })
+                            .as_object()
+                            .cloned()
+                            .unwrap(),
+                        ),
+                    },
+                    context,
+                )
+                .await
+        });
+
+        let res = result.expect("resolve_contradiction should not return unknown tool error");
+        assert!(
+            !res.is_error.unwrap_or(true),
+            "resolve_contradiction should succeed"
+        );
+    }
+
+    /// GIVEN sync research tools called via snake_case names
+    /// WHEN each snake_case alias is dispatched
+    /// THEN none return "unknown tool" errors
+    #[test]
+    fn snake_case_aliases_accepted_for_all_sync_research_tools() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var(
+            "HOME",
+            Some(
+                temp.path()
+                    .to_str()
+                    .expect("temp home should be valid utf-8"),
+            ),
+        );
+
+        // Each (snake_case_name, minimal_valid_args) pair for sync research tools
+        let cases: Vec<(&str, serde_json::Value)> = vec![
+            (
+                "query_knowledge_graph",
+                serde_json::json!({}), // stats mode — no args needed
+            ),
+            (
+                "add_knowledge_node",
+                serde_json::json!({"id": "test-snake", "kind": "topic", "label": "Snake Test"}),
+            ),
+            (
+                "link_knowledge",
+                serde_json::json!({"source_id": "test-snake", "target_id": "test-snake", "kind": "cites"}),
+            ),
+            (
+                "track_citations",
+                serde_json::json!({"paper_id": "p-snake", "action": "track", "title": "Snake Paper"}),
+            ),
+            (
+                "resolve_contradiction",
+                serde_json::json!({"improve": "performance", "degrades": "reliability"}),
+            ),
+        ];
+
+        for (name, args) in cases {
+            let svc = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1))
+                .expect("service should build");
+            let result = run_async(async move {
+                let (running, context, _client) = service_with_context(svc);
+                running
+                    .service()
+                    .call_tool(
+                        CallToolRequestParam {
+                            name: name.into(),
+                            arguments: Some(args.as_object().cloned().unwrap()),
+                        },
+                        context,
+                    )
+                    .await
+            });
+
+            assert!(
+                result.is_ok(),
+                "snake_case tool '{}' should be dispatched, got error: {:?}",
+                name,
+                result.err()
+            );
+        }
+    }
 }

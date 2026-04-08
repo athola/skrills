@@ -76,6 +76,7 @@ The `app` module is split to stay under the 2500 LOC threshold (ADR-0001):
 |--------|-------|---------|
 | `mod.rs` | ~1600 | Core SkillService, MCP handlers, resource serving |
 | `intelligence.rs` | ~740 | Intelligence tool implementations |
+| `research.rs` | ~610 | Research API tool handlers (tome crate integration) |
 
 **LOC Monitoring**: When `app/mod.rs` approaches 2000 lines, extract the next logical group (e.g., subagent tool handlers or resource-serving methods).
 

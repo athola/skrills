@@ -23,10 +23,30 @@ and Cursor.
 [FAQ](docs/FAQ.md) |
 [Changelog](book/src/changelog.md)
 
-> **What's new in 0.7.5** -- Serde-based enum parsing, hardened error
-> handling for research MCP tools, `OffsetDateTime` timestamps in the
-> knowledge graph, and new round-trip tests for `NodeKind`/`EdgeKind`.
+> **What's new in 0.7.5** -- Serde-based enum parsing for research
+> handlers, `OffsetDateTime` timestamps in the knowledge graph, and
+> hardened error reporting across MCP tools.
 > See [changelog](book/src/changelog.md).
+
+## Why Skrills?
+
+Skills authored for one AI coding assistant rarely work in another.
+Skrills validates, analyzes, and syncs skills across four CLI
+environments from a single Rust binary:
+
+- **One-command sync** -- `skrills sync-all` mirrors skills,
+  commands, agents, MCP servers, rules, and preferences between
+  Claude Code, Codex CLI, Copilot CLI, and Cursor.
+- **Validation with autofix** -- detects missing frontmatter,
+  incompatible fields, and body issues across each target's
+  requirements, then fixes them with `--autofix`.
+- **36-tool MCP server** -- exposes validation, sync,
+  intelligence, and research operations over stdio or HTTP so
+  other tools can call Skrills programmatically.
+
+See [comparison](book/src/comparison.md) for how Skrills differs
+from static skill bundles, rules repositories, and local sync
+CLIs.
 
 ## Demo
 
@@ -43,32 +63,25 @@ setup.
 
 ## Features
 
-- **Cross-CLI validation** -- validates skills against Claude Code
-  (permissive), Codex CLI (strict), Copilot CLI (strict), and Cursor
-  rules. Auto-derives missing YAML frontmatter from file paths and
-  content.
-- **Multi-directional sync** -- syncs skills, commands, agents, MCP
-  servers, rules, and preferences across all four environments. Uses
-  file hashing to respect manual edits so user changes are not
-  overwritten.
-- **Token analytics** -- measures token usage per skill and suggests
-  reductions to fit context windows.
-- **Dependency resolution** -- resolves skill dependencies with cycle
-  detection and semantic versioning constraints.
-- **MCP server** -- 36 tools for validation, sync, intelligence,
-  research, and project-aware skill generation over stdio or HTTP
-  transport.
+- **Cross-CLI validation** -- validates against Claude Code
+  (permissive), Codex CLI (strict), Copilot CLI (strict), and
+  Cursor rules. Auto-derives missing YAML frontmatter.
+- **Multi-directional sync** -- syncs seven asset types across
+  four CLIs. File hashing preserves manual edits.
+- **Token analytics** -- per-skill token counts with reduction
+  suggestions for context-window management.
+- **Dependency resolution** -- cycle detection and semver
+  constraints across skill graphs.
+- **MCP server** -- 36 tools over stdio or HTTP for validation,
+  sync, intelligence, research, and skill generation.
 - **Session mining** -- parses Claude Code and Codex CLI session
-  history to improve recommendations based on actual usage.
-- **Visualization** -- TUI and browser dashboard showing discovered
-  skills, validation status, usage metrics, and MCP server
-  configurations with tool filter indicators. The browser dashboard
-  supports light and dark modes. The standalone
-  [`skrills-portal.html`](skrills-portal.html) can be opened directly
-  in a browser or uploaded to integration platforms without a running
-  server.
+  history to improve recommendations.
+- **Dashboards** -- TUI and browser UIs showing skills,
+  validation status, usage metrics, and MCP server configs.
+  The standalone [`skrills-portal.html`](skrills-portal.html)
+  works offline without a running server.
 - **Discovery deduplication** -- frontmatter identity matching
-  consolidates the same skill installed in multiple locations.
+  consolidates duplicate skill installations.
 
 ## Installation
 
@@ -114,7 +127,8 @@ skrills multi-cli-agent my-agent
 ```
 
 See [CLI reference](book/src/cli.md) for all commands including
-skill lifecycle management.
+skill lifecycle management (`skill-deprecate`, `skill-rollback`,
+`skill-import`, `skill-score`, `skill-catalog`).
 
 ## Supported Environments
 
@@ -136,20 +150,6 @@ derivation (`alwaysApply`, glob-scoped, agent-requested).
 See [ADR 0006](docs/adr/0006-cursor-rules-mapping.md) for the
 mapping strategy and [sync guide](book/src/sync-guide.md) for
 workflows.
-
-## Skill Management
-
-```bash
-# Deprecate, rollback, import, or score skills
-skrills skill-deprecate old-skill --replacement "new-skill"
-skrills skill-rollback my-skill --version abc123
-skrills skill-import https://example.com/skill.md
-skrills skill-score
-```
-
-See [CLI reference](book/src/cli.md) for the full set of
-`skill-*` subcommands (`skill-catalog`, `skill-profile`,
-`skill-usage-report`).
 
 ## Architecture
 
@@ -201,7 +201,7 @@ subcommand) and [FAQ](docs/FAQ.md) for environment variables.
 | [Security](docs/security.md) | Auth, TLS, threat model |
 | [Changelog](book/src/changelog.md) | Release history |
 
-## Limitations
+## Known Limitations
 
 - **No runtime skill injection**: Skrills validates and syncs
   files; it does not inject skills into prompts at runtime.
