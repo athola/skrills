@@ -158,8 +158,8 @@ Use ReadMcpResourceTool with server="skrills" and uri="skill://skrills/claude/my
 
 Run `skrills serve --list-tools` to see all available tools.
 
-All research tools accept both kebab-case (`search-papers`) and
-snake_case (`search_papers`) names for cross-client compatibility.
+All tools accept both kebab-case (`search-papers`) and snake_case
+(`search_papers`) names for cross-client compatibility.
 
 ### Sync Tools (11)
 

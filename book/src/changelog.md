@@ -5,8 +5,10 @@
 - **Refactor: Research Handlers**: Serde-based enum parsing, module-level imports, and hardened error handling for research MCP tools.
 - **Fix: Error Reporting**: `search-papers` now returns `is_error: true` when all sources fail. PDF downloads validate HTTP status. Unpaywall errors are logged.
 - **Refactor: Knowledge Graph Timestamps**: `Node.created_at` uses `OffsetDateTime` with RFC 3339 serde instead of raw strings.
-- **Fix: Snake-Case Tool Aliases**: Research MCP tools accept both `search-papers` and `search_papers` forms for cross-client compatibility.
-- **Testing**: Enum round-trip tests for `NodeKind` and `EdgeKind`, cache directory creation test, handler dispatch tests for snake_case aliases.
+- **Fix: Snake-Case Tool Names**: All 36 MCP tools accept both kebab-case and snake_case names via universal normalization in `call_tool()` dispatch.
+- **Fix: Legacy Timestamp Fallback**: `parse_rfc3339` falls back to SQLite's `datetime('now')` format for pre-0.7.5 knowledge graph databases, treating legacy timestamps as UTC.
+- **Refactor: Cache Directory Dedup**: `ResearchCache::open()` delegates to `Self::cache_dir()`, eliminating duplicated path logic.
+- **Testing**: Enum round-trip tests for `NodeKind` and `EdgeKind`, cache directory creation test, legacy and RFC 3339 timestamp parse tests.
 
 ## 0.7.4 (2026-04-02)
 

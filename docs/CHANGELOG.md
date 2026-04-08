@@ -7,11 +7,12 @@
 - **Fix: Discussion Limit Clamping**: `search_discussions_tool` clamps the `limit` parameter to 100 to prevent excessive API requests.
 - **Fix: PDF Download Hardening**: `fetch_pdf_tool` adds a 30-second timeout and HTTP status check before writing downloaded PDFs.
 - **Fix: Unpaywall Error Logging**: `resolve_doi_tool` logs Unpaywall lookup failures via `tracing::warn` instead of silently swallowing errors.
-- **Refactor: Cache Directory**: Extracted `ResearchCache::cache_dir()` as the canonical source for the skrills-tome cache path, replacing duplicated logic in the server crate.
+- **Refactor: Cache Directory**: Extracted `ResearchCache::cache_dir()` as the canonical source for the skrills-tome cache path. Both `open()` and server-side `tome_cache_dir()` now delegate to it.
 - **Refactor: Knowledge Graph Timestamps**: Changed `Node.created_at` from `String` to `OffsetDateTime` with RFC 3339 serde, ensuring type-safe timestamp handling.
 - **Refactor: Enum Helpers**: Added `NodeKind::all()` and `EdgeKind::all()` for exhaustive enumeration, used by schema sync tests.
-- **Fix: Snake-Case Tool Aliases**: All 9 research MCP tools now accept both kebab-case (`search-papers`) and snake_case (`search_papers`) names for cross-client compatibility.
-- **Testing**: Added `cache_dir_creates_directory`, `node_kind_all_covers_every_variant`, and `edge_kind_all_covers_every_variant` tests in the tome crate. Added `snake_case_aliases_route_sync_research_tools` and `snake_case_aliases_accepted_for_all_sync_research_tools` handler dispatch tests.
+- **Fix: Snake-Case Tool Names**: All 36 MCP tools now accept both kebab-case (`search-papers`) and snake_case (`search_papers`) names via universal `replace('_', "-")` normalization in `call_tool()` dispatch.
+- **Fix: Legacy Timestamp Fallback**: `parse_rfc3339` falls back to SQLite's `datetime('now')` format (`YYYY-MM-DD HH:MM:SS`) for knowledge graph databases created before 0.7.5, treating legacy timestamps as UTC.
+- **Testing**: Added `cache_dir_creates_directory`, `node_kind_all_covers_every_variant`, `edge_kind_all_covers_every_variant`, `parse_rfc3339_accepts_legacy_sqlite_format`, and `parse_rfc3339_accepts_rfc3339_format` tests.
 
 ## 0.7.4 - 2026-04-02
 - **NEW: Research MCP Tools**: 9 tools exposing the `tome` crate over MCP: `search-papers`, `search-discussions`, `resolve-doi`, `fetch-pdf`, `query-knowledge-graph`, `add-knowledge-node`, `link-knowledge`, `track-citations`, and `resolve-contradiction` (27 → 36 tools total).
