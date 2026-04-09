@@ -29,6 +29,7 @@ graph TD
     server --> subagents[subagents]
     server --> dashboard[dashboard<br/>TUI + browser UI]
     server --> metrics[metrics<br/>SQLite telemetry]
+    server --> tome[tome<br/>research APIs, caching]
     sync --> validate
     analyze --> validate
     analyze --> discovery
@@ -41,6 +42,7 @@ graph TD
         validate
         metrics
         dashboard
+        tome
     end
 ```
 
@@ -59,6 +61,8 @@ graph TD
 | `subagents` | Multi-backend agent runtime |
 | `dashboard` | TUI and browser-based skill visualization (Leptos SSR) |
 | `metrics` | SQLite-based telemetry for invocations, validations, sync |
+| `tome` | Research API orchestration, knowledge graph, citation tracking, caching |
+| `test-utils` | Shared test infrastructure (fixtures, RAII guards, temp dirs) |
 
 ## Design Principles
 
@@ -72,6 +76,7 @@ The `app` module is split to stay under the 2500 LOC threshold (ADR-0001):
 |--------|-------|---------|
 | `mod.rs` | ~1600 | Core SkillService, MCP handlers, resource serving |
 | `intelligence.rs` | ~740 | Intelligence tool implementations |
+| `research.rs` | ~610 | Research API tool handlers (tome crate integration) |
 
 **LOC Monitoring**: When `app/mod.rs` approaches 2000 lines, extract the next logical group (e.g., subagent tool handlers or resource-serving methods).
 

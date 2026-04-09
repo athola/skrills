@@ -3,23 +3,27 @@
 //! Implements MCP tool handlers for academic research API orchestration,
 //! knowledge graph management, citation tracking, and TRIZ contradiction resolution.
 
+use std::collections::HashSet;
+
 use anyhow::{anyhow, Result};
 use rmcp::model::{CallToolResult, Content};
 use serde_json::{json, Map as JsonMap, Value};
 
+use skrills_tome::cache::ResearchCache;
+use skrills_tome::citations::CitationTracker;
+use skrills_tome::clients::{
+    arxiv::ArxivClient, crossref::CrossRefClient, hn_algolia::HnAlgoliaClient,
+    openalex::OpenAlexClient, semantic_scholar::SemanticScholarClient, unpaywall::UnpaywallClient,
+};
+use skrills_tome::knowledge_graph::{EdgeKind, KnowledgeGraph, NodeKind};
+use skrills_tome::models::{Paper, PaperSource};
+use skrills_tome::triz::{Parameter, TrizMatrix};
+
 use crate::app::SkillService;
 
 /// Resolve the skrills-tome cache directory.
-///
-/// Mirrors the logic in `ResearchCache::open()` so that the knowledge graph
-/// and citation databases land alongside the API cache.
 fn tome_cache_dir() -> Result<std::path::PathBuf> {
-    let base = dirs::cache_dir()
-        .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))
-        .ok_or_else(|| anyhow!("cannot determine cache directory: HOME is unset"))?;
-    let dir = base.join("skrills-tome");
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
+    Ok(ResearchCache::cache_dir()?)
 }
 
 impl SkillService {
@@ -29,12 +33,6 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
-        use skrills_tome::clients::arxiv::ArxivClient;
-        use skrills_tome::clients::openalex::OpenAlexClient;
-        use skrills_tome::clients::semantic_scholar::SemanticScholarClient;
-        use skrills_tome::models::Paper;
-        use std::collections::HashSet;
-
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
@@ -110,9 +108,13 @@ impl SkillService {
             })
             .collect();
 
+        let all_failed = deduped.is_empty() && !errors.is_empty();
         let mut text = format!("Found {} papers", deduped.len());
         if !errors.is_empty() {
             text.push_str(&format!(" ({} source errors)", errors.len()));
+        }
+        if all_failed {
+            text.push_str(": all sources failed");
         }
 
         Ok(CallToolResult {
@@ -122,7 +124,7 @@ impl SkillService {
                 "count": deduped.len(),
                 "errors": errors,
             })),
-            is_error: Some(false),
+            is_error: Some(all_failed),
             meta: None,
         })
     }
@@ -131,13 +133,15 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
-        use skrills_tome::clients::hn_algolia::HnAlgoliaClient;
-
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("Missing required parameter: query"))?;
-        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(10)
+            .min(100) as usize;
 
         let client = HnAlgoliaClient::new();
         let discussions = client.search(query, limit).await?;
@@ -178,9 +182,6 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
-        use skrills_tome::clients::crossref::CrossRefClient;
-        use skrills_tome::clients::unpaywall::UnpaywallClient;
-
         let doi = args
             .get("doi")
             .and_then(|v| v.as_str())
@@ -190,7 +191,13 @@ impl SkillService {
         let metadata = crossref.resolve_doi(doi).await?;
 
         let unpaywall = UnpaywallClient::default();
-        let pdf_url = unpaywall.find_pdf_url(doi).await.unwrap_or(None);
+        let pdf_url = match unpaywall.find_pdf_url(doi).await {
+            Ok(url) => url,
+            Err(e) => {
+                tracing::warn!(doi = doi, error = %e, "Unpaywall lookup failed");
+                None
+            }
+        };
 
         Ok(CallToolResult {
             content: vec![Content::text(format!(
@@ -217,9 +224,6 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
-        use skrills_tome::cache::ResearchCache;
-        use skrills_tome::clients::unpaywall::UnpaywallClient;
-
         let doi = args
             .get("doi")
             .and_then(|v| v.as_str())
@@ -238,8 +242,18 @@ impl SkillService {
 
         // Download if not already cached
         if !pdf_path.exists() {
-            let client = reqwest::Client::new();
-            let bytes = client.get(&pdf_url).send().await?.bytes().await?;
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()?;
+            let resp = client.get(&pdf_url).send().await?;
+            if !resp.status().is_success() {
+                return Err(anyhow!(
+                    "PDF download failed with HTTP {}: {}",
+                    resp.status().as_u16(),
+                    pdf_url
+                ));
+            }
+            let bytes = resp.bytes().await?;
             std::fs::write(&pdf_path, &bytes)?;
         }
 
@@ -264,8 +278,6 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
-        use skrills_tome::knowledge_graph::{KnowledgeGraph, NodeKind};
-
         let db_path = tome_cache_dir()?.join("knowledge.db");
         let kg = KnowledgeGraph::open(&db_path)?;
 
@@ -314,16 +326,14 @@ impl SkillService {
                 meta: None,
             })
         } else if let Some(query) = args.get("query").and_then(|v| v.as_str()) {
-            let kind = args
-                .get("kind")
-                .and_then(|v| v.as_str())
-                .and_then(|k| match k {
-                    "topic" => Some(NodeKind::Topic),
-                    "paper" => Some(NodeKind::Paper),
-                    "implementation" => Some(NodeKind::Implementation),
-                    "discussion" => Some(NodeKind::Discussion),
-                    _ => None,
-                });
+            let kind = match args.get("kind").and_then(|v| v.as_str()) {
+                Some(s) => {
+                    let k: NodeKind = serde_json::from_value(json!(s))
+                        .map_err(|_| anyhow!("Unknown node kind: {s}"))?;
+                    Some(k)
+                }
+                None => None,
+            };
 
             let nodes = kg.search_nodes(query, kind)?;
             let node_json: Vec<Value> = nodes
@@ -364,8 +374,6 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
-        use skrills_tome::knowledge_graph::{KnowledgeGraph, NodeKind};
-
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
@@ -380,13 +388,8 @@ impl SkillService {
             .ok_or_else(|| anyhow!("Missing required parameter: label"))?;
         let metadata = args.get("metadata").map(|v| v.to_string());
 
-        let kind = match kind_str {
-            "topic" => NodeKind::Topic,
-            "paper" => NodeKind::Paper,
-            "implementation" => NodeKind::Implementation,
-            "discussion" => NodeKind::Discussion,
-            other => return Err(anyhow!("Unknown node kind: {other}")),
-        };
+        let kind: NodeKind = serde_json::from_value(json!(kind_str))
+            .map_err(|_| anyhow!("Unknown node kind: {kind_str}"))?;
 
         let db_path = tome_cache_dir()?.join("knowledge.db");
         let kg = KnowledgeGraph::open(&db_path)?;
@@ -406,8 +409,6 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
-        use skrills_tome::knowledge_graph::{EdgeKind, KnowledgeGraph};
-
         let source_id = args
             .get("source_id")
             .and_then(|v| v.as_str())
@@ -423,14 +424,8 @@ impl SkillService {
         let weight = args.get("weight").and_then(|v| v.as_f64()).unwrap_or(1.0);
         let metadata = args.get("metadata").map(|v| v.to_string());
 
-        let kind = match kind_str {
-            "cites" => EdgeKind::Cites,
-            "implements" => EdgeKind::Implements,
-            "contradicts" => EdgeKind::Contradicts,
-            "extends" => EdgeKind::Extends,
-            "analogous_to" => EdgeKind::AnalogousTo,
-            other => return Err(anyhow!("Unknown edge kind: {other}")),
-        };
+        let kind: EdgeKind = serde_json::from_value(json!(kind_str))
+            .map_err(|_| anyhow!("Unknown edge kind: {kind_str}"))?;
 
         let db_path = tome_cache_dir()?.join("knowledge.db");
         let kg = KnowledgeGraph::open(&db_path)?;
@@ -455,9 +450,6 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
-        use skrills_tome::citations::CitationTracker;
-        use skrills_tome::models::{Paper, PaperSource};
-
         let paper_id = args
             .get("paper_id")
             .and_then(|v| v.as_str())
@@ -564,8 +556,6 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
-        use skrills_tome::triz::TrizMatrix;
-
         let improve_str = args
             .get("improve")
             .and_then(|v| v.as_str())
@@ -612,24 +602,7 @@ impl SkillService {
     }
 }
 
-fn parse_parameter(s: &str) -> Result<skrills_tome::triz::Parameter> {
-    use skrills_tome::triz::Parameter;
-    match s {
-        "performance" => Ok(Parameter::Performance),
-        "reliability" => Ok(Parameter::Reliability),
-        "maintainability" => Ok(Parameter::Maintainability),
-        "scalability" => Ok(Parameter::Scalability),
-        "security" => Ok(Parameter::Security),
-        "usability" => Ok(Parameter::Usability),
-        "testability" => Ok(Parameter::Testability),
-        "deployability" => Ok(Parameter::Deployability),
-        "cost_efficiency" => Ok(Parameter::CostEfficiency),
-        "development_speed" => Ok(Parameter::DevelopmentSpeed),
-        "code_complexity" => Ok(Parameter::CodeComplexity),
-        "memory_usage" => Ok(Parameter::MemoryUsage),
-        "latency" => Ok(Parameter::Latency),
-        "throughput" => Ok(Parameter::Throughput),
-        "availability" => Ok(Parameter::Availability),
-        other => Err(anyhow!("Unknown parameter: {other}")),
-    }
+fn parse_parameter(s: &str) -> Result<Parameter> {
+    serde_json::from_value(serde_json::Value::String(s.to_owned()))
+        .map_err(|_| anyhow!("Unknown parameter: {s}"))
 }

@@ -14,6 +14,26 @@ use std::sync::LazyLock;
 /// Kept here for backwards compatibility with callers in the cursor adapter.
 pub use crate::adapters::utils::split_frontmatter;
 
+/// Strips matching leading/trailing quotes (`'` or `"`) from a YAML value.
+pub fn strip_yaml_quotes(value: &str) -> String {
+    if value.len() >= 2
+        && ((value.starts_with('"') && value.ends_with('"'))
+            || (value.starts_with('\'') && value.ends_with('\'')))
+    {
+        return value[1..value.len() - 1].to_string();
+    }
+    value.to_string()
+}
+
+/// Returns true if a YAML value starts with a quote but doesn't close it on the same line.
+fn is_open_quoted(value: &str) -> bool {
+    if value.len() < 2 {
+        return false;
+    }
+    (value.starts_with('\'') && !value.ends_with('\''))
+        || (value.starts_with('"') && !value.ends_with('"'))
+}
+
 /// Parses YAML frontmatter from content, returning (frontmatter_fields, body).
 ///
 /// Frontmatter is delimited by `---` on its own line at the start of the file.
@@ -25,18 +45,66 @@ pub fn parse_frontmatter(content: &str) -> (HashMap<String, String>, &str) {
         return (HashMap::new(), body);
     };
 
-    // Parse simple key: value pairs from frontmatter
+    // Parse key: value pairs from frontmatter, handling:
+    // - Block scalars (>-, >, |-, |) with indented continuation
+    // - Quoted multi-line strings ('...\n  ...' or "...\n  ...")
+    // - Simple key: value pairs
     let mut fields = HashMap::new();
+    let mut current_key: Option<String> = None;
+    let mut current_value = String::new();
+    let mut multiline = false;
+
     for line in frontmatter_str.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
+        // Indented line: continuation of a multi-line value or list
+        if (line.starts_with(' ') || line.starts_with('\t')) && current_key.is_some() {
+            if multiline {
+                if !current_value.is_empty() {
+                    current_value.push(' ');
+                }
+                current_value.push_str(line.trim());
+            }
+            // Skip list continuation lines (e.g. "  - item") for non-multi-line fields
             continue;
         }
-        if let Some((key, rest)) = line.split_once(':') {
-            let key = key.trim().to_string();
-            let value = rest.trim().to_string();
-            fields.insert(key, value);
+
+        // Flush previous multi-line key — strip quotes from assembled value
+        // since YAML quotes span the full multi-line string.
+        if let Some(key) = current_key.take() {
+            fields.insert(key, strip_yaml_quotes(&current_value));
+            current_value.clear();
+            multiline = false;
         }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        if let Some((key, rest)) = trimmed.split_once(':') {
+            let key = key.trim().to_string();
+            let value = rest.trim();
+
+            if value == ">-" || value == ">" || value == "|-" || value == "|" {
+                // Block scalar: value continues on indented lines
+                current_key = Some(key);
+                multiline = true;
+            } else if is_open_quoted(value) {
+                // Quoted string that spans multiple lines
+                current_key = Some(key);
+                current_value = value.to_string();
+                multiline = true;
+            } else {
+                // Single-line values preserve quotes as-is (needed for
+                // globs like "**/*.ts" in rules). Callers that need
+                // unquoted values use strip_yaml_quotes themselves.
+                fields.insert(key, value.to_string());
+            }
+        }
+    }
+
+    // Flush final key if any
+    if let Some(key) = current_key {
+        fields.insert(key, strip_yaml_quotes(&current_value));
     }
 
     (fields, body)
@@ -81,6 +149,7 @@ pub fn render_frontmatter(fields: &HashMap<String, String>, body: &str) -> Strin
 /// Extracts the `model_hint` value from raw YAML frontmatter.
 ///
 /// Returns the hint (e.g., "fast", "standard", "deep") or None if absent.
+#[cfg(test)]
 pub fn extract_model_hint(content: &str) -> Option<String> {
     let (raw, _) = split_frontmatter(content);
     raw.and_then(|fm| {
@@ -235,6 +304,120 @@ mod tests {
         );
         assert_eq!(sanitize_name("Already-Kebab"), "already-kebab");
         assert_eq!(sanitize_name("file.name.ext"), "file-name-ext");
+    }
+
+    #[test]
+    fn parse_frontmatter_block_scalar_folded_strip() {
+        let content = "---\nname: code-search\ndescription: >-\n  Search GitHub for existing implementations.\n  Use when the user wants to find code.\nversion: 1.0\n---\n\n# Body\n";
+        let (fields, body) = parse_frontmatter(content);
+        assert_eq!(fields.get("name").unwrap(), "code-search");
+        assert_eq!(
+            fields.get("description").unwrap(),
+            "Search GitHub for existing implementations. Use when the user wants to find code."
+        );
+        assert_eq!(fields.get("version").unwrap(), "1.0");
+        assert!(body.starts_with("# Body"));
+    }
+
+    #[test]
+    fn parse_frontmatter_block_scalar_folded() {
+        let content = "---\nname: test\ndescription: >\n  Folded without strip.\nversion: 2.0\n---\n\n# Body\n";
+        let (fields, _body) = parse_frontmatter(content);
+        assert_eq!(fields.get("description").unwrap(), "Folded without strip.");
+        assert_eq!(fields.get("version").unwrap(), "2.0");
+    }
+
+    #[test]
+    fn parse_frontmatter_skips_list_values() {
+        let content = "---\nname: test\ntags:\n  - github\n  - code\nversion: 1.0\n---\n\n# Body\n";
+        let (fields, _body) = parse_frontmatter(content);
+        assert_eq!(fields.get("name").unwrap(), "test");
+        assert_eq!(fields.get("version").unwrap(), "1.0");
+        // tags is a list — stored as empty string since it's `tags:` with no inline value
+        assert_eq!(fields.get("tags").unwrap(), "");
+    }
+
+    #[test]
+    fn parse_frontmatter_multiline_quoted_string() {
+        // YAML flow scalar: opening quote on first line, closing on a continuation line
+        let content = "---\nname: test\ndescription: 'Single deployable with enforced module\n  boundaries for team autonomy.'\nversion: 1.0\n---\n\n# Body\n";
+        let (fields, _body) = parse_frontmatter(content);
+        assert_eq!(
+            fields.get("description").unwrap(),
+            "Single deployable with enforced module boundaries for team autonomy."
+        );
+        assert_eq!(fields.get("version").unwrap(), "1.0");
+    }
+
+    #[test]
+    fn parse_frontmatter_multiline_double_quoted_string() {
+        let content = "---\nname: test\ndescription: \"A multi-line\n  double-quoted value.\"\n---\n\n# Body\n";
+        let (fields, _body) = parse_frontmatter(content);
+        assert_eq!(
+            fields.get("description").unwrap(),
+            "A multi-line double-quoted value."
+        );
+    }
+
+    #[test]
+    fn parse_frontmatter_single_line_quotes_preserved() {
+        // Single-line quoted values keep quotes (needed for globs in rules)
+        let content = "---\nglobs: \"**/*.test.ts\"\ndescription: Testing\n---\n\n# Body\n";
+        let (fields, _body) = parse_frontmatter(content);
+        assert_eq!(
+            fields.get("globs").unwrap(),
+            "\"**/*.test.ts\"",
+            "Single-line quoted values should preserve quotes"
+        );
+    }
+
+    #[test]
+    fn parse_frontmatter_block_scalar_literal() {
+        // `|-` is a literal block scalar (preserves newlines, strips trailing)
+        // Our parser joins with spaces since we only need single-line values.
+        let content =
+            "---\nname: test\ndescription: |-\n  Line one.\n  Line two.\nversion: 3.0\n---\n\n# Body\n";
+        let (fields, _body) = parse_frontmatter(content);
+        assert_eq!(fields.get("description").unwrap(), "Line one. Line two.");
+        assert_eq!(fields.get("version").unwrap(), "3.0");
+    }
+
+    #[test]
+    fn parse_frontmatter_block_scalar_literal_keep() {
+        let content =
+            "---\nname: test\ndescription: |\n  Single line.\nversion: 1.0\n---\n\n# Body\n";
+        let (fields, _body) = parse_frontmatter(content);
+        assert_eq!(fields.get("description").unwrap(), "Single line.");
+    }
+
+    #[test]
+    fn strip_yaml_quotes_double() {
+        assert_eq!(strip_yaml_quotes("\"hello world\""), "hello world");
+    }
+
+    #[test]
+    fn strip_yaml_quotes_single() {
+        assert_eq!(strip_yaml_quotes("'hello world'"), "hello world");
+    }
+
+    #[test]
+    fn strip_yaml_quotes_no_quotes() {
+        assert_eq!(strip_yaml_quotes("hello world"), "hello world");
+    }
+
+    #[test]
+    fn strip_yaml_quotes_mismatched() {
+        assert_eq!(strip_yaml_quotes("\"hello'"), "\"hello'");
+    }
+
+    #[test]
+    fn strip_yaml_quotes_empty() {
+        assert_eq!(strip_yaml_quotes(""), "");
+    }
+
+    #[test]
+    fn strip_yaml_quotes_single_char() {
+        assert_eq!(strip_yaml_quotes("\""), "\"");
     }
 
     #[test]

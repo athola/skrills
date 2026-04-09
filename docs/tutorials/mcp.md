@@ -6,12 +6,13 @@ This tutorial shows how to use Skrills as an MCP server with Claude Code CLI and
 
 ## Overview
 
-Skrills runs as an MCP (Model Context Protocol) server, providing 24 tools for skill management:
+Skrills runs as an MCP (Model Context Protocol) server, providing 36 tools for skill management and research:
 
-- **Sync Tools**: Bidirectional sync between Claude, Codex, and Copilot
+- **Sync Tools**: Bidirectional sync between Claude, Codex, Copilot, and Cursor
 - **Validation Tools**: Validate skills for CLI compatibility
 - **Intelligence Tools**: Smart recommendations, project analysis, skill creation
 - **Trace Tools**: Skill loading instrumentation and debugging
+- **Research Tools**: Academic paper search, knowledge graphs, citations, TRIZ
 
 ## Setup
 
@@ -153,17 +154,22 @@ Use ListMcpResourcesTool with server="skrills"
 Use ReadMcpResourceTool with server="skrills" and uri="skill://skrills/claude/my-skill"
 ```
 
-## Available MCP Tools (24 Total)
+## Available MCP Tools (36 Total)
 
-Run `skrills serve --list-tools` to see all available tools:
+Run `skrills serve --list-tools` to see all available tools.
 
-### Sync Tools (9)
+All tools accept both kebab-case (`search-papers`) and snake_case
+(`search_papers`) names for cross-client compatibility.
+
+### Sync Tools (11)
 
 | Tool | Description |
 |------|-------------|
 | `sync-from-claude` | Copy skills from ~/.claude to ~/.codex |
 | `sync-from-copilot` | Sync from GitHub Copilot CLI |
+| `sync-from-cursor` | Sync from Cursor IDE |
 | `sync-to-copilot` | Sync to GitHub Copilot CLI |
+| `sync-to-cursor` | Sync to Cursor IDE |
 | `sync-skills` | Sync SKILL.md files between agents |
 | `sync-commands` | Sync slash commands |
 | `sync-mcp-servers` | Sync MCP server configurations |
@@ -171,12 +177,13 @@ Run `skrills serve --list-tools` to see all available tools:
 | `sync-all` | Sync everything |
 | `sync-status` | Preview sync changes (dry run) |
 
-### Validation Tools (2)
+### Validation Tools (3)
 
 | Tool | Description |
 |------|-------------|
 | `validate-skills` | Validate for Claude/Codex/Copilot/Cursor compatibility |
 | `analyze-skills` | Analyze token usage and optimization |
+| `search-skills-fuzzy` | Typo-tolerant skill search |
 
 ### Intelligence Tools (6)
 
@@ -187,7 +194,6 @@ Run `skrills serve --list-tools` to see all available tools:
 | `analyze-project-context` | Analyze project languages/frameworks |
 | `suggest-new-skills` | Identify gaps in skill library |
 | `create-skill` | Create skill via GitHub/LLM |
-| `search-skills-fuzzy` | Typo-tolerant skill search |
 | `search-skills-github` | Search GitHub for skills |
 
 ### Trace Tools (4)
@@ -199,12 +205,27 @@ Run `skrills serve --list-tools` to see all available tools:
 | `disable-skill-trace` | Remove trace skills |
 | `skill-loading-selftest` | Confirm skills are loading |
 
-### Other Tools (2)
+### Research Tools (9)
+
+| Tool | Description |
+|------|-------------|
+| `search-papers` | Search arXiv, Semantic Scholar, and OpenAlex |
+| `search-discussions` | Search Hacker News via Algolia |
+| `resolve-doi` | Resolve DOI metadata via CrossRef + Unpaywall |
+| `fetch-pdf` | Download and cache a paper's PDF |
+| `query-knowledge-graph` | Query nodes, edges, and stats |
+| `add-knowledge-node` | Add a node (topic, paper, implementation, discussion) |
+| `link-knowledge` | Create a typed edge between two nodes |
+| `track-citations` | Track, query forward/backward citations |
+| `resolve-contradiction` | TRIZ contradiction matrix lookup |
+
+### Other Tools (3)
 
 | Tool | Description |
 |------|-------------|
 | `resolve-dependencies` | Get transitive dependencies/dependents |
 | `skill-metrics` | Aggregate skill statistics |
+| `get-context-stats` | MCP gateway context statistics |
 
 ## Verifying MCP Connection
 

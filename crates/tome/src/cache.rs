@@ -13,14 +13,7 @@ pub struct ResearchCache {
 impl ResearchCache {
     /// Opens or creates the cache database at the default location.
     pub fn open() -> TomeResult<Self> {
-        let cache_dir = dirs::cache_dir()
-            .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))
-            .ok_or_else(|| {
-                TomeError::Other("cannot determine cache directory: HOME is unset".into())
-            })?
-            .join("skrills-tome");
-        std::fs::create_dir_all(&cache_dir)?;
-
+        let cache_dir = Self::cache_dir()?;
         let db_path = cache_dir.join("research.db");
         let pdf_dir = cache_dir.join("pdfs");
         std::fs::create_dir_all(&pdf_dir)?;
@@ -129,6 +122,21 @@ impl ResearchCache {
     pub fn pdf_dir(&self) -> &std::path::Path {
         &self.pdf_dir
     }
+
+    /// Returns the canonical skrills-tome cache directory, creating it if needed.
+    ///
+    /// Other modules (knowledge graph, citations) should use this instead of
+    /// duplicating the path logic.
+    pub fn cache_dir() -> TomeResult<std::path::PathBuf> {
+        let base = dirs::cache_dir()
+            .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))
+            .ok_or_else(|| {
+                TomeError::Other("cannot determine cache directory: HOME is unset".into())
+            })?;
+        let dir = base.join("skrills-tome");
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
 }
 
 #[cfg(test)]
@@ -165,5 +173,29 @@ mod tests {
         cache.put("key1", "api", "q", "v1", None).unwrap();
         cache.put("key1", "api", "q", "v2", None).unwrap();
         assert_eq!(cache.get("key1").unwrap(), Some("v2".to_string()));
+    }
+
+    /// GIVEN a valid HOME directory
+    /// WHEN ResearchCache::cache_dir() is called
+    /// THEN it returns a path ending in "skrills-tome" and creates the directory
+    #[test]
+    fn cache_dir_creates_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let prev = std::env::var("HOME").ok();
+
+        // Run inside catch_unwind so HOME is always restored even on panic
+        let result = std::panic::catch_unwind(|| {
+            std::env::set_var("HOME", temp.path());
+            ResearchCache::cache_dir()
+        });
+
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+
+        let dir = result.expect("test panicked").unwrap();
+        assert!(dir.ends_with("skrills-tome"));
+        assert!(dir.exists(), "cache_dir should create the directory");
     }
 }

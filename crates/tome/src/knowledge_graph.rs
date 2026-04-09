@@ -6,6 +6,7 @@
 use crate::{TomeError, TomeResult};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 
 /// Node types in the knowledge graph.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -25,6 +26,17 @@ impl NodeKind {
             Self::Implementation => "implementation",
             Self::Discussion => "discussion",
         }
+    }
+
+    /// Returns all variants in declaration order.  Update this list when
+    /// adding a new variant.
+    pub fn all() -> &'static [NodeKind] {
+        &[
+            Self::Topic,
+            Self::Paper,
+            Self::Implementation,
+            Self::Discussion,
+        ]
     }
 }
 
@@ -49,6 +61,18 @@ impl EdgeKind {
             Self::AnalogousTo => "analogous_to",
         }
     }
+
+    /// Returns all variants in declaration order.  Update this list when
+    /// adding a new variant.
+    pub fn all() -> &'static [EdgeKind] {
+        &[
+            Self::Cites,
+            Self::Implements,
+            Self::Contradicts,
+            Self::Extends,
+            Self::AnalogousTo,
+        ]
+    }
 }
 
 /// A node in the knowledge graph.
@@ -58,7 +82,8 @@ pub struct Node {
     pub kind: NodeKind,
     pub label: String,
     pub metadata_json: Option<String>,
-    pub created_at: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
 }
 
 /// An edge between two nodes.
@@ -110,7 +135,7 @@ impl KnowledgeGraph {
                 kind TEXT NOT NULL,
                 label TEXT NOT NULL,
                 metadata_json TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS edges (
@@ -142,10 +167,13 @@ impl KnowledgeGraph {
         metadata_json: Option<&str>,
     ) -> TomeResult<()> {
         let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        let now = OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .map_err(|e| TomeError::Other(format!("time format error: {e}")))?;
         conn.execute(
-            "INSERT INTO nodes (id, kind, label, metadata_json) VALUES (?1, ?2, ?3, ?4) \
+            "INSERT INTO nodes (id, kind, label, metadata_json, created_at) VALUES (?1, ?2, ?3, ?4, ?5) \
              ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, label=excluded.label, metadata_json=excluded.metadata_json",
-            rusqlite::params![id, kind.as_str(), label, metadata_json],
+            rusqlite::params![id, kind.as_str(), label, metadata_json, now],
         )?;
         Ok(())
     }
@@ -181,7 +209,8 @@ impl KnowledgeGraph {
                         .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
                     label: row.get(2)?,
                     metadata_json: row.get(3)?,
-                    created_at: row.get(4)?,
+                    created_at: parse_rfc3339(row.get::<_, String>(4)?.as_str())
+                        .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
                 })
             },
         );
@@ -208,7 +237,8 @@ impl KnowledgeGraph {
                         .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
                         label: row.get(2)?,
                         metadata_json: row.get(3)?,
-                        created_at: row.get(4)?,
+                        created_at: parse_rfc3339(row.get::<_, String>(4)?.as_str())
+                            .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
                     })
                 })?;
                 return rows.collect::<Result<Vec<_>, _>>().map_err(TomeError::Cache);
@@ -223,7 +253,8 @@ impl KnowledgeGraph {
                     .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
                 label: row.get(2)?,
                 metadata_json: row.get(3)?,
-                created_at: row.get(4)?,
+                created_at: parse_rfc3339(row.get::<_, String>(4)?.as_str())
+                    .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>()
@@ -279,25 +310,31 @@ impl KnowledgeGraph {
     }
 }
 
+/// Parse a timestamp string from SQLite TEXT storage into `OffsetDateTime`.
+///
+/// Accepts RFC 3339 (`2026-04-08T12:00:00Z`) and falls back to SQLite's
+/// `datetime('now')` format (`2026-04-08 12:00:00`) for databases created
+/// before the 0.7.5 migration.  Fallback timestamps are treated as UTC.
+fn parse_rfc3339(s: &str) -> TomeResult<OffsetDateTime> {
+    OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).or_else(|_| {
+        // Legacy SQLite datetime format: "YYYY-MM-DD HH:MM:SS" (no timezone)
+        let fmt = time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]")
+            .expect("static format description");
+        tracing::warn!("Parsing legacy timestamp format: '{s}' — consider re-inserting the node to migrate");
+        time::PrimitiveDateTime::parse(s, &fmt)
+            .map(|dt| dt.assume_utc())
+    })
+    .map_err(|e| TomeError::Other(format!("invalid timestamp '{s}': {e}")))
+}
+
 fn parse_node_kind(s: &str) -> TomeResult<NodeKind> {
-    match s {
-        "topic" => Ok(NodeKind::Topic),
-        "paper" => Ok(NodeKind::Paper),
-        "implementation" => Ok(NodeKind::Implementation),
-        "discussion" => Ok(NodeKind::Discussion),
-        other => Err(TomeError::Other(format!("unknown NodeKind: {other}"))),
-    }
+    serde_json::from_value(serde_json::Value::String(s.to_owned()))
+        .map_err(|_| TomeError::Other(format!("unknown NodeKind: {s}")))
 }
 
 fn parse_edge_kind(s: &str) -> TomeResult<EdgeKind> {
-    match s {
-        "cites" => Ok(EdgeKind::Cites),
-        "implements" => Ok(EdgeKind::Implements),
-        "contradicts" => Ok(EdgeKind::Contradicts),
-        "extends" => Ok(EdgeKind::Extends),
-        "analogous_to" => Ok(EdgeKind::AnalogousTo),
-        other => Err(TomeError::Other(format!("unknown EdgeKind: {other}"))),
-    }
+    serde_json::from_value(serde_json::Value::String(s.to_owned()))
+        .map_err(|_| TomeError::Other(format!("unknown EdgeKind: {s}")))
 }
 
 #[cfg(test)]
@@ -385,6 +422,77 @@ mod tests {
         assert_eq!(updated.label, "Updated Label");
         assert_eq!(updated.metadata_json.as_deref(), Some(r#"{"key":"val"}"#));
         assert_eq!(updated.created_at, original.created_at);
+    }
+
+    #[test]
+    fn created_at_is_rfc3339() {
+        let kg = KnowledgeGraph::open_in_memory().unwrap();
+        kg.add_node("ts-1", NodeKind::Topic, "Timestamp Test", None)
+            .unwrap();
+        let node = kg.get_node("ts-1").unwrap().unwrap();
+
+        // Verify created_at roundtrips through serde as RFC 3339
+        let json = serde_json::to_string(&node).unwrap();
+        assert!(
+            json.contains("T") && json.contains("Z"),
+            "created_at should be RFC 3339 format, got: {json}"
+        );
+        let roundtripped: Node = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtripped.created_at, node.created_at);
+    }
+
+    /// GIVEN NodeKind::all()
+    /// WHEN each variant is round-tripped through as_str + parse
+    /// THEN all variants are covered and parseable
+    #[test]
+    fn node_kind_all_covers_every_variant() {
+        let all = NodeKind::all();
+        // Verify each entry round-trips through serde
+        for kind in all {
+            let s = kind.as_str();
+            let parsed = parse_node_kind(s).unwrap();
+            assert_eq!(*kind, parsed, "NodeKind round-trip failed for '{s}'");
+        }
+        // Verify count matches the enum variants (4 variants)
+        assert_eq!(all.len(), 4, "NodeKind::all() should have 4 variants");
+    }
+
+    /// GIVEN EdgeKind::all()
+    /// WHEN each variant is round-tripped through as_str + parse
+    /// THEN all variants are covered and parseable
+    #[test]
+    fn edge_kind_all_covers_every_variant() {
+        let all = EdgeKind::all();
+        for kind in all {
+            let s = kind.as_str();
+            let parsed = parse_edge_kind(s).unwrap();
+            assert_eq!(*kind, parsed, "EdgeKind round-trip failed for '{s}'");
+        }
+        assert_eq!(all.len(), 5, "EdgeKind::all() should have 5 variants");
+    }
+
+    /// GIVEN a timestamp in SQLite's datetime('now') format
+    /// WHEN parse_rfc3339 is called
+    /// THEN it falls back to the legacy format and returns a valid OffsetDateTime
+    #[test]
+    fn parse_rfc3339_accepts_legacy_sqlite_format() {
+        let legacy = "2025-12-15 10:30:00";
+        let dt = parse_rfc3339(legacy).expect("should parse legacy format");
+        assert_eq!(dt.year(), 2025);
+        assert_eq!(dt.month() as u8, 12);
+        assert_eq!(dt.day(), 15);
+        assert_eq!(dt.hour(), 10);
+        assert_eq!(dt.minute(), 30);
+    }
+
+    /// GIVEN a timestamp in RFC 3339 format
+    /// WHEN parse_rfc3339 is called
+    /// THEN it parses without falling back
+    #[test]
+    fn parse_rfc3339_accepts_rfc3339_format() {
+        let rfc = "2026-04-08T12:00:00Z";
+        let dt = parse_rfc3339(rfc).expect("should parse RFC 3339");
+        assert_eq!(dt.year(), 2026);
     }
 
     #[test]

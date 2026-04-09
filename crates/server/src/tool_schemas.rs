@@ -6,8 +6,11 @@
 //! - Sync tools: cross-agent synchronization (sync-skills, sync-commands, etc.)
 //! - Validation tools: skill validation and analysis
 //! - Dependency tools: dependency resolution and tracking
+//! - Intelligence tools: context tracking, MCP gateway, skill creation
 //! - Metrics tools: skill statistics and metrics
 //! - Trace tools: skill loading instrumentation
+//! - Recommendation tools: skill search and recommendations
+//! - Research tools: academic paper search, knowledge graphs, citations, TRIZ
 
 use rmcp::model::{Tool, ToolAnnotations};
 use serde_json::{json, Map as JsonMap};
@@ -894,6 +897,7 @@ pub(crate) fn research_tools() -> Vec<Tool> {
                         "limit": {
                             "type": "integer",
                             "default": 10,
+                            "maximum": 100,
                             "description": "Maximum number of results to return"
                         }
                     }),
@@ -1119,7 +1123,7 @@ pub(crate) fn research_tools() -> Vec<Tool> {
                         }
                     }),
                 );
-                schema.insert("required".into(), json!(["paper_id", "title"]));
+                schema.insert("required".into(), json!(["paper_id"]));
                 schema.insert("additionalProperties".into(), json!(false));
                 schema
             }),

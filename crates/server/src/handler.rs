@@ -179,34 +179,20 @@ impl ServerHandler for SkillService {
                     }
                 }
             }
-            let result = match request.name.as_ref() {
-                "create-skill" => {
-                    let args = request.arguments.clone().unwrap_or_default();
-                    self.create_skill_tool(args).await
-                }
-                "search-skills-github" => {
-                    let args = request.arguments.clone().unwrap_or_default();
-                    self.search_skills_github_tool(args).await
-                }
+            // Normalize snake_case tool names to kebab-case so callers can
+            // use either convention (e.g. "search_papers" -> "search-papers").
+            let canonical_name = request.name.replace('_', "-");
+            let args = request.arguments.clone().unwrap_or_default();
+            let result = match canonical_name.as_str() {
+                "create-skill" => self.create_skill_tool(args).await,
+                "search-skills-github" => self.search_skills_github_tool(args).await,
                 // Research tools (async — require HTTP calls to external APIs)
-                "search-papers" => {
-                    let args = request.arguments.clone().unwrap_or_default();
-                    self.search_papers_tool(args).await
-                }
-                "search-discussions" => {
-                    let args = request.arguments.clone().unwrap_or_default();
-                    self.search_discussions_tool(args).await
-                }
-                "resolve-doi" => {
-                    let args = request.arguments.clone().unwrap_or_default();
-                    self.resolve_doi_tool(args).await
-                }
-                "fetch-pdf" => {
-                    let args = request.arguments.clone().unwrap_or_default();
-                    self.fetch_pdf_tool(args).await
-                }
+                "search-papers" => self.search_papers_tool(args).await,
+                "search-discussions" => self.search_discussions_tool(args).await,
+                "resolve-doi" => self.resolve_doi_tool(args).await,
+                "fetch-pdf" => self.fetch_pdf_tool(args).await,
                 _ => (|| -> Result<CallToolResult> {
-                    match request.name.as_ref() {
+                    match canonical_name.as_str() {
                     "sync-from-claude" => {
                         let include_marketplace = request
                             .arguments
@@ -707,13 +693,13 @@ impl ServerHandler for SkillService {
                         self.search_skills_fuzzy_tool(args)
                     }
                     // MCP Gateway tools for context optimization
-                    "list-mcp-tools" | "list_mcp_tools" => {
+                    "list-mcp-tools" => {
                         // Get tool entries from the real registry
                         let registry = self.mcp_registry.lock();
                         let entries: Vec<_> = registry.list_all();
                         crate::mcp_gateway::list_mcp_tools(request.arguments.as_ref(), entries)
                     }
-                    "describe-mcp-tool" | "describe_mcp_tool" => {
+                    "describe-mcp-tool" => {
                         // Track schema load for context stats
                         self.context_stats.record_schema_load();
 
@@ -727,7 +713,7 @@ impl ServerHandler for SkillService {
                                 .or_else(|| gateway_tools.iter().find(|t| t.name.as_ref() == name).cloned())
                         })
                     }
-                    "get-context-stats" | "get_context_stats" => {
+                    "get-context-stats" => {
                         // Return current context stats from the real tracker
                         let stats = self.context_stats.snapshot();
                         crate::mcp_gateway::get_context_stats(stats)
@@ -920,5 +906,123 @@ mod tests {
             err.message.contains("unknown tool"),
             "error message should mention unknown tool"
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // Snake-case tool name normalization tests
+    // -------------------------------------------------------------------------
+
+    /// GIVEN a sync research tool called via snake_case name
+    /// WHEN call_tool dispatches the request
+    /// THEN it routes to the correct handler (same as kebab-case)
+    #[test]
+    fn snake_case_aliases_route_sync_research_tools() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var(
+            "HOME",
+            Some(
+                temp.path()
+                    .to_str()
+                    .expect("temp home should be valid utf-8"),
+            ),
+        );
+
+        let service = build_service(&temp);
+
+        // Test resolve_contradiction (snake_case) returns principles, not "unknown tool"
+        let result = run_async(async {
+            let (running, context, _client) = service_with_context(service);
+            running
+                .service()
+                .call_tool(
+                    CallToolRequestParam {
+                        name: "resolve_contradiction".into(),
+                        arguments: Some(
+                            serde_json::json!({
+                                "improve": "performance",
+                                "degrades": "reliability"
+                            })
+                            .as_object()
+                            .cloned()
+                            .unwrap(),
+                        ),
+                    },
+                    context,
+                )
+                .await
+        });
+
+        let res = result.expect("resolve_contradiction should not return unknown tool error");
+        assert!(
+            !res.is_error.unwrap_or(true),
+            "resolve_contradiction should succeed"
+        );
+    }
+
+    /// GIVEN sync research tools called via snake_case names
+    /// WHEN each snake_case alias is dispatched
+    /// THEN none return "unknown tool" errors
+    #[test]
+    fn snake_case_aliases_accepted_for_all_sync_research_tools() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var(
+            "HOME",
+            Some(
+                temp.path()
+                    .to_str()
+                    .expect("temp home should be valid utf-8"),
+            ),
+        );
+
+        // Each (snake_case_name, minimal_valid_args) pair for sync research tools
+        let cases: Vec<(&str, serde_json::Value)> = vec![
+            (
+                "query_knowledge_graph",
+                serde_json::json!({}), // stats mode — no args needed
+            ),
+            (
+                "add_knowledge_node",
+                serde_json::json!({"id": "test-snake", "kind": "topic", "label": "Snake Test"}),
+            ),
+            (
+                "link_knowledge",
+                serde_json::json!({"source_id": "test-snake", "target_id": "test-snake", "kind": "cites"}),
+            ),
+            (
+                "track_citations",
+                serde_json::json!({"paper_id": "p-snake", "action": "track", "title": "Snake Paper"}),
+            ),
+            (
+                "resolve_contradiction",
+                serde_json::json!({"improve": "performance", "degrades": "reliability"}),
+            ),
+        ];
+
+        for (name, args) in cases {
+            let svc = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1))
+                .expect("service should build");
+            let result = run_async(async move {
+                let (running, context, _client) = service_with_context(svc);
+                running
+                    .service()
+                    .call_tool(
+                        CallToolRequestParam {
+                            name: name.into(),
+                            arguments: Some(args.as_object().cloned().unwrap()),
+                        },
+                        context,
+                    )
+                    .await
+            });
+
+            assert!(
+                result.is_ok(),
+                "snake_case tool '{}' should be dispatched, got error: {:?}",
+                name,
+                result.err()
+            );
+        }
     }
 }
