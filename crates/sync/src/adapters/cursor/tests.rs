@@ -94,14 +94,170 @@ fn skills_strip_frontmatter_on_write() {
     let report = adapter.write_skills(&skills).unwrap();
     assert_eq!(report.written, 1);
 
-    // Read back and verify frontmatter was stripped
+    // Read back and verify frontmatter was stripped but description preserved
     let read_back = adapter.read_skills().unwrap();
     assert_eq!(read_back.len(), 1);
     let content = String::from_utf8_lossy(&read_back[0].content);
     assert!(!content.contains("---"), "Frontmatter should be stripped");
     assert!(
+        content.starts_with("A test skill\n"),
+        "Description should be preserved as plain text first line"
+    );
+    assert!(
         content.contains("# test-skill Skill"),
         "Body should be preserved"
+    );
+}
+
+#[test]
+fn skills_description_before_model_hint() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let content = "---\nname: paradigms\ndescription: Compare architecture patterns\nmodel_hint: standard\n---\n\n# Paradigms\n\nContent.\n";
+    let skills = vec![make_command("paradigms", content)];
+
+    let report = adapter.write_skills(&skills).unwrap();
+    assert_eq!(report.written, 1);
+
+    let read_back = adapter.read_skills().unwrap();
+    let body = String::from_utf8_lossy(&read_back[0].content);
+
+    assert!(
+        body.starts_with("Compare architecture patterns\n"),
+        "Description should be plain text first line, got: {}",
+        body
+    );
+    assert!(
+        body.contains("<!-- model_hint: standard -->"),
+        "Model hint should be in output"
+    );
+
+    // Description must come before model_hint
+    let desc_pos = body.find("Compare architecture patterns").unwrap();
+    let hint_pos = body.find("<!-- model_hint:").unwrap();
+    assert!(
+        desc_pos < hint_pos,
+        "Description should appear before model_hint so Cursor shows it as the subtitle"
+    );
+}
+
+#[test]
+fn skills_description_strips_yaml_quotes() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let content =
+        "---\nname: quoted\ndescription: \"A quoted description\"\n---\n\n# Body\n\nContent.\n";
+    let skills = vec![make_command("quoted", content)];
+
+    adapter.write_skills(&skills).unwrap();
+    let read_back = adapter.read_skills().unwrap();
+    let body = String::from_utf8_lossy(&read_back[0].content);
+    assert!(
+        body.starts_with("A quoted description\n"),
+        "Quotes should be stripped from description, got: {}",
+        body
+    );
+}
+
+#[test]
+fn skills_block_scalar_description() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let content = "---\nname: research\ndescription: >-\n  Search GitHub for implementations.\n  Use when the user wants code.\nversion: 1.0\n---\n\n# Body\n";
+    let skills = vec![make_command("research", content)];
+
+    adapter.write_skills(&skills).unwrap();
+    let read_back = adapter.read_skills().unwrap();
+    let body = String::from_utf8_lossy(&read_back[0].content);
+    assert!(
+        body.starts_with("Search GitHub for implementations. Use when the user wants code.\n"),
+        "Block scalar description should be flattened to plain text, got: {}",
+        body
+    );
+}
+
+#[test]
+fn skills_single_quoted_description() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let content =
+        "---\nname: single-q\ndescription: 'A single-quoted desc'\n---\n\n# Body\n\nContent.\n";
+    let skills = vec![make_command("single-q", content)];
+
+    adapter.write_skills(&skills).unwrap();
+    let read_back = adapter.read_skills().unwrap();
+    let body = String::from_utf8_lossy(&read_back[0].content);
+    assert!(
+        body.starts_with("A single-quoted desc\n"),
+        "Single quotes should be stripped, got: {}",
+        body
+    );
+}
+
+#[test]
+fn skills_description_only_no_model_hint() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let content =
+        "---\nname: plain\ndescription: Just a description\n---\n\n# Content\n\nBody here.\n";
+    let skills = vec![make_command("plain", content)];
+
+    adapter.write_skills(&skills).unwrap();
+    let read_back = adapter.read_skills().unwrap();
+    let body = String::from_utf8_lossy(&read_back[0].content);
+    assert!(
+        body.starts_with("Just a description\n"),
+        "Description should be first line, got: {}",
+        body
+    );
+    assert!(
+        !body.contains("model_hint"),
+        "No model_hint comment when field is absent"
+    );
+    assert!(
+        body.contains("# Content"),
+        "Body should follow the description"
+    );
+}
+
+#[test]
+fn skills_model_hint_only_no_description() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let content = "---\nname: hinted\nmodel_hint: fast\n---\n\n# Content\n\nBody here.\n";
+    let skills = vec![make_command("hinted", content)];
+
+    adapter.write_skills(&skills).unwrap();
+    let read_back = adapter.read_skills().unwrap();
+    let body = String::from_utf8_lossy(&read_back[0].content);
+    assert!(
+        body.starts_with("<!-- model_hint: fast -->\n"),
+        "Model hint should be first line when no description, got: {}",
+        body
+    );
+}
+
+#[test]
+fn skills_multiline_quoted_description() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let content = "---\nname: modular-monolith\ndescription: 'Single deployable with enforced module\n  boundaries for team autonomy.'\n---\n\n# Content\n";
+    let skills = vec![make_command("modular-monolith", content)];
+
+    adapter.write_skills(&skills).unwrap();
+    let read_back = adapter.read_skills().unwrap();
+    let body = String::from_utf8_lossy(&read_back[0].content);
+    assert!(
+        body.starts_with("Single deployable with enforced module boundaries for team autonomy.\n"),
+        "Multi-line quoted description should be flattened and unquoted, got: {}",
+        body
     );
 }
 
@@ -238,7 +394,7 @@ fn rules_with_globs_preserved() {
 // --- Skills edge cases ---
 
 #[test]
-fn skills_frontmatter_only_content_produces_empty_body() {
+fn skills_frontmatter_only_content_preserves_description() {
     let tmp = TempDir::new().unwrap();
     let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
 
@@ -253,10 +409,10 @@ fn skills_frontmatter_only_content_produces_empty_body() {
     assert_eq!(read_back.len(), 1);
     let body = String::from_utf8_lossy(&read_back[0].content);
     assert!(!body.contains("---"), "Frontmatter should be stripped");
-    // Body may be empty or whitespace-only
     assert!(
-        body.trim().is_empty(),
-        "Body should be empty after stripping frontmatter-only content"
+        body.contains("Has no body"),
+        "Description should be preserved as plain text, got: {}",
+        body
     );
 }
 

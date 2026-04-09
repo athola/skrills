@@ -5,18 +5,22 @@
 //! Cursor skills have **no YAML frontmatter** — the content is pure markdown.
 //!
 //! When writing Claude skills to Cursor, YAML frontmatter is stripped.
-//! When reading Cursor skills back, no frontmatter is expected.
+//! The `description` field is preserved as a plain-text first line (Cursor
+//! shows it as the skill subtitle), and `model_hint` is kept as an HTML
+//! comment for routing. When reading Cursor skills back, no frontmatter
+//! is expected.
 //!
 //! ## Lossy roundtrip warning
 //!
-//! Syncing Claude → Cursor **strips YAML frontmatter** (name, description,
-//! dependencies, version, etc.). A subsequent Cursor → Claude sync will
-//! **not** restore that metadata. Treat Cursor as a one-way *consumer*
-//! of Claude skills; do not use it as the source of truth for skills
-//! that originated in Claude.
+//! Syncing Claude → Cursor **strips most YAML frontmatter** (name,
+//! dependencies, version, tags, etc.). `description` and `model_hint`
+//! are preserved in non-YAML form. A subsequent Cursor → Claude sync
+//! will **not** restore the original metadata. Treat Cursor as a
+//! one-way *consumer* of Claude skills; do not use it as the source
+//! of truth for skills that originated in Claude.
 
 use super::paths::skills_dir;
-use super::utils::{extract_model_hint, sanitize_name, strip_frontmatter, trim_skill_body};
+use super::utils::{parse_frontmatter, sanitize_name, strip_yaml_quotes, trim_skill_body};
 use crate::adapters::utils::{collect_module_files, hash_content};
 use crate::common::{Command, ContentFormat};
 use crate::report::{SkipReason, WriteReport};
@@ -101,20 +105,30 @@ pub fn write_skills(root: &Path, skills: &[Command]) -> Result<WriteReport> {
         let skill_dir = dir.join(&name);
         fs::create_dir_all(&skill_dir)?;
 
-        // Strip Claude frontmatter when writing to Cursor
+        // Parse Claude frontmatter to extract metadata before stripping
         let content_str = String::from_utf8_lossy(&skill.content);
+        let (fields, raw_body) = parse_frontmatter(&content_str);
 
-        // Extract model_hint before stripping frontmatter
-        let model_hint = extract_model_hint(&content_str);
+        let description = fields.get("description").map(|d| strip_yaml_quotes(d));
+        let model_hint = fields.get("model_hint").cloned();
 
-        // Strip frontmatter and trim non-essential sections
-        let raw_body = strip_frontmatter(&content_str);
+        // Trim non-essential sections from the body
         let trimmed = trim_skill_body(raw_body);
 
-        // Inject model_hint as a comment at the top if present
-        let body = match model_hint {
-            Some(hint) => format!("<!-- model_hint: {hint} -->\n\n{trimmed}"),
-            None => trimmed,
+        // Inject description as plain text (Cursor shows the first line as
+        // the skill subtitle) and model_hint as an HTML comment for routing.
+        let mut header = String::new();
+        if let Some(desc) = &description {
+            header.push_str(desc);
+            header.push('\n');
+        }
+        if let Some(hint) = &model_hint {
+            header.push_str(&format!("<!-- model_hint: {hint} -->\n"));
+        }
+        let body = if header.is_empty() {
+            trimmed
+        } else {
+            format!("{header}\n{trimmed}")
         };
 
         let skill_path = skill_dir.join("SKILL.md");

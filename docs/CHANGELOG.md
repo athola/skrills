@@ -1,6 +1,7 @@
 # Changelog
 
 ## 0.7.5 - 2026-04-07
+- **Fix: Cursor Skill Descriptions**: Cursor adapter now preserves skill `description` as a plain-text first line instead of discarding it. Handles YAML block scalars (`>-`, `>`, `|-`, `|`), multi-line quoted strings, and strips surrounding quotes. `model_hint` remains as an HTML comment. Cursor shows the description as the skill subtitle instead of `<!-- model_hint: ... -->`.
 - **Refactor: Research Handlers**: Hoisted function-level imports to module scope in `research.rs`, reducing per-call overhead and improving readability.
 - **Refactor: Serde-Based Parsing**: Replaced manual `match` arms for `NodeKind`, `EdgeKind`, and `Parameter` parsing with `serde_json::from_value`, eliminating duplication between enum definitions and parsers.
 - **Fix: Search Papers Error Reporting**: `search_papers_tool` now sets `is_error: true` when all sources fail, instead of silently returning an empty result.
