@@ -14,6 +14,22 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 use walkdir::WalkDir;
 
+/// Parse a directory entry name as a semver-ish tuple `(major, minor, patch)`.
+///
+/// Falls back to `(0, 0, 0)` for non-semver names so they sort before any real version.
+fn semver_tuple(entry: &fs::DirEntry) -> (u64, u64, u64) {
+    let name = entry
+        .file_name()
+        .to_str()
+        .unwrap_or("")
+        .to_string();
+    let parts: Vec<&str> = name.split('.').collect();
+    let major = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0u64);
+    let minor = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0u64);
+    let patch = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0u64);
+    (major, minor, patch)
+}
+
 /// Adapter for Claude Code configuration.
 pub struct ClaudeAdapter {
     root: PathBuf,
@@ -1034,11 +1050,16 @@ impl AgentAdapter for ClaudeAdapter {
             if !marketplace_path.is_dir() {
                 continue;
             }
-            let publisher = marketplace_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_string();
+            let publisher = match marketplace_path.file_name().and_then(|n| n.to_str()) {
+                Some(name) => name.to_string(),
+                None => {
+                    tracing::warn!(
+                        path = %marketplace_path.display(),
+                        "Skipping non-UTF-8 marketplace directory"
+                    );
+                    continue;
+                }
+            };
 
             for plugin_entry in fs::read_dir(&marketplace_path)? {
                 let plugin_entry = plugin_entry?;
@@ -1046,32 +1067,52 @@ impl AgentAdapter for ClaudeAdapter {
                 if !plugin_path.is_dir() {
                     continue;
                 }
-                let plugin_name = plugin_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown")
-                    .to_string();
+                let plugin_name = match plugin_path.file_name().and_then(|n| n.to_str()) {
+                    Some(name) => name.to_string(),
+                    None => {
+                        tracing::warn!(
+                            path = %plugin_path.display(),
+                            "Skipping non-UTF-8 plugin directory"
+                        );
+                        continue;
+                    }
+                };
 
-                // Find the latest version directory
+                // Find the latest version directory (prefer semver, fall back to mtime)
                 let mut versions: Vec<_> = fs::read_dir(&plugin_path)?
-                    .filter_map(|e| e.ok())
+                    .filter_map(|e| match e {
+                        Ok(entry) => Some(entry),
+                        Err(err) => {
+                            tracing::warn!(
+                                plugin = %plugin_name,
+                                error = %err,
+                                "Failed to read version directory entry"
+                            );
+                            None
+                        }
+                    })
                     .filter(|e| e.path().is_dir())
                     .collect();
-                versions.sort_by_key(|e| {
-                    e.metadata()
-                        .and_then(|m| m.modified())
-                        .unwrap_or(SystemTime::UNIX_EPOCH)
+                versions.sort_by(|a, b| {
+                    let ver_a = semver_tuple(a);
+                    let ver_b = semver_tuple(b);
+                    ver_a.cmp(&ver_b)
                 });
                 let version_entry = match versions.last() {
                     Some(e) => e,
                     None => continue,
                 };
                 let version_path = version_entry.path();
-                let version = version_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("0.0.0")
-                    .to_string();
+                let version = match version_path.file_name().and_then(|n| n.to_str()) {
+                    Some(name) => name.to_string(),
+                    None => {
+                        tracing::warn!(
+                            path = %version_path.display(),
+                            "Skipping non-UTF-8 version directory"
+                        );
+                        continue;
+                    }
+                };
 
                 // Walk the version directory collecting asset files
                 for entry in WalkDir::new(&version_path)
@@ -1081,7 +1122,14 @@ impl AgentAdapter for ClaudeAdapter {
                 {
                     let entry = match entry {
                         Ok(e) => e,
-                        Err(_) => continue,
+                        Err(e) => {
+                            tracing::warn!(
+                                plugin = %plugin_name,
+                                error = %e,
+                                "Failed to read directory entry while scanning plugin assets"
+                            );
+                            continue;
+                        }
                     };
                     let path = entry.path();
 
@@ -1123,7 +1171,15 @@ impl AgentAdapter for ClaudeAdapter {
 
                     let content = match fs::read(path) {
                         Ok(c) => c,
-                        Err(_) => continue,
+                        Err(e) => {
+                            tracing::warn!(
+                                path = %path.display(),
+                                plugin = %plugin_name,
+                                error = %e,
+                                "Failed to read plugin asset file, skipping"
+                            );
+                            continue;
+                        }
                     };
 
                     let executable = {
@@ -1140,17 +1196,14 @@ impl AgentAdapter for ClaudeAdapter {
                         }
                     };
 
-                    let hash = hash_content(&content);
-
-                    assets.push(PluginAsset {
-                        plugin_name: plugin_name.clone(),
-                        publisher: publisher.clone(),
-                        version: version.clone(),
-                        relative_path: rel_path.to_path_buf(),
+                    assets.push(PluginAsset::new(
+                        plugin_name.clone(),
+                        publisher.clone(),
+                        version.clone(),
+                        rel_path.to_path_buf(),
                         content,
-                        hash,
                         executable,
-                    });
+                    ));
                 }
             }
         }
@@ -1810,16 +1863,13 @@ mod tests {
 
     #[test]
     fn read_plugin_assets_picks_latest_version() {
-        // GIVEN a plugin with two version directories
+        // GIVEN a plugin with two version directories (semver-sorted)
         let tmp = tempdir().unwrap();
         let old_ver = tmp.path().join("plugins/cache/market/plug/1.0.0/scripts");
         let new_ver = tmp.path().join("plugins/cache/market/plug/2.0.0/scripts");
         fs::create_dir_all(&old_ver).unwrap();
         fs::create_dir_all(&new_ver).unwrap();
         fs::write(old_ver.join("old.py"), b"# old\n").unwrap();
-
-        // Ensure 2.0.0 has a newer mtime by writing after 1.0.0
-        std::thread::sleep(std::time::Duration::from_millis(10));
         fs::write(new_ver.join("new.py"), b"# new\n").unwrap();
 
         // WHEN reading plugin assets

@@ -6,6 +6,7 @@
 use crate::{TomeError, TomeResult};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 use time::OffsetDateTime;
 
 /// Node types in the knowledge graph.
@@ -209,7 +210,7 @@ impl KnowledgeGraph {
                         .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
                     label: row.get(2)?,
                     metadata_json: row.get(3)?,
-                    created_at: parse_rfc3339(row.get::<_, String>(4)?.as_str())
+                    created_at: parse_timestamp(row.get::<_, String>(4)?.as_str())
                         .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
                 })
             },
@@ -237,7 +238,7 @@ impl KnowledgeGraph {
                         .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
                         label: row.get(2)?,
                         metadata_json: row.get(3)?,
-                        created_at: parse_rfc3339(row.get::<_, String>(4)?.as_str())
+                        created_at: parse_timestamp(row.get::<_, String>(4)?.as_str())
                             .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
                     })
                 })?;
@@ -253,7 +254,7 @@ impl KnowledgeGraph {
                     .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
                 label: row.get(2)?,
                 metadata_json: row.get(3)?,
-                created_at: parse_rfc3339(row.get::<_, String>(4)?.as_str())
+                created_at: parse_timestamp(row.get::<_, String>(4)?.as_str())
                     .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
             })
         })?;
@@ -310,18 +311,22 @@ impl KnowledgeGraph {
     }
 }
 
+/// Legacy SQLite `datetime('now')` format: `YYYY-MM-DD HH:MM:SS`
+static LEGACY_TIMESTAMP_FMT: LazyLock<Vec<time::format_description::FormatItem<'static>>> =
+    LazyLock::new(|| {
+        time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]")
+            .expect("static format description")
+    });
+
 /// Parse a timestamp string from SQLite TEXT storage into `OffsetDateTime`.
 ///
 /// Accepts RFC 3339 (`2026-04-08T12:00:00Z`) and falls back to SQLite's
 /// `datetime('now')` format (`2026-04-08 12:00:00`) for databases created
 /// before the 0.7.5 migration.  Fallback timestamps are treated as UTC.
-fn parse_rfc3339(s: &str) -> TomeResult<OffsetDateTime> {
+fn parse_timestamp(s: &str) -> TomeResult<OffsetDateTime> {
     OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).or_else(|_| {
-        // Legacy SQLite datetime format: "YYYY-MM-DD HH:MM:SS" (no timezone)
-        let fmt = time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]")
-            .expect("static format description");
-        tracing::warn!("Parsing legacy timestamp format: '{s}' — consider re-inserting the node to migrate");
-        time::PrimitiveDateTime::parse(s, &fmt)
+        tracing::debug!("Parsing legacy timestamp format: '{s}'");
+        time::PrimitiveDateTime::parse(s, &LEGACY_TIMESTAMP_FMT)
             .map(|dt| dt.assume_utc())
     })
     .map_err(|e| TomeError::Other(format!("invalid timestamp '{s}': {e}")))
@@ -472,12 +477,12 @@ mod tests {
     }
 
     /// GIVEN a timestamp in SQLite's datetime('now') format
-    /// WHEN parse_rfc3339 is called
+    /// WHEN parse_timestamp is called
     /// THEN it falls back to the legacy format and returns a valid OffsetDateTime
     #[test]
-    fn parse_rfc3339_accepts_legacy_sqlite_format() {
+    fn parse_timestamp_accepts_legacy_sqlite_format() {
         let legacy = "2025-12-15 10:30:00";
-        let dt = parse_rfc3339(legacy).expect("should parse legacy format");
+        let dt = parse_timestamp(legacy).expect("should parse legacy format");
         assert_eq!(dt.year(), 2025);
         assert_eq!(dt.month() as u8, 12);
         assert_eq!(dt.day(), 15);
@@ -486,12 +491,12 @@ mod tests {
     }
 
     /// GIVEN a timestamp in RFC 3339 format
-    /// WHEN parse_rfc3339 is called
+    /// WHEN parse_timestamp is called
     /// THEN it parses without falling back
     #[test]
-    fn parse_rfc3339_accepts_rfc3339_format() {
+    fn parse_timestamp_accepts_rfc3339_format() {
         let rfc = "2026-04-08T12:00:00Z";
-        let dt = parse_rfc3339(rfc).expect("should parse RFC 3339");
+        let dt = parse_timestamp(rfc).expect("should parse RFC 3339");
         assert_eq!(dt.year(), 2026);
     }
 
@@ -505,5 +510,72 @@ mod tests {
         kg.add_edge("a", "b", EdgeKind::Extends, 1.0, None).unwrap();
 
         assert_eq!(kg.stats().unwrap(), (2, 1));
+    }
+
+    #[test]
+    fn get_nonexistent_node_returns_none() {
+        let kg = KnowledgeGraph::open_in_memory().unwrap();
+        assert!(kg.get_node("does-not-exist").unwrap().is_none());
+    }
+
+    #[test]
+    fn edge_upsert_updates_weight() {
+        let kg = KnowledgeGraph::open_in_memory().unwrap();
+        kg.add_node("a", NodeKind::Paper, "Paper A", None).unwrap();
+        kg.add_node("b", NodeKind::Paper, "Paper B", None).unwrap();
+
+        kg.add_edge("a", "b", EdgeKind::Cites, 0.5, None).unwrap();
+        // Upsert same edge with higher weight
+        kg.add_edge(
+            "a",
+            "b",
+            EdgeKind::Cites,
+            0.9,
+            Some(r#"{"reason":"stronger link"}"#),
+        )
+        .unwrap();
+
+        let edges = kg.edges_from("a").unwrap();
+        assert_eq!(edges.len(), 1, "upsert should not create duplicate edge");
+        assert!((edges[0].weight - 0.9).abs() < f64::EPSILON);
+        assert_eq!(
+            edges[0].metadata_json.as_deref(),
+            Some(r#"{"reason":"stronger link"}"#)
+        );
+    }
+
+    #[test]
+    fn multiple_edge_types_between_same_nodes() {
+        let kg = KnowledgeGraph::open_in_memory().unwrap();
+        kg.add_node("a", NodeKind::Paper, "Paper A", None).unwrap();
+        kg.add_node("b", NodeKind::Paper, "Paper B", None).unwrap();
+
+        // Same node pair, different edge types (PK is source_id + target_id + kind)
+        kg.add_edge("a", "b", EdgeKind::Cites, 1.0, None).unwrap();
+        kg.add_edge("a", "b", EdgeKind::Extends, 0.8, None).unwrap();
+        kg.add_edge("a", "b", EdgeKind::Contradicts, 0.3, None)
+            .unwrap();
+
+        let edges = kg.edges_from("a").unwrap();
+        assert_eq!(edges.len(), 3, "different edge types should coexist");
+
+        let incoming = kg.edges_to("b").unwrap();
+        assert_eq!(incoming.len(), 3);
+    }
+
+    #[test]
+    fn edges_from_nonexistent_node_returns_empty() {
+        let kg = KnowledgeGraph::open_in_memory().unwrap();
+        assert!(kg.edges_from("ghost").unwrap().is_empty());
+        assert!(kg.edges_to("ghost").unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_no_matches_returns_empty() {
+        let kg = KnowledgeGraph::open_in_memory().unwrap();
+        kg.add_node("t-1", NodeKind::Topic, "machine learning", None)
+            .unwrap();
+        let results = kg.search_nodes("quantum", None).unwrap();
+        assert!(results.is_empty());
     }
 }

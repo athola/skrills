@@ -219,4 +219,99 @@ mod tests {
         ct.add_citation("p2", "p1", None).unwrap();
         assert_eq!(ct.stats().unwrap(), (2, 1));
     }
+
+    #[test]
+    fn duplicate_citation_is_ignored() {
+        let ct = CitationTracker::open_in_memory().unwrap();
+        ct.track_paper(&test_paper("p1", "Original")).unwrap();
+        ct.track_paper(&test_paper("p2", "Citing")).unwrap();
+
+        ct.add_citation("p2", "p1", Some("first insert")).unwrap();
+        // Second insert with same IDs should be silently ignored
+        ct.add_citation("p2", "p1", Some("duplicate")).unwrap();
+
+        let fwd = ct.forward_citations("p1").unwrap();
+        assert_eq!(fwd.len(), 1, "duplicate citation should be ignored");
+        assert_eq!(
+            fwd[0].context.as_deref(),
+            Some("first insert"),
+            "original context should be preserved"
+        );
+    }
+
+    #[test]
+    fn upsert_updates_existing_paper() {
+        let ct = CitationTracker::open_in_memory().unwrap();
+        ct.track_paper(&test_paper("p1", "Original Title")).unwrap();
+
+        // Track same paper ID with updated title
+        let updated = Paper {
+            id: "p1".to_string(),
+            title: "Updated Title".to_string(),
+            authors: vec![],
+            abstract_text: None,
+            year: Some(2025),
+            doi: Some("10.1234/p1".to_string()),
+            url: None,
+            source: PaperSource::SemanticScholar,
+            citation_count: Some(100),
+            pdf_url: None,
+        };
+        ct.track_paper(&updated).unwrap();
+
+        let papers = ct.tracked_papers().unwrap();
+        assert_eq!(papers.len(), 1, "upsert should not create duplicate");
+        assert_eq!(papers[0].1, "Updated Title");
+        assert_eq!(papers[0].2, Some(100));
+    }
+
+    #[test]
+    fn empty_tracker_returns_empty_results() {
+        let ct = CitationTracker::open_in_memory().unwrap();
+        assert!(ct.forward_citations("nonexistent").unwrap().is_empty());
+        assert!(ct.backward_citations("nonexistent").unwrap().is_empty());
+        assert!(ct.tracked_papers().unwrap().is_empty());
+    }
+
+    #[test]
+    fn multiple_forward_citations() {
+        let ct = CitationTracker::open_in_memory().unwrap();
+        ct.track_paper(&test_paper("original", "Seminal Paper"))
+            .unwrap();
+        ct.track_paper(&test_paper("c1", "Citing A")).unwrap();
+        ct.track_paper(&test_paper("c2", "Citing B")).unwrap();
+        ct.track_paper(&test_paper("c3", "Citing C")).unwrap();
+
+        ct.add_citation("c1", "original", None).unwrap();
+        ct.add_citation("c2", "original", None).unwrap();
+        ct.add_citation("c3", "original", None).unwrap();
+
+        let fwd = ct.forward_citations("original").unwrap();
+        assert_eq!(fwd.len(), 3, "should have 3 forward citations");
+
+        // Original paper should have no backward citations
+        let bwd = ct.backward_citations("original").unwrap();
+        assert!(bwd.is_empty());
+    }
+
+    #[test]
+    fn tracked_papers_ordered_by_citation_count() {
+        let ct = CitationTracker::open_in_memory().unwrap();
+
+        let mut low = test_paper("low", "Low Citations");
+        low.citation_count = Some(5);
+        let mut high = test_paper("high", "High Citations");
+        high.citation_count = Some(500);
+        let mut mid = test_paper("mid", "Mid Citations");
+        mid.citation_count = Some(50);
+
+        ct.track_paper(&low).unwrap();
+        ct.track_paper(&high).unwrap();
+        ct.track_paper(&mid).unwrap();
+
+        let papers = ct.tracked_papers().unwrap();
+        assert_eq!(papers[0].0, "high");
+        assert_eq!(papers[1].0, "mid");
+        assert_eq!(papers[2].0, "low");
+    }
 }

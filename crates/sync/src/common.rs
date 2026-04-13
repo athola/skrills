@@ -23,10 +23,33 @@ pub struct PluginAsset {
     pub relative_path: PathBuf,
     /// File content as bytes
     pub content: Vec<u8>,
-    /// SHA256 hash for change detection
+    /// SHA256 hash of `content` for change detection (auto-computed by `new()`)
     pub hash: String,
     /// Whether the file should be executable
     pub executable: bool,
+}
+
+impl PluginAsset {
+    /// Creates a new `PluginAsset`, auto-computing the SHA256 hash from `content`.
+    pub fn new(
+        plugin_name: String,
+        publisher: String,
+        version: String,
+        relative_path: PathBuf,
+        content: Vec<u8>,
+        executable: bool,
+    ) -> Self {
+        let hash = crate::adapters::utils::hash_content(&content);
+        Self {
+            plugin_name,
+            publisher,
+            version,
+            relative_path,
+            content,
+            hash,
+            executable,
+        }
+    }
 }
 
 /// A companion file within a skill directory (e.g., helpers, sub-modules).
@@ -208,15 +231,14 @@ mod tests {
 
     #[test]
     fn plugin_asset_serializes_roundtrip() {
-        let asset = PluginAsset {
-            plugin_name: "abstract".to_string(),
-            publisher: "claude-night-market".to_string(),
-            version: "1.8.3".to_string(),
-            relative_path: PathBuf::from("scripts/makefile_dogfooder.py"),
-            content: b"#!/usr/bin/env python3\nprint('hello')\n".to_vec(),
-            hash: "abc123".to_string(),
-            executable: true,
-        };
+        let asset = PluginAsset::new(
+            "abstract".to_string(),
+            "claude-night-market".to_string(),
+            "1.8.3".to_string(),
+            PathBuf::from("scripts/makefile_dogfooder.py"),
+            b"#!/usr/bin/env python3\nprint('hello')\n".to_vec(),
+            true,
+        );
 
         let json = serde_json::to_string(&asset).unwrap();
         let restored: PluginAsset = serde_json::from_str(&json).unwrap();
@@ -229,7 +251,8 @@ mod tests {
             PathBuf::from("scripts/makefile_dogfooder.py")
         );
         assert_eq!(restored.content, asset.content);
-        assert_eq!(restored.hash, "abc123");
+        assert_eq!(restored.hash, asset.hash, "hash should roundtrip");
+        assert!(!restored.hash.is_empty(), "hash should be auto-computed");
         assert!(restored.executable);
     }
 }

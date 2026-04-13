@@ -123,10 +123,11 @@ impl ResearchCache {
         &self.pdf_dir
     }
 
-    /// Returns the canonical skrills-tome cache directory, creating it if needed.
+    /// Returns the standard skrills-tome cache directory, creating it if needed.
     ///
-    /// Other modules (knowledge graph, citations) should use this instead of
-    /// duplicating the path logic.
+    /// Callers that need the cache path (e.g., server handlers constructing
+    /// database paths for the knowledge graph or citation tracker) should use
+    /// this instead of duplicating the path logic.
     pub fn cache_dir() -> TomeResult<std::path::PathBuf> {
         let base = dirs::cache_dir()
             .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))

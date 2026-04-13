@@ -3,7 +3,7 @@
 ## 0.7.6 - 2026-04-12
 - **NEW: Plugin Assets Sync**: Cursor sync now mirrors plugin runtime scripts (Python, shell), binaries, and source packages from `~/.claude/plugins/cache/` to `~/.cursor/plugins/cache/`. Preserves directory hierarchy so skills can reference companion scripts at the same relative paths. Controlled by the `sync_plugin_assets` flag in `SyncParams` (default: enabled).
 - **NEW: `PluginAsset` Type**: Added `PluginAsset` struct to the sync common schema, with publisher, plugin name, version, relative path, content, hash, and executable permission tracking.
-- **NEW: Claude Adapter `read_plugin_assets()`**: Walks the plugin cache collecting files from `scripts/`, `bin/`, `hooks/`, `src/`, and config files. Excludes directories already handled by other sync paths (`skills/`, `commands/`, `agents/`) and runtime artifacts (`tests/`, `.venv/`, `__pycache__/`, `node_modules/`).
+- **NEW: Claude Adapter `read_plugin_assets()`**: Walks the plugin cache collecting all files except those handled by other sync paths (`skills/`, `commands/`, `agents/`) and runtime artifacts (`tests/`, `.venv/`, `__pycache__/`, `node_modules/`, `.git/`). This captures scripts, binaries, hooks, source packages, and config files.
 - **NEW: Cursor Adapter `write_plugin_assets()`**: Writes plugin assets to `~/.cursor/plugins/cache/` mirroring the Claude structure. Supports hash-based change detection and preserves executable permissions on Unix.
 - **Testing**: Added 18 tests covering plugin asset read/write, exclusion rules, version picking, executable detection, serialization roundtrip, report totals, and integration flows (dry-run, unchanged detection, hierarchy preservation).
 
