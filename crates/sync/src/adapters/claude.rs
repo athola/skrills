@@ -2,7 +2,9 @@
 
 use super::traits::{AgentAdapter, FieldSupport};
 use super::utils::{collect_module_files, hash_content, is_hidden_path, sanitize_name};
-use crate::common::{Command, ContentFormat, McpServer, McpTransport, ModuleFile, Preferences};
+use crate::common::{
+    Command, ContentFormat, McpServer, McpTransport, ModuleFile, PluginAsset, Preferences,
+};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use anyhow::Context;
@@ -129,6 +131,7 @@ impl AgentAdapter for ClaudeAdapter {
             hooks: true,
             agents: true,
             instructions: true,
+            plugin_assets: true,
         }
     }
 
@@ -1002,6 +1005,158 @@ impl AgentAdapter for ClaudeAdapter {
 
         Ok(report)
     }
+
+    fn read_plugin_assets(&self) -> Result<Vec<PluginAsset>> {
+        let cache_dir = self.root.join("plugins/cache");
+        if !cache_dir.exists() {
+            return Ok(vec![]);
+        }
+
+        // Directories already handled by other sync paths
+        const SYNCED_DIRS: &[&str] = &["skills", "commands", "agents"];
+        // Directories to skip (not needed at runtime)
+        const SKIP_DIRS: &[&str] = &[
+            "tests",
+            ".venv",
+            "__pycache__",
+            "node_modules",
+            ".git",
+            ".claude-plugin",
+            ".cursor-plugin",
+        ];
+
+        let mut assets = Vec::new();
+
+        // Walk: cache/<marketplace>/<plugin>/<version>/
+        for marketplace_entry in fs::read_dir(&cache_dir)? {
+            let marketplace_entry = marketplace_entry?;
+            let marketplace_path = marketplace_entry.path();
+            if !marketplace_path.is_dir() {
+                continue;
+            }
+            let publisher = marketplace_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+
+            for plugin_entry in fs::read_dir(&marketplace_path)? {
+                let plugin_entry = plugin_entry?;
+                let plugin_path = plugin_entry.path();
+                if !plugin_path.is_dir() {
+                    continue;
+                }
+                let plugin_name = plugin_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                // Find the latest version directory
+                let mut versions: Vec<_> = fs::read_dir(&plugin_path)?
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().is_dir())
+                    .collect();
+                versions.sort_by_key(|e| {
+                    e.metadata()
+                        .and_then(|m| m.modified())
+                        .unwrap_or(SystemTime::UNIX_EPOCH)
+                });
+                let version_entry = match versions.last() {
+                    Some(e) => e,
+                    None => continue,
+                };
+                let version_path = version_entry.path();
+                let version = version_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("0.0.0")
+                    .to_string();
+
+                // Walk the version directory collecting asset files
+                for entry in WalkDir::new(&version_path)
+                    .min_depth(1)
+                    .max_depth(10)
+                    .follow_links(false)
+                {
+                    let entry = match entry {
+                        Ok(e) => e,
+                        Err(_) => continue,
+                    };
+                    let path = entry.path();
+
+                    if !path.is_file() {
+                        continue;
+                    }
+
+                    let rel_path = match path.strip_prefix(&version_path) {
+                        Ok(p) => p,
+                        Err(_) => continue,
+                    };
+
+                    // Skip hidden files
+                    if is_hidden_path(rel_path) {
+                        continue;
+                    }
+
+                    // Check if this file is under a synced or skipped directory
+                    let top_component = rel_path
+                        .components()
+                        .next()
+                        .and_then(|c| c.as_os_str().to_str())
+                        .unwrap_or("");
+
+                    if SYNCED_DIRS.contains(&top_component) {
+                        continue; // Already synced by skills/commands/agents
+                    }
+                    if SKIP_DIRS.contains(&top_component) {
+                        continue;
+                    }
+                    // Also check any ancestor for skip dirs (e.g., nested __pycache__)
+                    if rel_path.components().any(|c| {
+                        c.as_os_str()
+                            .to_str()
+                            .is_some_and(|s| SKIP_DIRS.contains(&s))
+                    }) {
+                        continue;
+                    }
+
+                    let content = match fs::read(path) {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    };
+
+                    let executable = {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            fs::metadata(path)
+                                .map(|m| m.permissions().mode() & 0o111 != 0)
+                                .unwrap_or(false)
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            false
+                        }
+                    };
+
+                    let hash = hash_content(&content);
+
+                    assets.push(PluginAsset {
+                        plugin_name: plugin_name.clone(),
+                        publisher: publisher.clone(),
+                        version: version.clone(),
+                        relative_path: rel_path.to_path_buf(),
+                        content,
+                        hash,
+                        executable,
+                    });
+                }
+            }
+        }
+
+        Ok(assets)
+    }
 }
 
 #[cfg(test)]
@@ -1599,5 +1754,192 @@ mod tests {
         // Empty tool configs should not appear in JSON output
         assert!(server_json.get("allowedTools").is_none());
         assert!(server_json.get("disabledTools").is_none());
+    }
+
+    #[test]
+    fn read_plugin_assets_finds_scripts() {
+        let tmp = tempdir().unwrap();
+        let plugin_dir = tmp
+            .path()
+            .join("plugins/cache/market/myplugin/1.0.0/scripts");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        fs::write(plugin_dir.join("tool.py"), b"# tool\n").unwrap();
+
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let assets = adapter.read_plugin_assets().unwrap();
+
+        assert_eq!(assets.len(), 1, "Should find one asset: {:?}", assets);
+        assert_eq!(assets[0].plugin_name, "myplugin");
+        assert_eq!(assets[0].publisher, "market");
+        assert_eq!(assets[0].version, "1.0.0");
+        assert_eq!(
+            assets[0].relative_path,
+            std::path::PathBuf::from("scripts/tool.py")
+        );
+    }
+
+    #[test]
+    fn read_plugin_assets_excludes_skills_and_tests() {
+        let tmp = tempdir().unwrap();
+        let base = tmp.path().join("plugins/cache/market/plug/1.0.0");
+
+        // Script (should be included)
+        let scripts = base.join("scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        fs::write(scripts.join("run.py"), b"# run\n").unwrap();
+
+        // Skill (should be excluded)
+        let skills = base.join("skills/my-skill");
+        fs::create_dir_all(&skills).unwrap();
+        fs::write(skills.join("SKILL.md"), b"# Skill\n").unwrap();
+
+        // Tests (should be excluded)
+        let tests = base.join("tests");
+        fs::create_dir_all(&tests).unwrap();
+        fs::write(tests.join("test_run.py"), b"# test\n").unwrap();
+
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let assets = adapter.read_plugin_assets().unwrap();
+
+        assert_eq!(assets.len(), 1, "Should only find the script");
+        assert_eq!(
+            assets[0].relative_path,
+            std::path::PathBuf::from("scripts/run.py")
+        );
+    }
+
+    #[test]
+    fn read_plugin_assets_picks_latest_version() {
+        // GIVEN a plugin with two version directories
+        let tmp = tempdir().unwrap();
+        let old_ver = tmp.path().join("plugins/cache/market/plug/1.0.0/scripts");
+        let new_ver = tmp.path().join("plugins/cache/market/plug/2.0.0/scripts");
+        fs::create_dir_all(&old_ver).unwrap();
+        fs::create_dir_all(&new_ver).unwrap();
+        fs::write(old_ver.join("old.py"), b"# old\n").unwrap();
+
+        // Ensure 2.0.0 has a newer mtime by writing after 1.0.0
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        fs::write(new_ver.join("new.py"), b"# new\n").unwrap();
+
+        // WHEN reading plugin assets
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let assets = adapter.read_plugin_assets().unwrap();
+
+        // THEN only the latest version's files are returned
+        assert_eq!(assets.len(), 1, "Should only scan latest version");
+        assert_eq!(assets[0].version, "2.0.0");
+        assert_eq!(
+            assets[0].relative_path,
+            std::path::PathBuf::from("scripts/new.py")
+        );
+    }
+
+    #[test]
+    fn read_plugin_assets_skips_hidden_files() {
+        // GIVEN a plugin with a hidden file alongside a normal file
+        let tmp = tempdir().unwrap();
+        let scripts = tmp.path().join("plugins/cache/market/plug/1.0.0/scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        fs::write(scripts.join("visible.py"), b"# ok\n").unwrap();
+        fs::write(scripts.join(".hidden.py"), b"# hidden\n").unwrap();
+
+        // WHEN reading plugin assets
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let assets = adapter.read_plugin_assets().unwrap();
+
+        // THEN hidden files are excluded
+        assert_eq!(assets.len(), 1);
+        assert_eq!(
+            assets[0].relative_path,
+            std::path::PathBuf::from("scripts/visible.py")
+        );
+    }
+
+    #[test]
+    fn read_plugin_assets_includes_config_files() {
+        // GIVEN a plugin with non-script config files
+        let tmp = tempdir().unwrap();
+        let base = tmp.path().join("plugins/cache/market/plug/1.0.0");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("pyproject.toml"), b"[project]\n").unwrap();
+        fs::write(base.join("Makefile"), b"all:\n\techo ok\n").unwrap();
+
+        // WHEN reading plugin assets
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let assets = adapter.read_plugin_assets().unwrap();
+
+        // THEN config files at the plugin root are included
+        assert_eq!(assets.len(), 2);
+        let paths: HashSet<String> = assets
+            .iter()
+            .map(|a| a.relative_path.display().to_string())
+            .collect();
+        assert!(paths.contains("pyproject.toml"));
+        assert!(paths.contains("Makefile"));
+    }
+
+    #[test]
+    fn read_plugin_assets_empty_when_only_excluded_dirs() {
+        // GIVEN a plugin that only has excluded directories
+        let tmp = tempdir().unwrap();
+        let base = tmp.path().join("plugins/cache/market/plug/1.0.0");
+        let skills = base.join("skills/my-skill");
+        let tests = base.join("tests");
+        let commands = base.join("commands");
+        fs::create_dir_all(&skills).unwrap();
+        fs::create_dir_all(&tests).unwrap();
+        fs::create_dir_all(&commands).unwrap();
+        fs::write(skills.join("SKILL.md"), b"# Skill\n").unwrap();
+        fs::write(tests.join("test.py"), b"# test\n").unwrap();
+        fs::write(commands.join("cmd.md"), b"# cmd\n").unwrap();
+
+        // WHEN reading plugin assets
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let assets = adapter.read_plugin_assets().unwrap();
+
+        // THEN no assets are returned
+        assert!(
+            assets.is_empty(),
+            "All dirs are excluded, expected 0 assets"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_plugin_assets_detects_executable_permission() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // GIVEN a plugin with an executable script and a non-executable file
+        let tmp = tempdir().unwrap();
+        let scripts = tmp.path().join("plugins/cache/market/plug/1.0.0/scripts");
+        fs::create_dir_all(&scripts).unwrap();
+
+        let exec_path = scripts.join("run.sh");
+        fs::write(&exec_path, b"#!/bin/sh\necho ok\n").unwrap();
+        fs::set_permissions(&exec_path, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let data_path = scripts.join("config.json");
+        fs::write(&data_path, b"{}").unwrap();
+        fs::set_permissions(&data_path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        // WHEN reading plugin assets
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let assets = adapter.read_plugin_assets().unwrap();
+
+        // THEN the executable flag is set correctly
+        assert_eq!(assets.len(), 2);
+        let exec_asset = assets.iter().find(|a| a.relative_path.ends_with("run.sh"));
+        let data_asset = assets
+            .iter()
+            .find(|a| a.relative_path.ends_with("config.json"));
+        assert!(
+            exec_asset.unwrap().executable,
+            "run.sh should be marked executable"
+        );
+        assert!(
+            !data_asset.unwrap().executable,
+            "config.json should not be marked executable"
+        );
     }
 }

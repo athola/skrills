@@ -33,7 +33,7 @@ pub(crate) mod utils;
 mod tests;
 
 use super::traits::{AgentAdapter, FieldSupport};
-use crate::common::{Command, McpServer, Preferences};
+use crate::common::{Command, McpServer, PluginAsset, Preferences};
 use crate::report::WriteReport;
 use crate::Result;
 use std::collections::HashMap;
@@ -75,7 +75,8 @@ impl AgentAdapter for CursorAdapter {
             skills: true,
             hooks: true,
             agents: true,
-            instructions: true, // Rules (.mdc) mapped via instructions
+            instructions: true,  // Rules (.mdc) mapped via instructions
+            plugin_assets: true, // Cursor mirrors Claude's plugin cache
         }
     }
 
@@ -141,5 +142,80 @@ impl AgentAdapter for CursorAdapter {
 
     fn write_instructions(&self, instructions: &[Command]) -> Result<WriteReport> {
         rules::write_rules(&self.root, instructions)
+    }
+
+    fn write_plugin_assets(&self, assets: &[PluginAsset]) -> Result<WriteReport> {
+        use crate::report::SkipReason;
+        use std::fs;
+        use tracing::debug;
+
+        let mut report = WriteReport::default();
+
+        if assets.is_empty() {
+            return Ok(report);
+        }
+
+        let cache_dir = self.root.join("plugins").join("cache");
+        // Create cache dir upfront so is_path_contained can canonicalize it
+        fs::create_dir_all(&cache_dir)?;
+
+        for asset in assets {
+            // Mirror Claude's cache structure: plugins/cache/<publisher>/<plugin>/<version>/
+            let target_dir = cache_dir
+                .join(&asset.publisher)
+                .join(&asset.plugin_name)
+                .join(&asset.version);
+            let target_path = target_dir.join(&asset.relative_path);
+
+            // Path containment check
+            if !crate::adapters::utils::is_path_contained(&target_path, &cache_dir) {
+                debug!(
+                    path = %asset.relative_path.display(),
+                    "Skipping plugin asset with path outside cache directory"
+                );
+                continue;
+            }
+
+            // Check if unchanged
+            if target_path.exists() {
+                let existing = fs::read(&target_path).unwrap_or_default();
+                if crate::adapters::utils::hash_content(&existing) == asset.hash {
+                    report.skipped.push(SkipReason::Unchanged {
+                        item: format!(
+                            "{}/{}:{}",
+                            asset.plugin_name,
+                            asset.version,
+                            asset.relative_path.display()
+                        ),
+                    });
+                    continue;
+                }
+            }
+
+            // Ensure parent directory exists
+            if let Some(parent) = target_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            // Write the file
+            fs::write(&target_path, &asset.content)?;
+
+            // Preserve executable permissions
+            #[cfg(unix)]
+            if asset.executable {
+                use std::os::unix::fs::PermissionsExt;
+                let perms = std::fs::Permissions::from_mode(0o755);
+                fs::set_permissions(&target_path, perms)?;
+            }
+
+            debug!(
+                plugin = %asset.plugin_name,
+                path = %asset.relative_path.display(),
+                "Wrote plugin asset to Cursor"
+            );
+            report.written += 1;
+        }
+
+        Ok(report)
     }
 }

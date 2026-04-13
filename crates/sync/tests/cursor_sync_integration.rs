@@ -691,3 +691,329 @@ fn is_valid_platform_recognizes_all() {
     assert!(!is_valid_platform("vscode"));
     assert!(!is_valid_platform(""));
 }
+
+// ========================================================================
+// Plugin Asset Sync Tests
+// ========================================================================
+
+#[test]
+fn plugin_assets_synced_from_claude_to_cursor() {
+    let setup = CursorSyncTestSetup::new().unwrap();
+
+    // Create a mock plugin cache structure in Claude
+    let plugin_dir = setup
+        .claude_dir
+        .path()
+        .join("plugins/cache/claude-night-market/abstract/1.8.3");
+
+    // Create scripts directory with Python files
+    let scripts_dir = plugin_dir.join("scripts");
+    fs::create_dir_all(&scripts_dir).unwrap();
+    fs::write(
+        scripts_dir.join("makefile_dogfooder.py"),
+        b"#!/usr/bin/env python3\nprint('dogfood')\n",
+    )
+    .unwrap();
+    fs::write(
+        scripts_dir.join("validate_plugin.py"),
+        b"#!/usr/bin/env python3\nimport sys\n",
+    )
+    .unwrap();
+
+    // Create hooks directory with Python handlers
+    let hooks_dir = plugin_dir.join("hooks");
+    fs::create_dir_all(&hooks_dir).unwrap();
+    fs::write(
+        hooks_dir.join("session_start.py"),
+        b"#!/usr/bin/env python3\nprint('session started')\n",
+    )
+    .unwrap();
+
+    // Create bin directory
+    let bin_dir = plugin_dir.join("bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    fs::write(bin_dir.join("fallback.py"), b"# fallback script\n").unwrap();
+
+    // Create src directory (Python package)
+    let src_dir = plugin_dir.join("src/abstract");
+    fs::create_dir_all(&src_dir).unwrap();
+    fs::write(src_dir.join("__init__.py"), b"").unwrap();
+    fs::write(src_dir.join("utils.py"), b"def helper(): pass\n").unwrap();
+
+    // Also create directories that SHOULD be excluded
+    let skills_dir = plugin_dir.join("skills/my-skill");
+    fs::create_dir_all(&skills_dir).unwrap();
+    fs::write(skills_dir.join("SKILL.md"), b"# My Skill\n").unwrap();
+
+    let tests_dir = plugin_dir.join("tests");
+    fs::create_dir_all(&tests_dir).unwrap();
+    fs::write(tests_dir.join("test_something.py"), b"# test\n").unwrap();
+
+    let venv_dir = plugin_dir.join(".venv/lib");
+    fs::create_dir_all(&venv_dir).unwrap();
+    fs::write(venv_dir.join("site.py"), b"# venv\n").unwrap();
+
+    let pycache_dir = plugin_dir.join("scripts/__pycache__");
+    fs::create_dir_all(&pycache_dir).unwrap();
+    fs::write(pycache_dir.join("foo.pyc"), b"\x00\x00").unwrap();
+
+    // Create .claude-plugin metadata (should be excluded)
+    let meta_dir = plugin_dir.join(".claude-plugin");
+    fs::create_dir_all(&meta_dir).unwrap();
+    fs::write(meta_dir.join("plugin.json"), b"{}").unwrap();
+
+    // Sync with plugin assets enabled
+    let source = ClaudeAdapter::with_root(setup.claude_dir.path().to_path_buf());
+    let target = CursorAdapter::with_root(setup.cursor_dir.path().to_path_buf());
+    let orch = SyncOrchestrator::new(source, target);
+
+    let params = SyncParams {
+        sync_skills: false,
+        sync_commands: false,
+        sync_mcp_servers: false,
+        sync_preferences: false,
+        sync_agents: false,
+        sync_hooks: false,
+        sync_instructions: false,
+        sync_plugin_assets: true,
+        ..Default::default()
+    };
+
+    let report = orch.sync(&params).unwrap();
+    assert!(report.success);
+
+    // Verify scripts were synced
+    let cursor_plugin = setup
+        .cursor_dir
+        .path()
+        .join("plugins/cache/claude-night-market/abstract/1.8.3");
+
+    assert!(
+        cursor_plugin.join("scripts/makefile_dogfooder.py").exists(),
+        "makefile_dogfooder.py should be synced"
+    );
+    assert!(
+        cursor_plugin.join("scripts/validate_plugin.py").exists(),
+        "validate_plugin.py should be synced"
+    );
+    assert!(
+        cursor_plugin.join("hooks/session_start.py").exists(),
+        "hook handler should be synced"
+    );
+    assert!(
+        cursor_plugin.join("bin/fallback.py").exists(),
+        "bin script should be synced"
+    );
+    assert!(
+        cursor_plugin.join("src/abstract/__init__.py").exists(),
+        "Python package should be synced"
+    );
+    assert!(
+        cursor_plugin.join("src/abstract/utils.py").exists(),
+        "Python source should be synced"
+    );
+
+    // Verify content is correct
+    let content = fs::read_to_string(cursor_plugin.join("scripts/makefile_dogfooder.py")).unwrap();
+    assert!(content.contains("print('dogfood')"));
+
+    // Verify excluded directories were NOT synced
+    assert!(
+        !cursor_plugin.join("skills").exists(),
+        "skills/ should not be synced as plugin asset"
+    );
+    assert!(
+        !cursor_plugin.join("tests").exists(),
+        "tests/ should not be synced"
+    );
+    assert!(
+        !cursor_plugin.join(".venv").exists(),
+        ".venv/ should not be synced"
+    );
+    assert!(
+        !cursor_plugin.join("scripts/__pycache__").exists(),
+        "__pycache__/ should not be synced"
+    );
+    assert!(
+        !cursor_plugin.join(".claude-plugin").exists(),
+        ".claude-plugin/ should not be synced"
+    );
+
+    // Verify asset count (should have 6 files synced)
+    assert!(
+        report.plugin_assets.written >= 6,
+        "Expected at least 6 plugin assets, got {}",
+        report.plugin_assets.written
+    );
+}
+
+#[test]
+fn plugin_assets_skipped_when_disabled() {
+    let setup = CursorSyncTestSetup::new().unwrap();
+
+    // Create a simple plugin with a script
+    let plugin_dir = setup
+        .claude_dir
+        .path()
+        .join("plugins/cache/market/plugin/1.0.0/scripts");
+    fs::create_dir_all(&plugin_dir).unwrap();
+    fs::write(plugin_dir.join("tool.py"), b"# tool\n").unwrap();
+
+    let source = ClaudeAdapter::with_root(setup.claude_dir.path().to_path_buf());
+    let target = CursorAdapter::with_root(setup.cursor_dir.path().to_path_buf());
+    let orch = SyncOrchestrator::new(source, target);
+
+    let params = SyncParams {
+        sync_plugin_assets: false,
+        ..Default::default()
+    };
+
+    let report = orch.sync(&params).unwrap();
+    assert!(report.success);
+    assert_eq!(
+        report.plugin_assets.written, 0,
+        "No plugin assets should be synced when disabled"
+    );
+}
+
+#[test]
+fn plugin_assets_unchanged_files_skipped() {
+    let setup = CursorSyncTestSetup::new().unwrap();
+
+    // Create plugin with a script
+    let plugin_dir = setup
+        .claude_dir
+        .path()
+        .join("plugins/cache/market/plugin/1.0.0/scripts");
+    fs::create_dir_all(&plugin_dir).unwrap();
+    fs::write(plugin_dir.join("tool.py"), b"# tool\n").unwrap();
+
+    let source = ClaudeAdapter::with_root(setup.claude_dir.path().to_path_buf());
+    let target = CursorAdapter::with_root(setup.cursor_dir.path().to_path_buf());
+
+    let params = SyncParams {
+        sync_skills: false,
+        sync_commands: false,
+        sync_mcp_servers: false,
+        sync_preferences: false,
+        sync_agents: false,
+        sync_hooks: false,
+        sync_instructions: false,
+        sync_plugin_assets: true,
+        ..Default::default()
+    };
+
+    // First sync: should write
+    let orch = SyncOrchestrator::new(source, target);
+    let report1 = orch.sync(&params).unwrap();
+    assert_eq!(report1.plugin_assets.written, 1);
+
+    // Second sync: same content, should skip
+    let source2 = ClaudeAdapter::with_root(setup.claude_dir.path().to_path_buf());
+    let target2 = CursorAdapter::with_root(setup.cursor_dir.path().to_path_buf());
+    let orch2 = SyncOrchestrator::new(source2, target2);
+    let report2 = orch2.sync(&params).unwrap();
+    assert_eq!(
+        report2.plugin_assets.written, 0,
+        "Unchanged files should be skipped"
+    );
+    assert_eq!(report2.plugin_assets.skipped.len(), 1);
+}
+
+#[test]
+fn plugin_assets_empty_cache_returns_no_assets() {
+    let setup = CursorSyncTestSetup::new().unwrap();
+
+    // No plugin cache exists
+    let source = ClaudeAdapter::with_root(setup.claude_dir.path().to_path_buf());
+    let assets = source.read_plugin_assets().unwrap();
+    assert!(assets.is_empty());
+}
+
+#[test]
+fn plugin_assets_preserves_directory_hierarchy() {
+    let setup = CursorSyncTestSetup::new().unwrap();
+
+    // Create nested directory structure
+    let plugin_dir = setup
+        .claude_dir
+        .path()
+        .join("plugins/cache/market/plugin/2.0.0");
+    let nested = plugin_dir.join("scripts/dogfooder");
+    fs::create_dir_all(&nested).unwrap();
+    fs::write(nested.join("validator.py"), b"# validator\n").unwrap();
+    fs::write(nested.join("parser.py"), b"# parser\n").unwrap();
+    fs::write(nested.join("__init__.py"), b"").unwrap();
+
+    let source = ClaudeAdapter::with_root(setup.claude_dir.path().to_path_buf());
+    let target = CursorAdapter::with_root(setup.cursor_dir.path().to_path_buf());
+    let orch = SyncOrchestrator::new(source, target);
+
+    let params = SyncParams {
+        sync_skills: false,
+        sync_commands: false,
+        sync_mcp_servers: false,
+        sync_preferences: false,
+        sync_agents: false,
+        sync_hooks: false,
+        sync_instructions: false,
+        sync_plugin_assets: true,
+        ..Default::default()
+    };
+
+    let report = orch.sync(&params).unwrap();
+    assert!(report.success);
+
+    let cursor_plugin = setup
+        .cursor_dir
+        .path()
+        .join("plugins/cache/market/plugin/2.0.0");
+
+    assert!(cursor_plugin
+        .join("scripts/dogfooder/validator.py")
+        .exists());
+    assert!(cursor_plugin.join("scripts/dogfooder/parser.py").exists());
+    assert!(cursor_plugin.join("scripts/dogfooder/__init__.py").exists());
+}
+
+#[test]
+fn plugin_assets_dry_run_writes_nothing() {
+    let setup = CursorSyncTestSetup::new().unwrap();
+
+    let plugin_dir = setup
+        .claude_dir
+        .path()
+        .join("plugins/cache/market/plugin/1.0.0/scripts");
+    fs::create_dir_all(&plugin_dir).unwrap();
+    fs::write(plugin_dir.join("tool.py"), b"# tool\n").unwrap();
+
+    let source = ClaudeAdapter::with_root(setup.claude_dir.path().to_path_buf());
+    let target = CursorAdapter::with_root(setup.cursor_dir.path().to_path_buf());
+    let orch = SyncOrchestrator::new(source, target);
+
+    let params = SyncParams {
+        dry_run: true,
+        sync_skills: false,
+        sync_commands: false,
+        sync_mcp_servers: false,
+        sync_preferences: false,
+        sync_agents: false,
+        sync_hooks: false,
+        sync_instructions: false,
+        sync_plugin_assets: true,
+        ..Default::default()
+    };
+
+    let report = orch.sync(&params).unwrap();
+    assert_eq!(
+        report.plugin_assets.written, 1,
+        "Dry run should report count"
+    );
+
+    // Nothing should be on disk
+    let cursor_plugin = setup
+        .cursor_dir
+        .path()
+        .join("plugins/cache/market/plugin/1.0.0");
+    assert!(!cursor_plugin.exists(), "Dry run should not create files");
+}

@@ -1077,6 +1077,7 @@ impl SkillService {
             sync_skills: true,
             sync_agents: true,
             sync_instructions: true,
+            sync_plugin_assets: true, // Sync plugin scripts/binaries
             ..Default::default()
         };
 

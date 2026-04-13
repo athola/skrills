@@ -82,9 +82,10 @@ impl AgentAdapter for CopilotAdapter {
             mcp_servers: true,
             preferences: true,
             skills: true,
-            hooks: false,       // Copilot doesn't support hooks
-            agents: true,       // Copilot supports custom agents in ~/.copilot/agents/
-            instructions: true, // Copilot supports *.instructions.md files
+            hooks: false,         // Copilot doesn't support hooks
+            agents: true,         // Copilot supports custom agents in ~/.copilot/agents/
+            instructions: true,   // Copilot supports *.instructions.md files
+            plugin_assets: false, // Copilot doesn't support plugin assets
         }
     }
 

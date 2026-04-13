@@ -5,6 +5,30 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+/// A plugin asset file (script, binary, library) that skills/hooks depend on.
+///
+/// These are files within a plugin directory that aren't handled by other
+/// sync artifact types (skills, commands, agents, hooks config). They include
+/// Python scripts, shell scripts, binary helpers, and source packages that
+/// skills and hooks reference at runtime.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PluginAsset {
+    /// Plugin identifier (e.g., "abstract")
+    pub plugin_name: String,
+    /// Marketplace/publisher (e.g., "claude-night-market")
+    pub publisher: String,
+    /// Version string (e.g., "1.8.3")
+    pub version: String,
+    /// Relative path within the plugin directory (e.g., "scripts/makefile_dogfooder.py")
+    pub relative_path: PathBuf,
+    /// File content as bytes
+    pub content: Vec<u8>,
+    /// SHA256 hash for change detection
+    pub hash: String,
+    /// Whether the file should be executable
+    pub executable: bool,
+}
+
 /// A companion file within a skill directory (e.g., helpers, sub-modules).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModuleFile {
@@ -142,6 +166,7 @@ pub struct CommonConfig {
     pub hooks: Vec<Command>,
     pub agents: Vec<Command>,
     pub instructions: Vec<Command>,
+    pub plugin_assets: Vec<PluginAsset>,
 }
 
 #[cfg(test)]
@@ -179,5 +204,32 @@ mod tests {
             a.hash, b.hash,
             "different content should produce different hash"
         );
+    }
+
+    #[test]
+    fn plugin_asset_serializes_roundtrip() {
+        let asset = PluginAsset {
+            plugin_name: "abstract".to_string(),
+            publisher: "claude-night-market".to_string(),
+            version: "1.8.3".to_string(),
+            relative_path: PathBuf::from("scripts/makefile_dogfooder.py"),
+            content: b"#!/usr/bin/env python3\nprint('hello')\n".to_vec(),
+            hash: "abc123".to_string(),
+            executable: true,
+        };
+
+        let json = serde_json::to_string(&asset).unwrap();
+        let restored: PluginAsset = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.plugin_name, "abstract");
+        assert_eq!(restored.publisher, "claude-night-market");
+        assert_eq!(restored.version, "1.8.3");
+        assert_eq!(
+            restored.relative_path,
+            PathBuf::from("scripts/makefile_dogfooder.py")
+        );
+        assert_eq!(restored.content, asset.content);
+        assert_eq!(restored.hash, "abc123");
+        assert!(restored.executable);
     }
 }

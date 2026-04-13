@@ -137,6 +137,7 @@ mod skip_existing_commands_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
@@ -185,6 +186,7 @@ mod skip_existing_commands_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
@@ -255,6 +257,7 @@ mod skip_existing_commands_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
@@ -310,6 +313,7 @@ mod skip_existing_commands_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
@@ -370,6 +374,7 @@ mod skip_existing_commands_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
@@ -415,6 +420,7 @@ mod skip_existing_commands_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
@@ -465,6 +471,7 @@ mod skip_existing_commands_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         // Sync from Codex (new source) to Claude (new target)
@@ -521,6 +528,7 @@ mod skip_existing_commands_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
@@ -574,6 +582,7 @@ mod skip_existing_commands_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
