@@ -78,6 +78,9 @@ pub struct SyncParams {
     /// Include marketplace content (e.g. uninstalled plugins)
     #[serde(default)]
     pub include_marketplace: bool,
+    /// Sync plugin assets (scripts, binaries, libraries that skills/hooks depend on)
+    #[serde(default = "default_true")]
+    pub sync_plugin_assets: bool,
 }
 
 impl Default for SyncParams {
@@ -96,6 +99,7 @@ impl Default for SyncParams {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: true,
         }
     }
 }
@@ -376,6 +380,23 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 || self.target.read_instructions(),
                 |items| self.target.write_instructions(items),
             )?;
+        }
+
+        // Sync plugin assets (scripts, binaries, libraries)
+        if params.sync_plugin_assets {
+            if !target_support.plugin_assets {
+                tracing::debug!(
+                    target = %self.target.name(),
+                    "Target does not natively support plugin assets; skipping"
+                );
+            } else {
+                let assets = self.source.read_plugin_assets()?;
+                if !params.dry_run {
+                    report.plugin_assets = self.target.write_plugin_assets(&assets)?;
+                } else {
+                    report.plugin_assets.written = assets.len();
+                }
+            }
         }
 
         report.success = true;

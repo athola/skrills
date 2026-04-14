@@ -105,6 +105,7 @@ pub struct SyncReport {
     pub agents: WriteReport,
     pub hooks: WriteReport,
     pub instructions: WriteReport,
+    pub plugin_assets: WriteReport,
     /// Overall success status
     pub success: bool,
     /// Summary message
@@ -129,6 +130,7 @@ impl SyncReport {
             + self.agents.written
             + self.hooks.written
             + self.instructions.written
+            + self.plugin_assets.written
     }
 
     /// Returns total items skipped across all types.
@@ -140,6 +142,7 @@ impl SyncReport {
             + self.agents.skipped.len()
             + self.hooks.skipped.len()
             + self.instructions.skipped.len()
+            + self.plugin_assets.skipped.len()
     }
 
     /// Generates a formatted summary for display.
@@ -166,12 +169,16 @@ impl SyncReport {
         out.push_str(&line("Agents:", &self.agents));
         out.push_str(&line("Hooks:", &self.hooks));
         out.push_str(&line("Instructions:", &self.instructions));
+        if self.plugin_assets.written > 0 || !self.plugin_assets.skipped.is_empty() {
+            out.push_str(&line("Plugin Assets:", &self.plugin_assets));
+        }
 
         let total_dups = self.skills.duplicates
             + self.commands.duplicates
             + self.agents.duplicates
             + self.hooks.duplicates
-            + self.instructions.duplicates;
+            + self.instructions.duplicates
+            + self.plugin_assets.duplicates;
         if total_dups > 0 {
             out.push_str(&format!(
                 "\n  ⚠ {} duplicate name(s) detected — first occurrence kept, others dropped.\n    Run with RUST_LOG=warn for details.\n",
@@ -530,6 +537,61 @@ mod tests {
             assert_eq!(restored.skills.written, 5);
             assert!(restored.success);
             assert_eq!(restored.summary, "Test summary");
+        }
+    }
+
+    // ==========================================
+    // Plugin Assets in Report Tests
+    // ==========================================
+
+    mod plugin_assets_report {
+        use super::*;
+
+        #[test]
+        fn given_plugin_assets_when_total_synced_then_included_in_sum() {
+            let mut report = SyncReport::new();
+            report.skills.written = 2;
+            report.plugin_assets.written = 5;
+
+            assert_eq!(report.total_synced(), 7);
+        }
+
+        #[test]
+        fn given_plugin_assets_skipped_when_total_skipped_then_included_in_sum() {
+            let mut report = SyncReport::new();
+            report.plugin_assets.skipped = vec![
+                SkipReason::Unchanged {
+                    item: "a".to_string(),
+                },
+                SkipReason::Unchanged {
+                    item: "b".to_string(),
+                },
+            ];
+
+            assert_eq!(report.total_skipped(), 2);
+        }
+
+        #[test]
+        fn given_plugin_assets_written_when_format_summary_then_line_present() {
+            let mut report = SyncReport::new();
+            report.plugin_assets.written = 10;
+
+            let summary = report.format_summary("claude", "cursor");
+            assert!(
+                summary.contains("Plugin Assets"),
+                "Summary should contain Plugin Assets line when there are assets"
+            );
+            assert!(summary.contains("10 synced"));
+        }
+
+        #[test]
+        fn given_no_plugin_assets_when_format_summary_then_line_omitted() {
+            let report = SyncReport::new();
+            let summary = report.format_summary("claude", "cursor");
+            assert!(
+                !summary.contains("Plugin Assets"),
+                "Summary should omit Plugin Assets line when empty"
+            );
         }
     }
 }

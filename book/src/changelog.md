@@ -1,5 +1,13 @@
 # Changelog Highlights
 
+## 0.7.6 (2026-04-12)
+
+- **NEW: Plugin Assets Sync**: Cursor sync now mirrors plugin runtime scripts, binaries, and source packages from `~/.claude/plugins/cache/` to `~/.cursor/plugins/cache/`. Preserves directory hierarchy so skills can reference companion scripts at the same relative paths.
+- **NEW: `PluginAsset` Type**: Sync schema type with publisher, plugin name, version, relative path, content, hash, and executable permission tracking.
+- **NEW: Claude Adapter `read_plugin_assets()`**: Walks the plugin cache collecting all files except those handled by other sync paths (`skills/`, `commands/`, `agents/`) and runtime artifacts.
+- **NEW: Cursor Adapter `write_plugin_assets()`**: Writes plugin assets with hash-based change detection and executable permission preservation.
+- **Testing**: 18 new tests covering plugin asset read/write, exclusion rules, version picking, executable detection, and integration flows.
+
 ## 0.7.5 (2026-04-07)
 
 - **Refactor: Research Handlers**: Serde-based enum parsing, module-level imports, and hardened error handling for research MCP tools.

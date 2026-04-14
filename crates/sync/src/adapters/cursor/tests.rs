@@ -779,3 +779,318 @@ fn mcp_empty_tool_configs_omitted_from_json() {
     assert!(server_json.get("allowedTools").is_none());
     assert!(server_json.get("disabledTools").is_none());
 }
+
+// --- MCP edge cases ---
+
+#[test]
+fn mcp_http_transport_detected() {
+    let tmp = TempDir::new().unwrap();
+    let mcp_path = tmp.path().join("mcp.json");
+    std::fs::write(
+        &mcp_path,
+        r#"{
+        "mcpServers": {
+            "remote-server": {
+                "url": "https://mcp.example.com/v1",
+                "headers": {"Authorization": "Bearer tok"}
+            }
+        }
+    }"#,
+    )
+    .unwrap();
+
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let servers = adapter.read_mcp_servers().unwrap();
+    let server = servers.get("remote-server").unwrap();
+    assert_eq!(server.transport, McpTransport::Http);
+    assert_eq!(server.url.as_deref(), Some("https://mcp.example.com/v1"));
+    assert!(
+        server.command.is_empty(),
+        "HTTP server should have no command"
+    );
+}
+
+#[test]
+fn mcp_skips_entries_without_command_or_url() {
+    let tmp = TempDir::new().unwrap();
+    let mcp_path = tmp.path().join("mcp.json");
+    std::fs::write(
+        &mcp_path,
+        r#"{
+        "mcpServers": {
+            "broken": {"args": ["--verbose"]},
+            "valid": {"command": "/usr/bin/server"}
+        }
+    }"#,
+    )
+    .unwrap();
+
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let servers = adapter.read_mcp_servers().unwrap();
+    assert_eq!(servers.len(), 1, "broken entry should be skipped");
+    assert!(servers.contains_key("valid"));
+}
+
+#[test]
+fn mcp_disabled_server_preserved() {
+    let tmp = TempDir::new().unwrap();
+    let mcp_path = tmp.path().join("mcp.json");
+    std::fs::write(
+        &mcp_path,
+        r#"{
+        "mcpServers": {
+            "dormant": {
+                "command": "/usr/bin/server",
+                "enabled": false
+            }
+        }
+    }"#,
+    )
+    .unwrap();
+
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let servers = adapter.read_mcp_servers().unwrap();
+    let server = servers.get("dormant").unwrap();
+    assert!(!server.enabled, "disabled flag should be preserved");
+}
+
+#[test]
+fn mcp_skip_unchanged_on_second_write() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let mut servers = HashMap::new();
+    servers.insert(
+        "stable".to_string(),
+        McpServer {
+            name: "stable".to_string(),
+            transport: McpTransport::Stdio,
+            command: "/usr/bin/server".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            url: None,
+            headers: None,
+            enabled: true,
+            allowed_tools: vec![],
+            disabled_tools: vec![],
+        },
+    );
+
+    let first = adapter.write_mcp_servers(&servers).unwrap();
+    assert_eq!(first.written, 1);
+
+    let second = adapter.write_mcp_servers(&servers).unwrap();
+    assert_eq!(second.written, 0, "unchanged MCP config should be skipped");
+    assert_eq!(second.skipped.len(), 1);
+}
+
+#[test]
+fn mcp_empty_servers_returns_empty_report() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let servers = HashMap::new();
+    let report = adapter.write_mcp_servers(&servers).unwrap();
+    assert_eq!(report.written, 0);
+    assert!(report.skipped.is_empty());
+}
+
+#[test]
+fn mcp_nonexistent_file_returns_empty() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let servers = adapter.read_mcp_servers().unwrap();
+    assert!(servers.is_empty());
+}
+
+// --- Commands edge cases ---
+
+#[test]
+fn commands_hidden_files_skipped() {
+    let tmp = TempDir::new().unwrap();
+    let cmd_dir = tmp.path().join("commands");
+    std::fs::create_dir_all(&cmd_dir).unwrap();
+
+    std::fs::write(cmd_dir.join("visible.md"), "# Visible\n").unwrap();
+    std::fs::write(cmd_dir.join(".hidden.md"), "# Hidden\n").unwrap();
+
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let commands = adapter.read_commands(false).unwrap();
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].name, "visible");
+}
+
+#[test]
+fn commands_non_md_files_skipped() {
+    let tmp = TempDir::new().unwrap();
+    let cmd_dir = tmp.path().join("commands");
+    std::fs::create_dir_all(&cmd_dir).unwrap();
+
+    std::fs::write(cmd_dir.join("real.md"), "# Real\n").unwrap();
+    std::fs::write(cmd_dir.join("config.json"), "{}").unwrap();
+    std::fs::write(cmd_dir.join("script.sh"), "#!/bin/bash\n").unwrap();
+
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let commands = adapter.read_commands(false).unwrap();
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].name, "real");
+}
+
+#[test]
+fn commands_empty_list_writes_nothing() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let report = adapter.write_commands(&[]).unwrap();
+    assert_eq!(report.written, 0);
+    // commands dir should not be created for empty writes
+    assert!(!tmp.path().join("commands").exists());
+}
+
+#[test]
+fn commands_subdirectories_ignored() {
+    let tmp = TempDir::new().unwrap();
+    let cmd_dir = tmp.path().join("commands");
+    std::fs::create_dir_all(cmd_dir.join("subdir")).unwrap();
+    std::fs::write(cmd_dir.join("subdir/nested.md"), "# Nested\n").unwrap();
+    std::fs::write(cmd_dir.join("top-level.md"), "# Top Level\n").unwrap();
+
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let commands = adapter.read_commands(false).unwrap();
+    assert_eq!(commands.len(), 1, "subdirectories should be skipped");
+    assert_eq!(commands[0].name, "top-level");
+}
+
+#[test]
+fn commands_frontmatter_stripped_on_write() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let content = "---\nallowed-tools: [Read, Write]\ndescription: Test command\n---\n\n# Do Thing\n\nCommand body.\n";
+    let commands = vec![make_command("with-fm", content)];
+    adapter.write_commands(&commands).unwrap();
+
+    let read_back = adapter.read_commands(false).unwrap();
+    let body = String::from_utf8_lossy(&read_back[0].content);
+    assert!(
+        !body.contains("---"),
+        "Frontmatter should be stripped from commands"
+    );
+    assert!(body.contains("# Do Thing"), "Body should be preserved");
+}
+
+// --- Paths unit tests ---
+
+#[test]
+fn paths_all_resolve_under_root() {
+    let root = std::path::Path::new("/tmp/fake-cursor");
+    assert_eq!(paths::skills_dir(root), root.join("skills"));
+    assert_eq!(paths::commands_dir(root), root.join("commands"));
+    assert_eq!(paths::agents_dir(root), root.join("agents"));
+    assert_eq!(paths::rules_dir(root), root.join("rules"));
+    assert_eq!(paths::hooks_path(root), root.join("hooks.json"));
+    assert_eq!(paths::mcp_config_path(root), root.join("mcp.json"));
+}
+
+// --- Skills edge cases ---
+
+#[test]
+fn skills_empty_list_writes_nothing() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let report = adapter.write_skills(&[]).unwrap();
+    assert_eq!(report.written, 0);
+    assert!(!tmp.path().join("skills").exists());
+}
+
+#[test]
+fn skills_directories_without_skill_md_skipped() {
+    let tmp = TempDir::new().unwrap();
+    let skills_dir = tmp.path().join("skills");
+
+    // Directory with SKILL.md
+    std::fs::create_dir_all(skills_dir.join("valid-skill")).unwrap();
+    std::fs::write(skills_dir.join("valid-skill/SKILL.md"), "# Valid Skill\n").unwrap();
+
+    // Directory without SKILL.md (just loose files)
+    std::fs::create_dir_all(skills_dir.join("no-skill-md")).unwrap();
+    std::fs::write(skills_dir.join("no-skill-md/README.md"), "# Not a skill\n").unwrap();
+
+    // Regular file at skills root (not a directory)
+    std::fs::write(skills_dir.join("stray-file.md"), "# Stray\n").unwrap();
+
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let skills = adapter.read_skills().unwrap();
+    assert_eq!(
+        skills.len(),
+        1,
+        "only directories with SKILL.md should be read"
+    );
+    assert_eq!(skills[0].name, "valid-skill");
+}
+
+#[test]
+fn skills_model_hint_injected_as_comment() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let content =
+        "---\nname: smart-skill\nmodel_hint: opus\n---\n\n# Smart Skill\n\nDo things smartly.\n";
+    let skills = vec![make_command("smart-skill", content)];
+    adapter.write_skills(&skills).unwrap();
+
+    let read_back = adapter.read_skills().unwrap();
+    let body = String::from_utf8_lossy(&read_back[0].content);
+    assert!(
+        body.contains("<!-- model_hint: opus -->"),
+        "model_hint should be injected as HTML comment, got: {}",
+        body
+    );
+}
+
+// --- Plugin Asset Security Tests ---
+
+#[test]
+fn plugin_assets_path_traversal_blocked() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let malicious = PluginAsset::new(
+        "evil-plugin".to_string(),
+        "shady-market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from("../../etc/passwd"),
+        b"root:x:0:0:root:/root:/bin/bash\n".to_vec(),
+        false,
+    );
+    let normal = PluginAsset::new(
+        "good-plugin".to_string(),
+        "legit-market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from("scripts/helper.py"),
+        b"# helper\n".to_vec(),
+        false,
+    );
+
+    let report = adapter.write_plugin_assets(&[malicious, normal]).unwrap();
+
+    // The traversal asset should be blocked (counted as skipped), normal one written
+    assert_eq!(report.written, 1, "Only the safe asset should be written");
+    assert_eq!(
+        report.skipped.len(),
+        1,
+        "The traversal asset should be skipped"
+    );
+
+    // Verify the malicious file was NOT created outside the cache
+    assert!(
+        !tmp.path().join("etc/passwd").exists(),
+        "Path traversal must not create files outside cache"
+    );
+
+    // Verify the normal file WAS created
+    let expected = tmp
+        .path()
+        .join("plugins/cache/legit-market/good-plugin/1.0.0/scripts/helper.py");
+    assert!(expected.exists(), "Normal asset should be written");
+}

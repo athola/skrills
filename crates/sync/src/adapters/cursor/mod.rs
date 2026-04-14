@@ -12,9 +12,10 @@
 //!   `alwaysApply`) in `.cursor/rules/`. No other adapter writes this format.
 //! - **Hooks**: Cursor supports 18+ lifecycle events (camelCase) vs Claude's 8
 //!   (PascalCase). Event name mapping is handled in the hooks module.
-//! - **Skills**: Cursor skills have no frontmatter — Claude frontmatter is stripped
-//!   on write and absent on read. **This is lossy**: a Claude→Cursor→Claude
-//!   roundtrip loses all frontmatter metadata (name, description, dependencies).
+//! - **Skills**: Cursor skills have no YAML frontmatter — Claude frontmatter is stripped
+//!   on write, but `description` is preserved as a plain-text first line and `model_hint`
+//!   as an HTML comment. **Partially lossy**: a Claude→Cursor→Claude roundtrip loses
+//!   most frontmatter metadata (name, dependencies, version, tags).
 //! - **Agents**: Field translation: `background` ↔ `is_background`, model name
 //!   mapping, `tools`/`isolation` dropped (Cursor-only: `readonly`).
 //! - **Commands**: Near-identical to Claude format (`.cursor/commands/*.md`).
@@ -33,7 +34,7 @@ pub(crate) mod utils;
 mod tests;
 
 use super::traits::{AgentAdapter, FieldSupport};
-use crate::common::{Command, McpServer, Preferences};
+use crate::common::{Command, McpServer, PluginAsset, Preferences};
 use crate::report::WriteReport;
 use crate::Result;
 use std::collections::HashMap;
@@ -75,7 +76,8 @@ impl AgentAdapter for CursorAdapter {
             skills: true,
             hooks: true,
             agents: true,
-            instructions: true, // Rules (.mdc) mapped via instructions
+            instructions: true,  // Rules (.mdc) mapped via instructions
+            plugin_assets: true, // Cursor mirrors Claude's plugin cache
         }
     }
 
@@ -141,5 +143,99 @@ impl AgentAdapter for CursorAdapter {
 
     fn write_instructions(&self, instructions: &[Command]) -> Result<WriteReport> {
         rules::write_rules(&self.root, instructions)
+    }
+
+    fn write_plugin_assets(&self, assets: &[PluginAsset]) -> Result<WriteReport> {
+        use crate::report::SkipReason;
+        use std::fs;
+        use tracing::debug;
+
+        let mut report = WriteReport::default();
+
+        if assets.is_empty() {
+            return Ok(report);
+        }
+
+        let cache_dir = self.root.join("plugins").join("cache");
+        // Create cache dir upfront so is_path_contained can canonicalize it
+        fs::create_dir_all(&cache_dir)?;
+
+        for asset in assets {
+            // Mirror Claude's cache structure: plugins/cache/<publisher>/<plugin>/<version>/
+            let target_dir = cache_dir
+                .join(&asset.publisher)
+                .join(&asset.plugin_name)
+                .join(&asset.version);
+            let target_path = target_dir.join(&asset.relative_path);
+
+            // Path containment check — security: prevent path traversal
+            if !crate::adapters::utils::is_path_contained(&target_path, &cache_dir) {
+                tracing::warn!(
+                    plugin = %asset.plugin_name,
+                    path = %asset.relative_path.display(),
+                    "Rejected plugin asset with path outside cache directory"
+                );
+                report.skipped.push(SkipReason::Unchanged {
+                    item: format!(
+                        "BLOCKED:{}/{}:{}",
+                        asset.plugin_name,
+                        asset.version,
+                        asset.relative_path.display()
+                    ),
+                });
+                continue;
+            }
+
+            // Check if unchanged
+            if target_path.exists() {
+                let existing = match fs::read(&target_path) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        tracing::debug!(
+                            path = %target_path.display(),
+                            error = %e,
+                            "Could not read existing asset for hash comparison, will re-write"
+                        );
+                        vec![]
+                    }
+                };
+                if crate::adapters::utils::hash_content(&existing) == asset.hash {
+                    report.skipped.push(SkipReason::Unchanged {
+                        item: format!(
+                            "{}/{}:{}",
+                            asset.plugin_name,
+                            asset.version,
+                            asset.relative_path.display()
+                        ),
+                    });
+                    continue;
+                }
+            }
+
+            // Ensure parent directory exists
+            if let Some(parent) = target_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            // Write the file
+            fs::write(&target_path, &asset.content)?;
+
+            // Preserve executable permissions
+            #[cfg(unix)]
+            if asset.executable {
+                use std::os::unix::fs::PermissionsExt;
+                let perms = std::fs::Permissions::from_mode(0o755);
+                fs::set_permissions(&target_path, perms)?;
+            }
+
+            debug!(
+                plugin = %asset.plugin_name,
+                path = %asset.relative_path.display(),
+                "Wrote plugin asset to Cursor"
+            );
+            report.written += 1;
+        }
+
+        Ok(report)
     }
 }

@@ -206,6 +206,7 @@ mod copilot_to_claude_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -257,6 +258,7 @@ mod copilot_to_claude_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -301,6 +303,7 @@ mod copilot_to_claude_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -349,6 +352,7 @@ mod claude_to_copilot_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -399,6 +403,7 @@ mod claude_to_copilot_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -449,6 +454,7 @@ mod claude_to_copilot_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -501,6 +507,7 @@ mod copilot_to_codex_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -545,6 +552,7 @@ mod copilot_to_codex_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -594,6 +602,7 @@ mod copilot_dry_run_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -867,6 +876,7 @@ This is a test agent for Copilot.
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -937,6 +947,7 @@ This is a test agent for Copilot.
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -990,6 +1001,7 @@ This is a test agent for Copilot.
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -1041,6 +1053,7 @@ This is a test agent for Copilot.
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -1092,6 +1105,7 @@ This is a test agent for Copilot.
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -1147,6 +1161,7 @@ This is a test agent for Copilot.
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);

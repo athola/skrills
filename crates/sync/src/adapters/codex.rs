@@ -170,9 +170,10 @@ impl AgentAdapter for CodexAdapter {
             mcp_servers: true,
             preferences: true,
             skills: true,
-            hooks: false,        // Codex doesn't support hooks
-            agents: false,       // Codex doesn't read agents, but write_agents converts to skills
-            instructions: false, // Codex doesn't support instructions
+            hooks: false,         // Codex doesn't support hooks
+            agents: false,        // Codex doesn't read agents, but write_agents converts to skills
+            instructions: false,  // Codex doesn't support instructions
+            plugin_assets: false, // Codex doesn't support plugin assets
         }
     }
 

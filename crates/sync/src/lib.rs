@@ -40,6 +40,7 @@
 //!             hooks: false,
 //!             agents: false,
 //!             instructions: false,
+//!             plugin_assets: false,
 //!         }
 //!     }
 //!
@@ -138,7 +139,7 @@ pub mod validation;
 pub use adapters::{
     AgentAdapter, ClaudeAdapter, CodexAdapter, CopilotAdapter, CursorAdapter, FieldSupport,
 };
-pub use common::{Command, CommonConfig, ContentFormat, McpServer, Preferences};
+pub use common::{Command, CommonConfig, ContentFormat, McpServer, PluginAsset, Preferences};
 pub use models::transform_model;
 #[allow(deprecated)]
 pub use orchestrator::{

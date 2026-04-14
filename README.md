@@ -23,9 +23,10 @@ and Cursor.
 [FAQ](docs/FAQ.md) |
 [Changelog](book/src/changelog.md)
 
-> **What's new in 0.7.5** -- Serde-based enum parsing for research
-> handlers, `OffsetDateTime` timestamps in the knowledge graph, and
-> hardened error reporting across MCP tools.
+> **What's new in 0.7.6** -- Plugin assets sync mirrors runtime
+> scripts, binaries, and source packages from the Claude plugin cache
+> to Cursor. Hash-based change detection and executable permission
+> preservation on Unix.
 > See [changelog](book/src/changelog.md).
 
 ## Why Skrills?
@@ -35,8 +36,9 @@ Skrills validates, analyzes, and syncs skills across four CLI
 environments from a single Rust binary:
 
 - **One-command sync** -- `skrills sync-all` mirrors skills,
-  commands, agents, MCP servers, rules, and preferences between
-  Claude Code, Codex CLI, Copilot CLI, and Cursor.
+  commands, agents, MCP servers, hooks, rules, preferences, and
+  plugin assets between Claude Code, Codex CLI, Copilot CLI,
+  and Cursor.
 - **Validation with autofix** -- detects missing frontmatter,
   incompatible fields, and body issues across each target's
   requirements, then fixes them with `--autofix`.
@@ -66,7 +68,7 @@ setup.
 - **Cross-CLI validation** -- validates against Claude Code
   (permissive), Codex CLI (strict), Copilot CLI (strict), and
   Cursor rules. Auto-derives missing YAML frontmatter.
-- **Multi-directional sync** -- syncs seven asset types across
+- **Multi-directional sync** -- syncs eight asset types across
   four CLIs. File hashing preserves manual edits.
 - **Token analytics** -- per-skill token counts with reduction
   suggestions for context-window management.
@@ -80,6 +82,9 @@ setup.
   validation status, usage metrics, and MCP server configs.
   The standalone [`skrills-portal.html`](skrills-portal.html)
   works offline without a running server.
+- **Plugin asset sync** -- mirrors runtime scripts, binaries,
+  and source packages from the Claude plugin cache to Cursor
+  with hash-based change detection.
 - **Discovery deduplication** -- frontmatter identity matching
   consolidates duplicate skill installations.
 
@@ -132,7 +137,7 @@ skill lifecycle management (`skill-deprecate`, `skill-rollback`,
 
 ## Supported Environments
 
-Skrills syncs seven asset types across four CLI environments.
+Skrills syncs eight asset types across four CLI environments.
 Each cell reflects what the adapter reads and writes today:
 
 | Asset | Claude Code | Codex CLI | Copilot CLI | Cursor |
@@ -144,6 +149,11 @@ Each cell reflects what the adapter reads and writes today:
 | Hooks | Y | -- | -- | Y |
 | Instructions / Rules | Y | -- | Y | Y |
 | Preferences | Y | Y | Y | -- |
+| Plugin Assets | Y | -- | -- | Y |
+
+Plugin assets (scripts, binaries, libraries) are mirrored from the
+Claude plugin cache to `~/.cursor/plugins/cache/`, preserving the
+directory hierarchy so that skills can reference companion scripts.
 
 Cursor rules (`.mdc` files) are mapped bidirectionally via mode
 derivation (`alwaysApply`, glob-scoped, agent-requested).

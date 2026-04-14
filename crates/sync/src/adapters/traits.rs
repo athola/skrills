@@ -1,6 +1,6 @@
 //! Trait definition for agent adapters.
 
-use crate::common::{Command, CommonConfig, McpServer, Preferences};
+use crate::common::{Command, CommonConfig, McpServer, PluginAsset, Preferences};
 use crate::report::WriteReport;
 use crate::Result;
 use std::collections::HashMap;
@@ -16,6 +16,7 @@ pub struct FieldSupport {
     pub hooks: bool,
     pub agents: bool,
     pub instructions: bool,
+    pub plugin_assets: bool,
 }
 
 #[cfg(test)]
@@ -56,6 +57,14 @@ pub trait AgentAdapter: Send + Sync {
     /// Read instructions from native format (e.g., CLAUDE.md, *.instructions.md)
     fn read_instructions(&self) -> Result<Vec<Command>>;
 
+    /// Read plugin assets (scripts, binaries, libraries) from plugin cache.
+    ///
+    /// Default implementation returns empty — only adapters with a plugin cache
+    /// (like Claude) need to override this.
+    fn read_plugin_assets(&self) -> Result<Vec<PluginAsset>> {
+        Ok(vec![])
+    }
+
     /// Read complete configuration
     fn read_all(&self) -> Result<CommonConfig> {
         Ok(CommonConfig {
@@ -66,6 +75,7 @@ pub trait AgentAdapter: Send + Sync {
             hooks: self.read_hooks()?,
             agents: self.read_agents()?,
             instructions: self.read_instructions()?,
+            plugin_assets: self.read_plugin_assets()?,
         })
     }
 
@@ -91,6 +101,15 @@ pub trait AgentAdapter: Send + Sync {
 
     /// Write instructions to native format (e.g., CLAUDE.md, *.instructions.md)
     fn write_instructions(&self, instructions: &[Command]) -> Result<WriteReport>;
+
+    /// Write plugin assets (scripts, binaries, libraries) to target location.
+    ///
+    /// Default implementation is a no-op — only adapters that support plugin
+    /// assets (like Cursor, which mirrors the Claude plugin cache) need to
+    /// override this.
+    fn write_plugin_assets(&self, _assets: &[PluginAsset]) -> Result<WriteReport> {
+        Ok(WriteReport::default())
+    }
 }
 
 /// Blanket impl so `Box<dyn AgentAdapter>` can be used with `SyncOrchestrator`.
@@ -125,6 +144,9 @@ impl AgentAdapter for Box<dyn AgentAdapter> {
     fn read_instructions(&self) -> Result<Vec<Command>> {
         (**self).read_instructions()
     }
+    fn read_plugin_assets(&self) -> Result<Vec<PluginAsset>> {
+        (**self).read_plugin_assets()
+    }
     fn write_commands(&self, commands: &[Command]) -> Result<WriteReport> {
         (**self).write_commands(commands)
     }
@@ -145,5 +167,8 @@ impl AgentAdapter for Box<dyn AgentAdapter> {
     }
     fn write_instructions(&self, instructions: &[Command]) -> Result<WriteReport> {
         (**self).write_instructions(instructions)
+    }
+    fn write_plugin_assets(&self, assets: &[PluginAsset]) -> Result<WriteReport> {
+        (**self).write_plugin_assets(assets)
     }
 }

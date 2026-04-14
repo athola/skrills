@@ -233,6 +233,7 @@ mod basic_sync_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -271,6 +272,7 @@ mod basic_sync_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -314,6 +316,7 @@ mod basic_sync_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -354,6 +357,7 @@ mod basic_sync_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -396,6 +400,7 @@ mod basic_sync_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -437,6 +442,7 @@ mod basic_sync_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -1344,6 +1350,7 @@ mod case_sensitivity_tests {
             sync_instructions: true,
             skip_existing_instructions: false,
             include_marketplace: false,
+            sync_plugin_assets: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
