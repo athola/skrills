@@ -324,12 +324,12 @@ static LEGACY_TIMESTAMP_FMT: LazyLock<Vec<time::format_description::FormatItem<'
 /// `datetime('now')` format (`2026-04-08 12:00:00`) for databases created
 /// before the 0.7.5 migration.  Fallback timestamps are treated as UTC.
 fn parse_timestamp(s: &str) -> TomeResult<OffsetDateTime> {
-    OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).or_else(|_| {
-        tracing::debug!("Parsing legacy timestamp format: '{s}'");
-        time::PrimitiveDateTime::parse(s, &LEGACY_TIMESTAMP_FMT)
-            .map(|dt| dt.assume_utc())
-    })
-    .map_err(|e| TomeError::Other(format!("invalid timestamp '{s}': {e}")))
+    OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
+        .or_else(|_| {
+            tracing::debug!("Parsing legacy timestamp format: '{s}'");
+            time::PrimitiveDateTime::parse(s, &LEGACY_TIMESTAMP_FMT).map(|dt| dt.assume_utc())
+        })
+        .map_err(|e| TomeError::Other(format!("invalid timestamp '{s}': {e}")))
 }
 
 fn parse_node_kind(s: &str) -> TomeResult<NodeKind> {

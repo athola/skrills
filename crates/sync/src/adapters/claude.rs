@@ -18,11 +18,7 @@ use walkdir::WalkDir;
 ///
 /// Falls back to `(0, 0, 0)` for non-semver names so they sort before any real version.
 fn semver_tuple(entry: &fs::DirEntry) -> (u64, u64, u64) {
-    let name = entry
-        .file_name()
-        .to_str()
-        .unwrap_or("")
-        .to_string();
+    let name = entry.file_name().to_str().unwrap_or("").to_string();
     let parts: Vec<&str> = name.split('.').collect();
     let major = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0u64);
     let minor = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0u64);

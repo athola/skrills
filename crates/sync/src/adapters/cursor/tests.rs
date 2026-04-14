@@ -1076,7 +1076,11 @@ fn plugin_assets_path_traversal_blocked() {
 
     // The traversal asset should be blocked (counted as skipped), normal one written
     assert_eq!(report.written, 1, "Only the safe asset should be written");
-    assert_eq!(report.skipped.len(), 1, "The traversal asset should be skipped");
+    assert_eq!(
+        report.skipped.len(),
+        1,
+        "The traversal asset should be skipped"
+    );
 
     // Verify the malicious file was NOT created outside the cache
     assert!(
@@ -1085,6 +1089,8 @@ fn plugin_assets_path_traversal_blocked() {
     );
 
     // Verify the normal file WAS created
-    let expected = tmp.path().join("plugins/cache/legit-market/good-plugin/1.0.0/scripts/helper.py");
+    let expected = tmp
+        .path()
+        .join("plugins/cache/legit-market/good-plugin/1.0.0/scripts/helper.py");
     assert!(expected.exists(), "Normal asset should be written");
 }
