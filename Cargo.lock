@@ -3358,7 +3358,7 @@ dependencies = [
  "itertools",
  "kasuari",
  "lru",
- "strum",
+ "strum 0.27.2",
  "thiserror 2.0.18",
  "unicode-segmentation",
  "unicode-truncate",
@@ -3410,7 +3410,7 @@ dependencies = [
  "itertools",
  "line-clipping",
  "ratatui-core",
- "strum",
+ "strum 0.27.2",
  "time",
  "unicode-segmentation",
  "unicode-width",
@@ -4249,7 +4249,7 @@ checksum = "b2aa850e253778c88a04c3d7323b043aeda9d3e30d5971937c1855769763678e"
 
 [[package]]
 name = "skrills"
-version = "0.7.6"
+version = "0.7.7"
 dependencies = [
  "anyhow",
  "scopeguard",
@@ -4260,7 +4260,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-analyze"
-version = "0.7.6"
+version = "0.7.7"
 dependencies = [
  "parking_lot",
  "regex",
@@ -4277,7 +4277,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-dashboard"
-version = "0.7.6"
+version = "0.7.7"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -4297,7 +4297,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-discovery"
-version = "0.7.6"
+version = "0.7.7"
 dependencies = [
  "anyhow",
  "blake2",
@@ -4314,7 +4314,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-intelligence"
-version = "0.7.6"
+version = "0.7.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4336,7 +4336,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-metrics"
-version = "0.7.6"
+version = "0.7.7"
 dependencies = [
  "anyhow",
  "dirs",
@@ -4352,7 +4352,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-server"
-version = "0.7.6"
+version = "0.7.7"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
@@ -4410,19 +4410,21 @@ dependencies = [
 
 [[package]]
 name = "skrills-state"
-version = "0.7.6"
+version = "0.7.7"
 dependencies = [
  "anyhow",
  "dirs",
+ "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "skrills_test_utils",
  "tempfile",
 ]
 
 [[package]]
 name = "skrills-subagents"
-version = "0.7.6"
+version = "0.7.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4449,7 +4451,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-tome"
-version = "0.7.6"
+version = "0.7.7"
 dependencies = [
  "anyhow",
  "dirs",
@@ -4457,6 +4459,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "strum 0.26.3",
  "tempfile",
  "thiserror 2.0.18",
  "time",
@@ -4468,9 +4471,10 @@ dependencies = [
 
 [[package]]
 name = "skrills-validate"
-version = "0.7.6"
+version = "0.7.7"
 dependencies = [
  "anyhow",
+ "notify",
  "proptest",
  "regex",
  "semver",
@@ -4483,16 +4487,18 @@ dependencies = [
 
 [[package]]
 name = "skrills_sync"
-version = "0.7.6"
+version = "0.7.7"
 dependencies = [
  "anyhow",
  "dirs",
+ "inquire",
  "mockall",
  "proptest",
  "regex",
  "serde",
  "serde_json",
  "sha2",
+ "similar",
  "skrills-validate",
  "tempfile",
  "tokio",
@@ -4502,7 +4508,7 @@ dependencies = [
 
 [[package]]
 name = "skrills_test_utils"
-version = "0.7.6"
+version = "0.7.7"
 dependencies = [
  "tempfile",
 ]
@@ -4589,11 +4595,33 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "strum"
+version = "0.26.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8fec0f0aef304996cf250b31b5a10dee7980c85da9d759361292b8bca5a18f06"
+dependencies = [
+ "strum_macros 0.26.4",
+]
+
+[[package]]
+name = "strum"
 version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
 dependencies = [
- "strum_macros",
+ "strum_macros 0.27.2",
+]
+
+[[package]]
+name = "strum_macros"
+version = "0.26.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c6bee85a5a24955dc440386795aa378cd9cf82acd5f764469152d2270e581be"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "rustversion",
+ "syn 2.0.117",
 ]
 
 [[package]]

@@ -101,6 +101,7 @@ impl SkillSyncTestContext {
             hash,
             modules: Vec::new(),
             content_format: ContentFormat::default(),
+            plugin_origin: None,
         }
     }
 
@@ -234,6 +235,9 @@ mod basic_sync_tests {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: false,
+            interactive: false,
+            exclude_plugins: vec![],
+            full_plugin_mirror: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -273,6 +277,9 @@ mod basic_sync_tests {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: false,
+            interactive: false,
+            exclude_plugins: vec![],
+            full_plugin_mirror: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -317,6 +324,9 @@ mod basic_sync_tests {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: false,
+            interactive: false,
+            exclude_plugins: vec![],
+            full_plugin_mirror: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -358,6 +368,9 @@ mod basic_sync_tests {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: false,
+            interactive: false,
+            exclude_plugins: vec![],
+            full_plugin_mirror: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -401,6 +414,9 @@ mod basic_sync_tests {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: false,
+            interactive: false,
+            exclude_plugins: vec![],
+            full_plugin_mirror: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -443,6 +459,9 @@ mod basic_sync_tests {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: false,
+            interactive: false,
+            exclude_plugins: vec![],
+            full_plugin_mirror: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -1091,6 +1110,7 @@ mod negative_tests {
             modules: Vec::new(),
 
             content_format: ContentFormat::default(),
+            plugin_origin: None,
         };
 
         // WHEN: Validating
@@ -1351,6 +1371,9 @@ mod case_sensitivity_tests {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: false,
+            interactive: false,
+            exclude_plugins: vec![],
+            full_plugin_mirror: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);

@@ -1025,4 +1025,68 @@ mod tests {
             );
         }
     }
+
+    /// GIVEN async research tools called via snake_case names
+    /// WHEN each snake_case alias is dispatched
+    /// THEN none return "unknown tool" errors (network errors are acceptable)
+    #[test]
+    fn snake_case_aliases_accepted_for_async_research_tools() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var(
+            "HOME",
+            Some(
+                temp.path()
+                    .to_str()
+                    .expect("temp home should be valid utf-8"),
+            ),
+        );
+
+        // Each (snake_case_name, minimal_valid_args) pair for async research tools.
+        // These tools require HTTP clients, so they may fail with network errors,
+        // but they must NOT fail with "unknown tool" — that would mean the
+        // snake_case → kebab-case normalization did not dispatch them.
+        let cases: Vec<(&str, serde_json::Value)> = vec![
+            ("search_papers", serde_json::json!({"query": "test"})),
+            ("search_discussions", serde_json::json!({"query": "test"})),
+            ("resolve_doi", serde_json::json!({"doi": "10.1234/test"})),
+            (
+                "fetch_pdf",
+                serde_json::json!({"url": "https://example.com/test.pdf"}),
+            ),
+        ];
+
+        for (name, args) in cases {
+            let svc = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1))
+                .expect("service should build");
+            let result = run_async(async move {
+                let (running, context, _client) = service_with_context(svc);
+                running
+                    .service()
+                    .call_tool(
+                        CallToolRequestParam {
+                            name: name.into(),
+                            arguments: Some(args.as_object().cloned().unwrap()),
+                        },
+                        context,
+                    )
+                    .await
+            });
+
+            // The tool must be dispatched (no "unknown tool" error).
+            // Network errors are acceptable — they prove the tool was found
+            // and attempted execution rather than being rejected at dispatch.
+            match &result {
+                Ok(_) => {} // tool succeeded (unlikely without network, but fine)
+                Err(e) => {
+                    assert!(
+                        !e.message.contains("unknown tool"),
+                        "snake_case async tool '{}' should be dispatched, but got unknown tool error: {:?}",
+                        name,
+                        e
+                    );
+                }
+            }
+        }
+    }
 }

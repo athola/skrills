@@ -70,6 +70,7 @@ pub fn read_commands(root: &Path, _include_marketplace: bool) -> Result<Vec<Comm
             hash,
             modules: Vec::new(),
             content_format: ContentFormat::default(),
+            plugin_origin: None,
         });
     }
     Ok(commands)

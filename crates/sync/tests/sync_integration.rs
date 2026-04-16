@@ -137,6 +137,9 @@ mod sync_direction_tests {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: false,
+            interactive: false,
+            exclude_plugins: vec![],
+            full_plugin_mirror: false,
         };
 
         // Perform sync
@@ -191,6 +194,9 @@ mod sync_direction_tests {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: false,
+            interactive: false,
+            exclude_plugins: vec![],
+            full_plugin_mirror: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -246,6 +252,9 @@ mod sync_skip_existing_tests {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: false,
+            interactive: false,
+            exclude_plugins: vec![],
+            full_plugin_mirror: false,
         };
 
         // Debug: Show what commands are being synced
@@ -316,6 +325,9 @@ mod sync_dry_run_tests {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: false,
+            interactive: false,
+            exclude_plugins: vec![],
+            full_plugin_mirror: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -387,6 +399,9 @@ mod sync_force_overwrite_tests {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: false,
+            interactive: false,
+            exclude_plugins: vec![],
+            full_plugin_mirror: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -437,6 +452,9 @@ mod sync_error_handling_tests {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: false,
+            interactive: false,
+            exclude_plugins: vec![],
+            full_plugin_mirror: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -481,6 +499,9 @@ mod sync_error_handling_tests {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: false,
+            interactive: false,
+            exclude_plugins: vec![],
+            full_plugin_mirror: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);

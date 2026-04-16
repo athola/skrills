@@ -91,6 +91,7 @@ impl SyncTestContext {
             hash,
             modules: Vec::new(),
             content_format: ContentFormat::default(),
+            plugin_origin: None,
         }
     }
 }
@@ -138,6 +139,9 @@ mod skip_existing_commands_tests {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: false,
+            interactive: false,
+            exclude_plugins: vec![],
+            full_plugin_mirror: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
@@ -187,6 +191,9 @@ mod skip_existing_commands_tests {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: false,
+            interactive: false,
+            exclude_plugins: vec![],
+            full_plugin_mirror: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
@@ -258,6 +265,9 @@ mod skip_existing_commands_tests {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: false,
+            interactive: false,
+            exclude_plugins: vec![],
+            full_plugin_mirror: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
@@ -314,6 +324,9 @@ mod skip_existing_commands_tests {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: false,
+            interactive: false,
+            exclude_plugins: vec![],
+            full_plugin_mirror: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
@@ -375,6 +388,9 @@ mod skip_existing_commands_tests {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: false,
+            interactive: false,
+            exclude_plugins: vec![],
+            full_plugin_mirror: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
@@ -421,6 +437,9 @@ mod skip_existing_commands_tests {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: false,
+            interactive: false,
+            exclude_plugins: vec![],
+            full_plugin_mirror: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
@@ -472,6 +491,9 @@ mod skip_existing_commands_tests {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: false,
+            interactive: false,
+            exclude_plugins: vec![],
+            full_plugin_mirror: false,
         };
 
         // Sync from Codex (new source) to Claude (new target)
@@ -529,6 +551,9 @@ mod skip_existing_commands_tests {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: false,
+            interactive: false,
+            exclude_plugins: vec![],
+            full_plugin_mirror: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
@@ -583,6 +608,9 @@ mod skip_existing_commands_tests {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: false,
+            interactive: false,
+            exclude_plugins: vec![],
+            full_plugin_mirror: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);

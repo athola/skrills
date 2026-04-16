@@ -209,6 +209,7 @@ fn write_skills_creates_directories() {
         modules: Vec::new(),
 
         content_format: ContentFormat::default(),
+        plugin_origin: None,
     };
 
     let report = adapter.write_skills(&[skill]).unwrap();
@@ -234,6 +235,7 @@ fn write_skills_skips_unchanged() {
         modules: Vec::new(),
 
         content_format: ContentFormat::default(),
+        plugin_origin: None,
     };
 
     let report = adapter.write_skills(&[skill]).unwrap();
@@ -255,6 +257,7 @@ fn write_skills_no_config_toml_created() {
         modules: Vec::new(),
 
         content_format: ContentFormat::default(),
+        plugin_origin: None,
     };
 
     adapter.write_skills(&[skill]).unwrap();
@@ -605,6 +608,7 @@ fn skills_roundtrip() {
         modules: Vec::new(),
 
         content_format: ContentFormat::default(),
+        plugin_origin: None,
     };
 
     adapter.write_skills(&[skill]).unwrap();
@@ -716,6 +720,7 @@ fn write_agents_creates_agent_files() {
         modules: Vec::new(),
 
         content_format: ContentFormat::default(),
+        plugin_origin: None,
     }];
 
     let report = adapter.write_agents(&agents).unwrap();
@@ -745,6 +750,7 @@ fn write_agents_skips_unchanged() {
         modules: Vec::new(),
 
         content_format: ContentFormat::default(),
+        plugin_origin: None,
     }];
 
     // Write once
@@ -856,6 +862,7 @@ fn write_skills_sanitizes_path_traversal_in_names() {
         modules: Vec::new(),
 
         content_format: ContentFormat::default(),
+        plugin_origin: None,
     };
 
     adapter.write_skills(&[malicious_skill]).unwrap();
@@ -885,6 +892,7 @@ fn write_skills_sanitizes_absolute_paths() {
         modules: Vec::new(),
 
         content_format: ContentFormat::default(),
+        plugin_origin: None,
     };
 
     adapter.write_skills(&[skill]).unwrap();

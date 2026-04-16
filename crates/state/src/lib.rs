@@ -3,6 +3,8 @@
 //! This crate provides utilities for:
 //! - Reading environment variables for configuration.
 //! - Handling manifest settings and runtime overrides.
+//! - Network status detection for offline/cached mode.
+//! - Validation result caching for offline operation.
 //!
 //! Note: Legacy pin/history/autoload persistence was removed in 0.3.1
 //! as skill loading is now handled by Claude/Codex directly.
@@ -27,8 +29,18 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Environment and configuration utilities.
 pub mod env;
 
+/// Validation result caching for offline mode.
+pub mod cache;
+
+/// Network status detection.
+pub mod network;
+
+pub use cache::{
+    content_hash, human_age, staleness_indicator, CachedValidation, Staleness, ValidationCache,
+};
 pub use env::{
     cache_ttl, env_auto_persist, env_diag, env_include_claude, env_include_marketplace,
     extra_dirs_from_env, home_dir, load_manifest_settings, manifest_file, runtime_overrides_path,
     ManifestSettings,
 };
+pub use network::{check_connectivity, is_online, NetworkStatus};

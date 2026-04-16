@@ -83,6 +83,7 @@ pub fn read_skills(root: &Path) -> Result<Vec<Command>> {
             hash,
             modules,
             content_format: ContentFormat::default(),
+            plugin_origin: None,
         });
     }
     Ok(skills)

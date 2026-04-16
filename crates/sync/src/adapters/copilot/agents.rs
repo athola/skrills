@@ -77,6 +77,7 @@ pub fn read_agents(root: &Path) -> Result<Vec<Command>> {
             hash,
             modules: Vec::new(),
             content_format: ContentFormat::default(),
+            plugin_origin: None,
         });
     }
 
@@ -173,6 +174,7 @@ pub fn read_instructions(root: &Path) -> Result<Vec<Command>> {
             hash,
             modules: Vec::new(),
             content_format: ContentFormat::default(),
+            plugin_origin: None,
         });
     }
 

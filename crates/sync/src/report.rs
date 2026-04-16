@@ -29,6 +29,8 @@ pub enum SkipReason {
     ParseError { item: String, error: String },
     /// Would overwrite an existing item on the target side
     WouldOverwrite { item: String },
+    /// Excluded by --exclude-plugins filter
+    PluginExcluded,
 }
 
 impl SkipReason {
@@ -63,6 +65,7 @@ impl SkipReason {
             Self::WouldOverwrite { item } => {
                 format!("{} already exists on target (would overwrite)", item)
             }
+            Self::PluginExcluded => "excluded by --exclude-plugins filter".to_string(),
         }
     }
 
@@ -76,6 +79,7 @@ impl SkipReason {
             Self::Unchanged { .. } => None,
             Self::ParseError { .. } => Some("Fix the source file syntax"),
             Self::WouldOverwrite { .. } => Some("Use --skip-existing-commands to keep target copy"),
+            Self::PluginExcluded => None,
         }
     }
 }

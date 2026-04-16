@@ -59,9 +59,11 @@ pub trait AgentAdapter: Send + Sync {
 
     /// Read plugin assets (scripts, binaries, libraries) from plugin cache.
     ///
+    /// When `full_mirror` is true, includes skills, manifests, and all plugin
+    /// contents — used when the target needs a complete plugin copy (e.g., Cursor).
     /// Default implementation returns empty — only adapters with a plugin cache
     /// (like Claude) need to override this.
-    fn read_plugin_assets(&self) -> Result<Vec<PluginAsset>> {
+    fn read_plugin_assets(&self, _full_mirror: bool) -> Result<Vec<PluginAsset>> {
         Ok(vec![])
     }
 
@@ -75,7 +77,7 @@ pub trait AgentAdapter: Send + Sync {
             hooks: self.read_hooks()?,
             agents: self.read_agents()?,
             instructions: self.read_instructions()?,
-            plugin_assets: self.read_plugin_assets()?,
+            plugin_assets: self.read_plugin_assets(false)?,
         })
     }
 
@@ -144,8 +146,8 @@ impl AgentAdapter for Box<dyn AgentAdapter> {
     fn read_instructions(&self) -> Result<Vec<Command>> {
         (**self).read_instructions()
     }
-    fn read_plugin_assets(&self) -> Result<Vec<PluginAsset>> {
-        (**self).read_plugin_assets()
+    fn read_plugin_assets(&self, full_mirror: bool) -> Result<Vec<PluginAsset>> {
+        (**self).read_plugin_assets(full_mirror)
     }
     fn write_commands(&self, commands: &[Command]) -> Result<WriteReport> {
         (**self).write_commands(commands)

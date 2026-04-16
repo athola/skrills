@@ -92,6 +92,7 @@ pub fn read_rules(root: &Path) -> Result<Vec<Command>> {
             hash,
             modules: vec![],
             content_format: ContentFormat::default(),
+            plugin_origin: None,
         });
     }
 

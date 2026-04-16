@@ -409,6 +409,10 @@ pub enum Commands {
         /// Include marketplace content (uninstalled plugins).
         #[arg(long, env = "SKRILLS_INCLUDE_MARKETPLACE", default_value_t = false)]
         include_marketplace: bool,
+        /// Exclude plugins by name (comma-separated). Skills and assets from
+        /// these plugins will not be synced to the target.
+        #[arg(long, value_delimiter = ',', env = "SKRILLS_EXCLUDE_PLUGINS")]
+        exclude_plugins: Vec<String>,
         /// Validate skills before syncing.
         #[arg(long)]
         validate: bool,
@@ -447,6 +451,14 @@ pub enum Commands {
         /// Only show skills with errors.
         #[arg(long)]
         errors_only: bool,
+        #[cfg(feature = "watch")]
+        /// Watch skill directories for changes and auto-revalidate.
+        #[arg(long, default_value_t = false)]
+        watch: bool,
+        #[cfg(feature = "watch")]
+        /// Debounce interval in milliseconds for watch mode.
+        #[arg(long, default_value_t = 300)]
+        debounce_ms: u64,
     },
     /// Analyzes skills for token usage, dependencies, and optimization suggestions.
     Analyze {
@@ -1427,6 +1439,7 @@ mod tests {
                 dry_run,
                 skip_existing_commands,
                 include_marketplace,
+                exclude_plugins,
                 validate,
                 autofix,
             }) => {
@@ -1435,6 +1448,7 @@ mod tests {
                 assert!(dry_run);
                 assert!(skip_existing_commands);
                 assert!(!include_marketplace);
+                assert!(exclude_plugins.is_empty());
                 assert!(validate);
                 assert!(autofix);
             }
@@ -1494,6 +1508,7 @@ mod tests {
                 backup,
                 format,
                 errors_only,
+                ..
             }) => {
                 assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/s")]);
                 assert!(matches!(target, ValidationTarget::Codex));

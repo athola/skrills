@@ -119,6 +119,7 @@ pub fn read_hooks(root: &Path) -> Result<Vec<Command>> {
             hash,
             modules: vec![],
             content_format: ContentFormat::Json,
+            plugin_origin: None,
         });
     }
 
@@ -293,6 +294,7 @@ mod tests {
             hash: "test".to_string(),
             modules: vec![],
             content_format: ContentFormat::Json,
+            plugin_origin: None,
         }];
 
         let report = write_hooks(root, &hooks).unwrap();
@@ -313,6 +315,7 @@ mod tests {
             hash: "test".to_string(),
             modules: vec![],
             content_format: ContentFormat::default(), // Markdown
+            plugin_origin: None,
         }];
 
         let report = write_hooks(root, &hooks).unwrap();
@@ -334,6 +337,7 @@ mod tests {
             hash: "test".to_string(),
             modules: vec![],
             content_format: ContentFormat::Json,
+            plugin_origin: None,
         }];
 
         let report = write_hooks(root, &hooks).unwrap();
@@ -389,6 +393,7 @@ mod tests {
                 hash: "test".to_string(),
                 modules: vec![],
                 content_format: ContentFormat::Json,
+                plugin_origin: None,
             },
             crate::common::Command {
                 name: "PostToolUse".to_string(),
@@ -398,6 +403,7 @@ mod tests {
                 hash: "test".to_string(),
                 modules: vec![],
                 content_format: ContentFormat::Json,
+                plugin_origin: None,
             },
         ];
 
@@ -430,6 +436,7 @@ mod tests {
             hash: "test".to_string(),
             modules: vec![],
             content_format: ContentFormat::Json,
+            plugin_origin: None,
         }];
 
         // Should NOT error — should gracefully skip
@@ -455,6 +462,7 @@ mod tests {
             hash: "test".to_string(),
             modules: vec![],
             content_format: ContentFormat::Json,
+            plugin_origin: None,
         }];
 
         // Should NOT error — should warn and proceed with fresh config

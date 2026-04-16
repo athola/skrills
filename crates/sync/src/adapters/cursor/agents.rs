@@ -66,6 +66,7 @@ pub fn read_agents(root: &Path) -> Result<Vec<Command>> {
             hash,
             modules: vec![],
             content_format: ContentFormat::default(),
+            plugin_origin: None,
         });
     }
 
