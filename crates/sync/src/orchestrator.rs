@@ -81,6 +81,18 @@ pub struct SyncParams {
     /// Sync plugin assets (scripts, binaries, libraries that skills/hooks depend on)
     #[serde(default = "default_true")]
     pub sync_plugin_assets: bool,
+    /// Interactive mode: preview diffs and accept/reject each file before writing
+    #[serde(default)]
+    pub interactive: bool,
+    /// Exclude skills and assets from these plugins (e.g., ["phantom", "scry"]).
+    /// Skills without a plugin origin are never excluded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_plugins: Vec<String>,
+    /// When true, plugin_assets includes the full plugin directory
+    /// (skills, manifests) instead of only supplementary files.
+    /// Used when the target needs a complete plugin mirror (e.g., Cursor).
+    #[serde(default)]
+    pub full_plugin_mirror: bool,
 }
 
 impl Default for SyncParams {
@@ -100,7 +112,19 @@ impl Default for SyncParams {
             skip_existing_instructions: false,
             include_marketplace: false,
             sync_plugin_assets: true,
+            interactive: false,
+            exclude_plugins: Vec::new(),
+            full_plugin_mirror: false,
         }
+    }
+}
+
+impl SyncParams {
+    /// Returns true if the given plugin name should be excluded from sync.
+    pub fn is_plugin_excluded(&self, plugin_name: &str) -> bool {
+        self.exclude_plugins
+            .iter()
+            .any(|excluded| excluded.eq_ignore_ascii_case(plugin_name))
     }
 }
 
@@ -267,6 +291,25 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 );
             }
             let skills = self.source.read_skills()?;
+            // Apply plugin exclusion filter
+            let (skills, excluded_count) = if params.exclude_plugins.is_empty() {
+                (skills, 0usize)
+            } else {
+                let before = skills.len();
+                let filtered: Vec<_> = skills
+                    .into_iter()
+                    .filter(|s| {
+                        s.plugin_origin
+                            .as_ref()
+                            .is_none_or(|o| !params.is_plugin_excluded(&o.plugin_name))
+                    })
+                    .collect();
+                let excluded = before - filtered.len();
+                if excluded > 0 {
+                    tracing::info!(excluded, "Excluded skills from filtered plugins");
+                }
+                (filtered, excluded)
+            };
             let (skills, skill_dups) = dedup_by_name(
                 skills,
                 "skill",
@@ -279,6 +322,10 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 report.skills.written = skills.len();
             }
             report.skills.duplicates = skill_dups;
+            // Report excluded plugins as skipped
+            for _ in 0..excluded_count {
+                report.skills.skipped.push(SkipReason::PluginExcluded);
+            }
         }
 
         // Sync MCP servers
@@ -390,11 +437,29 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                     "Target does not natively support plugin assets; skipping"
                 );
             } else {
-                let assets = self.source.read_plugin_assets()?;
+                let assets = self.source.read_plugin_assets(params.full_plugin_mirror)?;
+                // Apply plugin exclusion filter to assets
+                let (assets, excluded_asset_count) = if params.exclude_plugins.is_empty() {
+                    (assets, 0usize)
+                } else {
+                    let before = assets.len();
+                    let filtered: Vec<_> = assets
+                        .into_iter()
+                        .filter(|a| !params.is_plugin_excluded(&a.plugin_name))
+                        .collect();
+                    let excluded = before - filtered.len();
+                    (filtered, excluded)
+                };
                 if !params.dry_run {
                     report.plugin_assets = self.target.write_plugin_assets(&assets)?;
                 } else {
                     report.plugin_assets.written = assets.len();
+                }
+                for _ in 0..excluded_asset_count {
+                    report
+                        .plugin_assets
+                        .skipped
+                        .push(SkipReason::PluginExcluded);
                 }
             }
         }

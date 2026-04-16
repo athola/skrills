@@ -1046,51 +1046,306 @@ fn skills_model_hint_injected_as_comment() {
     );
 }
 
-// --- Plugin Asset Security Tests ---
+// --- Plugin Asset Manifest Tests ---
 
+/// Non-manifest assets (scripts, binaries) are silently ignored — only
+/// `.claude-plugin/plugin.json` files are processed by the manifest writer.
 #[test]
-fn plugin_assets_path_traversal_blocked() {
+fn plugin_assets_ignores_non_manifest_files() {
     use crate::common::PluginAsset;
 
     let tmp = TempDir::new().unwrap();
     let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
 
-    let malicious = PluginAsset::new(
-        "evil-plugin".to_string(),
-        "shady-market".to_string(),
-        "1.0.0".to_string(),
-        std::path::PathBuf::from("../../etc/passwd"),
-        b"root:x:0:0:root:/root:/bin/bash\n".to_vec(),
-        false,
-    );
-    let normal = PluginAsset::new(
-        "good-plugin".to_string(),
-        "legit-market".to_string(),
+    let script = PluginAsset::new(
+        "my-plugin".to_string(),
+        "market".to_string(),
         "1.0.0".to_string(),
         std::path::PathBuf::from("scripts/helper.py"),
         b"# helper\n".to_vec(),
         false,
     );
 
-    let report = adapter.write_plugin_assets(&[malicious, normal]).unwrap();
+    let report = adapter.write_plugin_assets(&[script]).unwrap();
 
-    // The traversal asset should be blocked (counted as skipped), normal one written
-    assert_eq!(report.written, 1, "Only the safe asset should be written");
-    assert_eq!(
-        report.skipped.len(),
-        1,
-        "The traversal asset should be skipped"
+    assert_eq!(report.written, 0, "Non-manifest assets should be ignored");
+}
+
+/// A valid `.claude-plugin/plugin.json` asset is written to
+/// `plugins/local/<plugin>/.cursor-plugin/plugin.json`.
+#[test]
+fn plugin_assets_writes_manifest_to_local() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let manifest = PluginAsset::new(
+        "good-plugin".to_string(),
+        "legit-market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from(".claude-plugin/plugin.json"),
+        b"{\"name\": \"good-plugin\"}".to_vec(),
+        false,
     );
 
-    // Verify the malicious file was NOT created outside the cache
-    assert!(
-        !tmp.path().join("etc/passwd").exists(),
-        "Path traversal must not create files outside cache"
-    );
+    let report = adapter.write_plugin_assets(&[manifest]).unwrap();
 
-    // Verify the normal file WAS created
+    assert_eq!(report.written, 1, "Manifest should be written");
     let expected = tmp
         .path()
-        .join("plugins/cache/legit-market/good-plugin/1.0.0/scripts/helper.py");
-    assert!(expected.exists(), "Normal asset should be written");
+        .join("plugins/local/good-plugin/.cursor-plugin/plugin.json");
+    assert!(expected.exists(), "Manifest should exist at local path");
+}
+
+// --- Stale Plugin Pruning Tests ---
+
+/// GIVEN a previously synced plugin directory exists in plugins/local
+/// WHEN write_plugin_assets is called with a new set that excludes it
+/// THEN the stale plugin directory is pruned
+#[test]
+fn plugin_assets_prunes_stale_plugin_directories() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let local_dir = tmp.path().join("plugins/local");
+
+    // Pre-create a stale plugin from a prior sync
+    let stale = local_dir.join("old-plugin/.cursor-plugin");
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::write(stale.join("plugin.json"), b"{\"name\": \"old-plugin\"}").unwrap();
+
+    // Sync only the new plugin
+    let asset = PluginAsset::new(
+        "new-plugin".to_string(),
+        "market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from(".claude-plugin/plugin.json"),
+        b"{\"name\": \"new-plugin\"}".to_vec(),
+        false,
+    );
+
+    let report = adapter.write_plugin_assets(&[asset]).unwrap();
+
+    assert_eq!(report.written, 1);
+    // New plugin exists
+    assert!(local_dir
+        .join("new-plugin/.cursor-plugin/plugin.json")
+        .exists());
+    // Old plugin is removed
+    assert!(
+        !local_dir.join("old-plugin").exists(),
+        "Stale old-plugin should be pruned"
+    );
+}
+
+/// GIVEN an unchanged manifest already on disk
+/// WHEN write_plugin_assets is called with the same content
+/// THEN the write is skipped but stale plugins are still pruned
+#[test]
+fn plugin_assets_prune_preserves_current_when_unchanged() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let local_dir = tmp.path().join("plugins/local");
+
+    // Pre-create the current plugin manifest (simulating a prior sync)
+    let current = local_dir.join("current-plugin/.cursor-plugin");
+    std::fs::create_dir_all(&current).unwrap();
+    let content = b"{\"name\": \"current-plugin\"}";
+    std::fs::write(current.join("plugin.json"), content).unwrap();
+
+    // Also create a stale plugin
+    let stale = local_dir.join("removed-plugin/.cursor-plugin");
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::write(stale.join("plugin.json"), b"{\"name\": \"removed\"}").unwrap();
+
+    // Sync same content — should be skipped (unchanged) but stale should be pruned
+    let asset = PluginAsset::new(
+        "current-plugin".to_string(),
+        "market".to_string(),
+        "2.0.0".to_string(),
+        std::path::PathBuf::from(".claude-plugin/plugin.json"),
+        content.to_vec(),
+        false,
+    );
+
+    let report = adapter.write_plugin_assets(&[asset]).unwrap();
+
+    // Content unchanged, so nothing written
+    assert_eq!(report.written, 0);
+    // Current plugin preserved
+    assert!(
+        current.join("plugin.json").exists(),
+        "Current plugin should be preserved"
+    );
+    // Stale plugin pruned
+    assert!(
+        !local_dir.join("removed-plugin").exists(),
+        "Stale removed-plugin should be pruned even when current is unchanged"
+    );
+}
+
+/// GIVEN multiple plugins are synced
+/// WHEN each has a corresponding manifest
+/// THEN only plugins not in the current set are pruned
+#[test]
+fn plugin_assets_prune_multiple_plugins_independently() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let local_dir = tmp.path().join("plugins/local");
+
+    // Pre-create stale plugins
+    let stale_a = local_dir.join("stale-a/.cursor-plugin");
+    let stale_b = local_dir.join("stale-b/.cursor-plugin");
+    std::fs::create_dir_all(&stale_a).unwrap();
+    std::fs::create_dir_all(&stale_b).unwrap();
+    std::fs::write(stale_a.join("plugin.json"), b"{\"name\": \"stale-a\"}").unwrap();
+    std::fs::write(stale_b.join("plugin.json"), b"{\"name\": \"stale-b\"}").unwrap();
+
+    let assets = vec![
+        PluginAsset::new(
+            "plugin-a".to_string(),
+            "market".to_string(),
+            "2.0.0".to_string(),
+            std::path::PathBuf::from(".claude-plugin/plugin.json"),
+            b"{\"name\": \"plugin-a\"}".to_vec(),
+            false,
+        ),
+        PluginAsset::new(
+            "plugin-b".to_string(),
+            "market".to_string(),
+            "1.0.0".to_string(),
+            std::path::PathBuf::from(".claude-plugin/plugin.json"),
+            b"{\"name\": \"plugin-b\"}".to_vec(),
+            false,
+        ),
+    ];
+
+    let report = adapter.write_plugin_assets(&assets).unwrap();
+
+    assert_eq!(report.written, 2);
+    // New plugins exist
+    assert!(local_dir
+        .join("plugin-a/.cursor-plugin/plugin.json")
+        .exists());
+    assert!(local_dir
+        .join("plugin-b/.cursor-plugin/plugin.json")
+        .exists());
+    // Stale plugins pruned
+    assert!(
+        !local_dir.join("stale-a").exists(),
+        "Stale stale-a should be pruned"
+    );
+    assert!(
+        !local_dir.join("stale-b").exists(),
+        "Stale stale-b should be pruned"
+    );
+}
+
+/// GIVEN an empty asset list
+/// WHEN write_plugin_assets is called
+/// THEN no pruning occurs and existing directories are untouched
+#[test]
+fn plugin_assets_empty_list_does_not_prune() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let local_dir = tmp.path().join("plugins/local/some-plugin/.cursor-plugin");
+    std::fs::create_dir_all(&local_dir).unwrap();
+    std::fs::write(
+        local_dir.join("plugin.json"),
+        b"{\"name\": \"some-plugin\"}",
+    )
+    .unwrap();
+
+    let report = adapter.write_plugin_assets(&[]).unwrap();
+
+    assert_eq!(report.written, 0);
+    assert!(
+        report.warnings.is_empty(),
+        "No warnings for empty asset list"
+    );
+    assert!(
+        local_dir.join("plugin.json").exists(),
+        "Existing files should be untouched"
+    );
+}
+
+/// GIVEN a stale plugin directory exists in plugins/local
+/// WHEN write_plugin_assets prunes it
+/// THEN the report.warnings contains the pruned plugin name
+#[test]
+fn plugin_assets_prune_reports_warnings() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let local_dir = tmp.path().join("plugins/local");
+
+    // Pre-create a stale plugin
+    let stale = local_dir.join("old-plugin/.cursor-plugin");
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::write(stale.join("plugin.json"), b"{}").unwrap();
+
+    let asset = PluginAsset::new(
+        "new-plugin".to_string(),
+        "pub".to_string(),
+        "0.2.0".to_string(),
+        std::path::PathBuf::from(".claude-plugin/plugin.json"),
+        b"{\"name\": \"new-plugin\"}".to_vec(),
+        false,
+    );
+
+    let report = adapter.write_plugin_assets(&[asset]).unwrap();
+
+    assert_eq!(report.written, 1);
+    assert_eq!(report.warnings.len(), 1, "Should have 1 prune warning");
+    assert!(
+        report.warnings[0].contains("old-plugin"),
+        "Warning should identify the pruned plugin, got: {}",
+        report.warnings[0]
+    );
+}
+
+/// GIVEN a non-directory file exists alongside plugin directories in plugins/local
+/// WHEN pruning runs
+/// THEN non-directory entries are not considered for pruning (no crash)
+#[test]
+fn plugin_assets_prune_ignores_non_directory_entries() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let local_dir = tmp.path().join("plugins/local");
+    std::fs::create_dir_all(&local_dir).unwrap();
+
+    // Create a stray file alongside plugin directories
+    std::fs::write(local_dir.join("README.md"), b"# notes").unwrap();
+
+    let asset = PluginAsset::new(
+        "myplugin".to_string(),
+        "market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from(".claude-plugin/plugin.json"),
+        b"{\"name\": \"myplugin\"}".to_vec(),
+        false,
+    );
+
+    let report = adapter.write_plugin_assets(&[asset]).unwrap();
+
+    assert_eq!(report.written, 1);
+    // The README file should survive — it's not a plugin directory so
+    // remove_dir_all won't succeed on it, but the pruning loop should
+    // not crash. (It will appear in warnings if remove_dir_all fails
+    // on a file, but that's acceptable.)
+    assert!(
+        local_dir
+            .join("myplugin/.cursor-plugin/plugin.json")
+            .exists(),
+        "Plugin manifest should be written"
+    );
 }

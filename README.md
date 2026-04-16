@@ -23,10 +23,11 @@ and Cursor.
 [FAQ](docs/FAQ.md) |
 [Changelog](book/src/changelog.md)
 
-> **What's new in 0.7.6** -- Plugin assets sync mirrors runtime
-> scripts, binaries, and source packages from the Claude plugin cache
-> to Cursor. Hash-based change detection and executable permission
-> preservation on Unix.
+> **What's new in 0.7.7** -- Manifest-only plugin sync writes
+> `.cursor-plugin/plugin.json` to `plugins/local/` instead of
+> mirroring the full cache. Plugin-aware skill writing organizes
+> synced skills under their source plugin. Validation cache
+> enables offline `skrills validate`.
 > See [changelog](book/src/changelog.md).
 
 ## Why Skrills?
@@ -82,9 +83,15 @@ setup.
   validation status, usage metrics, and MCP server configs.
   The standalone [`skrills-portal.html`](skrills-portal.html)
   works offline without a running server.
-- **Plugin asset sync** -- mirrors runtime scripts, binaries,
-  and source packages from the Claude plugin cache to Cursor
-  with hash-based change detection.
+- **Plugin asset sync** -- writes plugin manifests to Cursor's
+  `plugins/local/` directory so synced plugins appear as
+  installed. Skills with plugin origin are organized under
+  their source plugin. Stale plugin entries are pruned
+  automatically.
+- **Validation cache** -- caches validation results in SQLite
+  so `skrills validate` works offline with staleness indicators.
+- **GitHub Action** -- reusable action for validating skills in
+  pull requests with configurable targets and strictness.
 - **Discovery deduplication** -- frontmatter identity matching
   consolidates duplicate skill installations.
 
@@ -135,6 +142,18 @@ See [CLI reference](book/src/cli.md) for all commands including
 skill lifecycle management (`skill-deprecate`, `skill-rollback`,
 `skill-import`, `skill-score`, `skill-catalog`).
 
+### CI Integration
+
+Validate skills in pull requests with the reusable GitHub Action:
+
+```yaml
+- uses: athola/skrills/.github/actions/validate-skills@v0.7.7
+  with:
+    targets: all
+    strict: true
+    path: skills/
+```
+
 ## Supported Environments
 
 Skrills syncs eight asset types across four CLI environments.
@@ -151,9 +170,10 @@ Each cell reflects what the adapter reads and writes today:
 | Preferences | Y | Y | Y | -- |
 | Plugin Assets | Y | -- | -- | Y |
 
-Plugin assets (scripts, binaries, libraries) are mirrored from the
-Claude plugin cache to `~/.cursor/plugins/cache/`, preserving the
-directory hierarchy so that skills can reference companion scripts.
+Plugin asset sync writes `.cursor-plugin/plugin.json` manifests to
+`~/.cursor/plugins/local/` so Cursor recognizes synced plugins.
+Cursor discovers actual plugin content from `~/.claude/plugins/cache/`
+natively. Stale plugin entries are pruned automatically during sync.
 
 Cursor rules (`.mdc` files) are mapped bidirectionally via mode
 derivation (`alwaysApply`, glob-scoped, agent-requested).
@@ -173,7 +193,7 @@ workflows.
 | `sync` | Multi-directional sync with adapters for each CLI (Claude, Codex, Copilot, Cursor) |
 | `dashboard` | TUI and browser-based skill visualization |
 | `discovery` | Skill discovery and ranking |
-| `state` | Environment config, manifest settings, runtime overrides |
+| `state` | Environment config, manifest settings, runtime overrides, validation cache, network detection |
 | `metrics` | SQLite-based telemetry for invocations, validations, sync |
 | `subagents` | Shared subagent runtime and backends |
 | `tome` | Research API orchestration, caching, PDF serving |

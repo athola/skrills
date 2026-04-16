@@ -1,5 +1,19 @@
 # Changelog Highlights
 
+## 0.7.7 (2026-04-15)
+
+- **Refactor: Manifest-Only Plugin Sync**: `write_plugin_assets` now writes manifests to `plugins/local/<plugin>/.cursor-plugin/plugin.json` instead of mirroring the full cache. Cursor discovers plugin content natively from `~/.claude/plugins/cache/`. Stale plugin directories are pruned automatically.
+- **NEW: Plugin-Aware Skill Writing**: Skills from plugins write to `plugins/local/<plugin>/skills/` so Cursor's plugin system discovers them. Manifests are auto-created per plugin.
+- **NEW: `PluginOrigin` Type**: Tracks which plugin an artifact came from (name, publisher, version). Enables plugin-aware writing in target adapters.
+- **NEW: Validation Cache**: SQLite-backed cache for offline `skrills validate` with staleness indicators (fresh/recent/aging/stale).
+- **NEW: Network Detection**: `NetworkStatus` module detects connectivity with configurable timeout for graceful offline degradation.
+- **NEW: GitHub Action**: Reusable composite action (`.github/actions/validate-skills/`) validates skills in PRs with configurable targets, strictness, and annotation output.
+- **NEW: Interactive Sync Preview**: `SyncParams.interactive` field enables per-file accept/reject before writing (scaffolded, CLI wiring pending).
+- **Refactor: `strum` Derives**: `NodeKind` and `EdgeKind` use `strum::EnumIter` and `strum::EnumCount` instead of manual `all()` methods.
+- **Fix: `cargo fmt`**: Resolved formatting violations in claude adapter, cursor tests, and knowledge graph timestamp parser.
+- **Fix: Marketplace Manifest**: Updated `.claude-plugin/marketplace.json` from stale 0.6.1 to 0.7.7 with correct tool count (36) and Cursor mention.
+- **Testing**: 8 manifest-sync and stale-plugin pruning tests. Snake_case normalization tests for async research tools. 21 validation cache tests. 5 network detection tests.
+
 ## 0.7.6 (2026-04-12)
 
 - **NEW: Plugin Assets Sync**: Cursor sync now mirrors plugin runtime scripts, binaries, and source packages from `~/.claude/plugins/cache/` to `~/.cursor/plugins/cache/`. Preserves directory hierarchy so skills can reference companion scripts at the same relative paths.
