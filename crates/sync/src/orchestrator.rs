@@ -263,6 +263,19 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 );
             }
             let commands = self.source.read_commands(params.include_marketplace)?;
+            // Apply plugin exclusion filter to commands
+            let commands: Vec<_> = if params.exclude_plugins.is_empty() {
+                commands
+            } else {
+                commands
+                    .into_iter()
+                    .filter(|c| {
+                        c.plugin_origin
+                            .as_ref()
+                            .is_none_or(|o| !params.is_plugin_excluded(&o.plugin_name))
+                    })
+                    .collect()
+            };
             let (commands, cmd_dups) = dedup_by_name(
                 commands,
                 "command",
@@ -386,6 +399,19 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 );
             }
             let agents = self.source.read_agents()?;
+            // Apply plugin exclusion filter to agents
+            let agents: Vec<_> = if params.exclude_plugins.is_empty() {
+                agents
+            } else {
+                agents
+                    .into_iter()
+                    .filter(|a| {
+                        a.plugin_origin
+                            .as_ref()
+                            .is_none_or(|o| !params.is_plugin_excluded(&o.plugin_name))
+                    })
+                    .collect()
+            };
             if !params.dry_run {
                 report.agents = self.target.write_agents(&agents)?;
             } else {

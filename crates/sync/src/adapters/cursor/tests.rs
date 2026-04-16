@@ -1048,6 +1048,38 @@ fn skills_model_hint_injected_as_comment() {
 
 // --- Plugin Asset Manifest Tests ---
 
+/// GIVEN a plugin_name containing path traversal components
+/// WHEN write_plugin_assets is called
+/// THEN the manifest is written inside plugins/local/ (traversal stripped)
+#[test]
+fn plugin_assets_path_traversal_sanitized() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let malicious = PluginAsset::new(
+        "../../tmp/evil".to_string(),
+        "shady".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from(".claude-plugin/plugin.json"),
+        b"{\"name\": \"evil\"}".to_vec(),
+        false,
+    );
+
+    let report = adapter.write_plugin_assets(&[malicious]).unwrap();
+
+    assert_eq!(report.written, 1);
+    // The traversal components are stripped — file lands inside plugins/local/
+    assert!(
+        !tmp.path().join("tmp/evil").exists(),
+        "Path traversal must not escape plugins/local/"
+    );
+    // The sanitized name should be under plugins/local/
+    let local_dir = tmp.path().join("plugins/local");
+    assert!(local_dir.exists(), "plugins/local should exist");
+}
+
 /// Non-manifest assets (scripts, binaries) are silently ignored — only
 /// `.claude-plugin/plugin.json` files are processed by the manifest writer.
 #[test]

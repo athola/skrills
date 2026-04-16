@@ -151,6 +151,7 @@ impl AgentAdapter for CursorAdapter {
     /// (skills, agents, hooks) from `~/.claude/plugins/cache/` natively.
     /// The local manifests exist solely so `/plugins` shows installed plugins.
     fn write_plugin_assets(&self, assets: &[PluginAsset]) -> Result<WriteReport> {
+        use crate::adapters::utils::sanitize_name;
         use crate::report::SkipReason;
         use std::collections::HashSet;
         use std::fs;
@@ -165,30 +166,41 @@ impl AgentAdapter for CursorAdapter {
         let local_dir = self.root.join("plugins").join("local");
         fs::create_dir_all(&local_dir)?;
 
-        // Only write .claude-plugin/plugin.json manifests, deduplicated by plugin name
+        // Track all referenced plugins so pruning never removes an active one,
+        // regardless of whether the batch contains their manifest.
         let mut seen_plugins: HashSet<String> = HashSet::new();
 
         for asset in assets {
+            // Register this plugin before filtering — protects it from pruning
+            // even if the batch only contains non-manifest files for it.
+            let safe_name = sanitize_name(&asset.plugin_name);
+            seen_plugins.insert(safe_name.clone());
+
             // Only process plugin.json manifest files
             let rel_str = asset.relative_path.to_string_lossy();
             if !rel_str.ends_with("plugin.json") || !rel_str.contains(".claude-plugin") {
                 continue;
             }
 
-            // One manifest per plugin
-            if !seen_plugins.insert(asset.plugin_name.clone()) {
-                continue;
-            }
-
-            let manifest_dir = local_dir.join(&asset.plugin_name).join(".cursor-plugin");
+            let manifest_dir = local_dir.join(&safe_name).join(".cursor-plugin");
             let manifest_path = manifest_dir.join("plugin.json");
 
             // Check if unchanged
             if manifest_path.exists() {
-                let existing = fs::read(&manifest_path).unwrap_or_default();
+                let existing = match fs::read(&manifest_path) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        debug!(
+                            path = %manifest_path.display(),
+                            error = %e,
+                            "Could not read existing manifest for hash comparison, will re-write"
+                        );
+                        vec![]
+                    }
+                };
                 if crate::adapters::utils::hash_content(&existing) == asset.hash {
                     report.skipped.push(SkipReason::Unchanged {
-                        item: format!("{}/.cursor-plugin/plugin.json", asset.plugin_name),
+                        item: format!("{}/.cursor-plugin/plugin.json", safe_name),
                     });
                     continue;
                 }
@@ -198,7 +210,7 @@ impl AgentAdapter for CursorAdapter {
             fs::write(&manifest_path, &asset.content)?;
 
             debug!(
-                plugin = %asset.plugin_name,
+                plugin = %safe_name,
                 "Wrote plugin manifest to Cursor plugins/local"
             );
             report.written += 1;
@@ -207,12 +219,16 @@ impl AgentAdapter for CursorAdapter {
         // Prune plugins that are no longer installed
         if let Ok(entries) = fs::read_dir(&local_dir) {
             for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
                 let name = match entry.file_name().into_string() {
                     Ok(n) => n,
                     Err(_) => continue,
                 };
                 if !seen_plugins.contains(&name) {
-                    if let Err(e) = fs::remove_dir_all(entry.path()) {
+                    if let Err(e) = fs::remove_dir_all(&path) {
                         tracing::warn!(
                             plugin = %name,
                             error = %e,
@@ -225,6 +241,11 @@ impl AgentAdapter for CursorAdapter {
                     }
                 }
             }
+        } else {
+            tracing::warn!(
+                path = %local_dir.display(),
+                "Could not read plugins/local for pruning"
+            );
         }
 
         Ok(report)
