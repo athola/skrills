@@ -8,3 +8,7 @@ publish = false
 
 [dependencies]
 tempfile = "3"
+
+[dev-dependencies]
+serde_json = { workspace = true }
+toml = "0.8"

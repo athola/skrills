@@ -4510,7 +4510,9 @@ dependencies = [
 name = "skrills_test_utils"
 version = "0.7.7"
 dependencies = [
+ "serde_json",
  "tempfile",
+ "toml 0.8.23",
 ]
 
 [[package]]

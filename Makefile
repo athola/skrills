@@ -61,6 +61,7 @@ endef
 
 # Phony targets: core developer flow
 .PHONY: all help version verify fmt fmt-check lint lint-md check test test-unit test-integration test-setup test-install \
+	release-consistency \
 	build build-min serve-help install status coverage test-coverage dogfood dogfood-readme ci precommit \
 	clean clean-demo hooks require-cargo security deny deps-update check-deps \
 	quick watch bench release
@@ -101,6 +102,7 @@ help:
 	@printf "  %-23s %s\n" "test | test-unit | test-integration" "run tests"
 	@printf "  %-23s %s\n" "test-setup" "run setup module tests"
 	@printf "  %-23s %s\n" "test-install" "test install.sh helper functions"
+	@printf "  %-23s %s\n" "release-consistency" "verify Cargo.toml/plugin.json version + commands parity"
 	@printf "  %-23s %s\n" "test-coverage" "coverage via cargo-llvm-cov (precise)"
 	@printf "  %-23s %s\n" "build | build-min" "release builds"
 	@printf "  %-23s %s\n" "install" "install skrills to $(CARGO_HOME)/bin"
@@ -177,6 +179,10 @@ test-setup:
 test-install:
 	@echo "==> Testing install.sh helper functions"
 	./scripts/test-install.sh
+
+release-consistency:
+	@echo "==> Verifying release-consistency invariants (Cargo.toml + plugin.json + commands/)"
+	$(CARGO_CMD) test -p skrills_test_utils --test release_consistency
 
 test-coverage:
 	@if command -v cargo-llvm-cov >/dev/null 2>&1; then \
