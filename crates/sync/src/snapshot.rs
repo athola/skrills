@@ -11,6 +11,7 @@ use crate::adapters::utils::hash_content;
 use crate::Result;
 use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use time::OffsetDateTime;
@@ -428,24 +429,25 @@ pub fn collect_target_paths(
     agents: &[crate::common::Command],
     instructions: &[crate::common::Command],
 ) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
+    // BTreeSet encodes both invariants this function promises: uniqueness
+    // (callers can't observe duplicates) and deterministic sorted ordering
+    // (snapshot manifests compare byte-for-byte across runs). Using the type
+    // for the contract beats remembering to call `.sort().dedup()` after
+    // every future edit to the loop body.
+    let mut paths = BTreeSet::new();
 
-    // For each item type, check if there's a corresponding file on the target
     for item_set in [commands, skills, hooks, agents, instructions] {
         for item in item_set {
-            // The source_path is absolute — we want the file name to look for
-            // on the target side. We use the name as the relative identifier.
+            // source_path is absolute; the target-side identifier is just
+            // the file name (commands/skills/hooks share a flat namespace
+            // on most adapters).
             if let Some(file_name) = item.source_path.file_name() {
-                paths.push(PathBuf::from(file_name));
+                paths.insert(PathBuf::from(file_name));
             }
         }
     }
 
-    // Deduplicate
-    paths.sort();
-    paths.dedup();
-
-    paths
+    paths.into_iter().collect()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -970,10 +972,22 @@ mod tests {
             &[],
         );
 
-        // Should be deduplicated
+        // Dedup: the duplicate hello.md (cmd + skill) collapses to one entry.
         assert_eq!(paths.len(), 2);
         assert!(paths.contains(&PathBuf::from("greet.md")));
         assert!(paths.contains(&PathBuf::from("hello.md")));
+
+        // Ordering: callers (e.g., snapshot manifests) rely on deterministic
+        // output. Verify the contract instead of just hoping for it.
+        assert_eq!(
+            paths,
+            vec![PathBuf::from("greet.md"), PathBuf::from("hello.md")]
+        );
+
+        // Stronger dedup check: build a set from the result and confirm no
+        // collapse happened — guards against future impls that drop dedup.
+        let unique: std::collections::HashSet<_> = paths.iter().cloned().collect();
+        assert_eq!(unique.len(), paths.len(), "result must be unique");
     }
 
     // ==========================================
