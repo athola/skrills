@@ -114,6 +114,7 @@ impl ClaudeAdapter {
                 hash,
                 modules: Vec::new(),
                 content_format: ContentFormat::default(),
+                plugin_origin: None,
             });
         }
 
@@ -208,6 +209,7 @@ impl AgentAdapter for ClaudeAdapter {
                     hash,
                     modules: Vec::new(),
                     content_format: ContentFormat::default(),
+                    plugin_origin: None,
                 });
             }
         }
@@ -335,42 +337,44 @@ impl AgentAdapter for ClaudeAdapter {
         let mut skills_map: HashMap<String, Command> = HashMap::new();
 
         // Helper to process a skill and update the map if it's newer
-        let process_skill = |skills_map: &mut HashMap<String, Command>,
-                             name: String,
-                             path: &std::path::Path,
-                             modules: Vec<ModuleFile>| {
-            let content = match fs::read(path) {
-                Ok(c) => c,
-                Err(_) => return,
-            };
-            let metadata = match fs::metadata(path) {
-                Ok(m) => m,
-                Err(_) => return,
-            };
-            let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-            let hash = hash_content(&content);
+        let process_skill =
+            |skills_map: &mut HashMap<String, Command>,
+             name: String,
+             path: &std::path::Path,
+             modules: Vec<ModuleFile>,
+             plugin_origin: Option<crate::common::PluginOrigin>| {
+                let content = match fs::read(path) {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
+                let metadata = match fs::metadata(path) {
+                    Ok(m) => m,
+                    Err(_) => return,
+                };
+                let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                let hash = hash_content(&content);
 
-            let skill = Command {
-                name: name.clone(),
-                content,
-                source_path: path.to_path_buf(),
-                modified,
-                hash,
-                modules,
+                let skill = Command {
+                    name: name.clone(),
+                    content,
+                    source_path: path.to_path_buf(),
+                    modified,
+                    hash,
+                    modules,
+                    content_format: ContentFormat::default(),
+                    plugin_origin,
+                };
 
-                content_format: ContentFormat::default(),
-            };
-
-            // Keep the most recently modified version
-            match skills_map.get(&name) {
-                Some(existing) if existing.modified >= modified => {
-                    // Existing is newer or same, skip
+                // Keep the most recently modified version
+                match skills_map.get(&name) {
+                    Some(existing) if existing.modified >= modified => {
+                        // Existing is newer or same, skip
+                    }
+                    _ => {
+                        skills_map.insert(name, skill);
+                    }
                 }
-                _ => {
-                    skills_map.insert(name, skill);
-                }
-            }
-        };
+            };
 
         // 1) Core ~/.claude/skills
         let skills_dir = self.skills_dir();
@@ -417,7 +421,7 @@ impl AgentAdapter for ClaudeAdapter {
                     (name, Vec::new())
                 };
 
-                process_skill(&mut skills_map, name, path, modules);
+                process_skill(&mut skills_map, name, path, modules, None);
             }
         }
 
@@ -471,7 +475,21 @@ impl AgentAdapter for ClaudeAdapter {
                     continue;
                 }
 
-                process_skill(&mut skills_map, name, path, modules);
+                // Derive plugin origin from the cache path structure:
+                // plugins/cache/<publisher>/<plugin>/<version>/skills/...
+                let origin = path.strip_prefix(&cache_dir).ok().and_then(|rel| {
+                    let mut components = rel.components();
+                    let publisher = components.next()?.as_os_str().to_str()?.to_string();
+                    let plugin_name = components.next()?.as_os_str().to_str()?.to_string();
+                    let version = components.next()?.as_os_str().to_str()?.to_string();
+                    Some(crate::common::PluginOrigin {
+                        plugin_name,
+                        publisher,
+                        version,
+                    })
+                });
+
+                process_skill(&mut skills_map, name, path, modules, origin);
             }
         }
 
@@ -700,6 +718,7 @@ impl AgentAdapter for ClaudeAdapter {
                 modules: Vec::new(),
 
                 content_format: ContentFormat::default(),
+                plugin_origin: None,
             };
 
             match hooks_map.get(&name) {
@@ -803,6 +822,7 @@ impl AgentAdapter for ClaudeAdapter {
                 modules: Vec::new(),
 
                 content_format: ContentFormat::default(),
+                plugin_origin: None,
             };
 
             match agents_map.get(&name) {
@@ -967,6 +987,7 @@ impl AgentAdapter for ClaudeAdapter {
             modules: Vec::new(),
 
             content_format: ContentFormat::default(),
+            plugin_origin: None,
         }])
     }
 
@@ -1018,24 +1039,34 @@ impl AgentAdapter for ClaudeAdapter {
         Ok(report)
     }
 
-    fn read_plugin_assets(&self) -> Result<Vec<PluginAsset>> {
+    fn read_plugin_assets(&self, full_mirror: bool) -> Result<Vec<PluginAsset>> {
         let cache_dir = self.root.join("plugins/cache");
         if !cache_dir.exists() {
             return Ok(vec![]);
         }
 
-        // Directories already handled by other sync paths
-        const SYNCED_DIRS: &[&str] = &["skills", "commands", "agents"];
+        // In normal mode, skip dirs handled by other sync paths.
+        // In full_mirror mode, include everything (for targets like Cursor
+        // that need a complete plugin cache copy).
+        let synced_dirs: &[&str] = if full_mirror {
+            &[]
+        } else {
+            &["skills", "commands", "agents"]
+        };
         // Directories to skip (not needed at runtime)
-        const SKIP_DIRS: &[&str] = &[
-            "tests",
-            ".venv",
-            "__pycache__",
-            "node_modules",
-            ".git",
-            ".claude-plugin",
-            ".cursor-plugin",
-        ];
+        let skip_dirs: &[&str] = if full_mirror {
+            &["tests", ".venv", "__pycache__", "node_modules", ".git"]
+        } else {
+            &[
+                "tests",
+                ".venv",
+                "__pycache__",
+                "node_modules",
+                ".git",
+                ".claude-plugin",
+                ".cursor-plugin",
+            ]
+        };
 
         let mut assets = Vec::new();
 
@@ -1138,8 +1169,15 @@ impl AgentAdapter for ClaudeAdapter {
                         Err(_) => continue,
                     };
 
-                    // Skip hidden files
-                    if is_hidden_path(rel_path) {
+                    // Skip hidden files — but in full_mirror mode, allow
+                    // .claude-plugin/ (plugin manifests needed by targets like Cursor)
+                    if is_hidden_path(rel_path)
+                        && (!full_mirror
+                            || rel_path
+                                .components()
+                                .next()
+                                .is_none_or(|c| c.as_os_str() != ".claude-plugin"))
+                    {
                         continue;
                     }
 
@@ -1150,17 +1188,17 @@ impl AgentAdapter for ClaudeAdapter {
                         .and_then(|c| c.as_os_str().to_str())
                         .unwrap_or("");
 
-                    if SYNCED_DIRS.contains(&top_component) {
+                    if synced_dirs.contains(&top_component) {
                         continue; // Already synced by skills/commands/agents
                     }
-                    if SKIP_DIRS.contains(&top_component) {
+                    if skip_dirs.contains(&top_component) {
                         continue;
                     }
                     // Also check any ancestor for skip dirs (e.g., nested __pycache__)
                     if rel_path.components().any(|c| {
                         c.as_os_str()
                             .to_str()
-                            .is_some_and(|s| SKIP_DIRS.contains(&s))
+                            .is_some_and(|s| skip_dirs.contains(&s))
                     }) {
                         continue;
                     }
@@ -1309,6 +1347,7 @@ mod tests {
             modules: Vec::new(),
 
             content_format: ContentFormat::default(),
+            plugin_origin: None,
         }];
 
         let report = adapter.write_commands(&commands).unwrap();
@@ -1336,6 +1375,7 @@ mod tests {
             modules: Vec::new(),
 
             content_format: ContentFormat::default(),
+            plugin_origin: None,
         }];
         adapter.write_commands(&commands).unwrap();
 
@@ -1349,6 +1389,7 @@ mod tests {
             modules: Vec::new(),
 
             content_format: ContentFormat::default(),
+            plugin_origin: None,
         }];
         let report = adapter.write_commands(&commands2).unwrap();
 
@@ -1473,6 +1514,7 @@ mod tests {
             modules: Vec::new(),
 
             content_format: ContentFormat::default(),
+            plugin_origin: None,
         };
 
         let report = adapter.write_skills(&[skill]).unwrap();
@@ -1815,7 +1857,7 @@ mod tests {
         fs::write(plugin_dir.join("tool.py"), b"# tool\n").unwrap();
 
         let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
-        let assets = adapter.read_plugin_assets().unwrap();
+        let assets = adapter.read_plugin_assets(false).unwrap();
 
         assert_eq!(assets.len(), 1, "Should find one asset: {:?}", assets);
         assert_eq!(assets[0].plugin_name, "myplugin");
@@ -1848,7 +1890,7 @@ mod tests {
         fs::write(tests.join("test_run.py"), b"# test\n").unwrap();
 
         let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
-        let assets = adapter.read_plugin_assets().unwrap();
+        let assets = adapter.read_plugin_assets(false).unwrap();
 
         assert_eq!(assets.len(), 1, "Should only find the script");
         assert_eq!(
@@ -1870,7 +1912,7 @@ mod tests {
 
         // WHEN reading plugin assets
         let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
-        let assets = adapter.read_plugin_assets().unwrap();
+        let assets = adapter.read_plugin_assets(false).unwrap();
 
         // THEN only the latest version's files are returned
         assert_eq!(assets.len(), 1, "Should only scan latest version");
@@ -1892,7 +1934,7 @@ mod tests {
 
         // WHEN reading plugin assets
         let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
-        let assets = adapter.read_plugin_assets().unwrap();
+        let assets = adapter.read_plugin_assets(false).unwrap();
 
         // THEN hidden files are excluded
         assert_eq!(assets.len(), 1);
@@ -1913,7 +1955,7 @@ mod tests {
 
         // WHEN reading plugin assets
         let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
-        let assets = adapter.read_plugin_assets().unwrap();
+        let assets = adapter.read_plugin_assets(false).unwrap();
 
         // THEN config files at the plugin root are included
         assert_eq!(assets.len(), 2);
@@ -1942,7 +1984,7 @@ mod tests {
 
         // WHEN reading plugin assets
         let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
-        let assets = adapter.read_plugin_assets().unwrap();
+        let assets = adapter.read_plugin_assets(false).unwrap();
 
         // THEN no assets are returned
         assert!(
@@ -1971,7 +2013,7 @@ mod tests {
 
         // WHEN reading plugin assets
         let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
-        let assets = adapter.read_plugin_assets().unwrap();
+        let assets = adapter.read_plugin_assets(false).unwrap();
 
         // THEN the executable flag is set correctly
         assert_eq!(assets.len(), 2);

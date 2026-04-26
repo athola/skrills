@@ -1,0 +1,76 @@
+name: "Validate Skills"
+description: "Validate skills against CLI targets (Claude, Codex, Copilot) using skrills"
+author: "athola"
+
+branding:
+  icon: "check-circle"
+  color: "blue"
+
+inputs:
+  targets:
+    description: >
+      Validation target passed to `skrills validate --target`.
+      Accepted values: claude, codex, copilot, all, both.
+    required: false
+    default: "all"
+  strict:
+    description: >
+      When 'true', the action exits with a non-zero status if any
+      validation errors are found. Set to 'false' to report issues
+      as annotations without failing the workflow.
+    required: false
+    default: "true"
+  path:
+    description: "Path to the skills directory to validate."
+    required: false
+    default: "skills/"
+  version:
+    description: >
+      skrills version to install (without leading 'v').
+      Use 'latest' to install the most recent release.
+    required: false
+    default: "latest"
+
+outputs:
+  total:
+    description: "Total number of skills validated."
+    value: ${{ steps.validate.outputs.total }}
+  errors:
+    description: "Total number of error-level issues found."
+    value: ${{ steps.validate.outputs.errors }}
+  warnings:
+    description: "Total number of warning-level issues found."
+    value: ${{ steps.validate.outputs.warnings }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install skrills
+      shell: bash
+      env:
+        SKRILLS_VERSION: ${{ inputs.version }}
+        SKRILLS_NO_HOOK: "1"
+        SKRILLS_SKIP_PATH_MESSAGE: "1"
+      run: |
+        set -euo pipefail
+        if [ "$SKRILLS_VERSION" = "latest" ]; then
+          unset SKRILLS_VERSION
+        fi
+        export SKRILLS_BIN_DIR="${RUNNER_TEMP:-/tmp}/skrills-bin"
+        # Use the install script from this repository if available,
+        # otherwise download it from GitHub.
+        if [ -f "${{ github.action_path }}/../../../scripts/install.sh" ]; then
+          bash "${{ github.action_path }}/../../../scripts/install.sh"
+        else
+          curl -LsSf "https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh" | bash
+        fi
+        echo "${SKRILLS_BIN_DIR}" >> "$GITHUB_PATH"
+
+    - name: Validate skills
+      id: validate
+      shell: bash
+      env:
+        INPUT_TARGETS: ${{ inputs.targets }}
+        INPUT_STRICT: ${{ inputs.strict }}
+        INPUT_PATH: ${{ inputs.path }}
+      run: bash "${{ github.action_path }}/entrypoint.sh"

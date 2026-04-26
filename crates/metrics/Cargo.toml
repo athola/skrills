@@ -1,6 +1,6 @@
 [package]
 name = "skrills-metrics"
-version = "0.7.6"
+version = "0.7.7"
 edition = "2021"
 description = "SQLite-based metrics collection for skrills skill invocations, validations, and sync events."
 license = "MIT"

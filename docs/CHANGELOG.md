@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.7 - 2026-04-15
+- **Refactor: Manifest-Only Plugin Sync**: Rewrote `write_plugin_assets` from full cache mirroring (`plugins/cache/`) to manifest-only writing (`plugins/local/<plugin>/.cursor-plugin/plugin.json`). Cursor natively discovers plugin content from `~/.claude/plugins/cache/`, so only registration manifests need to be synced. Stale plugin directories are pruned from `plugins/local/` when no longer in the sync set.
+- **NEW: Plugin-Aware Skill Writing**: Skills with a `PluginOrigin` are written to `plugins/local/<plugin>/skills/<name>/SKILL.md` instead of the flat `skills/` directory. Cursor's plugin system discovers them as installed plugins. `.cursor-plugin/plugin.json` manifests are auto-created per plugin.
+- **NEW: `PluginOrigin` Type**: Added `PluginOrigin` struct to `Command`, tracking which plugin (name, publisher, version) an artifact originated from. Source adapters set this when reading from plugin caches.
+- **NEW: Validation Cache**: SQLite-backed `ValidationCache` in `crates/state/src/cache.rs` stores validation results with staleness indicators (fresh/recent/aging/stale) for offline `skrills validate`. Includes auto-cleanup of entries older than a configurable retention period.
+- **NEW: Network Detection**: `NetworkStatus` module (`crates/state/src/network.rs`) provides `check_connectivity()` with configurable timeout and `is_online()` convenience function for graceful offline degradation.
+- **NEW: GitHub Action**: Reusable composite action at `.github/actions/validate-skills/` validates skills in pull requests. Configurable targets, strictness, and path. Reports issues as GitHub annotations.
+- **NEW: Interactive Sync Preview**: Added `interactive` field to `SyncParams` and `preview.rs` module (scaffolded) for per-file accept/reject diffs before writing.
+- **Refactor: `strum` Derives for Knowledge Graph**: `NodeKind` and `EdgeKind` now use `strum::EnumIter` and `strum::EnumCount` instead of manually maintained `all()` methods, providing compile-time completeness guarantees.
+- **Fix: `cargo fmt` Violations**: Resolved formatting issues in `claude.rs`, `cursor/tests.rs`, and `knowledge_graph.rs` that were failing CI.
+- **Fix: Marketplace Manifest**: Updated `.claude-plugin/marketplace.json` from stale 0.6.1 to 0.7.7 (36 MCP tools, added Cursor to description).
+- **Testing**: 8 manifest-sync and stale-plugin pruning tests (replaces 6 legacy cache-mirroring tests). 1 async snake_case normalization test covering 4 research tools. 21 validation cache tests. 5 network detection tests. 43 integration test sites updated for new `interactive` and `plugin_origin` fields.
+
 ## 0.7.6 - 2026-04-12
 - **NEW: Plugin Assets Sync**: Cursor sync now mirrors plugin runtime scripts (Python, shell), binaries, and source packages from `~/.claude/plugins/cache/` to `~/.cursor/plugins/cache/`. Preserves directory hierarchy so skills can reference companion scripts at the same relative paths. Controlled by the `sync_plugin_assets` flag in `SyncParams` (default: enabled).
 - **NEW: `PluginAsset` Type**: Added `PluginAsset` struct to the sync common schema, with publisher, plugin name, version, relative path, content, hash, and executable permission tracking.

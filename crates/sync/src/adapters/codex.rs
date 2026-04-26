@@ -208,6 +208,7 @@ impl AgentAdapter for CodexAdapter {
                     hash,
                     modules: Vec::new(),
                     content_format: ContentFormat::default(),
+                    plugin_origin: None,
                 });
             }
         }
@@ -381,6 +382,7 @@ impl AgentAdapter for CodexAdapter {
                 hash,
                 modules,
                 content_format: ContentFormat::default(),
+                plugin_origin: None,
             });
         }
         Ok(skills)
@@ -624,6 +626,7 @@ impl AgentAdapter for CodexAdapter {
                 hash,
                 modules,
                 content_format: ContentFormat::default(),
+                plugin_origin: None,
             });
         }
 
@@ -755,6 +758,7 @@ mod tests {
             modules: Vec::new(),
 
             content_format: ContentFormat::default(),
+            plugin_origin: None,
         }];
 
         let report = adapter.write_commands(&commands).unwrap();
@@ -778,6 +782,7 @@ mod tests {
             modules: Vec::new(),
 
             content_format: ContentFormat::default(),
+            plugin_origin: None,
         }];
 
         adapter.write_commands(&commands).unwrap();
@@ -880,6 +885,7 @@ mod tests {
             modules: Vec::new(),
 
             content_format: ContentFormat::default(),
+            plugin_origin: None,
         };
 
         let report = adapter.write_skills(&[skill]).unwrap();
@@ -901,6 +907,7 @@ mod tests {
             modules: Vec::new(),
 
             content_format: ContentFormat::default(),
+            plugin_origin: None,
         };
 
         adapter.write_skills(&[skill]).unwrap();
@@ -981,6 +988,7 @@ mod tests {
             ],
 
             content_format: ContentFormat::default(),
+            plugin_origin: None,
         };
 
         let report = adapter.write_skills(&[skill]).unwrap();
@@ -1016,6 +1024,7 @@ mod tests {
                 hash: "hash1".to_string(),
                 modules: Vec::new(),
                 content_format: ContentFormat::default(),
+                plugin_origin: None,
             },
             Command {
                 name: "test-writer".to_string(),
@@ -1026,6 +1035,7 @@ mod tests {
                 hash: "hash2".to_string(),
                 modules: Vec::new(),
                 content_format: ContentFormat::default(),
+                plugin_origin: None,
             },
         ];
 
@@ -1139,6 +1149,7 @@ mod tests {
             modules: Vec::new(),
 
             content_format: ContentFormat::default(),
+            plugin_origin: None,
         }];
 
         adapter.write_agents(&agents).unwrap();

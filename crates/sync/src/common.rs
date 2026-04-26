@@ -77,6 +77,21 @@ pub enum ContentFormat {
     Json,
 }
 
+/// Identifies the plugin a synced artifact originated from.
+///
+/// When set, target adapters that support plugin-aware writing (e.g., Cursor)
+/// can organize artifacts under `plugins/local/<plugin_name>/` so the target
+/// IDE recognizes them as installed plugins.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PluginOrigin {
+    /// Plugin name (e.g., "abstract", "sanctum")
+    pub plugin_name: String,
+    /// Marketplace or publisher (e.g., "claude-night-market")
+    pub publisher: String,
+    /// Plugin version (e.g., "1.8.4")
+    pub version: String,
+}
+
 /// A slash command that can be synced between agents.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Command {
@@ -100,6 +115,10 @@ pub struct Command {
     /// content is a serialized JSON array of hook entries.
     #[serde(default)]
     pub content_format: ContentFormat,
+    /// Which plugin this artifact came from, if any.
+    /// Set by source adapters when reading from plugin caches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_origin: Option<PluginOrigin>,
 }
 
 impl Command {
@@ -114,6 +133,7 @@ impl Command {
             hash,
             modules: vec![],
             content_format: ContentFormat::default(),
+            plugin_origin: None,
         }
     }
 }

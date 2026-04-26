@@ -145,8 +145,15 @@ impl AgentAdapter for CursorAdapter {
         rules::write_rules(&self.root, instructions)
     }
 
+    /// Writes plugin manifests to `~/.cursor/plugins/local/<plugin>/.cursor-plugin/plugin.json`.
+    ///
+    /// Only writes the manifest files — Cursor discovers actual plugin content
+    /// (skills, agents, hooks) from `~/.claude/plugins/cache/` natively.
+    /// The local manifests exist solely so `/plugins` shows installed plugins.
     fn write_plugin_assets(&self, assets: &[PluginAsset]) -> Result<WriteReport> {
+        use crate::adapters::utils::sanitize_name;
         use crate::report::SkipReason;
+        use std::collections::HashSet;
         use std::fs;
         use tracing::debug;
 
@@ -156,84 +163,89 @@ impl AgentAdapter for CursorAdapter {
             return Ok(report);
         }
 
-        let cache_dir = self.root.join("plugins").join("cache");
-        // Create cache dir upfront so is_path_contained can canonicalize it
-        fs::create_dir_all(&cache_dir)?;
+        let local_dir = self.root.join("plugins").join("local");
+        fs::create_dir_all(&local_dir)?;
+
+        // Track all referenced plugins so pruning never removes an active one,
+        // regardless of whether the batch contains their manifest.
+        let mut seen_plugins: HashSet<String> = HashSet::new();
 
         for asset in assets {
-            // Mirror Claude's cache structure: plugins/cache/<publisher>/<plugin>/<version>/
-            let target_dir = cache_dir
-                .join(&asset.publisher)
-                .join(&asset.plugin_name)
-                .join(&asset.version);
-            let target_path = target_dir.join(&asset.relative_path);
+            // Register this plugin before filtering — protects it from pruning
+            // even if the batch only contains non-manifest files for it.
+            let safe_name = sanitize_name(&asset.plugin_name);
+            seen_plugins.insert(safe_name.clone());
 
-            // Path containment check — security: prevent path traversal
-            if !crate::adapters::utils::is_path_contained(&target_path, &cache_dir) {
-                tracing::warn!(
-                    plugin = %asset.plugin_name,
-                    path = %asset.relative_path.display(),
-                    "Rejected plugin asset with path outside cache directory"
-                );
-                report.skipped.push(SkipReason::Unchanged {
-                    item: format!(
-                        "BLOCKED:{}/{}:{}",
-                        asset.plugin_name,
-                        asset.version,
-                        asset.relative_path.display()
-                    ),
-                });
+            // Only process plugin.json manifest files
+            let rel_str = asset.relative_path.to_string_lossy();
+            if !rel_str.ends_with("plugin.json") || !rel_str.contains(".claude-plugin") {
                 continue;
             }
 
+            let manifest_dir = local_dir.join(&safe_name).join(".cursor-plugin");
+            let manifest_path = manifest_dir.join("plugin.json");
+
             // Check if unchanged
-            if target_path.exists() {
-                let existing = match fs::read(&target_path) {
+            if manifest_path.exists() {
+                let existing = match fs::read(&manifest_path) {
                     Ok(data) => data,
                     Err(e) => {
-                        tracing::debug!(
-                            path = %target_path.display(),
+                        debug!(
+                            path = %manifest_path.display(),
                             error = %e,
-                            "Could not read existing asset for hash comparison, will re-write"
+                            "Could not read existing manifest for hash comparison, will re-write"
                         );
                         vec![]
                     }
                 };
                 if crate::adapters::utils::hash_content(&existing) == asset.hash {
                     report.skipped.push(SkipReason::Unchanged {
-                        item: format!(
-                            "{}/{}:{}",
-                            asset.plugin_name,
-                            asset.version,
-                            asset.relative_path.display()
-                        ),
+                        item: format!("{}/.cursor-plugin/plugin.json", safe_name),
                     });
                     continue;
                 }
             }
 
-            // Ensure parent directory exists
-            if let Some(parent) = target_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-
-            // Write the file
-            fs::write(&target_path, &asset.content)?;
-
-            // Preserve executable permissions
-            #[cfg(unix)]
-            if asset.executable {
-                use std::os::unix::fs::PermissionsExt;
-                let perms = std::fs::Permissions::from_mode(0o755);
-                fs::set_permissions(&target_path, perms)?;
-            }
+            fs::create_dir_all(&manifest_dir)?;
+            fs::write(&manifest_path, &asset.content)?;
 
             debug!(
-                plugin = %asset.plugin_name,
-                path = %asset.relative_path.display(),
-                "Wrote plugin asset to Cursor"
+                plugin = %safe_name,
+                "Wrote plugin manifest to Cursor plugins/local"
             );
             report.written += 1;
+        }
+
+        // Prune plugins that are no longer installed
+        if let Ok(entries) = fs::read_dir(&local_dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let name = match entry.file_name().into_string() {
+                    Ok(n) => n,
+                    Err(_) => continue,
+                };
+                if !seen_plugins.contains(&name) {
+                    if let Err(e) = fs::remove_dir_all(&path) {
+                        tracing::warn!(
+                            plugin = %name,
+                            error = %e,
+                            "Failed to prune stale local plugin"
+                        );
+                    } else {
+                        report
+                            .warnings
+                            .push(format!("Pruned stale plugin: {}", name));
+                    }
+                }
+            }
+        } else {
+            tracing::warn!(
+                path = %local_dir.display(),
+                "Could not read plugins/local for pruning"
+            );
         }
 
         Ok(report)

@@ -1,0 +1,1125 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>uPrompt — Amplify Prompts for AI Code Editors</title>
+<style>
+/* ═══ Reset ═══════════════════════════════════ */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+:root, html[data-theme="dark"] {
+  --bg-deep:      #0f1117;
+  --bg-surface:   #131720;
+  --bg-panel:     #1a1f2e;
+  --bg-card:      #1e2533;
+  --bg-hover:     #252d3d;
+  --bg-input:     #0d0f14;
+  --text-1:       #e2e8f0;
+  --text-2:       #94a3b8;
+  --text-3:       #64748b;
+  --accent:       #6366f1;
+  --accent-dim:   #4f46e5;
+  --accent-glow:  #6366f118;
+  --orange:       #f59e0b;
+  --orange-dim:   #d97706;
+  --green:        #22c55e;
+  --green-dim:    #16a34a;
+  --red:          #ef4444;
+  --cyan:         #06b6d4;
+  --border:       #1e2533;
+  --border-focus: #6366f166;
+  --radius:       8px;
+  --radius-sm:    5px;
+  --font:         -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --mono:         'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', ui-monospace, monospace;
+  --shadow:       0 4px 20px rgba(0,0,0,0.35);
+  --tr:           0.15s ease;
+}
+
+html[data-theme="light"] {
+  --bg-deep:      #f8fafc;
+  --bg-surface:   #ffffff;
+  --bg-panel:     #f1f5f9;
+  --bg-card:      #e2e8f0;
+  --bg-hover:     #dde3ec;
+  --bg-input:     #ffffff;
+  --text-1:       #0f172a;
+  --text-2:       #475569;
+  --text-3:       #94a3b8;
+  --accent:       #4f46e5;
+  --accent-dim:   #4338ca;
+  --accent-glow:  #4f46e510;
+  --border:       #e2e8f0;
+  --border-focus: #4f46e544;
+  --shadow:       0 4px 20px rgba(0,0,0,0.08);
+}
+
+html { font-size: 15px }
+body {
+  font-family: var(--font);
+  background: var(--bg-deep);
+  color: var(--text-1);
+  min-height: 100vh;
+  line-height: 1.55;
+}
+
+/* ═══ App Shell ═══════════════════════════════ */
+.app { display: grid; grid-template-rows: auto 1fr auto; min-height: 100vh }
+
+/* ── Header ─────────────────────────────────── */
+header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 16px; height: 48px;
+  background: var(--bg-surface); border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 100;
+}
+.logo { display:flex; align-items:center; gap:8px; font-weight:700; font-size:1.05rem; letter-spacing:-0.02em }
+.logo-mark {
+  width:26px; height:26px; border-radius:6px;
+  background: linear-gradient(135deg, var(--accent), var(--cyan));
+  display:grid; place-items:center; color:#fff; font-size:13px; font-weight:800;
+}
+.logo em { font-style:normal; color:var(--accent) }
+.hdr-actions { display:flex; align-items:center; gap:6px }
+
+/* ── Main ───────────────────────────────────── */
+main { display:grid; grid-template-columns:1fr 1fr; overflow:hidden }
+@media(max-width:860px){ main{grid-template-columns:1fr; grid-template-rows:1fr 1fr} }
+
+/* ── Panel ──────────────────────────────────── */
+.pnl { display:flex; flex-direction:column; overflow:hidden }
+.pnl:first-child { border-right:1px solid var(--border) }
+.pnl-head {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:0 12px; height:40px; background:var(--bg-surface);
+  border-bottom:1px solid var(--border); flex-shrink:0;
+}
+.pnl-title { font-size:0.72rem; font-weight:600; text-transform:uppercase; letter-spacing:0.07em; color:var(--text-3) }
+.pnl-acts { display:flex; gap:4px; align-items:center }
+.pnl-body { flex:1; overflow-y:auto; position:relative }
+
+/* ── Textarea ───────────────────────────────── */
+textarea, .out {
+  width:100%; height:100%; border:none; background:var(--bg-deep);
+  color:var(--text-1); font-family:var(--mono); font-size:0.82rem;
+  line-height:1.75; padding:14px 16px; resize:none; outline:none;
+}
+textarea::placeholder { color:var(--text-3); opacity:0.6 }
+.out { white-space:pre-wrap; word-wrap:break-word; overflow-y:auto; user-select:text }
+.out .h2 { color:var(--accent); font-weight:700 }
+.out .h3 { color:var(--cyan); font-weight:600 }
+.out .cb { color:var(--green) }
+.out .bold { color:var(--text-1); font-weight:600 }
+.out .hint { color:var(--text-3); font-style:italic }
+
+/* ── Controls Bar ───────────────────────────── */
+.ctrl {
+  display:flex; align-items:center; gap:6px; padding:6px 12px;
+  background:var(--bg-panel); border-top:1px solid var(--border); flex-wrap:wrap;
+}
+
+/* ── Buttons ────────────────────────────────── */
+.b {
+  display:inline-flex; align-items:center; gap:5px;
+  padding:5px 10px; border:1px solid var(--border); border-radius:var(--radius-sm);
+  background:var(--bg-card); color:var(--text-1); font-family:var(--font);
+  font-size:0.75rem; font-weight:500; cursor:pointer; transition:all var(--tr);
+  white-space:nowrap;
+}
+.b:hover { background:var(--bg-hover); border-color:var(--text-3) }
+.b:active { transform:scale(0.97) }
+.b-pri { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600 }
+.b-pri:hover { background:var(--accent-dim); border-color:var(--accent-dim) }
+.b-grn { background:var(--green-dim); border-color:var(--green-dim); color:#fff }
+.b-grn:hover { background:var(--green); border-color:var(--green) }
+.b-ghost { background:transparent; border-color:transparent }
+.b-ghost:hover { background:var(--bg-hover) }
+.b-icon { padding:4px; width:30px; height:30px; justify-content:center }
+.kbd { font-size:0.6rem; padding:1px 4px; border-radius:3px; background:rgba(255,255,255,0.1); color:var(--text-3); font-family:var(--mono) }
+
+/* ── Select ─────────────────────────────────── */
+select {
+  padding:4px 8px; border:1px solid var(--border); border-radius:var(--radius-sm);
+  background:var(--bg-card); color:var(--text-1); font-family:var(--font);
+  font-size:0.73rem; cursor:pointer; outline:none;
+}
+select:focus { border-color:var(--accent) }
+
+/* ── Chip ───────────────────────────────────── */
+.chip {
+  display:inline-flex; align-items:center; padding:2px 8px; border-radius:12px;
+  font-size:0.67rem; font-weight:500; background:var(--accent-glow);
+  border:1px solid var(--accent-dim); color:var(--accent);
+}
+
+/* ── Section Toggles ────────────────────────── */
+.sec-bar {
+  display:flex; flex-wrap:wrap; gap:3px; padding:5px 10px;
+  background:var(--bg-surface); border-bottom:1px solid var(--border);
+}
+.sec-t {
+  display:inline-flex; align-items:center; gap:3px; padding:2px 7px;
+  border-radius:3px; font-size:0.67rem; cursor:pointer; color:var(--text-3);
+  transition:all var(--tr); user-select:none; border:1px solid transparent;
+}
+.sec-t:hover { color:var(--text-1); background:var(--bg-hover) }
+.sec-t.on { color:var(--accent); border-color:var(--accent-dim); background:var(--accent-glow) }
+.sec-t input { display:none }
+
+/* ── Toast ──────────────────────────────────── */
+.toast {
+  position:fixed; bottom:20px; left:50%; transform:translateX(-50%) translateY(16px);
+  padding:8px 18px; border-radius:var(--radius); background:var(--bg-card);
+  border:1px solid var(--green); color:var(--green); font-size:0.8rem; font-weight:500;
+  box-shadow:var(--shadow); opacity:0; transition:all 0.25s ease; z-index:1000; pointer-events:none;
+}
+.toast.vis { opacity:1; transform:translateX(-50%) translateY(0) }
+
+/* ── Footer ─────────────────────────────────── */
+footer {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:0 12px; height:28px; background:var(--bg-surface);
+  border-top:1px solid var(--border); font-size:0.68rem; color:var(--text-3);
+}
+.stats { display:flex; gap:14px }
+.stat-v { color:var(--text-2); font-weight:600; font-family:var(--mono) }
+
+/* ── History Drawer ─────────────────────────── */
+.hist-ov {
+  position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:200;
+  opacity:0; pointer-events:none; transition:opacity 0.2s;
+}
+.hist-ov.open { opacity:1; pointer-events:auto }
+.hist-dw {
+  position:fixed; top:0; right:0; bottom:0; width:340px; max-width:90vw;
+  background:var(--bg-surface); border-left:1px solid var(--border);
+  z-index:201; transform:translateX(100%); transition:transform 0.2s ease;
+  display:flex; flex-direction:column;
+}
+.hist-ov.open .hist-dw { transform:translateX(0) }
+.hist-hd {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:10px 14px; border-bottom:1px solid var(--border);
+}
+.hist-hd h3 { font-size:0.85rem; font-weight:600 }
+.hist-ls { flex:1; overflow-y:auto; padding:6px }
+.hist-it {
+  padding:8px 10px; border-radius:var(--radius-sm); cursor:pointer;
+  transition:background var(--tr); margin-bottom:3px; position:relative;
+}
+.hist-it:hover { background:var(--bg-hover) }
+.hist-it-p { font-size:0.78rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:2px }
+.hist-it-m { font-size:0.65rem; color:var(--text-3); display:flex; gap:10px }
+.hist-it .del {
+  position:absolute; top:8px; right:8px; opacity:0; transition:opacity var(--tr);
+  background:none; border:none; color:var(--red); cursor:pointer; font-size:0.72rem; padding:2px;
+}
+.hist-it:hover .del { opacity:1 }
+.hist-empty { text-align:center; padding:30px; color:var(--text-3); font-size:0.8rem }
+
+/* ── Help Modal ─────────────────────────────── */
+.modal-ov {
+  position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:300;
+  display:none; place-items:center;
+}
+.modal-ov.open { display:grid }
+.modal {
+  background:var(--bg-surface); border:1px solid var(--border);
+  border-radius:var(--radius); padding:20px 24px; max-width:440px; width:90vw;
+  box-shadow:var(--shadow);
+}
+.modal h3 { font-size:0.95rem; margin-bottom:12px }
+.modal table { width:100%; font-size:0.78rem; border-collapse:collapse }
+.modal td { padding:5px 0; border-bottom:1px solid var(--border) }
+.modal td:first-child { color:var(--text-3); font-family:var(--mono); font-size:0.72rem; width:45% }
+.modal td:last-child { color:var(--text-1) }
+
+/* ── Scrollbar ──────────────────────────────── */
+::-webkit-scrollbar { width:5px }
+::-webkit-scrollbar-track { background:transparent }
+::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px }
+::-webkit-scrollbar-thumb:hover { background:var(--text-3) }
+
+/* ── Animation ──────────────────────────────── */
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+.gen { animation:pulse 0.8s ease-in-out infinite }
+.amp-ratio { font-family:var(--mono); font-size:0.72rem; color:var(--green); font-weight:600 }
+
+/* ── Print ──────────────────────────────────── */
+@media print {
+  header,footer,.ctrl,.sec-bar,.pnl:first-child,.toast,.hist-ov,.modal-ov { display:none!important }
+  main { grid-template-columns:1fr!important }
+  .pnl:last-child { border:none!important }
+  .out { font-size:11pt; color:#000 }
+  .out .h2 { color:#333 } .out .h3 { color:#555 }
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header>
+    <div class="logo">
+      <div class="logo-mark">U</div>
+      <em>u</em>Prompt
+    </div>
+    <div class="hdr-actions">
+      <select id="fmt" title="Target editor">
+        <option value="claude-code">Claude Code</option>
+        <option value="cursor">Cursor</option>
+        <option value="generic">Generic</option>
+      </select>
+      <select id="typ" title="Prompt type">
+        <option value="auto">Auto-detect</option>
+        <option value="project">New Project</option>
+        <option value="feature">Feature</option>
+        <option value="bugfix">Bug Fix</option>
+        <option value="refactor">Refactor</option>
+        <option value="api">API Design</option>
+        <option value="ui">UI / Frontend</option>
+      </select>
+      <button class="b b-icon" id="histBtn" title="History">&#9776;</button>
+      <button class="b b-icon" id="helpBtn" title="Shortcuts (?)">?</button>
+      <button class="b b-icon" id="themeBtn" title="Theme">&#9789;</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- ── Input ────────────────────────────── -->
+    <div class="pnl">
+      <div class="pnl-head">
+        <div style="display:flex;align-items:center;gap:6px">
+          <span class="pnl-title">Input</span>
+          <span class="chip" id="detected">auto</span>
+        </div>
+        <div class="pnl-acts">
+          <button class="b b-ghost b-icon" id="pasteBtn" title="Paste from clipboard">&#128203;</button>
+          <button class="b b-ghost b-icon" id="clearBtn" title="Clear">&#10005;</button>
+        </div>
+      </div>
+      <div class="pnl-body">
+        <textarea id="inp" spellcheck="false" placeholder="Describe what you want to build, fix, or improve...
+
+Examples:
+  build a CLI that converts CSV to JSON with streaming
+  add dark mode with system preference detection
+  fix the race condition in WebSocket reconnect logic
+  create a REST API for user subscriptions with Stripe
+
+The shorter your input, the higher the amplification.
+"></textarea>
+      </div>
+      <div class="ctrl">
+        <button class="b b-pri" id="ampBtn">&#9889; Amplify <span class="kbd">&#8984;&#9166;</span></button>
+        <button class="b" id="exBtn">Example</button>
+        <button class="b" id="shareBtn" title="Share via URL">&#128279; Share</button>
+        <span style="flex:1"></span>
+        <span style="font-size:0.68rem;color:var(--text-3)" id="inpStat">0 words</span>
+      </div>
+    </div>
+
+    <!-- ── Output ───────────────────────────── -->
+    <div class="pnl">
+      <div class="pnl-head">
+        <div style="display:flex;align-items:center;gap:6px">
+          <span class="pnl-title">Amplified</span>
+          <span class="amp-ratio" id="ratio"></span>
+        </div>
+        <div class="pnl-acts">
+          <button class="b b-grn" id="copyBtn">&#128203; Copy <span class="kbd">&#8984;&#8679;C</span></button>
+          <button class="b" id="dlBtn" title="Download .md">&#8681; .md</button>
+          <button class="b b-ghost b-icon" id="editBtn" title="Edit output">&#9998;</button>
+        </div>
+      </div>
+      <div class="sec-bar" id="secBar"></div>
+      <div class="pnl-body"><div class="out" id="out"><span class="hint">Amplified prompt appears here.
+
+Type a quick idea on the left, press Amplify,
+and get a detailed prompt ready for your editor.
+
+No API calls. No tokens wasted. Pure client-side.</span></div></div>
+    </div>
+  </main>
+
+  <footer>
+    <div class="stats">
+      <span>In: <span class="stat-v" id="sIn">0</span>w</span>
+      <span>Out: <span class="stat-v" id="sOut">0</span>w</span>
+      <span>~<span class="stat-v" id="sTok">0</span> tokens</span>
+      <span>Ratio: <span class="stat-v" id="sRat">-</span></span>
+    </div>
+    <span>uPrompt v0.1.0 &#8226; client-side only</span>
+  </footer>
+</div>
+
+<!-- ── History Drawer ────────────────────────── -->
+<div class="hist-ov" id="histOv">
+  <div class="hist-dw">
+    <div class="hist-hd">
+      <h3>History</h3>
+      <div style="display:flex;gap:4px">
+        <button class="b" id="histClr">Clear</button>
+        <button class="b b-ghost b-icon" id="histX">&#10005;</button>
+      </div>
+    </div>
+    <div class="hist-ls" id="histLs"></div>
+  </div>
+</div>
+
+<!-- ── Help Modal ────────────────────────────── -->
+<div class="modal-ov" id="helpOv">
+  <div class="modal">
+    <h3>Keyboard Shortcuts</h3>
+    <table>
+      <tr><td>Cmd/Ctrl + Enter</td><td>Amplify prompt</td></tr>
+      <tr><td>Cmd/Ctrl + Shift + C</td><td>Copy output</td></tr>
+      <tr><td>Cmd/Ctrl + L</td><td>Clear input</td></tr>
+      <tr><td>Cmd/Ctrl + H</td><td>Toggle history</td></tr>
+      <tr><td>Cmd/Ctrl + P</td><td>Paste from clipboard</td></tr>
+      <tr><td>Cmd/Ctrl + S</td><td>Download as .md</td></tr>
+      <tr><td>Cmd/Ctrl + /</td><td>Share via URL</td></tr>
+      <tr><td>?</td><td>Toggle this help</td></tr>
+      <tr><td>Escape</td><td>Close panels</td></tr>
+    </table>
+    <div style="margin-top:14px;text-align:right">
+      <button class="b" id="helpX">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+'use strict';
+
+/* ═══ DOM ═══════════════════════════════════════ */
+const $  = s => document.querySelector(s);
+const inp      = $('#inp');
+const out      = $('#out');
+const fmt      = $('#fmt');
+const typ      = $('#typ');
+const detected = $('#detected');
+const secBar   = $('#secBar');
+const toast    = $('#toast');
+
+/* ═══ State ═════════════════════════════════════ */
+let raw = '';
+let editable = false;
+let hist = JSON.parse(localStorage.getItem('uprompt_hist') || '[]');
+
+/* ═══ Examples ══════════════════════════════════ */
+const EX = [
+  'build a CLI tool that converts CSV to JSON with streaming and handles malformed rows',
+  'add real-time collaborative editing to the document editor using WebSockets',
+  'fix the memory leak in the image processing pipeline that causes OOM after 1000 images',
+  'create a REST API for task management with teams, projects, and recurring tasks',
+  'refactor the authentication module to support OAuth2, SAML, and API keys',
+  'build a dashboard showing real-time server metrics with alerting thresholds',
+  'add a plugin system to the markdown editor with custom renderers',
+  'create an e-commerce checkout flow with cart, Stripe payments, and order confirmation',
+  'fix the race condition when multiple users edit the same document simultaneously',
+  'build a file upload service with drag-and-drop, progress tracking, and resume support',
+];
+let exi = 0;
+
+/* ═══ Detection ═════════════════════════════════ */
+const RE = {
+  act: {
+    project:  /\b(build|create|make|design|develop|scaffold|bootstrap|start|set up)\b/i,
+    feature:  /\b(add|implement|introduce|integrate|enable|support|extend|enhance)\b/i,
+    bugfix:   /\b(fix|resolve|debug|patch|repair|address|correct|troubleshoot)\b/i,
+    refactor: /\b(refactor|restructure|reorganize|simplify|clean ?up|optimize|modernize|migrate)\b/i,
+    api:      /\b(api|endpoint|rest|graphql|grpc|webhook|route)\b/i,
+    ui:       /\b(ui|frontend|interface|page|component|layout|form|dashboard|modal|sidebar|navbar|theme|dark ?mode|responsive)\b/i,
+  },
+  tech: {
+    lang: /\b(typescript|javascript|python|rust|go|java|ruby|c\+\+|swift|kotlin|php|elixir)\b/gi,
+    fw:   /\b(react|vue|svelte|next\.?js|nuxt|angular|express|fastapi|django|flask|rails|spring|gin|actix|axum|nestjs|remix|astro)\b/gi,
+    db:   /\b(postgres|mysql|sqlite|mongo|redis|dynamo|supabase|prisma|drizzle)\b/gi,
+    inf:  /\b(docker|kubernetes|aws|gcp|azure|vercel|netlify|terraform)\b/gi,
+    svc:  /\b(stripe|auth0|clerk|firebase|twilio|sendgrid|openai|anthropic|websocket|graphql|grpc)\b/gi,
+  },
+  dom: {
+    realtime:  /\b(real-?time|live|stream|websocket|sse|push|notification)\b/i,
+    auth:      /\b(auth|login|signup|session|token|oauth|saml|sso|permission|rbac)\b/i,
+    data:      /\b(data|csv|json|xml|parse|transform|pipeline|etl|import|export|convert)\b/i,
+    test:      /\b(test|spec|coverage|mock|cypress|playwright|jest|vitest|pytest)\b/i,
+    cli:       /\b(cli|command.?line|terminal|shell|argv|flag|argument)\b/i,
+    perf:      /\b(performance|speed|latency|cache|optimize|memory|cpu|benchmark)\b/i,
+    security:  /\b(security|encrypt|hash|sanitize|xss|csrf|injection|vulnerability)\b/i,
+    file:      /\b(file|upload|download|storage|blob|s3|bucket|asset)\b/i,
+  }
+};
+
+function detect(text) {
+  const r = { type:'project', techs:[], domains:[], conf:0 };
+  const m = typ.value;
+  if (m !== 'auto') { r.type = m; r.conf = 1; }
+  else {
+    const sc = {};
+    for (const [t, re] of Object.entries(RE.act)) {
+      const mm = text.match(new RegExp(re, 'gi'));
+      sc[t] = mm ? mm.length : 0;
+    }
+    const best = Object.entries(sc).sort((a,b) => b[1]-a[1]);
+    if (best[0][1] > 0) { r.type = best[0][0]; r.conf = Math.min(best[0][1]/3,1); }
+  }
+  for (const re of Object.values(RE.tech)) {
+    const mm = text.match(re);
+    if (mm) mm.forEach(x => { const l=x.toLowerCase(); if(!r.techs.includes(l)) r.techs.push(l); });
+  }
+  for (const [d, re] of Object.entries(RE.dom)) { if (re.test(text)) r.domains.push(d); }
+  return r;
+}
+
+/* ═══ Section Definitions ═══════════════════════ */
+const SECS = {
+  std: {
+    overview:    { l:'Overview',     on:true },
+    requirements:{ l:'Requirements', on:true },
+    architecture:{ l:'Architecture', on:true },
+    stories:     { l:'User Stories', on:true },
+    acceptance:  { l:'Acceptance',   on:true },
+    edges:       { l:'Edge Cases',   on:true },
+    testing:     { l:'Testing',      on:true },
+    nfr:         { l:'Non-Functional',on:true },
+    impl:        { l:'Impl Notes',   on:true },
+    constraints: { l:'Constraints',  on:false },
+  },
+  bug: {
+    overview:   { l:'Description', on:true },
+    behavior:   { l:'Expected/Actual', on:true },
+    repro:      { l:'Reproduction', on:true },
+    investigate:{ l:'Investigation', on:true },
+    root:       { l:'Root Cause', on:true },
+    fix:        { l:'Fix Requirements', on:true },
+    testing:    { l:'Testing', on:true },
+    regression: { l:'Regression', on:true },
+  },
+  refactor: {
+    goal:    { l:'Goal', on:true },
+    current: { l:'Current State', on:true },
+    target:  { l:'Target State', on:true },
+    plan:    { l:'Plan', on:true },
+    constraints:{ l:'Constraints', on:true },
+    testing: { l:'Testing', on:true },
+  }
+};
+
+let active = {};
+
+function initToggles(defs) {
+  secBar.innerHTML = '';
+  active = {};
+  for (const [k,v] of Object.entries(defs)) {
+    active[k] = v.on;
+    const el = document.createElement('label');
+    el.className = `sec-t${v.on?' on':''}`;
+    el.innerHTML = `<input type="checkbox" ${v.on?'checked':''} data-s="${k}"> ${v.l}`;
+    el.querySelector('input').addEventListener('change', e => {
+      active[k] = e.target.checked;
+      el.classList.toggle('on', e.target.checked);
+      if (raw) regen();
+    });
+    secBar.appendChild(el);
+  }
+}
+
+/* ═══ Expansion Engine ══════════════════════════ */
+
+function expand(text, det) {
+  const t = det.type, techs = det.techs, doms = det.domains, f = fmt.value;
+  if (t === 'bugfix')   return expandBug(text, det, f);
+  if (t === 'refactor') return expandRefactor(text, det, f);
+  return expandStd(text, det, f);
+}
+
+function expandStd(text, det, f) {
+  const L = [], t = det.techs, d = det.domains;
+  const T = text.charAt(0).toUpperCase() + text.slice(1);
+
+  if (f === 'cursor') L.push('<!-- Cursor Composer -->\n');
+
+  if (active.overview) {
+    L.push('## Project Overview\n');
+    L.push(T + (T.endsWith('.') ? '' : '.') + '\n');
+    if (t.length) L.push(`**Stack:** ${t.join(', ')}\n`);
+  }
+
+  if (active.requirements) {
+    L.push('## Technical Requirements\n');
+    L.push('### Core Functionality\n');
+    const parts = splitReqs(text);
+    parts.forEach(p => L.push(`- ${p}`));
+    L.push('- Handle errors gracefully with clear messages');
+    L.push('- Include logging for debugging and monitoring');
+    L.push('');
+    if (t.length) {
+      L.push('### Technology Stack\n');
+      t.forEach(x => L.push(`- ${x}`));
+      L.push('');
+    }
+    if (d.includes('data')) {
+      L.push('### Data Handling\n');
+      L.push('- Define input/output formats and schemas');
+      L.push('- Handle malformed or partial data gracefully');
+      L.push('- Support streaming for large datasets where applicable');
+      L.push('');
+    }
+    if (d.includes('file')) {
+      L.push('### File Handling\n');
+      L.push('- Validate file types and sizes at the boundary');
+      L.push('- Support resumable uploads for large files');
+      L.push('- Clean up temporary files on failure');
+      L.push('');
+    }
+  }
+
+  if (active.architecture) {
+    L.push('## Architecture\n');
+    archFor(text, det.type, t, d).forEach(a => L.push(a));
+    L.push('');
+  }
+
+  if (active.stories) {
+    L.push('## User Stories\n');
+    storiesFor(text, det.type, d).forEach(s => L.push(`- ${s}`));
+    L.push('');
+  }
+
+  if (active.acceptance) {
+    L.push('## Acceptance Criteria\n');
+    acceptFor(text, det.type, d).forEach(c => L.push(`- [ ] ${c}`));
+    L.push('');
+  }
+
+  if (active.edges) {
+    L.push('## Edge Cases and Error Handling\n');
+    edgesFor(text, det.type, d, t).forEach(e => L.push(`- ${e}`));
+    L.push('');
+  }
+
+  if (active.testing) {
+    L.push('## Testing Strategy\n');
+    testsFor(text, det.type, d, t).forEach(x => L.push(x));
+    L.push('');
+  }
+
+  if (active.nfr) {
+    L.push('## Non-Functional Requirements\n');
+    nfrFor(text, det.type, d).forEach(x => L.push(x));
+    L.push('');
+  }
+
+  if (active.impl) {
+    L.push('## Implementation Notes\n');
+    implFor(text, det.type, t, d, f).forEach(x => L.push(x));
+    L.push('');
+  }
+
+  if (active.constraints) {
+    L.push('## Constraints\n');
+    L.push('- Keep implementation minimal and focused');
+    L.push('- Prefer standard library over external dependencies');
+    L.push('- Follow existing project conventions');
+    if (f === 'claude-code') { L.push('- Write tests alongside implementation'); L.push('- Do not modify unrelated files'); }
+    L.push('');
+  }
+
+  return L.join('\n');
+}
+
+function expandBug(text, det, f) {
+  const L = [], t = det.techs, d = det.domains;
+  const T = text.charAt(0).toUpperCase() + text.slice(1);
+
+  if (active.overview) {
+    L.push('## Bug Description\n');
+    L.push(T + (T.endsWith('.') ? '' : '.') + '\n');
+    if (t.length) L.push(`**Affected stack:** ${t.join(', ')}\n`);
+  }
+
+  if (active.behavior) {
+    L.push('## Expected vs Actual Behavior\n');
+    L.push('**Expected:** The system should [correct behavior per specification].\n');
+    L.push('**Actual:** Instead, [observed incorrect behavior].\n');
+  }
+
+  if (active.repro) {
+    L.push('## Reproduction Steps\n');
+    L.push('1. Set up the relevant environment or state');
+    L.push('2. Trigger the action described in the bug');
+    L.push('3. Observe the incorrect behavior');
+    L.push('4. Note error messages, stack traces, or logs\n');
+  }
+
+  if (active.investigate) {
+    L.push('## Investigation Approach\n');
+    L.push('- Check recent commits touching the affected code path');
+    L.push('- Add logging at key decision points to trace flow');
+    L.push('- Verify input data matches expected shape and types');
+    if (d.includes('realtime')) { L.push('- Check for race conditions or timing issues'); L.push('- Verify connection lifecycle (connect/disconnect/reconnect)'); }
+    if (d.includes('data'))     { L.push('- Validate transformation pipeline step by step'); L.push('- Check for encoding or format inconsistencies'); }
+    if (d.includes('auth'))     { L.push('- Verify token expiration and refresh logic'); L.push('- Check permission evaluation order'); }
+    if (d.includes('perf'))     { L.push('- Profile to identify the bottleneck'); L.push('- Check for memory leaks or unbounded growth'); }
+    L.push('');
+  }
+
+  if (active.root) {
+    L.push('## Root Cause Analysis\n');
+    L.push('Document after investigation:');
+    L.push('- The specific code path producing incorrect behavior');
+    L.push('- Why current logic fails for this case');
+    L.push('- Whether this is a regression or pre-existing');
+    L.push('- Scope of impact (other features/users affected)\n');
+  }
+
+  if (active.fix) {
+    L.push('## Fix Requirements\n');
+    L.push('- [ ] Fix addresses root cause, not symptom');
+    L.push('- [ ] No existing functionality broken');
+    L.push('- [ ] All variants of the issue handled');
+    L.push('- [ ] Error messages are clear and actionable');
+    if (f === 'claude-code') L.push('- [ ] Commit references the issue/bug report');
+    L.push('');
+  }
+
+  if (active.testing) {
+    L.push('## Testing\n');
+    L.push('- Write a failing test reproducing the bug FIRST');
+    L.push('- Verify the test fails before applying the fix');
+    L.push('- Apply fix and confirm the test passes');
+    L.push('- Add edge case tests for related scenarios');
+    L.push('');
+  }
+
+  if (active.regression) {
+    L.push('## Regression Checks\n');
+    L.push('- Run the full test suite for the affected module');
+    L.push('- Manually verify the happy path still works');
+    L.push('- Check fix does not introduce performance regression');
+    L.push('- Verify adjacent features are unaffected');
+    L.push('');
+  }
+
+  return L.join('\n');
+}
+
+function expandRefactor(text, det, f) {
+  const L = [];
+  const T = text.charAt(0).toUpperCase() + text.slice(1);
+
+  if (active.goal) {
+    L.push('## Refactoring Goal\n');
+    L.push(T + (T.endsWith('.') ? '' : '.') + '\n');
+  }
+
+  if (active.current) {
+    L.push('## Current State Assessment\n');
+    L.push('Before refactoring, document:');
+    L.push('- Current code structure and its limitations');
+    L.push('- Specific pain points motivating the refactor');
+    L.push('- Existing test coverage for this code');
+    L.push('- Dependencies on/from other modules\n');
+  }
+
+  if (active.target) {
+    L.push('## Target State\n');
+    L.push('- Desired code structure after refactoring');
+    L.push('- Specific improvements expected');
+    L.push('- Measurable success criteria (fewer lines, better perf, clearer API)\n');
+  }
+
+  if (active.plan) {
+    L.push('## Refactoring Plan\n');
+    L.push('1. Ensure full test coverage of existing behavior');
+    L.push('2. Make changes in small, reviewable increments');
+    L.push('3. Run tests after each increment');
+    L.push('4. Verify no behavioral changes (only structural)');
+    L.push('5. Update documentation and examples\n');
+  }
+
+  if (active.constraints) {
+    L.push('## Constraints\n');
+    L.push('- Preserve ALL existing behavior');
+    L.push('- Maintain backwards-compatible public API');
+    L.push('- Each commit independently reviewable and revertable');
+    if (f === 'claude-code') L.push('- One concern per commit');
+    L.push('');
+  }
+
+  if (active.testing) {
+    L.push('## Testing\n');
+    L.push('- All existing tests must pass without modification');
+    L.push('- If tests need updating, verify the behavioral change is intentional');
+    L.push('- Add characterization tests for untested paths before touching them');
+    L.push('');
+  }
+
+  return L.join('\n');
+}
+
+/* ── Helpers ────────────────────────────────── */
+
+function splitReqs(text) {
+  const parts = text.split(/(?:,\s*|\s+and\s+|\s+with\s+|\s+that\s+|\s+which\s+|\s+plus\s+)/i);
+  return parts.filter(p => p.trim().length > 3).map(p => {
+    const s = p.trim();
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  });
+}
+
+function archFor(text, type, techs, doms) {
+  const A = [];
+  if (doms.includes('cli')) {
+    A.push('### CLI Architecture\n');
+    A.push('- Use a proper CLI framework (not manual arg parsing)');
+    A.push('- Separate command parsing from business logic');
+    A.push('- Support stdin/stdout piping for composability');
+    A.push('- Exit codes: 0 success, 1 user error, 2 system error');
+  } else if (doms.includes('realtime')) {
+    A.push('### Real-time Architecture\n');
+    A.push('- Define the event/message protocol upfront');
+    A.push('- Handle connection lifecycle (connect, disconnect, reconnect)');
+    A.push('- Implement backpressure for slow consumers');
+    A.push('- Design for idempotent message processing');
+  } else if (type === 'api' || /\bapi\b/i.test(text)) {
+    A.push('### API Architecture\n');
+    A.push('- RESTful resource design with consistent naming');
+    A.push('- Request validation at the boundary');
+    A.push('- Pagination for list endpoints');
+    A.push('- Versioning strategy (URL prefix or header)');
+    A.push('- Consistent error response format');
+  } else if (type === 'ui') {
+    A.push('### Component Architecture\n');
+    A.push('- Separate presentational and container logic');
+    A.push('- Define state management approach');
+    A.push('- Design responsive layouts mobile-first');
+    A.push('- Plan accessibility from the start');
+  } else {
+    A.push('### System Architecture\n');
+    A.push('- Identify core modules and responsibilities');
+    A.push('- Define clear interfaces between modules');
+    A.push('- Separate I/O from business logic');
+    A.push('- Design for testability');
+  }
+  return A;
+}
+
+function storiesFor(text, type, doms) {
+  const S = [`As a user, I want to ${text.toLowerCase()}, so that I can accomplish my goal efficiently`];
+  if (doms.includes('auth'))  S.push('As a user, I want clear feedback when authentication fails');
+  if (doms.includes('data'))  { S.push('As a user, I want progress indication for long operations'); S.push('As a user, I want clear error reports for invalid input'); }
+  if (doms.includes('cli'))   S.push('As a user, I want --help with examples so I can learn usage quickly');
+  if (doms.includes('file'))  { S.push('As a user, I want to see upload progress so I know how long to wait'); S.push('As a user, I want to resume interrupted uploads'); }
+  if (type === 'ui')          { S.push('As a user, I want the interface to work on mobile'); S.push('As a user with disabilities, I want keyboard navigation and screen reader support'); }
+  if (type === 'api')         { S.push('As a developer, I want consistent error response formats'); S.push('As a developer, I want rate limit headers in responses'); }
+  return S;
+}
+
+function acceptFor(text, type, doms) {
+  const C = [
+    'Core functionality works as described',
+    'All error paths return clear messages',
+    'Unit tests cover core logic (>80% branch coverage)',
+    'No regressions in existing functionality',
+  ];
+  if (type === 'ui')          { C.push('Responsive at 320/768/1024/1440px'); C.push('Keyboard accessible'); C.push('Color contrast meets WCAG AA'); }
+  if (type === 'api')         { C.push('Correct HTTP status codes'); C.push('400 with descriptive body for invalid requests'); C.push('401 for auth failures (not 403)'); }
+  if (doms.includes('perf'))  { C.push('Meets defined latency/throughput targets'); C.push('No memory leaks under sustained load'); }
+  if (doms.includes('security')) { C.push('Input validated and sanitized at all entry points'); C.push('No sensitive data in logs or error messages'); }
+  return C;
+}
+
+function edgesFor(text, type, doms, techs) {
+  const E = ['Empty/null/undefined input', 'Extremely large input (boundary testing)', 'Concurrent access or rapid repeated actions'];
+  if (doms.includes('data'))     { E.push('Malformed or partially corrupt data'); E.push('Mixed encodings (UTF-8, Latin-1, BOM)'); E.push('Empty files or datasets'); }
+  if (doms.includes('realtime')) { E.push('Network disconnection during operation'); E.push('Messages arrive out of order'); E.push('Server restarts while clients connected'); }
+  if (doms.includes('auth'))     { E.push('Token expires during active session'); E.push('Multiple simultaneous login attempts'); E.push('Revoked credentials used for API call'); }
+  if (doms.includes('file'))     { E.push('File size exceeds limit'); E.push('Upload interrupted mid-transfer'); E.push('Duplicate filenames'); E.push('Special characters in filenames'); }
+  if (type === 'ui')             { E.push('Double-click on submit'); E.push('Browser back/forward during submission'); E.push('Screen reader state announcements'); }
+  if (type === 'api')            { E.push('Request body exceeds size limit'); E.push('Missing required fields'); E.push('Paginated response with zero results'); }
+  if (doms.includes('cli'))      { E.push('Piped input from another command'); E.push('No TTY (CI/CD environment)'); E.push('Special characters in file paths'); }
+  return E;
+}
+
+function testsFor(text, type, doms, techs) {
+  const T = [];
+  T.push('### Unit Tests\n');
+  T.push('- Test each public function in isolation');
+  T.push('- Cover happy path and error paths');
+  T.push('- Use table-driven tests for multiple input shapes\n');
+  T.push('### Integration Tests\n');
+  if (type === 'api')      { T.push('- Test full request/response cycle'); T.push('- Verify database state after mutations'); T.push('- Test auth and authorization flows'); }
+  else if (type === 'ui')  { T.push('- Test component interactions'); T.push('- Test form submission flows end-to-end'); T.push('- Verify state management across boundaries'); }
+  else                     { T.push('- Test module interactions with real dependencies'); T.push('- Verify data flows through the system correctly'); }
+  T.push('');
+  if (type === 'ui') { T.push('### E2E Tests\n'); T.push('- Verify layout at key breakpoints'); T.push('- Test critical user flows'); T.push('- Screenshot regression testing'); T.push(''); }
+  return T;
+}
+
+function nfrFor(text, type, doms) {
+  const N = [];
+  N.push('### Performance\n');
+  if (doms.includes('perf')) { N.push('- Define specific latency targets (p50, p95, p99)'); N.push('- Set throughput requirements'); N.push('- Profile before and after changes'); }
+  else                       { N.push('- Acceptable response time under normal load'); N.push('- No unnecessary blocking operations'); }
+  N.push('');
+  N.push('### Security\n');
+  N.push('- Validate all external input');
+  N.push('- No secrets in source code or logs');
+  if (doms.includes('auth')) { N.push('- Constant-time comparison for tokens'); N.push('- Rate limiting on auth endpoints'); }
+  N.push('');
+  if (type === 'ui') { N.push('### Accessibility\n'); N.push('- WCAG 2.1 AA compliance'); N.push('- Full keyboard navigation'); N.push('- Proper ARIA labels and roles'); N.push('- 4.5:1 contrast ratio minimum'); N.push(''); }
+  N.push('### Maintainability\n');
+  N.push('- Follow existing project conventions');
+  N.push('- Small, single-purpose functions');
+  N.push('- Minimal, justified dependencies');
+  N.push('');
+  return N;
+}
+
+function implFor(text, type, techs, doms, f) {
+  const N = [];
+  if (f === 'claude-code') {
+    N.push('### Claude Code Workflow\n');
+    N.push('- Read existing code before modifying');
+    N.push('- Write tests alongside implementation');
+    N.push('- Conventional commit messages');
+    N.push('- Verify with test suite before completing\n');
+  } else if (f === 'cursor') {
+    N.push('### Cursor Workflow\n');
+    N.push('- Reference relevant files with @file');
+    N.push('- Use @codebase for broader context');
+    N.push('- Apply changes incrementally, reviewing each diff\n');
+  }
+  N.push('### Approach\n');
+  if (type === 'project')     { N.push('- Start with data model and core types'); N.push('- Build business logic layer next'); N.push('- Add I/O and user-facing layer last'); N.push('- Wire up error handling throughout'); }
+  else if (type === 'feature'){ N.push('- Understand existing code structure first'); N.push('- Plan integration with current architecture'); N.push('- Implement incrementally, testing as you go'); N.push('- Update relevant documentation'); }
+  else if (type === 'api')    { N.push('- Define API contract (types/OpenAPI) first'); N.push('- Implement request validation'); N.push('- Build business logic'); N.push('- Add proper error responses'); N.push('- Write API integration tests'); }
+  else if (type === 'ui')     { N.push('- Start with component structure and props'); N.push('- Build static layout, then add interactivity'); N.push('- Implement responsive behavior'); N.push('- Add loading, error, and empty states'); }
+  else                        { N.push('- Identify the minimal changeset needed'); N.push('- Build incrementally with tests'); N.push('- Verify no side effects on existing code'); }
+  N.push('');
+  return N;
+}
+
+/* ═══ Core Actions ══════════════════════════════ */
+
+function amplify() {
+  const text = inp.value.trim();
+  if (!text) { notify('Type a prompt first', 'warn'); inp.focus(); return; }
+  const det = detect(text);
+  detected.textContent = det.type;
+  const secDef = det.type === 'bugfix' ? SECS.bug : det.type === 'refactor' ? SECS.refactor : SECS.std;
+  initToggles(secDef);
+  raw = expand(text, det);
+  render(raw);
+  stats(text, raw);
+  saveHist(text, det.type);
+}
+
+function regen() {
+  const text = inp.value.trim();
+  if (!text) return;
+  raw = expand(text, detect(text));
+  render(raw);
+  stats(text, raw);
+}
+
+function render(text) {
+  if (editable) {
+    out.innerHTML = '';
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'width:100%;height:100%;border:none;background:var(--bg-deep);color:var(--text-1);font-family:var(--mono);font-size:0.82rem;line-height:1.75;padding:14px 16px;resize:none;outline:none;';
+    ta.addEventListener('input', () => { raw = ta.value; stats(inp.value, ta.value); });
+    out.appendChild(ta);
+    return;
+  }
+  const esc = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  out.innerHTML = esc
+    .replace(/^(## .+)$/gm, '<span class="h2">$1</span>')
+    .replace(/^(### .+)$/gm, '<span class="h3">$1</span>')
+    .replace(/^(- \[[ x]\] .+)$/gm, '<span class="cb">$1</span>')
+    .replace(/(\*\*[^*]+\*\*)/g, '<span class="bold">$1</span>');
+}
+
+function stats(i, o) {
+  const iw = wc(i), ow = wc(o), tok = Math.round(ow * 1.33), rat = iw > 0 ? (ow/iw).toFixed(1) : '-';
+  $('#sIn').textContent = iw; $('#sOut').textContent = ow;
+  $('#sTok').textContent = tok; $('#sRat').textContent = rat + (iw > 0 ? 'x' : '');
+  $('#inpStat').textContent = `${iw} words`;
+  $('#ratio').textContent = iw > 0 ? `${rat}x` : '';
+}
+
+function wc(s) { return s.trim() ? s.trim().split(/\s+/).length : 0; }
+
+/* ═══ Clipboard ═════════════════════════════════ */
+
+async function copy() {
+  if (!raw) { notify('Nothing to copy', 'warn'); return; }
+  try { await navigator.clipboard.writeText(raw); }
+  catch { const t=document.createElement('textarea'); t.value=raw; document.body.appendChild(t); t.select(); document.execCommand('copy'); document.body.removeChild(t); }
+  notify('Copied to clipboard');
+}
+
+async function pasteIn() {
+  try {
+    const text = await navigator.clipboard.readText();
+    if (text) { inp.value = text; inp.dispatchEvent(new Event('input')); notify('Pasted'); }
+  } catch { notify('Clipboard access denied', 'warn'); }
+}
+
+/* ═══ Download ══════════════════════════════════ */
+
+function download() {
+  if (!raw) { notify('Nothing to download', 'warn'); return; }
+  const b = new Blob([raw], {type:'text/markdown'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(b);
+  a.download = `uprompt-${Date.now()}.md`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  notify('Downloaded');
+}
+
+/* ═══ Share via URL ═════════════════════════════ */
+
+function share() {
+  const text = inp.value.trim();
+  if (!text) { notify('Type a prompt first', 'warn'); return; }
+  const params = new URLSearchParams({ q: text, f: fmt.value, t: typ.value });
+  const url = location.origin + location.pathname + '?' + params.toString();
+  navigator.clipboard.writeText(url).then(
+    () => notify('Share URL copied'),
+    () => { window.prompt('Copy this URL:', url); }
+  );
+}
+
+function loadFromURL() {
+  const p = new URLSearchParams(location.search);
+  if (p.has('q')) {
+    inp.value = p.get('q');
+    if (p.has('f')) fmt.value = p.get('f');
+    if (p.has('t')) typ.value = p.get('t');
+    amplify();
+    history.replaceState(null, '', location.pathname);
+  }
+}
+
+/* ═══ History ═══════════════════════════════════ */
+
+function saveHist(prompt, type) {
+  hist = hist.filter(h => h.p !== prompt);
+  hist.unshift({ id: Date.now(), p: prompt, t: type, f: fmt.value, d: new Date().toISOString() });
+  if (hist.length > 50) hist = hist.slice(0, 50);
+  localStorage.setItem('uprompt_hist', JSON.stringify(hist));
+}
+
+function renderHist() {
+  const ls = $('#histLs');
+  if (!hist.length) { ls.innerHTML = '<div class="hist-empty">No prompts yet.</div>'; return; }
+  ls.innerHTML = hist.map(h => `
+    <div class="hist-it" data-id="${h.id}">
+      <button class="del" data-id="${h.id}">&times;</button>
+      <div class="hist-it-p">${esc(h.p)}</div>
+      <div class="hist-it-m"><span>${h.t}</span><span>${h.f||'claude-code'}</span><span>${new Date(h.d).toLocaleDateString()}</span></div>
+    </div>`).join('');
+  ls.querySelectorAll('.hist-it').forEach(el => {
+    el.addEventListener('click', e => {
+      if (e.target.classList.contains('del')) {
+        hist = hist.filter(h => h.id !== +e.target.dataset.id);
+        localStorage.setItem('uprompt_hist', JSON.stringify(hist));
+        renderHist(); return;
+      }
+      const h = hist.find(x => x.id === +el.dataset.id);
+      if (h) { inp.value = h.p; fmt.value = h.f || 'claude-code'; $('#histOv').classList.remove('open'); amplify(); }
+    });
+  });
+}
+
+function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+/* ═══ Toast ═════════════════════════════════════ */
+
+function notify(msg, type) {
+  toast.textContent = msg;
+  const c = type === 'warn' ? 'var(--orange)' : type === 'err' ? 'var(--red)' : 'var(--green)';
+  toast.style.borderColor = c; toast.style.color = c;
+  toast.classList.add('vis');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => toast.classList.remove('vis'), 1800);
+}
+
+/* ═══ Theme ═════════════════════════════════════ */
+
+function toggleTheme() {
+  const h = document.documentElement;
+  const n = h.dataset.theme === 'dark' ? 'light' : 'dark';
+  h.dataset.theme = n;
+  localStorage.setItem('uprompt_theme', n);
+  $('#themeBtn').innerHTML = n === 'dark' ? '&#9789;' : '&#9728;';
+}
+const st = localStorage.getItem('uprompt_theme');
+if (st) { document.documentElement.dataset.theme = st; $('#themeBtn').innerHTML = st === 'dark' ? '&#9789;' : '&#9728;'; }
+
+/* ═══ Auto-save draft ═══════════════════════════ */
+let draftTimer;
+inp.addEventListener('input', () => {
+  $('#inpStat').textContent = `${wc(inp.value)} words`;
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => localStorage.setItem('uprompt_draft', inp.value), 500);
+});
+const draft = localStorage.getItem('uprompt_draft');
+if (draft && !new URLSearchParams(location.search).has('q')) {
+  inp.value = draft;
+  $('#inpStat').textContent = `${wc(draft)} words`;
+}
+
+/* ═══ Init ══════════════════════════════════════ */
+initToggles(SECS.std);
+loadFromURL();
+
+/* ═══ Events ════════════════════════════════════ */
+$('#ampBtn').onclick  = amplify;
+$('#copyBtn').onclick = copy;
+$('#dlBtn').onclick   = download;
+$('#clearBtn').onclick = () => { inp.value=''; localStorage.removeItem('uprompt_draft'); inp.focus(); $('#inpStat').textContent='0 words'; };
+$('#pasteBtn').onclick = pasteIn;
+$('#shareBtn').onclick = share;
+$('#themeBtn').onclick = toggleTheme;
+$('#editBtn').onclick = () => { editable=!editable; $('#editBtn').style.color=editable?'var(--accent)':''; if(raw) render(raw); };
+
+$('#exBtn').onclick = () => { inp.value = EX[exi++ % EX.length]; $('#inpStat').textContent = `${wc(inp.value)} words`; inp.focus(); };
+
+$('#histBtn').onclick = () => { renderHist(); $('#histOv').classList.add('open'); };
+$('#histX').onclick   = () => $('#histOv').classList.remove('open');
+$('#histOv').onclick  = e => { if(e.target===$('#histOv')) $('#histOv').classList.remove('open'); };
+$('#histClr').onclick = () => { hist=[]; localStorage.setItem('uprompt_hist','[]'); renderHist(); notify('History cleared'); };
+
+$('#helpBtn').onclick = () => $('#helpOv').classList.toggle('open');
+$('#helpX').onclick   = () => $('#helpOv').classList.remove('open');
+$('#helpOv').onclick  = e => { if(e.target===$('#helpOv')) $('#helpOv').classList.remove('open'); };
+
+fmt.onchange = () => { if(raw && inp.value.trim()) amplify(); };
+typ.onchange = () => { if(raw && inp.value.trim()) amplify(); };
+
+/* ═══ Keyboard Shortcuts ════════════════════════ */
+document.addEventListener('keydown', e => {
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && e.key === 'Enter')                    { e.preventDefault(); amplify(); }
+  if (mod && e.shiftKey && e.key === 'C')          { e.preventDefault(); copy(); }
+  if (mod && e.key === 'l')                        { e.preventDefault(); inp.value=''; inp.focus(); }
+  if (mod && e.key === 'h')                        { e.preventDefault(); renderHist(); $('#histOv').classList.toggle('open'); }
+  if (mod && e.key === 'p')                        { e.preventDefault(); pasteIn(); }
+  if (mod && e.key === 's')                        { e.preventDefault(); download(); }
+  if (mod && e.key === '/')                        { e.preventDefault(); share(); }
+  if (e.key === '?' && !['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) { e.preventDefault(); $('#helpOv').classList.toggle('open'); }
+  if (e.key === 'Escape') { $('#histOv').classList.remove('open'); $('#helpOv').classList.remove('open'); }
+});
+
+})();
+</script>
+</body>
+</html>

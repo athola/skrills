@@ -757,10 +757,10 @@ fn plugin_assets_synced_from_claude_to_cursor() {
     fs::create_dir_all(&pycache_dir).unwrap();
     fs::write(pycache_dir.join("foo.pyc"), b"\x00\x00").unwrap();
 
-    // Create .claude-plugin metadata (should be excluded)
+    // Create .claude-plugin metadata (included in full_mirror mode for Cursor)
     let meta_dir = plugin_dir.join(".claude-plugin");
     fs::create_dir_all(&meta_dir).unwrap();
-    fs::write(meta_dir.join("plugin.json"), b"{}").unwrap();
+    fs::write(meta_dir.join("plugin.json"), b"{\"name\": \"abstract\"}").unwrap();
 
     // Sync with plugin assets enabled
     let source = ClaudeAdapter::with_root(setup.claude_dir.path().to_path_buf());
@@ -776,74 +776,36 @@ fn plugin_assets_synced_from_claude_to_cursor() {
         sync_hooks: false,
         sync_instructions: false,
         sync_plugin_assets: true,
+        full_plugin_mirror: true,
+        interactive: false,
         ..Default::default()
     };
 
     let report = orch.sync(&params).unwrap();
     assert!(report.success);
 
-    // Verify scripts were synced
-    let cursor_plugin = setup
+    // The manifest-only writer only processes .claude-plugin/plugin.json
+    // files. Verify the manifest was written to plugins/local/.
+    let cursor_manifest = setup
+        .cursor_dir
+        .path()
+        .join("plugins/local/abstract/.cursor-plugin/plugin.json");
+
+    assert!(
+        cursor_manifest.exists(),
+        "Plugin manifest should be synced to plugins/local/"
+    );
+
+    // Non-manifest files (scripts, hooks, bin) are NOT written by
+    // the manifest-only writer — Cursor discovers them natively from
+    // ~/.claude/plugins/cache/.
+    let cursor_cache = setup
         .cursor_dir
         .path()
         .join("plugins/cache/claude-night-market/abstract/1.8.3");
-
     assert!(
-        cursor_plugin.join("scripts/makefile_dogfooder.py").exists(),
-        "makefile_dogfooder.py should be synced"
-    );
-    assert!(
-        cursor_plugin.join("scripts/validate_plugin.py").exists(),
-        "validate_plugin.py should be synced"
-    );
-    assert!(
-        cursor_plugin.join("hooks/session_start.py").exists(),
-        "hook handler should be synced"
-    );
-    assert!(
-        cursor_plugin.join("bin/fallback.py").exists(),
-        "bin script should be synced"
-    );
-    assert!(
-        cursor_plugin.join("src/abstract/__init__.py").exists(),
-        "Python package should be synced"
-    );
-    assert!(
-        cursor_plugin.join("src/abstract/utils.py").exists(),
-        "Python source should be synced"
-    );
-
-    // Verify content is correct
-    let content = fs::read_to_string(cursor_plugin.join("scripts/makefile_dogfooder.py")).unwrap();
-    assert!(content.contains("print('dogfood')"));
-
-    // Verify excluded directories were NOT synced
-    assert!(
-        !cursor_plugin.join("skills").exists(),
-        "skills/ should not be synced as plugin asset"
-    );
-    assert!(
-        !cursor_plugin.join("tests").exists(),
-        "tests/ should not be synced"
-    );
-    assert!(
-        !cursor_plugin.join(".venv").exists(),
-        ".venv/ should not be synced"
-    );
-    assert!(
-        !cursor_plugin.join("scripts/__pycache__").exists(),
-        "__pycache__/ should not be synced"
-    );
-    assert!(
-        !cursor_plugin.join(".claude-plugin").exists(),
-        ".claude-plugin/ should not be synced"
-    );
-
-    // Verify asset count (should have 6 files synced)
-    assert!(
-        report.plugin_assets.written >= 6,
-        "Expected at least 6 plugin assets, got {}",
-        report.plugin_assets.written
+        !cursor_cache.exists(),
+        "Scripts should NOT be mirrored to plugins/cache/ in manifest-only mode"
     );
 }
 
@@ -865,6 +827,7 @@ fn plugin_assets_skipped_when_disabled() {
 
     let params = SyncParams {
         sync_plugin_assets: false,
+        interactive: false,
         ..Default::default()
     };
 
@@ -880,13 +843,13 @@ fn plugin_assets_skipped_when_disabled() {
 fn plugin_assets_unchanged_files_skipped() {
     let setup = CursorSyncTestSetup::new().unwrap();
 
-    // Create plugin with a script
+    // Create plugin with a manifest (the only asset type the writer processes)
     let plugin_dir = setup
         .claude_dir
         .path()
-        .join("plugins/cache/market/plugin/1.0.0/scripts");
+        .join("plugins/cache/market/plugin/1.0.0/.claude-plugin");
     fs::create_dir_all(&plugin_dir).unwrap();
-    fs::write(plugin_dir.join("tool.py"), b"# tool\n").unwrap();
+    fs::write(plugin_dir.join("plugin.json"), b"{\"name\": \"plugin\"}\n").unwrap();
 
     let source = ClaudeAdapter::with_root(setup.claude_dir.path().to_path_buf());
     let target = CursorAdapter::with_root(setup.cursor_dir.path().to_path_buf());
@@ -900,10 +863,12 @@ fn plugin_assets_unchanged_files_skipped() {
         sync_hooks: false,
         sync_instructions: false,
         sync_plugin_assets: true,
+        full_plugin_mirror: true,
+        interactive: false,
         ..Default::default()
     };
 
-    // First sync: should write
+    // First sync: should write the manifest
     let orch = SyncOrchestrator::new(source, target);
     let report1 = orch.sync(&params).unwrap();
     assert_eq!(report1.plugin_assets.written, 1);
@@ -915,7 +880,7 @@ fn plugin_assets_unchanged_files_skipped() {
     let report2 = orch2.sync(&params).unwrap();
     assert_eq!(
         report2.plugin_assets.written, 0,
-        "Unchanged files should be skipped"
+        "Unchanged manifest should be skipped"
     );
     assert_eq!(report2.plugin_assets.skipped.len(), 1);
 }
@@ -926,24 +891,25 @@ fn plugin_assets_empty_cache_returns_no_assets() {
 
     // No plugin cache exists
     let source = ClaudeAdapter::with_root(setup.claude_dir.path().to_path_buf());
-    let assets = source.read_plugin_assets().unwrap();
+    let assets = source.read_plugin_assets(false).unwrap();
     assert!(assets.is_empty());
 }
 
 #[test]
-fn plugin_assets_preserves_directory_hierarchy() {
+fn plugin_assets_manifest_written_to_local() {
     let setup = CursorSyncTestSetup::new().unwrap();
 
-    // Create nested directory structure
+    // Create plugin with manifest in Claude cache
     let plugin_dir = setup
         .claude_dir
         .path()
-        .join("plugins/cache/market/plugin/2.0.0");
-    let nested = plugin_dir.join("scripts/dogfooder");
-    fs::create_dir_all(&nested).unwrap();
-    fs::write(nested.join("validator.py"), b"# validator\n").unwrap();
-    fs::write(nested.join("parser.py"), b"# parser\n").unwrap();
-    fs::write(nested.join("__init__.py"), b"").unwrap();
+        .join("plugins/cache/market/plugin/2.0.0/.claude-plugin");
+    fs::create_dir_all(&plugin_dir).unwrap();
+    fs::write(
+        plugin_dir.join("plugin.json"),
+        b"{\"name\": \"plugin\", \"version\": \"2.0.0\"}\n",
+    )
+    .unwrap();
 
     let source = ClaudeAdapter::with_root(setup.claude_dir.path().to_path_buf());
     let target = CursorAdapter::with_root(setup.cursor_dir.path().to_path_buf());
@@ -958,22 +924,25 @@ fn plugin_assets_preserves_directory_hierarchy() {
         sync_hooks: false,
         sync_instructions: false,
         sync_plugin_assets: true,
+        full_plugin_mirror: true,
+        interactive: false,
         ..Default::default()
     };
 
     let report = orch.sync(&params).unwrap();
     assert!(report.success);
 
-    let cursor_plugin = setup
+    // Manifest should be at plugins/local/<plugin>/.cursor-plugin/plugin.json
+    let cursor_manifest = setup
         .cursor_dir
         .path()
-        .join("plugins/cache/market/plugin/2.0.0");
+        .join("plugins/local/plugin/.cursor-plugin/plugin.json");
 
-    assert!(cursor_plugin
-        .join("scripts/dogfooder/validator.py")
-        .exists());
-    assert!(cursor_plugin.join("scripts/dogfooder/parser.py").exists());
-    assert!(cursor_plugin.join("scripts/dogfooder/__init__.py").exists());
+    assert!(
+        cursor_manifest.exists(),
+        "Manifest should be written to plugins/local/"
+    );
+    assert_eq!(report.plugin_assets.written, 1);
 }
 
 #[test]
@@ -1001,6 +970,7 @@ fn plugin_assets_dry_run_writes_nothing() {
         sync_hooks: false,
         sync_instructions: false,
         sync_plugin_assets: true,
+        interactive: false,
         ..Default::default()
     };
 

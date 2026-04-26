@@ -10,7 +10,9 @@ use std::sync::LazyLock;
 use time::OffsetDateTime;
 
 /// Node types in the knowledge graph.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, strum::EnumIter, strum::EnumCount,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeKind {
     Topic,
@@ -29,20 +31,18 @@ impl NodeKind {
         }
     }
 
-    /// Returns all variants in declaration order.  Update this list when
-    /// adding a new variant.
+    /// Returns all variants in declaration order.
     pub fn all() -> &'static [NodeKind] {
-        &[
-            Self::Topic,
-            Self::Paper,
-            Self::Implementation,
-            Self::Discussion,
-        ]
+        static ALL: LazyLock<Vec<NodeKind>> =
+            LazyLock::new(|| <NodeKind as strum::IntoEnumIterator>::iter().collect());
+        &ALL
     }
 }
 
 /// Edge types (relationships) in the knowledge graph.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, strum::EnumIter, strum::EnumCount,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum EdgeKind {
     Cites,
@@ -63,16 +63,11 @@ impl EdgeKind {
         }
     }
 
-    /// Returns all variants in declaration order.  Update this list when
-    /// adding a new variant.
+    /// Returns all variants in declaration order.
     pub fn all() -> &'static [EdgeKind] {
-        &[
-            Self::Cites,
-            Self::Implements,
-            Self::Contradicts,
-            Self::Extends,
-            Self::AnalogousTo,
-        ]
+        static ALL: LazyLock<Vec<EdgeKind>> =
+            LazyLock::new(|| <EdgeKind as strum::IntoEnumIterator>::iter().collect());
+        &ALL
     }
 }
 
@@ -451,6 +446,8 @@ mod tests {
     /// THEN all variants are covered and parseable
     #[test]
     fn node_kind_all_covers_every_variant() {
+        use strum::EnumCount;
+
         let all = NodeKind::all();
         // Verify each entry round-trips through serde
         for kind in all {
@@ -458,8 +455,12 @@ mod tests {
             let parsed = parse_node_kind(s).unwrap();
             assert_eq!(*kind, parsed, "NodeKind round-trip failed for '{s}'");
         }
-        // Verify count matches the enum variants (4 variants)
-        assert_eq!(all.len(), 4, "NodeKind::all() should have 4 variants");
+        // Verify count matches the enum variants (compile-time guarantee)
+        assert_eq!(
+            all.len(),
+            NodeKind::COUNT,
+            "NodeKind::all() length must match EnumCount"
+        );
     }
 
     /// GIVEN EdgeKind::all()
@@ -467,13 +468,19 @@ mod tests {
     /// THEN all variants are covered and parseable
     #[test]
     fn edge_kind_all_covers_every_variant() {
+        use strum::EnumCount;
+
         let all = EdgeKind::all();
         for kind in all {
             let s = kind.as_str();
             let parsed = parse_edge_kind(s).unwrap();
             assert_eq!(*kind, parsed, "EdgeKind round-trip failed for '{s}'");
         }
-        assert_eq!(all.len(), 5, "EdgeKind::all() should have 5 variants");
+        assert_eq!(
+            all.len(),
+            EdgeKind::COUNT,
+            "EdgeKind::all() length must match EnumCount"
+        );
     }
 
     /// GIVEN a timestamp in SQLite's datetime('now') format

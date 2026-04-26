@@ -1053,6 +1053,7 @@ pub fn run() -> Result<()> {
             dry_run,
             skip_existing_commands,
             include_marketplace,
+            exclude_plugins,
             validate: _validate,
             autofix: _autofix,
         } => {
@@ -1090,9 +1091,13 @@ pub fn run() -> Result<()> {
                     );
                 }
 
-                // Then sync commands, MCP servers, preferences, and skills
-                // Only skip skills sync for Claude→Codex (handled above with special logic)
-                let sync_skills = !(from.is_claude() && target.is_codex());
+                // Skip skills sync for Claude→Codex (handled above with special logic).
+                // For →Cursor: skip flat skills copy — Cursor discovers skills from
+                // its own plugins/cache/ which is synced via plugin_assets.
+                let sync_skills = !(target.is_cursor() || from.is_claude() && target.is_codex());
+                // Cursor needs a full plugin mirror (including skills + manifests)
+                // since it has its own plugin cache at ~/.cursor/plugins/cache/
+                let full_plugin_mirror = target.is_cursor();
                 let params = SyncParams {
                     from: Some(from.as_str().to_string()),
                     dry_run,
@@ -1102,6 +1107,8 @@ pub fn run() -> Result<()> {
                     sync_preferences: true,
                     sync_skills,
                     include_marketplace,
+                    exclude_plugins: exclude_plugins.clone(),
+                    full_plugin_mirror,
                     ..Default::default()
                 };
 
@@ -1231,7 +1238,15 @@ pub fn run() -> Result<()> {
             backup,
             format,
             errors_only,
-        } => handle_validate_command(skill_dirs, target, autofix, backup, format, errors_only),
+            #[cfg(feature = "watch")]
+                watch: _watch,
+            #[cfg(feature = "watch")]
+                debounce_ms: _debounce_ms,
+        } => {
+            // TODO(#208): when watch feature is enabled, dispatch to watch loop
+            // if _watch { return handle_validate_watch(...); }
+            handle_validate_command(skill_dirs, target, autofix, backup, format, errors_only)
+        }
         Commands::Analyze {
             skill_dirs,
             format,

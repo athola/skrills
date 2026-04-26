@@ -1,0 +1,33 @@
+# Example workflow: validate skills on pull requests.
+#
+# Copy this file into your repository's .github/workflows/ directory and
+# adjust the inputs to match your project layout.
+#
+# For the full list of inputs and outputs see:
+#   .github/actions/validate-skills/action.yml
+
+name: Validate Skills
+
+on:
+  pull_request:
+    paths:
+      - "skills/**"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Skill validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Strict mode (default) — fails the check if any errors are found.
+      - name: Validate skills (all targets)
+        uses: ./.github/actions/validate-skills
+        with:
+          targets: "all"
+          path: "skills/"
+          # version: "0.7.6"  # pin to a specific release
+          # strict: "false"   # set to false to only annotate without failing
