@@ -1,5 +1,10 @@
 # Changelog Highlights
 
+## Unreleased
+
+- **Testing: Release-Consistency Invariants**: Filesystem-walking parity tests guard against workspace version drift and `plugin.json`/`marketplace.json` manifest drift. Five invariants: crate versions agree, `plugin.json` version matches workspace, registered commands exist on disk, top-level command count matches `plugin.json.commands.length`, and `marketplace.json` plugin entries agree with the workspace and have valid `source` paths. Pattern adapted from `claude-night-market` v1.9.3.
+- **Makefile: `release-consistency` Target**: Focused pre-tag verification entry point (`make release-consistency`).
+
 ## 0.7.7 (2026-04-15)
 
 - **Refactor: Manifest-Only Plugin Sync**: `write_plugin_assets` now writes manifests to `plugins/local/<plugin>/.cursor-plugin/plugin.json` instead of mirroring the full cache. Cursor discovers plugin content natively from `~/.claude/plugins/cache/`. Stale plugin directories are pruned automatically.

@@ -72,7 +72,7 @@ endef
 	demo-setup-both demo-setup-uninstall demo-setup-reinstall \
 	demo-setup-universal demo-setup-first-run demo-setup-all \
 	demo-analytics demo-gateway demo-cert demo-skill-lifecycle \
-	demo-multi-cli-agent
+	demo-multi-cli-agent demo-release-consistency
 .NOTPARALLEL: demo-all demo-setup-all
 .SILENT: demo-doctor demo-empirical demo-cli demo-all demo-setup-claude demo-setup-codex demo-setup-both \
 	demo-setup-uninstall demo-setup-reinstall demo-setup-universal demo-setup-first-run \
@@ -137,6 +137,7 @@ help:
 	@printf "  %-23s %s\n" "demo-analytics" "test analytics export/import"
 	@printf "  %-23s %s\n" "demo-gateway" "test MCP gateway tools"
 	@printf "  %-23s %s\n" "demo-multi-cli-agent" "test multi-CLI agent routing"
+	@printf "  %-23s %s\n" "demo-release-consistency" "show parity inventory + run invariant tests"
 	@printf "  %-23s %s\n" "demo-setup-all" "run all setup flow demos"
 	@printf "  %-23s %s\n" "demo-setup-{claude,codex,both}" "client setup demos"
 	@printf "  %-23s %s\n" "demo-setup-{uninstall,reinstall}" "lifecycle demos"
@@ -340,6 +341,23 @@ demo-doctor: demo-fixtures build
 	@echo "==> Demo: Doctor diagnostics"
 	$(DEMO_RUN) doctor
 	@echo "==> Doctor demo complete"
+
+demo-release-consistency:
+	@echo "==> Demo: Release-Consistency Invariants (LIVE)"
+	@echo "--- Invariant 1: workspace crate versions (must agree)"
+	@grep -hE '^version = "' crates/*/Cargo.toml | sort -u
+	@echo "--- Invariant 2: plugin.json version (must match workspace)"
+	@grep -E '"version":' plugins/skrills/.claude-plugin/plugin.json | head -1 | sed 's/^[[:space:]]*//'
+	@echo "--- Invariants 3 & 4: command parity"
+	@printf "    plugin.json commands.length: "
+	@python3 -c "import json; print(len(json.load(open('plugins/skrills/.claude-plugin/plugin.json'))['commands']))"
+	@printf "    plugins/skrills/commands/*.md (top-level): "
+	@find plugins/skrills/commands -maxdepth 1 -name '*.md' | wc -l
+	@echo "--- Invariant 5: marketplace.json plugin entries + sources"
+	@python3 -c "import json; d=json.load(open('.claude-plugin/marketplace.json')); meta=d.get('metadata',{}).get('version','-'); print(f'    metadata.version: {meta}'); [print(f'    plugins[{i}] {p[\"name\"]} v{p[\"version\"]} source={p[\"source\"]}') for i,p in enumerate(d['plugins'])]"
+	@echo "--- Running parity test suite"
+	$(CARGO_CMD) test -p skrills_test_utils --test release_consistency
+	@echo "==> Release-consistency demo complete"
 
 demo-empirical: demo-fixtures build
 	@echo "==> Demo: Empirical skill creation (dry-run)"

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Testing: Release-Consistency Invariants**: New filesystem-walking tests in `crates/test-utils/tests/release_consistency.rs` guard the workspace against version drift and command-manifest drift. Five invariants: (1) all `crates/*/Cargo.toml` versions agree; (2) `plugins/skrills/.claude-plugin/plugin.json` version matches the workspace crate version; (3) every command path in `plugin.json.commands` exists on disk; (4) top-level `plugins/skrills/commands/*.md` count equals `plugin.json.commands.length`; (5) `.claude-plugin/marketplace.json` plugin entries (and optional `metadata.version`) agree with the workspace and each entry's `source` path exists on disk. Pattern adapted from `claude-night-market` v1.9.3 (`plugins/sanctum/tests/test_release_consistency.py`). RED-on-drift demonstrated for each invariant before commit.
+- **Makefile: `release-consistency` Target**: New focused entry point (`make release-consistency`) for pre-tag verification. Wraps `cargo test -p skrills_test_utils --test release_consistency`. The existing `make test` and `make test-integration` continue to pick this up via the `--test '*'` filter.
+
 ## 0.7.7 - 2026-04-15
 - **Refactor: Manifest-Only Plugin Sync**: Rewrote `write_plugin_assets` from full cache mirroring (`plugins/cache/`) to manifest-only writing (`plugins/local/<plugin>/.cursor-plugin/plugin.json`). Cursor natively discovers plugin content from `~/.claude/plugins/cache/`, so only registration manifests need to be synced. Stale plugin directories are pruned from `plugins/local/` when no longer in the sync set.
 - **NEW: Plugin-Aware Skill Writing**: Skills with a `PluginOrigin` are written to `plugins/local/<plugin>/skills/<name>/SKILL.md` instead of the flat `skills/` directory. Cursor's plugin system discovers them as installed plugins. `.cursor-plugin/plugin.json` manifests are auto-created per plugin.

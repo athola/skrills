@@ -8,7 +8,7 @@
 //! (`plugins/sanctum/tests/test_release_consistency.py`), adapted for a
 //! Rust cargo workspace + `plugin.json` plugin manifest layout.
 //!
-//! The four invariants:
+//! The five invariants:
 //! 1. All `crates/*/Cargo.toml` versions agree.
 //! 2. `plugins/skrills/.claude-plugin/plugin.json` version matches the
 //!    workspace crate version.
@@ -17,6 +17,9 @@
 //!    `plugin.json.commands.length` (the `-maxdepth 1` analog from
 //!    night-market — guards against helper sub-files inflating counts
 //!    if a future commands/<name>/modules/ subdir is introduced).
+//! 5. `.claude-plugin/marketplace.json` plugin entries (and optional
+//!    `metadata.version`) agree with the workspace, and each entry's
+//!    `source` path exists on disk.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -41,6 +44,29 @@ fn plugin_dir() -> PathBuf {
 
 fn plugin_json_path() -> PathBuf {
     plugin_dir().join(".claude-plugin").join("plugin.json")
+}
+
+fn marketplace_json_path() -> PathBuf {
+    workspace_root()
+        .join(".claude-plugin")
+        .join("marketplace.json")
+}
+
+/// Canonical workspace version, asserted to be uniform across all crates.
+/// Panics if crates disagree — that's invariant #1's job; this helper
+/// short-circuits for the tests that depend on a single value.
+fn canonical_workspace_version() -> String {
+    let crate_versions = collect_crate_versions();
+    // Use owned Strings in the dedup set so the iterator doesn't borrow
+    // from `crate_versions` and we can return a single value cleanly.
+    let unique: std::collections::BTreeSet<String> = crate_versions.values().cloned().collect();
+    assert_eq!(
+        unique.len(),
+        1,
+        "crates disagree; cannot derive canonical version: {:#?}",
+        crate_versions
+    );
+    unique.into_iter().next().expect("at least one crate")
 }
 
 fn read_crate_version(cargo_toml: &Path) -> String {
@@ -104,16 +130,7 @@ fn plugin_json_version_matches_workspace_crates() {
         .get("version")
         .and_then(|v| v.as_str())
         .expect("plugin.json has string `version`");
-
-    let crate_versions = collect_crate_versions();
-    let unique: std::collections::BTreeSet<&String> = crate_versions.values().collect();
-    assert_eq!(
-        unique.len(),
-        1,
-        "crates disagree; cannot compare to plugin.json: {:#?}",
-        crate_versions
-    );
-    let workspace_version = unique.into_iter().next().expect("at least one crate");
+    let workspace_version = canonical_workspace_version();
 
     assert_eq!(
         plugin_version, workspace_version,
@@ -171,5 +188,78 @@ fn plugin_command_count_matches_top_level_disk() {
     assert_eq!(
         registered, on_disk,
         "plugin.json commands.length ({registered}) != top-level commands/*.md count ({on_disk})"
+    );
+}
+
+#[test]
+fn marketplace_json_versions_and_sources_agree() {
+    let path = marketplace_json_path();
+    let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let marketplace: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+
+    let workspace_version = canonical_workspace_version();
+    let workspace_root = workspace_root();
+    let mut errors: Vec<String> = Vec::new();
+
+    // metadata.version is optional; check only if present.
+    if let Some(meta_version) = marketplace
+        .get("metadata")
+        .and_then(|m| m.get("version"))
+        .and_then(|v| v.as_str())
+    {
+        if meta_version != workspace_version {
+            errors.push(format!(
+                "marketplace.json metadata.version `{meta_version}` != workspace `{workspace_version}`"
+            ));
+        }
+    }
+
+    let plugins = marketplace
+        .get("plugins")
+        .and_then(|p| p.as_array())
+        .expect("marketplace.json has `plugins` array");
+
+    assert!(
+        !plugins.is_empty(),
+        "marketplace.json `plugins` array is empty"
+    );
+
+    for (i, entry) in plugins.iter().enumerate() {
+        let name = entry
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("<unnamed>");
+
+        match entry.get("version").and_then(|v| v.as_str()) {
+            Some(v) if v == workspace_version => {}
+            Some(v) => errors.push(format!(
+                "marketplace.json plugins[{i}] (`{name}`) version `{v}` != workspace `{workspace_version}`"
+            )),
+            None => errors.push(format!(
+                "marketplace.json plugins[{i}] (`{name}`) missing string `version`"
+            )),
+        }
+
+        match entry.get("source").and_then(|s| s.as_str()) {
+            Some(src) => {
+                let normalized = src.strip_prefix("./").unwrap_or(src);
+                let abs = workspace_root.join(normalized);
+                if !abs.exists() {
+                    errors.push(format!(
+                        "marketplace.json plugins[{i}] (`{name}`) source `{src}` does not exist on disk"
+                    ));
+                }
+            }
+            None => errors.push(format!(
+                "marketplace.json plugins[{i}] (`{name}`) missing string `source`"
+            )),
+        }
+    }
+
+    assert!(
+        errors.is_empty(),
+        "marketplace.json drift detected:\n  - {}",
+        errors.join("\n  - ")
     );
 }
