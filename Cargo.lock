@@ -4524,6 +4524,7 @@ dependencies = [
  "notify",
  "parking_lot",
  "pathdiff",
+ "ratatui",
  "rcgen",
  "regex",
  "reqwest",
