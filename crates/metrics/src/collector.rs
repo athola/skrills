@@ -132,6 +132,45 @@ impl MetricsCollector {
         Ok(())
     }
 
+    /// Collect raw values for a named baseline metric over a trailing window.
+    ///
+    /// Returns the unsorted values for downstream quantile / aggregation
+    /// queries. Unknown metric names return an empty `Vec` so callers
+    /// can treat unknown metrics as warmup.
+    ///
+    /// Supported metrics:
+    /// - `skill_tokens` → `skill_invocations.tokens_used`
+    /// - `skill_duration_ms` → `skill_invocations.duration_ms`
+    /// - `rule_duration_ms` → `rule_triggers.duration_ms`
+    pub fn collect_metric_values(
+        &self,
+        metric: &str,
+        window: std::time::Duration,
+    ) -> Result<Vec<f64>> {
+        let secs = window.as_secs() as i64;
+        let conn = self.conn.lock();
+        let (table, column) = match metric {
+            "skill_tokens" => ("skill_invocations", "tokens_used"),
+            "skill_duration_ms" => ("skill_invocations", "duration_ms"),
+            "rule_duration_ms" => ("rule_triggers", "duration_ms"),
+            _ => return Ok(Vec::new()),
+        };
+        let sql = format!(
+            "SELECT CAST({col} AS REAL) FROM {tbl} \
+             WHERE {col} IS NOT NULL \
+             AND created_at >= datetime('now', '-' || ?1 || ' seconds')",
+            col = column,
+            tbl = table
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map([secs], |r| r.get::<_, f64>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     /// Broadcast a metric event to all subscribers.
     ///
     /// Logs a warning if there are no active subscribers or if the channel is full.
