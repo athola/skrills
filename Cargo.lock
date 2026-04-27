@@ -4293,6 +4293,7 @@ dependencies = [
  "ratatui",
  "skrills-discovery",
  "skrills-metrics",
+ "skrills-snapshot",
  "skrills_sync",
  "tempfile",
  "thiserror 2.0.18",
