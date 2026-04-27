@@ -24,6 +24,7 @@ walkdir.workspace = true
 toml.workspace = true
 dirs.workspace = true
 tracing.workspace = true
+skrills-snapshot = { path = "../snapshot", version = "0.8.0" }
 
 # Additional dependencies for intelligence features
 chrono = { version = "0.4", features = ["serde"] }

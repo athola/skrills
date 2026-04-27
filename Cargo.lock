@@ -4327,6 +4327,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
+ "skrills-snapshot",
  "skrills_test_utils",
  "tempfile",
  "tokio",

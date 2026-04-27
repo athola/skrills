@@ -47,6 +47,7 @@
 //! save_analytics(&analytics, Path::new("analytics.json")).unwrap();
 //! ```
 
+pub mod cold_window_hints;
 pub mod context;
 pub mod create;
 pub mod recommend;
