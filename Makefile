@@ -219,6 +219,11 @@ coverage:
 	$(CARGO_CMD) tarpaulin --workspace --all-features --out Html
 	$(call open_file,$(CURDIR)/tarpaulin-report.html)
 
+cold-window: build
+	@echo "Starting cold-window dashboard at http://localhost:8888/dashboard"
+	@echo "  Press Ctrl-C for graceful shutdown."
+	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH) cold-window --browser --port 8888 --alert-budget 50000
+
 dogfood: build demo-fixtures dogfood-readme
 	@echo "==> Dogfooding: Running skrills on itself"
 	HOME=$(HOME_DIR) $(BIN_PATH) doctor

@@ -23,11 +23,13 @@ and Cursor.
 [FAQ](docs/FAQ.md) |
 [Changelog](book/src/changelog.md)
 
-> **What's new in 0.7.7** -- Manifest-only plugin sync writes
-> `.cursor-plugin/plugin.json` to `plugins/local/` instead of
-> mirroring the full cache. Plugin-aware skill writing organizes
-> synced skills under their source plugin. Validation cache
-> enables offline `skrills validate`.
+> **What's new in 0.8.0** -- Cold-window real-time analysis
+> (`skrills cold-window --browser`). Continuously-refreshing
+> dashboard for plugins / skills / commands / subagents with a
+> 4-tier alert policy, token attribution per source, and pull-only
+> research findings. Browser surface ships in this release; TUI
+> panes available as library code. See
+> [Cold-Window guide](book/src/cold-window.md).
 > See [changelog](book/src/changelog.md).
 
 ## Why Skrills?
