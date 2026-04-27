@@ -26,9 +26,11 @@ pub mod alert;
 pub mod cadence;
 pub mod diff;
 pub mod engine;
+pub mod plugin_health;
 pub mod traits;
 
 pub use engine::{ColdWindowEngine, DefaultHintScorer, TickInput};
+pub use plugin_health::{CollectorOutput, MalformedPlugin, PluginHealthCollector};
 
 use std::collections::VecDeque;
 

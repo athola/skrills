@@ -26,7 +26,7 @@ use anyhow::{Context, Result};
 use clap::Args;
 use skrills_analyze::cold_window::cadence::read_loadavg_1min;
 use skrills_analyze::cold_window::engine::TickInput;
-use skrills_analyze::cold_window::ColdWindowEngine;
+use skrills_analyze::cold_window::{ColdWindowEngine, PluginHealthCollector};
 use skrills_snapshot::{LoadSample, TokenEntry, TokenLedger};
 use tokio::sync::watch;
 
@@ -70,6 +70,14 @@ pub struct ColdWindowArgs {
     /// producer (in addition to defaults).
     #[arg(long = "skill-dir", value_name = "DIR")]
     pub skill_dirs: Vec<PathBuf>,
+
+    /// Plugins root directory whose `<plugin>/health.toml` files
+    /// participate in each tick (FR11). Defaults to `./plugins`
+    /// relative to the current working directory; missing or
+    /// unreadable directories yield an empty plugin set without
+    /// error (the cold-window must never crash on user state).
+    #[arg(long = "plugins-dir", value_name = "DIR")]
+    pub plugins_dir: Option<PathBuf>,
 }
 
 /// Run the cold-window subcommand to completion (or until SIGINT/SIGTERM).
@@ -92,10 +100,15 @@ pub async fn run(args: ColdWindowArgs) -> Result<()> {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     // Spawn the producer task (fixture-driven for v0.8.0 demo).
+    let plugins_dir = args
+        .plugins_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("plugins"));
     let producer_handle = tokio::spawn(producer_loop(
         Arc::clone(&engine),
         args.tick_rate_ms.unwrap_or(2_000),
         args.no_adaptive,
+        plugins_dir,
         shutdown_rx.clone(),
     ));
 
@@ -135,16 +148,20 @@ pub async fn run(args: ColdWindowArgs) -> Result<()> {
 /// Producer loop: synthesize a `TickInput` from the local environment
 /// every `next_tick_ms` (read from the most recent snapshot) and call
 /// `engine.tick`. v0.8.0 demo body uses a small synthetic ledger that
-/// grows over time so the alert policy gets exercised; production
-/// wiring (real discovery + analyze::tokens attribution) is a follow-up.
+/// grows over time so the alert policy gets exercised, but plugin
+/// participation (FR11/T022) is real: each tick re-walks
+/// `<plugins_dir>/*/health.toml` cold and feeds the result to the
+/// engine. Token attribution from real discovery is a follow-up.
 async fn producer_loop(
     engine: Arc<ColdWindowEngine>,
     base_tick_ms: u64,
     no_adaptive: bool,
+    plugins_dir: PathBuf,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     let mut tick_count: u64 = 0;
     let mut next_delay_ms = base_tick_ms;
+    let plugin_collector = PluginHealthCollector::new(plugins_dir);
     loop {
         tokio::select! {
             biased;
@@ -156,7 +173,10 @@ async fn producer_loop(
             }
             _ = tokio::time::sleep(Duration::from_millis(next_delay_ms)) => {
                 tick_count += 1;
-                let input = build_demo_input(tick_count, no_adaptive);
+                let mut input = build_demo_input(tick_count, no_adaptive);
+                // FR11: real plugin participation each tick. Cold
+                // rewalk — never cached — per the spec contract.
+                input = input.with_plugin_collector_output(plugin_collector.collect());
                 let snap = engine.tick(input);
                 next_delay_ms = if no_adaptive {
                     base_tick_ms
@@ -299,7 +319,13 @@ mod tests {
     async fn producer_loop_terminates_on_shutdown() {
         let engine = Arc::new(ColdWindowEngine::with_defaults(100_000));
         let (tx, rx) = watch::channel(false);
-        let handle = tokio::spawn(producer_loop(Arc::clone(&engine), 50, true, rx));
+        let handle = tokio::spawn(producer_loop(
+            Arc::clone(&engine),
+            50,
+            true,
+            PathBuf::from("/nonexistent-plugins-test"),
+            rx,
+        ));
         // Let the producer fire a few ticks.
         tokio::time::sleep(Duration::from_millis(200)).await;
         let _ = tx.send(true);
@@ -314,7 +340,13 @@ mod tests {
         let engine = Arc::new(ColdWindowEngine::with_defaults(100_000));
         let mut rx = engine.subscribe();
         let (tx, shutdown_rx) = watch::channel(false);
-        let _handle = tokio::spawn(producer_loop(Arc::clone(&engine), 30, true, shutdown_rx));
+        let _handle = tokio::spawn(producer_loop(
+            Arc::clone(&engine),
+            30,
+            true,
+            PathBuf::from("/nonexistent-plugins-test"),
+            shutdown_rx,
+        ));
 
         let mut last_version = 0;
         for _ in 0..3 {

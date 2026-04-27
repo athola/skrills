@@ -184,8 +184,29 @@ impl AlertPolicy for LayeredAlertPolicy {
         history: &mut AlertHistory,
     ) -> Vec<Alert> {
         let mut alerts = Vec::new();
+        let total = curr.token_ledger.total;
+        let classification = self.classify_token_total(total);
+        let active_fingerprint = classification
+            .as_ref()
+            .map(|(sev, _)| Self::fingerprint_for(*sev).to_string());
 
-        if let Some((severity, band)) = self.classify_token_total(curr.token_ledger.total) {
+        // Hysteresis enforcement: any tracked fingerprint whose
+        // condition is no longer holding has its dwell reset to 0.
+        // Without this, an oscillating signal (e.g. tokens flapping
+        // 22 K ↔ 18 K around the Advisory threshold) would
+        // accumulate dwell across non-consecutive crossings and
+        // eventually fire — defeating min-dwell. With this reset, a
+        // condition must hold for `min_dwell_ticks` *consecutive*
+        // ticks to fire (matches FAA AC 25.1322-1 § 5.3 dwell
+        // semantics).
+        for (fp, entry) in history.fingerprints.iter_mut() {
+            if active_fingerprint.as_deref() != Some(fp.as_str()) {
+                entry.dwell_ticks = 0;
+                entry.cleared = true;
+            }
+        }
+
+        if let Some((severity, band)) = classification {
             let fingerprint = Self::fingerprint_for(severity);
 
             // Increment dwell on every tick where the condition holds,
@@ -200,6 +221,7 @@ impl AlertPolicy for LayeredAlertPolicy {
                     cleared: false,
                 });
             entry.dwell_ticks = entry.dwell_ticks.saturating_add(1);
+            entry.cleared = false;
             let dwell_ticks = entry.dwell_ticks;
 
             // Min-dwell: condition must persist before firing.

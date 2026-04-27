@@ -32,6 +32,7 @@ use skrills_snapshot::{
 use super::alert::LayeredAlertPolicy;
 use super::cadence::{CadenceStrategy, LoadAwareCadence};
 use super::diff::FieldwiseDiff;
+use super::plugin_health::{CollectorOutput, MalformedPlugin};
 use super::traits::{AlertHistory, AlertPolicy, HintScorer, SnapshotDiff};
 use super::{ActivityRing, ACTIVITY_RING_CAPACITY, SNAPSHOT_CHANNEL_CAPACITY};
 
@@ -53,6 +54,10 @@ pub struct TickInput {
     pub raw_hints: Vec<Hint>,
     /// Plugin health reports (from `health.toml` participants).
     pub plugin_health: Vec<PluginHealth>,
+    /// Plugins whose `health.toml` failed to parse this tick (FR11
+    /// EC5). Each entry is translated into a `Caution`-tier alert
+    /// before broadcast and excluded from `plugin_health`.
+    pub malformed_plugins: Vec<MalformedPlugin>,
     /// Load sample for adaptive cadence.
     pub load_sample: LoadSample,
     /// Research findings to attach to this tick's snapshot. The
@@ -70,9 +75,25 @@ impl TickInput {
             token_ledger: TokenLedger::default(),
             raw_hints: Vec::new(),
             plugin_health: Vec::new(),
+            malformed_plugins: Vec::new(),
             load_sample: LoadSample::default(),
             research_findings: Vec::new(),
         }
+    }
+
+    /// Builder: ingest a [`CollectorOutput`] from
+    /// [`super::PluginHealthCollector`]. Splits into `plugin_health`
+    /// (snapshot wire-format) and `malformed_plugins` (alert source).
+    pub fn with_plugin_collector_output(mut self, output: CollectorOutput) -> Self {
+        self.plugin_health = output.healths;
+        self.malformed_plugins = output.malformed;
+        self
+    }
+
+    /// Builder: set malformed plugins explicitly (for tests).
+    pub fn with_malformed_plugins(mut self, m: Vec<MalformedPlugin>) -> Self {
+        self.malformed_plugins = m;
+        self
     }
 
     /// Builder: set the timestamp.
@@ -229,6 +250,7 @@ impl ColdWindowEngine {
             token_ledger,
             raw_hints,
             plugin_health,
+            malformed_plugins,
             load_sample,
             research_findings,
         } = input;
@@ -279,9 +301,23 @@ impl ColdWindowEngine {
         // Run alert policy. The policy mutates history to track
         // dwell counters even on ticks that haven't yet hit min-dwell;
         // the engine doesn't need to update history separately.
-        let alerts = self
+        let mut alerts = self
             .alert_policy
             .evaluate(&prev, &snapshot, &mut state.alert_history);
+
+        // Append CAUTION alerts for malformed plugin health.toml files
+        // (FR11 EC5). These are deterministic — no hysteresis, no
+        // min-dwell — because user configuration errors need
+        // immediate visibility. Stable fingerprint allows downstream
+        // dispatchers to dedupe across ticks.
+        if !malformed_plugins.is_empty() {
+            let synthetic = CollectorOutput {
+                healths: Vec::new(),
+                malformed: malformed_plugins,
+            };
+            alerts.extend(synthetic.malformed_alerts(timestamp_ms));
+        }
+
         snapshot.alerts = alerts;
 
         let snap_arc = Arc::new(snapshot);
@@ -486,6 +522,72 @@ mod tests {
         ]);
         assert_eq!(ranked.len(), 2);
         assert_eq!(ranked[0].hint.uri, "b");
+    }
+
+    #[test]
+    fn malformed_plugin_yields_caution_alert_in_snapshot() {
+        // FR11 EC5: malformed plugin health.toml → CAUTION alert
+        // with stable fingerprint, deterministic (no min-dwell).
+        let engine = ColdWindowEngine::with_defaults(100_000);
+        let malformed = vec![MalformedPlugin {
+            plugin_name: "broken-plugin".into(),
+            error_message: "expected `=` at line 2".into(),
+        }];
+        let input = TickInput::empty()
+            .with_timestamp_ms(1_700_000_000_000)
+            .with_malformed_plugins(malformed);
+        let snap = engine.tick(input);
+        let cautions: Vec<_> = snap
+            .alerts
+            .iter()
+            .filter(|a| matches!(a.severity, Severity::Caution))
+            .filter(|a| a.fingerprint.starts_with("plugin-health-malformed::"))
+            .collect();
+        assert_eq!(
+            cautions.len(),
+            1,
+            "exactly one CAUTION per malformed plugin"
+        );
+        assert_eq!(
+            cautions[0].fingerprint,
+            "plugin-health-malformed::broken-plugin"
+        );
+        assert!(cautions[0].title.contains("broken-plugin"));
+        assert!(cautions[0].message.contains("expected `=`"));
+        assert_eq!(cautions[0].fired_at_ms, 1_700_000_000_000);
+        assert_eq!(cautions[0].dwell_ticks, 1, "deterministic alert, no dwell");
+    }
+
+    #[test]
+    fn collector_output_routes_to_plugin_health_and_alerts() {
+        // FR11 + EC5: CollectorOutput.healths populates snapshot,
+        // CollectorOutput.malformed becomes CAUTION alerts. The two
+        // streams are disjoint — a malformed plugin never appears in
+        // plugin_health.
+        use skrills_snapshot::HealthStatus;
+        let engine = ColdWindowEngine::with_defaults(100_000);
+        let collector_output = super::super::plugin_health::CollectorOutput {
+            healths: vec![PluginHealth {
+                plugin_name: "good".into(),
+                overall: HealthStatus::Ok,
+                checks: vec![],
+            }],
+            malformed: vec![MalformedPlugin {
+                plugin_name: "bad".into(),
+                error_message: "garbage".into(),
+            }],
+        };
+        let input = TickInput::empty().with_plugin_collector_output(collector_output);
+        let snap = engine.tick(input);
+        assert_eq!(snap.plugin_health.len(), 1);
+        assert_eq!(snap.plugin_health[0].plugin_name, "good");
+        assert!(
+            snap.alerts.iter().any(|a| {
+                matches!(a.severity, Severity::Caution)
+                    && a.fingerprint == "plugin-health-malformed::bad"
+            }),
+            "expected CAUTION alert for malformed plugin"
+        );
     }
 
     #[test]
