@@ -27,6 +27,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod cold_window;
 pub mod deps;
 pub mod graph;
 pub mod optimize;
