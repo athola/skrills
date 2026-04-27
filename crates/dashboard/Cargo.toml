@@ -17,6 +17,8 @@ skrills-metrics = { path = "../metrics", version = "0.8.0" }
 skrills-discovery = { path = "../discovery", version = "0.8.0" }
 skrills_sync = { path = "../sync", version = "0.8.0" }
 skrills-snapshot = { path = "../snapshot", version = "0.8.0" }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 # TUI
 ratatui = "0.30"
@@ -40,3 +42,4 @@ dirs = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 insta = "1"
+skrills_test_utils = { path = "../test-utils" }

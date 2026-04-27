@@ -17,12 +17,19 @@
 //! - [`status_bar`] renders the bottom status line: tick cadence,
 //!   token budget, alert counts per tier, research-quota state
 //!   (TASK-018).
-//! - `hint_pane` and `research_pane` land in TASK-016 and TASK-017.
+//! - [`hint_pane`] renders the ranked `ScoredHint` list with
+//!   category filter and persisted pin toggles (TASK-016).
+//! - [`research_pane`] renders the pull-only research findings
+//!   panel, collapsed by default with a badge counter (TASK-017).
 
 pub mod alert_pane;
+pub mod hint_pane;
+pub mod research_pane;
 pub mod state;
 pub mod status_bar;
 
 pub use alert_pane::{AlertAction, AlertPane};
+pub use hint_pane::{HintAction, HintPane, HintPaneState};
+pub use research_pane::{ResearchAction, ResearchPane, ResearchPaneState};
 pub use state::ColdWindowState;
 pub use status_bar::StatusBar;
