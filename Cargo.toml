@@ -13,6 +13,7 @@ members = [
     "crates/dashboard",
     "crates/test-utils",
     "crates/tome",
+    "crates/snapshot",
 ]
 resolver = "2"
 
@@ -52,3 +53,4 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "str
 rayon = "1.10"
 parking_lot = "0.12"
 subtle = "2.6"
+num_cpus = "1"

@@ -4249,7 +4249,7 @@ checksum = "b2aa850e253778c88a04c3d7323b043aeda9d3e30d5971937c1855769763678e"
 
 [[package]]
 name = "skrills"
-version = "0.7.7"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "scopeguard",
@@ -4260,7 +4260,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-analyze"
-version = "0.7.7"
+version = "0.8.0"
 dependencies = [
  "parking_lot",
  "regex",
@@ -4277,7 +4277,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-dashboard"
-version = "0.7.7"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -4297,7 +4297,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-discovery"
-version = "0.7.7"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "blake2",
@@ -4314,7 +4314,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-intelligence"
-version = "0.7.7"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4336,7 +4336,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-metrics"
-version = "0.7.7"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -4352,7 +4352,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-server"
-version = "0.7.7"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
@@ -4409,8 +4409,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "skrills-snapshot"
+version = "0.8.0"
+
+[[package]]
 name = "skrills-state"
-version = "0.7.7"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -4424,7 +4428,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-subagents"
-version = "0.7.7"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4451,7 +4455,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-tome"
-version = "0.7.7"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -4471,7 +4475,7 @@ dependencies = [
 
 [[package]]
 name = "skrills-validate"
-version = "0.7.7"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "notify",
@@ -4487,7 +4491,7 @@ dependencies = [
 
 [[package]]
 name = "skrills_sync"
-version = "0.7.7"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -4508,7 +4512,7 @@ dependencies = [
 
 [[package]]
 name = "skrills_test_utils"
-version = "0.7.7"
+version = "0.8.0"
 dependencies = [
  "serde_json",
  "tempfile",

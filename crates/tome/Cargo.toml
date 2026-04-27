@@ -1,6 +1,6 @@
 [package]
 name = "skrills-tome"
-version = "0.7.7"
+version = "0.8.0"
 edition = "2021"
 description = "Research API orchestration, caching, and knowledge graph for skrills."
 license = "MIT"
