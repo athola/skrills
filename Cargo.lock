@@ -4467,10 +4467,12 @@ version = "0.8.0"
 dependencies = [
  "anyhow",
  "dirs",
+ "parking_lot",
  "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
+ "skrills-snapshot",
  "strum 0.26.3",
  "tempfile",
  "thiserror 2.0.18",

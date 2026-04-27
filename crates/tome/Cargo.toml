@@ -18,6 +18,8 @@ dirs.workspace = true
 time.workspace = true
 uuid.workspace = true
 thiserror.workspace = true
+parking_lot.workspace = true
+skrills-snapshot = { path = "../snapshot", version = "0.8.0" }
 
 # Tome-specific deps
 rusqlite = { version = "0.38", features = ["bundled"] }
