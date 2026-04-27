@@ -1,0 +1,389 @@
+//! Cold-window subcommand entry point (TASK-021 + TASK-031).
+//!
+//! Wires the engine, a tick producer, and the optional HTTP browser
+//! surface together. Listens for SIGINT and SIGTERM and cleanly tears
+//! everything down within the spec § 3 / TASK-031 2-second budget.
+//!
+//! v0.8.0 ships **browser-mode** as the primary surface. The TUI
+//! panes (`skrills_dashboard::cold_window`) are fully implemented and
+//! tested as library code; mounting them into a crossterm raw-mode
+//! loop lands as a follow-up. Users today run:
+//!
+//! ```text
+//! skrills cold-window --browser --port 8888
+//! ```
+//!
+//! and open `http://localhost:8888/dashboard`.
+
+#![cfg(feature = "http-transport")]
+
+use std::net::{Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use anyhow::{Context, Result};
+use clap::Args;
+use skrills_analyze::cold_window::cadence::read_loadavg_1min;
+use skrills_analyze::cold_window::engine::TickInput;
+use skrills_analyze::cold_window::ColdWindowEngine;
+use skrills_snapshot::{LoadSample, TokenEntry, TokenLedger};
+use tokio::sync::watch;
+
+use crate::api::{cold_window_routes, ColdWindowDashboardState};
+
+/// CLI flags for `skrills cold-window`.
+///
+/// Matches spec § 3.10 except that `--no-bell` is a TUI-only concern
+/// and lands when the TUI surface is wired up. Defaults are the
+/// values frozen in the brief / spec.
+#[derive(Debug, Clone, Args)]
+pub struct ColdWindowArgs {
+    /// Token budget ceiling. Above this the LayeredAlertPolicy fires
+    /// a Warning and engages the kill-switch.
+    #[arg(long, default_value_t = 100_000)]
+    pub alert_budget: u64,
+
+    /// Research dispatcher fetches per hour.
+    #[arg(long, default_value_t = 10)]
+    pub research_rate: u32,
+
+    /// Disable the load-aware adaptive cadence and use the fixed base
+    /// tick rate. Equivalent to clamping load_ratio to 0.0.
+    #[arg(long, default_value_t = false)]
+    pub no_adaptive: bool,
+
+    /// Run the HTTP browser surface alongside the engine. Without
+    /// this flag the engine still ticks but no surface attaches.
+    #[arg(long, default_value_t = false)]
+    pub browser: bool,
+
+    /// Browser port (only meaningful with `--browser`).
+    #[arg(long, default_value_t = 8888)]
+    pub port: u16,
+
+    /// Override the base tick rate in milliseconds (default 2_000ms).
+    #[arg(long, value_name = "MILLIS")]
+    pub tick_rate_ms: Option<u64>,
+
+    /// Watch additional skill directories for the cold-window
+    /// producer (in addition to defaults).
+    #[arg(long = "skill-dir", value_name = "DIR")]
+    pub skill_dirs: Vec<PathBuf>,
+}
+
+/// Run the cold-window subcommand to completion (or until SIGINT/SIGTERM).
+///
+/// The async runtime is created/used by the caller — this function
+/// is meant to be invoked from inside `tokio::main` or
+/// `tokio::runtime::Runtime::block_on`.
+pub async fn run(args: ColdWindowArgs) -> Result<()> {
+    tracing::info!(
+        budget = args.alert_budget,
+        port = args.port,
+        browser = args.browser,
+        "starting cold-window subcommand"
+    );
+
+    let engine = Arc::new(ColdWindowEngine::with_defaults(args.alert_budget));
+    let bus = engine.bus_sender();
+
+    // Shutdown channel: producer + server both watch this.
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    // Spawn the producer task (fixture-driven for v0.8.0 demo).
+    let producer_handle = tokio::spawn(producer_loop(
+        Arc::clone(&engine),
+        args.tick_rate_ms.unwrap_or(2_000),
+        args.no_adaptive,
+        shutdown_rx.clone(),
+    ));
+
+    // Spawn the browser server if requested.
+    let server_handle = if args.browser {
+        let state = ColdWindowDashboardState::new(bus.clone(), args.alert_budget);
+        let addr: SocketAddr = (Ipv4Addr::LOCALHOST, args.port).into();
+        let shutdown_rx = shutdown_rx.clone();
+        Some(tokio::spawn(async move {
+            run_browser(state, addr, shutdown_rx).await
+        }))
+    } else {
+        None
+    };
+
+    // Wait for SIGINT or SIGTERM.
+    wait_for_shutdown_signal().await;
+    tracing::info!("shutdown signal received; tearing down");
+    let _ = shutdown_tx.send(true);
+
+    // Bound the cleanup window per spec (2 seconds, T031).
+    let cleanup = async {
+        let _ = producer_handle.await;
+        if let Some(h) = server_handle {
+            let _ = h.await;
+        }
+    };
+    match tokio::time::timeout(Duration::from_secs(2), cleanup).await {
+        Ok(()) => tracing::info!("clean shutdown"),
+        Err(_) => {
+            tracing::warn!("shutdown did not complete within 2s; tasks aborted by drop");
+        }
+    }
+    Ok(())
+}
+
+/// Producer loop: synthesize a `TickInput` from the local environment
+/// every `next_tick_ms` (read from the most recent snapshot) and call
+/// `engine.tick`. v0.8.0 demo body uses a small synthetic ledger that
+/// grows over time so the alert policy gets exercised; production
+/// wiring (real discovery + analyze::tokens attribution) is a follow-up.
+async fn producer_loop(
+    engine: Arc<ColdWindowEngine>,
+    base_tick_ms: u64,
+    no_adaptive: bool,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<()> {
+    let mut tick_count: u64 = 0;
+    let mut next_delay_ms = base_tick_ms;
+    loop {
+        tokio::select! {
+            biased;
+            _ = shutdown.changed() => {
+                if *shutdown.borrow() {
+                    tracing::info!("producer received shutdown");
+                    break;
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(next_delay_ms)) => {
+                tick_count += 1;
+                let input = build_demo_input(tick_count, no_adaptive);
+                let snap = engine.tick(input);
+                next_delay_ms = if no_adaptive {
+                    base_tick_ms
+                } else {
+                    snap.next_tick_ms.max(50)
+                };
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Build a synthetic `TickInput` that exercises the alert pipeline.
+///
+/// Token totals scale with `tick_count` so a long-running session
+/// crosses Advisory → Caution → Warning thresholds; the chaos-style
+/// trajectory shows the dashboard "doing something" during a demo.
+/// Replace with real discovery + analyze::tokens attribution in a
+/// follow-up.
+fn build_demo_input(tick_count: u64, no_adaptive: bool) -> TickInput {
+    let total = tick_count.saturating_mul(1_500);
+    let load_sample = if no_adaptive {
+        LoadSample::default()
+    } else {
+        LoadSample {
+            loadavg_1min: read_loadavg_1min(),
+            last_edit_age_ms: None,
+        }
+    };
+    let token_ledger = TokenLedger {
+        per_skill: vec![TokenEntry {
+            source: "skill://demo".into(),
+            tokens: total / 2,
+        }],
+        per_plugin: vec![],
+        per_mcp: vec![TokenEntry {
+            source: "mcp://demo".into(),
+            tokens: total / 2,
+        }],
+        conversation_cache_reads: 0,
+        conversation_cache_writes: 0,
+        total,
+    };
+    TickInput::empty()
+        .with_timestamp_ms(now_ms())
+        .with_token_ledger(token_ledger)
+        .with_load_sample(load_sample)
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Bind a TCP listener and serve the cold-window router with axum's
+/// graceful-shutdown future tied to `shutdown_rx`. Returns when the
+/// server has fully drained.
+async fn run_browser(
+    state: ColdWindowDashboardState,
+    addr: SocketAddr,
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> Result<()> {
+    let app = cold_window_routes(state);
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("binding {addr}"))?;
+    tracing::info!(%addr, "browser surface listening");
+    let shutdown = async move {
+        // Wait for the watch channel to flip to true.
+        loop {
+            if *shutdown_rx.borrow() {
+                break;
+            }
+            if shutdown_rx.changed().await.is_err() {
+                break;
+            }
+        }
+    };
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await
+        .context("axum::serve")?;
+    Ok(())
+}
+
+/// Block until SIGINT or (on unix) SIGTERM arrives.
+async fn wait_for_shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{signal, SignalKind};
+        if let Ok(mut sigterm) = signal(SignalKind::terminate()) {
+            sigterm.recv().await;
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => tracing::info!("received SIGINT"),
+        _ = terminate => tracing::info!("received SIGTERM"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn build_demo_input_scales_tokens_with_tick_count() {
+        let i1 = build_demo_input(1, true);
+        let i10 = build_demo_input(10, true);
+        let i100 = build_demo_input(100, true);
+        assert_eq!(i1.token_ledger.total, 1_500);
+        assert_eq!(i10.token_ledger.total, 15_000);
+        assert_eq!(i100.token_ledger.total, 150_000);
+    }
+
+    #[test]
+    fn build_demo_input_with_no_adaptive_zeros_load_sample() {
+        let i = build_demo_input(5, true);
+        assert_eq!(i.load_sample.loadavg_1min, 0.0);
+        assert!(i.load_sample.last_edit_age_ms.is_none());
+    }
+
+    #[test]
+    fn build_demo_input_partitions_total_between_skill_and_mcp() {
+        let i = build_demo_input(40, true);
+        let skill_total: u64 = i.token_ledger.per_skill.iter().map(|e| e.tokens).sum();
+        let mcp_total: u64 = i.token_ledger.per_mcp.iter().map(|e| e.tokens).sum();
+        assert_eq!(skill_total + mcp_total, i.token_ledger.total);
+    }
+
+    #[tokio::test]
+    async fn producer_loop_terminates_on_shutdown() {
+        let engine = Arc::new(ColdWindowEngine::with_defaults(100_000));
+        let (tx, rx) = watch::channel(false);
+        let handle = tokio::spawn(producer_loop(Arc::clone(&engine), 50, true, rx));
+        // Let the producer fire a few ticks.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let _ = tx.send(true);
+        // Should terminate within a small budget (well below the 2s
+        // shutdown budget guaranteed by the caller).
+        let result = tokio::time::timeout(Duration::from_secs(1), handle).await;
+        assert!(result.is_ok(), "producer did not terminate within 1s");
+    }
+
+    #[tokio::test]
+    async fn producer_loop_drives_engine_versions_forward() {
+        let engine = Arc::new(ColdWindowEngine::with_defaults(100_000));
+        let mut rx = engine.subscribe();
+        let (tx, shutdown_rx) = watch::channel(false);
+        let _handle = tokio::spawn(producer_loop(Arc::clone(&engine), 30, true, shutdown_rx));
+
+        let mut last_version = 0;
+        for _ in 0..3 {
+            match tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
+                Ok(Ok(snap)) => {
+                    assert!(
+                        snap.version > last_version,
+                        "version did not advance: {} <= {}",
+                        snap.version,
+                        last_version
+                    );
+                    last_version = snap.version;
+                }
+                _ => panic!("did not receive snapshot in time"),
+            }
+        }
+        let _ = tx.send(true);
+    }
+
+    #[test]
+    fn cold_window_args_parse_with_defaults() {
+        use clap::Parser;
+
+        #[derive(Parser, Debug)]
+        struct TestCli {
+            #[command(flatten)]
+            args: ColdWindowArgs,
+        }
+
+        let cli = TestCli::parse_from(["test"]);
+        assert_eq!(cli.args.alert_budget, 100_000);
+        assert_eq!(cli.args.research_rate, 10);
+        assert_eq!(cli.args.port, 8888);
+        assert!(!cli.args.browser);
+        assert!(!cli.args.no_adaptive);
+        assert!(cli.args.tick_rate_ms.is_none());
+    }
+
+    #[test]
+    fn cold_window_args_parse_with_overrides() {
+        use clap::Parser;
+
+        #[derive(Parser, Debug)]
+        struct TestCli {
+            #[command(flatten)]
+            args: ColdWindowArgs,
+        }
+
+        let cli = TestCli::parse_from([
+            "test",
+            "--alert-budget",
+            "50000",
+            "--research-rate",
+            "5",
+            "--port",
+            "9000",
+            "--browser",
+            "--no-adaptive",
+            "--tick-rate-ms",
+            "500",
+            "--skill-dir",
+            "/tmp/skills",
+        ]);
+        assert_eq!(cli.args.alert_budget, 50_000);
+        assert_eq!(cli.args.research_rate, 5);
+        assert_eq!(cli.args.port, 9000);
+        assert!(cli.args.browser);
+        assert!(cli.args.no_adaptive);
+        assert_eq!(cli.args.tick_rate_ms, Some(500));
+        assert_eq!(cli.args.skill_dirs.len(), 1);
+    }
+}

@@ -28,12 +28,9 @@ pub mod diff;
 pub mod engine;
 pub mod traits;
 
-use std::collections::VecDeque;
-use std::sync::Arc;
+pub use engine::{ColdWindowEngine, DefaultHintScorer, TickInput};
 
-use parking_lot::Mutex;
-use skrills_snapshot::WindowSnapshot;
-use tokio::sync::broadcast;
+use std::collections::VecDeque;
 
 /// Broadcast capacity: lagging subscribers drop after this many
 /// queued snapshots so the producer never blocks (R11 bound).
@@ -91,89 +88,9 @@ impl Default for ActivityRing {
     }
 }
 
-/// Cold-window engine skeleton.
-///
-/// At this stage (TASK-007 of the cold-window plan), the engine
-/// exposes the `SnapshotBus` and per-tick interface but does not yet
-/// integrate discovery, token attribution, alert policy, or hint
-/// scoring. Those land in TASK-008 (engine GREEN integration).
-///
-/// `tick` accepts a fully-built `WindowSnapshot` and broadcasts it.
-/// Once TASK-008 lands, `tick` will assemble the snapshot internally
-/// from discovery + analyze + intelligence + tome.
-pub struct ColdWindowEngine {
-    tx: broadcast::Sender<Arc<WindowSnapshot>>,
-    activity: Arc<Mutex<ActivityRing>>,
-}
-
-impl ColdWindowEngine {
-    /// Create a new engine with default bounded resources.
-    pub fn new() -> Self {
-        let (tx, _) = broadcast::channel(SNAPSHOT_CHANNEL_CAPACITY);
-        Self {
-            tx,
-            activity: Arc::new(Mutex::new(ActivityRing::default())),
-        }
-    }
-
-    /// Subscribe to the snapshot bus. The receiver delivers
-    /// `Arc<WindowSnapshot>` per tick. If a subscriber lags by more
-    /// than [`SNAPSHOT_CHANNEL_CAPACITY`] snapshots, the channel
-    /// returns `RecvError::Lagged` and the consumer must catch up.
-    pub fn subscribe(&self) -> broadcast::Receiver<Arc<WindowSnapshot>> {
-        self.tx.subscribe()
-    }
-
-    /// How many subscribers are currently attached.
-    pub fn subscriber_count(&self) -> usize {
-        self.tx.receiver_count()
-    }
-
-    /// Broadcast a pre-built snapshot. Returns the same `Arc` for
-    /// convenience. If no subscribers are attached, the snapshot is
-    /// dropped silently — broadcasting requires at least one receiver
-    /// to be observed.
-    pub fn publish(&self, snapshot: WindowSnapshot) -> Arc<WindowSnapshot> {
-        let snap = Arc::new(snapshot);
-        let _ = self.tx.send(Arc::clone(&snap));
-        snap
-    }
-
-    /// Append an activity entry to the bounded ring.
-    pub fn record_activity(&self, entry: impl Into<String>) {
-        self.activity.lock().push(entry.into());
-    }
-
-    /// Snapshot the activity ring (oldest first).
-    pub fn activity_snapshot(&self) -> Vec<String> {
-        self.activity.lock().snapshot()
-    }
-}
-
-impl Default for ColdWindowEngine {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skrills_snapshot::{LoadSample, TokenLedger};
-
-    fn empty_snapshot(version: u64) -> WindowSnapshot {
-        WindowSnapshot {
-            version,
-            timestamp_ms: 0,
-            token_ledger: TokenLedger::default(),
-            alerts: vec![],
-            hints: vec![],
-            research_findings: vec![],
-            plugin_health: vec![],
-            load_sample: LoadSample::default(),
-            next_tick_ms: 2_000,
-        }
-    }
 
     #[test]
     fn activity_ring_caps_at_capacity() {
@@ -191,54 +108,6 @@ mod tests {
         let ring = ActivityRing::default();
         assert!(ring.is_empty());
         assert_eq!(ring.len(), 0);
-    }
-
-    #[tokio::test]
-    async fn engine_publishes_to_subscriber() {
-        let engine = ColdWindowEngine::new();
-        let mut rx = engine.subscribe();
-        let published = engine.publish(empty_snapshot(1));
-        let received = rx.recv().await.expect("recv");
-        assert_eq!(received.version, 1);
-        assert!(Arc::ptr_eq(&published, &received));
-    }
-
-    #[tokio::test]
-    async fn engine_handles_no_subscribers_gracefully() {
-        let engine = ColdWindowEngine::new();
-        // No subscribers attached; publish must not panic or block.
-        let _ = engine.publish(empty_snapshot(1));
-        assert_eq!(engine.subscriber_count(), 0);
-    }
-
-    #[tokio::test]
-    async fn engine_marks_lagging_subscribers() {
-        let engine = ColdWindowEngine::new();
-        let mut rx = engine.subscribe();
-        // Publish more than the channel capacity without consuming.
-        for v in 0..(SNAPSHOT_CHANNEL_CAPACITY as u64 + 5) {
-            engine.publish(empty_snapshot(v));
-        }
-        // First recv should report lag, not deliver an old snapshot.
-        let result = rx.recv().await;
-        assert!(matches!(
-            result,
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_))
-        ));
-    }
-
-    #[tokio::test]
-    async fn thousand_ticks_do_not_grow_resident_state() {
-        // Memory smoke test (R11): broadcast bound + activity ring bound
-        // must hold under sustained tick load without unbounded growth.
-        let engine = ColdWindowEngine::new();
-        let _rx = engine.subscribe();
-        for v in 0..1000u64 {
-            engine.publish(empty_snapshot(v));
-            engine.record_activity(format!("tick-{v}"));
-        }
-        // Activity ring is capped; no more than ACTIVITY_RING_CAPACITY entries.
-        assert!(engine.activity_snapshot().len() <= ACTIVITY_RING_CAPACITY);
     }
 
     #[test]

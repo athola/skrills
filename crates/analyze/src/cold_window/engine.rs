@@ -187,6 +187,14 @@ impl ColdWindowEngine {
         self.tx.subscribe()
     }
 
+    /// Clone the snapshot bus sender. Useful for wiring browser routes
+    /// (`skrills_server::api::cold_window::ColdWindowDashboardState`)
+    /// that need to construct subscribers per-request rather than
+    /// holding a single long-lived receiver.
+    pub fn bus_sender(&self) -> broadcast::Sender<Arc<WindowSnapshot>> {
+        self.tx.clone()
+    }
+
     /// Number of currently attached subscribers.
     pub fn subscriber_count(&self) -> usize {
         self.tx.receiver_count()

@@ -37,6 +37,11 @@ pub mod http_transport;
 #[cfg(feature = "http-transport")]
 pub mod api;
 
+/// Cold-window subcommand wiring (CLI entry, tick producer, browser
+/// surface, graceful shutdown).
+#[cfg(feature = "http-transport")]
+pub mod cold_window_cli;
+
 /// Leptos-based browser UI for the dashboard.
 #[cfg(feature = "http-transport")]
 pub mod ui;
