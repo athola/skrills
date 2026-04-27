@@ -16,6 +16,10 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow.workspace = true
+skrills-snapshot = { path = "../snapshot", version = "0.8.0" }
+tokio-stream = { version = "0.1", features = ["sync"], optional = true }
+async-stream = { version = "0.3", optional = true }
+futures = { version = "0.3", optional = true }
 rmcp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -70,7 +74,7 @@ default = ["watch", "subagents", "http-transport", "dashboard"]
 dashboard = ["skrills-dashboard"]
 watch = ["notify"]
 subagents = ["skrills-subagents"]
-http-transport = ["axum", "axum-server", "tower", "tower-http", "subtle", "rcgen", "x509-parser", "leptos", "leptos_axum"]
+http-transport = ["axum", "axum-server", "tower", "tower-http", "subtle", "rcgen", "x509-parser", "leptos", "leptos_axum", "tokio-stream", "async-stream", "futures"]
 test-support = []
 
 [dev-dependencies]
