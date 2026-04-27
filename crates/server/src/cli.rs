@@ -859,6 +859,15 @@ pub enum Commands {
     /// Manage TLS certificates for HTTPS transport.
     #[command(subcommand)]
     Cert(CertAction),
+    /// Run the cold-window real-time analysis surface (TUI library + browser).
+    ///
+    /// Continuously re-reads authoritative state on each tick, runs a
+    /// 4-tier alert policy, ranks hints, and (with `--browser`)
+    /// serves a Server-Sent Events dashboard at
+    /// `http://127.0.0.1:<port>/dashboard`. Press Ctrl-C for graceful
+    /// shutdown within the spec § 3 / TASK-031 2-second budget.
+    #[cfg(feature = "http-transport")]
+    ColdWindow(crate::cold_window_cli::ColdWindowArgs),
 }
 
 #[cfg(test)]

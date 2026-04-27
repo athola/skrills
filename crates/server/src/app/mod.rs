@@ -1419,6 +1419,20 @@ pub fn run() -> Result<()> {
                 handle_cert_install_command(cert, key, format)
             }
         },
+        #[cfg(feature = "http-transport")]
+        Commands::ColdWindow(args) => {
+            // The cold-window subcommand owns its own tokio runtime so
+            // it can drive the producer + browser server concurrently
+            // and listen for SIGINT/SIGTERM via tokio signals. The
+            // outer `run()` is sync (anyhow::Result) by design.
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| {
+                    anyhow::anyhow!("failed to build tokio runtime for cold-window: {e}")
+                })?;
+            runtime.block_on(crate::cold_window_cli::run(args))
+        }
     }
 }
 
