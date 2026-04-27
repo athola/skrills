@@ -135,6 +135,79 @@ impl TokenCategory {
     }
 }
 
+/// Source category for per-source token attribution (cold-window TASK-009).
+///
+/// Splits system-prompt and conversation tokens into categories so the
+/// cold-window's token ledger can attribute each contribution to the
+/// right culprit. This is the difference between "your context is
+/// 100K tokens" (uninformative) and "your three MCP servers are
+/// dragging in 70K of tool descriptions" (actionable).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TokenSource {
+    /// Skill body (frontmatter + prose + code blocks).
+    #[default]
+    Skill,
+    /// Plugin (sum of skills + commands + agents).
+    Plugin,
+    /// MCP server (tool descriptions especially — see Willison's
+    /// "Too many MCP servers" note: a single MCP can swallow 55K
+    /// tokens of tool description overhead).
+    Mcp,
+    /// Active conversation (cache reads + writes).
+    Conversation,
+}
+
+/// A token breakdown attributed to a specific source.
+///
+/// Returned by `count_tokens_attributed`; also stored in the
+/// cold-window's `TokenLedger`. The `breakdown` is the same
+/// section split returned by `count_tokens()`; the `source` and
+/// `identifier` make the attribution explicit.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AttributedBreakdown {
+    /// Which source this attribution belongs to.
+    pub source: TokenSource,
+    /// Stable identifier (skill URI, plugin name, MCP server name,
+    /// conversation ID).
+    pub identifier: String,
+    /// Section-level breakdown of the underlying content.
+    pub breakdown: TokenBreakdown,
+}
+
+/// Count tokens for `content` and attribute the result to a named source.
+///
+/// Existing `count_tokens()` API is unchanged; this is purely additive.
+/// The same character-heuristic limits apply (see crate-level docs in
+/// `tokens.rs`); accuracy on a known fixture is asserted at ≥95%
+/// in TASK-026 of the cold-window plan.
+///
+/// # Example
+///
+/// ```rust
+/// use skrills_analyze::tokens::{count_tokens_attributed, TokenSource};
+///
+/// let attributed = count_tokens_attributed(
+///     "# Skill\nbody",
+///     TokenSource::Skill,
+///     "skill://demo",
+/// );
+/// assert_eq!(attributed.source, TokenSource::Skill);
+/// assert_eq!(attributed.identifier, "skill://demo");
+/// assert!(attributed.breakdown.total > 0);
+/// ```
+pub fn count_tokens_attributed(
+    content: &str,
+    source: TokenSource,
+    identifier: impl Into<String>,
+) -> AttributedBreakdown {
+    AttributedBreakdown {
+        source,
+        identifier: identifier.into(),
+        breakdown: count_tokens(content),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

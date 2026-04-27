@@ -23,6 +23,7 @@
 //! of the cold-window plan.
 
 pub mod cadence;
+pub mod diff;
 pub mod traits;
 
 use std::collections::VecDeque;
