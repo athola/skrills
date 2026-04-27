@@ -22,6 +22,7 @@
 //! `FieldwiseDiff`) land in TASK-010, TASK-011, TASK-013, TASK-014
 //! of the cold-window plan.
 
+pub mod alert;
 pub mod cadence;
 pub mod diff;
 pub mod traits;
