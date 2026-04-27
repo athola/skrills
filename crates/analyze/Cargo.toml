@@ -22,9 +22,12 @@ tracing = { workspace = true }
 skrills-validate = { path = "../validate", version = "0.8.0" }
 skrills-discovery = { path = "../discovery", version = "0.8.0" }
 skrills-snapshot = { path = "../snapshot", version = "0.8.0" }
+skrills-intelligence = { path = "../intelligence", version = "0.8.0" }
+skrills-tome = { path = "../tome", version = "0.8.0" }
 parking_lot = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 num_cpus = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+skrills_test_utils = { path = "../test-utils" }

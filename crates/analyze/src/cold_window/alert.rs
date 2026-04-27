@@ -25,7 +25,7 @@
 
 use skrills_snapshot::{Alert, AlertBand, Severity, WindowSnapshot};
 
-use super::traits::{AlertHistory, AlertPolicy};
+use super::traits::{AlertHistory, AlertPolicy, AlertState};
 
 /// Minimum dwell ticks before an alert fires (kills fleeting alarms).
 pub const DEFAULT_MIN_DWELL_TICKS: u32 = 2;
@@ -181,17 +181,26 @@ impl AlertPolicy for LayeredAlertPolicy {
         &self,
         _prev: &WindowSnapshot,
         curr: &WindowSnapshot,
-        history: &AlertHistory,
+        history: &mut AlertHistory,
     ) -> Vec<Alert> {
         let mut alerts = Vec::new();
 
         if let Some((severity, band)) = self.classify_token_total(curr.token_ledger.total) {
             let fingerprint = Self::fingerprint_for(severity);
-            let dwell_ticks = history
+
+            // Increment dwell on every tick where the condition holds,
+            // regardless of whether the alert ultimately fires. This
+            // is what lets min_dwell > 1 actually fire.
+            let entry = history
                 .fingerprints
-                .get(fingerprint)
-                .map(|s| s.dwell_ticks + 1)
-                .unwrap_or(1);
+                .entry(fingerprint.to_string())
+                .or_insert(AlertState {
+                    fired_at_ms: curr.timestamp_ms,
+                    dwell_ticks: 0,
+                    cleared: false,
+                });
+            entry.dwell_ticks = entry.dwell_ticks.saturating_add(1);
+            let dwell_ticks = entry.dwell_ticks;
 
             // Min-dwell: condition must persist before firing.
             if dwell_ticks >= self.min_dwell_ticks {
@@ -259,7 +268,7 @@ mod tests {
         let policy = LayeredAlertPolicy::new(100_000);
         let prev = snapshot_with_tokens(0);
         let curr = snapshot_with_tokens(10_000);
-        let alerts = policy.evaluate(&prev, &curr, &AlertHistory::new());
+        let alerts = policy.evaluate(&prev, &curr, &mut AlertHistory::new());
         assert!(alerts.is_empty());
     }
 
@@ -269,7 +278,7 @@ mod tests {
         let policy = LayeredAlertPolicy::new(100_000);
         let prev = snapshot_with_tokens(10_000);
         let curr = snapshot_with_tokens(25_000);
-        let alerts = policy.evaluate(&prev, &curr, &AlertHistory::new());
+        let alerts = policy.evaluate(&prev, &curr, &mut AlertHistory::new());
         assert!(alerts.is_empty());
     }
 
@@ -278,8 +287,8 @@ mod tests {
         let policy = LayeredAlertPolicy::new(100_000);
         let prev = snapshot_with_tokens(20_000);
         let curr = snapshot_with_tokens(25_000);
-        let history = history_with_dwell("token-budget-advisory", 1);
-        let alerts = policy.evaluate(&prev, &curr, &history);
+        let mut history = history_with_dwell("token-budget-advisory", 1);
+        let alerts = policy.evaluate(&prev, &curr, &mut history);
         assert_eq!(alerts.len(), 1);
         assert!(matches!(alerts[0].severity, Severity::Advisory));
     }
@@ -288,8 +297,8 @@ mod tests {
     fn caution_threshold_classifies_as_caution() {
         let policy = LayeredAlertPolicy::new(200_000);
         let curr = snapshot_with_tokens(60_000);
-        let history = history_with_dwell("token-budget-caution", 1);
-        let alerts = policy.evaluate(&snapshot_with_tokens(50_000), &curr, &history);
+        let mut history = history_with_dwell("token-budget-caution", 1);
+        let alerts = policy.evaluate(&snapshot_with_tokens(50_000), &curr, &mut history);
         assert_eq!(alerts.len(), 1);
         assert!(matches!(alerts[0].severity, Severity::Caution));
     }
@@ -299,8 +308,8 @@ mod tests {
         // budget = 100K → warning threshold = 80K
         let policy = LayeredAlertPolicy::new(100_000);
         let curr = snapshot_with_tokens(85_000);
-        let history = history_with_dwell("token-budget-warning", 1);
-        let alerts = policy.evaluate(&snapshot_with_tokens(70_000), &curr, &history);
+        let mut history = history_with_dwell("token-budget-warning", 1);
+        let alerts = policy.evaluate(&snapshot_with_tokens(70_000), &curr, &mut history);
         assert_eq!(alerts.len(), 1);
         assert!(matches!(alerts[0].severity, Severity::Warning));
     }
@@ -309,8 +318,8 @@ mod tests {
     fn warning_at_one_hundred_percent_engages_kill_switch() {
         let policy = LayeredAlertPolicy::new(100_000);
         let curr = snapshot_with_tokens(100_000);
-        let history = history_with_dwell("token-budget-warning", 1);
-        let alerts = policy.evaluate(&snapshot_with_tokens(95_000), &curr, &history);
+        let mut history = history_with_dwell("token-budget-warning", 1);
+        let alerts = policy.evaluate(&snapshot_with_tokens(95_000), &curr, &mut history);
         assert_eq!(alerts.len(), 1);
         assert!(matches!(alerts[0].severity, Severity::Warning));
         assert!(policy.kill_switch_engaged(curr.token_ledger.total));
@@ -330,7 +339,7 @@ mod tests {
         let policy = LayeredAlertPolicy::new(100_000).with_min_dwell(1);
         let prev = snapshot_with_tokens(10_000);
         let curr = snapshot_with_tokens(25_000);
-        let alerts = policy.evaluate(&prev, &curr, &AlertHistory::new());
+        let alerts = policy.evaluate(&prev, &curr, &mut AlertHistory::new());
         assert_eq!(alerts.len(), 1);
     }
 
@@ -338,7 +347,7 @@ mod tests {
     fn alert_carries_hysteresis_band() {
         let policy = LayeredAlertPolicy::new(100_000).with_min_dwell(1);
         let curr = snapshot_with_tokens(25_000);
-        let alerts = policy.evaluate(&snapshot_with_tokens(0), &curr, &AlertHistory::new());
+        let alerts = policy.evaluate(&snapshot_with_tokens(0), &curr, &mut AlertHistory::new());
         let band = alerts[0].band.expect("band present");
         // Advisory threshold 20K, clear ratio 0.95 → high_clear = 19K
         assert_eq!(band.high, 20_000.0);
@@ -349,8 +358,8 @@ mod tests {
     fn alert_dwell_increments_with_history() {
         let policy = LayeredAlertPolicy::new(100_000);
         let curr = snapshot_with_tokens(25_000);
-        let history = history_with_dwell("token-budget-advisory", 5);
-        let alerts = policy.evaluate(&snapshot_with_tokens(20_000), &curr, &history);
+        let mut history = history_with_dwell("token-budget-advisory", 5);
+        let alerts = policy.evaluate(&snapshot_with_tokens(20_000), &curr, &mut history);
         assert_eq!(alerts[0].dwell_ticks, 6);
     }
 
@@ -361,7 +370,7 @@ mod tests {
         // threshold. Severity classification picks the highest tier.
         let policy = LayeredAlertPolicy::new(100_000).with_min_dwell(1);
         let curr = snapshot_with_tokens(80_000);
-        let alerts = policy.evaluate(&snapshot_with_tokens(0), &curr, &AlertHistory::new());
+        let alerts = policy.evaluate(&snapshot_with_tokens(0), &curr, &mut AlertHistory::new());
         assert_eq!(alerts.len(), 1);
         assert!(matches!(alerts[0].severity, Severity::Warning));
     }
@@ -373,7 +382,7 @@ mod tests {
             .with_caution_threshold(15_000)
             .with_min_dwell(1);
         let curr = snapshot_with_tokens(7_000);
-        let alerts = policy.evaluate(&snapshot_with_tokens(0), &curr, &AlertHistory::new());
+        let alerts = policy.evaluate(&snapshot_with_tokens(0), &curr, &mut AlertHistory::new());
         assert_eq!(alerts.len(), 1);
         assert!(matches!(alerts[0].severity, Severity::Advisory));
     }

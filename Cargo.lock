@@ -4269,8 +4269,11 @@ dependencies = [
  "serde",
  "serde_json",
  "skrills-discovery",
+ "skrills-intelligence",
  "skrills-snapshot",
+ "skrills-tome",
  "skrills-validate",
+ "skrills_test_utils",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -4525,6 +4528,7 @@ name = "skrills_test_utils"
 version = "0.8.0"
 dependencies = [
  "serde_json",
+ "skrills-snapshot",
  "tempfile",
  "toml 0.8.23",
 ]

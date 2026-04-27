@@ -25,6 +25,7 @@
 pub mod alert;
 pub mod cadence;
 pub mod diff;
+pub mod engine;
 pub mod traits;
 
 use std::collections::VecDeque;

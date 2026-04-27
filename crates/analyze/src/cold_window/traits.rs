@@ -52,15 +52,19 @@ impl AlertHistory {
 /// Implementations apply hysteresis bands, min-dwell timers, and the
 /// 4-tier severity classification per spec § 3.4. The default
 /// implementation `LayeredAlertPolicy` lands in TASK-013.
+///
+/// Mutates `history` so dwell counters increment even on ticks where
+/// the condition holds but min-dwell has not yet been satisfied. This
+/// is what lets a `min_dwell = 2` policy actually fire on the second
+/// tick that observes the condition rather than waiting forever.
 pub trait AlertPolicy: Send + Sync {
-    /// Evaluate alerts given the previous and current snapshots and
-    /// the carried hysteresis history. Returns the alert list to be
-    /// included in `curr.alerts`.
+    /// Evaluate alerts and update history. Returns the alert list to
+    /// be included in `curr.alerts`.
     fn evaluate(
         &self,
         prev: &WindowSnapshot,
         curr: &WindowSnapshot,
-        history: &AlertHistory,
+        history: &mut AlertHistory,
     ) -> Vec<Alert>;
 }
 

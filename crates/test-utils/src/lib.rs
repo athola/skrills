@@ -3,6 +3,8 @@
 //! This crate provides common test fixtures and utilities used across
 //! multiple crates in the skrills workspace.
 
+pub mod cold_window_fixtures;
+
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 

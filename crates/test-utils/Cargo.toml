@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 tempfile = "3"
+skrills-snapshot = { path = "../snapshot", version = "0.8.0" }
 
 [dev-dependencies]
 serde_json = { workspace = true }
