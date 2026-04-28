@@ -36,8 +36,7 @@ fn copilot_adapter_basics() {
 fn read_commands_returns_empty_when_no_prompts() {
     let tmp = tempdir().unwrap();
     let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
-    let commands = adapter.read_commands(false).unwrap();
-    assert!(commands.is_empty());
+    crate::adapters::tests_common::assert_read_commands_empty(&adapter);
 }
 
 #[test]
@@ -115,8 +114,7 @@ fn commands_roundtrip() {
 fn read_skills_empty_dir() {
     let tmp = tempdir().unwrap();
     let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
-    let skills = adapter.read_skills().unwrap();
-    assert!(skills.is_empty());
+    crate::adapters::tests_common::assert_read_skills_empty(&adapter);
 }
 
 #[test]

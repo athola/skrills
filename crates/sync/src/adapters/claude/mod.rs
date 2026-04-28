@@ -190,8 +190,7 @@ mod tests {
     fn read_commands_empty_dir() {
         let tmp = tempdir().unwrap();
         let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
-        let commands = adapter.read_commands(false).unwrap();
-        assert!(commands.is_empty());
+        crate::adapters::tests_common::assert_read_commands_empty(&adapter);
     }
 
     #[test]

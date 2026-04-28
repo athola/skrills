@@ -67,8 +67,7 @@ fn commands_round_trip() {
 fn commands_empty_directory() {
     let tmp = TempDir::new().unwrap();
     let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
-    let commands = adapter.read_commands(false).unwrap();
-    assert!(commands.is_empty());
+    crate::adapters::tests_common::assert_read_commands_empty(&adapter);
 }
 
 // --- Skills ---

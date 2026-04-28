@@ -32,3 +32,27 @@ pub(crate) fn assert_adapter_basics<A: AgentAdapter>(
     assert_eq!(&adapter.config_root(), expected_root);
     field_assertions(&adapter.supported_fields());
 }
+
+/// Asserts that `read_commands(false)` returns an empty list when
+/// the adapter root is a fresh tempdir. Used by every implementor;
+/// each adapter has a different commands-dir convention but they
+/// all return empty when nothing has been written.
+pub(crate) fn assert_read_commands_empty<A: AgentAdapter>(adapter: &A) {
+    let commands = adapter.read_commands(false).unwrap();
+    assert!(
+        commands.is_empty(),
+        "expected no commands on empty root, got {} entries",
+        commands.len()
+    );
+}
+
+/// Asserts that `read_skills()` returns an empty list on a fresh
+/// tempdir root. Companion to [`assert_read_commands_empty`].
+pub(crate) fn assert_read_skills_empty<A: AgentAdapter>(adapter: &A) {
+    let skills = adapter.read_skills().unwrap();
+    assert!(
+        skills.is_empty(),
+        "expected no skills on empty root, got {} entries",
+        skills.len()
+    );
+}
