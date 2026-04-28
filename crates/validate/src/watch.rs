@@ -82,7 +82,12 @@ pub fn collect_debounced_paths(
                     changed.insert(p);
                 }
             }
-            Ok(Err(_)) => {} // notify error, ignore
+            Ok(Err(err)) => {
+                // notify backend hiccup; the next debounce window will
+                // pick up paths missed here. Trace so flapping watchers
+                // are visible without spamming logs at warn-level.
+                tracing::trace!(?err, "watcher notify error during debounce drain");
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => break,
             Err(mpsc::RecvTimeoutError::Disconnected) => return None,
         }
