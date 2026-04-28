@@ -18,7 +18,13 @@ use walkdir::WalkDir;
 ///
 /// Falls back to `(0, 0, 0)` for non-semver names so they sort before any real version.
 fn semver_tuple(entry: &fs::DirEntry) -> (u64, u64, u64) {
-    let name = entry.file_name().to_str().unwrap_or("").to_string();
+    let name = entry.file_name().to_str().map(str::to_owned).unwrap_or_else(|| {
+        tracing::warn!(
+            ?entry,
+            "non-UTF-8 directory name; sorted before all valid semver entries"
+        );
+        String::new()
+    });
     let parts: Vec<&str> = name.split('.').collect();
     let major = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0u64);
     let minor = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0u64);
@@ -94,8 +100,14 @@ impl ClaudeAdapter {
             let name = path
                 .file_stem()
                 .and_then(|s| s.to_str())
-                .unwrap_or("unknown")
-                .to_string();
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    tracing::warn!(
+                        ?path,
+                        "non-UTF-8 file stem; multiple such files will collide on the 'unknown' name"
+                    );
+                    "unknown".to_string()
+                });
 
             if !seen.insert(name.clone()) {
                 continue;
