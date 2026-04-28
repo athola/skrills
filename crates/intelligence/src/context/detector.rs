@@ -313,64 +313,68 @@ fn parse_requirements_txt(path: &Path) -> Result<Vec<DependencyInfo>> {
     Ok(deps)
 }
 
+/// Framework patterns: `(dependency-name substring, framework label)`.
+///
+/// Substring semantics are intentional: `react-dom` and `react-router`
+/// both match `react`. See `test_detect_frameworks_no_duplicates`.
+const KNOWN_FRAMEWORKS: &[(&str, &str)] = &[
+    // JavaScript/TypeScript
+    ("react", "React"),
+    ("next", "Next.js"),
+    ("vue", "Vue"),
+    ("nuxt", "Nuxt"),
+    ("angular", "Angular"),
+    ("svelte", "Svelte"),
+    ("express", "Express"),
+    ("fastify", "Fastify"),
+    ("koa", "Koa"),
+    ("nestjs", "NestJS"),
+    ("jest", "Jest"),
+    ("vitest", "Vitest"),
+    ("mocha", "Mocha"),
+    ("playwright", "Playwright"),
+    ("cypress", "Cypress"),
+    // Python
+    ("fastapi", "FastAPI"),
+    ("django", "Django"),
+    ("flask", "Flask"),
+    ("pytest", "pytest"),
+    ("pandas", "pandas"),
+    ("numpy", "NumPy"),
+    ("tensorflow", "TensorFlow"),
+    ("torch", "PyTorch"),
+    ("scikit-learn", "scikit-learn"),
+    // Rust
+    ("actix-web", "Actix"),
+    ("axum", "Axum"),
+    ("rocket", "Rocket"),
+    ("tokio", "Tokio"),
+    ("async-std", "async-std"),
+    ("serde", "Serde"),
+    ("clap", "Clap"),
+    ("tracing", "tracing"),
+    // Go
+    ("gin-gonic", "Gin"),
+    ("echo", "Echo"),
+    ("fiber", "Fiber"),
+];
+
 /// Detect frameworks from project dependencies.
 pub fn detect_frameworks(deps: &HashMap<String, Vec<DependencyInfo>>) -> Vec<String> {
-    let mut frameworks = Vec::new();
-
-    // Framework patterns: (dependency pattern, framework name)
-    let known_frameworks: &[(&str, &str)] = &[
-        // JavaScript/TypeScript
-        ("react", "React"),
-        ("next", "Next.js"),
-        ("vue", "Vue"),
-        ("nuxt", "Nuxt"),
-        ("angular", "Angular"),
-        ("svelte", "Svelte"),
-        ("express", "Express"),
-        ("fastify", "Fastify"),
-        ("koa", "Koa"),
-        ("nestjs", "NestJS"),
-        ("jest", "Jest"),
-        ("vitest", "Vitest"),
-        ("mocha", "Mocha"),
-        ("playwright", "Playwright"),
-        ("cypress", "Cypress"),
-        // Python
-        ("fastapi", "FastAPI"),
-        ("django", "Django"),
-        ("flask", "Flask"),
-        ("pytest", "pytest"),
-        ("pandas", "pandas"),
-        ("numpy", "NumPy"),
-        ("tensorflow", "TensorFlow"),
-        ("torch", "PyTorch"),
-        ("scikit-learn", "scikit-learn"),
-        // Rust
-        ("actix-web", "Actix"),
-        ("axum", "Axum"),
-        ("rocket", "Rocket"),
-        ("tokio", "Tokio"),
-        ("async-std", "async-std"),
-        ("serde", "Serde"),
-        ("clap", "Clap"),
-        ("tracing", "tracing"),
-        // Go
-        ("gin-gonic", "Gin"),
-        ("echo", "Echo"),
-        ("fiber", "Fiber"),
-    ];
+    let mut found: HashSet<&'static str> = HashSet::new();
 
     for deps_list in deps.values() {
         for dep in deps_list {
             let dep_lower = dep.name.to_lowercase();
-            for (pattern, framework) in known_frameworks {
-                if dep_lower.contains(pattern) && !frameworks.contains(&framework.to_string()) {
-                    frameworks.push(framework.to_string());
+            for (pattern, framework) in KNOWN_FRAMEWORKS {
+                if !found.contains(framework) && dep_lower.contains(pattern) {
+                    found.insert(framework);
                 }
             }
         }
     }
 
+    let mut frameworks: Vec<String> = found.into_iter().map(String::from).collect();
     frameworks.sort();
     frameworks
 }
