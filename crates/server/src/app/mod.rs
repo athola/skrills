@@ -13,8 +13,11 @@
 //! Keep this file under ~2500 LOC; split modules if needed.
 
 mod intelligence;
+mod mcp_registry;
 mod research;
 mod tools;
+
+use mcp_registry::build_mcp_registry;
 
 #[cfg(test)]
 pub(crate) use intelligence::{resolve_project_dir, select_default_skill_root};
@@ -42,9 +45,8 @@ use crate::discovery::{
 use crate::doctor::doctor_report;
 use crate::signals::ignore_sigchld;
 // Note: skill_trace imports moved to tools.rs
-use crate::mcp_gateway::{ContextStats, McpToolEntry, McpToolRegistry};
+use crate::mcp_gateway::{ContextStats, McpToolRegistry};
 use crate::sync::mirror_source_root;
-use crate::tool_schemas;
 use crate::tui::tui_flow;
 use anyhow::{anyhow, Result};
 use clap::Parser;
@@ -53,8 +55,10 @@ use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher}
 use parking_lot::Mutex;
 use rmcp::model::{Meta, RawResource, ReadResourceResult, Resource, ResourceContents};
 use serde_json::json;
-use skrills_discovery::{DuplicateInfo, SkillMeta, SkillRoot};
-use skrills_state::{cache_ttl, home_dir, load_manifest_settings};
+use skrills_discovery::{DuplicateInfo, SkillMeta};
+#[cfg(test)]
+use skrills_discovery::SkillRoot;
+use skrills_state::{home_dir, load_manifest_settings};
 #[cfg(feature = "subagents")]
 use skrills_subagents::SubagentService;
 use std::cmp::Reverse;
@@ -124,94 +128,7 @@ pub(crate) fn start_fs_watcher(_service: &SkillService) -> Result<()> {
     ))
 }
 
-/// Category classification for MCP tools.
-///
-/// Used for organizing and filtering tools by their primary purpose.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ToolCategory {
-    Sync,
-    Validation,
-    Trace,
-    Intelligence,
-    Metrics,
-    Dependency,
-    Gateway,
-}
-
-impl ToolCategory {
-    /// Infer category from a tool name using prefix/substring matching.
-    fn from_tool_name(name: &str) -> Option<Self> {
-        match name {
-            n if n.starts_with("sync") => Some(Self::Sync),
-            n if n.starts_with("validate") || n.starts_with("analyze") => Some(Self::Validation),
-            n if n.contains("trace") || n.contains("instrument") => Some(Self::Trace),
-            n if n.contains("recommend") || n.contains("suggest") => Some(Self::Intelligence),
-            n if n.contains("metric") => Some(Self::Metrics),
-            n if n.contains("depend") => Some(Self::Dependency),
-            _ => None,
-        }
-    }
-
-    /// Convert to a string representation for serialization.
-    const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Sync => "sync",
-            Self::Validation => "validation",
-            Self::Trace => "trace",
-            Self::Intelligence => "intelligence",
-            Self::Metrics => "metrics",
-            Self::Dependency => "dependency",
-            Self::Gateway => "gateway",
-        }
-    }
-}
-
-/// Builds the MCP tool registry from available definitions.
-fn build_mcp_registry() -> McpToolRegistry {
-    use crate::mcp_gateway::estimate_tokens;
-
-    let mut registry = McpToolRegistry::new();
-
-    // Register all internal tools from tool_schemas
-    for tool in tool_schemas::all_tools() {
-        let schema_json = serde_json::to_string(&tool.input_schema).unwrap_or_default();
-        let estimated_tokens = estimate_tokens(&schema_json);
-
-        // Infer category from tool name using enum matching
-        let category = ToolCategory::from_tool_name(&tool.name).map(|c| c.as_str().to_string());
-
-        registry.register(McpToolEntry {
-            name: tool.name.to_string(),
-            description: tool.description.clone().unwrap_or_default().to_string(),
-            source: "skrills".to_string(),
-            estimated_tokens,
-            category,
-        });
-    }
-
-    // Register gateway tools themselves
-    for tool in crate::mcp_gateway::mcp_gateway_tools() {
-        let schema_json = serde_json::to_string(&tool.input_schema).unwrap_or_default();
-        let estimated_tokens = estimate_tokens(&schema_json);
-        registry.register(McpToolEntry {
-            name: tool.name.to_string(),
-            description: tool.description.clone().unwrap_or_default().to_string(),
-            source: "gateway".to_string(),
-            estimated_tokens,
-            category: Some(ToolCategory::Gateway.as_str().to_string()),
-        });
-    }
-
-    registry
-}
-
 impl SkillService {
-    /// Creates a new `SkillService` with the default search roots.
-    #[allow(dead_code)]
-    fn new(extra_dirs: Vec<PathBuf>) -> Result<Self> {
-        Self::new_with_ttl(extra_dirs, cache_ttl(&load_manifest_settings))
-    }
-
     /// Creates a new `SkillService` with a custom cache TTL.
     pub fn new_with_ttl(extra_dirs: Vec<PathBuf>, ttl: Duration) -> Result<Self> {
         let build_started = Instant::now();
@@ -244,7 +161,7 @@ impl SkillService {
     /// that persist snapshots from becoming brittle when environment or
     /// priority configuration shifts between snapshot creation and service
     /// construction.
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn new_with_roots_for_test(roots: Vec<SkillRoot>, ttl: Duration) -> Result<Self> {
         let build_started = Instant::now();
         let mcp_registry = Arc::new(Mutex::new(build_mcp_registry()));
@@ -269,7 +186,7 @@ impl SkillService {
     /// Clear the metadata and content caches.
     ///
     /// The next cache access will trigger a rescan.
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn invalidate_cache(&self) -> Result<()> {
         self.cache.lock().invalidate();
         Ok(())
