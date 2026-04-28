@@ -32,6 +32,11 @@ use tokio::sync::watch;
 
 use crate::api::{cold_window_routes, ColdWindowDashboardState};
 
+/// Floor on the adaptive tick delay (ms). Prevents the engine from
+/// busy-looping if the snapshot's `next_tick_ms` is reported as 0
+/// or close to it under unusual load conditions.
+const MIN_TICK_MS: u64 = 50;
+
 /// CLI flags for `skrills cold-window`.
 ///
 /// Matches spec § 3.10 except that `--no-bell` is a TUI-only concern
@@ -181,7 +186,7 @@ async fn producer_loop(
                 next_delay_ms = if no_adaptive {
                     base_tick_ms
                 } else {
-                    snap.next_tick_ms.max(50)
+                    snap.next_tick_ms.max(MIN_TICK_MS)
                 };
             }
         }
