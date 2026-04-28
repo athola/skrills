@@ -27,31 +27,19 @@ fn make_skill_with_modules(name: &str) -> Command {
 // --- Adapter basics ---
 
 #[test]
-fn adapter_name_is_cursor() {
+fn adapter_basics() {
     let tmp = TempDir::new().unwrap();
-    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
-    assert_eq!(adapter.name(), "cursor");
-}
-
-#[test]
-fn adapter_config_root() {
-    let tmp = TempDir::new().unwrap();
-    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
-    assert_eq!(adapter.config_root(), tmp.path().to_path_buf());
-}
-
-#[test]
-fn adapter_supports_expected_fields() {
-    let tmp = TempDir::new().unwrap();
-    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
-    let fields = adapter.supported_fields();
-    assert!(fields.commands);
-    assert!(fields.mcp_servers);
-    assert!(!fields.preferences, "Cursor preferences are not yet mapped");
-    assert!(fields.skills);
-    assert!(fields.hooks);
-    assert!(fields.agents);
-    assert!(fields.instructions);
+    let root = tmp.path().to_path_buf();
+    let adapter = CursorAdapter::with_root(root.clone());
+    crate::adapters::tests_common::assert_adapter_basics(&adapter, "cursor", &root, |fields| {
+        assert!(fields.commands);
+        assert!(fields.mcp_servers);
+        assert!(!fields.preferences, "Cursor preferences are not yet mapped");
+        assert!(fields.skills);
+        assert!(fields.hooks);
+        assert!(fields.agents);
+        assert!(fields.instructions);
+    });
 }
 
 // --- Commands ---

@@ -14,31 +14,18 @@ use tempfile::tempdir;
 // ==========================================
 
 #[test]
-fn copilot_adapter_name() {
+fn copilot_adapter_basics() {
     let tmp = tempdir().unwrap();
-    let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
-    assert_eq!(adapter.name(), "copilot");
-}
-
-#[test]
-fn copilot_adapter_config_root() {
-    let tmp = tempdir().unwrap();
-    let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
-    assert_eq!(adapter.config_root(), tmp.path().to_path_buf());
-}
-
-#[test]
-fn copilot_adapter_supported_fields() {
-    let tmp = tempdir().unwrap();
-    let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
-    let fields = adapter.supported_fields();
-
-    // Copilot prompts are NOT equivalent to Claude commands/Codex prompts
-    // (prompts are detailed instruction files, commands are quick atomic shortcuts)
-    assert!(!fields.commands, "Copilot should NOT support commands");
-    assert!(fields.mcp_servers, "Copilot should support MCP servers");
-    assert!(fields.preferences, "Copilot should support preferences");
-    assert!(fields.skills, "Copilot should support skills");
+    let root = tmp.path().to_path_buf();
+    let adapter = CopilotAdapter::with_root(root.clone());
+    crate::adapters::tests_common::assert_adapter_basics(&adapter, "copilot", &root, |fields| {
+        // Copilot prompts are NOT equivalent to Claude commands/Codex prompts
+        // (prompts are detailed instruction files, commands are quick atomic shortcuts)
+        assert!(!fields.commands, "Copilot should NOT support commands");
+        assert!(fields.mcp_servers, "Copilot should support MCP servers");
+        assert!(fields.preferences, "Copilot should support preferences");
+        assert!(fields.skills, "Copilot should support skills");
+    });
 }
 
 // ==========================================
