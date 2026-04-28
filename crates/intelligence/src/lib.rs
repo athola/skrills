@@ -50,12 +50,14 @@
 pub mod cold_window_hints;
 pub mod context;
 pub mod create;
+mod error;
 pub mod recommend;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod types;
 pub mod usage;
 
+pub use error::IntelligenceError;
 pub use types::Confidence;
 
 pub use context::{

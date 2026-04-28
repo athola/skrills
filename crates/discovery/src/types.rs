@@ -120,7 +120,7 @@ pub enum RuleCategory {
 }
 
 impl RuleCategory {
-    /// Returns the category as a string slice.
+    /// Returns the kebab-case identifier (`"pre-commit"`, `"post-commit"`, etc.) used in rule manifests.
     pub fn as_str(&self) -> &str {
         match self {
             Self::PreCommit => "pre-commit",
@@ -291,7 +291,7 @@ pub enum AgentModel {
 }
 
 impl AgentModel {
-    /// Returns the model as a string slice.
+    /// Returns the canonical model identifier (`"sonnet"`, `"opus"`, `"haiku"`, `"inherit"`) or the raw `Other` string.
     pub fn as_str(&self) -> &str {
         match self {
             Self::Sonnet => "sonnet",
@@ -422,7 +422,7 @@ pub fn parse_agent_config(content: &str, fallback_name: &str) -> Result<AgentCon
 
     let raw = if let Some(yaml) = yaml_opt {
         serde_yaml::from_str::<RawAgentFrontmatter>(&yaml)
-            .map_err(|e| anyhow::anyhow!("Invalid YAML frontmatter: {e}"))?
+            .map_err(crate::DiscoveryError::from)?
     } else {
         RawAgentFrontmatter::default()
     };
