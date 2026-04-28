@@ -37,8 +37,8 @@ mod types;
 
 pub use types::{
     Alert, AlertBand, HealthCheck, HealthStatus, Hint, HintCategory, LoadSample, PluginHealth,
-    ResearchChannel, ResearchFinding, ScoredHint, Severity, TokenEntry, TokenLedger,
-    WindowSnapshot,
+    ResearchBudget, ResearchChannel, ResearchFinding, ScoredHint, Severity, TokenEntry,
+    TokenLedger, WindowSnapshot,
 };
 
 #[cfg(test)]
@@ -139,6 +139,33 @@ mod tests {
     fn research_channel_uses_kebab_case() {
         let json = serde_json::to_string(&ResearchChannel::HackerNews).expect("serialize");
         assert_eq!(json, "\"hacker-news\"");
+    }
+
+    #[test]
+    fn cadence_label_uses_active_edit_when_recent() {
+        let mut snap = fixture();
+        snap.next_tick_ms = 2_000;
+        snap.load_sample.last_edit_age_ms = Some(8_000);
+        snap.load_sample.loadavg_1min = 0.0;
+        assert_eq!(snap.cadence_label(), "tick: 2.0s [active edit]");
+    }
+
+    #[test]
+    fn cadence_label_uses_load_when_above_zero() {
+        let mut snap = fixture();
+        snap.next_tick_ms = 1_500;
+        snap.load_sample.last_edit_age_ms = None;
+        snap.load_sample.loadavg_1min = 0.42;
+        assert_eq!(snap.cadence_label(), "tick: 1.5s [load 0.42]");
+    }
+
+    #[test]
+    fn cadence_label_falls_back_to_base() {
+        let mut snap = fixture();
+        snap.next_tick_ms = 2_000;
+        snap.load_sample.last_edit_age_ms = None;
+        snap.load_sample.loadavg_1min = 0.0;
+        assert_eq!(snap.cadence_label(), "tick: 2.0s [base]");
     }
 
     #[test]

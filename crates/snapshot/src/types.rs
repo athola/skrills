@@ -43,6 +43,31 @@ pub struct WindowSnapshot {
     pub next_tick_ms: u64,
 }
 
+impl WindowSnapshot {
+    /// Human-readable cadence label including the adaptive-state suffix.
+    ///
+    /// Format: `tick: {secs:.1}s [active edit | load N.NN | base]`. The
+    /// suffix priority is `active edit` (last edit younger than 10s) >
+    /// `load` (loadavg above zero) > `base` (default). Both the HTTP
+    /// SSE handler and the TUI status bar render this exact string so
+    /// surfaces stay byte-for-byte identical.
+    #[must_use]
+    pub fn cadence_label(&self) -> String {
+        let secs = (self.next_tick_ms as f64) / 1_000.0;
+        let suffix = match self.load_sample.last_edit_age_ms {
+            Some(age) if age < 10_000 => "[active edit]".to_string(),
+            _ => {
+                if self.load_sample.loadavg_1min > 0.0 {
+                    format!("[load {:.2}]", self.load_sample.loadavg_1min)
+                } else {
+                    "[base]".to_string()
+                }
+            }
+        };
+        format!("tick: {secs:.1}s {suffix}")
+    }
+}
+
 /// 4-tier alert severity, mapped from FAA AC 25.1322-1 cockpit CAS.
 ///
 /// User-facing behavior per `docs/cold-window-spec.md` § 3.4:
@@ -248,4 +273,24 @@ pub struct LoadSample {
     /// Time since the most recent skill / plugin source-file edit
     /// (milliseconds). `None` when no recent edit has been observed.
     pub last_edit_age_ms: Option<u64>,
+}
+
+/// Decide whether the research dispatcher should issue an external
+/// fetch for a given topic fingerprint.
+///
+/// Defines the contract between the cold-window producer
+/// (`skrills_analyze::cold_window`) and the dispatcher
+/// implementation (`skrills_tome::dispatcher::BucketedBudget` in
+/// production). Co-located with [`WindowSnapshot`] because the
+/// trait's argument type lives here and the trait itself is part of
+/// the producer–consumer contract this crate carries.
+pub trait ResearchBudget: Send + Sync {
+    /// Return true when an external fetch is permitted for the given
+    /// fingerprint at this moment, false when the budget refuses.
+    fn should_query(
+        &self,
+        snapshot: &WindowSnapshot,
+        topic_fingerprint: &str,
+        last_query: Option<std::time::Instant>,
+    ) -> bool;
 }

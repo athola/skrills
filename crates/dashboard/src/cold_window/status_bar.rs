@@ -100,23 +100,14 @@ fn line_to_plain_string(line: &Line<'_>) -> String {
 }
 
 /// Format the cadence label, including the adaptive-state suffix.
+///
+/// The shared formatting (post-warmup) lives on `WindowSnapshot` so
+/// that the HTTP SSE handler and this TUI status bar emit byte-
+/// identical strings; only the warmup branch differs.
 fn cadence_label(snapshot: Option<&WindowSnapshot>) -> String {
     match snapshot {
         None => "tick: -- [warmup]".to_string(),
-        Some(s) => {
-            let secs = (s.next_tick_ms as f64) / 1_000.0;
-            let suffix = match s.load_sample.last_edit_age_ms {
-                Some(age) if age < 10_000 => "[active edit]".to_string(),
-                _ => {
-                    if s.load_sample.loadavg_1min > 0.0 {
-                        format!("[load {:.2}]", s.load_sample.loadavg_1min)
-                    } else {
-                        "[base]".to_string()
-                    }
-                }
-            };
-            format!("tick: {secs:.1}s {suffix}")
-        }
+        Some(s) => s.cadence_label(),
     }
 }
 

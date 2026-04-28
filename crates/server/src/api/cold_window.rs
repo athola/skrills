@@ -317,18 +317,7 @@ fn render_status_fragment(
 }
 
 fn cadence_label(snap: &WindowSnapshot) -> String {
-    let secs = (snap.next_tick_ms as f64) / 1_000.0;
-    let suffix = match snap.load_sample.last_edit_age_ms {
-        Some(age) if age < 10_000 => "[active edit]".to_string(),
-        _ => {
-            if snap.load_sample.loadavg_1min > 0.0 {
-                format!("[load {:.2}]", snap.load_sample.loadavg_1min)
-            } else {
-                "[base]".to_string()
-            }
-        }
-    };
-    format!("tick: {secs:.1}s {suffix}")
+    snap.cadence_label()
 }
 
 fn format_token_count(n: u64) -> String {
