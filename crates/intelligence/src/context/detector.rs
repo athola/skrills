@@ -398,7 +398,10 @@ fn parse_readme(root: &Path) -> Result<(Option<String>, Vec<String>)> {
         }
     }
 
-    anyhow::bail!("No README found")
+    Err(crate::IntelligenceError::ReadmeNotFound {
+        path: root.to_path_buf(),
+    }
+    .into())
 }
 
 /// Parse README content for description and keywords.

@@ -147,8 +147,8 @@ pub fn load_or_build_analytics(
     }
 
     // Build fresh analytics from session data
-    let home =
-        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+    let home = dirs::home_dir()
+        .ok_or(crate::IntelligenceError::HomeDirectoryNotFound)?;
 
     let claude_projects = home.join(".claude").join("projects");
     let codex_sessions = home.join(".codex").join("sessions");

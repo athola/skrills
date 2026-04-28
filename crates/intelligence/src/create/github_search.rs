@@ -247,7 +247,10 @@ pub async fn fetch_skill_content(raw_url: &str) -> Result<String> {
     .await?;
 
     if !response.status().is_success() {
-        anyhow::bail!("Failed to fetch skill content: {}", response.status());
+        return Err(crate::IntelligenceError::FetchFailed {
+            status: response.status().as_u16(),
+        }
+        .into());
     }
 
     Ok(response.text().await?)

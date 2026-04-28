@@ -49,7 +49,8 @@ pub fn extract_git_keywords(root: &Path, commit_limit: usize) -> Result<Vec<Stri
         .output()?;
 
     if !output.status.success() {
-        anyhow::bail!("git log failed");
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        return Err(crate::IntelligenceError::GitLogFailed(stderr).into());
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
