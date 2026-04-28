@@ -930,7 +930,7 @@ mod tests {
                 assert!(!tls_auto);
                 assert!(!open);
             }
-            _ => panic!("expected Serve command"),
+            _ => unreachable!("expected Serve command"),
         }
     }
 
@@ -973,7 +973,7 @@ mod tests {
                     ]
                 );
             }
-            _ => panic!("expected Serve command"),
+            _ => unreachable!("expected Serve command"),
         }
     }
 
@@ -989,7 +989,7 @@ mod tests {
             Some(Commands::Serve { auth_token, .. }) => {
                 assert_eq!(auth_token, Some("env-secret-token".to_string()));
             }
-            _ => panic!("expected Serve command"),
+            _ => unreachable!("expected Serve command"),
         }
     }
 
@@ -1003,7 +1003,7 @@ mod tests {
             Some(Commands::Serve { tls_auto, .. }) => {
                 assert!(tls_auto);
             }
-            _ => panic!("expected Serve command"),
+            _ => unreachable!("expected Serve command"),
         }
     }
 
@@ -1023,7 +1023,7 @@ mod tests {
                 assert_eq!(tls_cert, Some(PathBuf::from("/env/cert.pem")));
                 assert_eq!(tls_key, Some(PathBuf::from("/env/key.pem")));
             }
-            _ => panic!("expected Serve command"),
+            _ => unreachable!("expected Serve command"),
         }
     }
 
@@ -1048,7 +1048,7 @@ mod tests {
                     ]
                 );
             }
-            _ => panic!("expected Serve command"),
+            _ => unreachable!("expected Serve command"),
         }
     }
 
@@ -1063,7 +1063,7 @@ mod tests {
             Some(Commands::Sync {
                 include_marketplace,
             }) => assert!(include_marketplace),
-            _ => panic!("expected Sync command"),
+            _ => unreachable!("expected Sync command"),
         }
     }
 
@@ -1079,7 +1079,7 @@ mod tests {
             Some(Commands::Sync {
                 include_marketplace,
             }) => assert!(!include_marketplace),
-            _ => panic!("expected Sync command"),
+            _ => unreachable!("expected Sync command"),
         }
     }
 
@@ -1121,7 +1121,7 @@ mod tests {
                 assert_eq!(format, OutputFormat::Json);
                 assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/skills")]);
             }
-            _ => panic!("expected ResolveDependencies command"),
+            _ => unreachable!("expected ResolveDependencies command"),
         }
     }
 
@@ -1171,7 +1171,7 @@ mod tests {
                 assert_eq!(format, OutputFormat::Json);
                 assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/skills")]);
             }
-            _ => panic!("expected RecommendSkillsSmart command"),
+            _ => unreachable!("expected RecommendSkillsSmart command"),
         }
     }
 
@@ -1190,7 +1190,7 @@ mod tests {
             Some(Commands::RecommendSkillsSmart { auto_persist, .. }) => {
                 assert!(auto_persist, "--auto-persist flag should be true");
             }
-            _ => panic!("expected RecommendSkillsSmart command"),
+            _ => unreachable!("expected RecommendSkillsSmart command"),
         }
     }
 
@@ -1222,7 +1222,7 @@ mod tests {
                 assert_eq!(commit_limit, 25);
                 assert_eq!(format, OutputFormat::Json);
             }
-            _ => panic!("expected AnalyzeProjectContext command"),
+            _ => unreachable!("expected AnalyzeProjectContext command"),
         }
     }
 
@@ -1259,7 +1259,7 @@ mod tests {
                 assert_eq!(format, OutputFormat::Json);
                 assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/skills")]);
             }
-            _ => panic!("expected SuggestNewSkills command"),
+            _ => unreachable!("expected SuggestNewSkills command"),
         }
     }
 
@@ -1301,7 +1301,7 @@ mod tests {
                 assert!(dry_run);
                 assert_eq!(format, OutputFormat::Json);
             }
-            _ => panic!("expected CreateSkill command"),
+            _ => unreachable!("expected CreateSkill command"),
         }
     }
 
@@ -1343,7 +1343,7 @@ mod tests {
                 assert_eq!(limit, 5);
                 assert_eq!(format, OutputFormat::Json);
             }
-            _ => panic!("expected SearchSkillsGithub command"),
+            _ => unreachable!("expected SearchSkillsGithub command"),
         }
     }
 
@@ -1383,7 +1383,7 @@ mod tests {
                 assert!(skip_existing_commands);
                 assert!(include_marketplace);
             }
-            _ => panic!("expected Mirror command"),
+            _ => unreachable!("expected Mirror command"),
         }
     }
 
@@ -1418,7 +1418,7 @@ mod tests {
                 assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/agent-skills")]);
                 assert!(dry_run);
             }
-            _ => panic!("expected Agent command"),
+            _ => unreachable!("expected Agent command"),
         }
     }
 
@@ -1461,7 +1461,7 @@ mod tests {
                 assert!(validate);
                 assert!(autofix);
             }
-            _ => panic!("expected SyncAll command"),
+            _ => unreachable!("expected SyncAll command"),
         }
     }
 
@@ -1478,7 +1478,7 @@ mod tests {
                 assert!(to.is_none());
                 assert!(!dry_run);
             }
-            _ => panic!("expected SyncCommands command"),
+            _ => unreachable!("expected SyncCommands command"),
         }
     }
 
@@ -1526,7 +1526,7 @@ mod tests {
                 assert_eq!(format, OutputFormat::Json);
                 assert!(errors_only);
             }
-            _ => panic!("expected Validate command"),
+            _ => unreachable!("expected Validate command"),
         }
     }
 
@@ -1558,7 +1558,7 @@ mod tests {
                 assert_eq!(limit, 3);
                 assert_eq!(format, OutputFormat::Json);
             }
-            _ => panic!("expected SearchSkills command"),
+            _ => unreachable!("expected SearchSkills command"),
         }
     }
 
@@ -1606,7 +1606,7 @@ mod tests {
             Some(Commands::Cert(CertAction::Status { format })) => {
                 assert_eq!(format, OutputFormat::Json);
             }
-            _ => panic!("expected Cert Status command"),
+            _ => unreachable!("expected Cert Status command"),
         }
     }
 
@@ -1619,7 +1619,7 @@ mod tests {
             Some(Commands::Cert(CertAction::Renew { force })) => {
                 assert!(force);
             }
-            _ => panic!("expected Cert Renew command"),
+            _ => unreachable!("expected Cert Renew command"),
         }
     }
 
@@ -1658,7 +1658,7 @@ mod tests {
                 assert!(universal);
                 assert!(mirror_source.is_none());
             }
-            _ => panic!("expected Setup command"),
+            _ => unreachable!("expected Setup command"),
         }
     }
 
@@ -1691,7 +1691,7 @@ mod tests {
                 assert!(dry_run);
                 assert_eq!(format, OutputFormat::Json);
             }
-            _ => panic!("expected SkillImport command"),
+            _ => unreachable!("expected SkillImport command"),
         }
     }
 
@@ -1718,7 +1718,7 @@ mod tests {
                 assert_eq!(format, OutputFormat::Json);
                 assert_eq!(context, 5);
             }
-            _ => panic!("expected SkillDiff command"),
+            _ => unreachable!("expected SkillDiff command"),
         }
     }
 
@@ -1737,7 +1737,7 @@ mod tests {
                 assert!(!force_rebuild);
                 assert_eq!(format, OutputFormat::Text);
             }
-            _ => panic!("expected ExportAnalytics command"),
+            _ => unreachable!("expected ExportAnalytics command"),
         }
     }
 
@@ -1762,7 +1762,7 @@ mod tests {
             Some(Commands::Serve { list_tools, .. }) => {
                 assert!(list_tools);
             }
-            _ => panic!("expected Serve command"),
+            _ => unreachable!("expected Serve command"),
         }
     }
 
@@ -1776,7 +1776,7 @@ mod tests {
                 assert!(open);
                 assert_eq!(http, Some("127.0.0.1:3000".to_string()));
             }
-            _ => panic!("expected Serve command"),
+            _ => unreachable!("expected Serve command"),
         }
     }
 
@@ -1806,7 +1806,7 @@ mod tests {
                 assert!(skill_dirs.is_empty());
                 assert!(!dry_run);
             }
-            _ => panic!("expected MultiCliAgent command"),
+            _ => unreachable!("expected MultiCliAgent command"),
         }
     }
 
@@ -1836,7 +1836,7 @@ mod tests {
                 assert_eq!(skill_dirs, vec![PathBuf::from("/tmp/skills")]);
                 assert!(dry_run);
             }
-            _ => panic!("expected MultiCliAgent command"),
+            _ => unreachable!("expected MultiCliAgent command"),
         }
     }
 
@@ -1861,7 +1861,7 @@ mod tests {
             Some(Commands::MultiCliAgent { backend, .. }) => {
                 assert!(matches!(backend, AgentBackend::Claude));
             }
-            _ => panic!("expected MultiCliAgent command"),
+            _ => unreachable!("expected MultiCliAgent command"),
         }
     }
 
@@ -1889,7 +1889,7 @@ mod tests {
                 assert_eq!(to, Some(SyncSource::Cursor));
                 assert!(dry_run);
             }
-            _ => panic!("expected SyncAll command"),
+            _ => unreachable!("expected SyncAll command"),
         }
     }
 
