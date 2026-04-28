@@ -1,20 +1,26 @@
 //! Claude Code adapter for reading/writing ~/.claude configuration.
 
 use super::traits::{AgentAdapter, FieldSupport};
-use super::utils::{hash_content, is_hidden_path, sanitize_name};
-use crate::common::{
-    Command, ContentFormat, McpServer, McpTransport, PluginAsset, Preferences,
-};
-use crate::report::{SkipReason, WriteReport};
+#[cfg(test)]
+use super::utils::hash_content;
+#[cfg(test)]
+use crate::common::{ContentFormat, McpTransport};
+use crate::common::{Command, McpServer, PluginAsset, Preferences};
+use crate::report::WriteReport;
 use crate::Result;
 use anyhow::Context;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+#[cfg(test)]
 use std::time::SystemTime;
-use walkdir::WalkDir;
 
+mod agents;
+mod commands;
+mod hooks;
+mod instructions;
 mod plugin_assets;
+mod settings;
 mod skills;
 
 /// Parse a directory entry name as a semver-ish tuple `(major, minor, patch)`.
@@ -85,64 +91,6 @@ impl ClaudeAdapter {
     pub(super) fn instructions_path(&self) -> PathBuf {
         self.root.join("CLAUDE.md")
     }
-
-    fn collect_commands_from_dir(
-        &self,
-        dir: &PathBuf,
-        seen: &mut HashSet<String>,
-        commands: &mut Vec<Command>,
-    ) -> Result<()> {
-        if !dir.exists() {
-            return Ok(());
-        }
-
-        for entry in WalkDir::new(dir).min_depth(1).max_depth(8) {
-            let entry = entry?;
-            let path = entry.path();
-
-            if !path.is_file() {
-                continue;
-            }
-            match path.extension() {
-                Some(ext) if ext == "md" => {}
-                _ => continue,
-            }
-
-            let name = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(str::to_owned)
-                .unwrap_or_else(|| {
-                    tracing::warn!(
-                        ?path,
-                        "non-UTF-8 file stem; multiple such files will collide on the 'unknown' name"
-                    );
-                    "unknown".to_string()
-                });
-
-            if !seen.insert(name.clone()) {
-                continue;
-            }
-
-            let content = fs::read(path)?;
-            let metadata = fs::metadata(path)?;
-            let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-            let hash = hash_content(&content);
-
-            commands.push(Command {
-                name,
-                content,
-                source_path: path.to_path_buf(),
-                modified,
-                hash,
-                modules: Vec::new(),
-                content_format: ContentFormat::default(),
-                plugin_origin: None,
-            });
-        }
-
-        Ok(())
-    }
 }
 
 // Note: We intentionally do not implement Default for ClaudeAdapter because
@@ -172,187 +120,15 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     fn read_commands(&self, include_marketplace: bool) -> Result<Vec<Command>> {
-        let mut commands = Vec::new();
-        let mut seen = HashSet::new();
-
-        // 1) Core ~/.claude/commands
-        self.collect_commands_from_dir(&self.commands_dir(), &mut seen, &mut commands)?;
-
-        // 2) Marketplaces & Cache
-        let mut bases = vec!["plugins/cache"];
-        if include_marketplace {
-            bases.push("plugins/marketplaces");
-        }
-
-        for base in bases {
-            let base_path = self.root.join(base);
-            if !base_path.exists() {
-                continue;
-            }
-            for entry in WalkDir::new(&base_path).min_depth(1).max_depth(8) {
-                let entry = entry?;
-                let path = entry.path();
-
-                if !path.is_file() {
-                    continue;
-                }
-                match path.extension() {
-                    Some(ext) if ext == "md" => {}
-                    _ => continue,
-                }
-
-                // Only include files that live under a commands directory
-                if !path
-                    .ancestors()
-                    .any(|p| p.file_name().is_some_and(|n| n == "commands"))
-                {
-                    continue;
-                }
-
-                let name = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-
-                if !seen.insert(name.clone()) {
-                    continue;
-                }
-
-                let content = fs::read(path)?;
-                let metadata = fs::metadata(path)?;
-                let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                let hash = hash_content(&content);
-
-                commands.push(Command {
-                    name,
-                    content,
-                    source_path: path.to_path_buf(),
-                    modified,
-                    hash,
-                    modules: Vec::new(),
-                    content_format: ContentFormat::default(),
-                    plugin_origin: None,
-                });
-            }
-        }
-
-        Ok(commands)
+        commands::read_commands_impl(self, include_marketplace)
     }
 
     fn read_mcp_servers(&self) -> Result<HashMap<String, McpServer>> {
-        let path = self.settings_path();
-        if !path.exists() {
-            return Ok(HashMap::new());
-        }
-
-        let content = fs::read_to_string(&path)?;
-        let settings: serde_json::Value = serde_json::from_str(&content)?;
-
-        let mut servers = HashMap::new();
-        if let Some(mcp) = settings.get("mcpServers").and_then(|v| v.as_object()) {
-            for (name, config) in mcp {
-                // Determine transport type from "type" field (default to stdio)
-                let transport = match config.get("type").and_then(|v| v.as_str()) {
-                    Some("http") => McpTransport::Http,
-                    Some("stdio") | None => McpTransport::Stdio,
-                    Some(other) => {
-                        tracing::warn!(unknown_type = other, name = %name, "Unknown MCP server type, defaulting to stdio");
-                        McpTransport::Stdio
-                    }
-                };
-
-                let server = McpServer {
-                    name: name.clone(),
-                    transport,
-                    command: config
-                        .get("command")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    args: config
-                        .get("args")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_str().map(String::from))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                    env: config
-                        .get("env")
-                        .and_then(|v| v.as_object())
-                        .map(|obj| {
-                            obj.iter()
-                                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                    url: config.get("url").and_then(|v| v.as_str()).map(String::from),
-                    headers: config
-                        .get("headers")
-                        .and_then(|v| v.as_object())
-                        .map(|obj| {
-                            obj.iter()
-                                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                                .collect()
-                        }),
-                    enabled: config
-                        .get("disabled")
-                        .and_then(|v| v.as_bool())
-                        .map(|d| !d)
-                        .unwrap_or(true),
-                    allowed_tools: config
-                        .get("allowedTools")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_str().map(String::from))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                    disabled_tools: config
-                        .get("disabledTools")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_str().map(String::from))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                };
-
-                // Warn if HTTP transport is missing URL (required for HTTP servers)
-                if server.transport == McpTransport::Http && server.url.is_none() {
-                    tracing::warn!(
-                        name = %name,
-                        "HTTP MCP server is missing required 'url' field"
-                    );
-                }
-
-                servers.insert(name.clone(), server);
-            }
-        }
-
-        Ok(servers)
+        settings::read_mcp_servers_impl(self)
     }
 
     fn read_preferences(&self) -> Result<Preferences> {
-        let path = self.settings_path();
-        if !path.exists() {
-            return Ok(Preferences::default());
-        }
-
-        let content = fs::read_to_string(&path)?;
-        let settings: serde_json::Value = serde_json::from_str(&content)?;
-
-        Ok(Preferences {
-            model: settings
-                .get("model")
-                .and_then(|v| v.as_str())
-                .map(String::from),
-            custom: HashMap::new(), // Could extract other fields here
-        })
+        settings::read_preferences_impl(self)
     }
 
     fn read_skills(&self) -> Result<Vec<Command>> {
@@ -360,140 +136,15 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     fn write_commands(&self, commands: &[Command]) -> Result<WriteReport> {
-        let dir = self.commands_dir();
-        fs::create_dir_all(&dir)?;
-
-        let mut report = WriteReport::default();
-
-        for cmd in commands {
-            let safe_name = sanitize_name(&cmd.name);
-            let path = dir.join(format!("{}.md", safe_name));
-
-            // Check if unchanged
-            if path.exists() {
-                let existing = fs::read(&path)?;
-                if hash_content(&existing) == cmd.hash {
-                    report.skipped.push(SkipReason::Unchanged {
-                        item: cmd.name.clone(),
-                    });
-                    continue;
-                }
-            }
-
-            fs::write(&path, &cmd.content)?;
-            report.written += 1;
-        }
-
-        Ok(report)
+        commands::write_commands_impl(self, commands)
     }
 
     fn write_mcp_servers(&self, servers: &HashMap<String, McpServer>) -> Result<WriteReport> {
-        let path = self.settings_path();
-
-        // Read existing settings or create new
-        let mut settings: serde_json::Value = if path.exists() {
-            let content = fs::read_to_string(&path)?;
-            serde_json::from_str(&content)?
-        } else {
-            serde_json::json!({})
-        };
-
-        let mut report = WriteReport::default();
-        let mut mcp_obj = serde_json::Map::new();
-
-        for (name, server) in servers {
-            let mut server_config = serde_json::Map::new();
-
-            // Write transport type (only for non-stdio to keep config clean)
-            if server.transport != McpTransport::Stdio {
-                server_config.insert(
-                    "type".into(),
-                    serde_json::json!(match server.transport {
-                        McpTransport::Stdio => "stdio",
-                        McpTransport::Http => "http",
-                    }),
-                );
-            }
-
-            match server.transport {
-                McpTransport::Http => {
-                    // HTTP transport: write url and headers
-                    if let Some(ref url) = server.url {
-                        server_config.insert("url".into(), serde_json::json!(url));
-                    }
-                    if let Some(ref headers) = server.headers {
-                        let headers_obj: serde_json::Map<String, serde_json::Value> = headers
-                            .iter()
-                            .map(|(k, v)| (k.clone(), serde_json::json!(v)))
-                            .collect();
-                        server_config
-                            .insert("headers".into(), serde_json::Value::Object(headers_obj));
-                    }
-                }
-                McpTransport::Stdio => {
-                    // stdio transport: write command, args, env
-                    server_config.insert("command".into(), serde_json::json!(server.command));
-                    if !server.args.is_empty() {
-                        server_config.insert("args".into(), serde_json::json!(server.args));
-                    }
-                    if !server.env.is_empty() {
-                        server_config.insert("env".into(), serde_json::json!(server.env));
-                    }
-                }
-            }
-
-            if !server.enabled {
-                server_config.insert("disabled".into(), serde_json::json!(true));
-            }
-            if !server.allowed_tools.is_empty() {
-                server_config.insert(
-                    "allowedTools".into(),
-                    serde_json::json!(server.allowed_tools),
-                );
-            }
-            if !server.disabled_tools.is_empty() {
-                server_config.insert(
-                    "disabledTools".into(),
-                    serde_json::json!(server.disabled_tools),
-                );
-            }
-            mcp_obj.insert(name.clone(), serde_json::Value::Object(server_config));
-            report.written += 1;
-        }
-
-        settings["mcpServers"] = serde_json::Value::Object(mcp_obj);
-
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&path, serde_json::to_string_pretty(&settings)?)?;
-
-        Ok(report)
+        settings::write_mcp_servers_impl(self, servers)
     }
 
     fn write_preferences(&self, prefs: &Preferences) -> Result<WriteReport> {
-        let path = self.settings_path();
-
-        let mut settings: serde_json::Value = if path.exists() {
-            let content = fs::read_to_string(&path)?;
-            serde_json::from_str(&content)?
-        } else {
-            serde_json::json!({})
-        };
-
-        let mut report = WriteReport::default();
-
-        if let Some(model) = &prefs.model {
-            settings["model"] = serde_json::json!(model);
-            report.written += 1;
-        }
-
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&path, serde_json::to_string_pretty(&settings)?)?;
-
-        Ok(report)
+        settings::write_preferences_impl(self, prefs)
     }
 
     fn write_skills(&self, skills: &[Command]) -> Result<WriteReport> {
@@ -501,344 +152,27 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     fn read_hooks(&self) -> Result<Vec<Command>> {
-        // Track hooks by name, keeping the most recently modified version
-        let mut hooks_map: HashMap<String, Command> = HashMap::new();
-
-        // Helper to process a hook and update the map if it's newer
-        let mut process_hook = |name: String, path: &std::path::Path| -> Result<()> {
-            let content = fs::read(path)?;
-            let metadata = fs::metadata(path)?;
-            let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-            let hash = hash_content(&content);
-
-            let hook = Command {
-                name: name.clone(),
-                content,
-                source_path: path.to_path_buf(),
-                modified,
-                hash,
-                modules: Vec::new(),
-
-                content_format: ContentFormat::default(),
-                plugin_origin: None,
-            };
-
-            match hooks_map.get(&name) {
-                Some(existing) if existing.modified >= modified => {}
-                _ => {
-                    hooks_map.insert(name, hook);
-                }
-            }
-            Ok(())
-        };
-
-        // 1) Core ~/.claude/hooks
-        let hooks_dir = self.hooks_dir();
-        if hooks_dir.exists() {
-            for entry in WalkDir::new(&hooks_dir)
-                .min_depth(1)
-                .max_depth(10)
-                .follow_links(false)
-            {
-                let entry = entry?;
-                if entry.file_type().is_symlink() {
-                    continue;
-                }
-                let path = entry.path();
-                if is_hidden_path(path.strip_prefix(&hooks_dir).unwrap_or(path)) {
-                    continue;
-                }
-                if !path.is_file() {
-                    continue;
-                }
-                if path.extension().is_none_or(|ext| ext != "md") {
-                    continue;
-                }
-
-                let name = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-
-                process_hook(name, path)?;
-            }
-        }
-
-        // 2) Plugins cache ~/.claude/plugins/cache/**/hooks/
-        let cache_dir = self.root.join("plugins/cache");
-        if cache_dir.exists() {
-            for entry in WalkDir::new(&cache_dir).min_depth(1).max_depth(10) {
-                let entry = entry?;
-                let path = entry.path();
-
-                if !path.is_file() {
-                    continue;
-                }
-                if path.extension().is_none_or(|ext| ext != "md") {
-                    continue;
-                }
-
-                // Only include files under a hooks directory
-                if !path
-                    .ancestors()
-                    .any(|p| p.file_name().is_some_and(|n| n == "hooks"))
-                {
-                    continue;
-                }
-
-                let name = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-
-                if name == "unknown" || name == "hooks" {
-                    continue;
-                }
-
-                process_hook(name, path)?;
-            }
-        }
-
-        Ok(hooks_map.into_values().collect())
+        hooks::read_hooks_impl(self)
     }
 
     fn read_agents(&self) -> Result<Vec<Command>> {
-        // Track agents by name, keeping the most recently modified version
-        let mut agents_map: HashMap<String, Command> = HashMap::new();
-
-        // Helper to process an agent and update the map if it's newer
-        let mut process_agent = |name: String, path: &std::path::Path| -> Result<()> {
-            let content = fs::read(path)?;
-            let metadata = fs::metadata(path)?;
-            let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-            let hash = hash_content(&content);
-
-            let agent = Command {
-                name: name.clone(),
-                content,
-                source_path: path.to_path_buf(),
-                modified,
-                hash,
-                modules: Vec::new(),
-
-                content_format: ContentFormat::default(),
-                plugin_origin: None,
-            };
-
-            match agents_map.get(&name) {
-                Some(existing) if existing.modified >= modified => {}
-                _ => {
-                    agents_map.insert(name, agent);
-                }
-            }
-            Ok(())
-        };
-
-        // 1) Core ~/.claude/agents
-        let agents_dir = self.agents_dir();
-        if agents_dir.exists() {
-            for entry in WalkDir::new(&agents_dir)
-                .min_depth(1)
-                .max_depth(10)
-                .follow_links(false)
-            {
-                let entry = entry?;
-                if entry.file_type().is_symlink() {
-                    continue;
-                }
-                let path = entry.path();
-                if is_hidden_path(path.strip_prefix(&agents_dir).unwrap_or(path)) {
-                    continue;
-                }
-                if !path.is_file() {
-                    continue;
-                }
-                if path.extension().is_none_or(|ext| ext != "md") {
-                    continue;
-                }
-
-                let name = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-
-                process_agent(name, path)?;
-            }
-        }
-
-        // 2) Plugins cache ~/.claude/plugins/cache/**/agents/
-        let cache_dir = self.root.join("plugins/cache");
-        if cache_dir.exists() {
-            for entry in WalkDir::new(&cache_dir).min_depth(1).max_depth(10) {
-                let entry = entry?;
-                let path = entry.path();
-
-                if !path.is_file() {
-                    continue;
-                }
-                if path.extension().is_none_or(|ext| ext != "md") {
-                    continue;
-                }
-
-                // Only include files under an agents directory
-                if !path
-                    .ancestors()
-                    .any(|p| p.file_name().is_some_and(|n| n == "agents"))
-                {
-                    continue;
-                }
-
-                let name = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-
-                if name == "unknown" || name == "agents" {
-                    continue;
-                }
-
-                process_agent(name, path)?;
-            }
-        }
-
-        Ok(agents_map.into_values().collect())
+        agents::read_agents_impl(self)
     }
 
     fn write_hooks(&self, hooks: &[Command]) -> Result<WriteReport> {
-        let dir = self.hooks_dir();
-        fs::create_dir_all(&dir)?;
-
-        let mut report = WriteReport::default();
-
-        for hook in hooks {
-            let safe_name = sanitize_name(&hook.name);
-            let path = dir.join(format!("{}.md", safe_name));
-
-            if path.exists() {
-                let existing = fs::read(&path)?;
-                if hash_content(&existing) == hook.hash {
-                    report.skipped.push(SkipReason::Unchanged {
-                        item: hook.name.clone(),
-                    });
-                    continue;
-                }
-            }
-
-            fs::write(&path, &hook.content)?;
-            report.written += 1;
-        }
-
-        Ok(report)
+        hooks::write_hooks_impl(self, hooks)
     }
 
     fn write_agents(&self, agents: &[Command]) -> Result<WriteReport> {
-        let dir = self.agents_dir();
-        fs::create_dir_all(&dir)?;
-
-        let mut report = WriteReport::default();
-
-        for agent in agents {
-            let safe_name = sanitize_name(&agent.name);
-            let path = dir.join(format!("{}.md", safe_name));
-
-            if path.exists() {
-                let existing = fs::read(&path)?;
-                if hash_content(&existing) == agent.hash {
-                    report.skipped.push(SkipReason::Unchanged {
-                        item: agent.name.clone(),
-                    });
-                    continue;
-                }
-            }
-
-            fs::write(&path, &agent.content)?;
-            report.written += 1;
-        }
-
-        Ok(report)
+        agents::write_agents_impl(self, agents)
     }
 
     fn read_instructions(&self) -> Result<Vec<Command>> {
-        let path = self.instructions_path();
-        if !path.exists() {
-            return Ok(Vec::new());
-        }
-
-        let content = fs::read(&path)?;
-        let metadata = fs::metadata(&path)?;
-        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        let hash = hash_content(&content);
-
-        // Use "CLAUDE" as the instruction name (derived from CLAUDE.md)
-        let name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("CLAUDE")
-            .to_string();
-
-        Ok(vec![Command {
-            name,
-            content,
-            source_path: path.clone(),
-            modified,
-            hash,
-            modules: Vec::new(),
-
-            content_format: ContentFormat::default(),
-            plugin_origin: None,
-        }])
+        instructions::read_instructions_impl(self)
     }
 
     fn write_instructions(&self, instructions: &[Command]) -> Result<WriteReport> {
-        let mut report = WriteReport::default();
-
-        // Claude only supports a single CLAUDE.md file
-        // If multiple instructions are provided, merge them or take the first
-        if instructions.is_empty() {
-            return Ok(report);
-        }
-
-        let path = self.instructions_path();
-
-        // Merge all instructions content if multiple are provided
-        let merged_content: Vec<u8> = if instructions.len() == 1 {
-            instructions[0].content.clone()
-        } else {
-            // Merge multiple instructions with headers
-            let mut merged = Vec::new();
-            for (i, instruction) in instructions.iter().enumerate() {
-                if i > 0 {
-                    merged.extend_from_slice(b"\n\n---\n\n");
-                }
-                merged.extend_from_slice(
-                    format!("<!-- Source: {} -->\n\n", instruction.name).as_bytes(),
-                );
-                merged.extend_from_slice(&instruction.content);
-            }
-            merged
-        };
-
-        if path.exists() {
-            let existing = fs::read(&path)?;
-            if hash_content(&existing) == hash_content(&merged_content) {
-                report.skipped.push(SkipReason::Unchanged {
-                    item: "CLAUDE.md".to_string(),
-                });
-                return Ok(report);
-            }
-        }
-
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&path, &merged_content)?;
-        report.written += 1;
-
-        Ok(report)
+        instructions::write_instructions_impl(self, instructions)
     }
 
     fn read_plugin_assets(&self, full_mirror: bool) -> Result<Vec<PluginAsset>> {
