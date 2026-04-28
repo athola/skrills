@@ -133,6 +133,7 @@ pub mod adapters;
 pub mod common;
 pub mod models;
 pub mod orchestrator;
+pub mod platform_routing;
 pub mod report;
 pub mod validation;
 
@@ -141,11 +142,11 @@ pub use adapters::{
 };
 pub use common::{Command, CommonConfig, ContentFormat, McpServer, PluginAsset, Preferences};
 pub use models::transform_model;
-#[allow(deprecated)]
 pub use orchestrator::{
-    create_adapter, default_target_for, is_valid_platform, parse_direction, sync_between,
-    SyncDirection, SyncOrchestrator, SyncParams,
+    create_adapter, is_valid_platform, sync_between, SyncOrchestrator, SyncParams,
 };
+#[allow(deprecated)]
+pub use platform_routing::{default_target_for, parse_direction, SyncDirection};
 pub use report::{SkipReason, SyncReport, WriteReport};
 pub use validation::{
     apply_autofix_to_skill, skill_is_codex_compatible, skill_is_copilot_compatible,
