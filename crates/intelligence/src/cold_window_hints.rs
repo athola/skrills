@@ -23,10 +23,11 @@
 //! mode. Customize by constructing [`MultiSignalScorer`] with
 //! different weights or implementing your own `HintScorer`.
 //!
-//! Note: this module does not depend on `skrills_analyze` to avoid
-//! a circular dependency. The `HintScorer` trait is duplicated here
-//! with the same shape; `skrills_analyze::cold_window::engine` will
-//! adapt between them in TASK-008.
+//! This module does not depend on `skrills_analyze`. The
+//! `HintScorer` trait lives in `skrills_analyze::cold_window::traits`;
+//! `skrills_analyze::cold_window::engine::DefaultHintScorer` is the
+//! adapter that wraps [`MultiSignalScorer`] for the engine — see its
+//! definition for the boundary contract.
 
 use skrills_snapshot::{Hint, ScoredHint};
 
