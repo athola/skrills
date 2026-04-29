@@ -29,3 +29,4 @@ tempfile.workspace = true
 mockall = "0.14.0"
 tokio = { version = "1", features = ["full"] }
 proptest = "1.4"
+skrills_test_utils = { path = "../test-utils" }

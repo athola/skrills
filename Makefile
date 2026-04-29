@@ -60,7 +60,7 @@ define verify_setup
 endef
 
 # Phony targets: core developer flow
-.PHONY: all help version verify fmt fmt-check lint lint-md check test test-unit test-integration test-setup test-install \
+.PHONY: all help version verify fmt fmt-check lint lint-md lint-prose lint-decoration lint-hygiene check test test-unit test-integration test-setup test-install \
 	release-consistency \
 	build build-min serve-help install status coverage test-coverage dogfood dogfood-readme ci precommit \
 	clean clean-demo hooks require-cargo security deny deps-update check-deps \
@@ -73,6 +73,10 @@ endef
 	demo-setup-universal demo-setup-first-run demo-setup-all \
 	demo-analytics demo-gateway demo-cert demo-skill-lifecycle \
 	demo-multi-cli-agent demo-release-consistency
+# Phony targets: dogfood (v0.8.0 cold-window + script ports)
+.PHONY: dogfood-cold-window-headless dogfood-cold-window-chaos dogfood-cold-window-browser \
+	dogfood-tui dogfood-dashboard dogfood-skill-diff dogfood-all \
+	plugin-validate-direct plugin-modernize-direct plugin-registrations-direct
 .NOTPARALLEL: demo-all demo-setup-all
 .SILENT: demo-doctor demo-empirical demo-cli demo-all demo-setup-claude demo-setup-codex demo-setup-both \
 	demo-setup-uninstall demo-setup-reinstall demo-setup-universal demo-setup-first-run \
@@ -86,7 +90,7 @@ all: fmt lint test build
 version:
 	@echo "$(call get_version)"
 
-verify: fmt-check lint lint-md test test-install
+verify: fmt-check lint lint-md lint-hygiene test test-scripts test-install
 	@echo "==> All verification checks passed"
 
 help:
@@ -98,11 +102,20 @@ help:
 	@printf "  %-23s %s\n" "fmt | fmt-check" "format workspace or check only"
 	@printf "  %-23s %s\n" "lint" "clippy --all-features with -D warnings"
 	@printf "  %-23s %s\n" "lint-md" "lint markdown files"
+	@printf "  %-23s %s\n" "lint-prose" "block AI-slop vocabulary in docs"
+	@printf "  %-23s %s\n" "lint-decoration" "block decorative // ─ separator comments"
+	@printf "  %-23s %s\n" "lint-hygiene" "run lint-prose + lint-decoration"
 	@printf "  %-23s %s\n" "check" "cargo check all targets"
 	@printf "  %-23s %s\n" "test | test-unit | test-integration" "run tests"
 	@printf "  %-23s %s\n" "test-setup" "run setup module tests"
 	@printf "  %-23s %s\n" "test-install" "test install.sh helper functions"
 	@printf "  %-23s %s\n" "release-consistency" "verify Cargo.toml/plugin.json version + commands parity"
+	@printf "  %-23s %s\n" "plugin-audit" "audit plugin.json registrations vs disk"
+	@printf "  %-23s %s\n" "plugin-audit-fix" "rewrite plugin.json to match disk"
+	@printf "  %-23s %s\n" "plugin-validate" "validate plugin structure (kebab-case, paths, hooks)"
+	@printf "  %-23s %s\n" "plugin-modernize" "scan hook scripts for deprecated patterns"
+	@printf "  %-23s %s\n" "plugin-doctor" "run all three plugin audits"
+	@printf "  %-23s %s\n" "test-scripts" "pytest the ported script suite under tests/unit/"
 	@printf "  %-23s %s\n" "test-coverage" "coverage via cargo-llvm-cov (precise)"
 	@printf "  %-23s %s\n" "build | build-min" "release builds"
 	@printf "  %-23s %s\n" "install" "install skrills to $(CARGO_HOME)/bin"
@@ -143,6 +156,17 @@ help:
 	@printf "  %-23s %s\n" "demo-setup-{uninstall,reinstall}" "lifecycle demos"
 	@printf "  %-23s %s\n" "demo-setup-{universal,first-run}" "other setup demos"
 	@printf "  %-23s %s\n" "demo-fixtures" "prepare demo HOME sandbox"
+	@printf "\nDogfood (v0.8.0 cold-window + script ports)\n"
+	@printf "  %-23s %s\n" "dogfood-all" "run dogfood + all v0.8.0 surface checks"
+	@printf "  %-23s %s\n" "dogfood-cold-window-headless" "engine ticks for 3s, expects clean SIGTERM exit"
+	@printf "  %-23s %s\n" "dogfood-cold-window-chaos" "--no-adaptive + tiny budget; exercises kill-switch"
+	@printf "  %-23s %s\n" "dogfood-cold-window-browser" "HTML+SSE parity check + 2s graceful-shutdown budget"
+	@printf "  %-23s %s\n" "dogfood-tui" "skrills tui smoke (timeout 3s)"
+	@printf "  %-23s %s\n" "dogfood-dashboard" "skrills dashboard smoke (timeout 3s)"
+	@printf "  %-23s %s\n" "dogfood-skill-diff" "skill-diff --format json validates as JSON"
+	@printf "  %-23s %s\n" "plugin-validate-direct" "validate_plugin.py against ./plugins/skrills"
+	@printf "  %-23s %s\n" "plugin-modernize-direct" "check_hook_modernization.py --json"
+	@printf "  %-23s %s\n" "plugin-registrations-direct" "update_plugin_registrations.py --dry-run"
 
 require-cargo:
 	@command -v $(CARGO) >/dev/null 2>&1 || { \
@@ -161,6 +185,17 @@ lint:
 
 lint-md:
 	$(SHELL) ./scripts/lint-markdown.sh
+
+# Block AI-slop vocabulary in user-facing prose.
+lint-prose:
+	$(SHELL) ./scripts/lint-prose-slop.sh
+
+# Block decorative `// ─{20,}` separator comments in Rust source.
+lint-decoration:
+	$(SHELL) ./scripts/lint-rust-decoration.sh
+
+# Aggregate AI hygiene lints (banned words + decorative comments).
+lint-hygiene: lint-prose lint-decoration
 
 check:
 	$(CARGO_CMD) check --workspace --all-targets
@@ -184,6 +219,29 @@ test-install:
 release-consistency:
 	@echo "==> Verifying release-consistency invariants (Cargo.toml + plugin.json + commands/)"
 	$(CARGO_CMD) test -p skrills_test_utils --test release_consistency
+
+# Plugin audits (Phase 1 / 1b / 1c). Uses ~/claude-night-market upstream
+# scripts when present, else the in-tree ports under scripts/.
+plugin-audit:
+	@./scripts/audit-plugins.sh
+
+plugin-audit-fix:
+	@./scripts/audit-plugins.sh --fix
+
+plugin-validate:
+	@./scripts/audit-plugins.sh --validate
+
+plugin-modernize:
+	@./scripts/audit-plugins.sh --modernize
+
+plugin-doctor:
+	@./scripts/audit-plugins.sh --all
+
+# Run pytest over the script ports (validate_plugin / hook modernization
+# / registration auditor).
+test-scripts:
+	@command -v pytest >/dev/null 2>&1 || { echo "pytest not installed (pip install pytest)"; exit 1; }
+	pytest tests/unit -q
 
 test-coverage:
 	@if command -v cargo-llvm-cov >/dev/null 2>&1; then \
@@ -507,12 +565,12 @@ clean-demo:
 	@rm -rf $(HOME_DIR)
 	@echo "Removed demo HOME $(HOME_DIR)"
 
-ci: fmt lint test
+ci: fmt lint lint-hygiene test
 
 verify-publish:
 	@if bash -c 'declare -A x 2>/dev/null'; then bash scripts/verify_publish_order.sh; else echo "[SKIP] verify-publish requires bash 4+ (found $$(bash --version | head -1))"; fi
 
-precommit: fmt-check lint lint-md test test-install verify-publish
+precommit: fmt-check lint lint-md lint-hygiene test test-install verify-publish
 
 hooks:
 	@git config core.hooksPath githooks
@@ -547,3 +605,146 @@ deny:
 deps-update:
 	$(CARGO_CMD) update
 	@echo "Dependencies updated. Run 'make test' to verify."
+
+# =============================================================================
+# Dogfood targets — v0.8.0 cold-window surfaces + script ports.
+# Goal: every new CLI/TUI/browser/SSE/script entrypoint executes against
+# real fixtures and is validated for exit code, output shape, or contract.
+# =============================================================================
+
+# Override-able port so a developer can run `make cold-window` (8888) and
+# `make dogfood-cold-window-browser` (18888) side-by-side.
+DOGFOOD_PORT ?= 18888
+DOGFOOD_TMP  := /tmp/skrills-dogfood-$$$$
+
+# 124 = `timeout` fired (clean), 143 = 128+SIGTERM (clean). Anything else fails.
+# Note: callers MUST run the prior command under `set +e` so $$? is observable.
+define _assert_clean_exit
+	rc=$$?; case $$rc in 0|124|143) ;; *) echo "FAIL: exit $$rc"; exit 1;; esac
+endef
+
+dogfood-cold-window-headless: build
+	@echo "==> [headless] engine ticks 3s @ 200ms cadence; expects graceful SIGTERM exit"
+	@set +e; HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) timeout --signal=TERM 3 \
+	  $(BIN_PATH) cold-window --tick-rate-ms 200 --alert-budget 100000 >/dev/null 2>&1 ; \
+	$(_assert_clean_exit)
+	@echo "==> [headless] OK"
+
+dogfood-cold-window-chaos: build
+	@echo "==> [chaos] --no-adaptive + alert-budget=1 forces kill-switch path"
+	@set +e; HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) timeout --signal=TERM 3 \
+	  $(BIN_PATH) cold-window --no-adaptive --tick-rate-ms 200 --alert-budget 1 >/dev/null 2>&1 ; \
+	$(_assert_clean_exit)
+	@echo "==> [chaos] OK"
+
+dogfood-cold-window-browser: build
+	@command -v jq   >/dev/null 2>&1 || { echo "FAIL: jq required (apt install jq)"; exit 1; }
+	@command -v curl >/dev/null 2>&1 || { echo "FAIL: curl required"; exit 1; }
+	@PORT=$(DOGFOOD_PORT) ; TMP=$(DOGFOOD_TMP) ; \
+	mkdir -p $$TMP ; \
+	echo "==> [browser] starting cold-window on port $$PORT" ; \
+	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) \
+	  $(BIN_PATH) cold-window --browser --port $$PORT \
+	    --tick-rate-ms 200 --alert-budget 100000 \
+	    >$$TMP/server.log 2>&1 & \
+	PID=$$! ; \
+	cleanup() { kill -TERM $$PID 2>/dev/null || true ; wait $$PID 2>/dev/null || true ; rm -rf $$TMP ; } ; \
+	trap cleanup EXIT INT TERM ; \
+	for i in 1 2 3 4 5 6 7 8 9 10 ; do \
+	  curl -fsS --max-time 1 "http://127.0.0.1:$$PORT/dashboard" >$$TMP/page.html 2>/dev/null && break ; \
+	  sleep 0.5 ; \
+	done ; \
+	test -s $$TMP/page.html || { echo "FAIL: /dashboard never responded"; cat $$TMP/server.log; exit 1; } ; \
+	echo "==> [browser] /dashboard HTML served ($$(wc -c <$$TMP/page.html) bytes)" ; \
+	grep -q "/dashboard.sse" $$TMP/page.html || { echo "FAIL: HTML missing /dashboard.sse reference"; exit 1; } ; \
+	for ev in alert hint research status ; do \
+	  grep -q "addEventListener('$$ev'" $$TMP/page.html \
+	    || { echo "FAIL: HTML page does not subscribe to '$$ev'"; exit 1; } ; \
+	done ; \
+	echo "==> [browser] HTML contract: declares listeners for {alert,hint,research,status}" ; \
+	curl -fsS --max-time 3 -N "http://127.0.0.1:$$PORT/dashboard.sse" >$$TMP/stream.sse 2>/dev/null || true ; \
+	test -s $$TMP/stream.sse || { echo "FAIL: SSE stream produced no bytes"; cat $$TMP/server.log; exit 1; } ; \
+	for ev in alert hint research status ; do \
+	  grep -q "^event: $$ev$$" $$TMP/stream.sse \
+	    || { echo "FAIL: SSE missing 'event: $$ev'"; head -40 $$TMP/stream.sse; exit 1; } ; \
+	done ; \
+	DATA_LINES=$$(grep -c "^data: " $$TMP/stream.sse || true) ; \
+	test "$$DATA_LINES" -ge 4 \
+	  || { echo "FAIL: only $$DATA_LINES SSE data: lines (need >=4)"; head -40 $$TMP/stream.sse; exit 1; } ; \
+	echo "==> [browser] SSE parity OK: 4 event names emitted, $$DATA_LINES data: lines" ; \
+	START=$$(date +%s) ; kill -TERM $$PID ; wait $$PID 2>/dev/null || true ; \
+	END=$$(date +%s) ; ELAPSED=$$((END - START)) ; \
+	test $$ELAPSED -le 3 \
+	  || { echo "FAIL: shutdown took $${ELAPSED}s (>3s budget per spec § 3 / TASK-031)"; exit 1; } ; \
+	echo "==> [browser] graceful shutdown in $${ELAPSED}s (within 2s spec budget +1s test slack)"
+
+# TUI/dashboard contract: under a TTY, render until SIGTERM (rc 124/143).
+# Without a TTY (CI, redirected stdio), exit cleanly with a "requires a TTY"
+# message — that graceful refusal is itself a contract worth testing.
+dogfood-tui: build demo-fixtures
+	@echo "==> [tui] TTY-or-graceful-refusal contract (skrills tui)"
+	@TMP=$(DOGFOOD_TMP).tui.err ; \
+	set +e; HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) timeout --signal=TERM 3 \
+	  $(BIN_PATH) tui --skill-dir $(HOME_DIR)/.codex/skills </dev/null >/dev/null 2>$$TMP ; \
+	rc=$$? ; \
+	case $$rc in \
+	  0|124|143) echo "==> [tui] OK (rc=$$rc, ran under TTY)" ; rm -f $$TMP ;; \
+	  1) grep -qiE "tty|terminal" $$TMP \
+	       && { echo "==> [tui] OK (rc=1, graceful no-TTY refusal: $$(cat $$TMP))" ; rm -f $$TMP ; } \
+	       || { echo "FAIL: rc=1 but stderr lacks TTY explanation:" ; cat $$TMP ; rm -f $$TMP ; exit 1 ; } ;; \
+	  *) echo "FAIL: tui exit $$rc" ; cat $$TMP ; rm -f $$TMP ; exit 1 ;; \
+	esac
+
+dogfood-dashboard: build demo-fixtures
+	@echo "==> [dashboard] TTY-or-graceful-refusal contract (skrills dashboard)"
+	@TMP=$(DOGFOOD_TMP).dash.err ; \
+	set +e; HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) timeout --signal=TERM 3 \
+	  $(BIN_PATH) dashboard --skill-dir $(HOME_DIR)/.codex/skills </dev/null >/dev/null 2>$$TMP ; \
+	rc=$$? ; \
+	case $$rc in \
+	  0|124|143) echo "==> [dashboard] OK (rc=$$rc, ran under TTY)" ; rm -f $$TMP ;; \
+	  1) grep -qiE "tty|terminal" $$TMP \
+	       && { echo "==> [dashboard] OK (rc=1, graceful no-TTY refusal: $$(cat $$TMP))" ; rm -f $$TMP ; } \
+	       || { echo "FAIL: rc=1 but stderr lacks TTY explanation:" ; cat $$TMP ; rm -f $$TMP ; exit 1 ; } ;; \
+	  *) echo "FAIL: dashboard exit $$rc" ; cat $$TMP ; rm -f $$TMP ; exit 1 ;; \
+	esac
+
+dogfood-skill-diff: build demo-fixtures
+	@command -v jq >/dev/null 2>&1 || { echo "FAIL: jq required"; exit 1; }
+	@echo "==> [skill-diff] JSON output for the demo fixture skill"
+	@TMP=$(DOGFOOD_TMP).json ; \
+	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) \
+	  $(BIN_PATH) skill-diff demo --format json >$$TMP 2>/dev/null || true ; \
+	jq -e '. | has("skill") and has("found_in")' $$TMP >/dev/null \
+	  || { echo "FAIL: skill-diff JSON missing expected keys (.skill, .found_in)"; cat $$TMP; rm -f $$TMP; exit 1; } ; \
+	echo "==> [skill-diff] keys: $$(jq -r '[keys[]] | tostring' $$TMP)" ; \
+	rm -f $$TMP
+	@echo "==> [skill-diff] OK"
+
+# Direct-script targets: exercise the in-tree Python ports under scripts/
+# even when audit-plugins.sh would route to NIGHT_MARKET_ROOT instead.
+plugin-validate-direct:
+	@echo "==> [direct] validate_plugin.py plugins/skrills"
+	@python3 scripts/validate_plugin.py plugins/skrills
+	@echo "==> [validate-direct] OK"
+
+plugin-modernize-direct:
+	@echo "==> [direct] check_hook_modernization.py --json --root ."
+	@TMP=$(DOGFOOD_TMP).hooks.json ; \
+	python3 scripts/check_hook_modernization.py --root . --json >$$TMP ; \
+	jq -e '.success == true and .errors == 0' $$TMP >/dev/null \
+	  || { echo "FAIL: hook modernization audit not clean:" ; jq . $$TMP ; rm -f $$TMP ; exit 1; } ; \
+	echo "==> [modernize-direct] $$(jq -r '"errors=\(.errors) warnings=\(.warnings) findings=\(.findings | length)"' $$TMP)" ; \
+	rm -f $$TMP
+	@echo "==> [modernize-direct] OK"
+
+plugin-registrations-direct:
+	@echo "==> [direct] update_plugin_registrations.py --dry-run"
+	@python3 scripts/update_plugin_registrations.py --dry-run --plugins-root plugins
+	@echo "==> [registrations-direct] OK"
+
+dogfood-all: dogfood \
+             dogfood-cold-window-headless dogfood-cold-window-chaos dogfood-cold-window-browser \
+             dogfood-tui dogfood-dashboard dogfood-skill-diff \
+             plugin-validate-direct plugin-modernize-direct plugin-registrations-direct
+	@echo "==> Full v0.8.0 dogfood pass complete"

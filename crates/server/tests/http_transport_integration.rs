@@ -24,12 +24,15 @@ async fn http_server_binds_and_responds() {
     let handle = tokio::spawn(async move {
         let _ = timeout(
             Duration::from_secs(2),
-            skrills_server::http_transport::serve_http(
+            skrills_server::http_transport::serve_http_with_security(
                 || {
                     skrills_server::app::SkillService::new_with_ttl(vec![], Duration::from_secs(60))
                         .map_err(std::io::Error::other)
                 },
                 &bind,
+                skrills_server::http_transport::HttpSecurityConfig::default(),
+                vec![],
+                false,
             ),
         )
         .await;

@@ -26,3 +26,13 @@ commit_msg.txt
 .attune/
 .cursorignore
 .cursorindexingignore
+# Generated portal (regenerate via `skills/html-portal-generator` skill)
+skrills-portal.html
+skrills-demo.html
+# Refinement / hygiene reports (session-local)
+.refinement-evidence.md
+.ai-hygiene-report.md
+.unbloat-report.md
+# Python script ports (scripts/*.py + tests/unit/) byproducts
+__pycache__/
+.pytest_cache/

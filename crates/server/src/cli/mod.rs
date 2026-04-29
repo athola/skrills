@@ -29,7 +29,7 @@ pub enum Commands {
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
         /// Cache TTL for skill discovery in milliseconds (overrides `SKRILLS_CACHE_TTL_MS`).
-        #[arg(long, value_name = "MILLIS")]
+        #[arg(long, value_name = "MILLIS", env = "SKRILLS_CACHE_TTL_MS")]
         cache_ttl_ms: Option<u64>,
         /// Dumps raw MCP initialize traffic (stdin/stdout) as hex+UTF8 for debugging.
         #[arg(long, env = "SKRILLS_TRACE_WIRE", default_value_t = false)]
@@ -41,7 +41,7 @@ pub enum Commands {
         /// Bind address for HTTP transport (e.g., "0.0.0.0:3000" or "127.0.0.1:8080").
         /// When specified, serves MCP over HTTP instead of stdio.
         /// Requires the `http-transport` feature (enabled by default).
-        #[arg(long, value_name = "BIND_ADDR")]
+        #[arg(long, value_name = "BIND_ADDR", env = "SKRILLS_HTTP")]
         http: Option<String>,
 
         // --- Phase 2 Security Options ---

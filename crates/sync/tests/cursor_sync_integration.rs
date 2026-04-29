@@ -186,9 +186,7 @@ impl CursorSyncTestSetup {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Claude → Cursor sync tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn claude_to_cursor_syncs_skills_with_frontmatter_stripping() {
@@ -379,9 +377,7 @@ fn claude_to_cursor_syncs_mcp() {
     assert!(content.contains("skrills"));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Cursor → Claude sync tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn cursor_to_claude_syncs_skills() {
@@ -450,9 +446,7 @@ fn cursor_to_claude_syncs_rules_as_instructions() {
     assert!(names.contains(&"testing"), "Should find testing rule");
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Round-trip fidelity tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn round_trip_commands_claude_to_cursor_to_claude() {
@@ -548,9 +542,7 @@ fn round_trip_mcp_claude_to_cursor_to_claude() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Full sync (all artifact types)
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn full_claude_to_cursor_sync() {
@@ -624,9 +616,7 @@ fn full_cursor_to_claude_sync() {
     assert!(claude_root.join("agents").exists());
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Edge cases
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn sync_to_cursor_with_empty_source() {

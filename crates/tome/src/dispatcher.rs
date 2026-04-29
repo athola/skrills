@@ -27,7 +27,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use skrills_snapshot::{ResearchChannel, WindowSnapshot};
+use skrills_snapshot::{ResearchBudget, ResearchChannel, WindowSnapshot};
 
 use crate::error::TomeResult;
 
@@ -88,22 +88,6 @@ impl PersistedBucket {
             false
         }
     }
-}
-
-/// Trait declaration mirroring `skrills_analyze::cold_window::traits::ResearchBudget`.
-///
-/// Duplicated here to keep the tome crate independent of analyze
-/// (no circular dep). The engine adapts between the two trait shapes
-/// in TASK-008.
-pub trait ResearchBudget: Send + Sync {
-    /// Return `true` when an external fetch is permitted right now
-    /// for the given fingerprint.
-    fn should_query(
-        &self,
-        snapshot: &WindowSnapshot,
-        topic_fingerprint: &str,
-        last_query: Option<Instant>,
-    ) -> bool;
 }
 
 /// One in-flight or recently-completed dispatch entry. Kept in

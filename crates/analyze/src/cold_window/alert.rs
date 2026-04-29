@@ -1,7 +1,7 @@
 //! Default alert policy for the cold-window engine.
 //!
 //! Implements [`AlertPolicy`] via [`LayeredAlertPolicy`] per
-//! `docs/cold-window-spec.md` § 3.4 / § 5.3. Combines:
+//! `docs/archive/2026-04-26-cold-window-spec.md` § 3.4 / § 5.3. Combines:
 //!
 //! - **4-tier classification** (Warning / Caution / Advisory / Status)
 //!   from FAA AC 25.1322-1 cockpit CAS via the war-room TRIZ bridge.

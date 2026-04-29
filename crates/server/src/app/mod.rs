@@ -20,9 +20,10 @@ mod skill_recommendations;
 mod tools;
 
 pub use dispatcher::run;
-pub(crate) use dispatcher::run_sync_with_adapters;
 use mcp_registry::build_mcp_registry;
 
+#[cfg(test)]
+pub(crate) use dispatcher::run_sync_with_adapters;
 #[cfg(test)]
 pub(crate) use intelligence::{resolve_project_dir, select_default_skill_root};
 

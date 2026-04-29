@@ -251,7 +251,7 @@ mod tests {
     #[test]
     fn test_name_too_long() {
         let long_name = "a".repeat(101);
-        let content = format!("---\nname: {long_name}\ndescription: Test\n---\n# Content");
+        let content = skrills_test_utils::skill_md(&long_name, "Test", "# Content");
         let result = validate_codex(&PathBuf::from("skill.md"), &content);
 
         assert!(!result.codex_valid);
@@ -264,7 +264,7 @@ mod tests {
     #[test]
     fn test_description_too_long() {
         let long_desc = "a".repeat(501);
-        let content = format!("---\nname: test\ndescription: {long_desc}\n---\n# Content");
+        let content = skrills_test_utils::skill_md("test", &long_desc, "# Content");
         let result = validate_codex(&PathBuf::from("skill.md"), &content);
 
         assert!(!result.codex_valid);

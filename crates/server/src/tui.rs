@@ -120,3 +120,28 @@ pub(crate) fn tui_flow(_extra_dirs: &[PathBuf]) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `cargo test` runs without an attached TTY, so stdout is a pipe.
+    /// Under that condition `tui_flow` must short-circuit with the
+    /// canonical "TUI requires a TTY" error rather than calling into
+    /// `inquire`, which would crash on the closed stdin. The mirror
+    /// guard for `Commands::Dashboard` lives in `app/dispatcher.rs`
+    /// and is exercised end-to-end by `make dogfood-dashboard`.
+    #[test]
+    fn tui_flow_refuses_when_stdout_is_not_a_tty() {
+        assert!(
+            !std::io::stdout().is_terminal(),
+            "test precondition: cargo test should run without a TTY"
+        );
+        let err = tui_flow(&[]).expect_err("tui_flow must Err without a TTY");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("TTY"),
+            "error message should mention TTY, got: {msg}"
+        );
+    }
+}

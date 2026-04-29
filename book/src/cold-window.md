@@ -209,6 +209,47 @@ to the 50 K tier.
   [hyper #2787](https://github.com/hyperium/hyper/issues/2787)).
   Future maintainers: do not "simplify" by removing the merge.
 
+## Dogfooding the surfaces
+
+A `dogfood-all` Make target exercises every cold-window surface
+end-to-end against real fixtures. Useful when verifying a release
+candidate or after touching the engine, browser, or shutdown code:
+
+```sh
+make dogfood-cold-window-headless   # engine ticks 3 s, expects clean SIGTERM
+make dogfood-cold-window-chaos      # --no-adaptive + budget=1, kill-switch path
+make dogfood-cold-window-browser    # HTML+SSE parity + 2 s shutdown budget
+make dogfood-tui                    # tui TTY-or-graceful-refusal contract
+make dogfood-dashboard              # dashboard TTY-or-graceful-refusal contract
+make dogfood-skill-diff             # skill-diff --format json round-trips
+make dogfood-all                    # everything above + the original dogfood
+```
+
+The browser target is the load-bearing one: it boots
+`cold-window --browser` on `:18888`, asserts the rendered HTML
+declares `EventSource` listeners for the four canonical event
+names (`alert`, `hint`, `research`, `status`), then opens a
+2 s `curl -N` against `/dashboard.sse` and confirms the engine
+emits matching `event:` lines plus at least four `data:`
+payloads. After that it sends `SIGTERM` and asserts the process
+exits inside the spec § 3 / TASK-031 2 s graceful-shutdown
+budget. The contract being tested is "the HTML page's listener
+set equals the SSE endpoint's emitter set" — the same parity
+guarantee that the in-tree integration test
+[`crates/server/tests/cold_window_parity.rs`](https://github.com/athola/skrills/blob/master/crates/server/tests/cold_window_parity.rs)
+verifies via the broadcast bus directly. Together they cover
+both the Rust-internal path and the externally-observable HTTP
+contract.
+
+The `tui` and `dashboard` targets validate the TTY-guard
+contract: under a real terminal the process renders until the
+3 s timeout fires (rc 124 / 143); under a non-TTY environment
+(CI, redirected stdio) the process exits 1 with a clear
+`requires a TTY` message rather than crashing on a termios
+syscall against `/dev/null`. Both surfaces use the same guard
+pattern (`crates/server/src/tui.rs:20-22` and
+`crates/server/src/app/dispatcher.rs:417-419`).
+
 ## Roadmap
 
 - TUI mounting in the CLI (currently library code only).
@@ -228,7 +269,7 @@ to the 50 K tier.
 
 ## Reference
 
-- Brief: [`docs/cold-window-brief.md`](https://github.com/athola/skrills/blob/master/docs/cold-window-brief.md)
-- Spec: [`docs/cold-window-spec.md`](https://github.com/athola/skrills/blob/master/docs/cold-window-spec.md)
-- Plan: [`docs/cold-window-plan.md`](https://github.com/athola/skrills/blob/master/docs/cold-window-plan.md)
-- War-room decision: [`docs/cold-window-war-room.md`](https://github.com/athola/skrills/blob/master/docs/cold-window-war-room.md)
+- Brief: [`docs/archive/2026-04-26-cold-window-brief.md`](https://github.com/athola/skrills/blob/master/docs/archive/2026-04-26-cold-window-brief.md)
+- Spec: [`docs/archive/2026-04-26-cold-window-spec.md`](https://github.com/athola/skrills/blob/master/docs/archive/2026-04-26-cold-window-spec.md)
+- Plan: [`docs/archive/2026-04-26-cold-window-plan.md`](https://github.com/athola/skrills/blob/master/docs/archive/2026-04-26-cold-window-plan.md)
+- War-room decision: [`docs/archive/2026-04-26-cold-window-war-room.md`](https://github.com/athola/skrills/blob/master/docs/archive/2026-04-26-cold-window-war-room.md)

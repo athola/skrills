@@ -1,7 +1,8 @@
 # Changelog Highlights
 
-## Unreleased
+## 0.8.0 (2026-04-28)
 
+- **Feature: Cold-Window Real-Time Analysis (`skrills cold-window`)**: New continuously-refreshing analysis surface. Each tick re-reads authoritative state, runs a 4-tier alert policy with hysteresis and min-dwell, ranks hints via a recency-weighted multi-signal scorer, attributes tokens per source (skill / plugin / MCP / conversation), and gates external research fetches through an AlertManager-style dispatcher with restart-resilient quota persistence at `~/.skrills/research-quota.json`. v0.8.0 ships browser mode (`--browser`); the TUI panes are fully implemented as library code and mount in a follow-up. Token thresholds are research-backed: 20K Advisory, 50K Caution, 80% Warning, 100% kill-switch. See [`Cold-Window Real-Time Analysis`](cold-window.md) for the user guide.
 - **Testing: Release-Consistency Invariants**: Filesystem-walking parity tests guard against workspace version drift and `plugin.json`/`marketplace.json` manifest drift. Five invariants: crate versions agree, `plugin.json` version matches workspace, registered commands exist on disk, top-level command count matches `plugin.json.commands.length`, and `marketplace.json` plugin entries agree with the workspace and have valid `source` paths. Pattern adapted from `claude-night-market` v1.9.3.
 - **Makefile: `release-consistency` Target**: Focused pre-tag verification entry point (`make release-consistency`).
 

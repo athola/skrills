@@ -54,11 +54,9 @@ pub struct ServeConfig {
     pub tls_auto: Option<bool>,
     /// Comma-separated list of allowed CORS origins.
     pub cors_origins: Option<String>,
-    /// Bind address for HTTP transport (reserved for future CLI env var support).
-    #[allow(dead_code)]
+    /// Bind address for HTTP transport (e.g., "127.0.0.1:3000").
     pub http: Option<String>,
-    /// Cache TTL in milliseconds (reserved for future CLI env var support).
-    #[allow(dead_code)]
+    /// Cache TTL in milliseconds for skill discovery.
     pub cache_ttl_ms: Option<u64>,
 }
 
@@ -172,6 +170,14 @@ fn apply_serve_config_to_env(serve: &ServeConfig) {
     if let Some(ref origins) = serve.cors_origins {
         set_if_absent("SKRILLS_CORS_ORIGINS", origins);
     }
+
+    if let Some(ref bind) = serve.http {
+        set_if_absent("SKRILLS_HTTP", bind);
+    }
+
+    if let Some(ttl) = serve.cache_ttl_ms {
+        set_if_absent("SKRILLS_CACHE_TTL_MS", &ttl.to_string());
+    }
 }
 
 #[cfg(test)]
@@ -251,5 +257,23 @@ mod tests {
             "env-token",
             "Config should not override existing env var"
         );
+    }
+
+    #[test]
+    fn apply_config_sets_http_and_cache_ttl() {
+        let _g = crate::test_support::env_guard();
+        let _http = crate::test_support::set_env_var("SKRILLS_HTTP", None);
+        let _ttl = crate::test_support::set_env_var("SKRILLS_CACHE_TTL_MS", None);
+
+        let serve = ServeConfig {
+            http: Some("127.0.0.1:9000".to_string()),
+            cache_ttl_ms: Some(7500),
+            ..Default::default()
+        };
+
+        apply_serve_config_to_env(&serve);
+
+        assert_eq!(std::env::var("SKRILLS_HTTP").unwrap(), "127.0.0.1:9000");
+        assert_eq!(std::env::var("SKRILLS_CACHE_TTL_MS").unwrap(), "7500");
     }
 }

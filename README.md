@@ -68,6 +68,13 @@ setup.
 
 ## Features
 
+- **Cold-window real-time analysis** (0.8.0) --
+  `skrills cold-window --browser` opens a continuously-refreshing
+  dashboard with a 4-tier alert policy (hysteresis + min-dwell),
+  recency-weighted hint ranking, per-source token attribution, and
+  pull-only research findings. Browser surface ships in 0.8.0;
+  TUI panes are library-only for now.
+  See [Cold-Window guide](book/src/cold-window.md).
 - **Cross-CLI validation** -- validates against Claude Code
   (permissive), Codex CLI (strict), Copilot CLI (strict), and
   Cursor rules. Auto-derives missing YAML frontmatter.
@@ -83,8 +90,9 @@ setup.
   history to improve recommendations.
 - **Dashboards** -- TUI and browser UIs showing skills,
   validation status, usage metrics, and MCP server configs.
-  The standalone [`skrills-portal.html`](skrills-portal.html)
-  works offline without a running server.
+  A standalone HTML portal can be generated on demand via
+  the `html-portal-generator` skill — produces a single
+  `skrills-portal.html` that works offline.
 - **Plugin asset sync** -- writes plugin manifests to Cursor's
   `plugins/local/` directory so synced plugins appear as
   installed. Skills with plugin origin are organized under
@@ -133,6 +141,9 @@ skrills sync --from cursor --to claude
 # Start MCP server and open the browser dashboard
 skrills serve --http 127.0.0.1:3000 --open
 
+# Real-time cold-window dashboard (0.8.0)
+skrills cold-window --browser --port 8888
+
 # Interactive TUI dashboard
 skrills tui
 
@@ -149,7 +160,7 @@ skill lifecycle management (`skill-deprecate`, `skill-rollback`,
 Validate skills in pull requests with the reusable GitHub Action:
 
 ```yaml
-- uses: athola/skrills/.github/actions/validate-skills@v0.7.7
+- uses: athola/skrills/.github/actions/validate-skills@v0.8.0
   with:
     targets: all
     strict: true

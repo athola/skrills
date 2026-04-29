@@ -37,9 +37,8 @@ use skrills_state::home_dir;
 
 /// Sync helper used by Sync* command branches.
 ///
-/// Visible at `crate::app::run_sync_with_adapters` via the
-/// re-export in `app/mod.rs`; tests under `app/tests/sync.rs` rely
-/// on that path.
+/// Re-exported under `#[cfg(test)]` from `app/mod.rs` so tests under
+/// `app/tests/sync.rs` can reach it via the `super::super::*` glob.
 pub(crate) fn run_sync_with_adapters(
     from: SyncSource,
     to: SyncSource,
@@ -416,6 +415,10 @@ pub fn run() -> Result<()> {
         Commands::Tui { skill_dirs } => tui_flow(&merge_extra_dirs(&skill_dirs)),
         #[cfg(feature = "dashboard")]
         Commands::Dashboard { skill_dirs } => {
+            use std::io::IsTerminal;
+            if !std::io::stdout().is_terminal() {
+                return Err(anyhow!("Dashboard requires a TTY"));
+            }
             let dashboard = skrills_dashboard::Dashboard::new(skill_dirs)?;
             tokio::runtime::Runtime::new()?.block_on(dashboard.run())
         }

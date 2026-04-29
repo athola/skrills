@@ -9,14 +9,11 @@ repository = "https://github.com/athola/skrills"
 [dependencies]
 # Use workspace deps where possible
 reqwest.workspace = true
-tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-anyhow.workspace = true
 tracing.workspace = true
 dirs.workspace = true
 time.workspace = true
-uuid.workspace = true
 thiserror.workspace = true
 parking_lot.workspace = true
 skrills-snapshot = { path = "../snapshot", version = "0.8.0" }
