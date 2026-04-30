@@ -21,7 +21,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 # TUI
-ratatui = "0.30"
+ratatui = { workspace = true }
 crossterm = { version = "0.29", features = ["event-stream"] }
 
 # Async

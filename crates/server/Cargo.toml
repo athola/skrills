@@ -86,6 +86,7 @@ tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 serial_test = "3.0"
 # Cold-window parity test (TASK-023): drives the TUI render path
-# alongside the browser surface. Pinned to the workspace version used
-# by `skrills-dashboard` to avoid double-resolution of widget types.
-ratatui = "0.30"
+# alongside the browser surface. Sourced from the workspace pin so
+# both `skrills-dashboard` and the parity test resolve to a single
+# widget-type identity.
+ratatui = { workspace = true }
