@@ -7,7 +7,6 @@
 //! |---|---|---|
 //! | [`AlertPolicy`] | `LayeredAlertPolicy` | TASK-013 |
 //! | [`HintScorer`] | `MultiSignalScorer`  | TASK-010 |
-//! | [`ResearchBudget`] | `BucketedBudget` | TASK-011 |
 //! | [`SnapshotDiff`] | `FieldwiseDiff`    | TASK-014 |
 //!
 //! All traits are kept object-safe so the engine can store them as
@@ -16,7 +15,6 @@
 //! accidental loss of object-safety during evolution.
 
 use std::collections::HashMap;
-use std::time::Instant;
 
 use skrills_snapshot::{Alert, Hint, ScoredHint, WindowSnapshot};
 
@@ -79,23 +77,6 @@ pub trait HintScorer: Send + Sync {
     fn rank(&self, hints: Vec<Hint>) -> Vec<ScoredHint>;
 }
 
-/// Decide whether the research dispatcher should issue an external
-/// fetch for a given topic fingerprint.
-///
-/// The default implementation `BucketedBudget` (TASK-011) enforces a
-/// token-bucket capacity, per-fingerprint TTL, and persistence
-/// across daemon restarts (R10 mitigation).
-pub trait ResearchBudget: Send + Sync {
-    /// Return true when an external fetch is permitted for the given
-    /// fingerprint at this moment, false when the budget refuses.
-    fn should_query(
-        &self,
-        snapshot: &WindowSnapshot,
-        topic_fingerprint: &str,
-        last_query: Option<Instant>,
-    ) -> bool;
-}
-
 /// One field that changed between two snapshots and is considered
 /// alertable by the active [`SnapshotDiff`] policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,7 +136,6 @@ mod tests {
         fn assert_object_safe<T: ?Sized>() {}
         assert_object_safe::<dyn AlertPolicy>();
         assert_object_safe::<dyn HintScorer>();
-        assert_object_safe::<dyn ResearchBudget>();
         assert_object_safe::<dyn SnapshotDiff>();
     }
 
