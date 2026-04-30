@@ -44,18 +44,34 @@ use std::path::PathBuf;
 #[derive(Debug)]
 pub struct CursorAdapter {
     root: PathBuf,
+    kill_switch: Option<skrills_snapshot::KillSwitch>,
 }
 
 impl CursorAdapter {
     /// Creates a new CursorAdapter with the default root (~/.cursor).
     pub fn new() -> Result<Self> {
         let root = paths::resolve_config_root()?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            kill_switch: None,
+        })
     }
 
     /// Creates a CursorAdapter with a custom root (for testing).
     pub fn with_root(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            kill_switch: None,
+        }
+    }
+
+    /// Attach a [`KillSwitch`](skrills_snapshot::KillSwitch) so that mutating
+    /// operations refuse with [`SyncError::TokenBudgetExceeded`](crate::SyncError)
+    /// when the cold-window engine has engaged it (FR12).
+    #[must_use]
+    pub fn with_kill_switch(mut self, switch: skrills_snapshot::KillSwitch) -> Self {
+        self.kill_switch = Some(switch);
+        self
     }
 }
 
@@ -110,14 +126,17 @@ impl AgentAdapter for CursorAdapter {
     }
 
     fn write_commands(&self, commands: &[Command]) -> Result<WriteReport> {
+        crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         commands::write_commands(&self.root, commands)
     }
 
     fn write_mcp_servers(&self, servers: &HashMap<String, McpServer>) -> Result<WriteReport> {
+        crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         mcp::write_mcp_servers(&self.root, servers)
     }
 
     fn write_preferences(&self, _prefs: &Preferences) -> Result<WriteReport> {
+        crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         let mut report = WriteReport::default();
         report
             .skipped
@@ -130,18 +149,22 @@ impl AgentAdapter for CursorAdapter {
     }
 
     fn write_skills(&self, skills: &[Command]) -> Result<WriteReport> {
+        crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         skills::write_skills(&self.root, skills)
     }
 
     fn write_hooks(&self, hooks: &[Command]) -> Result<WriteReport> {
+        crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         hooks::write_hooks(&self.root, hooks)
     }
 
     fn write_agents(&self, agents: &[Command]) -> Result<WriteReport> {
+        crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         agents::write_agents(&self.root, agents)
     }
 
     fn write_instructions(&self, instructions: &[Command]) -> Result<WriteReport> {
+        crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         rules::write_rules(&self.root, instructions)
     }
 
@@ -151,6 +174,7 @@ impl AgentAdapter for CursorAdapter {
     /// (skills, agents, hooks) from `~/.claude/plugins/cache/` natively.
     /// The local manifests exist solely so `/plugins` shows installed plugins.
     fn write_plugin_assets(&self, assets: &[PluginAsset]) -> Result<WriteReport> {
+        crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         use crate::adapters::utils::sanitize_name;
         use crate::report::SkipReason;
         use std::collections::HashSet;
@@ -216,36 +240,76 @@ impl AgentAdapter for CursorAdapter {
             report.written += 1;
         }
 
-        // Prune plugins that are no longer installed
-        if let Ok(entries) = fs::read_dir(&local_dir) {
-            for entry in entries.filter_map(|e| e.ok()) {
-                let path = entry.path();
-                if !path.is_dir() {
-                    continue;
-                }
-                let name = match entry.file_name().into_string() {
-                    Ok(n) => n,
-                    Err(_) => continue,
-                };
-                if !seen_plugins.contains(&name) {
-                    if let Err(e) = fs::remove_dir_all(&path) {
-                        tracing::warn!(
-                            plugin = %name,
-                            error = %e,
-                            "Failed to prune stale local plugin"
-                        );
-                    } else {
-                        report
-                            .warnings
-                            .push(format!("Pruned stale plugin: {}", name));
+        // Prune plugins that are no longer installed.
+        //
+        // NI15 (PR #218 review): per-entry I/O errors used to be silently
+        // dropped via `.filter_map(|e| e.ok())`, which produced partial sync
+        // with no indication. Surface them as warnings on the report so the
+        // operator sees that pruning was incomplete; the directory walk
+        // continues with the remaining entries (vs. bailing) because a
+        // single unreadable entry should not block sync of unrelated
+        // plugins. Bubbling the read_dir handle itself is unchanged.
+        match fs::read_dir(&local_dir) {
+            Ok(entries) => {
+                for entry_result in entries {
+                    let entry = match entry_result {
+                        Ok(e) => e,
+                        Err(e) => {
+                            let msg = format!(
+                                "Skipped a plugins/local entry due to I/O error: {} (pruning may be incomplete)",
+                                e
+                            );
+                            tracing::warn!(error = %e, "Failed to read plugins/local entry");
+                            report.warnings.push(msg);
+                            continue;
+                        }
+                    };
+                    let path = entry.path();
+                    if !path.is_dir() {
+                        continue;
+                    }
+                    let name = match entry.file_name().into_string() {
+                        Ok(n) => n,
+                        Err(raw) => {
+                            let msg = format!(
+                                "Skipped non-UTF-8 plugins/local directory name: {:?}",
+                                raw
+                            );
+                            tracing::warn!(?raw, "Skipping non-UTF-8 plugin directory");
+                            report.warnings.push(msg);
+                            continue;
+                        }
+                    };
+                    if !seen_plugins.contains(&name) {
+                        if let Err(e) = fs::remove_dir_all(&path) {
+                            tracing::warn!(
+                                plugin = %name,
+                                error = %e,
+                                "Failed to prune stale local plugin"
+                            );
+                            report
+                                .warnings
+                                .push(format!("Failed to prune stale plugin {}: {}", name, e));
+                        } else {
+                            report
+                                .warnings
+                                .push(format!("Pruned stale plugin: {}", name));
+                        }
                     }
                 }
             }
-        } else {
-            tracing::warn!(
-                path = %local_dir.display(),
-                "Could not read plugins/local for pruning"
-            );
+            Err(e) => {
+                tracing::warn!(
+                    path = %local_dir.display(),
+                    error = %e,
+                    "Could not read plugins/local for pruning"
+                );
+                report.warnings.push(format!(
+                    "Could not read {} for pruning: {}",
+                    local_dir.display(),
+                    e
+                ));
+            }
         }
 
         Ok(report)

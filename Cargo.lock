@@ -4421,6 +4421,7 @@ name = "skrills-validate"
 version = "0.8.0"
 dependencies = [
  "anyhow",
+ "libc",
  "notify",
  "proptest",
  "regex",
@@ -4447,9 +4448,11 @@ dependencies = [
  "serde_json",
  "sha2",
  "similar",
+ "skrills-snapshot",
  "skrills-validate",
  "skrills_test_utils",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "walkdir",

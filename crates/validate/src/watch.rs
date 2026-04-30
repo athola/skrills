@@ -298,7 +298,14 @@ fn collect_debounced_paths_interruptible(
                                 changed.insert(p);
                             }
                         }
-                        Ok(Err(_)) => {}
+                        Ok(Err(err)) => {
+                            // notify backend hiccup; the next debounce window
+                            // will pick up paths missed here. Trace so flapping
+                            // watchers are visible without spamming logs at
+                            // warn-level. Mirrors the pattern in
+                            // `collect_debounced_paths` above.
+                            tracing::trace!(?err, "watcher notify error during debounce drain");
+                        }
                         Err(mpsc::RecvTimeoutError::Timeout) => {
                             if Instant::now() >= deadline {
                                 break;
@@ -319,6 +326,7 @@ fn collect_debounced_paths_interruptible(
 }
 
 /// Sets up a Ctrl+C handler that sends on the given channel.
+#[allow(unsafe_code)]
 fn ctrlc_channel(tx: &mpsc::Sender<()>) {
     let tx = tx.clone();
     // Use a simple atomic + signal handler approach
@@ -331,7 +339,10 @@ fn ctrlc_channel(tx: &mpsc::Sender<()>) {
             static SIGNALED: AtomicBool = AtomicBool::new(false);
 
             unsafe {
-                libc::signal(libc::SIGINT, sigint_handler as libc::sighandler_t);
+                libc::signal(
+                    libc::SIGINT,
+                    sigint_handler as *const () as libc::sighandler_t,
+                );
             }
 
             extern "C" fn sigint_handler(_: libc::c_int) {
@@ -376,10 +387,7 @@ mod tests {
 
     #[test]
     fn watch_config_defaults() {
-        let config = WatchConfig::new(
-            vec![PathBuf::from("/tmp/skills")],
-            ValidationTarget::All,
-        );
+        let config = WatchConfig::new(vec![PathBuf::from("/tmp/skills")], ValidationTarget::All);
         assert_eq!(config.debounce_ms, 300);
         assert!(!config.errors_only);
         assert_eq!(config.paths.len(), 1);
@@ -402,7 +410,8 @@ mod tests {
     #[test]
     fn validate_changed_file_non_skill_returns_none() {
         // A path that doesn't exist and isn't SKILL.md
-        let result = validate_changed_file(Path::new("/nonexistent/README.md"), ValidationTarget::All);
+        let result =
+            validate_changed_file(Path::new("/nonexistent/README.md"), ValidationTarget::All);
         assert!(result.is_none());
     }
 
@@ -530,5 +539,139 @@ mod tests {
         assert_eq!(ts.len(), 8);
         assert_eq!(&ts[2..3], ":");
         assert_eq!(&ts[5..6], ":");
+    }
+
+    /// Minimal in-tree `tracing::Subscriber` that counts events whose
+    /// metadata level and message text match expectations. Avoids pulling
+    /// `tracing-subscriber` in as a dev-dependency.
+    struct TraceCapture {
+        hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        target_level: tracing::Level,
+        // Substring expected in the formatted message field.
+        needle: &'static str,
+    }
+
+    impl tracing::Subscriber for TraceCapture {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            *metadata.level() <= self.target_level
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            if *event.metadata().level() != self.target_level {
+                return;
+            }
+            // Visit fields and look for our needle in the formatted output.
+            struct Visitor<'a> {
+                needle: &'a str,
+                matched: bool,
+            }
+            impl<'a> tracing::field::Visit for Visitor<'a> {
+                fn record_debug(
+                    &mut self,
+                    _field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    let formatted = format!("{:?}", value);
+                    if formatted.contains(self.needle) {
+                        self.matched = true;
+                    }
+                }
+                fn record_str(&mut self, _field: &tracing::field::Field, value: &str) {
+                    if value.contains(self.needle) {
+                        self.matched = true;
+                    }
+                }
+            }
+            let mut v = Visitor {
+                needle: self.needle,
+                matched: false,
+            };
+            event.record(&mut v);
+            if v.matched {
+                self.hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    /// Regression test for PR #218 NB4: the production watch loop calls
+    /// `collect_debounced_paths_interruptible`, which previously swallowed
+    /// `Ok(Err(_))` events silently. Verify the live path now emits the
+    /// `tracing::trace!("watcher notify error during debounce drain")` event
+    /// when the watcher backend yields an `Err` mid-debounce.
+    #[test]
+    fn interruptible_emits_trace_on_watcher_error() {
+        let (tx, rx) = mpsc::channel();
+        let (_stop_tx, stop_rx) = mpsc::channel::<()>();
+        let debounce = Duration::from_millis(150);
+
+        // First event: a normal Ok so the function enters debounce-drain.
+        tx.send(Ok(notify::Event {
+            kind: notify::EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
+            paths: vec![PathBuf::from("/a/SKILL.md")],
+            attrs: Default::default(),
+        }))
+        .unwrap();
+
+        // Second event during the debounce window: an Err from the backend.
+        // This is the branch the bug-fix targets.
+        tx.send(Err(notify::Error::generic("simulated backend hiccup")))
+            .unwrap();
+
+        // Third event: another Ok to confirm the loop did NOT return early
+        // after seeing the Err.
+        tx.send(Ok(notify::Event {
+            kind: notify::EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
+            paths: vec![PathBuf::from("/b/SKILL.md")],
+            attrs: Default::default(),
+        }))
+        .unwrap();
+
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let subscriber = TraceCapture {
+            hits: hits.clone(),
+            target_level: tracing::Level::TRACE,
+            needle: "watcher notify error during debounce drain",
+        };
+
+        let result = tracing::subscriber::with_default(subscriber, || {
+            collect_debounced_paths_interruptible(&rx, &stop_rx, debounce)
+        });
+
+        // Behavior assertion: function did not return early; both Ok paths
+        // were aggregated despite the intervening Err.
+        match result {
+            WatchEvent::Changed(paths) => {
+                assert!(
+                    paths.contains(&PathBuf::from("/a/SKILL.md")),
+                    "expected /a/SKILL.md in aggregated paths: {:?}",
+                    paths
+                );
+                assert!(
+                    paths.contains(&PathBuf::from("/b/SKILL.md")),
+                    "expected /b/SKILL.md to be aggregated after the Err event: {:?}",
+                    paths
+                );
+            }
+            WatchEvent::Stop => panic!("interruptible loop returned Stop on watcher Err"),
+        }
+
+        // Observability assertion: the trace event was emitted exactly once
+        // for the single Err we injected. This is the regression assertion
+        // for NB4 — pre-fix code had `Ok(Err(_)) => {}` and emitted nothing.
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "expected exactly one trace event for the watcher Err"
+        );
     }
 }

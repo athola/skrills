@@ -230,12 +230,7 @@ mod tests {
             severity: Severity::Warning,
             title: "t".into(),
             message: "m".into(),
-            band: Some(AlertBand {
-                low: 0.0,
-                low_clear: 0.0,
-                high: 1.0,
-                high_clear: 0.95,
-            }),
+            band: Some(AlertBand::new(0.0, 0.0, 1.0, 0.95).expect("test fixture")),
             fired_at_ms: 0,
             dwell_ticks: 1,
         };

@@ -1,10 +1,37 @@
 //! Shared utility functions for agent adapters.
 
 use crate::common::ModuleFile;
+use crate::error::SyncError;
+use crate::Result;
 use sha2::{Digest, Sha256};
+use skrills_snapshot::KillSwitch;
 use std::path::Path;
 use tracing::{debug, warn};
 use walkdir::WalkDir;
+
+/// Refuse a mutating sync operation when the cold-window kill-switch is engaged.
+///
+/// Adapters call this at the top of every `write_*` method. When the switch
+/// is `None` (no engine present, e.g. unit tests of the adapter in isolation)
+/// or disengaged, the call is a near-zero-cost atomic load.
+///
+/// On engagement, returns [`SyncError::TokenBudgetExceeded`] wrapped in
+/// `anyhow::Error`. The numeric `tokens` and `ceiling` fields are not
+/// available at the adapter (they live in the engine that engaged the
+/// switch); the adapter reports `(0, 0)` and relies on the engine's
+/// WARNING-tier alert for the operator-facing numbers.
+pub(crate) fn ensure_not_engaged(switch: Option<&KillSwitch>) -> Result<()> {
+    if let Some(s) = switch {
+        if s.is_engaged() {
+            return Err(SyncError::TokenBudgetExceeded {
+                tokens: 0,
+                ceiling: 0,
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
 
 /// Splits content into raw frontmatter string and body.
 ///

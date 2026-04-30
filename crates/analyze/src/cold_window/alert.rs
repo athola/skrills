@@ -99,59 +99,34 @@ impl LayeredAlertPolicy {
     /// Classify a token total into `(severity, band)` if alertable.
     /// Returns `None` for totals below the lowest tier threshold.
     fn classify_token_total(&self, total: u64) -> Option<(Severity, AlertBand)> {
+        // Helper: build a one-sided high-band with the standard hysteresis-clear ratio.
+        // Static thresholds are validated by construction so `expect` is safe.
+        fn band_for(high: f64) -> AlertBand {
+            AlertBand::new(0.0, 0.0, high, high * HYSTERESIS_CLEAR_RATIO)
+                .expect("static thresholds are valid (non-NaN, ordered)")
+        }
+
         let budget = self.budget_ceiling as f64;
         let warning_threshold = budget * WARNING_BUDGET_FRACTION;
 
         // Hard kill-switch: at or above ceiling.
         if total >= self.budget_ceiling {
-            return Some((
-                Severity::Warning,
-                AlertBand {
-                    low: 0.0,
-                    low_clear: 0.0,
-                    high: budget,
-                    high_clear: budget * HYSTERESIS_CLEAR_RATIO,
-                },
-            ));
+            return Some((Severity::Warning, band_for(budget)));
         }
 
         // Soft warning at 80% of budget.
         if (total as f64) >= warning_threshold {
-            return Some((
-                Severity::Warning,
-                AlertBand {
-                    low: 0.0,
-                    low_clear: 0.0,
-                    high: warning_threshold,
-                    high_clear: warning_threshold * HYSTERESIS_CLEAR_RATIO,
-                },
-            ));
+            return Some((Severity::Warning, band_for(warning_threshold)));
         }
 
         // Caution at MCP-overhead range.
         if total >= self.caution_threshold {
-            return Some((
-                Severity::Caution,
-                AlertBand {
-                    low: 0.0,
-                    low_clear: 0.0,
-                    high: self.caution_threshold as f64,
-                    high_clear: (self.caution_threshold as f64) * HYSTERESIS_CLEAR_RATIO,
-                },
-            ));
+            return Some((Severity::Caution, band_for(self.caution_threshold as f64)));
         }
 
         // Advisory at quadratic inflection.
         if total >= self.advisory_threshold {
-            return Some((
-                Severity::Advisory,
-                AlertBand {
-                    low: 0.0,
-                    low_clear: 0.0,
-                    high: self.advisory_threshold as f64,
-                    high_clear: (self.advisory_threshold as f64) * HYSTERESIS_CLEAR_RATIO,
-                },
-            ));
+            return Some((Severity::Advisory, band_for(self.advisory_threshold as f64)));
         }
 
         None
@@ -372,8 +347,8 @@ mod tests {
         let alerts = policy.evaluate(&snapshot_with_tokens(0), &curr, &mut AlertHistory::new());
         let band = alerts[0].band.expect("band present");
         // Advisory threshold 20K, clear ratio 0.95 → high_clear = 19K
-        assert_eq!(band.high, 20_000.0);
-        assert!((band.high_clear - 19_000.0).abs() < 1e-9);
+        assert_eq!(band.high(), 20_000.0);
+        assert!((band.high_clear() - 19_000.0).abs() < 1e-9);
     }
 
     #[test]

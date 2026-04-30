@@ -84,12 +84,7 @@ fn parity_snapshot() -> WindowSnapshot {
             severity: Severity::Caution,
             title: "TokenBudgetApproaching".into(),
             message: "github MCP source consumes half the budget".into(),
-            band: Some(AlertBand {
-                low: 0.0,
-                low_clear: 0.0,
-                high: 0.5,
-                high_clear: 0.45,
-            }),
+            band: Some(AlertBand::new(0.0, 0.0, 0.5, 0.45).expect("test fixture")),
             fired_at_ms: 1_700_000_000_000,
             dwell_ticks: 3,
         }],

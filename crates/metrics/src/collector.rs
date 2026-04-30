@@ -18,6 +18,49 @@ use crate::types::{
 /// Default channel capacity for metric event subscribers.
 const CHANNEL_CAPACITY: usize = 100;
 
+/// SQL table identifiers used by [`MetricsCollector::collect_metric_values`].
+///
+/// This enum exists so the SQL builder for `collect_metric_values` cannot
+/// receive caller-controlled strings: every variant maps to a fixed
+/// `&'static str` literal that is hard-coded at the type level. Adding a
+/// new metric requires adding a variant here, which makes accidental
+/// interpolation of untrusted input a compile-time impossibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MetricTable {
+    SkillInvocations,
+    RuleTriggers,
+}
+
+impl MetricTable {
+    /// Static SQL identifier for this table. Never derived from user input.
+    fn as_str(&self) -> &'static str {
+        match self {
+            MetricTable::SkillInvocations => "skill_invocations",
+            MetricTable::RuleTriggers => "rule_triggers",
+        }
+    }
+}
+
+/// SQL column identifiers used by [`MetricsCollector::collect_metric_values`].
+///
+/// Closed whitelist of numeric columns that can be aggregated as REAL.
+/// See [`MetricTable`] for rationale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MetricColumn {
+    TokensUsed,
+    DurationMs,
+}
+
+impl MetricColumn {
+    /// Static SQL identifier for this column. Never derived from user input.
+    fn as_str(&self) -> &'static str {
+        match self {
+            MetricColumn::TokensUsed => "tokens_used",
+            MetricColumn::DurationMs => "duration_ms",
+        }
+    }
+}
+
 /// Storage mode for the metrics collector.
 #[derive(Debug, Clone, Default)]
 pub enum StorageMode {
@@ -149,18 +192,22 @@ impl MetricsCollector {
     ) -> Result<Vec<f64>> {
         let secs = window.as_secs() as i64;
         let conn = self.conn.lock();
-        let (table, column) = match metric {
-            "skill_tokens" => ("skill_invocations", "tokens_used"),
-            "skill_duration_ms" => ("skill_invocations", "duration_ms"),
-            "rule_duration_ms" => ("rule_triggers", "duration_ms"),
+        // Map the caller-supplied metric name onto a typed (table, column)
+        // pair drawn from a closed whitelist of enum variants. The SQL string
+        // is then assembled from `as_str()` calls that return `&'static str`
+        // literals, so no caller input ever reaches the query text.
+        let (table, column): (MetricTable, MetricColumn) = match metric {
+            "skill_tokens" => (MetricTable::SkillInvocations, MetricColumn::TokensUsed),
+            "skill_duration_ms" => (MetricTable::SkillInvocations, MetricColumn::DurationMs),
+            "rule_duration_ms" => (MetricTable::RuleTriggers, MetricColumn::DurationMs),
             _ => return Ok(Vec::new()),
         };
+        let col = column.as_str();
+        let tbl = table.as_str();
         let sql = format!(
             "SELECT CAST({col} AS REAL) FROM {tbl} \
              WHERE {col} IS NOT NULL \
-             AND created_at >= datetime('now', '-' || ?1 || ' seconds')",
-            col = column,
-            tbl = table
+             AND created_at >= datetime('now', '-' || ?1 || ' seconds')"
         );
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map([secs], |r| r.get::<_, f64>(0))?;
@@ -1814,5 +1861,153 @@ mod tests {
         assert_eq!(summary.failed_syncs, 0);
         assert!((summary.success_rate - 0.0).abs() < 0.01);
         assert!((summary.avg_files_per_sync - 0.0).abs() < 0.01);
+    }
+
+    /// All [`MetricColumn`] / [`MetricTable`] variants must return non-empty
+    /// `&'static str`s with no SQL metacharacters. If a future contributor
+    /// adds a variant with quotes / semicolons / comment markers / whitespace,
+    /// this test fails before the bad identifier reaches `format!`.
+    #[test]
+    fn test_metric_identifiers_are_safe_static_literals() {
+        const FORBIDDEN: &[char] = &[';', '\'', '"', ' ', '\t', '\n', '\r', '(', ')', '*'];
+
+        let columns = [MetricColumn::TokensUsed, MetricColumn::DurationMs];
+        for c in &columns {
+            let s = c.as_str();
+            assert!(!s.is_empty(), "MetricColumn::{c:?} returned empty string");
+            assert!(
+                !s.contains("--"),
+                "MetricColumn::{c:?} contains SQL comment marker: {s:?}"
+            );
+            for ch in FORBIDDEN {
+                assert!(
+                    !s.contains(*ch),
+                    "MetricColumn::{c:?} contains forbidden char {ch:?}: {s:?}"
+                );
+            }
+            // Must be a valid SQL identifier (ASCII alphanumeric + underscore).
+            assert!(
+                s.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_'),
+                "MetricColumn::{c:?} is not a bare identifier: {s:?}"
+            );
+        }
+
+        let tables = [MetricTable::SkillInvocations, MetricTable::RuleTriggers];
+        for t in &tables {
+            let s = t.as_str();
+            assert!(!s.is_empty(), "MetricTable::{t:?} returned empty string");
+            assert!(
+                !s.contains("--"),
+                "MetricTable::{t:?} contains SQL comment marker: {s:?}"
+            );
+            for ch in FORBIDDEN {
+                assert!(
+                    !s.contains(*ch),
+                    "MetricTable::{t:?} contains forbidden char {ch:?}: {s:?}"
+                );
+            }
+            assert!(
+                s.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_'),
+                "MetricTable::{t:?} is not a bare identifier: {s:?}"
+            );
+        }
+    }
+
+    /// "Property-style" check: try every (table, column) pair the enum
+    /// algebra can produce and assert the resulting SQL is well-formed
+    /// (i.e. SQLite can prepare it). Because the enum is closed, this
+    /// enumerates the entire input space — there is no way to construct
+    /// an invalid pair from the outside.
+    #[test]
+    fn test_metric_enum_combinations_yield_preparable_sql() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        let conn = collector.conn.lock();
+        let tables = [MetricTable::SkillInvocations, MetricTable::RuleTriggers];
+        let columns = [MetricColumn::TokensUsed, MetricColumn::DurationMs];
+        for t in &tables {
+            for c in &columns {
+                let col = c.as_str();
+                let tbl = t.as_str();
+                let sql = format!(
+                    "SELECT CAST({col} AS REAL) FROM {tbl} \
+                     WHERE {col} IS NOT NULL \
+                     AND created_at >= datetime('now', '-' || ?1 || ' seconds')"
+                );
+                // Some pairs are semantically nonsensical (e.g. tokens_used
+                // on rule_triggers) — those should fail with a column-missing
+                // error from SQLite, never an unrelated parse error. The
+                // important guarantee is that no metacharacters slip through.
+                let prepared = conn.prepare(&sql);
+                if let Err(e) = &prepared {
+                    let msg = format!("{e}");
+                    assert!(
+                        msg.contains("no such column") || msg.contains("has no column"),
+                        "unexpected SQL error for ({t:?}, {c:?}): {msg}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Regression test: each supported metric name must produce the same
+    /// observable result it did before the enum refactor. Inserts one row
+    /// per metric and asserts `collect_metric_values` returns it.
+    #[test]
+    fn test_collect_metric_values_regression_all_metrics() {
+        use std::time::Duration;
+
+        let collector = MetricsCollector::in_memory().unwrap();
+
+        // skill_tokens & skill_duration_ms both come from skill_invocations
+        collector
+            .record_skill_invocation("regression-skill", 250, true, Some(1024))
+            .unwrap();
+
+        // rule_duration_ms comes from rule_triggers
+        collector
+            .record_rule_trigger(
+                "regression-rule",
+                None,
+                None,
+                Some(99),
+                RuleOutcome::Pass,
+                None,
+            )
+            .unwrap();
+
+        let window = Duration::from_secs(3600);
+
+        let tokens = collector
+            .collect_metric_values("skill_tokens", window)
+            .unwrap();
+        assert_eq!(tokens, vec![1024.0]);
+
+        let skill_dur = collector
+            .collect_metric_values("skill_duration_ms", window)
+            .unwrap();
+        assert_eq!(skill_dur, vec![250.0]);
+
+        let rule_dur = collector
+            .collect_metric_values("rule_duration_ms", window)
+            .unwrap();
+        assert_eq!(rule_dur, vec![99.0]);
+
+        // Unknown metric returns empty (warmup behavior).
+        let unknown = collector
+            .collect_metric_values("definitely-not-a-metric", window)
+            .unwrap();
+        assert!(unknown.is_empty());
+
+        // Hostile names that previously could have been interpolated must
+        // still just hit the unknown branch and return empty — never error,
+        // never inject.
+        for hostile in [
+            "skill_tokens; DROP TABLE skill_invocations;--",
+            "1=1 OR ''='",
+            "tokens_used FROM skill_invocations WHERE 1=1 --",
+        ] {
+            let v = collector.collect_metric_values(hostile, window).unwrap();
+            assert!(v.is_empty(), "hostile metric name leaked rows: {hostile:?}");
+        }
     }
 }

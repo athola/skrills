@@ -131,11 +131,15 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 pub mod adapters;
 pub mod common;
+pub mod error;
 pub mod models;
 pub mod orchestrator;
 pub mod platform_routing;
 pub mod report;
 pub mod validation;
+
+pub use error::SyncError;
+pub use skrills_snapshot::KillSwitch;
 
 pub use adapters::{
     AgentAdapter, ClaudeAdapter, CodexAdapter, CopilotAdapter, CursorAdapter, FieldSupport,

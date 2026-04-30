@@ -36,6 +36,8 @@ pub mod codex;
 pub mod common;
 pub mod copilot;
 pub mod frontmatter;
+#[cfg(feature = "watch")]
+pub mod watch;
 
 pub use autofix::{
     autofix_frontmatter, scaffold_body, to_kebab_case, AutofixOptions, AutofixResult,

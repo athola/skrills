@@ -72,7 +72,13 @@ impl WindowSnapshot {
 ///
 /// User-facing behavior per `docs/cold-window-spec.md` § 3.4:
 /// `Warning` interrupts; `Caution` and below are panel-only.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// Serialization writes the bare lowercase variant name (`"warning"`)
+/// for proto3 `enum`-compatibility today. Deserialization additionally
+/// accepts the tagged form `{"kind":"warning"}` for forward-compat
+/// with the v0.9.0 wire format that will introduce variants carrying
+/// payload (PR #218 review N1). See [`crate::serde_impls`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     /// Hard limit breached; requires per-row dismissal; bell on first sight.
@@ -87,16 +93,126 @@ pub enum Severity {
 
 /// Hysteresis-banded threshold for an alert: re-arming requires
 /// re-crossing the matching `*_clear` value.
+///
+/// Construction is gated through [`AlertBand::new`] which validates
+/// the four thresholds (NI4 from PR #218 review). Fields are crate-
+/// private so producers outside `skrills_snapshot` must go through
+/// the validating constructor; producers inside the crate (and the
+/// `Deserialize` impl) may use [`AlertBand::new_unchecked`] for hot
+/// paths where validation already happened.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AlertBand {
     /// Lower fire threshold.
-    pub low: f64,
+    pub(crate) low: f64,
     /// Lower re-arm threshold (must re-cross to fire again).
-    pub low_clear: f64,
+    pub(crate) low_clear: f64,
     /// Upper fire threshold.
-    pub high: f64,
+    pub(crate) high: f64,
     /// Upper re-arm threshold.
-    pub high_clear: f64,
+    pub(crate) high_clear: f64,
+}
+
+/// Validation failure when constructing an [`AlertBand`].
+///
+/// See [`AlertBand::new`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BandError {
+    /// `low > high` — the fire thresholds are inverted.
+    MisorderedThresholds,
+    /// One or more thresholds is `NaN`.
+    NaNValue,
+    /// A `*_clear` value sits on the wrong side of its fire threshold,
+    /// so hysteresis can never re-arm. The expected ordering is
+    /// `low <= low_clear <= high_clear <= high`.
+    InvalidClear,
+}
+
+impl core::fmt::Display for BandError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::MisorderedThresholds => write!(f, "AlertBand: low must be <= high"),
+            Self::NaNValue => write!(f, "AlertBand: thresholds may not be NaN"),
+            Self::InvalidClear => write!(
+                f,
+                "AlertBand: clear thresholds must satisfy low <= low_clear <= high_clear <= high"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BandError {}
+
+impl AlertBand {
+    /// Construct a validated `AlertBand`.
+    ///
+    /// Returns [`BandError`] when the thresholds are inverted, contain
+    /// `NaN`, or have clear values that prevent hysteresis from re-
+    /// arming.
+    pub fn new(low: f64, low_clear: f64, high: f64, high_clear: f64) -> Result<Self, BandError> {
+        if [low, low_clear, high, high_clear]
+            .iter()
+            .any(|v| v.is_nan())
+        {
+            return Err(BandError::NaNValue);
+        }
+        if low > high {
+            return Err(BandError::MisorderedThresholds);
+        }
+        // Hysteresis sanity: clear thresholds must sit between the
+        // fire thresholds. The expected layout (per spec § 3.4) is:
+        //   low  <=  low_clear  <=  high_clear  <=  high
+        if low_clear < low || high_clear > high || low_clear > high_clear {
+            return Err(BandError::InvalidClear);
+        }
+        Ok(Self {
+            low,
+            low_clear,
+            high,
+            high_clear,
+        })
+    }
+
+    /// Construct without validating thresholds.
+    ///
+    /// Reserved for in-crate hot paths where the caller has already
+    /// vouched for the inputs. External producers must always go
+    /// through [`AlertBand::new`]. `Deserialize` ingests via the
+    /// derived field-by-field path on `AlertBand`'s `pub(crate)`
+    /// fields (round-trips of producer-emitted JSON).
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub(crate) fn new_unchecked(low: f64, low_clear: f64, high: f64, high_clear: f64) -> Self {
+        Self {
+            low,
+            low_clear,
+            high,
+            high_clear,
+        }
+    }
+
+    /// Lower fire threshold.
+    #[must_use]
+    pub fn low(&self) -> f64 {
+        self.low
+    }
+
+    /// Lower re-arm threshold.
+    #[must_use]
+    pub fn low_clear(&self) -> f64 {
+        self.low_clear
+    }
+
+    /// Upper fire threshold.
+    #[must_use]
+    pub fn high(&self) -> f64 {
+        self.high
+    }
+
+    /// Upper re-arm threshold.
+    #[must_use]
+    pub fn high_clear(&self) -> f64 {
+        self.high_clear
+    }
 }
 
 /// A single alert raised by the alert policy.
@@ -119,7 +235,9 @@ pub struct Alert {
 }
 
 /// Categories for hints; mirrors the recommender's signal taxonomy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// See [`Severity`] for notes on the read-tolerant deserialization path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HintCategory {
     /// Token-cost reduction opportunity.
@@ -165,7 +283,9 @@ pub struct ScoredHint {
 }
 
 /// Source channel for a research finding.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// See [`Severity`] for notes on the read-tolerant deserialization path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ResearchChannel {
     /// GitHub code search.
@@ -228,17 +348,23 @@ pub struct TokenLedger {
 }
 
 /// Aggregate health status for a plugin.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// `Unknown` is the [`Default`] (NI8 from PR #218 review): a freshly
+/// constructed `PluginHealth` has not been measured yet, so reporting
+/// `Ok` would launder absence-of-data into a positive result. Callers
+/// that want `Ok` must say so explicitly.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HealthStatus {
     /// All checks passing.
-    #[default]
     Ok,
     /// At least one warn-tier check.
     Warn,
     /// At least one error-tier check.
     Error,
-    /// Plugin participation declared but checks unreachable.
+    /// Plugin participation declared but checks unreachable, or
+    /// status has not yet been measured. This is the `Default`.
+    #[default]
     Unknown,
 }
 

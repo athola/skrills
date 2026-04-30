@@ -5,7 +5,7 @@
 //! formula (per `docs/cold-window-spec.md` § 6.3) is:
 //!
 //! ```text
-//! score = (frequency * IMPACT_WEIGHT + impact * ACTIONABILITY_WEIGHT)
+//! score = (frequency * FREQUENCY_WEIGHT + impact * IMPACT_WEIGHT)
 //!         / (ease_score + 1.0)
 //!         * recency_factor
 //!         + user_pin_boost
@@ -13,7 +13,7 @@
 //! recency_factor = exp(-age_days / HALF_LIFE_DAYS)
 //! ```
 //!
-//! Defaults: `IMPACT_WEIGHT = 2.0`, `ACTIONABILITY_WEIGHT = 1.5`,
+//! Defaults: `FREQUENCY_WEIGHT = 2.0`, `IMPACT_WEIGHT = 1.5`,
 //! `HALF_LIFE_DAYS = 14`. Pin status is a primary sort key (pinned
 //! hints always rank above non-pinned regardless of score), not a
 //! score boost.
@@ -32,10 +32,10 @@
 use skrills_snapshot::{Hint, ScoredHint};
 
 /// Weight applied to the `frequency` signal in the default formula.
-pub const IMPACT_WEIGHT: f64 = 2.0;
+pub const FREQUENCY_WEIGHT: f64 = 2.0;
 
 /// Weight applied to the `impact` signal in the default formula.
-pub const ACTIONABILITY_WEIGHT: f64 = 1.5;
+pub const IMPACT_WEIGHT: f64 = 1.5;
 
 /// Half-life (days) for the recency decay term.
 pub const HALF_LIFE_DAYS: f64 = 14.0;
@@ -47,9 +47,9 @@ pub const HALF_LIFE_DAYS: f64 = 14.0;
 #[derive(Debug, Clone, Copy)]
 pub struct MultiSignalScorer {
     /// Weight applied to the frequency signal.
-    pub impact_weight: f64,
+    pub frequency_weight: f64,
     /// Weight applied to the impact signal.
-    pub actionability_weight: f64,
+    pub impact_weight: f64,
     /// Half-life in days for recency decay.
     pub half_life_days: f64,
 }
@@ -58,21 +58,21 @@ impl MultiSignalScorer {
     /// Construct with the cold-window-spec defaults.
     pub fn new() -> Self {
         Self {
+            frequency_weight: FREQUENCY_WEIGHT,
             impact_weight: IMPACT_WEIGHT,
-            actionability_weight: ACTIONABILITY_WEIGHT,
             half_life_days: HALF_LIFE_DAYS,
         }
     }
 
     /// Override the frequency weight.
-    pub fn with_impact_weight(mut self, w: f64) -> Self {
-        self.impact_weight = w;
+    pub fn with_frequency_weight(mut self, w: f64) -> Self {
+        self.frequency_weight = w;
         self
     }
 
-    /// Override the impact (actionability) weight.
-    pub fn with_actionability_weight(mut self, w: f64) -> Self {
-        self.actionability_weight = w;
+    /// Override the impact weight.
+    pub fn with_impact_weight(mut self, w: f64) -> Self {
+        self.impact_weight = w;
         self
     }
 
@@ -89,7 +89,7 @@ impl MultiSignalScorer {
     /// regardless of how high the unpinned hint scores.
     pub fn score_one(&self, hint: &Hint) -> f64 {
         let numerator =
-            (hint.frequency as f64) * self.impact_weight + hint.impact * self.actionability_weight;
+            (hint.frequency as f64) * self.frequency_weight + hint.impact * self.impact_weight;
         let denominator = hint.ease_score + 1.0;
         let recency = (-hint.age_days / self.half_life_days.max(f64::MIN_POSITIVE)).exp();
         (numerator / denominator) * recency
@@ -168,8 +168,8 @@ mod tests {
     #[test]
     fn defaults_match_spec() {
         let s = MultiSignalScorer::new();
-        assert_eq!(s.impact_weight, 2.0);
-        assert_eq!(s.actionability_weight, 1.5);
+        assert_eq!(s.frequency_weight, 2.0);
+        assert_eq!(s.impact_weight, 1.5);
         assert_eq!(s.half_life_days, 14.0);
     }
 
@@ -259,14 +259,44 @@ mod tests {
 
     #[test]
     fn custom_weights_change_ranking_predictably() {
-        // Make actionability dominant so impact swings the rank.
+        // Make impact dominant so the impact signal swings the rank.
         let s = MultiSignalScorer::new()
-            .with_impact_weight(0.1)
-            .with_actionability_weight(10.0);
+            .with_frequency_weight(0.1)
+            .with_impact_weight(10.0);
         let h_freq = hint("freq", 100, 1.0, 5.0, 0.0);
         let h_imp = hint("imp", 1, 9.0, 5.0, 0.0);
         let ranked = s.rank(vec![h_freq, h_imp]);
         assert_eq!(ranked[0].hint.uri, "imp");
+    }
+
+    #[test]
+    fn with_frequency_weight_doubles_frequency_contribution() {
+        // The numerator is `frequency * frequency_weight + impact * impact_weight`.
+        // With impact = 0, the numerator collapses to `frequency * frequency_weight`,
+        // so doubling the weight must double the score (denominator and recency are
+        // identical between the two scorers).
+        let base = MultiSignalScorer::new().with_impact_weight(0.0);
+        let doubled = MultiSignalScorer::new()
+            .with_impact_weight(0.0)
+            .with_frequency_weight(FREQUENCY_WEIGHT * 2.0);
+        let h = hint("h", 5, 0.0, 5.0, 0.0);
+        let s_base = base.score_one(&h);
+        let s_doubled = doubled.score_one(&h);
+        assert!((s_doubled - 2.0 * s_base).abs() < 1e-9);
+    }
+
+    #[test]
+    fn with_impact_weight_doubles_impact_contribution() {
+        // Mirror of the frequency test: zero out the frequency contribution by
+        // setting frequency_weight to 0 and exercise the impact signal alone.
+        let base = MultiSignalScorer::new().with_frequency_weight(0.0);
+        let doubled = MultiSignalScorer::new()
+            .with_frequency_weight(0.0)
+            .with_impact_weight(IMPACT_WEIGHT * 2.0);
+        let h = hint("h", 0, 4.0, 5.0, 0.0);
+        let s_base = base.score_one(&h);
+        let s_doubled = doubled.score_one(&h);
+        assert!((s_doubled - 2.0 * s_base).abs() < 1e-9);
     }
 
     #[test]

@@ -48,6 +48,7 @@ pub(super) fn semver_tuple(entry: &fs::DirEntry) -> (u64, u64, u64) {
 /// Adapter for Claude Code configuration.
 pub struct ClaudeAdapter {
     root: PathBuf,
+    kill_switch: Option<skrills_snapshot::KillSwitch>,
 }
 
 impl ClaudeAdapter {
@@ -56,12 +57,25 @@ impl ClaudeAdapter {
         let home = dirs::home_dir().context("Could not determine home directory")?;
         Ok(Self {
             root: home.join(".claude"),
+            kill_switch: None,
         })
     }
 
     /// Creates a ClaudeAdapter with a custom root (for testing).
     pub fn with_root(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            kill_switch: None,
+        }
+    }
+
+    /// Attach a [`KillSwitch`](skrills_snapshot::KillSwitch) so that mutating
+    /// operations refuse with [`SyncError::TokenBudgetExceeded`](crate::SyncError)
+    /// when the cold-window engine has engaged it (FR12).
+    #[must_use]
+    pub fn with_kill_switch(mut self, switch: skrills_snapshot::KillSwitch) -> Self {
+        self.kill_switch = Some(switch);
+        self
     }
 
     /// Returns a borrow of the adapter's config root.
@@ -140,18 +154,22 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     fn write_commands(&self, commands: &[Command]) -> Result<WriteReport> {
+        crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         commands::write_commands_impl(self, commands)
     }
 
     fn write_mcp_servers(&self, servers: &HashMap<String, McpServer>) -> Result<WriteReport> {
+        crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         settings::write_mcp_servers_impl(self, servers)
     }
 
     fn write_preferences(&self, prefs: &Preferences) -> Result<WriteReport> {
+        crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         settings::write_preferences_impl(self, prefs)
     }
 
     fn write_skills(&self, skills: &[Command]) -> Result<WriteReport> {
+        crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         skills::write_skills_impl(self, skills)
     }
 
@@ -164,10 +182,12 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     fn write_hooks(&self, hooks: &[Command]) -> Result<WriteReport> {
+        crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         hooks::write_hooks_impl(self, hooks)
     }
 
     fn write_agents(&self, agents: &[Command]) -> Result<WriteReport> {
+        crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         agents::write_agents_impl(self, agents)
     }
 
@@ -176,6 +196,7 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     fn write_instructions(&self, instructions: &[Command]) -> Result<WriteReport> {
+        crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         instructions::write_instructions_impl(self, instructions)
     }
 

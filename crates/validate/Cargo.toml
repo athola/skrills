@@ -20,10 +20,11 @@ walkdir = { workspace = true }
 semver = { workspace = true }
 tracing = { workspace = true }
 notify = { version = "8", optional = true }
+libc = { workspace = true, optional = true }
 
 [features]
 default = ["watch"]
-watch = ["notify"]
+watch = ["notify", "libc"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
