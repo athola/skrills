@@ -421,8 +421,7 @@ pub fn parse_agent_config(content: &str, fallback_name: &str) -> Result<AgentCon
     let (yaml_opt, body) = split_agent_frontmatter(content);
 
     let raw = if let Some(yaml) = yaml_opt {
-        serde_yaml::from_str::<RawAgentFrontmatter>(&yaml)
-            .map_err(crate::DiscoveryError::from)?
+        serde_yaml::from_str::<RawAgentFrontmatter>(&yaml).map_err(crate::DiscoveryError::from)?
     } else {
         RawAgentFrontmatter::default()
     };

@@ -154,12 +154,7 @@ pub fn skill_md(name: &str, description: &str, body: &str) -> String {
 /// let s = skill_md_with_extras("foo", "demo", "version: 1.0.0", "# Body");
 /// assert!(s.contains("version: 1.0.0\n---"));
 /// ```
-pub fn skill_md_with_extras(
-    name: &str,
-    description: &str,
-    extra: &str,
-    body: &str,
-) -> String {
+pub fn skill_md_with_extras(name: &str, description: &str, extra: &str, body: &str) -> String {
     format!(
         "---\nname: {}\ndescription: {}\n{}\n---\n{}",
         name, description, extra, body

@@ -5,9 +5,7 @@
 //! `GraphBuilder` validates edges at build time so resolution itself can avoid
 //! string lookups.
 
-use super::types::{
-    ResolutionResult, ResolveError, ResolveOptions, ResolvedDependency, SkillInfo,
-};
+use super::types::{ResolutionResult, ResolveError, ResolveOptions, ResolvedDependency, SkillInfo};
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

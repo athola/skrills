@@ -5,9 +5,7 @@
 //! `super::graph::DependencyGraph` instead — it caches and avoids string
 //! hashing during traversal.
 
-use super::types::{
-    ResolutionResult, ResolveError, ResolveOptions, ResolvedDependency, SkillInfo,
-};
+use super::types::{ResolutionResult, ResolveError, ResolveOptions, ResolvedDependency, SkillInfo};
 use std::collections::{HashMap, HashSet};
 
 /// Trait for looking up skills by name.

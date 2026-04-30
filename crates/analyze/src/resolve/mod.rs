@@ -57,9 +57,7 @@ mod types;
 
 pub use graph::{DependencyGraph, GraphBuilder};
 pub use resolver::{DependencyResolver, InMemoryRegistry, SkillRegistry};
-pub use types::{
-    ResolutionResult, ResolveError, ResolveOptions, ResolvedDependency, SkillInfo,
-};
+pub use types::{ResolutionResult, ResolveError, ResolveOptions, ResolvedDependency, SkillInfo};
 
 #[cfg(test)]
 mod tests {

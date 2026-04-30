@@ -40,9 +40,9 @@ use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher}
 use parking_lot::Mutex;
 use rmcp::model::{Meta, RawResource, ReadResourceResult, Resource, ResourceContents};
 use serde_json::json;
-use skrills_discovery::{DuplicateInfo, SkillMeta};
 #[cfg(test)]
 use skrills_discovery::SkillRoot;
+use skrills_discovery::{DuplicateInfo, SkillMeta};
 use skrills_state::load_manifest_settings;
 #[cfg(feature = "subagents")]
 use skrills_subagents::SubagentService;

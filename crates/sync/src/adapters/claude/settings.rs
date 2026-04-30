@@ -190,7 +190,10 @@ pub(super) fn write_mcp_servers_impl(
             server_config.insert("disabled".into(), serde_json::json!(true));
         }
         if !server.allowed_tools.is_empty() {
-            server_config.insert("allowedTools".into(), serde_json::json!(server.allowed_tools));
+            server_config.insert(
+                "allowedTools".into(),
+                serde_json::json!(server.allowed_tools),
+            );
         }
         if !server.disabled_tools.is_empty() {
             server_config.insert(

@@ -6,9 +6,7 @@
 //! Isolating it here keeps `SkillService::recommend_skills`
 //! visible at one grep target alongside its supporting types.
 
-use crate::metrics_types::{
-    RecommendationRelationship, SkillRecommendation, SkillRecommendations,
-};
+use crate::metrics_types::{RecommendationRelationship, SkillRecommendation, SkillRecommendations};
 use anyhow::Result;
 use std::fs;
 

@@ -3,9 +3,9 @@
 use super::traits::{AgentAdapter, FieldSupport};
 #[cfg(test)]
 use super::utils::hash_content;
+use crate::common::{Command, McpServer, PluginAsset, Preferences};
 #[cfg(test)]
 use crate::common::{ContentFormat, McpTransport};
-use crate::common::{Command, McpServer, PluginAsset, Preferences};
 use crate::report::WriteReport;
 use crate::Result;
 use anyhow::Context;
@@ -27,13 +27,17 @@ mod skills;
 ///
 /// Falls back to `(0, 0, 0)` for non-semver names so they sort before any real version.
 pub(super) fn semver_tuple(entry: &fs::DirEntry) -> (u64, u64, u64) {
-    let name = entry.file_name().to_str().map(str::to_owned).unwrap_or_else(|| {
-        tracing::warn!(
-            ?entry,
-            "non-UTF-8 directory name; sorted before all valid semver entries"
-        );
-        String::new()
-    });
+    let name = entry
+        .file_name()
+        .to_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            tracing::warn!(
+                ?entry,
+                "non-UTF-8 directory name; sorted before all valid semver entries"
+            );
+            String::new()
+        });
     let parts: Vec<&str> = name.split('.').collect();
     let major = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0u64);
     let minor = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0u64);

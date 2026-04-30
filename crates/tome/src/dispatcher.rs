@@ -31,8 +31,9 @@ use skrills_snapshot::{ResearchBudget, ResearchChannel, WindowSnapshot};
 
 use crate::error::TomeResult;
 
-/// Default fetches-per-hour budget when constructing
-/// [`BucketedBudget::new`].
+/// Default fetches-per-hour budget when constructing a
+/// [`BucketedBudget`] via [`BucketedBudget::in_memory`] or
+/// [`BucketedBudget::persistent`].
 pub const DEFAULT_RESEARCH_RATE_PER_HOUR: u32 = 10;
 
 /// Default per-fingerprint TTL for the inhibit window. Identical

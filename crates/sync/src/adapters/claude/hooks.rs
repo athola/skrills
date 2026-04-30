@@ -120,10 +120,7 @@ pub(super) fn read_hooks_impl(adapter: &ClaudeAdapter) -> Result<Vec<Command>> {
     Ok(hooks_map.into_values().collect())
 }
 
-pub(super) fn write_hooks_impl(
-    adapter: &ClaudeAdapter,
-    hooks: &[Command],
-) -> Result<WriteReport> {
+pub(super) fn write_hooks_impl(adapter: &ClaudeAdapter, hooks: &[Command]) -> Result<WriteReport> {
     let dir = adapter.hooks_dir();
     fs::create_dir_all(&dir)?;
 
