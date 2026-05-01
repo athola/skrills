@@ -95,7 +95,13 @@ async fn serve_dashboard_sse(
                         ));
                     yield Ok::<Event, Infallible>(event);
                 }
-                Err(broadcast::error::RecvError::Closed) => break,
+                Err(broadcast::error::RecvError::Closed) => {
+                    tracing::info!("cold-window SSE stream closing — emitting shutdown event");
+                    yield Ok::<Event, Infallible>(
+                        Event::default().event("shutdown").data("{}"),
+                    );
+                    break;
+                }
             }
         }
     };
@@ -634,6 +640,48 @@ mod tests {
         let mut body = response.into_body();
         let chunk = body.frame().await;
         assert!(chunk.is_some(), "SSE stream produced no frames");
+    }
+
+    #[tokio::test]
+    async fn sse_emits_shutdown_event_when_bus_closes() {
+        // NI13/N8: previously the `RecvError::Closed` arm broke
+        // without telling the client the stream was ending. Now we
+        // emit a final `event: shutdown` so connected dashboards can
+        // distinguish "server going down cleanly" from "network
+        // hiccup, please reconnect".
+        use axum::body::Body;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let (tx, _rx) = broadcast::channel::<Arc<WindowSnapshot>>(16);
+        let state = ColdWindowDashboardState::new(tx.clone(), 100_000);
+        let app = cold_window_routes(state);
+
+        // Drop the only sender so the receiver's next `recv` returns
+        // `RecvError::Closed`. We do this BEFORE issuing the request
+        // so the handler subscribes to an already-closing channel.
+        drop(tx);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/dashboard.sse")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        // Drain the body. Because the channel is closed and we never
+        // sent a snapshot, the only event emitted should be the
+        // shutdown sentinel followed by stream end.
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8_lossy(&bytes).to_string();
+        assert!(
+            body.contains("event:shutdown") || body.contains("event: shutdown"),
+            "missing shutdown event in SSE body:\n{body}"
+        );
     }
 
     #[tokio::test]

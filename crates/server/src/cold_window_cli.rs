@@ -85,6 +85,25 @@ pub struct ColdWindowArgs {
     pub plugins_dir: Option<PathBuf>,
 }
 
+/// Await a spawned task handle, surfacing any `JoinError` instead of
+/// silently dropping it (NI10). A clean exit is logged at trace level
+/// (callers may upgrade); a panic is logged at error level so it shows
+/// up in production logs by default; an unexpected end (cancellation,
+/// abort) is a warning. The `kind` argument is interpolated into the
+/// message and into the structured fields so log filters can target
+/// just the producer or just the server.
+async fn await_task_handle(handle: tokio::task::JoinHandle<Result<()>>, kind: &str) {
+    match handle.await {
+        Ok(_) => {}
+        Err(e) if e.is_panic() => {
+            tracing::error!(kind = %kind, error = ?e, "{kind} task panicked");
+        }
+        Err(e) => {
+            tracing::warn!(kind = %kind, error = ?e, "{kind} task ended unexpectedly");
+        }
+    }
+}
+
 /// Run the cold-window subcommand to completion (or until SIGINT/SIGTERM).
 ///
 /// The async runtime is created/used by the caller — this function
@@ -136,9 +155,9 @@ pub async fn run(args: ColdWindowArgs) -> Result<()> {
 
     // Bound the cleanup window per spec (2 seconds, T031).
     let cleanup = async {
-        let _ = producer_handle.await;
+        await_task_handle(producer_handle, "producer").await;
         if let Some(h) = server_handle {
-            let _ = h.await;
+            await_task_handle(h, "server").await;
         }
     };
     match tokio::time::timeout(Duration::from_secs(2), cleanup).await {
@@ -293,7 +312,39 @@ async fn wait_for_shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use std::io;
+    use std::sync::{Arc, Mutex};
+
+    /// Shared in-memory writer for capturing tracing output. Cloned
+    /// across thread/task boundaries so the test can inspect what the
+    /// subscriber wrote regardless of which worker emitted the event.
+    #[derive(Clone, Default)]
+    struct CaptureWriter {
+        buf: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl CaptureWriter {
+        fn contents(&self) -> String {
+            String::from_utf8_lossy(&self.buf.lock().unwrap()).to_string()
+        }
+    }
+
+    impl io::Write for CaptureWriter {
+        fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+            self.buf.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureWriter {
+        type Writer = CaptureWriter;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
 
     #[test]
     fn build_demo_input_scales_tokens_with_tick_count() {
@@ -388,6 +439,88 @@ mod tests {
         assert!(!cli.args.browser);
         assert!(!cli.args.no_adaptive);
         assert!(cli.args.tick_rate_ms.is_none());
+    }
+
+    #[tokio::test]
+    async fn await_task_handle_logs_error_when_producer_panics() {
+        // NI10: simulate a panicking producer task and assert the
+        // `tracing::error!` call fires, instead of the previous
+        // `let _ = handle.await;` which dropped the JoinError silently.
+        let writer = CaptureWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(writer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let handle: tokio::task::JoinHandle<Result<()>> =
+            tokio::spawn(async { panic!("simulated producer crash") });
+        await_task_handle(handle, "producer").await;
+
+        let logs = writer.contents();
+        assert!(
+            logs.contains("ERROR"),
+            "expected ERROR-level log, got:\n{logs}"
+        );
+        assert!(
+            logs.contains("producer task panicked"),
+            "expected panic message, got:\n{logs}"
+        );
+    }
+
+    #[tokio::test]
+    async fn await_task_handle_logs_warn_when_task_aborted() {
+        // NI10: an aborted task surfaces as a (non-panic) JoinError;
+        // it must hit the WARN arm instead of being dropped.
+        let writer = CaptureWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(writer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let handle: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            Ok(())
+        });
+        handle.abort();
+        await_task_handle(handle, "server").await;
+
+        let logs = writer.contents();
+        assert!(
+            logs.contains("WARN"),
+            "expected WARN-level log, got:\n{logs}"
+        );
+        assert!(
+            logs.contains("server task ended unexpectedly"),
+            "expected unexpected-end message, got:\n{logs}"
+        );
+    }
+
+    #[tokio::test]
+    async fn await_task_handle_is_silent_on_clean_exit() {
+        let writer = CaptureWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(writer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let handle: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async { Ok(()) });
+        await_task_handle(handle, "producer").await;
+
+        let logs = writer.contents();
+        assert!(
+            !logs.contains("panicked"),
+            "clean exit must not log panic, got:\n{logs}"
+        );
+        assert!(
+            !logs.contains("ended unexpectedly"),
+            "clean exit must not log unexpected end, got:\n{logs}"
+        );
     }
 
     #[test]

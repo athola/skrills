@@ -48,8 +48,8 @@ use skrills_dashboard::cold_window::{
 };
 use skrills_server::api::{cold_window_routes, ColdWindowDashboardState};
 use skrills_snapshot::{
-    Alert, AlertBand, Hint, HintCategory, LoadSample, ResearchChannel, ResearchFinding, ScoredHint,
-    Severity, TokenEntry, TokenLedger, WindowSnapshot,
+    Alert, AlertBand, HealthStatus, Hint, HintCategory, LoadSample, PluginHealth, ResearchChannel,
+    ResearchFinding, ScoredHint, Severity, TokenEntry, TokenLedger, WindowSnapshot,
 };
 use tokio::sync::broadcast;
 
@@ -79,15 +79,29 @@ fn parity_snapshot() -> WindowSnapshot {
             conversation_cache_writes: 0,
             total: 25_000,
         },
-        alerts: vec![Alert {
-            fingerprint: "alert-token-budget".into(),
-            severity: Severity::Caution,
-            title: "TokenBudgetApproaching".into(),
-            message: "github MCP source consumes half the budget".into(),
-            band: Some(AlertBand::new(0.0, 0.0, 0.5, 0.45).expect("test fixture")),
-            fired_at_ms: 1_700_000_000_000,
-            dwell_ticks: 3,
-        }],
+        alerts: vec![
+            Alert {
+                fingerprint: "alert-token-budget".into(),
+                severity: Severity::Caution,
+                title: "TokenBudgetApproaching".into(),
+                message: "github MCP source consumes half the budget".into(),
+                band: Some(AlertBand::new(0.0, 0.0, 0.5, 0.45).expect("test fixture")),
+                fired_at_ms: 1_700_000_000_000,
+                dwell_ticks: 3,
+            },
+            // N9: include a Warning alert so the rendered surfaces
+            // both contain the WARN severity label, enabling a
+            // byte-equality check between TUI and SSE outputs.
+            Alert {
+                fingerprint: "alert-budget-exceeded".into(),
+                severity: Severity::Warning,
+                title: "TokenBudgetExceeded".into(),
+                message: "github MCP source has exceeded the budget".into(),
+                band: None,
+                fired_at_ms: 1_700_000_000_001,
+                dwell_ticks: 1,
+            },
+        ],
         hints: vec![ScoredHint {
             hint: Hint {
                 uri: "skill://demo-redundant".into(),
@@ -109,7 +123,19 @@ fn parity_snapshot() -> WindowSnapshot {
             score: 142.0,
             fetched_at_ms: 1_700_000_000_000,
         }],
-        plugin_health: vec![],
+        // N9: non-empty plugin_health so the parity test exercises
+        // the field instead of vacuously passing on `vec![]`. Note:
+        // neither surface currently surfaces plugin_health to the user
+        // (no plugin pane in the TUI, no plugin event in the SSE
+        // stream); when a plugin pane lands we'll extend the parity
+        // assertions below to compare its output. For now this just
+        // ensures the snapshot type round-trips through both render
+        // paths without panicking.
+        plugin_health: vec![PluginHealth {
+            plugin_name: "test-plugin".into(),
+            overall: HealthStatus::Warn,
+            checks: vec![],
+        }],
         load_sample: LoadSample {
             loadavg_1min: 0.42,
             last_edit_age_ms: None,
@@ -235,10 +261,12 @@ async fn render_browser_text(snap: Arc<WindowSnapshot>) -> String {
             break;
         }
     }
-    for _ in 0..5 {
-        let _ = tx.send(snap.clone());
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    // S9: the "subscribe before send" wait above is the correct
+    // synchronization point — once `receiver_count() >= 2` the SSE
+    // handler is guaranteed to be subscribed, so a single send is
+    // sufficient. The previous 5x send + sleep loop only masked
+    // races caused by sending too early.
+    let _ = tx.send(snap.clone());
 
     let bytes = req.await.unwrap_or_default();
     server.abort();
@@ -376,4 +404,21 @@ async fn tui_and_browser_render_semantic_parity() {
         browser_text.contains("quota: 7/10"),
         "browser status missing research quota"
     );
+
+    // N9: severity tier labels for `Caution` and `Warning` must be
+    // byte-equal between the TUI alert pane and the browser alert
+    // fragment. Both surfaces independently choose a short tag for
+    // each tier; SC4 requires those tags to match so users moving
+    // between surfaces don't see "WARN" in one place and "Warning"
+    // in another.
+    for label in ["WARN", "CAUT"] {
+        assert!(
+            tui_text.contains(label),
+            "TUI missing severity label `{label}`\nTUI text:\n{tui_text}",
+        );
+        assert!(
+            browser_text.contains(label),
+            "browser missing severity label `{label}`\nbrowser text:\n{browser_text}",
+        );
+    }
 }
