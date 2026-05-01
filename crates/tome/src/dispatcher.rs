@@ -68,25 +68,105 @@ pub const QUOTA_FILE_NAME: &str = "research-quota.json";
 
 /// Persistent state for the token bucket. Saved on every successful
 /// dispatch and on graceful shutdown.
+///
+/// Construction is gated through [`PersistedBucket::full`] (always
+/// valid) or [`PersistedBucket::new`] (fallible, rejects NaN/Inf,
+/// negative `available`, and `available > rate_per_hour`). Fields
+/// are crate-private so external callers cannot bypass validation
+/// (PR-218 wave-4 B4); the JSON-load path inside `BucketedBudget`
+/// still routes through a silent-clamp helper for tolerant recovery
+/// from tampered persistence files.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedBucket {
     /// Capacity in fetches per hour.
-    pub rate_per_hour: u32,
+    pub(crate) rate_per_hour: u32,
     /// Tokens currently available (fractional during refill).
-    pub available: f64,
+    pub(crate) available: f64,
     /// UNIX-epoch milliseconds at which `available` was last
     /// computed; used to refill pro-rata on restart.
-    pub last_refill_ms: u64,
+    pub(crate) last_refill_ms: u64,
 }
+
+/// Construction failures for [`PersistedBucket::new`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BucketError {
+    /// `available` is `NaN` or `Inf`.
+    NonFinite,
+    /// `available` is negative.
+    NegativeAvailable,
+    /// `available` exceeds `rate_per_hour`.
+    Overcapacity,
+}
+
+impl core::fmt::Display for BucketError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NonFinite => write!(f, "PersistedBucket: available must be finite"),
+            Self::NegativeAvailable => write!(f, "PersistedBucket: available must be >= 0"),
+            Self::Overcapacity => {
+                write!(f, "PersistedBucket: available must be <= rate_per_hour")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BucketError {}
 
 impl PersistedBucket {
     /// Construct a brand-new full bucket.
+    #[must_use]
     pub fn full(rate_per_hour: u32, now_ms: u64) -> Self {
         Self {
             rate_per_hour,
             available: rate_per_hour as f64,
             last_refill_ms: now_ms,
         }
+    }
+
+    /// Construct a bucket with a specific `available` token count.
+    ///
+    /// Rejects `NaN`/`Inf`, negative `available`, and values above
+    /// `rate_per_hour`. The fallible construction path is the only
+    /// way for callers outside `skrills_tome` to instantiate a bucket
+    /// with a non-full token count; the silent-clamp path
+    /// (`validated`) is reserved for the JSON-load recovery flow.
+    pub fn new(
+        rate_per_hour: u32,
+        available: f64,
+        last_refill_ms: u64,
+    ) -> Result<Self, BucketError> {
+        if !available.is_finite() {
+            return Err(BucketError::NonFinite);
+        }
+        if available < 0.0 {
+            return Err(BucketError::NegativeAvailable);
+        }
+        if available > rate_per_hour as f64 {
+            return Err(BucketError::Overcapacity);
+        }
+        Ok(Self {
+            rate_per_hour,
+            available,
+            last_refill_ms,
+        })
+    }
+
+    /// Capacity in fetches per hour.
+    #[must_use]
+    pub fn rate_per_hour(&self) -> u32 {
+        self.rate_per_hour
+    }
+
+    /// Tokens currently available (fractional during refill).
+    #[must_use]
+    pub fn available(&self) -> f64 {
+        self.available
+    }
+
+    /// UNIX-epoch milliseconds at which `available` was last computed.
+    #[must_use]
+    pub fn last_refill_ms(&self) -> u64 {
+        self.last_refill_ms
     }
 
     /// Refill the bucket pro-rata by elapsed wall-clock since
@@ -485,8 +565,11 @@ fn tmp_sibling(path: &Path) -> PathBuf {
 /// Fallible UNIX-millis clock. Returns `None` if `SystemTime::now()`
 /// precedes `UNIX_EPOCH` (NTP recovery, container time-warp).
 /// Callers must not fabricate `0` on `None` — see PR-218 finding NB5
-/// for the saturation-guard rationale.
-fn current_ms_checked() -> Option<u64> {
+/// for the saturation-guard rationale. Re-exported for the cold-window
+/// CLI producer (PR-218 wave-4 B1) so the second clock site cannot
+/// drift from this contract.
+#[must_use]
+pub fn current_ms_checked() -> Option<u64> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()
@@ -778,5 +861,113 @@ mod tests {
         };
         let v = over.validated(10).unwrap();
         assert_eq!(v.available, 10.0);
+    }
+
+    // ---------- B4: PersistedBucket::new validates on the public path ----------
+    //
+    // Pre-B4, the three fields were `pub` so external callers could
+    // construct `PersistedBucket { available: f64::NAN, ... }` directly,
+    // bypassing the silent-clamp `validated()` helper used by the JSON-
+    // load path. The fields are now `pub(crate)` and external
+    // construction must go through `new` (strict) or `full` (always
+    // valid).
+
+    #[test]
+    fn new_rejects_nan_and_inf_available() {
+        assert_eq!(
+            PersistedBucket::new(10, f64::NAN, 0).unwrap_err(),
+            BucketError::NonFinite
+        );
+        assert_eq!(
+            PersistedBucket::new(10, f64::INFINITY, 0).unwrap_err(),
+            BucketError::NonFinite
+        );
+        assert_eq!(
+            PersistedBucket::new(10, f64::NEG_INFINITY, 0).unwrap_err(),
+            BucketError::NonFinite
+        );
+    }
+
+    #[test]
+    fn new_rejects_negative_available() {
+        assert_eq!(
+            PersistedBucket::new(10, -0.001, 0).unwrap_err(),
+            BucketError::NegativeAvailable
+        );
+    }
+
+    #[test]
+    fn new_rejects_overcapacity_available() {
+        assert_eq!(
+            PersistedBucket::new(10, 10.0001, 0).unwrap_err(),
+            BucketError::Overcapacity
+        );
+    }
+
+    #[test]
+    fn new_accepts_zero_to_capacity_inclusive() {
+        let zero = PersistedBucket::new(10, 0.0, 0).expect("zero is valid");
+        assert_eq!(zero.available(), 0.0);
+        let cap = PersistedBucket::new(10, 10.0, 0).expect("cap is valid");
+        assert_eq!(cap.available(), 10.0);
+        let mid = PersistedBucket::new(10, 4.5, 1_700_000_000_000)
+            .expect("mid-range fractional is valid");
+        assert_eq!(mid.available(), 4.5);
+        assert_eq!(mid.last_refill_ms(), 1_700_000_000_000);
+    }
+
+    #[test]
+    fn full_remains_an_always_valid_constructor() {
+        let bucket = PersistedBucket::full(7, 1_700_000_000_000);
+        assert_eq!(bucket.rate_per_hour(), 7);
+        assert_eq!(bucket.available(), 7.0);
+        assert_eq!(bucket.last_refill_ms(), 1_700_000_000_000);
+    }
+
+    // ---------- I8: SC10 saturation path on last_refill_ms ----------
+    //
+    // SC10 (cold-window spec) requires that the dispatcher's bucket
+    // never silently saturates to capacity under clock anomalies.
+    // `clock_warp_does_not_saturate_bucket` covers the *forward*
+    // anomaly (clock returns None mid-tick). I8 adds the
+    // last_refill_ms-specific cases the wave-4 toolkit flagged:
+    // - a future `last_refill_ms` (clock-skewed file from a faster
+    //   host) does not produce a negative `elapsed` that wraps.
+    // - a missing-timestamp recovery path (loaded bucket starts with
+    //   `bootstrap_ms(None) == u64::MAX`) does not saturate on the
+    //   first refill.
+
+    #[test]
+    fn refill_with_future_last_refill_ms_does_not_wrap() {
+        // Saturating subtraction: if `last_refill_ms > now`, elapsed
+        // saturates to 0 and the bucket does NOT add tokens.
+        let mut bucket = PersistedBucket {
+            rate_per_hour: 10,
+            available: 3.0,
+            last_refill_ms: 2_000_000_000_000, // far future
+        };
+        bucket.refill(1_000_000_000_000); // now < last_refill_ms
+        assert_eq!(
+            bucket.available, 3.0,
+            "future last_refill_ms must not synthesize negative elapsed → tokens"
+        );
+        assert_eq!(bucket.last_refill_ms, 1_000_000_000_000);
+    }
+
+    #[test]
+    fn refill_with_bootstrap_max_last_refill_does_not_saturate() {
+        // bootstrap_ms(None) returns u64::MAX so the first real refill
+        // sees `now.saturating_sub(MAX) == 0` elapsed. The bucket must
+        // retain its starting value, not saturate to capacity.
+        let mut bucket = PersistedBucket {
+            rate_per_hour: 10,
+            available: 0.0,
+            last_refill_ms: u64::MAX,
+        };
+        bucket.refill(1_700_000_000_000);
+        assert_eq!(
+            bucket.available, 0.0,
+            "u64::MAX last_refill must saturate elapsed at 0 (NB5/SC10)"
+        );
     }
 }

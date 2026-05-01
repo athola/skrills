@@ -20,15 +20,15 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Args;
 use skrills_analyze::cold_window::cadence::read_loadavg_1min;
 use skrills_analyze::cold_window::engine::TickInput;
-use skrills_analyze::cold_window::{ColdWindowEngine, PluginHealthCollector};
+use skrills_analyze::cold_window::{ColdWindowEngine, PluginHealthCollector, SkillCollector};
 use skrills_snapshot::{KillSwitch, LoadSample, TokenEntry, TokenLedger};
-use skrills_tome::dispatcher::BucketedBudget;
+use skrills_tome::dispatcher::{current_ms_checked, BucketedBudget};
 use tokio::sync::watch;
 
 use crate::api::{cold_window_routes, ColdWindowDashboardState};
@@ -73,8 +73,11 @@ pub struct ColdWindowArgs {
     #[arg(long, value_name = "MILLIS")]
     pub tick_rate_ms: Option<u64>,
 
-    /// Watch additional skill directories for the cold-window
-    /// producer (in addition to defaults).
+    /// Additional skill directories the producer walks each tick to
+    /// build the snapshot's per-skill token attribution. Combined with
+    /// any directories supplied via `SKRILLS_EXTRA_SKILL_DIRS` and the
+    /// default skill roots. Token totals are estimated from file size
+    /// (`bytes / 4`); a real BPE tokenizer is a v0.9.0 follow-up.
     #[arg(long = "skill-dir", value_name = "DIR")]
     pub skill_dirs: Vec<PathBuf>,
 
@@ -213,12 +216,18 @@ async fn producer_loop(
     base_tick_ms: u64,
     no_adaptive: bool,
     plugins_dir: PathBuf,
-    _skill_dirs: Vec<PathBuf>,
+    skill_dirs: Vec<PathBuf>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     let mut tick_count: u64 = 0;
     let mut next_delay_ms = base_tick_ms;
     let plugin_collector = Arc::new(PluginHealthCollector::new(plugins_dir));
+    // NI16 (PR-218 wave-4): wire the `--skill-dir` flag through to a
+    // real per-tick walk. When the operator supplied no dirs the
+    // collector short-circuits to empty; the producer keeps the
+    // synthetic demo ledger so the dashboard stays interactive in that
+    // mode.
+    let skill_collector = Arc::new(SkillCollector::new(skill_dirs));
     loop {
         tokio::select! {
             biased;
@@ -230,7 +239,18 @@ async fn producer_loop(
             }
             _ = tokio::time::sleep(Duration::from_millis(next_delay_ms)) => {
                 tick_count += 1;
-                let mut input = build_demo_input(tick_count, no_adaptive);
+                let Some(mut input) = build_demo_input(tick_count, no_adaptive) else {
+                    // Clock precedes UNIX_EPOCH (NTP recovery / container
+                    // time-warp / VM resume). Skip the tick rather than
+                    // fabricate a zero timestamp; the next loop iteration
+                    // will retry with a fresh clock read. See PR-218
+                    // wave-4 B1.
+                    tracing::warn!(
+                        tick_count,
+                        "system clock precedes UNIX_EPOCH; skipping tick"
+                    );
+                    continue;
+                };
                 // FR11 + NI3: real plugin participation each tick. Cold
                 // rewalk — never cached — per the spec contract. The
                 // walk runs on the blocking pool so the runtime's
@@ -253,6 +273,63 @@ async fn producer_loop(
                     }
                 };
                 input = input.with_plugin_collector_output(collector_output);
+
+                // NI16: real per-tick skill discovery on the blocking
+                // pool. When no skill-dirs are configured the collector
+                // is empty and we keep the synthetic demo ledger so the
+                // dashboard stays alive without flags.
+                if !skill_collector.is_empty() {
+                    let collector = Arc::clone(&skill_collector);
+                    let skill_output = match tokio::task::spawn_blocking(move || {
+                        collector.collect()
+                    })
+                    .await
+                    {
+                        Ok(out) => out,
+                        Err(join_err) => {
+                            tracing::warn!(
+                                error = ?join_err,
+                                "skill collector spawn_blocking task failed; \
+                                 keeping synthetic demo ledger this tick"
+                            );
+                            Default::default()
+                        }
+                    };
+                    if !skill_output.entries.is_empty() {
+                        // Replace the synthetic `skill://demo` entries
+                        // with real attribution from the configured
+                        // skill_dirs while preserving demo per_mcp /
+                        // per_plugin (no MCP collector lives in v0.8.0).
+                        input.token_ledger.per_skill = skill_output.entries;
+                        let skill_sum: u64 = input
+                            .token_ledger
+                            .per_skill
+                            .iter()
+                            .map(|e| e.tokens)
+                            .sum();
+                        let mcp_sum: u64 = input
+                            .token_ledger
+                            .per_mcp
+                            .iter()
+                            .map(|e| e.tokens)
+                            .sum();
+                        let plugin_sum: u64 = input
+                            .token_ledger
+                            .per_plugin
+                            .iter()
+                            .map(|e| e.tokens)
+                            .sum();
+                        input.token_ledger.total = skill_sum + mcp_sum + plugin_sum;
+                    }
+                    for malformed in skill_output.malformed {
+                        tracing::warn!(
+                            source = %malformed.source,
+                            error = %malformed.error_message,
+                            "skill discovery surfaced malformed entry"
+                        );
+                    }
+                }
+
                 let snap = engine.tick(input);
                 next_delay_ms = if no_adaptive {
                     base_tick_ms
@@ -272,7 +349,15 @@ async fn producer_loop(
 /// trajectory shows the dashboard "doing something" during a demo.
 /// Replace with real discovery + analyze::tokens attribution in a
 /// follow-up.
-fn build_demo_input(tick_count: u64, no_adaptive: bool) -> TickInput {
+///
+/// Returns `None` when the system clock precedes `UNIX_EPOCH` (NTP
+/// recovery, container time-warp, VM resume). The caller must skip
+/// the tick rather than fabricate `timestamp_ms = 0` — a synthesized
+/// zero would propagate through the engine's monotonic guards and
+/// silently corrupt cadence/dwell/alert hysteresis (PR-218 wave-4 B1,
+/// reusing the NB5 plumbing in `tome::dispatcher`).
+fn build_demo_input(tick_count: u64, no_adaptive: bool) -> Option<TickInput> {
+    let timestamp_ms = current_ms_checked()?;
     let total = tick_count.saturating_mul(1_500);
     let load_sample = if no_adaptive {
         LoadSample::default()
@@ -296,17 +381,12 @@ fn build_demo_input(tick_count: u64, no_adaptive: bool) -> TickInput {
         conversation_cache_writes: 0,
         total,
     };
-    TickInput::empty()
-        .with_timestamp_ms(now_ms())
-        .with_token_ledger(token_ledger)
-        .with_load_sample(load_sample)
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    Some(
+        TickInput::empty()
+            .with_timestamp_ms(timestamp_ms)
+            .with_token_ledger(token_ledger)
+            .with_load_sample(load_sample),
+    )
 }
 
 /// Bind a TCP listener and serve the cold-window router with axum's
@@ -400,9 +480,9 @@ mod tests {
 
     #[test]
     fn build_demo_input_scales_tokens_with_tick_count() {
-        let i1 = build_demo_input(1, true);
-        let i10 = build_demo_input(10, true);
-        let i100 = build_demo_input(100, true);
+        let i1 = build_demo_input(1, true).expect("clock available in test env");
+        let i10 = build_demo_input(10, true).expect("clock available in test env");
+        let i100 = build_demo_input(100, true).expect("clock available in test env");
         assert_eq!(i1.token_ledger.total, 1_500);
         assert_eq!(i10.token_ledger.total, 15_000);
         assert_eq!(i100.token_ledger.total, 150_000);
@@ -410,17 +490,32 @@ mod tests {
 
     #[test]
     fn build_demo_input_with_no_adaptive_zeros_load_sample() {
-        let i = build_demo_input(5, true);
+        let i = build_demo_input(5, true).expect("clock available in test env");
         assert_eq!(i.load_sample.loadavg_1min, 0.0);
         assert!(i.load_sample.last_edit_age_ms.is_none());
     }
 
     #[test]
     fn build_demo_input_partitions_total_between_skill_and_mcp() {
-        let i = build_demo_input(40, true);
+        let i = build_demo_input(40, true).expect("clock available in test env");
         let skill_total: u64 = i.token_ledger.per_skill.iter().map(|e| e.tokens).sum();
         let mcp_total: u64 = i.token_ledger.per_mcp.iter().map(|e| e.tokens).sum();
         assert_eq!(skill_total + mcp_total, i.token_ledger.total);
+    }
+
+    #[test]
+    fn build_demo_input_emits_real_unix_millis_timestamp() {
+        // B1 regression: producer must surface a real epoch-ms timestamp,
+        // not the fabricated `0` of the pre-fix `now_ms` helper. We can
+        // only assert the lower bound (clocks vary), so check that the
+        // value lands in a sensible "after 2020" window.
+        let twenty_twenty_unix_ms = 1_577_836_800_000u64; // 2020-01-01T00:00:00Z
+        let i = build_demo_input(1, true).expect("clock available in test env");
+        assert!(
+            i.timestamp_ms >= twenty_twenty_unix_ms,
+            "expected real epoch-ms timestamp; got {}",
+            i.timestamp_ms
+        );
     }
 
     #[tokio::test]
@@ -474,6 +569,70 @@ mod tests {
             }
         }
         let _ = tx.send(true);
+    }
+
+    #[tokio::test]
+    async fn producer_loop_consumes_skill_dirs_into_per_skill_attribution() {
+        // NI16 regression (PR-218 wave-4): the `--skill-dir` flag must
+        // actually drive per-tick discovery, not be silently dropped
+        // (`_skill_dirs`). Set up a tempdir with two real SKILL.md files
+        // and assert that the broadcast snapshots include them in
+        // `token_ledger.per_skill`, not the synthetic `skill://demo`.
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let alpha = tmp.path().join("alpha");
+        let beta = tmp.path().join("beta");
+        std::fs::create_dir_all(&alpha).unwrap();
+        std::fs::create_dir_all(&beta).unwrap();
+        std::fs::write(alpha.join("SKILL.md"), "alpha body").unwrap();
+        std::fs::write(beta.join("SKILL.md"), "beta body").unwrap();
+
+        let engine = Arc::new(ColdWindowEngine::with_defaults(100_000));
+        let mut rx = engine.subscribe();
+        let (tx, shutdown_rx) = watch::channel(false);
+        let _handle = tokio::spawn(producer_loop(
+            Arc::clone(&engine),
+            30,
+            true,
+            PathBuf::from("/nonexistent-plugins-test"),
+            vec![tmp.path().to_path_buf()],
+            shutdown_rx,
+        ));
+
+        // Walk a few snapshots until we see one that picked up the
+        // skill collector (the very first tick may race the spawn of
+        // the blocking task; allow up to 4 ticks before failing).
+        let mut found_alpha = false;
+        let mut found_beta = false;
+        for _ in 0..4 {
+            match tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
+                Ok(Ok(snap)) => {
+                    for entry in &snap.token_ledger.per_skill {
+                        if entry.source == "skill://alpha" {
+                            found_alpha = true;
+                        }
+                        if entry.source == "skill://beta" {
+                            found_beta = true;
+                        }
+                    }
+                    if found_alpha && found_beta {
+                        break;
+                    }
+                }
+                _ => panic!("did not receive snapshot in time"),
+            }
+        }
+        let _ = tx.send(true);
+
+        assert!(
+            found_alpha,
+            "alpha skill missing from per_skill — flag was dropped"
+        );
+        assert!(
+            found_beta,
+            "beta skill missing from per_skill — flag was dropped"
+        );
     }
 
     #[test]
@@ -584,8 +743,8 @@ mod tests {
         // the runner builds and observe the snapshot.
         let dispatcher = BucketedBudget::in_memory(1);
         let snap = dispatcher.current_state();
-        assert_eq!(snap.rate_per_hour, 1);
-        assert_eq!(snap.available, 1.0);
+        assert_eq!(snap.rate_per_hour(), 1);
+        assert_eq!(snap.available(), 1.0);
     }
 
     #[tokio::test]

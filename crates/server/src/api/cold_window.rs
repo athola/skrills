@@ -59,8 +59,8 @@ impl ResearchQuotaSource for Arc<BucketedBudget> {
         // fetch that would actually block; `used = total - available`
         // by construction so the displayed `available/total` matches
         // what the bucket can actually serve.
-        let available = state.available.max(0.0).floor() as u32;
-        let total = state.rate_per_hour;
+        let available = state.available().max(0.0).floor() as u32;
+        let total = state.rate_per_hour();
         let used = total.saturating_sub(available);
         ResearchQuota::new(used, total)
     }
@@ -327,12 +327,32 @@ fn render_research_fragment(snap: &WindowSnapshot) -> String {
             chan = chan_class,
             label = chan_label,
             score = f.score,
-            url = html_escape(&f.url),
+            url = sanitize_external_href(&f.url),
             title = html_escape(&f.title),
         ));
     }
     out.push_str("</ul>");
     out
+}
+
+/// Gate the `<a href="...">` URL to safe external schemes.
+///
+/// Research findings come from external producers (HN, Lobsters,
+/// Reddit, GitHub, arXiv). `html_escape` defends against quote-
+/// breakout in the *attribute value* but does not block scheme
+/// execution: a payload of `javascript:alert(1)` has no quotes to
+/// escape and survives `html_escape` unchanged. `target="_blank"
+/// rel="noopener"` does not block scheme execution either. We
+/// therefore allowlist `http`/`https` URLs and downgrade everything
+/// else to `#` before HTML-escaping (PR-218 wave-4 I1).
+fn sanitize_external_href(url: &str) -> String {
+    let trimmed = url.trim_start();
+    let lowered = trimmed.to_ascii_lowercase();
+    if lowered.starts_with("https://") || lowered.starts_with("http://") {
+        html_escape(trimmed)
+    } else {
+        "#".to_string()
+    }
 }
 
 fn render_status_fragment(
@@ -656,6 +676,73 @@ mod tests {
         assert_eq!(html_escape("plain"), "plain");
     }
 
+    // ---------- I1: URL-scheme allowlist on research-pane <a href> ----------
+
+    #[test]
+    fn sanitize_external_href_allows_http_and_https() {
+        assert_eq!(
+            sanitize_external_href("https://example.com/x"),
+            "https://example.com/x"
+        );
+        assert_eq!(
+            sanitize_external_href("http://example.com/x"),
+            "http://example.com/x"
+        );
+    }
+
+    #[test]
+    fn sanitize_external_href_rejects_javascript_scheme() {
+        assert_eq!(sanitize_external_href("javascript:alert(1)"), "#");
+        // Mixed case + leading whitespace are common payload tricks.
+        assert_eq!(sanitize_external_href("  JavaScript:alert(1)"), "#");
+        assert_eq!(sanitize_external_href("JaVaScRiPt:alert(1)"), "#");
+    }
+
+    #[test]
+    fn sanitize_external_href_rejects_data_and_vbscript_schemes() {
+        assert_eq!(
+            sanitize_external_href("data:text/html,<script>alert(1)</script>"),
+            "#"
+        );
+        assert_eq!(sanitize_external_href("vbscript:msgbox(1)"), "#");
+        assert_eq!(sanitize_external_href("file:///etc/passwd"), "#");
+    }
+
+    #[test]
+    fn sanitize_external_href_html_escapes_attribute_breakouts() {
+        // Even on the allowlisted path the attribute escape still runs.
+        let payload = "https://example.com/x?q=\"><script>alert(1)</script>";
+        let escaped = sanitize_external_href(payload);
+        assert!(!escaped.contains('"'));
+        assert!(!escaped.contains('<'));
+    }
+
+    #[test]
+    fn research_fragment_neutralizes_javascript_url() {
+        // I1 regression (PR-218 wave-4): a hostile finding URL must not
+        // become an executable javascript:-href in the rendered SSE
+        // fragment. Pre-fix `html_escape` left this bare in the href
+        // attribute.
+        let mut snap = empty_snap();
+        snap.research_findings.push(ResearchFinding {
+            fingerprint: "evil".into(),
+            channel: ResearchChannel::HackerNews,
+            title: "click me".into(),
+            url: "javascript:alert(1)".into(),
+            score: 1.0,
+            fetched_at_ms: 0,
+        });
+        let frag = render_research_fragment(&snap);
+        assert!(
+            !frag.contains("javascript:"),
+            "javascript: scheme survived the render: {frag}"
+        );
+        assert!(
+            frag.contains(r##"href="#""##),
+            "expected sanitized href=\"#\" placeholder; got: {frag}"
+        );
+    }
+
     #[tokio::test]
     async fn sse_route_responds_with_text_event_stream() {
         use axum::body::Body;
@@ -816,6 +903,57 @@ mod tests {
             .map(|q| q.quota_snapshot())
             .or(state.research_quota);
         assert_eq!(resolved, Some(ResearchQuota::new(7, 7)));
+    }
+
+    // ---------- I7: SSE Lagged-arm coverage ----------
+
+    #[tokio::test]
+    async fn sse_emits_status_event_when_subscriber_lags() {
+        // I7 (PR-218 wave-4): the only user-facing signal that a slow
+        // SSE client missed snapshots is the "subscriber lagged by N
+        // ticks" status event. Pre-fix this arm had no test, so a
+        // refactor could silently break it without anyone noticing.
+        // Reproduce by using a buffer-1 channel and sending >1 snapshot
+        // before the handler's stream consumes the first.
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let (tx, _keep_rx) = broadcast::channel::<Arc<WindowSnapshot>>(1);
+        let state = ColdWindowDashboardState::new(tx.clone(), 100_000);
+        let app = cold_window_routes(state);
+
+        let req = axum::http::Request::builder()
+            .uri("/dashboard.sse")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response_fut = app.oneshot(req);
+
+        // Send >1 snapshot before the handler's stream consumes any.
+        // The receiver lags by len(extras), then close so the body
+        // collects.
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            for _ in 0..50 {
+                if tx_clone.receiver_count() >= 2 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            // Capacity is 1 so the second send + a draining recv pair
+            // on the slow consumer overflow into the Lagged arm.
+            for _ in 0..5 {
+                let _ = tx_clone.send(Arc::new(empty_snap()));
+            }
+        });
+        drop(tx);
+
+        let response = response_fut.await.unwrap();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8_lossy(&bytes).to_string();
+        assert!(
+            body.contains("subscriber lagged"),
+            "expected Lagged status event in SSE body:\n{body}"
+        );
     }
 
     #[test]

@@ -55,9 +55,9 @@ fn concurrent_dispatch_never_oversells_capacity() {
 
     let state = budget.current_state();
     assert!(
-        state.available >= 0.0,
+        state.available() >= 0.0,
         "available went negative under contention: {}",
-        state.available,
+        state.available(),
     );
     assert!(
         total_allowed <= rate as usize,
@@ -112,10 +112,10 @@ fn corrupt_persistence_file_recovers_at_full() {
     let budget = BucketedBudget::persistent(7, path.clone())
         .expect("corrupt file must not block daemon boot");
     let state = budget.current_state();
-    assert_eq!(state.rate_per_hour, 7);
+    assert_eq!(state.rate_per_hour(), 7);
     // Full bucket on recovery (allow tiny refill jitter, but at most
     // the configured capacity).
-    assert!(state.available > 6.5 && state.available <= 7.0);
+    assert!(state.available() > 6.5 && state.available() <= 7.0);
 }
 
 #[test]
@@ -164,9 +164,9 @@ fn load_clamps_negative_available_to_zero() {
     let budget =
         BucketedBudget::persistent(10, path).expect("validation must not propagate as Err");
     let state = budget.current_state();
-    assert!(state.available.is_finite());
-    assert!(state.available >= 0.0);
-    assert!(state.available <= state.rate_per_hour as f64);
+    assert!(state.available().is_finite());
+    assert!(state.available() >= 0.0);
+    assert!(state.available() <= state.rate_per_hour() as f64);
 }
 
 #[test]
@@ -185,6 +185,6 @@ fn load_rejects_nan_available() {
 
     let budget = BucketedBudget::persistent(10, path).expect("NaN must not block daemon boot");
     let state = budget.current_state();
-    assert!(state.available.is_finite(), "NaN survived load");
-    assert!(state.available >= 0.0);
+    assert!(state.available().is_finite(), "NaN survived load");
+    assert!(state.available() >= 0.0);
 }
