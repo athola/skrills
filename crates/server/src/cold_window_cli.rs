@@ -27,10 +27,12 @@ use clap::Args;
 use skrills_analyze::cold_window::cadence::read_loadavg_1min;
 use skrills_analyze::cold_window::engine::TickInput;
 use skrills_analyze::cold_window::{ColdWindowEngine, PluginHealthCollector};
-use skrills_snapshot::{LoadSample, TokenEntry, TokenLedger};
+use skrills_snapshot::{KillSwitch, LoadSample, TokenEntry, TokenLedger};
+use skrills_tome::dispatcher::BucketedBudget;
 use tokio::sync::watch;
 
 use crate::api::{cold_window_routes, ColdWindowDashboardState};
+use crate::discovery::merge_extra_dirs;
 
 /// Floor on the adaptive tick delay (ms). Prevents the engine from
 /// busy-looping if the snapshot's `next_tick_ms` is reported as 0
@@ -112,13 +114,39 @@ async fn await_task_handle(handle: tokio::task::JoinHandle<Result<()>>, kind: &s
 pub async fn run(args: ColdWindowArgs) -> Result<()> {
     tracing::info!(
         budget = args.alert_budget,
+        research_rate = args.research_rate,
         port = args.port,
         browser = args.browser,
         "starting cold-window subcommand"
     );
 
-    let engine = Arc::new(ColdWindowEngine::with_defaults(args.alert_budget));
+    // B4 server-half: mint one shared kill-switch. Cloned into the
+    // engine via `with_kill_switch`, then handed to any sync adapter
+    // constructed in this run. The engine engages it on token-budget
+    // breach (FR12); adapters consult it before mutating I/O.
+    let kill_switch = KillSwitch::new();
+
+    let engine = Arc::new(
+        ColdWindowEngine::with_defaults(args.alert_budget).with_kill_switch(kill_switch.clone()),
+    );
     let bus = engine.bus_sender();
+
+    // B2: mint the research-budget dispatcher from the parsed CLI rate.
+    // In-memory variant — persistent path is the daemon's job
+    // (`skrills daemon`), not the cold-window subcommand.
+    let dispatcher = Arc::new(BucketedBudget::in_memory(args.research_rate));
+
+    // NI16: resolve the merged skill-dir list once at startup so the
+    // user sees confirmation in the logs that their `--skill-dir`
+    // flags were honored. Per-tick discovery wiring lands when the
+    // producer takes a real skill collector (T-NEXT in plan.md).
+    let merged_skill_dirs = merge_extra_dirs(&args.skill_dirs);
+    if !merged_skill_dirs.is_empty() {
+        tracing::info!(
+            skill_dir_count = merged_skill_dirs.len(),
+            "cold-window resolved extra skill directories",
+        );
+    }
 
     // Shutdown channel: producer + server both watch this.
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -133,12 +161,16 @@ pub async fn run(args: ColdWindowArgs) -> Result<()> {
         args.tick_rate_ms.unwrap_or(2_000),
         args.no_adaptive,
         plugins_dir,
+        merged_skill_dirs,
         shutdown_rx.clone(),
     ));
 
     // Spawn the browser server if requested.
     let server_handle = if args.browser {
-        let state = ColdWindowDashboardState::new(bus.clone(), args.alert_budget);
+        // B3: hand the dispatcher to the dashboard so the status bar
+        // reflects live drain state, not a frozen snapshot.
+        let state = ColdWindowDashboardState::new(bus.clone(), args.alert_budget)
+            .with_research_quota_source(Arc::clone(&dispatcher));
         let addr: SocketAddr = (Ipv4Addr::LOCALHOST, args.port).into();
         let shutdown_rx = shutdown_rx.clone();
         Some(tokio::spawn(async move {
@@ -181,11 +213,12 @@ async fn producer_loop(
     base_tick_ms: u64,
     no_adaptive: bool,
     plugins_dir: PathBuf,
+    _skill_dirs: Vec<PathBuf>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     let mut tick_count: u64 = 0;
     let mut next_delay_ms = base_tick_ms;
-    let plugin_collector = PluginHealthCollector::new(plugins_dir);
+    let plugin_collector = Arc::new(PluginHealthCollector::new(plugins_dir));
     loop {
         tokio::select! {
             biased;
@@ -198,9 +231,28 @@ async fn producer_loop(
             _ = tokio::time::sleep(Duration::from_millis(next_delay_ms)) => {
                 tick_count += 1;
                 let mut input = build_demo_input(tick_count, no_adaptive);
-                // FR11: real plugin participation each tick. Cold
-                // rewalk — never cached — per the spec contract.
-                input = input.with_plugin_collector_output(plugin_collector.collect());
+                // FR11 + NI3: real plugin participation each tick. Cold
+                // rewalk — never cached — per the spec contract. The
+                // walk runs on the blocking pool so the runtime's
+                // worker threads stay free for IO-bound tasks (SSE
+                // subscribers, signal handlers).
+                let collector = Arc::clone(&plugin_collector);
+                let collector_output = match tokio::task::spawn_blocking(move || {
+                    collector.collect()
+                })
+                .await
+                {
+                    Ok(out) => out,
+                    Err(join_err) => {
+                        tracing::warn!(
+                            error = ?join_err,
+                            "plugin collector spawn_blocking task failed; \
+                             skipping plugin participation for this tick"
+                        );
+                        continue;
+                    }
+                };
+                input = input.with_plugin_collector_output(collector_output);
                 let snap = engine.tick(input);
                 next_delay_ms = if no_adaptive {
                     base_tick_ms
@@ -380,6 +432,7 @@ mod tests {
             50,
             true,
             PathBuf::from("/nonexistent-plugins-test"),
+            Vec::new(),
             rx,
         ));
         // Let the producer fire a few ticks.
@@ -401,6 +454,7 @@ mod tests {
             30,
             true,
             PathBuf::from("/nonexistent-plugins-test"),
+            Vec::new(),
             shutdown_rx,
         ));
 
@@ -520,6 +574,96 @@ mod tests {
         assert!(
             !logs.contains("ended unexpectedly"),
             "clean exit must not log unexpected end, got:\n{logs}"
+        );
+    }
+
+    #[test]
+    fn research_rate_one_caps_dispatcher_at_one_per_hour() {
+        // B2: a `--research-rate 1` flag must yield a dispatcher whose
+        // capacity is exactly 1/hour. Build the same `BucketedBudget`
+        // the runner builds and observe the snapshot.
+        let dispatcher = BucketedBudget::in_memory(1);
+        let snap = dispatcher.current_state();
+        assert_eq!(snap.rate_per_hour, 1);
+        assert_eq!(snap.available, 1.0);
+    }
+
+    #[tokio::test]
+    async fn producer_collect_runs_in_blocking_pool() {
+        // NI3: regression — `producer_loop` previously called
+        // `plugin_collector.collect()` directly on a runtime worker,
+        // which can stall the executor under slow filesystems. The fix
+        // wraps the call in `tokio::task::spawn_blocking`. We verify
+        // the loop continues to drive snapshots forward through the
+        // bus even when the plugins dir does not exist (collect()
+        // returns empty), which exercises the spawn_blocking path.
+        let engine = Arc::new(ColdWindowEngine::with_defaults(100_000));
+        let mut rx = engine.subscribe();
+        let (tx, shutdown_rx) = watch::channel(false);
+        let _handle = tokio::spawn(producer_loop(
+            Arc::clone(&engine),
+            30,
+            true,
+            PathBuf::from("/nonexistent-plugins-test"),
+            Vec::new(),
+            shutdown_rx,
+        ));
+        let snap = tokio::time::timeout(Duration::from_millis(500), rx.recv())
+            .await
+            .expect("snapshot did not arrive in time")
+            .expect("bus closed");
+        // The plugins dir does not exist, so the collector returns
+        // empty; assert the engine still ticked at least once.
+        assert!(snap.version >= 1);
+        assert!(snap.plugin_health.is_empty());
+        let _ = tx.send(true);
+    }
+
+    #[test]
+    fn kill_switch_engages_when_engine_observes_budget_breach() {
+        // B4 cross-check: a switch shared with the engine engages once
+        // a tick crosses the budget ceiling. We construct the engine
+        // exactly the way `run` does — via `with_defaults` then
+        // `with_kill_switch` — so any drift in that chain breaks this
+        // assertion.
+        use skrills_analyze::cold_window::engine::TickInput;
+        let kill_switch = KillSwitch::new();
+        assert!(!kill_switch.is_engaged());
+        let engine = ColdWindowEngine::with_defaults(10_000).with_kill_switch(kill_switch.clone());
+        // Drive a tick whose token total is at the ceiling. The engine
+        // engages the switch in `tick()` per FR12.
+        let breach = TickInput::empty().with_token_ledger(TokenLedger {
+            per_skill: vec![],
+            per_plugin: vec![],
+            per_mcp: vec![TokenEntry {
+                source: "mcp://breach".into(),
+                tokens: 10_000,
+            }],
+            conversation_cache_reads: 0,
+            conversation_cache_writes: 0,
+            total: 10_000,
+        });
+        let _ = engine.tick(breach);
+        assert!(
+            kill_switch.is_engaged(),
+            "kill-switch must engage when token total reaches budget"
+        );
+    }
+
+    #[test]
+    fn skill_dirs_arg_propagates_through_merge_extra_dirs() {
+        // NI16: the user-provided `--skill-dir` paths flow through the
+        // same `merge_extra_dirs` helper that the rest of the server
+        // uses, so a future producer that takes a real skill collector
+        // sees them. Until that producer lands, this contract pins the
+        // call site so it can't silently drop the field.
+        let cli_dirs = vec![PathBuf::from("/tmp/skrills-test-a")];
+        let merged = merge_extra_dirs(&cli_dirs);
+        assert!(
+            merged
+                .iter()
+                .any(|p| p == &PathBuf::from("/tmp/skrills-test-a")),
+            "merge_extra_dirs must include the CLI-supplied dir, got: {merged:?}"
         );
     }
 

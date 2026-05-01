@@ -207,6 +207,7 @@ async fn render_browser_text(snap: Arc<WindowSnapshot>) -> String {
         bus: tx.clone(),
         budget_ceiling: BUDGET,
         research_quota: Some((7, 10)),
+        quota_source: None,
     };
     let app = cold_window_routes(dash_state);
 

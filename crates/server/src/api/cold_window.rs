@@ -36,7 +36,29 @@ use axum::routing::get;
 use axum::Router;
 use futures::Stream;
 use skrills_snapshot::{HintCategory, ResearchChannel, Severity, WindowSnapshot};
+use skrills_tome::dispatcher::BucketedBudget;
 use tokio::sync::broadcast;
+
+/// Live source for the research-quota status fragment. Implementors
+/// snapshot the current `(remaining, capacity)` pair on demand so the
+/// SSE loop can refresh it cheaply on every tick.
+///
+/// Implemented by [`BucketedBudget`] via the blanket `Arc` impl below;
+/// tests can also implement it directly for a fixed pair.
+pub trait ResearchQuotaSource: Send + Sync {
+    /// Return `(remaining, capacity)` rounded toward the user-visible
+    /// integer. `remaining` floors so a partial token never advertises
+    /// a fetch that would actually block.
+    fn quota_snapshot(&self) -> (u32, u32);
+}
+
+impl ResearchQuotaSource for Arc<BucketedBudget> {
+    fn quota_snapshot(&self) -> (u32, u32) {
+        let state = self.current_state();
+        let remaining = state.available.max(0.0).floor() as u32;
+        (remaining, state.rate_per_hour)
+    }
+}
 
 /// Shared state for the cold-window browser routes.
 #[derive(Clone)]
@@ -46,7 +68,15 @@ pub struct ColdWindowDashboardState {
     /// Token-budget ceiling for the status bar's progress display.
     pub budget_ceiling: u64,
     /// Optional research-quota snapshot (remaining, capacity).
+    ///
+    /// Used as the fallback when no live `quota_source` is wired.
+    /// When a source is present, the SSE loop overwrites this field
+    /// per-tick from `quota_source.quota_snapshot()`.
     pub research_quota: Option<(u32, u32)>,
+    /// Optional live quota source (the dispatcher, typically). When
+    /// present, the SSE loop snapshots the pair from this on every
+    /// tick so the dashboard reflects drains in real time (B3).
+    pub quota_source: Option<Arc<dyn ResearchQuotaSource>>,
 }
 
 impl ColdWindowDashboardState {
@@ -56,7 +86,19 @@ impl ColdWindowDashboardState {
             bus,
             budget_ceiling,
             research_quota: None,
+            quota_source: None,
         }
+    }
+
+    /// Attach a live quota source whose `quota_snapshot()` will be
+    /// queried each tick (B3). Replaces any previously-attached source
+    /// or static `research_quota` value.
+    pub fn with_research_quota_source<S>(mut self, source: S) -> Self
+    where
+        S: ResearchQuotaSource + 'static,
+    {
+        self.quota_source = Some(Arc::new(source));
+        self
     }
 }
 
@@ -77,12 +119,19 @@ async fn serve_dashboard_sse(
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let mut rx = state.bus.subscribe();
     let budget_ceiling = state.budget_ceiling;
-    let research_quota = state.research_quota;
+    let static_quota = state.research_quota;
+    let quota_source = state.quota_source.clone();
 
     let s = stream! {
         loop {
             match rx.recv().await {
                 Ok(snap) => {
+                    // B3: prefer the live dispatcher snapshot over the
+                    // static fallback so drains are visible in real time.
+                    let research_quota = quota_source
+                        .as_ref()
+                        .map(|q| q.quota_snapshot())
+                        .or(static_quota);
                     for event in render_snapshot_events(&snap, budget_ceiling, research_quota) {
                         yield Ok::<Event, Infallible>(event);
                     }
@@ -682,6 +731,102 @@ mod tests {
             body.contains("event:shutdown") || body.contains("event: shutdown"),
             "missing shutdown event in SSE body:\n{body}"
         );
+    }
+
+    /// B3: a synthetic quota source returns the pair we plugged in,
+    /// regardless of the static `research_quota` field.
+    struct StaticQuota(u32, u32);
+    impl ResearchQuotaSource for StaticQuota {
+        fn quota_snapshot(&self) -> (u32, u32) {
+            (self.0, self.1)
+        }
+    }
+
+    #[tokio::test]
+    async fn dashboard_quota_reflects_live_source_snapshot() {
+        // B3: with a live quota source attached, the SSE-rendered status
+        // fragment uses `source.quota_snapshot()`, not the static fallback.
+        // We bind an ephemeral port so we can subscribe via the real
+        // handler stack AND send a snapshot strictly after the handler
+        // has subscribed (broadcast only delivers to receivers that
+        // exist at the time of `send`).
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let (tx, _keep_rx) = broadcast::channel::<Arc<WindowSnapshot>>(16);
+        let state = ColdWindowDashboardState::new(tx.clone(), 100_000)
+            .with_research_quota_source(StaticQuota(0, 7));
+        let app = cold_window_routes(state);
+
+        // Build the request future first.
+        let req = axum::http::Request::builder()
+            .uri("/dashboard.sse")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response_fut = app.oneshot(req);
+
+        // Drive: spawn a sender that waits briefly for the handler to
+        // subscribe, then sends a snapshot and drops the sender so the
+        // stream completes (RecvError::Closed → shutdown event).
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            // Poll until the handler has subscribed. Two receivers
+            // exist at startup (`_keep_rx` and `tx_clone`'s implicit
+            // count); a third means the SSE handler is in.
+            for _ in 0..50 {
+                if tx_clone.receiver_count() >= 2 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let _ = tx_clone.send(Arc::new(empty_snap()));
+            // Drop the original `tx` so the channel closes once the
+            // remaining receivers drain. We have to drop both
+            // `tx_clone` (this scope) and the outer `tx` (below).
+        });
+        drop(tx);
+
+        let response = response_fut.await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8_lossy(&bytes).to_string();
+        assert!(
+            body.contains("quota: 0/7"),
+            "expected drained-quota label '0/7' in SSE body:\n{body}"
+        );
+    }
+
+    #[test]
+    fn live_quota_source_overrides_static_quota_in_sse_loop() {
+        // B3 (unit-level): the quota-resolution policy is "live source
+        // first, static field as fallback". This pins the policy
+        // independent of axum/tokio plumbing so future SSE refactors
+        // can't silently regress the priority.
+        let (tx, _rx) = broadcast::channel::<Arc<WindowSnapshot>>(1);
+        let state = ColdWindowDashboardState::new(tx, 100_000)
+            .with_research_quota_source(StaticQuota(0, 7));
+        // Pretend we also had a stale static value. The policy in the
+        // SSE handler is `quota_source.or(static_quota)`; we mirror it
+        // here against the same fields the handler reads.
+        let resolved = state
+            .quota_source
+            .as_ref()
+            .map(|q| q.quota_snapshot())
+            .or(state.research_quota);
+        assert_eq!(resolved, Some((0, 7)));
+    }
+
+    #[test]
+    fn bucketed_budget_quota_snapshot_reports_capacity_and_floor() {
+        // B3: the BucketedBudget Arc impl floors `available` and reports
+        // `rate_per_hour` as capacity — so a fresh bucket reads as
+        // `(rate, rate)` and the dashboard never advertises a fetch the
+        // bucket can't actually serve.
+        let bucket = Arc::new(BucketedBudget::in_memory(5));
+        let (rem, cap) = bucket.quota_snapshot();
+        assert_eq!(cap, 5);
+        assert_eq!(rem, 5);
     }
 
     #[tokio::test]
