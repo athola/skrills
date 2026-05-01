@@ -328,13 +328,10 @@ fn collect_debounced_paths_interruptible(
 /// Sets up a Ctrl+C handler that sends on the given channel.
 #[allow(unsafe_code)]
 fn ctrlc_channel(tx: &mpsc::Sender<()>) {
-    let tx = tx.clone();
-    // Use a simple atomic + signal handler approach
-    // that works without pulling in the `ctrlc` crate.
-    let _ = std::thread::spawn(move || {
-        // Block on SIGINT via libc
-        #[cfg(unix)]
-        {
+    #[cfg(unix)]
+    {
+        let tx = tx.clone();
+        let _ = std::thread::spawn(move || {
             use std::sync::atomic::{AtomicBool, Ordering};
             static SIGNALED: AtomicBool = AtomicBool::new(false);
 
@@ -356,17 +353,16 @@ fn ctrlc_channel(tx: &mpsc::Sender<()>) {
                     break;
                 }
             }
-        }
+        });
+    }
 
-        #[cfg(not(unix))]
-        {
-            // On non-unix, just sleep forever; the watcher channel closing
-            // will stop the loop.
-            loop {
-                std::thread::sleep(Duration::from_secs(3600));
-            }
-        }
-    });
+    #[cfg(not(unix))]
+    {
+        // On non-unix the watcher channel closing terminates the loop;
+        // no signal plumbing is wired (yet). The `tx` argument is
+        // intentionally unused on this path.
+        let _ = tx;
+    }
 }
 
 /// Returns a human-readable timestamp (HH:MM:SS).

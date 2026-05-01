@@ -9,7 +9,7 @@
 //! See `docs/archive/2026-04-26-cold-window-brief.md` for design rationale and
 //! `docs/archive/2026-04-26-cold-window-spec.md` for type contracts. Type design rules
 //! (proto-friendly conventions for the v0.9.0 gRPC follow-up) live in
-//! the `types` module documentation. The [`serde_impls`] module
+//! the `types` module documentation. The `serde_impls` module
 //! documents the read-tolerant deserialization strategy that reserves
 //! the `{"kind": "..."}` tagged shape for future payload variants
 //! without breaking the current bare-string wire format.
@@ -355,6 +355,48 @@ mod tests {
         // low_clear > high_clear (clears overlap inverted)
         let err = AlertBand::new(0.0, 96.0, 100.0, 95.0).expect_err("clears inverted");
         assert_eq!(err, BandError::InvalidClear);
+    }
+
+    // ---------- B3: AlertBand Deserialize re-runs validation ----------
+    //
+    // The derived `Deserialize` (pre-B3) routed JSON straight onto
+    // `pub(crate)` fields, bypassing `AlertBand::new`. A hostile or
+    // v0.9.0 non-Rust producer could ship `{"low":100,"high":50,...}`
+    // and downstream consumers would trust the invariants. The manual
+    // impl in `serde_impls` re-runs validation; these tests pin that
+    // contract.
+
+    #[test]
+    fn alert_band_deserialize_rejects_misordered_thresholds() {
+        let err = serde_json::from_str::<AlertBand>(
+            r#"{"low":100,"low_clear":100,"high":50,"high_clear":50}"#,
+        )
+        .expect_err("misordered thresholds must be rejected on the deserialize path");
+        assert!(
+            err.to_string().contains("low must be <= high"),
+            "BandError::Display should propagate; got: {err}"
+        );
+    }
+
+    #[test]
+    fn alert_band_deserialize_rejects_clear_outside_band() {
+        let err = serde_json::from_str::<AlertBand>(
+            r#"{"low":0.0,"low_clear":-5.0,"high":100.0,"high_clear":95.0}"#,
+        )
+        .expect_err("low_clear below low must be rejected");
+        assert!(
+            err.to_string().contains("clear thresholds"),
+            "BandError::InvalidClear should surface; got: {err}"
+        );
+    }
+
+    #[test]
+    fn alert_band_deserialize_accepts_valid_payload() {
+        let band: AlertBand =
+            serde_json::from_str(r#"{"low":0.0,"low_clear":5.0,"high":100.0,"high_clear":95.0}"#)
+                .expect("valid band deserializes");
+        assert_eq!(band.low(), 0.0);
+        assert_eq!(band.high(), 100.0);
     }
 
     // ---------- NI8: HealthStatus default ----------

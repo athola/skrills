@@ -125,7 +125,7 @@ impl ResearchQuota {
 /// for proto3 `enum`-compatibility today. Deserialization additionally
 /// accepts the tagged form `{"kind":"warning"}` for forward-compat
 /// with the v0.9.0 wire format that will introduce variants carrying
-/// payload (PR #218 review N1). See [`crate::serde_impls`].
+/// payload. See the `serde_impls` module.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
@@ -170,12 +170,13 @@ impl Severity {
 /// re-crossing the matching `*_clear` value.
 ///
 /// Construction is gated through [`AlertBand::new`] which validates
-/// the four thresholds (NI4 from PR #218 review). Fields are crate-
-/// private so producers outside `skrills_snapshot` must go through
-/// the validating constructor; producers inside the crate (and the
-/// `Deserialize` impl) may use [`AlertBand::new_unchecked`] for hot
-/// paths where validation already happened.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+/// the four thresholds. Fields are crate-private so producers outside
+/// `skrills_snapshot` must go through the validating constructor.
+/// `Deserialize` is implemented manually (see `serde_impls`) so JSON
+/// payloads from non-Rust producers or tampered SSE traffic also
+/// re-validate via [`AlertBand::new`] and reject NaN, misordered, or
+/// inverted clear thresholds the same way as direct construction.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct AlertBand {
     /// Lower fire threshold.
     pub(crate) low: f64,
@@ -245,24 +246,6 @@ impl AlertBand {
             high,
             high_clear,
         })
-    }
-
-    /// Construct without validating thresholds.
-    ///
-    /// Reserved for in-crate hot paths where the caller has already
-    /// vouched for the inputs. External producers must always go
-    /// through [`AlertBand::new`]. `Deserialize` ingests via the
-    /// derived field-by-field path on `AlertBand`'s `pub(crate)`
-    /// fields (round-trips of producer-emitted JSON).
-    #[doc(hidden)]
-    #[allow(dead_code)]
-    pub(crate) fn new_unchecked(low: f64, low_clear: f64, high: f64, high_clear: f64) -> Self {
-        Self {
-            low,
-            low_clear,
-            high,
-            high_clear,
-        }
     }
 
     /// Lower fire threshold.

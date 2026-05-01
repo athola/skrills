@@ -34,7 +34,7 @@ use core::fmt;
 use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde::Deserialize;
 
-use crate::types::{HealthStatus, HintCategory, ResearchChannel, Severity};
+use crate::types::{AlertBand, HealthStatus, HintCategory, ResearchChannel, Severity};
 
 /// Read either a bare string or a `{"kind": "..."}` map and resolve
 /// the discriminator into `T` via `from_str`. Forward-compatible with
@@ -208,5 +208,34 @@ impl<'de> Deserialize<'de> for HealthStatus {
             health_status_from_str,
             HEALTH_STATUS_VARIANTS,
         )
+    }
+}
+
+// ---------- AlertBand ----------
+//
+// `AlertBand` enforces invariants (NaN-rejection, ordered fire
+// thresholds, clear thresholds bracketed by fire thresholds) via its
+// constructor `AlertBand::new`. Deriving `Deserialize` would route
+// JSON payloads through serde's field-by-field path and skip
+// validation entirely, letting hostile or v0.9.0 non-Rust producers
+// ship `{"low":100,"high":50,"low_clear":NaN,"high_clear":-1}`.
+// Downstream consumers (FieldwiseDiff, dashboard renderer) trust the
+// invariants. We therefore deserialize into a transparent helper
+// struct and re-run `AlertBand::new`, reporting `BandError` as a
+// serde validation error.
+
+#[derive(Deserialize)]
+struct AlertBandWire {
+    low: f64,
+    low_clear: f64,
+    high: f64,
+    high_clear: f64,
+}
+
+impl<'de> Deserialize<'de> for AlertBand {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = AlertBandWire::deserialize(deserializer)?;
+        AlertBand::new(wire.low, wire.low_clear, wire.high, wire.high_clear)
+            .map_err(de::Error::custom)
     }
 }
