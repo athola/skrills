@@ -4,7 +4,7 @@
 //! These widgets subscribe to the snapshot bus produced by
 //! `skrills_analyze::cold_window::ColdWindowEngine` and render
 //! ratatui frames. The TUI surface is one of two
-//! [render targets](docs/cold-window-brief.md#3-architecture); the
+//! [render targets](docs/archive/2026-04-26-cold-window-brief.md#3-architecture); the
 //! browser surface in `skrills-server` consumes the same
 //! `WindowSnapshot` artifact.
 //!

@@ -1,6 +1,6 @@
 //! Cold-window real-time analysis subsystem.
 //!
-//! Per `docs/cold-window-brief.md`, this module hosts the per-tick
+//! Per `docs/archive/2026-04-26-cold-window-brief.md`, this module hosts the per-tick
 //! producer (`ColdWindowEngine`) and the strategy traits that govern
 //! its behavior (`AlertPolicy`, `HintScorer`, `ResearchBudget`,
 //! `SnapshotDiff`, `CadenceStrategy`). The producer broadcasts

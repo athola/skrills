@@ -1,6 +1,6 @@
 //! Default snapshot diff policy for the cold-window engine.
 //!
-//! Per `docs/cold-window-spec.md` § 6.5, [`FieldwiseDiff`] applies
+//! Per `docs/archive/2026-04-26-cold-window-spec.md` § 6.5, [`FieldwiseDiff`] applies
 //! per-field rules:
 //!
 //! - **Token totals**: alert on ±2% change (kills heuristic noise).

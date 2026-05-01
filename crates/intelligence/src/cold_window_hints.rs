@@ -2,7 +2,7 @@
 //!
 //! Implements the `HintScorer` trait declared in
 //! `skrills_analyze::cold_window::traits`. The default scoring
-//! formula (per `docs/cold-window-spec.md` § 6.3) is:
+//! formula (per `docs/archive/2026-04-26-cold-window-spec.md` § 6.3) is:
 //!
 //! ```text
 //! score = (frequency * FREQUENCY_WEIGHT + impact * IMPACT_WEIGHT)

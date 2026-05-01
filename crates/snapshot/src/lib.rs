@@ -6,8 +6,8 @@
 //! `skrills_server`). Producer and consumers depend on this crate;
 //! they do not depend on each other.
 //!
-//! See `docs/cold-window-brief.md` for design rationale and
-//! `docs/cold-window-spec.md` for type contracts. Type design rules
+//! See `docs/archive/2026-04-26-cold-window-brief.md` for design rationale and
+//! `docs/archive/2026-04-26-cold-window-spec.md` for type contracts. Type design rules
 //! (proto-friendly conventions for the v0.9.0 gRPC follow-up) live in
 //! the `types` module documentation. The [`serde_impls`] module
 //! documents the read-tolerant deserialization strategy that reserves

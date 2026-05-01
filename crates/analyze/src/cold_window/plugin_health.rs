@@ -1,6 +1,6 @@
 //! Plugin participation in the cold-window tick (TASK-022).
 //!
-//! Implements FR11 from `docs/cold-window-spec.md`: third-party
+//! Implements FR11 from `docs/archive/2026-04-26-cold-window-spec.md`: third-party
 //! skrills plugins may opt into the cold-window by shipping a
 //! `health.toml` file alongside their `.claude-plugin/plugin.json`.
 //! On each tick the [`PluginHealthCollector`] walks the plugins

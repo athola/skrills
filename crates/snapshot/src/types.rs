@@ -1,6 +1,6 @@
 //! Wire-format types for the cold-window snapshot.
 //!
-//! Type design rules (proto-friendly, per `docs/cold-window-brief.md` § 5.8):
+//! Type design rules (proto-friendly, per `docs/archive/2026-04-26-cold-window-brief.md` § 5.8):
 //!
 //! - All enum variants use tagged unions where they carry payload (proto3
 //!   `oneof`-compatible). Unit-only enums serialize as bare strings
@@ -70,7 +70,7 @@ impl WindowSnapshot {
 
 /// 4-tier alert severity, mapped from FAA AC 25.1322-1 cockpit CAS.
 ///
-/// User-facing behavior per `docs/cold-window-spec.md` § 3.4:
+/// User-facing behavior per `docs/archive/2026-04-26-cold-window-spec.md` § 3.4:
 /// `Warning` interrupts; `Caution` and below are panel-only.
 ///
 /// Serialization writes the bare lowercase variant name (`"warning"`)
@@ -328,7 +328,7 @@ pub struct TokenEntry {
 
 /// Itemized token attribution for the snapshot.
 ///
-/// Per `docs/cold-window-spec.md` § 3.3 and § 3.4: alerts at 20K
+/// Per `docs/archive/2026-04-26-cold-window-spec.md` § 3.3 and § 3.4: alerts at 20K
 /// (quadratic inflection), 50K (Willison MCP-overhead range), and
 /// 100% of `--alert-budget`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
