@@ -22,11 +22,13 @@
 //! and [`FieldwiseDiff`].
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use skrills_intelligence::cold_window_hints::MultiSignalScorer;
 use skrills_snapshot::{
-    Hint, LoadSample, PluginHealth, ResearchFinding, ScoredHint, TokenLedger, WindowSnapshot,
+    Alert, AlertBand, Hint, KillSwitch, LoadSample, PluginHealth, ResearchFinding, ScoredHint,
+    Severity, TokenLedger, WindowSnapshot,
 };
 
 use super::alert::LayeredAlertPolicy;
@@ -152,14 +154,36 @@ struct EngineState {
     last_snapshot: Option<Arc<WindowSnapshot>>,
     alert_history: AlertHistory,
     version: u64,
+    /// Consecutive ticks whose wall-clock body exceeded the configured
+    /// budget. Reset on the first under-budget tick. Drives the NB1/NB2
+    /// STATUS → ADVISORY escalation.
+    consecutive_overruns: u32,
+    /// Ticks since last `tracing::debug!` for "broadcast send had no
+    /// subscribers". Throttles the log to once per
+    /// [`SUBSCRIBERLESS_LOG_INTERVAL`] ticks (NI14).
+    subscriberless_ticks: u32,
 }
+
+/// How many consecutive overruns of the tick budget escalate the
+/// per-tick alert from `Severity::Status` (informational) to
+/// `Severity::Advisory` (awareness-only). Spec NB1.
+pub const TICK_OVERRUN_ADVISORY_THRESHOLD: u32 = 3;
+
+/// Cadence at which the engine emits a `tracing::debug!` with the
+/// count of broadcast-send failures (no subscribers). Once per N
+/// ticks; counter resets after each emission. NI14 keeps the log
+/// from spamming when no consumer is attached.
+pub const SUBSCRIBERLESS_LOG_INTERVAL: u32 = 100;
 
 /// Cold-window engine: per-tick producer of immutable
 /// `Arc<WindowSnapshot>` artifacts.
 ///
 /// Construct via [`ColdWindowEngine::with_defaults`] for the standard
 /// strategy stack, or [`ColdWindowEngine::with_strategies`] when you
-/// want to inject custom implementations.
+/// want to inject custom implementations. Both constructors yield an
+/// engine wired to a fresh [`KillSwitch`]; callers that already
+/// minted one (e.g. `skrills-server` for sharing with sync adapters)
+/// must replace it via [`ColdWindowEngine::with_kill_switch`].
 pub struct ColdWindowEngine {
     tx: broadcast::Sender<Arc<WindowSnapshot>>,
     activity: Arc<Mutex<ActivityRing>>,
@@ -168,11 +192,31 @@ pub struct ColdWindowEngine {
     hint_scorer: Box<dyn HintScorer>,
     diff: Box<dyn SnapshotDiff>,
     state: Arc<Mutex<EngineState>>,
+    /// Hard budget for one tick body. If wall-clock exceeds this,
+    /// the engine emits a `Severity::Status` alert (or
+    /// `Severity::Advisory` after [`TICK_OVERRUN_ADVISORY_THRESHOLD`]
+    /// consecutive overruns). Defaults to 50 ms (SC1 median budget).
+    tick_budget: Duration,
+    /// Externally-shared kill-switch. The engine engages it when the
+    /// active alert policy reports the budget has been breached
+    /// (FR12 hard kill). Cloned out via [`Self::kill_switch`] so
+    /// adapters (sync, server) can observe the same flag.
+    kill_switch: KillSwitch,
+    /// Token budget ceiling forwarded by the alert policy. Stored so
+    /// the engine can engage the kill-switch without re-classifying
+    /// the snapshot itself (the policy already did).
+    budget_ceiling: u64,
 }
+
+/// Default per-tick wall-clock budget. Matches the SC1 median budget
+/// used by the criterion bench in `benches/tick_budget.rs`.
+pub const DEFAULT_TICK_BUDGET: Duration = Duration::from_millis(50);
 
 impl ColdWindowEngine {
     /// Construct an engine with the spec-default strategy stack and
-    /// a user-supplied token-budget ceiling.
+    /// a user-supplied token-budget ceiling. Wires a fresh
+    /// [`KillSwitch`]; share state by chaining
+    /// [`ColdWindowEngine::with_kill_switch`].
     pub fn with_defaults(budget_ceiling: u64) -> Self {
         Self::with_strategies(
             Box::new(LoadAwareCadence::new()),
@@ -180,9 +224,13 @@ impl ColdWindowEngine {
             Box::new(DefaultHintScorer(MultiSignalScorer::new())),
             Box::new(FieldwiseDiff::new()),
         )
+        .with_budget_ceiling(budget_ceiling)
     }
 
-    /// Construct an engine with caller-provided strategies.
+    /// Construct an engine with caller-provided strategies. The token
+    /// budget ceiling defaults to `u64::MAX` (kill-switch never
+    /// engages); chain [`ColdWindowEngine::with_budget_ceiling`] when
+    /// the alert policy uses a real ceiling.
     pub fn with_strategies(
         cadence: Box<dyn CadenceStrategy>,
         alert_policy: Box<dyn AlertPolicy>,
@@ -200,7 +248,40 @@ impl ColdWindowEngine {
             hint_scorer,
             diff,
             state: Arc::new(Mutex::new(EngineState::default())),
+            tick_budget: DEFAULT_TICK_BUDGET,
+            kill_switch: KillSwitch::new(),
+            budget_ceiling: u64::MAX,
         }
+    }
+
+    /// Replace the engine's [`KillSwitch`] with a caller-provided one.
+    /// Used by `skrills-server` to share a single switch across the
+    /// engine and the sync adapters (FR12).
+    pub fn with_kill_switch(mut self, kill_switch: KillSwitch) -> Self {
+        self.kill_switch = kill_switch;
+        self
+    }
+
+    /// Override the per-tick wall-clock budget. Defaults to
+    /// [`DEFAULT_TICK_BUDGET`].
+    pub fn with_tick_budget(mut self, budget: Duration) -> Self {
+        self.tick_budget = budget;
+        self
+    }
+
+    /// Set the token budget ceiling that the engine will use to engage
+    /// the kill-switch. Should match the ceiling configured on the
+    /// alert policy.
+    pub fn with_budget_ceiling(mut self, ceiling: u64) -> Self {
+        self.budget_ceiling = ceiling;
+        self
+    }
+
+    /// Clone out the kill-switch so adapters (sync, server, dashboard)
+    /// can observe engagement without holding a reference to the
+    /// engine.
+    pub fn kill_switch(&self) -> KillSwitch {
+        self.kill_switch.clone()
     }
 
     /// Subscribe to the snapshot bus.
@@ -245,6 +326,7 @@ impl ColdWindowEngine {
     /// run alert policy + hint scorer + diff against the carried
     /// state, broadcast, and return the new snapshot.
     pub fn tick(&self, input: TickInput) -> Arc<WindowSnapshot> {
+        let tick_start = Instant::now();
         let TickInput {
             timestamp_ms,
             token_ledger,
@@ -318,13 +400,72 @@ impl ColdWindowEngine {
             alerts.extend(synthetic.malformed_alerts(timestamp_ms));
         }
 
+        // B4 engine-half: engage shared kill-switch when token total
+        // breaches the configured budget ceiling (FR12). One-way:
+        // never released by the engine; only daemon restart clears.
+        if snapshot.token_ledger.total >= self.budget_ceiling {
+            self.kill_switch.engage();
+        }
+
+        // NB1 + NB2: tick-budget overrun.
+        let elapsed = tick_start.elapsed();
+        if elapsed > self.tick_budget {
+            state.consecutive_overruns = state.consecutive_overruns.saturating_add(1);
+            let severity = if state.consecutive_overruns >= TICK_OVERRUN_ADVISORY_THRESHOLD {
+                Severity::Advisory
+            } else {
+                Severity::Status
+            };
+            let elapsed_ms = elapsed.as_millis() as u64;
+            let budget_ms = self.tick_budget.as_millis() as u64;
+            // Hysteresis band over (budget_ms .. elapsed_ms+1) — the
+            // alert is "value-driven" so a band is informative even
+            // though the gate logic is just elapsed > budget.
+            let high = (elapsed_ms.max(budget_ms + 1)) as f64;
+            let band = AlertBand::new(0.0, 0.0, high, budget_ms as f64).ok();
+            alerts.push(Alert {
+                fingerprint: "tick-budget-overrun".into(),
+                severity,
+                title: "Tick budget overrun".into(),
+                message: format!(
+                    "tick exceeded budget: elapsed_ms={elapsed_ms} budget_ms={budget_ms} \
+                     consecutive_overruns={}",
+                    state.consecutive_overruns
+                ),
+                band,
+                fired_at_ms: timestamp_ms,
+                dwell_ticks: state.consecutive_overruns,
+            });
+        } else {
+            state.consecutive_overruns = 0;
+        }
+
         snapshot.alerts = alerts;
 
         let snap_arc = Arc::new(snapshot);
         state.last_snapshot = Some(Arc::clone(&snap_arc));
+
+        // NI14: surface broadcast send failures via a throttled debug
+        // log. SendError occurs only when the channel has zero live
+        // receivers — common during startup (no SSE clients yet) and
+        // benign once consumers attach. Logging on every tick spams.
+        match self.tx.send(Arc::clone(&snap_arc)) {
+            Ok(_) => {
+                state.subscriberless_ticks = 0;
+            }
+            Err(_) => {
+                state.subscriberless_ticks = state.subscriberless_ticks.saturating_add(1);
+                if state.subscriberless_ticks >= SUBSCRIBERLESS_LOG_INTERVAL {
+                    tracing::debug!(
+                        ticks_with_no_subscribers = state.subscriberless_ticks,
+                        "cold-window broadcast send had no subscribers"
+                    );
+                    state.subscriberless_ticks = 0;
+                }
+            }
+        }
         drop(state);
 
-        let _ = self.tx.send(Arc::clone(&snap_arc));
         snap_arc
     }
 }
@@ -422,16 +563,18 @@ mod tests {
 
     #[test]
     fn chaos_sequence_eventually_fires_warning() {
-        // Ramp tokens 0 → 50K (10 ticks * 5K). With budget 30K and
-        // min_dwell 1, we expect Warning tier to fire by tick 8.
+        // Ramp tokens 0 → 65K (14 ticks * 5K). With budget 80K (so
+        // warning fires at 64K and caution=50K < warning=64K satisfies
+        // tier ordering — NI6) and min_dwell 1, Warning fires by t=13
+        // (65K crosses the 64K warning floor).
         let engine = ColdWindowEngine::with_strategies(
             Box::new(LoadAwareCadence::new()),
-            Box::new(LayeredAlertPolicy::new(30_000).with_min_dwell(1)),
+            Box::new(LayeredAlertPolicy::new(80_000).with_min_dwell(1)),
             Box::new(DefaultHintScorer(MultiSignalScorer::new())),
             Box::new(FieldwiseDiff::new()),
         );
         let mut warning_fired = false;
-        for snap in chaos_sequence(11) {
+        for snap in chaos_sequence(14) {
             let result = engine.tick(input_from_snapshot(&snap));
             if result
                 .alerts
@@ -616,5 +759,193 @@ mod tests {
         let snap = engine.tick(input);
         assert_eq!(snap.token_ledger.total, 42);
         assert_eq!(snap.token_ledger.per_skill.len(), 1);
+    }
+
+    // ---------- NB1 + NB2: tick budget overrun ----------
+
+    fn slow_input() -> TickInput {
+        TickInput::empty().with_timestamp_ms(1_700_000_000_000)
+    }
+
+    /// Drive a tick that exceeds the configured tick budget. We do this
+    /// via a custom alert policy that sleeps inside `evaluate` for
+    /// longer than the budget, ensuring deterministic overrun without
+    /// relying on machine load.
+    struct SlowPolicy {
+        sleep: Duration,
+    }
+    impl AlertPolicy for SlowPolicy {
+        fn evaluate(
+            &self,
+            _prev: &WindowSnapshot,
+            _curr: &WindowSnapshot,
+            _history: &mut AlertHistory,
+        ) -> Vec<skrills_snapshot::Alert> {
+            std::thread::sleep(self.sleep);
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn nb1_overrun_emits_status_alert() {
+        // Tight 1-ms tick budget plus a 5-ms sleep inside the policy
+        // forces an overrun on every tick. First overrun → STATUS.
+        let engine = ColdWindowEngine::with_strategies(
+            Box::new(LoadAwareCadence::new()),
+            Box::new(SlowPolicy {
+                sleep: Duration::from_millis(5),
+            }),
+            Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+            Box::new(FieldwiseDiff::new()),
+        )
+        .with_tick_budget(Duration::from_millis(1));
+
+        let snap = engine.tick(slow_input());
+        let overrun: Vec<_> = snap
+            .alerts
+            .iter()
+            .filter(|a| a.fingerprint == "tick-budget-overrun")
+            .collect();
+        assert_eq!(overrun.len(), 1);
+        assert!(matches!(overrun[0].severity, Severity::Status));
+        assert!(overrun[0].message.contains("elapsed_ms"));
+        assert!(overrun[0].message.contains("budget_ms"));
+    }
+
+    #[test]
+    fn nb2_three_consecutive_overruns_escalate_to_advisory() {
+        let engine = ColdWindowEngine::with_strategies(
+            Box::new(LoadAwareCadence::new()),
+            Box::new(SlowPolicy {
+                sleep: Duration::from_millis(3),
+            }),
+            Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+            Box::new(FieldwiseDiff::new()),
+        )
+        .with_tick_budget(Duration::from_millis(1));
+
+        let mut last_severity: Option<Severity> = None;
+        for _ in 0..3 {
+            let snap = engine.tick(slow_input());
+            let overrun = snap
+                .alerts
+                .iter()
+                .find(|a| a.fingerprint == "tick-budget-overrun")
+                .expect("overrun alert");
+            last_severity = Some(overrun.severity);
+        }
+        assert!(matches!(last_severity, Some(Severity::Advisory)));
+    }
+
+    #[test]
+    fn nb1_under_budget_resets_overrun_counter() {
+        // Use the no-sleep default policy with a generous tick budget;
+        // counter must remain zero, no overrun alert appears.
+        let engine =
+            ColdWindowEngine::with_defaults(100_000).with_tick_budget(Duration::from_secs(10));
+        let snap = engine.tick(TickInput::empty());
+        let overrun = snap
+            .alerts
+            .iter()
+            .find(|a| a.fingerprint == "tick-budget-overrun");
+        assert!(
+            overrun.is_none(),
+            "no overrun expected on under-budget tick"
+        );
+    }
+
+    // ---------- B4 engine-half: KillSwitch ----------
+
+    #[test]
+    fn b4_kill_switch_engages_on_budget_breach() {
+        let engine = ColdWindowEngine::with_defaults(50_000);
+        let switch = engine.kill_switch();
+        assert!(!switch.is_engaged(), "switch starts disengaged");
+        let input = TickInput::empty().with_token_ledger(TokenLedger {
+            total: 50_000,
+            ..Default::default()
+        });
+        let _ = engine.tick(input);
+        assert!(
+            switch.is_engaged(),
+            "switch must engage at or above budget ceiling"
+        );
+    }
+
+    #[test]
+    fn b4_kill_switch_stays_disengaged_below_ceiling() {
+        let engine = ColdWindowEngine::with_defaults(100_000);
+        let switch = engine.kill_switch();
+        let input = TickInput::empty().with_token_ledger(TokenLedger {
+            total: 50_000,
+            ..Default::default()
+        });
+        let _ = engine.tick(input);
+        assert!(!switch.is_engaged());
+    }
+
+    #[test]
+    fn b4_with_kill_switch_replaces_engine_switch() {
+        let external = KillSwitch::new();
+        let engine = ColdWindowEngine::with_defaults(50_000).with_kill_switch(external.clone());
+        let input = TickInput::empty().with_token_ledger(TokenLedger {
+            total: 60_000,
+            ..Default::default()
+        });
+        let _ = engine.tick(input);
+        assert!(
+            external.is_engaged(),
+            "externally-cloned switch must observe engagement"
+        );
+    }
+
+    // ---------- NI14: broadcast send debug log (no subscribers) ----------
+
+    #[test]
+    fn ni14_no_subscribers_does_not_panic_on_repeated_ticks() {
+        // Driver test: many ticks with zero subscribers must never
+        // panic. The engine throttles its `tracing::debug!` to once
+        // per SUBSCRIBERLESS_LOG_INTERVAL ticks (100). We validate
+        // robustness by running >2x the interval.
+        let engine = ColdWindowEngine::with_defaults(100_000);
+        for _ in 0..(SUBSCRIBERLESS_LOG_INTERVAL * 2 + 5) {
+            let _ = engine.tick(TickInput::empty());
+        }
+        // Reaching here means no panic, no allocator blowup. Snapshot
+        // version counter advanced by full count.
+        let last = engine.last_snapshot().expect("at least one tick");
+        assert!(last.version >= u64::from(SUBSCRIBERLESS_LOG_INTERVAL * 2 + 5));
+    }
+
+    #[tokio::test]
+    async fn ni14_attached_subscriber_keeps_send_succeeding() {
+        // Sanity check: with a subscriber attached, broadcast send
+        // succeeds and the engine never increments its counter.
+        let engine = ColdWindowEngine::with_defaults(100_000);
+        let mut rx = engine.subscribe();
+        for _ in 0..10 {
+            let _ = engine.tick(TickInput::empty());
+            let _ = rx.recv().await;
+        }
+        // No assertion on internal counter (private), but the receive
+        // side observed each tick — the send path must have succeeded.
+    }
+
+    #[test]
+    fn b4_kill_switch_engagement_is_one_way() {
+        // Once engaged, dropping back below the ceiling must NOT
+        // release the switch (FR12: only daemon restart clears).
+        let engine = ColdWindowEngine::with_defaults(50_000);
+        let switch = engine.kill_switch();
+        let _ = engine.tick(TickInput::empty().with_token_ledger(TokenLedger {
+            total: 60_000,
+            ..Default::default()
+        }));
+        assert!(switch.is_engaged());
+        let _ = engine.tick(TickInput::empty().with_token_ledger(TokenLedger {
+            total: 0,
+            ..Default::default()
+        }));
+        assert!(switch.is_engaged(), "engagement must be one-way");
     }
 }

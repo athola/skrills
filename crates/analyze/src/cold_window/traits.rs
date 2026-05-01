@@ -29,6 +29,13 @@ pub struct AlertState {
     /// condition re-crosses the matching `*_clear` threshold in
     /// the alert's [`skrills_snapshot::AlertBand`]).
     pub cleared: bool,
+    /// `high_clear` value of the band that produced this alert state.
+    /// Used by [`AlertPolicy::evaluate`] to decide whether a tick
+    /// where the signal has fallen out of the firing band counts as
+    /// a *true* clear (signal dropped to or below `high_clear`) or
+    /// merely a brief dip into the hysteresis zone (between
+    /// `high_clear` and `high`). Spec § 3.4 (B6 re-arm gate).
+    pub last_high_clear: Option<f64>,
 }
 
 /// Hysteresis state across all known alert fingerprints.

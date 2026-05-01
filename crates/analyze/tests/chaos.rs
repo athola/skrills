@@ -82,15 +82,23 @@ fn monotonic_ramp_emits_at_most_one_alert_per_tier() {
     );
 
     let mut fire_counts: std::collections::HashMap<String, usize> = Default::default();
+    let mut transitions: std::collections::HashMap<String, usize> = Default::default();
+    let mut last_active: std::collections::HashSet<String> = Default::default();
     for snap in chaos_sequence(TEN_MIN_TICKS) {
         let input = TickInput::empty()
             .with_timestamp_ms(snap.timestamp_ms)
             .with_token_ledger(snap.token_ledger.clone())
             .with_load_sample(snap.load_sample);
         let out = engine.tick(input);
-        for alert in &out.alerts {
-            *fire_counts.entry(alert.fingerprint.clone()).or_insert(0) += 1;
+        let now_active: std::collections::HashSet<String> =
+            out.alerts.iter().map(|a| a.fingerprint.clone()).collect();
+        for fp in &now_active {
+            if !last_active.contains(fp) {
+                *transitions.entry(fp.clone()).or_insert(0) += 1;
+            }
+            *fire_counts.entry(fp.clone()).or_insert(0) += 1;
         }
+        last_active = now_active;
     }
 
     // Each fingerprint may persist across ticks (alert stays "on")
@@ -101,6 +109,18 @@ fn monotonic_ramp_emits_at_most_one_alert_per_tier() {
         fire_counts.len() >= 3,
         "expected at least 3 tier escalations (Advisory, Caution, Warning) — got {fire_counts:?}"
     );
+    // N3: lower-bound assertion. A monotonic ramp through every tier
+    // must produce *at least one* transition (alarm switching from
+    // inactive → active). A zero-firing implementation that vacuously
+    // satisfies SC7 (the upper bound test in this file) would also
+    // vacuously satisfy `fire_counts.len() >= 3` if alerts were
+    // emitted but never re-counted as transitions, so we explicitly
+    // require >= 1 transition here.
+    let total_transitions: usize = transitions.values().sum();
+    assert!(
+        total_transitions >= 1,
+        "monotonic ramp must produce at least one alert transition; got {transitions:?}"
+    );
 }
 
 #[test]
@@ -108,6 +128,16 @@ fn oscillating_chaos_meets_sc7_via_hysteresis() {
     // Spec SC7: a flapping signal must not re-fire the same alert
     // > 12 times per hour. 10-min window admits 2 re-fires per
     // fingerprint; we project to 1 hr by multiplying.
+    //
+    // N3 note: this assertion is intentionally **one-sided** (upper
+    // bound only). A zero-firing implementation passes vacuously, but
+    // that scenario is caught by `chaos_stream_eventually_fires_at_least_one_alert`
+    // and `monotonic_ramp_emits_at_most_one_alert_per_tier` (which
+    // adds an explicit `transitions >= 1` lower bound for the
+    // monotonic ramp). The flapping case here is correctly served by
+    // the upper bound: with hysteresis active, a true B6 fix can
+    // legitimately yield zero transitions (signal stays in the
+    // hysteresis zone the whole time) and SC7 must pass.
     let engine = ColdWindowEngine::with_strategies(
         Box::new(LoadAwareCadence::new()),
         Box::new(LayeredAlertPolicy::new(80_000).with_min_dwell(2)),
