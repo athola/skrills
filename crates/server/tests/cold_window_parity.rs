@@ -9,7 +9,7 @@
 //!
 //! ## Plan deviation
 //!
-//! `docs/cold-window-plan.md` § 2 lists this test at
+//! `docs/archive/2026-04-26-cold-window-plan.md` § 2 lists this test at
 //! `crates/test-utils/tests/parity.rs`. Putting it there would force
 //! `skrills_test_utils` to dev-depend on `skrills-server`,
 //! `skrills-dashboard`, `ratatui`, and `reqwest`. Two of those
@@ -49,7 +49,7 @@ use skrills_dashboard::cold_window::{
 use skrills_server::api::{cold_window_routes, ColdWindowDashboardState};
 use skrills_snapshot::{
     Alert, AlertBand, HealthStatus, Hint, HintCategory, LoadSample, PluginHealth, ResearchChannel,
-    ResearchFinding, ScoredHint, Severity, TokenEntry, TokenLedger, WindowSnapshot,
+    ResearchFinding, ResearchQuota, ScoredHint, Severity, TokenEntry, TokenLedger, WindowSnapshot,
 };
 use tokio::sync::broadcast;
 
@@ -173,7 +173,15 @@ fn render_tui_text(snap: Arc<WindowSnapshot>) -> String {
             AlertPane::render(&state, f, chunks[0]);
             HintPane::render(&state, &hint_state, f, chunks[1]);
             ResearchPane::render(&state, &research_state, f, chunks[2]);
-            StatusBar::render(&state, Some((7, 10)), BUDGET, f, chunks[3]);
+            // NI7: 3 used of 10 → status renders "quota: 7/10" (the
+            // historical `available/total` form).
+            StatusBar::render(
+                &state,
+                Some(ResearchQuota::new(3, 10)),
+                BUDGET,
+                f,
+                chunks[3],
+            );
         })
         .unwrap();
 
@@ -206,7 +214,7 @@ async fn render_browser_text(snap: Arc<WindowSnapshot>) -> String {
     let dash_state = ColdWindowDashboardState {
         bus: tx.clone(),
         budget_ceiling: BUDGET,
-        research_quota: Some((7, 10)),
+        research_quota: Some(ResearchQuota::new(3, 10)),
         quota_source: None,
     };
     let app = cold_window_routes(dash_state);

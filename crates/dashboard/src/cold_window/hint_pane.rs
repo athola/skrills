@@ -180,7 +180,7 @@ impl HintPane {
     ) {
         let title = match pane_state.filter {
             None => " Hints  (1=tok 2=val 3=red 4=sync 5=qual 0=all  P=pin) ".to_string(),
-            Some(c) => format!(" Hints  filter:{}  (0=clear) ", category_label(c)),
+            Some(c) => format!(" Hints  filter:{}  (0=clear) ", c.label()),
         };
         let visible = pane_state.visible_hints(snap_state);
         let items: Vec<ListItem> = visible
@@ -198,7 +198,7 @@ impl HintPane {
         let pinned = pane_state.pinned.contains(&hint.hint.uri);
         let pin_marker = if pinned { "[*] " } else { "[ ] " };
         let score_str = format!("{:>5.1}", hint.score);
-        let category = category_label(hint.hint.category);
+        let category = hint.hint.category.label();
         let line = Line::from(vec![
             Span::styled(
                 pin_marker.to_string(),
@@ -271,20 +271,10 @@ impl HintPane {
     }
 }
 
-fn category_label(category: HintCategory) -> &'static str {
-    match category {
-        HintCategory::Token => "token",
-        HintCategory::Validation => "validation",
-        HintCategory::Redundancy => "redundancy",
-        HintCategory::SyncDrift => "sync-drift",
-        HintCategory::Quality => "quality",
-    }
-}
-
 /// Public so the cli can derive labels for help text without going
-/// through the trait.
+/// through the trait. Thin shim over [`HintCategory::label`] (S1).
 pub fn category_label_pub(c: HintCategory) -> &'static str {
-    category_label(c)
+    c.label()
 }
 
 #[cfg(test)]

@@ -43,8 +43,8 @@ mod types;
 pub use kill_switch::KillSwitch;
 pub use types::{
     Alert, AlertBand, BandError, HealthCheck, HealthStatus, Hint, HintCategory, LoadSample,
-    PluginHealth, ResearchBudget, ResearchChannel, ResearchFinding, ScoredHint, Severity,
-    TokenEntry, TokenLedger, WindowSnapshot,
+    PluginHealth, ResearchBudget, ResearchChannel, ResearchFinding, ResearchQuota, ScoredHint,
+    Severity, TokenEntry, TokenLedger, WindowSnapshot,
 };
 
 #[cfg(test)]
@@ -371,5 +371,80 @@ mod tests {
     fn plugin_health_default_uses_unknown_overall() {
         let ph = PluginHealth::default();
         assert_eq!(ph.overall, HealthStatus::Unknown);
+    }
+
+    // ---------- NI7: ResearchQuota newtype ----------
+
+    #[test]
+    fn research_quota_new_stores_used_then_total() {
+        // The constructor signature is `new(used, total)` — named
+        // accessors prevent silent inversion at call sites.
+        let q = ResearchQuota::new(3, 10);
+        assert_eq!(q.used(), 3);
+        assert_eq!(q.total(), 10);
+        assert_eq!(q.available(), 7);
+    }
+
+    #[test]
+    fn research_quota_available_saturates_at_zero() {
+        // Defensive: if a producer reports `used > total` (clock skew,
+        // refill race), `available` must not underflow into `u32::MAX`.
+        let q = ResearchQuota::new(15, 10);
+        assert_eq!(q.available(), 0);
+    }
+
+    #[test]
+    fn research_quota_round_trips_through_json() {
+        let q = ResearchQuota::new(2, 5);
+        let json = serde_json::to_string(&q).expect("serialize");
+        let restored: ResearchQuota = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored, q);
+    }
+
+    #[test]
+    fn research_quota_inversion_is_visible_at_value_level() {
+        // NI7 regression: the named-field accessors make a flipped
+        // call site produce values that disagree with their meaning,
+        // which any equality test catches.
+        let intended = ResearchQuota::new(3, 10);
+        let inverted = ResearchQuota::new(10, 3);
+        assert_ne!(intended, inverted);
+        assert_eq!(intended.available(), 7);
+        assert_eq!(inverted.available(), 0); // saturating: 3 - 10 → 0
+    }
+
+    // ---------- S1: hoisted label / rank methods ----------
+
+    #[test]
+    fn severity_short_label_covers_every_variant() {
+        assert_eq!(Severity::Warning.short_label(), "WARN");
+        assert_eq!(Severity::Caution.short_label(), "CAUT");
+        assert_eq!(Severity::Advisory.short_label(), "ADVI");
+        assert_eq!(Severity::Status.short_label(), "STAT");
+    }
+
+    #[test]
+    fn severity_rank_orders_warning_first() {
+        assert!(Severity::Warning.rank() < Severity::Caution.rank());
+        assert!(Severity::Caution.rank() < Severity::Advisory.rank());
+        assert!(Severity::Advisory.rank() < Severity::Status.rank());
+    }
+
+    #[test]
+    fn hint_category_label_covers_every_variant() {
+        assert_eq!(HintCategory::Token.label(), "token");
+        assert_eq!(HintCategory::Validation.label(), "validation");
+        assert_eq!(HintCategory::Redundancy.label(), "redundancy");
+        assert_eq!(HintCategory::SyncDrift.label(), "sync-drift");
+        assert_eq!(HintCategory::Quality.label(), "quality");
+    }
+
+    #[test]
+    fn research_channel_short_label_covers_every_variant() {
+        assert_eq!(ResearchChannel::GitHub.short_label(), "GitHub");
+        assert_eq!(ResearchChannel::HackerNews.short_label(), "HN");
+        assert_eq!(ResearchChannel::Lobsters.short_label(), "Lobsters");
+        assert_eq!(ResearchChannel::Paper.short_label(), "Paper");
+        assert_eq!(ResearchChannel::Triz.short_label(), "TRIZ");
     }
 }

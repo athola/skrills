@@ -35,28 +35,34 @@ use axum::response::Html;
 use axum::routing::get;
 use axum::Router;
 use futures::Stream;
-use skrills_snapshot::{HintCategory, ResearchChannel, Severity, WindowSnapshot};
+use skrills_snapshot::{ResearchChannel, ResearchQuota, Severity, WindowSnapshot};
 use skrills_tome::dispatcher::BucketedBudget;
 use tokio::sync::broadcast;
 
 /// Live source for the research-quota status fragment. Implementors
-/// snapshot the current `(remaining, capacity)` pair on demand so the
-/// SSE loop can refresh it cheaply on every tick.
+/// snapshot the current quota on demand so the SSE loop can refresh
+/// it cheaply on every tick (NI7 newtype boundary).
 ///
 /// Implemented by [`BucketedBudget`] via the blanket `Arc` impl below;
-/// tests can also implement it directly for a fixed pair.
+/// tests can also implement it directly for a fixed value.
 pub trait ResearchQuotaSource: Send + Sync {
-    /// Return `(remaining, capacity)` rounded toward the user-visible
-    /// integer. `remaining` floors so a partial token never advertises
-    /// a fetch that would actually block.
-    fn quota_snapshot(&self) -> (u32, u32);
+    /// Return the current quota. The newtype removes the historical
+    /// `(u32, u32)` ambiguity ("which slot is remaining?") at the
+    /// type-system level.
+    fn quota_snapshot(&self) -> ResearchQuota;
 }
 
 impl ResearchQuotaSource for Arc<BucketedBudget> {
-    fn quota_snapshot(&self) -> (u32, u32) {
+    fn quota_snapshot(&self) -> ResearchQuota {
         let state = self.current_state();
-        let remaining = state.available.max(0.0).floor() as u32;
-        (remaining, state.rate_per_hour)
+        // `available` floors so a partial token never advertises a
+        // fetch that would actually block; `used = total - available`
+        // by construction so the displayed `available/total` matches
+        // what the bucket can actually serve.
+        let available = state.available.max(0.0).floor() as u32;
+        let total = state.rate_per_hour;
+        let used = total.saturating_sub(available);
+        ResearchQuota::new(used, total)
     }
 }
 
@@ -67,12 +73,12 @@ pub struct ColdWindowDashboardState {
     pub bus: broadcast::Sender<Arc<WindowSnapshot>>,
     /// Token-budget ceiling for the status bar's progress display.
     pub budget_ceiling: u64,
-    /// Optional research-quota snapshot (remaining, capacity).
+    /// Optional static research-quota snapshot (NI7).
     ///
     /// Used as the fallback when no live `quota_source` is wired.
     /// When a source is present, the SSE loop overwrites this field
     /// per-tick from `quota_source.quota_snapshot()`.
-    pub research_quota: Option<(u32, u32)>,
+    pub research_quota: Option<ResearchQuota>,
     /// Optional live quota source (the dispatcher, typically). When
     /// present, the SSE loop snapshots the pair from this on every
     /// tick so the dashboard reflects drains in real time (B3).
@@ -162,7 +168,7 @@ async fn serve_dashboard_sse(
 fn render_snapshot_events(
     snap: &WindowSnapshot,
     budget_ceiling: u64,
-    research_quota: Option<(u32, u32)>,
+    research_quota: Option<ResearchQuota>,
 ) -> Vec<Event> {
     vec![
         Event::default()
@@ -257,13 +263,15 @@ fn render_alert_fragment(snap: &WindowSnapshot) -> String {
     }
     let mut sorted = snap.alerts.iter().collect::<Vec<_>>();
     sorted.sort_by(|a, b| {
-        severity_rank(a.severity)
-            .cmp(&severity_rank(b.severity))
+        a.severity
+            .rank()
+            .cmp(&b.severity.rank())
             .then(b.fired_at_ms.cmp(&a.fired_at_ms))
     });
     let mut out = String::from("<ul>");
     for alert in sorted {
-        let (class, label) = severity_class(alert.severity);
+        let class = severity_class(alert.severity);
+        let label = alert.severity.short_label();
         out.push_str(&format!(
             r#"<li><span class="tier-tag {class}">{label}</span><span class="severity-{class}">{title}</span> — {message}</li>"#,
             class = class,
@@ -297,7 +305,7 @@ fn render_hint_fragment(snap: &WindowSnapshot) -> String {
             pin_class = pin_class,
             pin = pin,
             score = h.score,
-            cat = category_label(h.hint.category),
+            cat = h.hint.category.label(),
             uri = html_escape(&h.hint.uri),
             msg = html_escape(&h.hint.message),
         ));
@@ -312,7 +320,8 @@ fn render_research_fragment(snap: &WindowSnapshot) -> String {
     }
     let mut out = String::from("<ul>");
     for f in &snap.research_findings {
-        let (chan_class, chan_label) = channel_classes(f.channel);
+        let chan_class = channel_class(f.channel);
+        let chan_label = f.channel.short_label();
         out.push_str(&format!(
             r#"<li><span class="channel-tag {chan}">{label}</span><strong>{score:.1}</strong>  <a href="{url}" target="_blank" rel="noopener noreferrer">{title}</a></li>"#,
             chan = chan_class,
@@ -329,7 +338,7 @@ fn render_research_fragment(snap: &WindowSnapshot) -> String {
 fn render_status_fragment(
     snap: &WindowSnapshot,
     budget_ceiling: u64,
-    research_quota: Option<(u32, u32)>,
+    research_quota: Option<ResearchQuota>,
 ) -> String {
     let cadence = cadence_label(snap);
     let token_label = format!(
@@ -363,8 +372,10 @@ fn render_status_fragment(
         "W:{} C:{} A:{} S:{}",
         counts[0], counts[1], counts[2], counts[3]
     );
+    // NI7: render `available/total` so the historical "quota: 7/10"
+    // contract is preserved across the SSE wire and the TUI.
     let quota_label = research_quota
-        .map(|(rem, cap)| format!("  ·  quota: {rem}/{cap}"))
+        .map(|q| format!("  ·  quota: {}/{}", q.available(), q.total()))
         .unwrap_or_default();
     format!(
         r#"<strong>{cadence}</strong>  ·  <span>{token_label}</span><span class="budget-bar"><span class="budget-fill {bar_class}" style="width:{bar_width}%"></span></span>  ·  <span>{alerts_label}</span>{quota_label}"#
@@ -383,41 +394,26 @@ fn format_token_count(n: u64) -> String {
     }
 }
 
-fn severity_rank(severity: Severity) -> u8 {
+/// CSS class fragment for a severity tier. The user-visible short
+/// label lives on [`Severity::short_label`] (S1).
+fn severity_class(severity: Severity) -> &'static str {
     match severity {
-        Severity::Warning => 0,
-        Severity::Caution => 1,
-        Severity::Advisory => 2,
-        Severity::Status => 3,
+        Severity::Warning => "warning",
+        Severity::Caution => "caution",
+        Severity::Advisory => "advisory",
+        Severity::Status => "status",
     }
 }
 
-fn severity_class(severity: Severity) -> (&'static str, &'static str) {
-    match severity {
-        Severity::Warning => ("warning", "WARN"),
-        Severity::Caution => ("caution", "CAUT"),
-        Severity::Advisory => ("advisory", "ADVI"),
-        Severity::Status => ("status", "STAT"),
-    }
-}
-
-fn category_label(category: HintCategory) -> &'static str {
-    match category {
-        HintCategory::Token => "token",
-        HintCategory::Validation => "validation",
-        HintCategory::Redundancy => "redundancy",
-        HintCategory::SyncDrift => "sync-drift",
-        HintCategory::Quality => "quality",
-    }
-}
-
-fn channel_classes(channel: ResearchChannel) -> (&'static str, &'static str) {
+/// CSS class fragment for a research channel. The user-visible label
+/// lives on [`ResearchChannel::short_label`] (S1).
+fn channel_class(channel: ResearchChannel) -> &'static str {
     match channel {
-        ResearchChannel::GitHub => ("github", "GitHub"),
-        ResearchChannel::HackerNews => ("hn", "HN"),
-        ResearchChannel::Lobsters => ("lobsters", "Lobsters"),
-        ResearchChannel::Paper => ("paper", "Paper"),
-        ResearchChannel::Triz => ("triz", "TRIZ"),
+        ResearchChannel::GitHub => "github",
+        ResearchChannel::HackerNews => "hn",
+        ResearchChannel::Lobsters => "lobsters",
+        ResearchChannel::Paper => "paper",
+        ResearchChannel::Triz => "triz",
     }
 }
 
@@ -445,7 +441,8 @@ fn html_escape(s: &str) -> String {
 mod tests {
     use super::*;
     use skrills_snapshot::{
-        Alert, AlertBand, Hint, LoadSample, ResearchFinding, ScoredHint, TokenLedger,
+        Alert, AlertBand, Hint, HintCategory, LoadSample, ResearchChannel, ResearchFinding,
+        ScoredHint, TokenLedger,
     };
 
     fn empty_snap() -> WindowSnapshot {
@@ -606,7 +603,8 @@ mod tests {
         snap.token_ledger.total = 25_000;
         snap.next_tick_ms = 4_000;
         snap.load_sample.loadavg_1min = 0.78;
-        let frag = render_status_fragment(&snap, 100_000, Some((7, 10)));
+        // NI7: 3 used of 10 → "quota: 7/10" matches the prior wire.
+        let frag = render_status_fragment(&snap, 100_000, Some(ResearchQuota::new(3, 10)));
         assert!(frag.contains("tick: 4.0s"));
         assert!(frag.contains("[load 0.78]"));
         assert!(frag.contains("25.0K / 100.0K"));
@@ -733,12 +731,13 @@ mod tests {
         );
     }
 
-    /// B3: a synthetic quota source returns the pair we plugged in,
-    /// regardless of the static `research_quota` field.
+    /// B3: a synthetic quota source returns the value we plugged in,
+    /// regardless of the static `research_quota` field. Constructor
+    /// takes `(used, total)` to match [`ResearchQuota::new`].
     struct StaticQuota(u32, u32);
     impl ResearchQuotaSource for StaticQuota {
-        fn quota_snapshot(&self) -> (u32, u32) {
-            (self.0, self.1)
+        fn quota_snapshot(&self) -> ResearchQuota {
+            ResearchQuota::new(self.0, self.1)
         }
     }
 
@@ -754,8 +753,10 @@ mod tests {
         use tower::ServiceExt;
 
         let (tx, _keep_rx) = broadcast::channel::<Arc<WindowSnapshot>>(16);
+        // NI7: `StaticQuota` now passes `(used, total)`; `used=7, total=7`
+        // means "fully drained" → renderer emits `quota: 0/7`.
         let state = ColdWindowDashboardState::new(tx.clone(), 100_000)
-            .with_research_quota_source(StaticQuota(0, 7));
+            .with_research_quota_source(StaticQuota(7, 7));
         let app = cold_window_routes(state);
 
         // Build the request future first.
@@ -805,7 +806,7 @@ mod tests {
         // can't silently regress the priority.
         let (tx, _rx) = broadcast::channel::<Arc<WindowSnapshot>>(1);
         let state = ColdWindowDashboardState::new(tx, 100_000)
-            .with_research_quota_source(StaticQuota(0, 7));
+            .with_research_quota_source(StaticQuota(7, 7));
         // Pretend we also had a stale static value. The policy in the
         // SSE handler is `quota_source.or(static_quota)`; we mirror it
         // here against the same fields the handler reads.
@@ -814,19 +815,20 @@ mod tests {
             .as_ref()
             .map(|q| q.quota_snapshot())
             .or(state.research_quota);
-        assert_eq!(resolved, Some((0, 7)));
+        assert_eq!(resolved, Some(ResearchQuota::new(7, 7)));
     }
 
     #[test]
     fn bucketed_budget_quota_snapshot_reports_capacity_and_floor() {
-        // B3: the BucketedBudget Arc impl floors `available` and reports
-        // `rate_per_hour` as capacity — so a fresh bucket reads as
-        // `(rate, rate)` and the dashboard never advertises a fetch the
-        // bucket can't actually serve.
+        // B3 + NI7: the BucketedBudget Arc impl returns a ResearchQuota
+        // where `used = total - floor(available)`; a fresh bucket reads
+        // as `used = 0` so the dashboard never advertises a fetch the
+        // bucket can't actually serve (`available() == total`).
         let bucket = Arc::new(BucketedBudget::in_memory(5));
-        let (rem, cap) = bucket.quota_snapshot();
-        assert_eq!(cap, 5);
-        assert_eq!(rem, 5);
+        let q = bucket.quota_snapshot();
+        assert_eq!(q.total(), 5);
+        assert_eq!(q.used(), 0);
+        assert_eq!(q.available(), 5);
     }
 
     #[tokio::test]

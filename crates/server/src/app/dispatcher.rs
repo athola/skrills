@@ -84,12 +84,12 @@ pub fn run() -> Result<()> {
                     None, None, false, false, false, false, false, None,
                 )?;
                 crate::setup::run_setup(config)?;
-                println!(
-                    "\nYou can now use skrills. Run your command again or explore 'skrills --help'"
+                tracing::info!(
+                    "you can now use skrills; run your command again or explore 'skrills --help'"
                 );
                 return Ok(());
             } else {
-                println!("Setup skipped. Run 'skrills setup' when ready.");
+                tracing::info!("setup skipped; run 'skrills setup' when ready");
             }
         }
     }
@@ -170,8 +170,8 @@ pub fn run() -> Result<()> {
             let target = to.unwrap_or_else(|| from.default_target());
 
             if !skip_existing_commands {
-                eprintln!(
-                    "Warning: syncing commands will overwrite existing files. Use --skip-existing-commands to keep existing copies."
+                tracing::warn!(
+                    "syncing commands will overwrite existing files; use --skip-existing-commands to keep existing copies"
                 );
             }
 
@@ -189,7 +189,7 @@ pub fn run() -> Result<()> {
 
             let report = run_sync_with_adapters(from, target, &params)?;
 
-            println!(
+            tracing::info!(
                 "{}{}",
                 report.summary,
                 if skip_existing_commands && !report.commands.skipped.is_empty() {
@@ -208,7 +208,7 @@ pub fn run() -> Result<()> {
                 }
             );
             if dry_run {
-                println!("(dry run - no changes made)");
+                tracing::info!("(dry run - no changes made)");
             }
             Ok(())
         }
@@ -229,9 +229,9 @@ pub fn run() -> Result<()> {
 
             let report = run_sync_with_adapters(from, target, &params)?;
 
-            println!("{}", report.summary);
+            tracing::info!("{}", report.summary);
             if dry_run {
-                println!("(dry run - no changes made)");
+                tracing::info!("(dry run - no changes made)");
             }
             Ok(())
         }
@@ -252,9 +252,9 @@ pub fn run() -> Result<()> {
 
             let report = run_sync_with_adapters(from, target, &params)?;
 
-            println!("{}", report.summary);
+            tracing::info!("{}", report.summary);
             if dry_run {
-                println!("(dry run - no changes made)");
+                tracing::info!("(dry run - no changes made)");
             }
             Ok(())
         }
@@ -280,7 +280,11 @@ pub fn run() -> Result<()> {
 
             for target in targets {
                 if multi_target {
-                    println!("\n=== Syncing {} → {} ===", from.as_str(), target.as_str());
+                    tracing::info!(
+                        from = %from.as_str(),
+                        to = %target.as_str(),
+                        "syncing target"
+                    );
                 }
 
                 // First sync skills using existing mechanism (only for claude→codex)
@@ -296,9 +300,10 @@ pub fn run() -> Result<()> {
                     let _ = crate::setup::ensure_codex_skills_feature_enabled(
                         &home.join(".codex/config.toml"),
                     );
-                    println!(
-                        "Skills: {} synced, {} unchanged",
-                        skill_report.copied, skill_report.skipped
+                    tracing::info!(
+                        synced = skill_report.copied,
+                        unchanged = skill_report.skipped,
+                        "skills synced"
                     );
                 }
 
@@ -325,7 +330,7 @@ pub fn run() -> Result<()> {
 
                 let report = run_sync_with_adapters(from, target, &params)?;
 
-                println!(
+                tracing::info!(
                     "{}{}",
                     report.summary,
                     if skip_existing_commands && !report.commands.skipped.is_empty() {
@@ -346,7 +351,7 @@ pub fn run() -> Result<()> {
             }
 
             if dry_run {
-                println!("\n(dry run - no changes made)");
+                tracing::info!("(dry run - no changes made)");
             }
             Ok(())
         }
@@ -367,14 +372,20 @@ pub fn run() -> Result<()> {
                 ..Default::default()
             };
 
-            println!("Sync direction: {} → {}", from.as_str(), target.as_str());
+            tracing::info!(
+                from = %from.as_str(),
+                to = %target.as_str(),
+                "sync direction"
+            );
 
             let report = run_sync_with_adapters(from, target, &params)?;
 
-            println!("\nPending changes:");
-            println!("  Commands: {} would sync", report.commands.written);
-            println!("  MCP Servers: {} would sync", report.mcp_servers.written);
-            println!("  Preferences: {} would sync", report.preferences.written);
+            tracing::info!(
+                commands = report.commands.written,
+                mcp_servers = report.mcp_servers.written,
+                preferences = report.preferences.written,
+                "pending changes"
+            );
 
             // Count skills
             let home = home_dir()?;
@@ -404,9 +415,9 @@ pub fn run() -> Result<()> {
                     .filter_map(|e| e.ok())
                     .filter(crate::discovery::is_skill_file)
                     .count();
-                println!("  Skills: {} found in source", skill_count);
+                tracing::info!(skill_count, "skills found in source");
             } else {
-                println!("  Skills: 0 (source directory not found)");
+                tracing::info!("skills: 0 (source directory not found)");
             }
 
             Ok(())
@@ -424,7 +435,7 @@ pub fn run() -> Result<()> {
         }
         #[cfg(not(feature = "dashboard"))]
         Commands::Dashboard { .. } => {
-            eprintln!("Dashboard feature not enabled. Rebuild with --features dashboard");
+            tracing::error!("dashboard feature not enabled; rebuild with --features dashboard");
             Ok(())
         }
         Commands::Setup {

@@ -68,6 +68,54 @@ impl WindowSnapshot {
     }
 }
 
+/// Research-quota pair surfaced on the status bar (NI7 from PR #218).
+///
+/// Replaces the prior `Option<(u32, u32)>` representation, which was
+/// silently bug-prone: callers had to remember whether the tuple was
+/// `(used, total)` or `(remaining, capacity)`, and a flipped pair
+/// produced inverted displays without any compile-time signal.
+///
+/// Semantics: `used` is the count of tokens consumed so far this
+/// hour, `total` is the per-hour capacity. The status bar historically
+/// renders `quota: {available}/{total}` where `available = total -
+/// used`, so [`Self::available`] is the field the renderer pulls.
+///
+/// Construction is `new(used, total)`; named-field accessors prevent
+/// the historical "did I get the order right?" bug class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResearchQuota {
+    /// Tokens already consumed this hour.
+    pub used: u32,
+    /// Per-hour capacity.
+    pub total: u32,
+}
+
+impl ResearchQuota {
+    /// Construct from a `(used, total)` pair.
+    #[must_use]
+    pub fn new(used: u32, total: u32) -> Self {
+        Self { used, total }
+    }
+
+    /// Tokens already consumed this hour.
+    #[must_use]
+    pub fn used(&self) -> u32 {
+        self.used
+    }
+
+    /// Per-hour capacity.
+    #[must_use]
+    pub fn total(&self) -> u32 {
+        self.total
+    }
+
+    /// Tokens still available this hour (`total - used`, saturating).
+    #[must_use]
+    pub fn available(&self) -> u32 {
+        self.total.saturating_sub(self.used)
+    }
+}
+
 /// 4-tier alert severity, mapped from FAA AC 25.1322-1 cockpit CAS.
 ///
 /// User-facing behavior per `docs/archive/2026-04-26-cold-window-spec.md` § 3.4:
@@ -89,6 +137,33 @@ pub enum Severity {
     Advisory,
     /// Informational; auto-clears when condition resolves.
     Status,
+}
+
+impl Severity {
+    /// Short 4-character label used by the alert pane and SSE
+    /// fragments. Centralized here (S1 from PR #218) so the TUI and
+    /// browser can never drift on the user-visible tag.
+    #[must_use]
+    pub fn short_label(&self) -> &'static str {
+        match self {
+            Self::Warning => "WARN",
+            Self::Caution => "CAUT",
+            Self::Advisory => "ADVI",
+            Self::Status => "STAT",
+        }
+    }
+
+    /// Sort rank used by alert renderers (lower rank surfaces first).
+    /// Warning < Caution < Advisory < Status.
+    #[must_use]
+    pub fn rank(&self) -> u8 {
+        match self {
+            Self::Warning => 0,
+            Self::Caution => 1,
+            Self::Advisory => 2,
+            Self::Status => 3,
+        }
+    }
 }
 
 /// Hysteresis-banded threshold for an alert: re-arming requires
@@ -252,6 +327,22 @@ pub enum HintCategory {
     Quality,
 }
 
+impl HintCategory {
+    /// Lowercase label used in the hint pane, the SSE hint fragment,
+    /// and the CLI help output. Centralized here (S1 from PR #218) so
+    /// the kebab-case form for `SyncDrift` is settled in one place.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Token => "token",
+            Self::Validation => "validation",
+            Self::Redundancy => "redundancy",
+            Self::SyncDrift => "sync-drift",
+            Self::Quality => "quality",
+        }
+    }
+}
+
 /// A raw hint produced by the intelligence crate's recommender.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Hint {
@@ -298,6 +389,22 @@ pub enum ResearchChannel {
     Paper,
     /// TRIZ cross-domain analogy.
     Triz,
+}
+
+impl ResearchChannel {
+    /// Short label used by the research pane row and the SSE channel
+    /// tag. Centralized here (S1 from PR #218) so the TUI and browser
+    /// stay byte-identical on this field per SC4.
+    #[must_use]
+    pub fn short_label(&self) -> &'static str {
+        match self {
+            Self::GitHub => "GitHub",
+            Self::HackerNews => "HN",
+            Self::Lobsters => "Lobsters",
+            Self::Paper => "Paper",
+            Self::Triz => "TRIZ",
+        }
+    }
 }
 
 /// A research finding surfaced asynchronously by the tome dispatcher.

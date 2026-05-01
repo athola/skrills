@@ -67,7 +67,8 @@ impl AlertPane {
 
     /// Build one ratatui list row for an alert.
     fn render_row(alert: &Alert) -> ListItem<'_> {
-        let (color, tag) = tier_style(alert.severity);
+        let color = tier_color(alert.severity);
+        let tag = alert.severity.short_label();
         let line = Line::from(vec![
             Span::styled(
                 format!(" {tag} "),
@@ -111,12 +112,14 @@ impl AlertPane {
     }
 }
 
-fn tier_style(severity: Severity) -> (Color, &'static str) {
+/// Map a severity tier to its ratatui color. Labels live on
+/// [`Severity::short_label`] (S1).
+fn tier_color(severity: Severity) -> Color {
     match severity {
-        Severity::Warning => (Color::Red, "WARN"),
-        Severity::Caution => (Color::Yellow, "CAUT"),
-        Severity::Advisory => (Color::Cyan, "ADVI"),
-        Severity::Status => (Color::Gray, "STAT"),
+        Severity::Warning => Color::Red,
+        Severity::Caution => Color::Yellow,
+        Severity::Advisory => Color::Cyan,
+        Severity::Status => Color::Gray,
     }
 }
 

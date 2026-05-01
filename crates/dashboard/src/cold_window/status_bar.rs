@@ -17,7 +17,7 @@ use ratatui::prelude::*;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
-use skrills_snapshot::WindowSnapshot;
+use skrills_snapshot::{ResearchQuota, WindowSnapshot};
 
 use super::state::ColdWindowState;
 
@@ -28,7 +28,7 @@ impl StatusBar {
     /// Render the status line into `area`.
     pub fn render(
         state: &ColdWindowState,
-        research_quota: Option<(u32, u32)>,
+        research_quota: Option<ResearchQuota>,
         budget_ceiling: u64,
         frame: &mut Frame<'_>,
         area: Rect,
@@ -43,7 +43,7 @@ impl StatusBar {
     /// backend, and for logging).
     pub fn render_to_string(
         state: &ColdWindowState,
-        research_quota: Option<(u32, u32)>,
+        research_quota: Option<ResearchQuota>,
         budget_ceiling: u64,
     ) -> String {
         line_to_plain_string(&build_line(state, research_quota, budget_ceiling))
@@ -52,7 +52,7 @@ impl StatusBar {
 
 fn build_line<'a>(
     state: &ColdWindowState,
-    research_quota: Option<(u32, u32)>,
+    research_quota: Option<ResearchQuota>,
     budget_ceiling: u64,
 ) -> Line<'a> {
     let cadence_label = cadence_label(state.current.as_deref());
@@ -62,8 +62,10 @@ fn build_line<'a>(
         "W:{} C:{} A:{} S:{}",
         counts.warning, counts.caution, counts.advisory, counts.status,
     );
+    // NI7: render `available/total` so the historical "quota: 7/10"
+    // visual contract holds even though the newtype stores `used`.
     let quota_label = research_quota
-        .map(|(remaining, capacity)| format!("quota: {remaining}/{capacity}"))
+        .map(|q| format!("quota: {}/{}", q.available(), q.total()))
         .unwrap_or_default();
 
     let mut spans = vec![
@@ -146,7 +148,9 @@ mod tests {
     use ratatui::backend::TestBackend;
     use std::sync::Arc;
 
-    use skrills_snapshot::{Alert, AlertBand, LoadSample, Severity, TokenLedger, WindowSnapshot};
+    use skrills_snapshot::{
+        Alert, AlertBand, LoadSample, ResearchQuota, Severity, TokenLedger, WindowSnapshot,
+    };
 
     fn snap_with(
         load: f64,
@@ -218,7 +222,9 @@ mod tests {
     fn quota_label_renders_when_provided() {
         let mut state = ColdWindowState::new();
         state.ingest(snap_with(0.0, None, 5_000, 2_000));
-        let s = StatusBar::render_to_string(&state, Some((7, 10)), 100_000);
+        // NI7: 3 used out of 10 → status shows the historical
+        // `available/total` form (7/10).
+        let s = StatusBar::render_to_string(&state, Some(ResearchQuota::new(3, 10)), 100_000);
         assert!(s.contains("quota: 7/10"), "got: {s}");
     }
 

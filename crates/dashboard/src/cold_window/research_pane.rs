@@ -171,7 +171,7 @@ impl ResearchPane {
     }
 
     fn render_row(finding: &ResearchFinding) -> ListItem<'_> {
-        let channel = channel_label(finding.channel);
+        let channel = finding.channel.short_label();
         let line = Line::from(vec![
             Span::styled(
                 format!(" {channel:>10} "),
@@ -210,16 +210,6 @@ impl ResearchPane {
             }
             _ => ResearchAction::NoOp,
         }
-    }
-}
-
-fn channel_label(channel: ResearchChannel) -> &'static str {
-    match channel {
-        ResearchChannel::GitHub => "GitHub",
-        ResearchChannel::HackerNews => "HN",
-        ResearchChannel::Lobsters => "Lobsters",
-        ResearchChannel::Paper => "Paper",
-        ResearchChannel::Triz => "TRIZ",
     }
 }
 

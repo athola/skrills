@@ -108,8 +108,9 @@ impl ColdWindowState {
             })
             .collect();
         visible.sort_by(|a, b| {
-            severity_rank(a.severity)
-                .cmp(&severity_rank(b.severity))
+            a.severity
+                .rank()
+                .cmp(&b.severity.rank())
                 .then(b.fired_at_ms.cmp(&a.fired_at_ms))
         });
         visible
@@ -155,16 +156,6 @@ impl AlertCounts {
     /// Total count across all tiers.
     pub fn total(&self) -> usize {
         self.warning + self.caution + self.advisory + self.status
-    }
-}
-
-fn severity_rank(severity: Severity) -> u8 {
-    // Lower rank sorts first.
-    match severity {
-        Severity::Warning => 0,
-        Severity::Caution => 1,
-        Severity::Advisory => 2,
-        Severity::Status => 3,
     }
 }
 
