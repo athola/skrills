@@ -24,7 +24,7 @@ use skrills_snapshot::LoadSample;
 ///
 /// The default implementation is [`LoadAwareCadence`]; users
 /// may override by implementing this trait and passing it to the
-/// engine via a future `with_cadence()` method (added in TASK-008).
+/// engine via the `with_strategies()` constructor.
 pub trait CadenceStrategy: Send + Sync {
     /// Decide how long to wait before firing the next tick given
     /// the current load sample.

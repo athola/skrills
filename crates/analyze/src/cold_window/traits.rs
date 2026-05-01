@@ -1,13 +1,12 @@
 //! Strategy traits for the cold-window engine.
 //!
-//! Each trait declares a contract; default implementations land in
-//! later cold-window plan tasks:
+//! Each trait declares a contract; default implementations:
 //!
-//! | Trait | Default impl | Plan task |
+//! | Trait | Default impl | Crate |
 //! |---|---|---|
-//! | [`AlertPolicy`] | `LayeredAlertPolicy` | TASK-013 |
-//! | [`HintScorer`] | `MultiSignalScorer`  | TASK-010 |
-//! | [`SnapshotDiff`] | `FieldwiseDiff`    | TASK-014 |
+//! | [`AlertPolicy`] | `LayeredAlertPolicy` | `analyze::cold_window::alert` |
+//! | [`HintScorer`] | `MultiSignalScorer`  | `skrills-intelligence` |
+//! | [`SnapshotDiff`] | `FieldwiseDiff`    | `analyze::cold_window::diff` |
 //!
 //! All traits are kept object-safe so the engine can store them as
 //! `Box<dyn Trait>` and accept user overrides at runtime. The
@@ -56,7 +55,7 @@ impl AlertHistory {
 ///
 /// Implementations apply hysteresis bands, min-dwell timers, and the
 /// 4-tier severity classification per spec § 3.4. The default
-/// implementation `LayeredAlertPolicy` lands in TASK-013.
+/// implementation is `LayeredAlertPolicy` in [`super::alert`].
 ///
 /// Mutates `history` so dwell counters increment even on ticks where
 /// the condition holds but min-dwell has not yet been satisfied. This
@@ -75,7 +74,7 @@ pub trait AlertPolicy: Send + Sync {
 
 /// Rank a list of hints into a `ScoredHint` vector.
 ///
-/// The default implementation `MultiSignalScorer` (TASK-010) extends
+/// The default implementation `MultiSignalScorer` (in `skrills-intelligence`) extends
 /// the existing `skrills_intelligence::recommend::scorer` machinery
 /// with a recency-weighted ratio per spec § 6.3.
 pub trait HintScorer: Send + Sync {
@@ -117,7 +116,7 @@ pub enum DiffField {
 /// Decide what fields changed enough between two snapshots to be
 /// worth alerting on.
 ///
-/// The default implementation `FieldwiseDiff` (TASK-014) applies
+/// The default implementation `FieldwiseDiff` (in [`super::diff`]) applies
 /// declarative per-field rules: ±2% tolerance on token counts,
 /// always-alert on skill/plugin add/remove, never-alert on
 /// timestamps.

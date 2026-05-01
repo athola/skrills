@@ -8,7 +8,7 @@
 //! channel; consumers (TUI in `skrills-dashboard`, browser SSE
 //! handler in `skrills-server`) subscribe to the same bus.
 //!
-//! Resource bounds (per cold-window plan TASK-007 / risk R11):
+//! Resource bounds (R11):
 //!
 //! - Broadcast channel capacity: [`SNAPSHOT_CHANNEL_CAPACITY`].
 //!   Lagging subscribers drop and the engine logs a `Status`-tier
@@ -17,10 +17,10 @@
 //!   evict; the ring never grows unboundedly.
 //!
 //! Type-shaped contracts live in [`traits`]; the default cadence
-//! lives in [`cadence`]. Default trait implementations
-//! (`LayeredAlertPolicy`, `MultiSignalScorer`, `BucketedBudget`,
-//! `FieldwiseDiff`) land in TASK-010, TASK-011, TASK-013, TASK-014
-//! of the cold-window plan.
+//! lives in [`cadence`]. Default trait implementations are
+//! `LayeredAlertPolicy` (in [`alert`]), `MultiSignalScorer` (in
+//! `skrills-intelligence`), `BucketedBudget` (in `skrills-tome`),
+//! and `FieldwiseDiff` (in [`diff`]).
 
 pub mod alert;
 pub mod cadence;
@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn activity_ring_constants_match_plan() {
-        // Per cold-window plan TASK-007 (R11):
+        // R11 resource-bounds invariants:
         assert_eq!(SNAPSHOT_CHANNEL_CAPACITY, 16);
         assert_eq!(ACTIVITY_RING_CAPACITY, 100);
     }

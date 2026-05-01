@@ -1,4 +1,4 @@
-//! Plugin participation in the cold-window tick (TASK-022).
+//! Plugin participation in the cold-window tick.
 //!
 //! Implements FR11 from `docs/archive/2026-04-26-cold-window-spec.md`: third-party
 //! skrills plugins may opt into the cold-window by shipping a

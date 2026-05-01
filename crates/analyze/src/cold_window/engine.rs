@@ -1,4 +1,4 @@
-//! Cold-window engine integration (TASK-008 GREEN phase).
+//! Cold-window engine integration.
 //!
 //! Wires the strategy traits declared in
 //! [`super::traits`] into a single `tick()` loop. The engine takes
@@ -507,7 +507,7 @@ mod tests {
     #[test]
     fn tick_under_typical_input_completes_under_50ms() {
         // Median tick budget per spec SC1. This is a smoke test on
-        // the integration path, not the full benchmark (TASK-024).
+        // the integration path, not the full benchmark.
         let engine = ColdWindowEngine::with_defaults(100_000);
         let input = input_from_snapshot(&standard_snapshot());
         let start = std::time::Instant::now();
