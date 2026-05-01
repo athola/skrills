@@ -27,10 +27,12 @@ pub mod cadence;
 pub mod diff;
 pub mod engine;
 pub mod plugin_health;
+pub mod skill_collector;
 pub mod traits;
 
 pub use engine::{ColdWindowEngine, DefaultHintScorer, TickInput};
 pub use plugin_health::{CollectorOutput, MalformedPlugin, PluginHealthCollector};
+pub use skill_collector::{MalformedSkillEntry, SkillCollector, SkillCollectorOutput};
 
 use std::collections::VecDeque;
 

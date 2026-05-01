@@ -133,11 +133,43 @@ impl PluginHealthCollector {
             }
         };
 
-        let mut plugin_dirs: Vec<PathBuf> = entries
-            .filter_map(Result::ok)
-            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-            .map(|e| e.path())
-            .collect();
+        // B2 (PR-218 wave-4): surface per-entry I/O errors instead of
+        // silently dropping them. NI9 raised the *root* read failure to
+        // a CAUTION alert; the per-entry fan-out below repeats the same
+        // hazard at the next level — a single restricted permission or
+        // flapping NFS mount would silently disappear from the health
+        // report, leaving operators looking at "plugin healthy" when the
+        // plugin couldn't even be inspected. Mirror NI15's resolution
+        // and push each per-entry failure onto `output.malformed`.
+        let mut plugin_dirs: Vec<PathBuf> = Vec::new();
+        for entry in entries {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(err) => {
+                    output.malformed.push(MalformedPlugin {
+                        plugin_name: "<plugin-entry>".to_string(),
+                        error_message: format!("plugin entry unreadable: {err}"),
+                    });
+                    continue;
+                }
+            };
+            match entry.file_type() {
+                Ok(ft) if ft.is_dir() => plugin_dirs.push(entry.path()),
+                Ok(_) => {} // non-dir siblings (stray files) are ignored as before
+                Err(err) => {
+                    let plugin_name = entry
+                        .path()
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("<plugin-entry>")
+                        .to_string();
+                    output.malformed.push(MalformedPlugin {
+                        plugin_name,
+                        error_message: format!("plugin file_type unreadable: {err}"),
+                    });
+                }
+            }
+        }
         plugin_dirs.sort();
 
         for plugin_dir in plugin_dirs {
