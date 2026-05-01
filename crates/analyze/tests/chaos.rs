@@ -101,14 +101,30 @@ fn monotonic_ramp_emits_at_most_one_alert_per_tier() {
         last_active = now_active;
     }
 
-    // Each fingerprint may persist across ticks (alert stays "on")
-    // but a clean monotonic ramp should not produce any single
-    // fingerprint > TEN_MIN_TICKS times. The flapping signal is
-    // captured by the next test.
-    assert!(
-        fire_counts.len() >= 3,
-        "expected at least 3 tier escalations (Advisory, Caution, Warning) — got {fire_counts:?}"
-    );
+    // S7: assert SPECIFIC tier fingerprints fired, not just "at
+    // least 3 distinct fingerprints". A regression that skipped one
+    // tier entirely while another fired twice would pass a len()
+    // check.
+    for expected in [
+        "token-budget-advisory",
+        "token-budget-caution",
+        "token-budget-warning",
+    ] {
+        assert!(
+            fire_counts.contains_key(expected),
+            "expected tier {expected} to fire on monotonic ramp; got {fire_counts:?}"
+        );
+    }
+    // S7 upper bound: a clean monotonic ramp should not produce any
+    // single fingerprint more than TEN_MIN_TICKS times (alert may
+    // stay "on" for the whole window once it engages, but never
+    // exceed window length).
+    for (fp, count) in &fire_counts {
+        assert!(
+            *count <= TEN_MIN_TICKS,
+            "fingerprint {fp} fired {count} times in {TEN_MIN_TICKS} ticks (impossible)"
+        );
+    }
     // N3: lower-bound assertion. A monotonic ramp through every tier
     // must produce *at least one* transition (alarm switching from
     // inactive → active). A zero-firing implementation that vacuously

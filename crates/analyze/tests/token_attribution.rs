@@ -68,20 +68,20 @@ fn tick_preserves_token_attribution() {
         .with_token_ledger(fixture.token_ledger.clone());
     let snap = engine.tick(input);
 
+    // S6: full content equality, not just len(). A regression that
+    // reordered entries or renamed sources without changing counts
+    // would silently pass a len-only check; this catches it.
     assert_eq!(
-        snap.token_ledger.per_skill.len(),
-        fixture.token_ledger.per_skill.len(),
-        "per_skill entry count drifted across tick"
+        snap.token_ledger.per_skill, fixture.token_ledger.per_skill,
+        "per_skill entries drifted (order, names, or counts)"
     );
     assert_eq!(
-        snap.token_ledger.per_plugin.len(),
-        fixture.token_ledger.per_plugin.len(),
-        "per_plugin entry count drifted"
+        snap.token_ledger.per_plugin, fixture.token_ledger.per_plugin,
+        "per_plugin entries drifted"
     );
     assert_eq!(
-        snap.token_ledger.per_mcp.len(),
-        fixture.token_ledger.per_mcp.len(),
-        "per_mcp entry count drifted"
+        snap.token_ledger.per_mcp, fixture.token_ledger.per_mcp,
+        "per_mcp entries drifted"
     );
     assert_eq!(snap.token_ledger.total, fixture.token_ledger.total);
 
