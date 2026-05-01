@@ -21,7 +21,7 @@
 //! [`MultiSignalScorer`] (via the [`DefaultHintScorer`] adapter),
 //! and [`FieldwiseDiff`].
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
@@ -39,6 +39,25 @@ use super::traits::{AlertHistory, AlertPolicy, HintScorer, SnapshotDiff};
 use super::{ActivityRing, ACTIVITY_RING_CAPACITY, SNAPSHOT_CHANNEL_CAPACITY};
 
 use tokio::sync::broadcast;
+
+/// First-tick baseline for the snapshot diff. Constructed once and
+/// shared by every engine instance — `WindowSnapshot` is `Send + Sync`
+/// and the diff/alert policy only borrows it immutably (PR-218 wave-4
+/// I2: avoids per-tick deep clone of the previous snapshot).
+fn empty_window_snapshot_baseline() -> &'static WindowSnapshot {
+    static BASELINE: OnceLock<WindowSnapshot> = OnceLock::new();
+    BASELINE.get_or_init(|| WindowSnapshot {
+        version: 0,
+        timestamp_ms: 0,
+        token_ledger: TokenLedger::default(),
+        alerts: Vec::new(),
+        hints: Vec::new(),
+        research_findings: Vec::new(),
+        plugin_health: Vec::new(),
+        load_sample: LoadSample::default(),
+        next_tick_ms: 0,
+    })
+}
 
 /// Inputs to a single engine tick.
 ///
@@ -364,28 +383,24 @@ impl ColdWindowEngine {
         // Diff against prior snapshot (used by callers, optional here);
         // we run it for the side-effect of validating the policy stack
         // even when nothing observes the diff directly.
-        let prev = state.last_snapshot.as_deref().cloned().unwrap_or_else(|| {
-            // Construct an empty baseline for first-tick diff.
-            WindowSnapshot {
-                version: 0,
-                timestamp_ms: 0,
-                token_ledger: TokenLedger::default(),
-                alerts: Vec::new(),
-                hints: Vec::new(),
-                research_findings: Vec::new(),
-                plugin_health: Vec::new(),
-                load_sample: LoadSample::default(),
-                next_tick_ms: 0,
-            }
-        });
-        let _diff_fields = self.diff.is_alertable(&prev, &snapshot);
+        //
+        // I2 (PR-218 wave-4): downstream `is_alertable`/`evaluate` only
+        // borrow `prev` immutably so we avoid the per-tick deep clone
+        // of `WindowSnapshot` (which contains the full alert/hint/
+        // research-finding/plugin-health vectors). `Arc::clone` is
+        // cheap; we keep ownership long enough to vend a reference,
+        // and fall back to the lazy empty baseline on the first tick.
+        let prev_arc = state.last_snapshot.clone();
+        let empty_baseline = empty_window_snapshot_baseline();
+        let prev: &WindowSnapshot = prev_arc.as_deref().unwrap_or(empty_baseline);
+        let _diff_fields = self.diff.is_alertable(prev, &snapshot);
 
         // Run alert policy. The policy mutates history to track
         // dwell counters even on ticks that haven't yet hit min-dwell;
         // the engine doesn't need to update history separately.
         let mut alerts = self
             .alert_policy
-            .evaluate(&prev, &snapshot, &mut state.alert_history);
+            .evaluate(prev, &snapshot, &mut state.alert_history);
 
         // Append CAUTION alerts for malformed plugin health.toml files
         // (FR11 EC5). These are deterministic — no hysteresis, no

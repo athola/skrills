@@ -297,9 +297,20 @@ pub fn run() -> Result<()> {
                         &codex_skills_root,
                         include_marketplace,
                     )?;
-                    let _ = crate::setup::ensure_codex_skills_feature_enabled(
+                    if let Err(err) = crate::setup::ensure_codex_skills_feature_enabled(
                         &home.join(".codex/config.toml"),
-                    );
+                    ) {
+                        // I3 (PR-218 wave-4): surface filesystem errors
+                        // (read-only home, disk full, malformed TOML) so
+                        // the user sees a hint when codex skills won't
+                        // start despite "skills synced" landing
+                        // successfully on the FS side.
+                        tracing::warn!(
+                            error = %err,
+                            "could not ensure codex skills feature flag; users may need \
+                             to re-run setup or check ~/.codex/config.toml"
+                        );
+                    }
                     tracing::info!(
                         synced = skill_report.copied,
                         unchanged = skill_report.skipped,
@@ -408,14 +419,40 @@ pub fn run() -> Result<()> {
                 }
             };
             if source_root.exists() {
-                let skill_count = walkdir::WalkDir::new(&source_root)
+                // I4 (PR-218 wave-4): surface walkdir errors instead of
+                // silently dropping them. A single unreadable
+                // subdirectory under `~/.claude/skills` would otherwise
+                // make sibling skills appear absent in the count;
+                // operator sees "skills found in source: N" when the
+                // real number is N+errored.
+                let mut walk_errors: u64 = 0;
+                let mut skill_count: usize = 0;
+                for entry in walkdir::WalkDir::new(&source_root)
                     .min_depth(1)
                     .max_depth(6)
                     .into_iter()
-                    .filter_map(|e| e.ok())
-                    .filter(crate::discovery::is_skill_file)
-                    .count();
-                tracing::info!(skill_count, "skills found in source");
+                {
+                    match entry {
+                        Ok(e) => {
+                            if crate::discovery::is_skill_file(&e) {
+                                skill_count += 1;
+                            }
+                        }
+                        Err(err) => {
+                            walk_errors += 1;
+                            tracing::warn!(
+                                error = %err,
+                                source_root = %source_root.display(),
+                                "walk error while counting skills (entry skipped)"
+                            );
+                        }
+                    }
+                }
+                if walk_errors > 0 {
+                    tracing::info!(skill_count, walk_errors, "skills found in source");
+                } else {
+                    tracing::info!(skill_count, "skills found in source");
+                }
             } else {
                 tracing::info!("skills: 0 (source directory not found)");
             }

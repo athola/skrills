@@ -98,7 +98,10 @@ impl HintPaneState {
     }
 
     /// Toggle the pin state of a URI. Returns `true` if newly pinned,
-    /// `false` if newly unpinned. Best-effort persistence.
+    /// `false` if newly unpinned. Best-effort persistence; persistence
+    /// failures (`fs::create_dir_all`, `serde_json`, `fs::write`) are
+    /// surfaced via `tracing::warn!` so the operator can investigate
+    /// why pins disappear next launch (PR-218 wave-4 I6).
     pub fn toggle_pin(&mut self, uri: &str) -> bool {
         let pinned = if self.pinned.contains(uri) {
             self.pinned.remove(uri);
@@ -107,7 +110,13 @@ impl HintPaneState {
             self.pinned.insert(uri.to_string());
             true
         };
-        let _ = self.save();
+        if let Err(err) = self.save() {
+            tracing::warn!(
+                error = %err,
+                uri,
+                "hint-pane pin persistence failed; pin may not survive restart"
+            );
+        }
         pinned
     }
 

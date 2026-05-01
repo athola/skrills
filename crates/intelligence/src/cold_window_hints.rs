@@ -43,15 +43,63 @@ pub const HALF_LIFE_DAYS: f64 = 14.0;
 /// Default cold-window hint scorer.
 ///
 /// Construct via [`MultiSignalScorer::new`] for spec defaults, or
-/// the builder methods to override individual weights.
+/// the fallible `try_with_*` builder methods to override individual
+/// weights. The non-fallible `with_*` aliases panic on invalid input
+/// and exist solely for spec-fixture / test ergonomics where the
+/// caller has already vouched for the value.
 #[derive(Debug, Clone, Copy)]
 pub struct MultiSignalScorer {
     /// Weight applied to the frequency signal.
-    pub frequency_weight: f64,
+    pub(crate) frequency_weight: f64,
     /// Weight applied to the impact signal.
-    pub impact_weight: f64,
+    pub(crate) impact_weight: f64,
     /// Half-life in days for recency decay.
-    pub half_life_days: f64,
+    pub(crate) half_life_days: f64,
+}
+
+/// Validation failure when constructing a [`MultiSignalScorer`] override.
+///
+/// I9 (PR-218 wave-4): NaN/negative weights silently corrupt the hint
+/// ranking because `partial_cmp` returns `Equal` on NaN, breaking the
+/// downstream sort. The fallible builders reject these up front.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScorerError {
+    /// Weight or half-life is `NaN`.
+    NaNValue,
+    /// Weight or half-life is negative.
+    Negative,
+    /// Half-life is zero (would divide-by-zero in the recency term).
+    ZeroHalfLife,
+}
+
+impl core::fmt::Display for ScorerError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NaNValue => write!(f, "MultiSignalScorer: weight may not be NaN"),
+            Self::Negative => write!(f, "MultiSignalScorer: weight may not be negative"),
+            Self::ZeroHalfLife => write!(f, "MultiSignalScorer: half_life_days must be > 0"),
+        }
+    }
+}
+
+impl std::error::Error for ScorerError {}
+
+fn validate_weight(value: f64) -> Result<f64, ScorerError> {
+    if value.is_nan() {
+        return Err(ScorerError::NaNValue);
+    }
+    if value < 0.0 {
+        return Err(ScorerError::Negative);
+    }
+    Ok(value)
+}
+
+fn validate_half_life(value: f64) -> Result<f64, ScorerError> {
+    let v = validate_weight(value)?;
+    if v == 0.0 {
+        return Err(ScorerError::ZeroHalfLife);
+    }
+    Ok(v)
 }
 
 impl MultiSignalScorer {
@@ -64,22 +112,60 @@ impl MultiSignalScorer {
         }
     }
 
-    /// Override the frequency weight.
-    pub fn with_frequency_weight(mut self, w: f64) -> Self {
-        self.frequency_weight = w;
-        self
+    /// Frequency weight currently in use.
+    #[must_use]
+    pub fn frequency_weight(&self) -> f64 {
+        self.frequency_weight
     }
 
-    /// Override the impact weight.
-    pub fn with_impact_weight(mut self, w: f64) -> Self {
-        self.impact_weight = w;
-        self
+    /// Impact weight currently in use.
+    #[must_use]
+    pub fn impact_weight(&self) -> f64 {
+        self.impact_weight
     }
 
-    /// Override the recency half-life in days.
-    pub fn with_half_life_days(mut self, d: f64) -> Self {
-        self.half_life_days = d;
-        self
+    /// Recency half-life in days currently in use.
+    #[must_use]
+    pub fn half_life_days(&self) -> f64 {
+        self.half_life_days
+    }
+
+    /// Override the frequency weight (rejects NaN/negative).
+    pub fn try_with_frequency_weight(mut self, w: f64) -> Result<Self, ScorerError> {
+        self.frequency_weight = validate_weight(w)?;
+        Ok(self)
+    }
+
+    /// Override the impact weight (rejects NaN/negative).
+    pub fn try_with_impact_weight(mut self, w: f64) -> Result<Self, ScorerError> {
+        self.impact_weight = validate_weight(w)?;
+        Ok(self)
+    }
+
+    /// Override the recency half-life in days (rejects NaN/negative/zero).
+    pub fn try_with_half_life_days(mut self, d: f64) -> Result<Self, ScorerError> {
+        self.half_life_days = validate_half_life(d)?;
+        Ok(self)
+    }
+
+    /// Override the frequency weight; panics on invalid input.
+    /// Prefer [`try_with_frequency_weight`](Self::try_with_frequency_weight)
+    /// in production code.
+    pub fn with_frequency_weight(self, w: f64) -> Self {
+        self.try_with_frequency_weight(w)
+            .expect("with_frequency_weight: invalid weight; use try_* in non-test code")
+    }
+
+    /// Override the impact weight; panics on invalid input.
+    pub fn with_impact_weight(self, w: f64) -> Self {
+        self.try_with_impact_weight(w)
+            .expect("with_impact_weight: invalid weight; use try_* in non-test code")
+    }
+
+    /// Override the recency half-life; panics on invalid input.
+    pub fn with_half_life_days(self, d: f64) -> Self {
+        self.try_with_half_life_days(d)
+            .expect("with_half_life_days: invalid value; use try_* in non-test code")
     }
 
     /// Compute the unpinned score for a single hint.
@@ -168,9 +254,69 @@ mod tests {
     #[test]
     fn defaults_match_spec() {
         let s = MultiSignalScorer::new();
-        assert_eq!(s.frequency_weight, 2.0);
-        assert_eq!(s.impact_weight, 1.5);
-        assert_eq!(s.half_life_days, 14.0);
+        assert_eq!(s.frequency_weight(), 2.0);
+        assert_eq!(s.impact_weight(), 1.5);
+        assert_eq!(s.half_life_days(), 14.0);
+    }
+
+    // ---------- I9: NaN/negative weight rejection ----------
+
+    #[test]
+    fn try_with_frequency_weight_rejects_nan() {
+        assert_eq!(
+            MultiSignalScorer::new()
+                .try_with_frequency_weight(f64::NAN)
+                .unwrap_err(),
+            ScorerError::NaNValue
+        );
+    }
+
+    #[test]
+    fn try_with_impact_weight_rejects_negative() {
+        assert_eq!(
+            MultiSignalScorer::new()
+                .try_with_impact_weight(-1.0)
+                .unwrap_err(),
+            ScorerError::Negative
+        );
+    }
+
+    #[test]
+    fn try_with_half_life_days_rejects_zero() {
+        assert_eq!(
+            MultiSignalScorer::new()
+                .try_with_half_life_days(0.0)
+                .unwrap_err(),
+            ScorerError::ZeroHalfLife
+        );
+    }
+
+    #[test]
+    fn try_with_half_life_days_rejects_nan_and_negative() {
+        assert_eq!(
+            MultiSignalScorer::new()
+                .try_with_half_life_days(f64::NAN)
+                .unwrap_err(),
+            ScorerError::NaNValue
+        );
+        assert_eq!(
+            MultiSignalScorer::new()
+                .try_with_half_life_days(-7.0)
+                .unwrap_err(),
+            ScorerError::Negative
+        );
+    }
+
+    #[test]
+    fn try_with_frequency_weight_accepts_zero_and_positive() {
+        let z = MultiSignalScorer::new()
+            .try_with_frequency_weight(0.0)
+            .unwrap();
+        assert_eq!(z.frequency_weight(), 0.0);
+        let p = MultiSignalScorer::new()
+            .try_with_frequency_weight(7.5)
+            .unwrap();
+        assert_eq!(p.frequency_weight(), 7.5);
     }
 
     #[test]
