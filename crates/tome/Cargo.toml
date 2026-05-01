@@ -19,7 +19,7 @@ parking_lot.workspace = true
 skrills-snapshot = { path = "../snapshot", version = "0.8.0" }
 
 # Tome-specific deps
-rusqlite = { version = "0.38", features = ["bundled"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
 strum = { version = "0.28", features = ["derive"] }
 url = "2"
 
