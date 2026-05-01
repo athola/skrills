@@ -112,7 +112,25 @@ impl PluginHealthCollector {
         let mut output = CollectorOutput::default();
         let entries = match std::fs::read_dir(&self.plugins_dir) {
             Ok(e) => e,
-            Err(_) => return output,
+            // NI9: distinguish "no plugins dir" from "unreadable plugins
+            // dir". The former is the legitimate empty-deployment case
+            // and stays silent; the latter (permission denied, broken
+            // symlink, transient I/O error) would otherwise hide every
+            // plugin from the operator. Surface it via the existing
+            // malformed-alert pipeline so it lands as a CAUTION alert.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return output,
+            Err(err) => {
+                output.malformed.push(MalformedPlugin {
+                    plugin_name: self
+                        .plugins_dir
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("<plugins-root>")
+                        .to_string(),
+                    error_message: format!("plugins root unreadable: {err}"),
+                });
+                return output;
+            }
         };
 
         let mut plugin_dirs: Vec<PathBuf> = entries
@@ -370,6 +388,49 @@ overall = "ok"
         assert!(out.healths.is_empty());
         assert_eq!(out.malformed.len(), 1);
         assert_eq!(out.malformed[0].plugin_name, "typo");
+    }
+
+    #[test]
+    fn ni9_unreadable_plugins_root_emits_caution_alert() {
+        // NI9: an unreadable plugins root (here: a file masquerading
+        // as a dir; on Unix the read_dir call returns an Err that is
+        // NOT NotFound) must surface via the malformed-alert pipeline
+        // so the operator sees that plugin discovery is broken.
+        let dir = tempdir().unwrap();
+        let bogus = dir.path().join("not-a-dir");
+        fs::write(&bogus, "this is a file, not a directory").unwrap();
+        let out = PluginHealthCollector::new(&bogus).collect();
+        assert!(
+            out.healths.is_empty(),
+            "no plugins should be reported when root is unreadable"
+        );
+        assert_eq!(
+            out.malformed.len(),
+            1,
+            "expected exactly one malformed entry for unreadable root"
+        );
+        assert!(
+            out.malformed[0].error_message.contains("unreadable"),
+            "malformed entry should describe the root error: {:?}",
+            out.malformed[0]
+        );
+        // The synthetic entry should translate into a Caution alert.
+        let alerts = out.malformed_alerts(0);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].severity, skrills_snapshot::Severity::Caution);
+    }
+
+    #[test]
+    fn ni9_truly_absent_plugins_root_stays_silent() {
+        // The legitimate empty-deployment case: NotFound is silent.
+        let dir = tempdir().unwrap();
+        let absent = dir.path().join("does-not-exist");
+        let out = PluginHealthCollector::new(&absent).collect();
+        assert!(out.healths.is_empty());
+        assert!(
+            out.malformed.is_empty(),
+            "absent plugins dir must not produce a malformed alert"
+        );
     }
 
     #[test]
