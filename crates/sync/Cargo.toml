@@ -21,7 +21,7 @@ sha2.workspace = true
 walkdir.workspace = true
 dirs.workspace = true
 tracing.workspace = true
-similar = "2"
+similar = "3"
 inquire.workspace = true
 skrills-snapshot = { path = "../snapshot", version = "0.8.0" }
 skrills-validate = { path = "../validate", version = "0.8.0" }

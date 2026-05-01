@@ -31,7 +31,7 @@ toml = "0.8"
 [dev-dependencies]
 tempfile = { workspace = true }
 skrills_test_utils = { path = "../test-utils" }
-criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
 [[bench]]
 name = "tick_budget"
