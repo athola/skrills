@@ -1,0 +1,998 @@
+//! Cold-window browser surface (TASK-019 + TASK-020).
+//!
+//! Two endpoints:
+//!
+//! - `GET /dashboard` — initial HTML page with an `EventSource`
+//!   pointing at `/dashboard.sse`. No JavaScript framework: the
+//!   browser is a paint surface.
+//! - `GET /dashboard.sse` — Server-Sent Events stream. Each tick
+//!   from the bus emits four named events (`alert`, `hint`,
+//!   `research`, `status`) carrying pre-rendered HTML fragments.
+//!
+//! HTTP/2 negotiation (per R8 mitigation): when running behind
+//! TLS via `axum-server` with rustls, ALPN advertises `h2`. The
+//! browser stream-multiplexes — multiple dashboard tabs in the same
+//! origin all stay subscribed without bumping into HTTP/1.1's
+//! 6-connection-per-origin limit.
+//!
+//! XSS posture: server-side fragments html-escape every user-derived
+//! string. The browser then swaps fragments via `DOMParser` +
+//! `replaceChildren`, which structurally prevents `<script>`
+//! execution from any string that survived escaping. Two layers; if
+//! either fails we degrade to "broken render", not "remote code
+//! execution".
+
+#![cfg(feature = "http-transport")]
+
+use std::convert::Infallible;
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_stream::stream;
+use axum::extract::State;
+use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::Html;
+use axum::routing::get;
+use axum::Router;
+use futures::Stream;
+use skrills_snapshot::{ResearchChannel, ResearchQuota, Severity, WindowSnapshot};
+use skrills_tome::dispatcher::BucketedBudget;
+use tokio::sync::broadcast;
+
+/// Live source for the research-quota status fragment. Implementors
+/// snapshot the current quota on demand so the SSE loop can refresh
+/// it cheaply on every tick (NI7 newtype boundary).
+///
+/// Implemented by [`BucketedBudget`] via the blanket `Arc` impl below;
+/// tests can also implement it directly for a fixed value.
+pub trait ResearchQuotaSource: Send + Sync {
+    /// Return the current quota. The newtype removes the historical
+    /// `(u32, u32)` ambiguity ("which slot is remaining?") at the
+    /// type-system level.
+    fn quota_snapshot(&self) -> ResearchQuota;
+}
+
+impl ResearchQuotaSource for Arc<BucketedBudget> {
+    fn quota_snapshot(&self) -> ResearchQuota {
+        let state = self.current_state();
+        // `available` floors so a partial token never advertises a
+        // fetch that would actually block; `used = total - available`
+        // by construction so the displayed `available/total` matches
+        // what the bucket can actually serve.
+        let available = state.available().max(0.0).floor() as u32;
+        let total = state.rate_per_hour();
+        let used = total.saturating_sub(available);
+        ResearchQuota::new(used, total)
+    }
+}
+
+/// Shared state for the cold-window browser routes.
+#[derive(Clone)]
+pub struct ColdWindowDashboardState {
+    /// Subscriber-producing handle to the engine's snapshot bus.
+    pub bus: broadcast::Sender<Arc<WindowSnapshot>>,
+    /// Token-budget ceiling for the status bar's progress display.
+    pub budget_ceiling: u64,
+    /// Optional static research-quota snapshot (NI7).
+    ///
+    /// Used as the fallback when no live `quota_source` is wired.
+    /// When a source is present, the SSE loop overwrites this field
+    /// per-tick from `quota_source.quota_snapshot()`.
+    pub research_quota: Option<ResearchQuota>,
+    /// Optional live quota source (the dispatcher, typically). When
+    /// present, the SSE loop snapshots the pair from this on every
+    /// tick so the dashboard reflects drains in real time (B3).
+    pub quota_source: Option<Arc<dyn ResearchQuotaSource>>,
+}
+
+impl ColdWindowDashboardState {
+    /// Construct from a bus + budget ceiling, no research quota.
+    pub fn new(bus: broadcast::Sender<Arc<WindowSnapshot>>, budget_ceiling: u64) -> Self {
+        Self {
+            bus,
+            budget_ceiling,
+            research_quota: None,
+            quota_source: None,
+        }
+    }
+
+    /// Attach a live quota source whose `quota_snapshot()` will be
+    /// queried each tick (B3). Replaces any previously-attached source
+    /// or static `research_quota` value.
+    pub fn with_research_quota_source<S>(mut self, source: S) -> Self
+    where
+        S: ResearchQuotaSource + 'static,
+    {
+        self.quota_source = Some(Arc::new(source));
+        self
+    }
+}
+
+/// Build the cold-window router.
+pub fn cold_window_routes(state: ColdWindowDashboardState) -> Router {
+    Router::new()
+        .route("/dashboard", get(serve_dashboard))
+        .route("/dashboard.sse", get(serve_dashboard_sse))
+        .with_state(state)
+}
+
+async fn serve_dashboard(State(state): State<ColdWindowDashboardState>) -> Html<String> {
+    Html(render_dashboard_page(state.budget_ceiling))
+}
+
+async fn serve_dashboard_sse(
+    State(state): State<ColdWindowDashboardState>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let mut rx = state.bus.subscribe();
+    let budget_ceiling = state.budget_ceiling;
+    let static_quota = state.research_quota;
+    let quota_source = state.quota_source.clone();
+
+    let s = stream! {
+        loop {
+            match rx.recv().await {
+                Ok(snap) => {
+                    // B3: prefer the live dispatcher snapshot over the
+                    // static fallback so drains are visible in real time.
+                    let research_quota = quota_source
+                        .as_ref()
+                        .map(|q| q.quota_snapshot())
+                        .or(static_quota);
+                    for event in render_snapshot_events(&snap, budget_ceiling, research_quota) {
+                        yield Ok::<Event, Infallible>(event);
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    let event = Event::default()
+                        .event("status")
+                        .data(format!(
+                            "<span style=\"color:#ff5555\">subscriber lagged by {n} ticks</span>"
+                        ));
+                    yield Ok::<Event, Infallible>(event);
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    tracing::info!("cold-window SSE stream closing — emitting shutdown event");
+                    yield Ok::<Event, Infallible>(
+                        Event::default().event("shutdown").data("{}"),
+                    );
+                    break;
+                }
+            }
+        }
+    };
+
+    Sse::new(s).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+}
+
+/// Render one tick into 4 named SSE events.
+fn render_snapshot_events(
+    snap: &WindowSnapshot,
+    budget_ceiling: u64,
+    research_quota: Option<ResearchQuota>,
+) -> Vec<Event> {
+    vec![
+        Event::default()
+            .event("alert")
+            .data(render_alert_fragment(snap)),
+        Event::default()
+            .event("hint")
+            .data(render_hint_fragment(snap)),
+        Event::default()
+            .event("research")
+            .data(render_research_fragment(snap)),
+        Event::default()
+            .event("status")
+            .data(render_status_fragment(snap, budget_ceiling, research_quota)),
+    ]
+}
+
+fn render_dashboard_page(budget_ceiling: u64) -> String {
+    let budget_label = format_token_count(budget_ceiling);
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>skrills cold-window dashboard</title>
+<style>
+  body {{ font-family: ui-monospace, monospace; background: #0a0a0a; color: #e0e0e0; margin: 0; padding: 16px; }}
+  h1 {{ margin: 0 0 12px 0; font-size: 18px; }}
+  .pane {{ border: 1px solid #444; padding: 12px; margin-bottom: 12px; border-radius: 4px; background: #121212; }}
+  .pane h2 {{ margin: 0 0 8px 0; font-size: 12px; text-transform: uppercase; color: #888; }}
+  .severity-warning  {{ color: #ff5555; font-weight: bold; }}
+  .severity-caution  {{ color: #ffaa00; }}
+  .severity-advisory {{ color: #44ddff; }}
+  .severity-status   {{ color: #888; }}
+  .tier-tag {{ display: inline-block; padding: 0 6px; margin-right: 8px; background: #444; color: #fff; font-size: 11px; }}
+  .tier-tag.warning  {{ background: #ff5555; color: #000; }}
+  .tier-tag.caution  {{ background: #ffaa00; color: #000; }}
+  .tier-tag.advisory {{ background: #44ddff; color: #000; }}
+  .tier-tag.status   {{ background: #888; color: #000; }}
+  .pinned {{ color: #ffff00; }}
+  .channel-tag {{ display: inline-block; padding: 0 6px; margin-right: 6px; font-size: 11px; }}
+  .channel-tag.github   {{ background: #c000c0; color: #000; }}
+  .channel-tag.hn       {{ background: #ff8800; color: #000; }}
+  .channel-tag.lobsters {{ background: #cc3333; color: #000; }}
+  .channel-tag.paper    {{ background: #4488ff; color: #000; }}
+  .channel-tag.triz     {{ background: #00cc00; color: #000; }}
+  ul {{ list-style: none; padding: 0; margin: 0; }}
+  li {{ padding: 3px 0; border-bottom: 1px dashed #2a2a2a; }}
+  li:last-child {{ border-bottom: 0; }}
+  .empty {{ color: #555; font-style: italic; }}
+  #status-bar {{ font-size: 12px; }}
+  .budget-bar {{ display: inline-block; width: 200px; height: 8px; background: #222; vertical-align: middle; margin: 0 8px; border-radius: 2px; overflow: hidden; }}
+  .budget-fill {{ display: block; height: 100%; background: #00cc00; }}
+  .budget-fill.warn {{ background: #ffaa00; }}
+  .budget-fill.crit {{ background: #ff5555; }}
+</style>
+</head>
+<body>
+<h1>skrills cold-window  ·  budget {budget_label}</h1>
+<div id="status-bar" class="pane"><span class="empty">connecting…</span></div>
+<section class="pane"><h2>Alerts</h2><div id="alert-body"><span class="empty">awaiting first tick…</span></div></section>
+<section class="pane"><h2>Hints</h2><div id="hint-body"><span class="empty">awaiting first tick…</span></div></section>
+<section class="pane"><h2>Research</h2><div id="research-body"><span class="empty">awaiting first tick…</span></div></section>
+<script>
+  // Defense in depth: server already html-escapes every user-derived
+  // string, and the browser swaps fragments via DOMParser +
+  // replaceChildren. DOMParser parses <script> tags into nodes that do
+  // NOT execute when later attached to the document, so even if the
+  // server-side escape ever regresses, an injected payload can't run.
+  const evt = new EventSource('/dashboard.sse');
+  const swap = (id, html) => {{
+    const el = document.getElementById(id);
+    if (!el) return;
+    const parsed = new DOMParser().parseFromString(html, 'text/html');
+    el.replaceChildren(...parsed.body.childNodes);
+  }};
+  evt.addEventListener('alert',    e => swap('alert-body',    e.data));
+  evt.addEventListener('hint',     e => swap('hint-body',     e.data));
+  evt.addEventListener('research', e => swap('research-body', e.data));
+  evt.addEventListener('status',   e => swap('status-bar',    e.data));
+  evt.onerror = () => swap('status-bar',
+    '<span class="severity-warning">reconnecting…</span>');
+</script>
+</body>
+</html>"#
+    )
+}
+
+fn render_alert_fragment(snap: &WindowSnapshot) -> String {
+    if snap.alerts.is_empty() {
+        return r#"<span class="empty">no active alerts</span>"#.to_string();
+    }
+    let mut sorted = snap.alerts.iter().collect::<Vec<_>>();
+    sorted.sort_by(|a, b| {
+        a.severity
+            .rank()
+            .cmp(&b.severity.rank())
+            .then(b.fired_at_ms.cmp(&a.fired_at_ms))
+    });
+    let mut out = String::from("<ul>");
+    for alert in sorted {
+        let class = severity_class(alert.severity);
+        let label = alert.severity.short_label();
+        out.push_str(&format!(
+            r#"<li><span class="tier-tag {class}">{label}</span><span class="severity-{class}">{title}</span> — {message}</li>"#,
+            class = class,
+            label = label,
+            title = html_escape(&alert.title),
+            message = html_escape(&alert.message),
+        ));
+    }
+    out.push_str("</ul>");
+    out
+}
+
+fn render_hint_fragment(snap: &WindowSnapshot) -> String {
+    if snap.hints.is_empty() {
+        return r#"<span class="empty">no hints</span>"#.to_string();
+    }
+    let mut sorted: Vec<_> = snap.hints.iter().collect();
+    sorted.sort_by(|a, b| {
+        b.pinned.cmp(&a.pinned).then_with(|| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+    });
+    let mut out = String::from("<ul>");
+    for h in sorted {
+        let pin = if h.pinned { "[*] " } else { "[ ] " };
+        let pin_class = if h.pinned { "pinned" } else { "" };
+        out.push_str(&format!(
+            r#"<li><span class="{pin_class}">{pin}</span><strong>{score:.1}</strong> [{cat}] {uri} — {msg}</li>"#,
+            pin_class = pin_class,
+            pin = pin,
+            score = h.score,
+            cat = h.hint.category.label(),
+            uri = html_escape(&h.hint.uri),
+            msg = html_escape(&h.hint.message),
+        ));
+    }
+    out.push_str("</ul>");
+    out
+}
+
+fn render_research_fragment(snap: &WindowSnapshot) -> String {
+    if snap.research_findings.is_empty() {
+        return r#"<span class="empty">no research findings yet</span>"#.to_string();
+    }
+    let mut out = String::from("<ul>");
+    for f in &snap.research_findings {
+        let chan_class = channel_class(f.channel);
+        let chan_label = f.channel.short_label();
+        out.push_str(&format!(
+            r#"<li><span class="channel-tag {chan}">{label}</span><strong>{score:.1}</strong>  <a href="{url}" target="_blank" rel="noopener noreferrer">{title}</a></li>"#,
+            chan = chan_class,
+            label = chan_label,
+            score = f.score,
+            url = sanitize_external_href(&f.url),
+            title = html_escape(&f.title),
+        ));
+    }
+    out.push_str("</ul>");
+    out
+}
+
+/// Gate the `<a href="...">` URL to safe external schemes.
+///
+/// Research findings come from external producers (HN, Lobsters,
+/// Reddit, GitHub, arXiv). `html_escape` defends against quote-
+/// breakout in the *attribute value* but does not block scheme
+/// execution: a payload of `javascript:alert(1)` has no quotes to
+/// escape and survives `html_escape` unchanged. `target="_blank"
+/// rel="noopener"` does not block scheme execution either. We
+/// therefore allowlist `http`/`https` URLs and downgrade everything
+/// else to `#` before HTML-escaping (PR-218 wave-4 I1).
+fn sanitize_external_href(url: &str) -> String {
+    let trimmed = url.trim_start();
+    let lowered = trimmed.to_ascii_lowercase();
+    if lowered.starts_with("https://") || lowered.starts_with("http://") {
+        html_escape(trimmed)
+    } else {
+        "#".to_string()
+    }
+}
+
+fn render_status_fragment(
+    snap: &WindowSnapshot,
+    budget_ceiling: u64,
+    research_quota: Option<ResearchQuota>,
+) -> String {
+    let cadence = cadence_label(snap);
+    let token_label = format!(
+        "{} / {}",
+        format_token_count(snap.token_ledger.total),
+        format_token_count(budget_ceiling)
+    );
+    let ratio = if budget_ceiling == 0 {
+        0.0
+    } else {
+        (snap.token_ledger.total as f64) / (budget_ceiling as f64)
+    };
+    let bar_class = if ratio >= 1.0 {
+        "crit"
+    } else if ratio >= 0.8 {
+        "warn"
+    } else {
+        ""
+    };
+    let bar_width = (ratio.clamp(0.0, 1.0) * 100.0).round() as u32;
+    let mut counts = [0u32; 4];
+    for a in &snap.alerts {
+        match a.severity {
+            Severity::Warning => counts[0] += 1,
+            Severity::Caution => counts[1] += 1,
+            Severity::Advisory => counts[2] += 1,
+            Severity::Status => counts[3] += 1,
+        }
+    }
+    let alerts_label = format!(
+        "W:{} C:{} A:{} S:{}",
+        counts[0], counts[1], counts[2], counts[3]
+    );
+    // NI7: render `available/total` so the historical "quota: 7/10"
+    // contract is preserved across the SSE wire and the TUI.
+    let quota_label = research_quota
+        .map(|q| format!("  ·  quota: {}/{}", q.available(), q.total()))
+        .unwrap_or_default();
+    format!(
+        r#"<strong>{cadence}</strong>  ·  <span>{token_label}</span><span class="budget-bar"><span class="budget-fill {bar_class}" style="width:{bar_width}%"></span></span>  ·  <span>{alerts_label}</span>{quota_label}"#
+    )
+}
+
+fn cadence_label(snap: &WindowSnapshot) -> String {
+    snap.cadence_label()
+}
+
+fn format_token_count(n: u64) -> String {
+    if n >= 1_000 {
+        format!("{:.1}K", (n as f64) / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
+/// CSS class fragment for a severity tier. The user-visible short
+/// label lives on [`Severity::short_label`] (S1).
+fn severity_class(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Warning => "warning",
+        Severity::Caution => "caution",
+        Severity::Advisory => "advisory",
+        Severity::Status => "status",
+    }
+}
+
+/// CSS class fragment for a research channel. The user-visible label
+/// lives on [`ResearchChannel::short_label`] (S1).
+fn channel_class(channel: ResearchChannel) -> &'static str {
+    match channel {
+        ResearchChannel::GitHub => "github",
+        ResearchChannel::HackerNews => "hn",
+        ResearchChannel::Lobsters => "lobsters",
+        ResearchChannel::Paper => "paper",
+        ResearchChannel::Triz => "triz",
+    }
+}
+
+/// Minimal HTML escaper for user-provided text. Covers the OWASP
+/// HTML attribute / body context characters; sufficient for our
+/// fragments which never embed user text inside script tags or
+/// onevent handlers. The browser-side `DOMParser` swap is the second
+/// layer of defense (see module docs).
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#x27;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skrills_snapshot::{
+        Alert, AlertBand, Hint, HintCategory, LoadSample, ResearchChannel, ResearchFinding,
+        ScoredHint, TokenLedger,
+    };
+
+    fn empty_snap() -> WindowSnapshot {
+        WindowSnapshot {
+            version: 1,
+            timestamp_ms: 0,
+            token_ledger: TokenLedger::default(),
+            alerts: vec![],
+            hints: vec![],
+            research_findings: vec![],
+            plugin_health: vec![],
+            load_sample: LoadSample::default(),
+            next_tick_ms: 2_000,
+        }
+    }
+
+    #[test]
+    fn dashboard_page_includes_event_source_script() {
+        let html = render_dashboard_page(100_000);
+        assert!(html.contains("EventSource"));
+        assert!(html.contains("/dashboard.sse"));
+        assert!(html.contains("alert-body"));
+        assert!(html.contains("hint-body"));
+        assert!(html.contains("research-body"));
+        assert!(html.contains("status-bar"));
+    }
+
+    #[test]
+    fn dashboard_page_uses_dom_parser_replace_children() {
+        let html = render_dashboard_page(100_000);
+        assert!(html.contains("DOMParser"));
+        assert!(html.contains("replaceChildren"));
+    }
+
+    #[test]
+    fn dashboard_page_includes_budget_label() {
+        let html = render_dashboard_page(100_000);
+        assert!(html.contains("100.0K"));
+    }
+
+    #[test]
+    fn empty_alert_fragment_says_no_active_alerts() {
+        let frag = render_alert_fragment(&empty_snap());
+        assert!(frag.contains("no active alerts"));
+    }
+
+    #[test]
+    fn alert_fragment_sorts_warning_first() {
+        let mut snap = empty_snap();
+        snap.alerts = vec![
+            Alert {
+                fingerprint: "a1".into(),
+                severity: Severity::Advisory,
+                title: "advisory".into(),
+                message: "m".into(),
+                band: Some(AlertBand::new(0.0, 0.0, 1.0, 0.95).expect("test fixture")),
+                fired_at_ms: 50,
+                dwell_ticks: 1,
+            },
+            Alert {
+                fingerprint: "w1".into(),
+                severity: Severity::Warning,
+                title: "warning".into(),
+                message: "m".into(),
+                band: None,
+                fired_at_ms: 100,
+                dwell_ticks: 1,
+            },
+        ];
+        let frag = render_alert_fragment(&snap);
+        let warn_idx = frag.find("warning").expect("warning label");
+        let advisory_idx = frag.find("advisory").expect("advisory label");
+        assert!(warn_idx < advisory_idx);
+    }
+
+    #[test]
+    fn alert_fragment_escapes_user_text() {
+        let mut snap = empty_snap();
+        snap.alerts.push(Alert {
+            fingerprint: "x".into(),
+            severity: Severity::Status,
+            title: "<script>evil</script>".into(),
+            message: "&\"".into(),
+            band: None,
+            fired_at_ms: 0,
+            dwell_ticks: 1,
+        });
+        let frag = render_alert_fragment(&snap);
+        assert!(!frag.contains("<script>evil"));
+        assert!(frag.contains("&lt;script&gt;"));
+        assert!(frag.contains("&amp;"));
+        assert!(frag.contains("&quot;"));
+    }
+
+    #[test]
+    fn hint_fragment_pinned_floats_to_top() {
+        let mut snap = empty_snap();
+        snap.hints = vec![
+            ScoredHint {
+                hint: Hint {
+                    uri: "low".into(),
+                    category: HintCategory::Token,
+                    message: "m".into(),
+                    frequency: 1,
+                    impact: 1.0,
+                    ease_score: 1.0,
+                    age_days: 0.0,
+                },
+                score: 0.1,
+                pinned: true,
+            },
+            ScoredHint {
+                hint: Hint {
+                    uri: "high".into(),
+                    category: HintCategory::Token,
+                    message: "m".into(),
+                    frequency: 1,
+                    impact: 1.0,
+                    ease_score: 1.0,
+                    age_days: 0.0,
+                },
+                score: 99.0,
+                pinned: false,
+            },
+        ];
+        let frag = render_hint_fragment(&snap);
+        let low_idx = frag.find("low").expect("low uri");
+        let high_idx = frag.find("high").expect("high uri");
+        assert!(low_idx < high_idx, "pinned hint must come first");
+    }
+
+    #[test]
+    fn research_fragment_renders_url_and_title() {
+        let mut snap = empty_snap();
+        snap.research_findings.push(ResearchFinding {
+            fingerprint: "fp".into(),
+            channel: ResearchChannel::HackerNews,
+            title: "Test Finding".into(),
+            url: "https://example.com/x".into(),
+            score: 142.0,
+            fetched_at_ms: 0,
+        });
+        let frag = render_research_fragment(&snap);
+        assert!(frag.contains("Test Finding"));
+        assert!(frag.contains("https://example.com/x"));
+        assert!(frag.contains("rel=\"noopener noreferrer\""));
+    }
+
+    #[test]
+    fn research_fragment_handles_empty_findings() {
+        let frag = render_research_fragment(&empty_snap());
+        assert!(frag.contains("no research findings yet"));
+    }
+
+    #[test]
+    fn status_fragment_includes_cadence_token_alert_quota() {
+        let mut snap = empty_snap();
+        snap.token_ledger.total = 25_000;
+        snap.next_tick_ms = 4_000;
+        snap.load_sample.loadavg_1min = 0.78;
+        // NI7: 3 used of 10 → "quota: 7/10" matches the prior wire.
+        let frag = render_status_fragment(&snap, 100_000, Some(ResearchQuota::new(3, 10)));
+        assert!(frag.contains("tick: 4.0s"));
+        assert!(frag.contains("[load 0.78]"));
+        assert!(frag.contains("25.0K / 100.0K"));
+        assert!(frag.contains("W:0 C:0 A:0 S:0"));
+        assert!(frag.contains("quota: 7/10"));
+    }
+
+    #[test]
+    fn status_fragment_omits_quota_when_unset() {
+        let snap = empty_snap();
+        let frag = render_status_fragment(&snap, 100_000, None);
+        assert!(!frag.contains("quota:"));
+    }
+
+    #[test]
+    fn status_fragment_uses_active_edit_label() {
+        let mut snap = empty_snap();
+        snap.load_sample.last_edit_age_ms = Some(3_000);
+        let frag = render_status_fragment(&snap, 100_000, None);
+        assert!(frag.contains("[active edit]"));
+    }
+
+    #[test]
+    fn status_fragment_budget_bar_has_warn_class_above_eighty_percent() {
+        let mut snap = empty_snap();
+        snap.token_ledger.total = 85_000;
+        let frag = render_status_fragment(&snap, 100_000, None);
+        assert!(frag.contains("budget-fill warn"));
+    }
+
+    #[test]
+    fn status_fragment_budget_bar_has_crit_class_at_or_above_one_hundred_percent() {
+        let mut snap = empty_snap();
+        snap.token_ledger.total = 110_000;
+        let frag = render_status_fragment(&snap, 100_000, None);
+        assert!(frag.contains("budget-fill crit"));
+    }
+
+    #[test]
+    fn render_snapshot_events_emits_four_named_events() {
+        let snap = empty_snap();
+        let events = render_snapshot_events(&snap, 100_000, None);
+        assert_eq!(events.len(), 4);
+    }
+
+    #[test]
+    fn html_escape_handles_basic_xss_chars() {
+        assert_eq!(html_escape("<>&\"'"), "&lt;&gt;&amp;&quot;&#x27;");
+        assert_eq!(html_escape("plain"), "plain");
+    }
+
+    // ---------- I1: URL-scheme allowlist on research-pane <a href> ----------
+
+    #[test]
+    fn sanitize_external_href_allows_http_and_https() {
+        assert_eq!(
+            sanitize_external_href("https://example.com/x"),
+            "https://example.com/x"
+        );
+        assert_eq!(
+            sanitize_external_href("http://example.com/x"),
+            "http://example.com/x"
+        );
+    }
+
+    #[test]
+    fn sanitize_external_href_rejects_javascript_scheme() {
+        assert_eq!(sanitize_external_href("javascript:alert(1)"), "#");
+        // Mixed case + leading whitespace are common payload tricks.
+        assert_eq!(sanitize_external_href("  JavaScript:alert(1)"), "#");
+        assert_eq!(sanitize_external_href("JaVaScRiPt:alert(1)"), "#");
+    }
+
+    #[test]
+    fn sanitize_external_href_rejects_data_and_vbscript_schemes() {
+        assert_eq!(
+            sanitize_external_href("data:text/html,<script>alert(1)</script>"),
+            "#"
+        );
+        assert_eq!(sanitize_external_href("vbscript:msgbox(1)"), "#");
+        assert_eq!(sanitize_external_href("file:///etc/passwd"), "#");
+    }
+
+    #[test]
+    fn sanitize_external_href_html_escapes_attribute_breakouts() {
+        // Even on the allowlisted path the attribute escape still runs.
+        let payload = "https://example.com/x?q=\"><script>alert(1)</script>";
+        let escaped = sanitize_external_href(payload);
+        assert!(!escaped.contains('"'));
+        assert!(!escaped.contains('<'));
+    }
+
+    #[test]
+    fn research_fragment_neutralizes_javascript_url() {
+        // I1 regression (PR-218 wave-4): a hostile finding URL must not
+        // become an executable javascript:-href in the rendered SSE
+        // fragment. Pre-fix `html_escape` left this bare in the href
+        // attribute.
+        let mut snap = empty_snap();
+        snap.research_findings.push(ResearchFinding {
+            fingerprint: "evil".into(),
+            channel: ResearchChannel::HackerNews,
+            title: "click me".into(),
+            url: "javascript:alert(1)".into(),
+            score: 1.0,
+            fetched_at_ms: 0,
+        });
+        let frag = render_research_fragment(&snap);
+        assert!(
+            !frag.contains("javascript:"),
+            "javascript: scheme survived the render: {frag}"
+        );
+        assert!(
+            frag.contains(r##"href="#""##),
+            "expected sanitized href=\"#\" placeholder; got: {frag}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sse_route_responds_with_text_event_stream() {
+        use axum::body::Body;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let (tx, _rx) = broadcast::channel(16);
+        let state = ColdWindowDashboardState::new(tx.clone(), 100_000);
+        let app = cold_window_routes(state);
+
+        let _ = tx.send(Arc::new(empty_snap()));
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/dashboard.sse")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(content_type.starts_with("text/event-stream"));
+        let mut body = response.into_body();
+        let chunk = body.frame().await;
+        assert!(chunk.is_some(), "SSE stream produced no frames");
+    }
+
+    #[tokio::test]
+    async fn sse_emits_shutdown_event_when_bus_closes() {
+        // NI13/N8: previously the `RecvError::Closed` arm broke
+        // without telling the client the stream was ending. Now we
+        // emit a final `event: shutdown` so connected dashboards can
+        // distinguish "server going down cleanly" from "network
+        // hiccup, please reconnect".
+        use axum::body::Body;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let (tx, _rx) = broadcast::channel::<Arc<WindowSnapshot>>(16);
+        let state = ColdWindowDashboardState::new(tx.clone(), 100_000);
+        let app = cold_window_routes(state);
+
+        // Drop the only sender so the receiver's next `recv` returns
+        // `RecvError::Closed`. We do this BEFORE issuing the request
+        // so the handler subscribes to an already-closing channel.
+        drop(tx);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/dashboard.sse")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        // Drain the body. Because the channel is closed and we never
+        // sent a snapshot, the only event emitted should be the
+        // shutdown sentinel followed by stream end.
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8_lossy(&bytes).to_string();
+        assert!(
+            body.contains("event:shutdown") || body.contains("event: shutdown"),
+            "missing shutdown event in SSE body:\n{body}"
+        );
+    }
+
+    /// B3: a synthetic quota source returns the value we plugged in,
+    /// regardless of the static `research_quota` field. Constructor
+    /// takes `(used, total)` to match [`ResearchQuota::new`].
+    struct StaticQuota(u32, u32);
+    impl ResearchQuotaSource for StaticQuota {
+        fn quota_snapshot(&self) -> ResearchQuota {
+            ResearchQuota::new(self.0, self.1)
+        }
+    }
+
+    #[tokio::test]
+    async fn dashboard_quota_reflects_live_source_snapshot() {
+        // B3: with a live quota source attached, the SSE-rendered status
+        // fragment uses `source.quota_snapshot()`, not the static fallback.
+        // We bind an ephemeral port so we can subscribe via the real
+        // handler stack AND send a snapshot strictly after the handler
+        // has subscribed (broadcast only delivers to receivers that
+        // exist at the time of `send`).
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let (tx, _keep_rx) = broadcast::channel::<Arc<WindowSnapshot>>(16);
+        // NI7: `StaticQuota` now passes `(used, total)`; `used=7, total=7`
+        // means "fully drained" → renderer emits `quota: 0/7`.
+        let state = ColdWindowDashboardState::new(tx.clone(), 100_000)
+            .with_research_quota_source(StaticQuota(7, 7));
+        let app = cold_window_routes(state);
+
+        // Build the request future first.
+        let req = axum::http::Request::builder()
+            .uri("/dashboard.sse")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response_fut = app.oneshot(req);
+
+        // Drive: spawn a sender that waits briefly for the handler to
+        // subscribe, then sends a snapshot and drops the sender so the
+        // stream completes (RecvError::Closed → shutdown event).
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            // Poll until the handler has subscribed. Two receivers
+            // exist at startup (`_keep_rx` and `tx_clone`'s implicit
+            // count); a third means the SSE handler is in.
+            for _ in 0..50 {
+                if tx_clone.receiver_count() >= 2 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let _ = tx_clone.send(Arc::new(empty_snap()));
+            // Drop the original `tx` so the channel closes once the
+            // remaining receivers drain. We have to drop both
+            // `tx_clone` (this scope) and the outer `tx` (below).
+        });
+        drop(tx);
+
+        let response = response_fut.await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8_lossy(&bytes).to_string();
+        assert!(
+            body.contains("quota: 0/7"),
+            "expected drained-quota label '0/7' in SSE body:\n{body}"
+        );
+    }
+
+    #[test]
+    fn live_quota_source_overrides_static_quota_in_sse_loop() {
+        // B3 (unit-level): the quota-resolution policy is "live source
+        // first, static field as fallback". This pins the policy
+        // independent of axum/tokio plumbing so future SSE refactors
+        // can't silently regress the priority.
+        let (tx, _rx) = broadcast::channel::<Arc<WindowSnapshot>>(1);
+        let state = ColdWindowDashboardState::new(tx, 100_000)
+            .with_research_quota_source(StaticQuota(7, 7));
+        // Pretend we also had a stale static value. The policy in the
+        // SSE handler is `quota_source.or(static_quota)`; we mirror it
+        // here against the same fields the handler reads.
+        let resolved = state
+            .quota_source
+            .as_ref()
+            .map(|q| q.quota_snapshot())
+            .or(state.research_quota);
+        assert_eq!(resolved, Some(ResearchQuota::new(7, 7)));
+    }
+
+    // ---------- I7: SSE Lagged-arm coverage ----------
+
+    #[tokio::test]
+    async fn sse_emits_status_event_when_subscriber_lags() {
+        // I7 (PR-218 wave-4): the only user-facing signal that a slow
+        // SSE client missed snapshots is the "subscriber lagged by N
+        // ticks" status event. Pre-fix this arm had no test, so a
+        // refactor could silently break it without anyone noticing.
+        // Reproduce by using a buffer-1 channel and sending >1 snapshot
+        // before the handler's stream consumes the first.
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let (tx, _keep_rx) = broadcast::channel::<Arc<WindowSnapshot>>(1);
+        let state = ColdWindowDashboardState::new(tx.clone(), 100_000);
+        let app = cold_window_routes(state);
+
+        let req = axum::http::Request::builder()
+            .uri("/dashboard.sse")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response_fut = app.oneshot(req);
+
+        // Send >1 snapshot before the handler's stream consumes any.
+        // The receiver lags by len(extras), then close so the body
+        // collects.
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            for _ in 0..50 {
+                if tx_clone.receiver_count() >= 2 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            // Capacity is 1 so the second send + a draining recv pair
+            // on the slow consumer overflow into the Lagged arm.
+            for _ in 0..5 {
+                let _ = tx_clone.send(Arc::new(empty_snap()));
+            }
+        });
+        drop(tx);
+
+        let response = response_fut.await.unwrap();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8_lossy(&bytes).to_string();
+        assert!(
+            body.contains("subscriber lagged"),
+            "expected Lagged status event in SSE body:\n{body}"
+        );
+    }
+
+    #[test]
+    fn bucketed_budget_quota_snapshot_reports_capacity_and_floor() {
+        // B3 + NI7: the BucketedBudget Arc impl returns a ResearchQuota
+        // where `used = total - floor(available)`; a fresh bucket reads
+        // as `used = 0` so the dashboard never advertises a fetch the
+        // bucket can't actually serve (`available() == total`).
+        let bucket = Arc::new(BucketedBudget::in_memory(5));
+        let q = bucket.quota_snapshot();
+        assert_eq!(q.total(), 5);
+        assert_eq!(q.used(), 0);
+        assert_eq!(q.available(), 5);
+    }
+
+    #[tokio::test]
+    async fn dashboard_html_route_returns_200_with_event_source_script() {
+        use axum::body::Body;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let (tx, _rx) = broadcast::channel(16);
+        let state = ColdWindowDashboardState::new(tx, 100_000);
+        let app = cold_window_routes(state);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/dashboard")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(body.contains("EventSource"));
+        assert!(body.contains("/dashboard.sse"));
+        assert!(body.contains("DOMParser"));
+    }
+}

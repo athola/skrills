@@ -213,30 +213,6 @@ fn build_cors_layer(origins: &[String], has_auth: bool) -> CorsLayer {
     }
 }
 
-/// Starts the MCP server over HTTP transport.
-///
-/// # Arguments
-/// * `service_factory` - Factory function to create SkillService instances
-/// * `bind_addr` - Socket address to bind (e.g., "127.0.0.1:3000")
-///
-/// # Security
-/// This endpoint has NO authentication by default.
-/// Only bind to localhost or trusted network interfaces.
-#[allow(dead_code)]
-pub async fn serve_http<F>(service_factory: F, bind_addr: &str) -> Result<()>
-where
-    F: Fn() -> Result<SkillService, std::io::Error> + Send + Sync + 'static,
-{
-    serve_http_with_security(
-        service_factory,
-        bind_addr,
-        HttpSecurityConfig::default(),
-        vec![],
-        false,
-    )
-    .await
-}
-
 /// Starts the MCP server over HTTP transport with security configuration.
 ///
 /// # Arguments

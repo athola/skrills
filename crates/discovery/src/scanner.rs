@@ -181,7 +181,13 @@ fn file_hash(path: &Path) -> Result<String> {
     if size > 0 {
         use std::io::Read;
         if let Ok(mut file) = fs::File::open(path) {
-            let mut prefix = vec![0u8; 1024.min(usize::try_from(size).unwrap_or(usize::MAX))];
+            // I5 (PR-218 wave-4): saturation-guard expresses intent
+            // explicitly. Pre-fix pattern was `1024.min(usize::try_from(size).unwrap_or(usize::MAX))`
+            // — benign today (the outer `.min(1024)` clamps back) but a
+            // refactor reordering the operands was one OOM allocation
+            // away. The new shape caps at the prefix length up front.
+            let prefix_len = usize::try_from(size).unwrap_or(1024).min(1024);
+            let mut prefix = vec![0u8; prefix_len];
             if let Ok(n) = file.read(&mut prefix) {
                 prefix.truncate(n);
                 hasher.update(&prefix);
@@ -299,7 +305,20 @@ fn collect_skills_from(
                 }
                 true
             })
-            .filter_map(|e| e.ok())
+            // I4 (PR-218 wave-4): walkdir errors are surfaced via
+            // `tracing::warn!` so a single unreadable subdirectory
+            // doesn't silently shrink the discovered skill count.
+            .filter_map(|e| match e {
+                Ok(entry) => Some(entry),
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        root = %root.display(),
+                        "skill walk error (entry skipped)"
+                    );
+                    None
+                }
+            })
             .filter(|e| {
                 if root_cfg.source == SkillSource::Cursor {
                     is_cursor_rule_file(e)
@@ -468,7 +487,18 @@ pub fn discover_agents(roots: &[SkillRoot]) -> Result<Vec<crate::types::AgentMet
                 }
                 true
             })
-            .filter_map(|e| e.ok())
+            // I4 (PR-218 wave-4): see paired note in `discover_skills`.
+            .filter_map(|e| match e {
+                Ok(entry) => Some(entry),
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        root = %root.display(),
+                        "agent walk error (entry skipped)"
+                    );
+                    None
+                }
+            })
         {
             if !is_agent_file(&entry) {
                 continue;

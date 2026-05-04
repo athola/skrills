@@ -29,7 +29,23 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+mod error;
+
+/// Structured error type for discovery operations (T2.7).
+///
+/// New code should consume this enum directly to match on specific
+/// failure modes. The crate's primary `Error` alias (`anyhow::Error`)
+/// is preserved for backward compatibility; conversion is automatic
+/// because `DiscoveryError` implements `std::error::Error`.
+pub use error::DiscoveryError;
+
 /// Error type for discovery operations.
+///
+/// Currently aliased to `anyhow::Error` for callers that propagate
+/// errors via `?` into `anyhow::Result` contexts (the workspace-wide
+/// convention as of v0.8.0). Internal call sites that surface
+/// structured failure modes return [`DiscoveryError`] directly; the
+/// `?` operator converts seamlessly into `anyhow::Error`.
 pub type Error = anyhow::Error;
 /// Result type for discovery operations.
 pub type Result<T> = std::result::Result<T, Error>;

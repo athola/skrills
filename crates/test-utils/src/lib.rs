@@ -3,6 +3,8 @@
 //! This crate provides common test fixtures and utilities used across
 //! multiple crates in the skrills workspace.
 
+pub mod cold_window_fixtures;
+
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
@@ -117,12 +119,46 @@ impl TestFixture {
         description: &str,
         body: &str,
     ) -> std::io::Result<PathBuf> {
-        let content = format!(
-            "---\nname: {}\ndescription: {}\n---\n{}",
-            name, description, body
-        );
-        self.create_skill(name, &content)
+        let skill = skill_md(name, description, body);
+        self.create_skill(name, &skill)
     }
+}
+
+/// Build the standard `---\nname: ...\ndescription: ...\n---\nBODY` SKILL.md
+/// string for tests that need the frontmatter blob in memory rather than
+/// written to disk. Use [`TestFixture::create_skill_with_frontmatter`] when
+/// the test needs a real file.
+///
+/// # Example
+/// ```
+/// use skrills_test_utils::skill_md;
+/// let s = skill_md("foo", "demo", "# Body");
+/// assert!(s.starts_with("---\nname: foo\n"));
+/// assert!(s.ends_with("# Body"));
+/// ```
+pub fn skill_md(name: &str, description: &str, body: &str) -> String {
+    format!(
+        "---\nname: {}\ndescription: {}\n---\n{}",
+        name, description, body
+    )
+}
+
+/// Build a SKILL.md string with arbitrary extra frontmatter keys. Pass
+/// `extra` as already-formatted YAML lines (without trailing newline),
+/// e.g. `"version: 1.0.0\ndepends:\n  - base"`. Use this for tests that
+/// vary frontmatter shape per case.
+///
+/// # Example
+/// ```
+/// use skrills_test_utils::skill_md_with_extras;
+/// let s = skill_md_with_extras("foo", "demo", "version: 1.0.0", "# Body");
+/// assert!(s.contains("version: 1.0.0\n---"));
+/// ```
+pub fn skill_md_with_extras(name: &str, description: &str, extra: &str, body: &str) -> String {
+    format!(
+        "---\nname: {}\ndescription: {}\n{}\n---\n{}",
+        name, description, extra, body
+    )
 }
 
 #[cfg(test)]

@@ -1,0 +1,162 @@
+//! Strategy traits for the cold-window engine.
+//!
+//! Each trait declares a contract; default implementations:
+//!
+//! | Trait | Default impl | Crate |
+//! |---|---|---|
+//! | [`AlertPolicy`] | `LayeredAlertPolicy` | `analyze::cold_window::alert` |
+//! | [`HintScorer`] | `MultiSignalScorer`  | `skrills-intelligence` |
+//! | [`SnapshotDiff`] | `FieldwiseDiff`    | `analyze::cold_window::diff` |
+//!
+//! All traits are kept object-safe so the engine can store them as
+//! `Box<dyn Trait>` and accept user overrides at runtime. The
+//! `traits_are_object_safe` test below exists exactly to catch any
+//! accidental loss of object-safety during evolution.
+
+use std::collections::HashMap;
+
+use skrills_snapshot::{Alert, Hint, ScoredHint, WindowSnapshot};
+
+/// Per-alert hysteresis state carried forward across ticks.
+#[derive(Debug, Clone)]
+pub struct AlertState {
+    /// First-fire wall-clock (UNIX epoch ms).
+    pub fired_at_ms: u64,
+    /// How many consecutive ticks the underlying condition has held.
+    pub dwell_ticks: u32,
+    /// True after the alert has been cleared (re-armed when the
+    /// condition re-crosses the matching `*_clear` threshold in
+    /// the alert's [`skrills_snapshot::AlertBand`]).
+    pub cleared: bool,
+    /// `high_clear` value of the band that produced this alert state.
+    /// Used by [`AlertPolicy::evaluate`] to decide whether a tick
+    /// where the signal has fallen out of the firing band counts as
+    /// a *true* clear (signal dropped to or below `high_clear`) or
+    /// merely a brief dip into the hysteresis zone (between
+    /// `high_clear` and `high`). Spec § 3.4 (B6 re-arm gate).
+    pub last_high_clear: Option<f64>,
+}
+
+/// Hysteresis state across all known alert fingerprints.
+#[derive(Debug, Default, Clone)]
+pub struct AlertHistory {
+    /// Per-fingerprint state.
+    pub fingerprints: HashMap<String, AlertState>,
+}
+
+impl AlertHistory {
+    /// Construct an empty history (warmup state).
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Decide which alerts fire on each tick.
+///
+/// Implementations apply hysteresis bands, min-dwell timers, and the
+/// 4-tier severity classification per spec § 3.4. The default
+/// implementation is `LayeredAlertPolicy` in [`super::alert`].
+///
+/// Mutates `history` so dwell counters increment even on ticks where
+/// the condition holds but min-dwell has not yet been satisfied. This
+/// is what lets a `min_dwell = 2` policy actually fire on the second
+/// tick that observes the condition rather than waiting forever.
+pub trait AlertPolicy: Send + Sync {
+    /// Evaluate alerts and update history. Returns the alert list to
+    /// be included in `curr.alerts`.
+    fn evaluate(
+        &self,
+        prev: &WindowSnapshot,
+        curr: &WindowSnapshot,
+        history: &mut AlertHistory,
+    ) -> Vec<Alert>;
+}
+
+/// Rank a list of hints into a `ScoredHint` vector.
+///
+/// The default implementation `MultiSignalScorer` (in `skrills-intelligence`) extends
+/// the existing `skrills_intelligence::recommend::scorer` machinery
+/// with a recency-weighted ratio per spec § 6.3.
+pub trait HintScorer: Send + Sync {
+    /// Compute scores and return hints ranked from highest score to
+    /// lowest. Pinned hints sort to the top regardless of score.
+    fn rank(&self, hints: Vec<Hint>) -> Vec<ScoredHint>;
+}
+
+/// One field that changed between two snapshots and is considered
+/// alertable by the active [`SnapshotDiff`] policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffField {
+    /// Total token count changed beyond the configured tolerance.
+    TokenTotal {
+        /// Previous total tokens.
+        before: u64,
+        /// New total tokens.
+        after: u64,
+    },
+    /// A skill appeared in the snapshot.
+    SkillAdded(String),
+    /// A skill was removed from the snapshot.
+    SkillRemoved(String),
+    /// A plugin appeared in the snapshot.
+    PluginAdded(String),
+    /// A plugin was removed from the snapshot.
+    PluginRemoved(String),
+    /// A skill's validation status flipped.
+    ValidationTransition {
+        /// Skill URI.
+        uri: String,
+        /// Previous validity.
+        from: bool,
+        /// New validity.
+        to: bool,
+    },
+}
+
+/// Decide what fields changed enough between two snapshots to be
+/// worth alerting on.
+///
+/// The default implementation `FieldwiseDiff` (in [`super::diff`]) applies
+/// declarative per-field rules: ±2% tolerance on token counts,
+/// always-alert on skill/plugin add/remove, never-alert on
+/// timestamps.
+pub trait SnapshotDiff: Send + Sync {
+    /// Return the alertable fields between `prev` and `curr`. An
+    /// empty vector means nothing changed enough to warrant alert
+    /// evaluation this tick.
+    fn is_alertable(&self, prev: &WindowSnapshot, curr: &WindowSnapshot) -> Vec<DiffField>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Compile-time guard: each strategy trait must remain object-safe
+    /// so the engine can hold them as `Box<dyn Trait>`. If any of
+    /// these `dyn` references stops compiling, an unintended
+    /// non-object-safe change has been introduced (e.g. a generic
+    /// method, a `Self` return type, or an associated constant
+    /// lacking a default).
+    #[test]
+    fn traits_are_object_safe() {
+        fn assert_object_safe<T: ?Sized>() {}
+        assert_object_safe::<dyn AlertPolicy>();
+        assert_object_safe::<dyn HintScorer>();
+        assert_object_safe::<dyn SnapshotDiff>();
+    }
+
+    #[test]
+    fn alert_history_starts_empty() {
+        let h = AlertHistory::new();
+        assert!(h.fingerprints.is_empty());
+    }
+
+    #[test]
+    fn diff_field_partial_eq_is_structural() {
+        let a = DiffField::SkillAdded("skill://demo".into());
+        let b = DiffField::SkillAdded("skill://demo".into());
+        let c = DiffField::SkillAdded("skill://other".into());
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+}

@@ -36,6 +36,7 @@ use std::path::PathBuf;
 /// Adapter for GitHub Copilot CLI configuration.
 pub struct CopilotAdapter {
     root: PathBuf,
+    kill_switch: Option<skrills_snapshot::KillSwitch>,
 }
 
 impl CopilotAdapter {
@@ -47,12 +48,27 @@ impl CopilotAdapter {
     /// 3. `~/.copilot` (legacy fallback)
     pub fn new() -> Result<Self> {
         let root = paths::resolve_config_root()?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            kill_switch: None,
+        })
     }
 
     /// Creates a CopilotAdapter with a custom root (for testing).
     pub fn with_root(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            kill_switch: None,
+        }
+    }
+
+    /// Attach a [`KillSwitch`](skrills_snapshot::KillSwitch) so that mutating
+    /// operations refuse with [`SyncError::TokenBudgetExceeded`](crate::SyncError)
+    /// when the cold-window engine has engaged it (FR12).
+    #[must_use]
+    pub fn with_kill_switch(mut self, switch: skrills_snapshot::KillSwitch) -> Self {
+        self.kill_switch = Some(switch);
+        self
     }
 
     /// Resolves the configuration root following XDG Base Directory Specification.
@@ -106,18 +122,22 @@ impl AgentAdapter for CopilotAdapter {
     }
 
     fn write_commands(&self, commands: &[Command]) -> Result<WriteReport> {
+        crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         commands::write_commands(&self.root, commands)
     }
 
     fn write_mcp_servers(&self, servers: &HashMap<String, McpServer>) -> Result<WriteReport> {
+        crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         mcp::write_mcp_servers(&self.root, servers)
     }
 
     fn write_preferences(&self, prefs: &Preferences) -> Result<WriteReport> {
+        crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         preferences::write_preferences(&self.root, prefs)
     }
 
     fn write_skills(&self, skills: &[Command]) -> Result<WriteReport> {
+        crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         skills::write_skills(&self.root, skills)
     }
 
@@ -130,10 +150,12 @@ impl AgentAdapter for CopilotAdapter {
     }
 
     fn write_hooks(&self, hooks: &[Command]) -> Result<WriteReport> {
+        crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         agents::write_hooks(&self.root, hooks)
     }
 
     fn write_agents(&self, agents: &[Command]) -> Result<WriteReport> {
+        crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         agents::write_agents(&self.root, agents)
     }
 
@@ -142,6 +164,7 @@ impl AgentAdapter for CopilotAdapter {
     }
 
     fn write_instructions(&self, instructions: &[Command]) -> Result<WriteReport> {
+        crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         agents::write_instructions(&self.root, instructions)
     }
 }

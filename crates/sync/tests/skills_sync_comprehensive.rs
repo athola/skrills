@@ -166,7 +166,7 @@ impl SkillSyncTestContext {
     fn empty_content_skill(name: &str) -> Command {
         Self::make_skill(
             name,
-            &format!("---\nname: {}\ndescription: Empty content\n---\n", name),
+            &skrills_test_utils::skill_md(name, "Empty content", ""),
         )
     }
 

@@ -193,11 +193,20 @@ async fn search_github_raw(query: &str, limit: usize) -> Result<Vec<GitHubSkillR
             _ => "",
         };
 
-        if error_msg.is_empty() {
-            anyhow::bail!("GitHub API error ({}): {}", status, body);
+        // Construct via the structured `IntelligenceError::GitHubApi`
+        // variant so callers can match on `status` to decide whether
+        // to retry, fall back, or surface to the user. The `?`
+        // operator promotes it into anyhow::Error transparently.
+        let message = if error_msg.is_empty() {
+            body
         } else {
-            anyhow::bail!("{} (HTTP {})", error_msg, status);
+            format!("{error_msg} (body: {body})")
+        };
+        return Err(crate::IntelligenceError::GitHubApi {
+            status: status.as_u16(),
+            message,
         }
+        .into());
     }
 
     let search_result: SearchResponse = response.json().await?;
@@ -238,7 +247,10 @@ pub async fn fetch_skill_content(raw_url: &str) -> Result<String> {
     .await?;
 
     if !response.status().is_success() {
-        anyhow::bail!("Failed to fetch skill content: {}", response.status());
+        return Err(crate::IntelligenceError::FetchFailed {
+            status: response.status().as_u16(),
+        }
+        .into());
     }
 
     Ok(response.text().await?)

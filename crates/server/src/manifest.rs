@@ -181,7 +181,16 @@ fn format_rfc3339(time: SystemTime) -> String {
                 year, month, day, hours, minutes, seconds
             )
         }
-        Err(_) => "1970-01-01T00:00:00Z".to_string(),
+        Err(err) => {
+            // Only triggers when the system clock is before 1970-01-01
+            // (broken container clock, misconfigured VM). Emit a
+            // warning so the epoch-stamped manifest doesn't look real.
+            tracing::warn!(
+                ?err,
+                "system clock before UNIX epoch; manifest timestamp falling back to epoch"
+            );
+            "1970-01-01T00:00:00Z".to_string()
+        }
     }
 }
 
