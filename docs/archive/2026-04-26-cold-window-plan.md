@@ -143,7 +143,7 @@ within phase (no shared file edits).
 - **Criteria**:
   - Trait per spec § 6.2 with `next_tick(LoadSample) -> Duration`.
   - `LoadAwareCadence` implements the policy diagram in brief § 4.2:
-    base / 2 on recent edit; * 4 on load > 0.9; * 2 on load > 0.7;
+    base / 2 on recent edit; \* 4 on load > 0.9; \* 2 on load > 0.7;
     base otherwise.
   - Defaults: `base = 2s`, `min = 500ms`, `max = 8s`.
   - Property test: `next_tick` always within `[min, max]`.
@@ -523,7 +523,7 @@ within phase (no shared file edits).
   - Shutdown completes within 2 seconds; if it doesn't, SIGKILL
     fallback after grace period.
   - Test: send `kill -INT` to a running daemon, verify clean exit
-    + persisted quota state.
+    - persisted quota state.
   - User-facing: `make cold-window` documents the kill mechanism.
 
 ---

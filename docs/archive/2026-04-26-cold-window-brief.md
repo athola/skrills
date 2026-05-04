@@ -263,7 +263,7 @@ Each alert has:
 - **Min-dwell**: condition holds for K consecutive ticks before firing.
   Eliminates fleeting alarms.
 - **Master-acknowledge**: single keystroke clears all CAUTION + ADVISORY
-  + STATUS at once; only WARNING requires per-alert dismissal.
+  - STATUS at once; only WARNING requires per-alert dismissal.
 - **Priority sequence**: deterministic ordering when multiple alerts fire
   same tick (no race-condition display order).
 

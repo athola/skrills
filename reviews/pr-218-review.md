@@ -161,7 +161,7 @@ This branch is past every threshold but it's auditable. v0.9.0 should not need t
 
 ## PR Hygiene
 
-- **Commit messages**: clean. No `Co-Authored-By: Claude`, no emojis, no "leverage/streamline/comprehensive" slop. Conventional commit format with finding IDs in the scope tag.
+- **Commit messages**: clean. No `Co-Authored-By: Claude`, no emojis, no banned AI-slop vocabulary. Conventional commit format with finding IDs in the scope tag.
 - **PR description**: comprehensive — summary, architecture, quality evidence with concrete numbers (1.44µs/tick benches, 4ms shutdown), notable defects caught and fixed in-branch, reviewer notes that proactively flag the dev-dep cycle workaround for T023.
 - **Self-review signals**: PR description acknowledges "RED-zone by line count" and links the per-task ledger. Author has been responsive to wave-1/2/3 findings.
 

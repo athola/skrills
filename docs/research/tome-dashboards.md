@@ -79,7 +79,7 @@ needed in any of these; an `Arc<Mutex<…>>` snapshot was sufficient.
   is the canonical pattern. **Verdict: validates**.
 - [tokio-rs/axum graceful-shutdown example](https://github.com/tokio-rs/axum/blob/main/examples/graceful-shutdown/src/main.rs):
   `axum::serve(listener, app).with_graceful_shutdown(shutdown_signal())`
-  + `TimeoutLayer`, with `tokio::select!` on `ctrl_c` and
+  - `TimeoutLayer`, with `tokio::select!` on `ctrl_c` and
   `SIGTERM`. **Verdict: validates**.
 - [axum issue #2673](https://github.com/tokio-rs/axum/issues/2673)
   and [hyperium/hyper #2787](https://github.com/hyperium/hyper/issues/2787):

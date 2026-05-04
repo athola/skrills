@@ -26,7 +26,7 @@ skrills-intelligence = { path = "../intelligence", version = "0.8.0" }
 parking_lot = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 num_cpus = { workspace = true }
-toml = "0.8"
+toml = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

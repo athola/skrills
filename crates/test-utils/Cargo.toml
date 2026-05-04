@@ -12,4 +12,4 @@ skrills-snapshot = { path = "../snapshot", version = "0.8.0" }
 
 [dev-dependencies]
 serde_json = { workspace = true }
-toml = "0.8"
+toml = { workspace = true }

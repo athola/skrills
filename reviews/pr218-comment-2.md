@@ -1,4 +1,4 @@
-## Test Plan — PR #218
+# Test Plan — PR #218
 
 Verification checklist for the six BLOCKING findings in the review above:
 
@@ -45,4 +45,3 @@ Verification checklist for the six BLOCKING findings in the review above:
 
 - [ ] Address N1–N10 (see review § 4)
 - [ ] Tag `v0.8.0` only after B1–B6 fixes and N1 (`#[serde(tag)]`) ship — N1 is wire-format-fragility risk for v0.9.0 gRPC
-

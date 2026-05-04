@@ -153,7 +153,7 @@ The cold-window runs a tick on a configurable cadence. Each tick:
 3. Broadcasts the snapshot to all subscribers (TUI, browser, research
    worker).
 4. Completes in under 200ms p99 on a fixture of 200 skills + 50 commands
-   + 20 plugins.
+   - 20 plugins.
 
 The tick must never silently skip. If a tick exceeds its budget, the
 next tick is delayed proportionally and a STATUS-tier alert is recorded.

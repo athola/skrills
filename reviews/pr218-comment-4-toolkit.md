@@ -1,4 +1,4 @@
-## Multi-Agent Toolkit Review — Wave 4
+# Multi-Agent Toolkit Review — Wave 4
 
 **Companion to**: [/sanctum:pr-review wave 4](https://github.com/athola/skrills/pull/218#issuecomment-4358018914)
 **Agents dispatched**: 6 in parallel — comment-analyzer, pr-test-analyzer, silent-failure-hunter, type-design-analyzer, code-reviewer, code-simplifier

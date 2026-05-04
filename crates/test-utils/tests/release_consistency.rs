@@ -72,7 +72,7 @@ fn canonical_workspace_version() -> String {
 fn read_crate_version(cargo_toml: &Path) -> String {
     let text = fs::read_to_string(cargo_toml)
         .unwrap_or_else(|e| panic!("read {}: {e}", cargo_toml.display()));
-    let parsed: toml::Value = text
+    let parsed: toml::Table = text
         .parse()
         .unwrap_or_else(|e| panic!("parse {}: {e}", cargo_toml.display()));
     parsed
