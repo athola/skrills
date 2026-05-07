@@ -132,6 +132,8 @@ pub(super) fn read_plugin_assets_impl(
                 }
             };
 
+            let assets_before = assets.len();
+
             // Walk the version directory collecting asset files
             for entry in WalkDir::new(&version_path)
                 .min_depth(1)
@@ -229,6 +231,22 @@ pub(super) fn read_plugin_assets_impl(
                     content,
                     executable,
                 ));
+            }
+
+            if full_mirror {
+                let has_manifest = assets[assets_before..].iter().any(|a| {
+                    a.relative_path
+                        .to_string_lossy()
+                        .contains(".claude-plugin/plugin.json")
+                });
+                if !has_manifest {
+                    tracing::warn!(
+                        plugin = %plugin_name,
+                        version = %version,
+                        "Plugin has no .claude-plugin/plugin.json manifest; \
+                         it will not appear in the target's plugin list"
+                    );
+                }
             }
         }
     }

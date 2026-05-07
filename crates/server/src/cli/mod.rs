@@ -1223,6 +1223,7 @@ mod tests {
     fn parse_sync_all_arguments() {
         let _guard = env_guard();
         let _env = set_env_var("SKRILLS_INCLUDE_MARKETPLACE", None);
+        let _env2 = set_env_var("SKRILLS_EXCLUDE_PLUGINS", None);
 
         let cli = Cli::try_parse_from([
             "skrills",

@@ -60,7 +60,10 @@ pub(crate) fn run_sync_with_adapters(
 pub fn run() -> Result<()> {
     ignore_sigchld()?;
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
         .init();
 
     // Load config file and apply settings to env vars before CLI parsing.
