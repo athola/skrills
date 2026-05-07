@@ -4,10 +4,10 @@
 //! as a colored ratatui list. Handles two keystrokes:
 //!
 //! - `A` (uppercase): master-acknowledge — clears all CAUTION,
-//!   ADVISORY, and STATUS alerts in one stroke per spec § 3.5.
+//!   ADVISORY, and STATUS alerts in one stroke.
 //! - `d`: dismiss the focused WARNING-tier alert (per-row ack).
 //!
-//! Resize behavior (per R9 mitigation): the pane re-derives its
+//! Resize behavior: the pane re-derives its
 //! layout from the supplied `area: Rect` on every render, so a
 //! crossterm `Event::Resize` simply triggers a redraw with the new
 //! dimensions. No per-pane state caches the previous size.

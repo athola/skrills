@@ -43,7 +43,7 @@ pub use error::DiscoveryError;
 ///
 /// Currently aliased to `anyhow::Error` for callers that propagate
 /// errors via `?` into `anyhow::Result` contexts (the workspace-wide
-/// convention as of v0.8.0). Internal call sites that surface
+/// convention). Internal call sites that surface
 /// structured failure modes return [`DiscoveryError`] directly; the
 /// `?` operator converts seamlessly into `anyhow::Error`.
 pub type Error = anyhow::Error;

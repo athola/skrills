@@ -54,7 +54,7 @@ impl AlertHistory {
 /// Decide which alerts fire on each tick.
 ///
 /// Implementations apply hysteresis bands, min-dwell timers, and the
-/// 4-tier severity classification per spec § 3.4. The default
+/// 4-tier severity classification. The default
 /// implementation is `LayeredAlertPolicy` in [`super::alert`].
 ///
 /// Mutates `history` so dwell counters increment even on ticks where
@@ -76,7 +76,7 @@ pub trait AlertPolicy: Send + Sync {
 ///
 /// The default implementation `MultiSignalScorer` (in `skrills-intelligence`) extends
 /// the existing `skrills_intelligence::recommend::scorer` machinery
-/// with a recency-weighted ratio per spec § 6.3.
+/// with a recency-weighted ratio.
 pub trait HintScorer: Send + Sync {
     /// Compute scores and return hints ranked from highest score to
     /// lowest. Pinned hints sort to the top regardless of score.

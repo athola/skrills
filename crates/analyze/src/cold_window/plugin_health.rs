@@ -16,7 +16,7 @@
 //! The collector is **deliberately stateless and side-effect free**:
 //! it walks the filesystem fresh each tick (the "cold rewalk"
 //! contract). Caching belongs to a follow-up if SC1 budget pressure
-//! demands it; for v0.8.0 the simplicity is the feature.
+//! demands it; the simplicity is the feature.
 //!
 //! `health.toml` schema (per FR11):
 //!

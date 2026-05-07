@@ -2,9 +2,9 @@
 //!
 //! Wires the engine, a tick producer, and the optional HTTP browser
 //! surface together. Listens for SIGINT and SIGTERM and cleanly tears
-//! everything down within the spec § 3 2-second budget.
+//! everything down within the 2-second budget.
 //!
-//! v0.8.0 ships **browser-mode** as the primary surface. The TUI
+//! **Browser-mode** is the primary surface. The TUI
 //! panes (`skrills_dashboard::cold_window`) are fully implemented and
 //! tested as library code; mounting them into a crossterm raw-mode
 //! loop lands as a follow-up. Users today run:
@@ -41,9 +41,8 @@ const MIN_TICK_MS: u64 = 50;
 
 /// CLI flags for `skrills cold-window`.
 ///
-/// Matches spec § 3.10 except that `--no-bell` is a TUI-only concern
-/// and lands when the TUI surface is wired up. Defaults are the
-/// values frozen in the brief / spec.
+/// The `--no-bell` flag is a TUI-only concern and lands when
+/// the TUI surface is wired up.
 #[derive(Debug, Clone, Args)]
 pub struct ColdWindowArgs {
     /// Token budget ceiling. Above this the LayeredAlertPolicy fires
@@ -77,7 +76,7 @@ pub struct ColdWindowArgs {
     /// build the snapshot's per-skill token attribution. Combined with
     /// any directories supplied via `SKRILLS_EXTRA_SKILL_DIRS` and the
     /// default skill roots. Token totals are estimated from file size
-    /// (`bytes / 4`); a real BPE tokenizer is a v0.9.0 follow-up.
+    /// (`bytes / 4`); a real BPE tokenizer is a follow-up.
     #[arg(long = "skill-dir", value_name = "DIR")]
     pub skill_dirs: Vec<PathBuf>,
 
@@ -206,7 +205,7 @@ pub async fn run(args: ColdWindowArgs) -> Result<()> {
 
 /// Producer loop: synthesize a `TickInput` from the local environment
 /// every `next_tick_ms` (read from the most recent snapshot) and call
-/// `engine.tick`. v0.8.0 demo body uses a small synthetic ledger that
+/// `engine.tick`. Demo body uses a small synthetic ledger that
 /// grows over time so the alert policy gets exercised, but plugin
 /// participation is real: each tick re-walks
 /// `<plugins_dir>/*/health.toml` cold and feeds the result to the

@@ -1,7 +1,6 @@
 //! Adaptive cadence test.
 //!
-//! Validates spec SC12 ("cadence backs off under load") and the
-//! brief § 4.2 policy diagram. Drives `LoadAwareCadence` directly
+//! Validates that cadence backs off under load. Drives `LoadAwareCadence` directly
 //! with synthetic `LoadSample` values pinned to a deterministic
 //! 4-core baseline so behaviour is reproducible across machines
 //! (test runners with 8+ cores would otherwise see different

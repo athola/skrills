@@ -9,7 +9,7 @@
 //!   that would erase the optional/required distinction at the wire level.
 //! - All collections are `Vec<T>` or maps with primitive keys.
 //! - All timestamps are `u64` milliseconds since UNIX epoch (mappable to
-//!   `google.protobuf.Timestamp` when the gRPC follow-up lands in v0.9.0).
+//!   `google.protobuf.Timestamp` when the gRPC follow-up lands).
 
 use serde::{Deserialize, Serialize};
 
@@ -118,13 +118,12 @@ impl ResearchQuota {
 
 /// 4-tier alert severity, mapped from FAA AC 25.1322-1 cockpit CAS.
 ///
-/// User-facing behavior per spec § 3.4:
 /// `Warning` interrupts; `Caution` and below are panel-only.
 ///
 /// Serialization writes the bare lowercase variant name (`"warning"`)
 /// for proto3 `enum`-compatibility today. Deserialization additionally
 /// accepts the tagged form `{"kind":"warning"}` for forward-compat
-/// with the v0.9.0 wire format that will introduce variants carrying
+/// with a future wire format that will introduce variants carrying
 /// payload. See the `serde_impls` module.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -424,8 +423,7 @@ pub struct TokenEntry {
 
 /// Itemized token attribution for the snapshot.
 ///
-/// Per spec § 3.3 and § 3.4: alerts at 20K
-/// (quadratic inflection), 50K (Willison MCP-overhead range), and
+/// Alerts at 20K (quadratic inflection), 50K (Willison MCP-overhead range), and
 /// 100% of `--alert-budget`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TokenLedger {

@@ -1,6 +1,6 @@
 //! Tick-budget perf benchmark.
 //!
-//! Validates spec SC1: a tick on the standard fixture (200 skills /
+//! Validates that a tick on the standard fixture (200 skills /
 //! 50 commands / 20 plugins / 3 MCPs) completes with median <50 ms
 //! and p99 <200 ms. Wired into `make bench` (which runs
 //! `cargo bench --workspace`).

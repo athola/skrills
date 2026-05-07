@@ -1,7 +1,7 @@
 //! Research pane.
 //!
 //! Pull-only side panel that surfaces research findings asynchronously
-//! attached by the tome dispatcher. Per spec § 3.7 and the
+//! attached by the tome dispatcher. Per the
 //! CHI 2025 contrarian finding (Theme 2 of the discourse research),
 //! this pane is **collapsed by default**. Users open it when curious;
 //! findings never auto-expand into the user's view.
@@ -53,7 +53,7 @@ impl ResearchPaneState {
     /// Re-evaluate the badge count given a new snapshot. Findings
     /// not yet in `seen_keys` count as new.
     ///
-    /// Per spec § 3.7: when the pane is **collapsed**, new findings
+    /// When the pane is **collapsed**, new findings
     /// bump `badge_count`. When the pane is **expanded**, the user
     /// is actively viewing them; they're acknowledged on next ingest.
     pub fn ingest(&mut self, snap_state: &ColdWindowState) {

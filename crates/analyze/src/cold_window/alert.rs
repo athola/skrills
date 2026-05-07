@@ -1,7 +1,6 @@
 //! Default alert policy for the cold-window engine.
 //!
-//! Implements [`AlertPolicy`] via [`LayeredAlertPolicy`] per
-//! per spec § 3.4 / § 5.3. Combines:
+//! Implements [`AlertPolicy`] via [`LayeredAlertPolicy`]. Combines:
 //!
 //! - **4-tier classification** (Warning / Caution / Advisory / Status)
 //!   from FAA AC 25.1322-1 cockpit CAS via the war-room TRIZ bridge.
@@ -15,7 +14,7 @@
 //!   budget fires a `Warning` and signals the rest of the system to
 //!   refuse mutating operations.
 //!
-//! Token thresholds (spec § 5.3, research-backed):
+//! Token thresholds (research-backed):
 //!
 //! - 20K total → `Advisory` (Anthropic API quadratic inflection per
 //!   the Feb 2026 HN "Expensively Quadratic" analysis).

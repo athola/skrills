@@ -1,6 +1,6 @@
 //! Supporting CLI enums used by clap subcommands.
 //!
-//! Split out of `cli/mod.rs` (FU-4 of v0.8.0 refinement). These
+//! Split out of `cli/mod.rs`. These
 //! enums are public because clap derives `ValueEnum` for parsing
 //! `--target=claude` style arguments. They re-export from the
 //! parent module so external callers continue to use the existing

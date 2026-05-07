@@ -1,6 +1,6 @@
 //! Cold-window TUI ↔ browser parity test.
 //!
-//! Verifies SC4 (cold-window-spec § 6): the TUI render surface and the
+//! Verifies that the TUI render surface and the
 //! browser render surface emit the same semantic content for a fixed
 //! `WindowSnapshot`. "Semantic" means user-visible text — alert
 //! titles + messages, hint URIs + messages, research titles, and
@@ -53,8 +53,8 @@ use skrills_snapshot::{
 };
 use tokio::sync::broadcast;
 
-/// Token-budget ceiling shared by both surfaces. The spec § 3.4
-/// "Caution" tier example uses 50K so the snapshot's 25K total
+/// Token-budget ceiling shared by both surfaces. The "Caution"
+/// tier example uses 50K so the snapshot's 25K total
 /// renders as 50% — far enough below the 80% bar threshold that the
 /// status bar should NOT show the warn class, and far enough above 0
 /// that the bar isn't empty.

@@ -9,7 +9,7 @@
 //! divided by 4 — so the cold rewalk stays cheap. This is wrong-in-the-
 //! detail (a Markdown file is not 4 chars per token) but right-in-the-
 //! shape: skills that grow show as larger consumers, skills that shrink
-//! pull back. A real BPE tokenizer is a v0.9.0 follow-up; until then
+//! pull back. A real BPE tokenizer is a follow-up; until then
 //! this surfaces *real* attribution rather than the synthetic
 //! the original `skill://demo` placeholder.
 //!

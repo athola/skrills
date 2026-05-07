@@ -1,4 +1,4 @@
-//! Test helpers shared by adapter test suites (T3.5 bootstrap).
+//! Test helpers shared by adapter test suites.
 //!
 //! The four `AgentAdapter` implementations (claude/codex/copilot/
 //! cursor) historically each spelled out the same handful of basic

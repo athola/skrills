@@ -1,7 +1,6 @@
 //! Plugin-cache asset walker for the Claude adapter.
 //!
-//! Split out of `claude/mod.rs` (T3.3 of the v0.8.0 refinement
-//! plan) — this is the largest single trait method in the adapter
+//! Split out of `claude/mod.rs` — this is the largest single trait method in the adapter
 //! (~205 LOC) and pure recursion over the plugin cache layout
 //! `cache/<marketplace>/<plugin>/<version>/`. It carries its own
 //! filtering rules (synced vs skipped directories) which are easier

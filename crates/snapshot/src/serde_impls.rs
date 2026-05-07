@@ -4,7 +4,7 @@
 //!
 //! This module calls for `#[serde(tag = "kind")]`
 //! on every snapshot enum so that a future variant carrying a payload —
-//! shipped in v0.9.0 alongside the gRPC follow-up — can be added without
+//! shipped alongside the gRPC follow-up — can be added without
 //! a wire-breaking change. Today every variant is unit-only and
 //! serializes as a bare lowercase string (e.g. `"warning"`).
 //!
@@ -16,10 +16,10 @@
 //! - **Serialize** keeps emitting bare strings via the derived impl
 //!   (`#[serde(rename_all = "...")]`). Wire format does not change.
 //! - **Deserialize** here accepts BOTH the current bare-string form
-//!   AND the future `{"kind":"..."}` tagged form, so a v0.9.0 producer
+//!   AND the future `{"kind":"..."}` tagged form, so a future producer
 //!   that emits the new shape can be read by a v0.8.x consumer.
 //!
-//! When v0.9.0 introduces a variant with a payload, the writer side
+//! When a future version introduces a variant with a payload, the writer side
 //! switches to a tagged emission for that variant only; pre-existing
 //! unit variants continue to emit bare strings. Both forms round-trip.
 //!

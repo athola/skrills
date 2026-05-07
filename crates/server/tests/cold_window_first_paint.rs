@@ -9,11 +9,11 @@
 //! [`cold_window_dashboard_first_paint_under_one_second`]. We bind an
 //! ephemeral-port server, send a snapshot through the bus, then issue
 //! a single GET against `/dashboard` (the HTML shell, not the SSE
-//! stream — first paint = HTML byte arrival per the spec) and assert
+//! stream — first paint = HTML byte arrival) and assert
 //! the elapsed time is under 1 s.
 //!
 //! SC3 (TUI startup) needs a real crossterm raw-mode loop, which is
-//! not yet wired up in v0.8.0 (the TUI panes are library code, not a
+//! not yet wired up (the TUI panes are library code, not a
 //! launchable binary). Tracking is via the `#[ignore]`-marked
 //! placeholder below; the assertion lands when the TUI
 //! integration crate ships.

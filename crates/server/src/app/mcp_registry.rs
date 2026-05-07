@@ -1,6 +1,6 @@
 //! MCP tool registry construction and tool-name categorization.
 //!
-//! Split out of `app/mod.rs` (T3.1 of the v0.8.0 refinement plan).
+//! Split out of `app/mod.rs` to keep registry construction separate from lifecycle wiring.
 //! Houses the [`build_mcp_registry`] entrypoint that the
 //! [`super::SkillService`] constructor calls once at startup, plus
 //! the [`ToolCategory`] enum used to tag tool entries by purpose.

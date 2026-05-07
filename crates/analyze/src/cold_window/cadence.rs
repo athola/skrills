@@ -1,7 +1,6 @@
 //! Adaptive cadence policy for the cold-window engine.
 //!
-//! Per spec § 4.2, the default
-//! [`LoadAwareCadence`] implements the policy:
+//! [`LoadAwareCadence`] is the default implementation. Policy:
 //!
 //! ```text
 //! recent edit (<10s)?  → tick = max(base / 2, min)
@@ -131,7 +130,7 @@ impl CadenceStrategy for LoadAwareCadence {
 /// Returns 0.0 on platforms without `/proc` or when the file cannot
 /// be parsed; in that case the [`LoadAwareCadence`] degrades to
 /// `base` cadence (load_ratio is 0.0). This is the documented
-/// graceful fallback (spec § 8 / Assumption A2).
+/// graceful fallback (load_ratio falls back to 0.0).
 pub fn read_loadavg_1min() -> f64 {
     #[cfg(target_os = "linux")]
     {

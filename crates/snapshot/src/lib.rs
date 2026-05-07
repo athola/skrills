@@ -6,8 +6,8 @@
 //! `skrills_server`). Producer and consumers depend on this crate;
 //! they do not depend on each other.
 //!
-//! Design rationale and type contracts are documented in the spec. Type design rules
-//! (proto-friendly conventions for the v0.9.0 gRPC follow-up) live in
+//! Type design rules
+//! (proto-friendly conventions for the gRPC follow-up) live in
 //! the `types` module documentation. The `serde_impls` module
 //! documents the read-tolerant deserialization strategy that reserves
 //! the `{"kind": "..."}` tagged shape for future payload variants

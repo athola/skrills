@@ -2,8 +2,8 @@
 //!
 //! Used by the cold-window's `LayeredAlertPolicy` (and any other
 //! consumer) to fetch contextual baselines from historical metrics
-//! data. Per spec § 8 / Assumption A1: when the rolling window has
-//! insufficient samples (warmup state), the query returns `None`
+//! data. When the rolling window has insufficient samples (warmup
+//! state), the query returns `None`
 //! so the consumer can fall back to constants instead of producing
 //! spurious alerts off a thin sample.
 //!
@@ -62,8 +62,7 @@ impl BaselineQuery for MetricsCollector {
 ///
 /// Uses nearest-rank ordering: `values[round((n-1) * q)]`. This is
 /// less sophisticated than linear interpolation but plays well with
-/// the heuristic-bound nature of token estimation (per spec
-/// Assumption A1) — a few extra digits of precision would lie about
+/// the heuristic-bound nature of token estimation — a few extra digits of precision would lie about
 /// the underlying signal.
 fn quantile(values: &mut [f64], q: f64) -> f64 {
     values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));

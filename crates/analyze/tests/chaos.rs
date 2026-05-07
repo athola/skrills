@@ -1,6 +1,6 @@
 //! Synthetic chaos test for alert hygiene budget.
 //!
-//! Validates spec SC7: with hysteresis + min-dwell + tier filtering,
+//! Validates that with hysteresis + min-dwell + tier filtering,
 //! a 10-minute chaos mutation stream produces fewer than 12
 //! user-visible alerts per hour. SC7 targets *flapping* — repeated
 //! re-fires of the same condition due to noisy signals oscillating

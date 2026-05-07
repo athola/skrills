@@ -1,6 +1,6 @@
 //! CLI dispatch — the `skrills` binary entry point.
 //!
-//! Split out of `app/mod.rs` (T3.1 of the v0.8.0 refinement plan).
+//! Split out of `app/mod.rs` to keep dispatch routing separate from business logic.
 //! This file owns nothing except the routing of parsed [`Cli`]
 //! commands to their respective handlers in [`crate::commands`]. The
 //! handlers themselves live in their own submodules; this is pure

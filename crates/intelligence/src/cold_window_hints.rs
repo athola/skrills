@@ -18,7 +18,7 @@
 //! hints always rank above non-pinned regardless of score), not a
 //! score boost.
 //!
-//! Override use cases (per spec): severity-first ordering for
+//! Override use cases: severity-first ordering for
 //! incident response, ease-first ordering for "low-hanging fruit"
 //! mode. Customize by constructing [`MultiSignalScorer`] with
 //! different weights or implementing your own `HintScorer`.
