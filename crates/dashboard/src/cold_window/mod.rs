@@ -3,24 +3,21 @@
 //!
 //! These widgets subscribe to the snapshot bus produced by
 //! `skrills_analyze::cold_window::ColdWindowEngine` and render
-//! ratatui frames. The TUI surface is one of two
-//! [render targets](docs/archive/2026-04-26-cold-window-brief.md#3-architecture); the
-//! browser surface in `skrills-server` consumes the same
-//! `WindowSnapshot` artifact.
+//! ratatui frames. The browser surface in `skrills-server` consumes the
+//! same `WindowSnapshot` artifact.
 //!
 //! Module layout:
 //!
 //! - [`state`] holds per-tick view state (current snapshot, ack
 //!   bookkeeping, bell suppression).
 //! - [`alert_pane`] renders the 4-tier alert list and handles the
-//!   master-acknowledge keystroke (TASK-015).
+//!   master-acknowledge keystroke.
 //! - [`status_bar`] renders the bottom status line: tick cadence,
-//!   token budget, alert counts per tier, research-quota state
-//!   (TASK-018).
+//!   token budget, alert counts per tier, research-quota state.
 //! - [`hint_pane`] renders the ranked `ScoredHint` list with
-//!   category filter and persisted pin toggles (TASK-016).
+//!   category filter and persisted pin toggles.
 //! - [`research_pane`] renders the pull-only research findings
-//!   panel, collapsed by default with a badge counter (TASK-017).
+//!   panel, collapsed by default with a badge counter.
 
 pub mod alert_pane;
 pub mod hint_pane;

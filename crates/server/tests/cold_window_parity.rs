@@ -1,4 +1,4 @@
-//! Cold-window TUI ↔ browser parity test (TASK-023).
+//! Cold-window TUI ↔ browser parity test.
 //!
 //! Verifies SC4 (cold-window-spec § 6): the TUI render surface and the
 //! browser render surface emit the same semantic content for a fixed
@@ -9,7 +9,7 @@
 //!
 //! ## Plan deviation
 //!
-//! `docs/archive/2026-04-26-cold-window-plan.md` § 2 lists this test at
+//! The original plan placed this test at
 //! `crates/test-utils/tests/parity.rs`. Putting it there would force
 //! `skrills_test_utils` to dev-depend on `skrills-server`,
 //! `skrills-dashboard`, `ratatui`, and `reqwest`. Two of those
@@ -173,7 +173,7 @@ fn render_tui_text(snap: Arc<WindowSnapshot>) -> String {
             AlertPane::render(&state, f, chunks[0]);
             HintPane::render(&state, &hint_state, f, chunks[1]);
             ResearchPane::render(&state, &research_state, f, chunks[2]);
-            // NI7: 3 used of 10 → status renders "quota: 7/10" (the
+            // 3 used of 10 → status renders "quota: 7/10" (the
             // historical `available/total` form).
             StatusBar::render(
                 &state,

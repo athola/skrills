@@ -1,4 +1,4 @@
-//! Tick-budget perf benchmark (TASK-024).
+//! Tick-budget perf benchmark.
 //!
 //! Validates spec SC1: a tick on the standard fixture (200 skills /
 //! 50 commands / 20 plugins / 3 MCPs) completes with median <50 ms

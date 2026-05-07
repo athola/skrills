@@ -6,8 +6,7 @@
 //! `skrills_server`). Producer and consumers depend on this crate;
 //! they do not depend on each other.
 //!
-//! See `docs/archive/2026-04-26-cold-window-brief.md` for design rationale and
-//! `docs/archive/2026-04-26-cold-window-spec.md` for type contracts. Type design rules
+//! Design rationale and type contracts are documented in the spec. Type design rules
 //! (proto-friendly conventions for the v0.9.0 gRPC follow-up) live in
 //! the `types` module documentation. The `serde_impls` module
 //! documents the read-tolerant deserialization strategy that reserves
@@ -196,7 +195,7 @@ mod tests {
         assert!(json.contains("\"last_edit_age_ms\":null"));
     }
 
-    // ---------- N10: All-variants round-trip ----------
+    // ---------- All-variants round-trip ----------
 
     /// Helper: serialize a value, then deserialize, then assert equality.
     fn roundtrip<T>(value: T)
@@ -258,7 +257,7 @@ mod tests {
         }
     }
 
-    // ---------- N1: Read-tolerant tagged-form acceptance ----------
+    // ---------- Read-tolerant tagged-form acceptance ----------
 
     #[test]
     fn severity_accepts_bare_string_form() {
@@ -313,7 +312,7 @@ mod tests {
         assert!(err.is_err(), "unknown variant must not deserialize");
     }
 
-    // ---------- NI4: AlertBand validation ----------
+    // ---------- AlertBand validation ----------
 
     #[test]
     fn alert_band_new_accepts_valid_thresholds() {
@@ -357,9 +356,9 @@ mod tests {
         assert_eq!(err, BandError::InvalidClear);
     }
 
-    // ---------- B3: AlertBand Deserialize re-runs validation ----------
+    // ---------- AlertBand Deserialize re-runs validation ----------
     //
-    // The derived `Deserialize` (pre-B3) routed JSON straight onto
+    // The derived `Deserialize` (pre-fix) routed JSON straight onto
     // `pub(crate)` fields, bypassing `AlertBand::new`. A hostile or
     // v0.9.0 non-Rust producer could ship `{"low":100,"high":50,...}`
     // and downstream consumers would trust the invariants. The manual
@@ -399,11 +398,11 @@ mod tests {
         assert_eq!(band.high(), 100.0);
     }
 
-    // ---------- NI8: HealthStatus default ----------
+    // ---------- HealthStatus default ----------
 
     #[test]
     fn health_status_default_is_unknown() {
-        // NI8: a freshly-constructed PluginHealth must not silently
+        // A freshly-constructed PluginHealth must not silently
         // launder absence-of-data into "Ok". Unknown is the correct
         // sentinel.
         assert_eq!(HealthStatus::default(), HealthStatus::Unknown);
@@ -415,7 +414,7 @@ mod tests {
         assert_eq!(ph.overall, HealthStatus::Unknown);
     }
 
-    // ---------- NI7: ResearchQuota newtype ----------
+    // ---------- ResearchQuota newtype ----------
 
     #[test]
     fn research_quota_new_stores_used_then_total() {
@@ -445,7 +444,7 @@ mod tests {
 
     #[test]
     fn research_quota_inversion_is_visible_at_value_level() {
-        // NI7 regression: the named-field accessors make a flipped
+        // The named-field accessors make a flipped
         // call site produce values that disagree with their meaning,
         // which any equality test catches.
         let intended = ResearchQuota::new(3, 10);
@@ -455,7 +454,7 @@ mod tests {
         assert_eq!(inverted.available(), 0); // saturating: 3 - 10 → 0
     }
 
-    // ---------- S1: hoisted label / rank methods ----------
+    // ---------- Hoisted label / rank methods ----------
 
     #[test]
     fn severity_short_label_covers_every_variant() {

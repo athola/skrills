@@ -1,6 +1,6 @@
 //! Wire-format types for the cold-window snapshot.
 //!
-//! Type design rules (proto-friendly, per `docs/archive/2026-04-26-cold-window-brief.md` § 5.8):
+//! Type design rules (proto3-friendly):
 //!
 //! - All enum variants use tagged unions where they carry payload (proto3
 //!   `oneof`-compatible). Unit-only enums serialize as bare strings
@@ -68,7 +68,7 @@ impl WindowSnapshot {
     }
 }
 
-/// Research-quota pair surfaced on the status bar (NI7 from PR #218).
+/// Research-quota pair surfaced on the status bar.
 ///
 /// Replaces the prior `Option<(u32, u32)>` representation, which was
 /// silently bug-prone: callers had to remember whether the tuple was
@@ -118,7 +118,7 @@ impl ResearchQuota {
 
 /// 4-tier alert severity, mapped from FAA AC 25.1322-1 cockpit CAS.
 ///
-/// User-facing behavior per `docs/archive/2026-04-26-cold-window-spec.md` § 3.4:
+/// User-facing behavior per spec § 3.4:
 /// `Warning` interrupts; `Caution` and below are panel-only.
 ///
 /// Serialization writes the bare lowercase variant name (`"warning"`)
@@ -141,7 +141,7 @@ pub enum Severity {
 
 impl Severity {
     /// Short 4-character label used by the alert pane and SSE
-    /// fragments. Centralized here (S1 from PR #218) so the TUI and
+    /// fragments. Centralized here so the TUI and
     /// browser can never drift on the user-visible tag.
     #[must_use]
     pub fn short_label(&self) -> &'static str {
@@ -312,7 +312,7 @@ pub enum HintCategory {
 
 impl HintCategory {
     /// Lowercase label used in the hint pane, the SSE hint fragment,
-    /// and the CLI help output. Centralized here (S1 from PR #218) so
+    /// and the CLI help output. Centralized here so
     /// the kebab-case form for `SyncDrift` is settled in one place.
     #[must_use]
     pub fn label(&self) -> &'static str {
@@ -376,8 +376,8 @@ pub enum ResearchChannel {
 
 impl ResearchChannel {
     /// Short label used by the research pane row and the SSE channel
-    /// tag. Centralized here (S1 from PR #218) so the TUI and browser
-    /// stay byte-identical on this field per SC4.
+    /// tag. Centralized here so the TUI and browser
+    /// stay byte-identical on this field.
     #[must_use]
     pub fn short_label(&self) -> &'static str {
         match self {
@@ -407,6 +407,12 @@ pub struct ResearchFinding {
     pub fetched_at_ms: u64,
 }
 
+impl core::fmt::Display for ResearchFinding {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}#{}", self.fingerprint, self.channel.short_label())
+    }
+}
+
 /// One row of the per-source token ledger.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TokenEntry {
@@ -418,7 +424,7 @@ pub struct TokenEntry {
 
 /// Itemized token attribution for the snapshot.
 ///
-/// Per `docs/archive/2026-04-26-cold-window-spec.md` § 3.3 and § 3.4: alerts at 20K
+/// Per spec § 3.3 and § 3.4: alerts at 20K
 /// (quadratic inflection), 50K (Willison MCP-overhead range), and
 /// 100% of `--alert-budget`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -439,7 +445,7 @@ pub struct TokenLedger {
 
 /// Aggregate health status for a plugin.
 ///
-/// `Unknown` is the [`Default`] (NI8 from PR #218 review): a freshly
+/// `Unknown` is the [`Default`]: a freshly
 /// constructed `PluginHealth` has not been measured yet, so reporting
 /// `Ok` would launder absence-of-data into a positive result. Callers
 /// that want `Ok` must say so explicitly.

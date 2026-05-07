@@ -135,7 +135,7 @@ impl TokenCategory {
     }
 }
 
-/// Source category for per-source token attribution (cold-window TASK-009).
+/// Source category for per-source token attribution.
 ///
 /// Splits system-prompt and conversation tokens into categories so the
 /// cold-window's token ledger can attribute each contribution to the
@@ -180,7 +180,7 @@ pub struct AttributedBreakdown {
 /// Existing `count_tokens()` API is unchanged; this is purely additive.
 /// The same character-heuristic limits apply (see crate-level docs in
 /// `tokens.rs`); accuracy on a known fixture is asserted at ≥95%
-/// in TASK-026 of the cold-window plan.
+/// in the cold-window test plan.
 ///
 /// # Example
 ///

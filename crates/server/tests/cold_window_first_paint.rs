@@ -1,6 +1,6 @@
-//! SC2/SC3 first-paint timing assertions (NI17 from PR #218).
+//! SC2/SC3 first-paint timing assertions.
 //!
-//! Spec § 6 (`docs/archive/2026-04-26-cold-window-spec.md`):
+//! Spec § 6:
 //! - **SC2**: Browser surface renders the first paint within 1 second
 //!   of the dashboard URL request on `localhost`.
 //! - **SC3**: TUI startup to first snapshot under 500ms.
@@ -15,7 +15,7 @@
 //! SC3 (TUI startup) needs a real crossterm raw-mode loop, which is
 //! not yet wired up in v0.8.0 (the TUI panes are library code, not a
 //! launchable binary). Tracking is via the `#[ignore]`-marked
-//! placeholder below; the assertion lands when TASK-024 / the TUI
+//! placeholder below; the assertion lands when the TUI
 //! integration crate ships.
 
 #![cfg(feature = "http-transport")]
@@ -86,7 +86,7 @@ async fn cold_window_dashboard_first_paint_under_one_second() {
 }
 
 #[tokio::test]
-#[ignore = "SC3: pending TUI integration test (TASK-024 follow-up)"]
+#[ignore = "SC3: pending TUI integration test (TUI binary not yet wired)"]
 async fn cold_window_tui_startup_under_five_hundred_ms() {
     // SC3: TUI startup-to-first-snapshot must beat 500 ms.
     //
@@ -94,8 +94,8 @@ async fn cold_window_tui_startup_under_five_hundred_ms() {
     // `skrills_dashboard::cold_window` rendered via `TestBackend` in
     // unit tests. There is no `skrills cold-window --tui` binary path
     // yet, so this assertion has no surface to measure. When the TUI
-    // launch path lands (TASK-024 in cold-window-plan.md), replace
-    // this body with: spawn the TUI, drive the bus to first snapshot,
-    // assert `t_first_snapshot - t_spawn < Duration::from_millis(500)`.
-    unimplemented!("SC3 measurement requires the TUI launch path from TASK-024");
+    // launch path lands, replace this body with: spawn the TUI, drive
+    // the bus to first snapshot, assert
+    // `t_first_snapshot - t_spawn < Duration::from_millis(500)`.
+    unimplemented!("SC3 measurement requires a launchable TUI binary path");
 }

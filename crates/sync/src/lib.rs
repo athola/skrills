@@ -149,8 +149,7 @@ pub use models::transform_model;
 pub use orchestrator::{
     create_adapter, is_valid_platform, sync_between, SyncOrchestrator, SyncParams,
 };
-#[allow(deprecated)]
-pub use platform_routing::{default_target_for, parse_direction, SyncDirection};
+pub use platform_routing::default_target_for;
 pub use report::{SkipReason, SyncReport, WriteReport};
 pub use validation::{
     apply_autofix_to_skill, skill_is_codex_compatible, skill_is_copilot_compatible,

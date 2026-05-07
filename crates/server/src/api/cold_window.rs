@@ -1,4 +1,4 @@
-//! Cold-window browser surface (TASK-019 + TASK-020).
+//! Cold-window browser surface.
 //!
 //! Two endpoints:
 //!
@@ -41,7 +41,7 @@ use tokio::sync::broadcast;
 
 /// Live source for the research-quota status fragment. Implementors
 /// snapshot the current quota on demand so the SSE loop can refresh
-/// it cheaply on every tick (NI7 newtype boundary).
+/// it cheaply on every tick.
 ///
 /// Implemented by [`BucketedBudget`] via the blanket `Arc` impl below;
 /// tests can also implement it directly for a fixed value.
@@ -73,7 +73,7 @@ pub struct ColdWindowDashboardState {
     pub bus: broadcast::Sender<Arc<WindowSnapshot>>,
     /// Token-budget ceiling for the status bar's progress display.
     pub budget_ceiling: u64,
-    /// Optional static research-quota snapshot (NI7).
+    /// Optional static research-quota snapshot.
     ///
     /// Used as the fallback when no live `quota_source` is wired.
     /// When a source is present, the SSE loop overwrites this field
@@ -81,7 +81,7 @@ pub struct ColdWindowDashboardState {
     pub research_quota: Option<ResearchQuota>,
     /// Optional live quota source (the dispatcher, typically). When
     /// present, the SSE loop snapshots the pair from this on every
-    /// tick so the dashboard reflects drains in real time (B3).
+    /// tick so the dashboard reflects drains in real time.
     pub quota_source: Option<Arc<dyn ResearchQuotaSource>>,
 }
 
@@ -97,7 +97,7 @@ impl ColdWindowDashboardState {
     }
 
     /// Attach a live quota source whose `quota_snapshot()` will be
-    /// queried each tick (B3). Replaces any previously-attached source
+    /// queried each tick. Replaces any previously-attached source
     /// or static `research_quota` value.
     pub fn with_research_quota_source<S>(mut self, source: S) -> Self
     where
@@ -132,7 +132,7 @@ async fn serve_dashboard_sse(
         loop {
             match rx.recv().await {
                 Ok(snap) => {
-                    // B3: prefer the live dispatcher snapshot over the
+                    // Prefer the live dispatcher snapshot over the
                     // static fallback so drains are visible in real time.
                     let research_quota = quota_source
                         .as_ref()
@@ -344,7 +344,7 @@ fn render_research_fragment(snap: &WindowSnapshot) -> String {
 /// escape and survives `html_escape` unchanged. `target="_blank"
 /// rel="noopener"` does not block scheme execution either. We
 /// therefore allowlist `http`/`https` URLs and downgrade everything
-/// else to `#` before HTML-escaping (PR-218 wave-4 I1).
+/// else to `#` before HTML-escaping.
 fn sanitize_external_href(url: &str) -> String {
     let trimmed = url.trim_start();
     let lowered = trimmed.to_ascii_lowercase();
@@ -392,7 +392,7 @@ fn render_status_fragment(
         "W:{} C:{} A:{} S:{}",
         counts[0], counts[1], counts[2], counts[3]
     );
-    // NI7: render `available/total` so the historical "quota: 7/10"
+    // Render `available/total` so the historical "quota: 7/10"
     // contract is preserved across the SSE wire and the TUI.
     let quota_label = research_quota
         .map(|q| format!("  ·  quota: {}/{}", q.available(), q.total()))
@@ -415,7 +415,7 @@ fn format_token_count(n: u64) -> String {
 }
 
 /// CSS class fragment for a severity tier. The user-visible short
-/// label lives on [`Severity::short_label`] (S1).
+/// label lives on [`Severity::short_label`].
 fn severity_class(severity: Severity) -> &'static str {
     match severity {
         Severity::Warning => "warning",
@@ -426,7 +426,7 @@ fn severity_class(severity: Severity) -> &'static str {
 }
 
 /// CSS class fragment for a research channel. The user-visible label
-/// lives on [`ResearchChannel::short_label`] (S1).
+/// lives on [`ResearchChannel::short_label`].
 fn channel_class(channel: ResearchChannel) -> &'static str {
     match channel {
         ResearchChannel::GitHub => "github",
@@ -623,7 +623,7 @@ mod tests {
         snap.token_ledger.total = 25_000;
         snap.next_tick_ms = 4_000;
         snap.load_sample.loadavg_1min = 0.78;
-        // NI7: 3 used of 10 → "quota: 7/10" matches the prior wire.
+        // 3 used of 10 → "quota: 7/10" matches the prior wire.
         let frag = render_status_fragment(&snap, 100_000, Some(ResearchQuota::new(3, 10)));
         assert!(frag.contains("tick: 4.0s"));
         assert!(frag.contains("[load 0.78]"));
@@ -676,7 +676,7 @@ mod tests {
         assert_eq!(html_escape("plain"), "plain");
     }
 
-    // ---------- I1: URL-scheme allowlist on research-pane <a href> ----------
+    // ---------- URL-scheme allowlist on research-pane <a href> ----------
 
     #[test]
     fn sanitize_external_href_allows_http_and_https() {
@@ -719,7 +719,7 @@ mod tests {
 
     #[test]
     fn research_fragment_neutralizes_javascript_url() {
-        // I1 regression (PR-218 wave-4): a hostile finding URL must not
+        // A hostile finding URL must not
         // become an executable javascript:-href in the rendered SSE
         // fragment. Pre-fix `html_escape` left this bare in the href
         // attribute.
@@ -778,7 +778,7 @@ mod tests {
 
     #[tokio::test]
     async fn sse_emits_shutdown_event_when_bus_closes() {
-        // NI13/N8: previously the `RecvError::Closed` arm broke
+        // Previously the `RecvError::Closed` arm broke
         // without telling the client the stream was ending. Now we
         // emit a final `event: shutdown` so connected dashboards can
         // distinguish "server going down cleanly" from "network
@@ -818,7 +818,7 @@ mod tests {
         );
     }
 
-    /// B3: a synthetic quota source returns the value we plugged in,
+    /// A synthetic quota source returns the value we plugged in,
     /// regardless of the static `research_quota` field. Constructor
     /// takes `(used, total)` to match [`ResearchQuota::new`].
     struct StaticQuota(u32, u32);
@@ -830,7 +830,7 @@ mod tests {
 
     #[tokio::test]
     async fn dashboard_quota_reflects_live_source_snapshot() {
-        // B3: with a live quota source attached, the SSE-rendered status
+        // With a live quota source attached, the SSE-rendered status
         // fragment uses `source.quota_snapshot()`, not the static fallback.
         // We bind an ephemeral port so we can subscribe via the real
         // handler stack AND send a snapshot strictly after the handler
@@ -840,7 +840,7 @@ mod tests {
         use tower::ServiceExt;
 
         let (tx, _keep_rx) = broadcast::channel::<Arc<WindowSnapshot>>(16);
-        // NI7: `StaticQuota` now passes `(used, total)`; `used=7, total=7`
+        // `StaticQuota` passes `(used, total)`; `used=7, total=7`
         // means "fully drained" → renderer emits `quota: 0/7`.
         let state = ColdWindowDashboardState::new(tx.clone(), 100_000)
             .with_research_quota_source(StaticQuota(7, 7));
@@ -887,7 +887,7 @@ mod tests {
 
     #[test]
     fn live_quota_source_overrides_static_quota_in_sse_loop() {
-        // B3 (unit-level): the quota-resolution policy is "live source
+        // The quota-resolution policy is "live source
         // first, static field as fallback". This pins the policy
         // independent of axum/tokio plumbing so future SSE refactors
         // can't silently regress the priority.
@@ -905,11 +905,11 @@ mod tests {
         assert_eq!(resolved, Some(ResearchQuota::new(7, 7)));
     }
 
-    // ---------- I7: SSE Lagged-arm coverage ----------
+    // ---------- SSE Lagged-arm coverage ----------
 
     #[tokio::test]
     async fn sse_emits_status_event_when_subscriber_lags() {
-        // I7 (PR-218 wave-4): the only user-facing signal that a slow
+        // The only user-facing signal that a slow
         // SSE client missed snapshots is the "subscriber lagged by N
         // ticks" status event. Pre-fix this arm had no test, so a
         // refactor could silently break it without anyone noticing.
@@ -958,7 +958,7 @@ mod tests {
 
     #[test]
     fn bucketed_budget_quota_snapshot_reports_capacity_and_floor() {
-        // B3 + NI7: the BucketedBudget Arc impl returns a ResearchQuota
+        // The BucketedBudget Arc impl returns a ResearchQuota
         // where `used = total - floor(available)`; a fresh bucket reads
         // as `used = 0` so the dashboard never advertises a fetch the
         // bucket can't actually serve (`available() == total`).

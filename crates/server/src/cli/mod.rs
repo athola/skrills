@@ -662,7 +662,7 @@ pub enum Commands {
     /// 4-tier alert policy, ranks hints, and (with `--browser`)
     /// serves a Server-Sent Events dashboard at
     /// `http://127.0.0.1:<port>/dashboard`. Press Ctrl-C for graceful
-    /// shutdown within the spec § 3 / TASK-031 2-second budget.
+    /// shutdown within the spec § 3 2-second budget.
     #[cfg(feature = "http-transport")]
     ColdWindow(crate::cold_window_cli::ColdWindowArgs),
 }

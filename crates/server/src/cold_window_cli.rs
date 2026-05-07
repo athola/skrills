@@ -1,8 +1,8 @@
-//! Cold-window subcommand entry point (TASK-021 + TASK-031).
+//! Cold-window subcommand entry point.
 //!
 //! Wires the engine, a tick producer, and the optional HTTP browser
 //! surface together. Listens for SIGINT and SIGTERM and cleanly tears
-//! everything down within the spec § 3 / TASK-031 2-second budget.
+//! everything down within the spec § 3 2-second budget.
 //!
 //! v0.8.0 ships **browser-mode** as the primary surface. The TUI
 //! panes (`skrills_dashboard::cold_window`) are fully implemented and
@@ -82,7 +82,7 @@ pub struct ColdWindowArgs {
     pub skill_dirs: Vec<PathBuf>,
 
     /// Plugins root directory whose `<plugin>/health.toml` files
-    /// participate in each tick (FR11). Defaults to `./plugins`
+    /// participate in each tick. Defaults to `./plugins`
     /// relative to the current working directory; missing or
     /// unreadable directories yield an empty plugin set without
     /// error (the cold-window must never crash on user state).
@@ -91,7 +91,7 @@ pub struct ColdWindowArgs {
 }
 
 /// Await a spawned task handle, surfacing any `JoinError` instead of
-/// silently dropping it (NI10). A clean exit is logged at trace level
+/// silently dropping it. A clean exit is logged at trace level
 /// (callers may upgrade); a panic is logged at error level so it shows
 /// up in production logs by default; an unexpected end (cancellation,
 /// abort) is a warning. The `kind` argument is interpolated into the
@@ -123,10 +123,10 @@ pub async fn run(args: ColdWindowArgs) -> Result<()> {
         "starting cold-window subcommand"
     );
 
-    // B4 server-half: mint one shared kill-switch. Cloned into the
-    // engine via `with_kill_switch`, then handed to any sync adapter
-    // constructed in this run. The engine engages it on token-budget
-    // breach (FR12); adapters consult it before mutating I/O.
+    // Mint one shared kill-switch. Cloned into the engine via
+    // `with_kill_switch`, then handed to any sync adapter constructed
+    // in this run. The engine engages it on token-budget breach;
+    // adapters consult it before mutating I/O.
     let kill_switch = KillSwitch::new();
 
     let engine = Arc::new(
@@ -134,15 +134,15 @@ pub async fn run(args: ColdWindowArgs) -> Result<()> {
     );
     let bus = engine.bus_sender();
 
-    // B2: mint the research-budget dispatcher from the parsed CLI rate.
+    // Mint the research-budget dispatcher from the parsed CLI rate.
     // In-memory variant — persistent path is the daemon's job
     // (`skrills daemon`), not the cold-window subcommand.
     let dispatcher = Arc::new(BucketedBudget::in_memory(args.research_rate));
 
-    // NI16: resolve the merged skill-dir list once at startup so the
+    // Resolve the merged skill-dir list once at startup so the
     // user sees confirmation in the logs that their `--skill-dir`
     // flags were honored. Per-tick discovery wiring lands when the
-    // producer takes a real skill collector (T-NEXT in plan.md).
+    // producer takes a real skill collector.
     let merged_skill_dirs = merge_extra_dirs(&args.skill_dirs);
     if !merged_skill_dirs.is_empty() {
         tracing::info!(
@@ -170,7 +170,7 @@ pub async fn run(args: ColdWindowArgs) -> Result<()> {
 
     // Spawn the browser server if requested.
     let server_handle = if args.browser {
-        // B3: hand the dispatcher to the dashboard so the status bar
+        // Hand the dispatcher to the dashboard so the status bar
         // reflects live drain state, not a frozen snapshot.
         let state = ColdWindowDashboardState::new(bus.clone(), args.alert_budget)
             .with_research_quota_source(Arc::clone(&dispatcher));
@@ -188,7 +188,7 @@ pub async fn run(args: ColdWindowArgs) -> Result<()> {
     tracing::info!("shutdown signal received; tearing down");
     let _ = shutdown_tx.send(true);
 
-    // Bound the cleanup window per spec (2 seconds, T031).
+    // Bound the cleanup window per spec § 3 (2-second budget).
     let cleanup = async {
         await_task_handle(producer_handle, "producer").await;
         if let Some(h) = server_handle {
@@ -208,7 +208,7 @@ pub async fn run(args: ColdWindowArgs) -> Result<()> {
 /// every `next_tick_ms` (read from the most recent snapshot) and call
 /// `engine.tick`. v0.8.0 demo body uses a small synthetic ledger that
 /// grows over time so the alert policy gets exercised, but plugin
-/// participation (FR11/T022) is real: each tick re-walks
+/// participation is real: each tick re-walks
 /// `<plugins_dir>/*/health.toml` cold and feeds the result to the
 /// engine. Token attribution from real discovery is a follow-up.
 async fn producer_loop(
@@ -222,11 +222,10 @@ async fn producer_loop(
     let mut tick_count: u64 = 0;
     let mut next_delay_ms = base_tick_ms;
     let plugin_collector = Arc::new(PluginHealthCollector::new(plugins_dir));
-    // NI16 (PR-218 wave-4): wire the `--skill-dir` flag through to a
-    // real per-tick walk. When the operator supplied no dirs the
-    // collector short-circuits to empty; the producer keeps the
-    // synthetic demo ledger so the dashboard stays interactive in that
-    // mode.
+    // Wire the `--skill-dir` flag through to a real per-tick walk.
+    // When the operator supplied no dirs the collector short-circuits
+    // to empty; the producer keeps the synthetic demo ledger so the
+    // dashboard stays interactive in that mode.
     let skill_collector = Arc::new(SkillCollector::new(skill_dirs));
     loop {
         tokio::select! {
@@ -243,16 +242,15 @@ async fn producer_loop(
                     // Clock precedes UNIX_EPOCH (NTP recovery / container
                     // time-warp / VM resume). Skip the tick rather than
                     // fabricate a zero timestamp; the next loop iteration
-                    // will retry with a fresh clock read. See PR-218
-                    // wave-4 B1.
+                    // will retry with a fresh clock read.
                     tracing::warn!(
                         tick_count,
                         "system clock precedes UNIX_EPOCH; skipping tick"
                     );
                     continue;
                 };
-                // FR11 + NI3: real plugin participation each tick. Cold
-                // rewalk — never cached — per the spec contract. The
+                // Real plugin participation each tick. Cold rewalk —
+                // never cached — per the spec contract. The
                 // walk runs on the blocking pool so the runtime's
                 // worker threads stay free for IO-bound tasks (SSE
                 // subscribers, signal handlers).
@@ -274,7 +272,7 @@ async fn producer_loop(
                 };
                 input = input.with_plugin_collector_output(collector_output);
 
-                // NI16: real per-tick skill discovery on the blocking
+                // Real per-tick skill discovery on the blocking
                 // pool. When no skill-dirs are configured the collector
                 // is empty and we keep the synthetic demo ledger so the
                 // dashboard stays alive without flags.
@@ -354,8 +352,7 @@ async fn producer_loop(
 /// recovery, container time-warp, VM resume). The caller must skip
 /// the tick rather than fabricate `timestamp_ms = 0` — a synthesized
 /// zero would propagate through the engine's monotonic guards and
-/// silently corrupt cadence/dwell/alert hysteresis (PR-218 wave-4 B1,
-/// reusing the NB5 plumbing in `tome::dispatcher`).
+/// silently corrupt cadence/dwell/alert hysteresis.
 fn build_demo_input(tick_count: u64, no_adaptive: bool) -> Option<TickInput> {
     let timestamp_ms = current_ms_checked()?;
     let total = tick_count.saturating_mul(1_500);
@@ -505,7 +502,7 @@ mod tests {
 
     #[test]
     fn build_demo_input_emits_real_unix_millis_timestamp() {
-        // B1 regression: producer must surface a real epoch-ms timestamp,
+        // Regression: producer must surface a real epoch-ms timestamp,
         // not the fabricated `0` of the pre-fix `now_ms` helper. We can
         // only assert the lower bound (clocks vary), so check that the
         // value lands in a sensible "after 2020" window.
@@ -573,9 +570,9 @@ mod tests {
 
     #[tokio::test]
     async fn producer_loop_consumes_skill_dirs_into_per_skill_attribution() {
-        // NI16 regression (PR-218 wave-4): the `--skill-dir` flag must
-        // actually drive per-tick discovery, not be silently dropped
-        // (`_skill_dirs`). Set up a tempdir with two real SKILL.md files
+        // Regression: the `--skill-dir` flag must actually drive
+        // per-tick discovery, not be silently dropped (`_skill_dirs`).
+        // Set up a tempdir with two real SKILL.md files
         // and assert that the broadcast snapshots include them in
         // `token_ledger.per_skill`, not the synthetic `skill://demo`.
         use tempfile::TempDir;
@@ -656,7 +653,7 @@ mod tests {
 
     #[tokio::test]
     async fn await_task_handle_logs_error_when_producer_panics() {
-        // NI10: simulate a panicking producer task and assert the
+        // Simulate a panicking producer task and assert the
         // `tracing::error!` call fires, instead of the previous
         // `let _ = handle.await;` which dropped the JoinError silently.
         let writer = CaptureWriter::default();
@@ -684,7 +681,7 @@ mod tests {
 
     #[tokio::test]
     async fn await_task_handle_logs_warn_when_task_aborted() {
-        // NI10: an aborted task surfaces as a (non-panic) JoinError;
+        // An aborted task surfaces as a (non-panic) JoinError;
         // it must hit the WARN arm instead of being dropped.
         let writer = CaptureWriter::default();
         let subscriber = tracing_subscriber::fmt()
@@ -738,7 +735,7 @@ mod tests {
 
     #[test]
     fn research_rate_one_caps_dispatcher_at_one_per_hour() {
-        // B2: a `--research-rate 1` flag must yield a dispatcher whose
+        // A `--research-rate 1` flag must yield a dispatcher whose
         // capacity is exactly 1/hour. Build the same `BucketedBudget`
         // the runner builds and observe the snapshot.
         let dispatcher = BucketedBudget::in_memory(1);
@@ -749,7 +746,7 @@ mod tests {
 
     #[tokio::test]
     async fn producer_collect_runs_in_blocking_pool() {
-        // NI3: regression — `producer_loop` previously called
+        // Regression: `producer_loop` previously called
         // `plugin_collector.collect()` directly on a runtime worker,
         // which can stall the executor under slow filesystems. The fix
         // wraps the call in `tokio::task::spawn_blocking`. We verify
@@ -780,7 +777,7 @@ mod tests {
 
     #[test]
     fn kill_switch_engages_when_engine_observes_budget_breach() {
-        // B4 cross-check: a switch shared with the engine engages once
+        // A switch shared with the engine engages once
         // a tick crosses the budget ceiling. We construct the engine
         // exactly the way `run` does — via `with_defaults` then
         // `with_kill_switch` — so any drift in that chain breaks this
@@ -811,7 +808,7 @@ mod tests {
 
     #[test]
     fn skill_dirs_arg_propagates_through_merge_extra_dirs() {
-        // NI16: the user-provided `--skill-dir` paths flow through the
+        // The user-provided `--skill-dir` paths flow through the
         // same `merge_extra_dirs` helper that the rest of the server
         // uses, so a future producer that takes a real skill collector
         // sees them. Until that producer lands, this contract pins the

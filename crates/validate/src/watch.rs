@@ -595,7 +595,7 @@ mod tests {
         fn exit(&self, _: &tracing::span::Id) {}
     }
 
-    /// Regression test for PR #218 NB4: the production watch loop calls
+    /// Regression test: the production watch loop calls
     /// `collect_debounced_paths_interruptible`, which previously swallowed
     /// `Ok(Err(_))` events silently. Verify the live path now emits the
     /// `tracing::trace!("watcher notify error during debounce drain")` event
@@ -662,8 +662,8 @@ mod tests {
         }
 
         // Observability assertion: the trace event was emitted exactly once
-        // for the single Err we injected. This is the regression assertion
-        // for NB4 — pre-fix code had `Ok(Err(_)) => {}` and emitted nothing.
+        // for the single Err we injected. Pre-fix code had `Ok(Err(_)) => {}`
+        // and emitted nothing.
         assert_eq!(
             hits.load(std::sync::atomic::Ordering::SeqCst),
             1,

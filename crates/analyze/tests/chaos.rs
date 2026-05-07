@@ -1,4 +1,4 @@
-//! Synthetic chaos test for alert hygiene budget (TASK-025).
+//! Synthetic chaos test for alert hygiene budget.
 //!
 //! Validates spec SC7: with hysteresis + min-dwell + tier filtering,
 //! a 10-minute chaos mutation stream produces fewer than 12

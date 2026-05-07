@@ -1,13 +1,13 @@
 //! Concurrency / robustness tests for `BucketedBudget`.
 //!
-//! Each test guards a specific PR-218 review finding:
-//! - `concurrent_dispatch_never_oversells_capacity` — B5 (TOCTOU)
-//! - `corrupt_persistence_file_recovers_at_full` — N6 (corrupt file)
+//! Each test guards a specific boundary contract:
+//! - `concurrent_dispatch_never_oversells_capacity` — TOCTOU race
+//! - `corrupt_persistence_file_recovers_at_full` — corrupt file
 //! - `persist_bucket_atomic_no_temp_leakage` — N7 (atomic write)
-//! - `load_clamps_negative_available_to_zero` — NI5 (negative)
-//! - `load_rejects_nan_available` — NI5 (NaN)
+//! - `load_clamps_negative_available_to_zero` — negative available
+//! - `load_rejects_nan_available` — NaN available
 //!
-//! NB5 (clock-warp) is asserted via the unit-test path in
+//! Clock-warp is asserted via the unit-test path in
 //! `dispatcher.rs::tests` — see `clock_warp_does_not_saturate_bucket`.
 //! Re-routing the system clock from an integration test would require
 //! a public clock-provider trait, which exceeds the surface budget of
@@ -22,7 +22,7 @@ use skrills_tome::dispatcher::{BucketedBudget, DispatchVerdict, PersistedBucket}
 
 #[test]
 fn concurrent_dispatch_never_oversells_capacity() {
-    // B5: 8 threads, each issuing 1000 distinct fingerprints, racing
+    // 8 threads, each issuing 1000 distinct fingerprints, racing
     // try_dispatch on the same budget. Capacity is small (50) so
     // contention is high. Invariants:
     //   1. Total Allowed verdicts <= rate_per_hour.
@@ -67,7 +67,7 @@ fn concurrent_dispatch_never_oversells_capacity() {
 
 #[test]
 fn concurrent_dispatch_dedupes_same_fingerprint_under_race() {
-    // B5 (sharper): N threads racing the SAME fingerprint. With the
+    // Sharper: N threads racing the SAME fingerprint. With the
     // pre-fix three-critical-section structure, multiple threads can
     // pass the dedup check, each consume a token, and each record —
     // resulting in more than one Allowed verdict for one fingerprint.
@@ -103,7 +103,7 @@ fn concurrent_dispatch_dedupes_same_fingerprint_under_race() {
 
 #[test]
 fn corrupt_persistence_file_recovers_at_full() {
-    // N6: a corrupt JSON file must NOT make persistent() return Err.
+    // A corrupt JSON file must NOT make persistent() return Err.
     // The daemon must boot with a fresh full bucket and log a warning.
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("quota.json");
@@ -150,7 +150,7 @@ fn persist_bucket_atomic_no_temp_leakage() {
 
 #[test]
 fn load_clamps_negative_available_to_zero() {
-    // NI5: tampered file with negative `available` must not flow
+    // A tampered file with negative `available` must not flow
     // through silently. We accept either "clamp to 0" or "fall back
     // to full bucket"; a negative or NaN value must NEVER survive.
     let dir = tempfile::TempDir::new().unwrap();
@@ -171,7 +171,7 @@ fn load_clamps_negative_available_to_zero() {
 
 #[test]
 fn load_rejects_nan_available() {
-    // NI5: NaN poisons `min` (`NaN.min(x) == NaN`) and would propagate
+    // NaN poisons `min` (`NaN.min(x) == NaN`) and would propagate
     // forever through the bucket. Recover.
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("quota.json");

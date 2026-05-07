@@ -42,8 +42,8 @@ use tokio::sync::broadcast;
 
 /// First-tick baseline for the snapshot diff. Constructed once and
 /// shared by every engine instance — `WindowSnapshot` is `Send + Sync`
-/// and the diff/alert policy only borrows it immutably (PR-218 wave-4
-/// I2: avoids per-tick deep clone of the previous snapshot).
+/// and the diff/alert policy only borrows it immutably (avoids
+/// per-tick deep clone of the previous snapshot).
 fn empty_window_snapshot_baseline() -> &'static WindowSnapshot {
     static BASELINE: OnceLock<WindowSnapshot> = OnceLock::new();
     BASELINE.get_or_init(|| WindowSnapshot {
@@ -69,7 +69,7 @@ fn empty_window_snapshot_baseline() -> &'static WindowSnapshot {
 pub struct TickInput {
     /// Wall-clock timestamp at tick start (UNIX epoch milliseconds).
     pub timestamp_ms: u64,
-    /// Per-source token attribution from `analyze::tokens` (T009).
+    /// Per-source token attribution from `analyze::tokens`.
     pub token_ledger: TokenLedger,
     /// Raw hints from the recommender (pre-scoring).
     pub raw_hints: Vec<Hint>,
@@ -82,7 +82,7 @@ pub struct TickInput {
     /// Load sample for adaptive cadence.
     pub load_sample: LoadSample,
     /// Research findings to attach to this tick's snapshot. The
-    /// dispatcher (T011) lives outside the engine and feeds findings
+    /// dispatcher lives outside the engine and feeds findings
     /// in here when they arrive asynchronously.
     pub research_findings: Vec<ResearchFinding>,
 }
@@ -174,24 +174,24 @@ struct EngineState {
     alert_history: AlertHistory,
     version: u64,
     /// Consecutive ticks whose wall-clock body exceeded the configured
-    /// budget. Reset on the first under-budget tick. Drives the NB1/NB2
+    /// budget. Reset on the first under-budget tick. Drives the
     /// STATUS → ADVISORY escalation.
     consecutive_overruns: u32,
     /// Ticks since last `tracing::debug!` for "broadcast send had no
     /// subscribers". Throttles the log to once per
-    /// [`SUBSCRIBERLESS_LOG_INTERVAL`] ticks (NI14).
+    /// [`SUBSCRIBERLESS_LOG_INTERVAL`] ticks.
     subscriberless_ticks: u32,
 }
 
 /// How many consecutive overruns of the tick budget escalate the
 /// per-tick alert from `Severity::Status` (informational) to
-/// `Severity::Advisory` (awareness-only). Spec NB1.
+/// `Severity::Advisory` (awareness-only).
 pub const TICK_OVERRUN_ADVISORY_THRESHOLD: u32 = 3;
 
 /// Cadence at which the engine emits a `tracing::debug!` with the
 /// count of broadcast-send failures (no subscribers). Once per N
-/// ticks; counter resets after each emission. NI14 keeps the log
-/// from spamming when no consumer is attached.
+/// ticks; counter resets after each emission. Prevents log spam
+/// when no consumer is attached.
 pub const SUBSCRIBERLESS_LOG_INTERVAL: u32 = 100;
 
 /// Cold-window engine: per-tick producer of immutable
@@ -384,9 +384,9 @@ impl ColdWindowEngine {
         // we run it for the side-effect of validating the policy stack
         // even when nothing observes the diff directly.
         //
-        // I2 (PR-218 wave-4): downstream `is_alertable`/`evaluate` only
-        // borrow `prev` immutably so we avoid the per-tick deep clone
-        // of `WindowSnapshot` (which contains the full alert/hint/
+        // Downstream `is_alertable`/`evaluate` only borrow `prev`
+        // immutably so we avoid the per-tick deep clone of
+        // `WindowSnapshot` (which contains the full alert/hint/
         // research-finding/plugin-health vectors). `Arc::clone` is
         // cheap; we keep ownership long enough to vend a reference,
         // and fall back to the lazy empty baseline on the first tick.
@@ -415,14 +415,14 @@ impl ColdWindowEngine {
             alerts.extend(synthetic.malformed_alerts(timestamp_ms));
         }
 
-        // B4 engine-half: engage shared kill-switch when token total
-        // breaches the configured budget ceiling (FR12). One-way:
-        // never released by the engine; only daemon restart clears.
+        // Engage shared kill-switch when token total breaches the
+        // configured budget ceiling. One-way: never released by the
+        // engine; only daemon restart clears.
         if snapshot.token_ledger.total >= self.budget_ceiling {
             self.kill_switch.engage();
         }
 
-        // NB1 + NB2: tick-budget overrun.
+        // Tick-budget overrun.
         let elapsed = tick_start.elapsed();
         if elapsed > self.tick_budget {
             state.consecutive_overruns = state.consecutive_overruns.saturating_add(1);
@@ -460,8 +460,8 @@ impl ColdWindowEngine {
         let snap_arc = Arc::new(snapshot);
         state.last_snapshot = Some(Arc::clone(&snap_arc));
 
-        // NI14: surface broadcast send failures via a throttled debug
-        // log. SendError occurs only when the channel has zero live
+        // Surface broadcast send failures via a throttled debug log.
+        // SendError occurs only when the channel has zero live
         // receivers — common during startup (no SSE clients yet) and
         // benign once consumers attach. Logging on every tick spams.
         match self.tx.send(Arc::clone(&snap_arc)) {
@@ -580,7 +580,7 @@ mod tests {
     fn chaos_sequence_eventually_fires_warning() {
         // Ramp tokens 0 → 65K (14 ticks * 5K). With budget 80K (so
         // warning fires at 64K and caution=50K < warning=64K satisfies
-        // tier ordering — NI6) and min_dwell 1, Warning fires by t=13
+        // tier ordering) and min_dwell 1, Warning fires by t=13
         // (65K crosses the 64K warning floor).
         let engine = ColdWindowEngine::with_strategies(
             Box::new(LoadAwareCadence::new()),
@@ -776,7 +776,7 @@ mod tests {
         assert_eq!(snap.token_ledger.per_skill.len(), 1);
     }
 
-    // ---------- NB1 + NB2: tick budget overrun ----------
+    // ---------- Tick budget overrun ----------
 
     fn slow_input() -> TickInput {
         TickInput::empty().with_timestamp_ms(1_700_000_000_000)
@@ -869,7 +869,7 @@ mod tests {
         );
     }
 
-    // ---------- B4 engine-half: KillSwitch ----------
+    // ---------- KillSwitch ----------
 
     #[test]
     fn b4_kill_switch_engages_on_budget_breach() {
@@ -914,7 +914,7 @@ mod tests {
         );
     }
 
-    // ---------- NI14: broadcast send debug log (no subscribers) ----------
+    // ---------- Broadcast send debug log (no subscribers) ----------
 
     #[test]
     fn ni14_no_subscribers_does_not_panic_on_repeated_ticks() {

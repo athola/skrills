@@ -1,4 +1,4 @@
-//! Hint pane (TASK-016).
+//! Hint pane.
 //!
 //! Renders the snapshot's `ScoredHint` list with category filter
 //! and per-hint pin toggle. Pin state persists to
@@ -12,7 +12,7 @@
 //! - `P` toggle pin on the highest-priority visible hint (by URI).
 //!
 //! Pinned hints sort to the top of the visible list regardless of
-//! their score (matching the `MultiSignalScorer` behavior in T010).
+//! their score (matching the `MultiSignalScorer` ranking behavior).
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -101,7 +101,7 @@ impl HintPaneState {
     /// `false` if newly unpinned. Best-effort persistence; persistence
     /// failures (`fs::create_dir_all`, `serde_json`, `fs::write`) are
     /// surfaced via `tracing::warn!` so the operator can investigate
-    /// why pins disappear next launch (PR-218 wave-4 I6).
+    /// why pins disappear next launch.
     pub fn toggle_pin(&mut self, uri: &str) -> bool {
         let pinned = if self.pinned.contains(uri) {
             self.pinned.remove(uri);

@@ -1,7 +1,7 @@
 //! Default alert policy for the cold-window engine.
 //!
 //! Implements [`AlertPolicy`] via [`LayeredAlertPolicy`] per
-//! `docs/archive/2026-04-26-cold-window-spec.md` § 3.4 / § 5.3. Combines:
+//! per spec § 3.4 / § 5.3. Combines:
 //!
 //! - **4-tier classification** (Warning / Caution / Advisory / Status)
 //!   from FAA AC 25.1322-1 cockpit CAS via the war-room TRIZ bridge.
@@ -51,7 +51,7 @@ pub const HYSTERESIS_CLEAR_RATIO: f64 = 0.95;
 /// switches from static thresholds to adaptive (mean ± k·σ) thresholds.
 /// Sized for ~1 minute of activity at 1 Hz tick — small enough for
 /// responsive adaptation, large enough that early jitter does not
-/// dominate the sample mean. Spec § 4.3 (NI1 SC9 rolling baseline).
+/// dominate the sample mean. Spec § 4.3 (rolling baseline).
 pub const MIN_BASELINE_SAMPLES: usize = 60;
 
 /// Hard cap on the rolling baseline window. Spec § 4.3 names "5
@@ -73,7 +73,7 @@ pub const CAUTION_SIGMA_K: f64 = 3.0;
 pub const WARNING_SIGMA_K: f64 = 4.0;
 
 /// Validation failure when constructing or mutating a
-/// [`LayeredAlertPolicy`] (NI6 builder validation).
+/// [`LayeredAlertPolicy`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PolicyError {
     /// Tier ordering violated:
@@ -98,7 +98,7 @@ impl core::fmt::Display for PolicyError {
 
 impl std::error::Error for PolicyError {}
 
-/// Rolling baseline window of token-total samples (NI1 SC9).
+/// Rolling baseline window of token-total samples.
 ///
 /// Maintained internally by [`LayeredAlertPolicy`]; a fresh window is
 /// created per policy instance. We compute mean + sample-stddev on
@@ -184,10 +184,10 @@ impl BaselineWindow {
 }
 
 /// Layered alert policy with hysteresis + min-dwell + 4-tier severity
-/// + rolling-baseline adaptation (NI1 SC9).
+/// + rolling-baseline adaptation.
 ///
-/// Field privacy (NI6): all configuration knobs are crate-private and
-/// reachable only through the validating builders. Builders return
+/// All configuration knobs are crate-private and reachable only
+/// through the validating builders. Builders return
 /// `Result<Self, PolicyError>` so callers cannot construct an
 /// inconsistent policy. The legacy non-fallible builders are
 /// preserved as wrappers that `panic!` on invalid input — these are
@@ -210,7 +210,7 @@ pub struct LayeredAlertPolicy {
     pub(crate) caution_threshold: u64,
     /// Rolling-baseline window. Wrapped in `Arc<Mutex<...>>` so the
     /// policy can record samples through `&self` (the trait method
-    /// signature is immutable). Spec § 4.3 (NI1 SC9).
+    /// signature is immutable). Spec § 4.3.
     pub(crate) baseline: Arc<Mutex<BaselineWindow>>,
 }
 
@@ -229,7 +229,7 @@ impl LayeredAlertPolicy {
 
     /// Validate the current configuration and return self on success.
     /// Tier ordering must satisfy `advisory < caution < budget` and
-    /// `min_dwell >= 1`. Spec § 5.3 (NI6 field-privacy + ordering).
+    /// `min_dwell >= 1`. Spec § 5.3.
     pub fn validate(self) -> Result<Self, PolicyError> {
         if self.min_dwell_ticks == 0 {
             return Err(PolicyError::ZeroDwell);
@@ -318,7 +318,7 @@ impl LayeredAlertPolicy {
     /// noisier than the static threshold expects (avoids raining
     /// alerts during a high-baseline workload). When the workload is
     /// quieter, the static threshold still gates so a rare spike still
-    /// surfaces. Spec § 4.3 (NI1 SC9). The simplest viable adaptive
+    /// surfaces. Spec § 4.3. The simplest viable adaptive
     /// scheme; documented inline so future iterations can swap in
     /// e.g. EWMA without touching the call sites.
     pub(crate) fn effective_thresholds(&self) -> (u64, u64) {
@@ -401,7 +401,7 @@ impl AlertPolicy for LayeredAlertPolicy {
     ) -> Vec<Alert> {
         let mut alerts = Vec::new();
         let total = curr.token_ledger.total;
-        // NI1 SC9: feed the rolling baseline with each tick's sample.
+        // Feed the rolling baseline with each tick's sample.
         // Sampling happens before classification so the in-progress
         // tick contributes to subsequent ticks but not its own
         // threshold evaluation (avoids self-attribution in spike
@@ -413,7 +413,7 @@ impl AlertPolicy for LayeredAlertPolicy {
             .as_ref()
             .map(|(sev, _)| Self::fingerprint_for(*sev).to_string());
 
-        // Hysteresis enforcement (B6 re-arm gate, spec § 3.4):
+        // Hysteresis enforcement (re-arm gate, spec § 3.4):
         // any tracked fingerprint whose condition is no longer
         // classified as active is checked against its remembered
         // `high_clear`. The signal must drop to or below `high_clear`
@@ -462,7 +462,7 @@ impl AlertPolicy for LayeredAlertPolicy {
             entry.cleared = false;
             // Remember the band's `high_clear` so subsequent ticks
             // can decide whether a non-classified signal counts as
-            // a true clear (B6 re-arm gate, spec § 3.4).
+            // a true clear (re-arm gate, spec § 3.4).
             entry.last_high_clear = Some(band.high_clear());
             let dwell_ticks = entry.dwell_ticks;
 
@@ -640,11 +640,11 @@ mod tests {
         assert!(matches!(alerts[0].severity, Severity::Warning));
     }
 
-    // ---------- B6: high_clear re-arm gate (spec § 3.4) ----------
+    // ---------- high_clear re-arm gate (spec § 3.4) ----------
 
     #[test]
     fn b6_signal_dipping_into_hysteresis_zone_does_not_clear() {
-        // Spec § 3.4 (B6): a brief dip into (high_clear, high) is *not*
+        // Spec § 3.4: a brief dip into (high_clear, high) is *not*
         // a true clear. The alarm event persists, dwell is preserved,
         // and the alarm continues to fire on the next high crossing.
         // Default advisory: high=20_000, high_clear=19_000.
@@ -667,7 +667,7 @@ mod tests {
 
         // Tick 3: 19_500 (just-above high_clear of 19_000): not classified
         // (below firing threshold) but signal stayed above high_clear.
-        // Per B6 the dwell must be preserved, not reset.
+        // Dwell must be preserved, not reset (hysteresis gate).
         let _ = policy.evaluate(
             &snapshot_with_tokens(22_000),
             &snapshot_with_tokens(19_500),
@@ -698,7 +698,7 @@ mod tests {
 
     #[test]
     fn b6_signal_below_high_clear_truly_clears() {
-        // Spec § 3.4 (B6): a drop to or below high_clear is a true
+        // Spec § 3.4: a drop to or below high_clear is a true
         // clear — dwell resets and the alarm must re-accumulate
         // min_dwell ticks before firing again.
         let policy = LayeredAlertPolicy::new(100_000).with_min_dwell(2);
@@ -748,7 +748,7 @@ mod tests {
     #[test]
     fn b6_alert_state_tracks_high_clear_after_first_fire() {
         // After firing, the state must remember the band's high_clear
-        // so subsequent ticks can apply the B6 gate correctly.
+        // so subsequent ticks can apply the hysteresis gate correctly.
         let policy = LayeredAlertPolicy::new(100_000).with_min_dwell(1);
         let mut history = AlertHistory::new();
         let _ = policy.evaluate(
@@ -779,7 +779,7 @@ mod tests {
         assert!(matches!(alerts[0].severity, Severity::Advisory));
     }
 
-    // ---------- NI1: rolling baseline (SC9) ----------
+    // ---------- Rolling baseline ----------
 
     #[test]
     fn ni1_baseline_window_pre_warmup_uses_static_thresholds() {
@@ -853,7 +853,7 @@ mod tests {
         assert_eq!(bw.len(), MIN_BASELINE_SAMPLES);
     }
 
-    // ---------- NI6: field privacy + builder validation ----------
+    // ---------- Field privacy + builder validation ----------
 
     #[test]
     fn ni6_validate_rejects_misordered_tiers() {

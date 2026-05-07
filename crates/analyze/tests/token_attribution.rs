@@ -1,11 +1,11 @@
-//! Token attribution accuracy test (TASK-026).
+//! Token attribution accuracy test.
 //!
 //! Asserts spec SC5: ≥95 % of tokens in a `WindowSnapshot` are
 //! accounted to a specific source (skill / plugin / MCP). The
 //! `TokenLedger` ground truth is its breakdown; "accuracy" is the
 //! fraction of `total` that the breakdown sums to.
 //!
-//! Honestly fixture-bound per spec A1: this test does **not**
+//! Fixture-bound per spec A1: this test does **not**
 //! validate that token *counts* match real wire-level usage — that
 //! would require running against a live Anthropic API call and is
 //! out of scope for v0.8.0. What it validates is that the cold-window

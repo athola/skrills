@@ -303,7 +303,7 @@ pub fn run() -> Result<()> {
                     if let Err(err) = crate::setup::ensure_codex_skills_feature_enabled(
                         &home.join(".codex/config.toml"),
                     ) {
-                        // I3 (PR-218 wave-4): surface filesystem errors
+                        // Surface filesystem errors
                         // (read-only home, disk full, malformed TOML) so
                         // the user sees a hint when codex skills won't
                         // start despite "skills synced" landing
@@ -422,7 +422,7 @@ pub fn run() -> Result<()> {
                 }
             };
             if source_root.exists() {
-                // I4 (PR-218 wave-4): surface walkdir errors instead of
+                // Surface walkdir errors instead of
                 // silently dropping them. A single unreadable
                 // subdirectory under `~/.claude/skills` would otherwise
                 // make sibling skills appear absent in the count;

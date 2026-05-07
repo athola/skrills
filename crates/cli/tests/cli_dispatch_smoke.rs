@@ -1,23 +1,20 @@
-//! CLI-dispatch smoke tests for the cold-window subcommand
-//! (v0.8.1 follow-up; closes the gap left open by TASK-031b).
+//! CLI-dispatch smoke tests for the cold-window subcommand.
 //!
 //! ## Why this exists
 //!
-//! TASK-031 wired `Commands::ColdWindow(ColdWindowArgs)` into
+//! `Commands::ColdWindow(ColdWindowArgs)` is wired into
 //! `app/mod.rs::run()` so `skrills cold-window …` dispatches.
 //! Existing browser-integration tests construct the axum `Router`
 //! directly (`cold_window_routes(state)`) and never go through CLI
 //! dispatch — so when the dispatch arm was initially missing,
 //! `cargo test` was green but `make cold-window` (real binary) failed
-//! with "unrecognized subcommand". Dogfooding caught it; T031b fixed
-//! it; this file ensures no future refactor can re-introduce the
-//! defect silently.
+//! with "unrecognized subcommand". Dogfooding caught it; this file
+//! ensures no future refactor can re-introduce the defect silently.
 //!
 //! ## Test pyramid coverage
 //!
 //! - `cold_window_help_dispatches`: cheap (~30 ms). Asserts the
-//!   subcommand is registered with clap. This alone would have caught
-//!   T031b.
+//!   subcommand is registered with clap.
 //! - `cold_window_browser_surface_serves_dashboard`: full lifecycle
 //!   (~2 s). Spawns the real binary, verifies `/dashboard` returns
 //!   `HTTP/1.1 200` with the expected `EventSource` script.
@@ -55,7 +52,7 @@ fn http_get_dashboard(port: u16) -> std::io::Result<String> {
 }
 
 /// Asserts `skrills cold-window --help` exits 0 with the expected
-/// flags listed. This single test would have caught TASK-031b
+/// flags listed. This single test would have caught the dispatch regression
 /// without spawning a server, doing HTTP, or waiting any meaningful
 /// time. Cheapest possible smoke for "is the subcommand registered".
 #[test]

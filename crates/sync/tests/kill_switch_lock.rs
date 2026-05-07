@@ -1,11 +1,11 @@
-//! Integration tests for the operational kill-switch (B4 from PR #218 review).
+//! Integration tests for the operational kill-switch.
 //!
 //! When the cold-window kill-switch is engaged, every adapter's mutating
 //! `write_*` method must refuse with [`SyncError::TokenBudgetExceeded`].
 //! These tests fail today (no caller exists) and pass once each adapter
 //! consults the switch at the top of every write entry-point.
 //!
-//! NI15 (Cursor adapter swallowing per-entry I/O errors) is exercised by
+//! Cursor adapter per-entry I/O errors are exercised by
 //! [`cursor_pruning_surfaces_warning_on_unreadable_subentry`], which seeds
 //! a Unix-mode-0 directory entry so the read of `plugins/local` itself
 //! succeeds but iteration over the entries surfaces an error that must
@@ -210,7 +210,7 @@ fn cursor_write_instructions_refuses_when_engaged() {
     assert_token_budget_exceeded(err);
 }
 
-// ---------- NI15: cursor pruning surfaces I/O errors ----------
+// ---------- Cursor pruning surfaces I/O errors ----------
 
 /// Seeds `~/.cursor/plugins/local/<name>` with a directory whose mode is
 /// `0o000`, so `fs::read_dir` succeeds for the parent but iteration over

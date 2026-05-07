@@ -1,26 +1,26 @@
 //! Cold-window real-time analysis subsystem.
 //!
-//! Per `docs/archive/2026-04-26-cold-window-brief.md`, this module hosts the per-tick
-//! producer (`ColdWindowEngine`) and the strategy traits that govern
-//! its behavior (`AlertPolicy`, `HintScorer`, `ResearchBudget`,
-//! `SnapshotDiff`, `CadenceStrategy`). The producer broadcasts
-//! `Arc<WindowSnapshot>` over a bounded `tokio::sync::broadcast`
-//! channel; consumers (TUI in `skrills-dashboard`, browser SSE
-//! handler in `skrills-server`) subscribe to the same bus.
+//! Hosts the per-tick producer (`ColdWindowEngine`) and the strategy
+//! traits that govern its behavior (`AlertPolicy`, `HintScorer`,
+//! `ResearchBudget`, `SnapshotDiff`, `CadenceStrategy`). The producer
+//! broadcasts `Arc<WindowSnapshot>` over a bounded
+//! `tokio::sync::broadcast` channel; consumers (TUI in
+//! `skrills-dashboard`, browser SSE handler in `skrills-server`)
+//! subscribe to the same bus.
 //!
-//! Resource bounds (R11):
+//! Resource bounds:
 //!
 //! - Broadcast channel capacity: [`SNAPSHOT_CHANNEL_CAPACITY`].
 //!   Lagging subscribers drop and the engine logs a `Status`-tier
 //!   alert; the producer never blocks.
 //! - Activity ring buffer: [`ACTIVITY_RING_CAPACITY`]. Oldest entries
-//!   evict; the ring never grows unboundedly.
+//!   evict; the buffer is bounded.
 //!
-//! Type-shaped contracts live in [`traits`]; the default cadence
-//! lives in [`cadence`]. Default trait implementations are
-//! `LayeredAlertPolicy` (in [`alert`]), `MultiSignalScorer` (in
-//! `skrills-intelligence`), `BucketedBudget` (in `skrills-tome`),
-//! and `FieldwiseDiff` (in [`diff`]).
+//! Strategy contracts are in [`traits`]; the default cadence is in
+//! [`cadence`]. Default trait implementations are `LayeredAlertPolicy`
+//! (in [`alert`]), `MultiSignalScorer` (in `skrills-intelligence`),
+//! `BucketedBudget` (in `skrills-tome`), and `FieldwiseDiff` (in
+//! [`diff`]).
 
 pub mod alert;
 pub mod cadence;

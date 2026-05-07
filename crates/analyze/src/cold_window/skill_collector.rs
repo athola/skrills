@@ -1,4 +1,4 @@
-//! Skill participation in the cold-window tick (NI16, PR-218 wave-4).
+//! Skill participation in the cold-window tick.
 //!
 //! Parallel to [`super::plugin_health::PluginHealthCollector`]: walks
 //! the configured skill directories each tick and produces a list of
@@ -11,12 +11,12 @@
 //! shape: skills that grow show as larger consumers, skills that shrink
 //! pull back. A real BPE tokenizer is a v0.9.0 follow-up; until then
 //! this surfaces *real* attribution rather than the synthetic
-//! `skill://demo` placeholder shipped pre-NI16.
+//! the original `skill://demo` placeholder.
 //!
 //! The collector is **deliberately stateless and side-effect free**,
 //! mirroring the plugin collector's "cold rewalk" contract. Errors
 //! reading individual entries are surfaced via `malformed`, not
-//! silently dropped — same NI15/B2 discipline applied elsewhere.
+//! silently dropped — same discipline applied elsewhere.
 
 use std::path::{Path, PathBuf};
 
@@ -237,7 +237,7 @@ mod tests {
         let collector = SkillCollector::new(vec![nonexistent]);
         let output = collector.collect();
         // NotFound is the legitimate empty case (mirrors plugin_health
-        // NI9 contract); no malformed entry, no panic.
+        // silent-drop contract); no malformed entry, no panic.
         assert!(output.entries.is_empty());
         assert!(output.malformed.is_empty());
     }

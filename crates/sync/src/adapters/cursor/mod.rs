@@ -242,7 +242,7 @@ impl AgentAdapter for CursorAdapter {
 
         // Prune plugins that are no longer installed.
         //
-        // NI15 (PR #218 review): per-entry I/O errors used to be silently
+        // Per-entry I/O errors used to be silently
         // dropped via `.filter_map(|e| e.ok())`, which produced partial sync
         // with no indication. Surface them as warnings on the report so the
         // operator sees that pruning was incomplete; the directory walk

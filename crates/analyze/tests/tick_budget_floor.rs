@@ -1,4 +1,4 @@
-//! SC1 tick-budget regression floor (TASK-024 companion).
+//! SC1 tick-budget regression floor.
 //!
 //! Criterion benches in `benches/tick_budget.rs` produce statistical
 //! distribution data, but `cargo bench` runs lazily. This test

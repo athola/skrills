@@ -1,4 +1,4 @@
-//! Alert pane (TASK-015).
+//! Alert pane.
 //!
 //! Renders the visible alerts (filtered + sorted by `ColdWindowState`)
 //! as a colored ratatui list. Handles two keystrokes:
@@ -113,7 +113,7 @@ impl AlertPane {
 }
 
 /// Map a severity tier to its ratatui color. Labels live on
-/// [`Severity::short_label`] (S1).
+/// [`Severity::short_label`].
 fn tier_color(severity: Severity) -> Color {
     match severity {
         Severity::Warning => Color::Red,

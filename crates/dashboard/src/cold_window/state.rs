@@ -32,7 +32,7 @@ pub struct ColdWindowState {
     /// underlying condition has resolved).
     pub master_ack_version: u64,
     /// Whether to ring the terminal bell when a new WARNING fires.
-    /// Maps to the `--no-bell` CLI flag in TASK-021.
+    /// Maps to the `--no-bell` CLI flag.
     pub bell_enabled: bool,
 }
 

@@ -1,6 +1,6 @@
 //! Plugin participation in the cold-window tick.
 //!
-//! Implements FR11 from `docs/archive/2026-04-26-cold-window-spec.md`: third-party
+//! Implements FR11 from the spec: third-party
 //! skrills plugins may opt into the cold-window by shipping a
 //! `health.toml` file alongside their `.claude-plugin/plugin.json`.
 //! On each tick the [`PluginHealthCollector`] walks the plugins
@@ -112,7 +112,7 @@ impl PluginHealthCollector {
         let mut output = CollectorOutput::default();
         let entries = match std::fs::read_dir(&self.plugins_dir) {
             Ok(e) => e,
-            // NI9: distinguish "no plugins dir" from "unreadable plugins
+            // Distinguish "no plugins dir" from "unreadable plugins
             // dir". The former is the legitimate empty-deployment case
             // and stays silent; the latter (permission denied, broken
             // symlink, transient I/O error) would otherwise hide every
@@ -133,14 +133,13 @@ impl PluginHealthCollector {
             }
         };
 
-        // B2 (PR-218 wave-4): surface per-entry I/O errors instead of
-        // silently dropping them. NI9 raised the *root* read failure to
-        // a CAUTION alert; the per-entry fan-out below repeats the same
-        // hazard at the next level — a single restricted permission or
-        // flapping NFS mount would silently disappear from the health
-        // report, leaving operators looking at "plugin healthy" when the
-        // plugin couldn't even be inspected. Mirror NI15's resolution
-        // and push each per-entry failure onto `output.malformed`.
+        // Surface per-entry I/O errors instead of silently dropping them.
+        // The root read failure is raised to a CAUTION alert; the per-entry
+        // fan-out below repeats the same hazard at the next level — a single
+        // restricted permission or flapping NFS mount would silently disappear
+        // from the health report, leaving operators looking at "plugin healthy"
+        // when the plugin couldn't even be inspected. Push each per-entry
+        // failure onto `output.malformed`.
         let mut plugin_dirs: Vec<PathBuf> = Vec::new();
         for entry in entries {
             let entry = match entry {
@@ -424,7 +423,7 @@ overall = "ok"
 
     #[test]
     fn ni9_unreadable_plugins_root_emits_caution_alert() {
-        // NI9: an unreadable plugins root (here: a file masquerading
+        // An unreadable plugins root (here: a file masquerading
         // as a dir; on Unix the read_dir call returns an Err that is
         // NOT NotFound) must surface via the malformed-alert pipeline
         // so the operator sees that plugin discovery is broken.

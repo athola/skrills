@@ -1,4 +1,4 @@
-//! Adaptive cadence test (TASK-027).
+//! Adaptive cadence test.
 //!
 //! Validates spec SC12 ("cadence backs off under load") and the
 //! brief § 4.2 policy diagram. Drives `LoadAwareCadence` directly

@@ -166,8 +166,7 @@ errors need immediate visibility.
 ## Prior-art validation
 
 The cold-window's design draws explicitly from mature reference
-implementations. See `docs/research/tome-dashboards.md` and
-`docs/research/tome-alerts-hints.md` for citations and verdicts.
+implementations.
 
 | Pattern | Reference | Skrills' choice |
 |---|---|---|
@@ -232,7 +231,7 @@ names (`alert`, `hint`, `research`, `status`), then opens a
 2 s `curl -N` against `/dashboard.sse` and confirms the engine
 emits matching `event:` lines plus at least four `data:`
 payloads. After that it sends `SIGTERM` and asserts the process
-exits inside the spec § 3 / TASK-031 2 s graceful-shutdown
+exits inside the 2 s graceful-shutdown
 budget. The contract being tested is "the HTML page's listener
 set equals the SSE endpoint's emitter set" — the same parity
 guarantee that the in-tree integration test
@@ -249,6 +248,29 @@ contract: under a real terminal the process renders until the
 syscall against `/dev/null`. Both surfaces use the same guard
 pattern (`crates/server/src/tui.rs:20-22` and
 `crates/server/src/app/dispatcher.rs:417-419`).
+
+## Hint patterns (ISA-18.2 inspired)
+
+The hint scorer surfaces these operational patterns when it detects
+the matching signal in the snapshot:
+
+1. **Hysteresis flapping** — if a Caution fires within min-dwell of
+   the previous Caution on the same fingerprint, suggest raising
+   the hysteresis floor by 5% (the signal is oscillating near the
+   trigger boundary).
+2. **Research quota storm** — if the research dispatcher drains
+   > 80% of its hourly bucket in under the group interval, suggest
+   widening the fetch interval or adding an inhibition rule for
+   low-tier alerts.
+3. **Chattering Warning** — if a Warning resolves and re-fires
+   within the repeat interval, suggest adding a dead-band or
+   shelving per ISA-18.2.
+4. **Cascade suppression** — if an Emergency alert fires while a
+   Critical on the same fingerprint is unacked, surface a
+   keystroke hint to master-ack the superseded Critical.
+5. **Span-of-control overload** — if the hint pane shows > 7
+   active hints simultaneously, suggest shelving advisories or
+   raising the Caution floor (ISA-18.2 §6.4 operator limit).
 
 ## Roadmap
 
@@ -269,7 +291,6 @@ pattern (`crates/server/src/tui.rs:20-22` and
 
 ## Reference
 
-- Brief: [`docs/archive/2026-04-26-cold-window-brief.md`](https://github.com/athola/skrills/blob/master/docs/archive/2026-04-26-cold-window-brief.md)
-- Spec: [`docs/archive/2026-04-26-cold-window-spec.md`](https://github.com/athola/skrills/blob/master/docs/archive/2026-04-26-cold-window-spec.md)
-- Plan: [`docs/archive/2026-04-26-cold-window-plan.md`](https://github.com/athola/skrills/blob/master/docs/archive/2026-04-26-cold-window-plan.md)
+- [ADR 0007: Cold-Window Architecture](../docs/adr/0007-cold-window-architecture.md)
+- [architecture.md](../docs/architecture.md)
 - War-room decision: [`docs/archive/2026-04-26-cold-window-war-room.md`](https://github.com/athola/skrills/blob/master/docs/archive/2026-04-26-cold-window-war-room.md)

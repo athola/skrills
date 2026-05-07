@@ -2,7 +2,7 @@
 //!
 //! # Why this module exists
 //!
-//! `TASK-003` (cold-window v0.8.0 plan) calls for `#[serde(tag = "kind")]`
+//! This module calls for `#[serde(tag = "kind")]`
 //! on every snapshot enum so that a future variant carrying a payload —
 //! shipped in v0.9.0 alongside the gRPC follow-up — can be added without
 //! a wire-breaking change. Today every variant is unit-only and
@@ -11,8 +11,7 @@
 //! Adding `#[serde(tag = "kind")]` right now would flip the on-the-wire
 //! shape from `"warning"` to `{"kind":"warning"}`, which breaks the
 //! cold-window parity test fixture and any persisted dispatcher state.
-//! The compromise (per PR #218 review N1) is **read-tolerant
-//! deserialization**:
+//! The compromise is **read-tolerant deserialization**:
 //!
 //! - **Serialize** keeps emitting bare strings via the derived impl
 //!   (`#[serde(rename_all = "...")]`). Wire format does not change.

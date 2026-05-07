@@ -1,9 +1,9 @@
-//! Cold-window snapshot fixtures (TASK-006 of the cold-window plan).
+//! Cold-window snapshot fixtures.
 //!
 //! In-memory `WindowSnapshot` builders used by engine tests in
-//! `skrills_analyze::cold_window::engine` (TASK-008) and downstream
+//! `skrills_analyze::cold_window::engine` and downstream
 //! crates. Full filesystem-tree fixtures (200 skills + 50 commands +
-//! 20 plugins for SC1 / SC4 / SC5 in Sprint 4) live alongside their
+//! 20 plugins) live alongside their
 //! consuming benchmarks; this module focuses on the in-memory
 //! shapes the engine needs right now.
 

@@ -1,7 +1,7 @@
-//! Research pane (TASK-017).
+//! Research pane.
 //!
 //! Pull-only side panel that surfaces research findings asynchronously
-//! attached by the tome dispatcher (T011). Per spec § 3.7 and the
+//! attached by the tome dispatcher. Per spec § 3.7 and the
 //! CHI 2025 contrarian finding (Theme 2 of the discourse research),
 //! this pane is **collapsed by default**. Users open it when curious;
 //! findings never auto-expand into the user's view.
@@ -64,7 +64,7 @@ impl ResearchPaneState {
         if self.collapsed {
             // Count only previously-unseen findings.
             for finding in &snap.research_findings {
-                let key = key_for(finding);
+                let key = finding.to_string();
                 if !self.seen_keys.contains(&key) {
                     self.badge_count = self.badge_count.saturating_add(1);
                     self.seen_keys.insert(key);
@@ -73,7 +73,7 @@ impl ResearchPaneState {
         } else {
             // Expanded: mark every finding as seen, badge stays 0.
             for finding in &snap.research_findings {
-                self.seen_keys.insert(key_for(finding));
+                self.seen_keys.insert(finding.to_string());
             }
             self.badge_count = 0;
         }
@@ -87,16 +87,12 @@ impl ResearchPaneState {
             // Opening: ack everything visible.
             if let Some(snap) = snap_state.current.as_deref() {
                 for finding in &snap.research_findings {
-                    self.seen_keys.insert(key_for(finding));
+                    self.seen_keys.insert(finding.to_string());
                 }
             }
             self.badge_count = 0;
         }
     }
-}
-
-fn key_for(finding: &ResearchFinding) -> String {
-    format!("{}#{:?}", finding.fingerprint, finding.channel)
 }
 
 /// Action returned by the pane after handling a keystroke.

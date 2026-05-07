@@ -1,6 +1,6 @@
 //! Adaptive cadence policy for the cold-window engine.
 //!
-//! Per `docs/archive/2026-04-26-cold-window-brief.md` § 4.2, the default
+//! Per spec § 4.2, the default
 //! [`LoadAwareCadence`] implements the policy:
 //!
 //! ```text

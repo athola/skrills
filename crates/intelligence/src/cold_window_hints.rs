@@ -2,7 +2,7 @@
 //!
 //! Implements the `HintScorer` trait declared in
 //! `skrills_analyze::cold_window::traits`. The default scoring
-//! formula (per `docs/archive/2026-04-26-cold-window-spec.md` § 6.3) is:
+//! formula is:
 //!
 //! ```text
 //! score = (frequency * FREQUENCY_WEIGHT + impact * IMPACT_WEIGHT)
@@ -59,7 +59,7 @@ pub struct MultiSignalScorer {
 
 /// Validation failure when constructing a [`MultiSignalScorer`] override.
 ///
-/// I9 (PR-218 wave-4): NaN/negative weights silently corrupt the hint
+/// NaN/negative weights silently corrupt the hint
 /// ranking because `partial_cmp` returns `Equal` on NaN, breaking the
 /// downstream sort. The fallible builders reject these up front.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -259,7 +259,7 @@ mod tests {
         assert_eq!(s.half_life_days(), 14.0);
     }
 
-    // ---------- I9: NaN/negative weight rejection ----------
+    // ---------- NaN/negative weight rejection ----------
 
     #[test]
     fn try_with_frequency_weight_rejects_nan() {

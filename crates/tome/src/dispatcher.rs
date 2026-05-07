@@ -73,7 +73,7 @@ pub const QUOTA_FILE_NAME: &str = "research-quota.json";
 /// valid) or [`PersistedBucket::new`] (fallible, rejects NaN/Inf,
 /// negative `available`, and `available > rate_per_hour`). Fields
 /// are crate-private so external callers cannot bypass validation
-/// (PR-218 wave-4 B4); the JSON-load path inside `BucketedBudget`
+/// the JSON-load path inside `BucketedBudget`
 /// still routes through a silent-clamp helper for tolerant recovery
 /// from tampered persistence files.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,7 +222,7 @@ struct DispatchEntry {
 
 /// State protected by a single mutex so that the
 /// dedup-then-token-bucket sequence in `try_dispatch` is atomic.
-/// See B5 in PR-218 review: splitting these maps admitted a TOCTOU
+/// Splitting these maps admits a TOCTOU
 /// race that violated the SC10 capacity invariant.
 struct DispatcherInner {
     bucket: PersistedBucket,
@@ -270,7 +270,7 @@ impl BucketedBudget {
     /// tokens that have accrued in the (zero) elapsed time are
     /// (zero) — quota does not reset.
     ///
-    /// **Recovery (N6/NI5).** If the persistence file is corrupt
+    /// **Recovery.** If the persistence file is corrupt
     /// (half-written from a SIGKILL) or contains an unrecoverable
     /// value (`NaN`/`Inf` in `available`), this constructor logs a
     /// `tracing::warn!` at `CAUTION` tier and falls back to a fresh
@@ -316,7 +316,7 @@ impl BucketedBudget {
             PersistedBucket::full(rate_per_hour, now_ms)
         };
         // Only top up at boot if we got a usable clock — otherwise we
-        // would compute elapsed against a sentinel and saturate (NB5).
+        // would compute elapsed against a sentinel and saturate.
         if let Some(real_now) = now_ms_opt {
             bucket.refill(real_now);
         }
@@ -348,7 +348,7 @@ impl BucketedBudget {
     /// step.
     ///
     /// The full dedup-and-bucket sequence runs under one mutex. See
-    /// the module docs and PR-218 finding B5 for why splitting the
+    /// the module docs for why splitting the
     /// critical sections is unsafe.
     pub fn try_dispatch(&self, fingerprint: &str, channel: ResearchChannel) -> DispatchVerdict {
         let now = Instant::now();
@@ -436,7 +436,7 @@ impl BucketedBudget {
     }
 
     /// Force-persist the current bucket state. Called on graceful
-    /// shutdown by TASK-031.
+    /// shutdown.
     pub fn flush_persistence(&self) -> TomeResult<()> {
         if let Some(path) = &self.persistence_path {
             let bucket = self.inner.lock().bucket.clone();
@@ -446,7 +446,7 @@ impl BucketedBudget {
     }
 
     /// Test-only: construct an in-memory budget with an injected
-    /// clock. Used to exercise the NB5 (clock-warp) recovery path
+    /// clock. Used to exercise the clock-warp recovery path
     /// without touching the real `SystemTime`.
     #[cfg(test)]
     fn in_memory_with_clock(rate_per_hour: u32, clock: ClockFn) -> Self {
@@ -472,7 +472,7 @@ impl ResearchBudget for BucketedBudget {
     /// authoritative atomic dedup-and-consume. Repeatedly calling
     /// `should_query` without a follow-up `try_dispatch` is allowed
     /// and does not exhaust quota — it is intentionally cheap so the
-    /// cold-window engine can poll it (PR-218 review N5).
+    /// cold-window engine can poll it.
     ///
     /// The trait's per-channel ignorance (no channel argument) is
     /// resolved by treating it as a "is any channel allowed?" probe.
@@ -521,7 +521,7 @@ pub fn default_persistence_path() -> Option<PathBuf> {
 /// Persist the bucket atomically: write to a per-pid sibling temp
 /// file, then `rename` over the destination. `rename` on POSIX is
 /// atomic for same-filesystem moves; this closes the N7
-/// corruption-on-crash window in PR-218.
+/// corruption-on-crash window.
 fn persist_bucket(path: &Path, bucket: &PersistedBucket) -> TomeResult<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -564,9 +564,9 @@ fn tmp_sibling(path: &Path) -> PathBuf {
 
 /// Fallible UNIX-millis clock. Returns `None` if `SystemTime::now()`
 /// precedes `UNIX_EPOCH` (NTP recovery, container time-warp).
-/// Callers must not fabricate `0` on `None` — see PR-218 finding NB5
+/// Callers must not fabricate `0` on `None` — see the clock-warp
 /// for the saturation-guard rationale. Re-exported for the cold-window
-/// CLI producer (PR-218 wave-4 B1) so the second clock site cannot
+/// CLI producer so the second clock site cannot
 /// drift from this contract.
 #[must_use]
 pub fn current_ms_checked() -> Option<u64> {
@@ -580,7 +580,7 @@ pub fn current_ms_checked() -> Option<u64> {
 /// time. If the clock is usable, use it. If not, use `u64::MAX` so
 /// that the first `refill` after the clock recovers computes
 /// `now.saturating_sub(MAX) == 0` elapsed — preventing the bucket
-/// from saturating to capacity on the recovery tick (NB5).
+/// from saturating to capacity on the recovery tick.
 fn bootstrap_ms(now_ms_opt: Option<u64>) -> u64 {
     now_ms_opt.unwrap_or(u64::MAX)
 }
@@ -771,7 +771,7 @@ mod tests {
 
     #[test]
     fn should_query_does_not_consume_tokens() {
-        // N5: should_query must be a non-consuming probe. Hammering
+        // should_query must be a non-consuming probe. Hammering
         // it 1000x must not exhaust quota.
         let budget = BucketedBudget::in_memory(2);
         let snap = empty_snapshot();
@@ -783,7 +783,7 @@ mod tests {
 
     #[test]
     fn clock_warp_does_not_saturate_bucket() {
-        // NB5: simulate a clock that briefly precedes UNIX_EPOCH
+        // Simulate a clock that briefly precedes UNIX_EPOCH
         // (returns None) for one tick, then recovers. The pre-fix
         // implementation fabricated 0 on None, which made the next
         // refill compute elapsed ≈ 1.7T ms → bucket saturates to
@@ -863,9 +863,9 @@ mod tests {
         assert_eq!(v.available, 10.0);
     }
 
-    // ---------- B4: PersistedBucket::new validates on the public path ----------
+    // ---------- PersistedBucket::new validates on the public path ----------
     //
-    // Pre-B4, the three fields were `pub` so external callers could
+    // Previously the three fields were `pub` so external callers could
     // construct `PersistedBucket { available: f64::NAN, ... }` directly,
     // bypassing the silent-clamp `validated()` helper used by the JSON-
     // load path. The fields are now `pub(crate)` and external
@@ -924,13 +924,12 @@ mod tests {
         assert_eq!(bucket.last_refill_ms(), 1_700_000_000_000);
     }
 
-    // ---------- I8: SC10 saturation path on last_refill_ms ----------
+    // ---------- SC10 saturation path on last_refill_ms ----------
     //
     // SC10 (cold-window spec) requires that the dispatcher's bucket
     // never silently saturates to capacity under clock anomalies.
     // `clock_warp_does_not_saturate_bucket` covers the *forward*
-    // anomaly (clock returns None mid-tick). I8 adds the
-    // last_refill_ms-specific cases the wave-4 toolkit flagged:
+    // anomaly (clock returns None mid-tick). Additional cases:
     // - a future `last_refill_ms` (clock-skewed file from a faster
     //   host) does not produce a negative `elapsed` that wraps.
     // - a missing-timestamp recovery path (loaded bucket starts with
@@ -967,7 +966,7 @@ mod tests {
         bucket.refill(1_700_000_000_000);
         assert_eq!(
             bucket.available, 0.0,
-            "u64::MAX last_refill must saturate elapsed at 0 (NB5/SC10)"
+            "u64::MAX last_refill must saturate elapsed at 0"
         );
     }
 }

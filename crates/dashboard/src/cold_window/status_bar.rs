@@ -1,4 +1,4 @@
-//! Status bar widget (TASK-018).
+//! Status bar widget.
 //!
 //! Bottom-of-screen one-liner that surfaces the cold-window's
 //! operating profile so the user always knows what's active:
@@ -62,7 +62,7 @@ fn build_line<'a>(
         "W:{} C:{} A:{} S:{}",
         counts.warning, counts.caution, counts.advisory, counts.status,
     );
-    // NI7: render `available/total` so the historical "quota: 7/10"
+    // Render `available/total` so the "quota: 7/10"
     // visual contract holds even though the newtype stores `used`.
     let quota_label = research_quota
         .map(|q| format!("quota: {}/{}", q.available(), q.total()))
@@ -222,8 +222,7 @@ mod tests {
     fn quota_label_renders_when_provided() {
         let mut state = ColdWindowState::new();
         state.ingest(snap_with(0.0, None, 5_000, 2_000));
-        // NI7: 3 used out of 10 → status shows the historical
-        // `available/total` form (7/10).
+        // 3 used out of 10 → status shows available/total form (7/10).
         let s = StatusBar::render_to_string(&state, Some(ResearchQuota::new(3, 10)), 100_000);
         assert!(s.contains("quota: 7/10"), "got: {s}");
     }
