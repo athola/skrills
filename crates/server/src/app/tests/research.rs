@@ -881,7 +881,7 @@ fn query_knowledge_graph_direction_to() {
 }
 
 // -------------------------------------------------------------------------
-// I5: Enum sync test — verify TRIZ parameter, NodeKind, and EdgeKind
+// Enum sync test — verify TRIZ parameter, NodeKind, and EdgeKind
 //     enums are consistent between schema and handler
 // -------------------------------------------------------------------------
 

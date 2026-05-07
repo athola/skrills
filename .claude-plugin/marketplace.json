@@ -3,7 +3,7 @@
   "name": "skrills-marketplace",
   "metadata": {
     "description": "Skill synchronization and management tools for Claude Code, Codex, GitHub Copilot, and Cursor",
-    "version": "0.7.7"
+    "version": "0.8.0"
   },
   "owner": {
     "name": "skrills",
@@ -13,7 +13,7 @@
     {
       "name": "skrills",
       "description": "36 MCP tools for skill validation, sync, intelligence, research, and tracing across Claude Code, Codex, Copilot, and Cursor",
-      "version": "0.7.7",
+      "version": "0.8.0",
       "author": {
         "name": "skrills"
       },

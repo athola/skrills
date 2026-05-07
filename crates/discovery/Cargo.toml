@@ -1,6 +1,6 @@
 [package]
 name = "skrills-discovery"
-version = "0.7.7"
+version = "0.8.0"
 edition = "2021"
 description = "Filesystem discovery and hashing utilities used by the skrills MCP server."
 license = "MIT"
@@ -16,6 +16,7 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow.workspace = true
+thiserror.workspace = true
 dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true

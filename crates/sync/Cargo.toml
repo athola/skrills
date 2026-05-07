@@ -1,6 +1,6 @@
 [package]
 name = "skrills_sync"
-version = "0.7.7"
+version = "0.8.0"
 edition.workspace = true
 description = "Preference synchronization and validation sync utilities for skrills"
 license = "MIT"
@@ -13,6 +13,7 @@ categories = ["development-tools"]
 
 [dependencies]
 anyhow.workspace = true
+thiserror.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -20,12 +21,14 @@ sha2.workspace = true
 walkdir.workspace = true
 dirs.workspace = true
 tracing.workspace = true
-similar = "2"
+similar = "3"
 inquire.workspace = true
-skrills-validate = { path = "../validate", version = "0.7.7" }
+skrills-snapshot = { path = "../snapshot", version = "0.8.0" }
+skrills-validate = { path = "../validate", version = "0.8.0" }
 
 [dev-dependencies]
 tempfile.workspace = true
 mockall = "0.14.0"
 tokio = { version = "1", features = ["full"] }
 proptest = "1.4"
+skrills_test_utils = { path = "../test-utils" }

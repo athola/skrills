@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn given_name_too_long_when_validated_then_copilot_invalid() {
         let long_name = "a".repeat(101);
-        let content = format!("---\nname: {long_name}\ndescription: Test\n---\n# Content");
+        let content = skrills_test_utils::skill_md(&long_name, "Test", "# Content");
         let result = validate_copilot(&PathBuf::from("skill.md"), &content);
 
         assert!(!result.copilot_valid);
@@ -350,7 +350,7 @@ mod tests {
     #[test]
     fn given_description_too_long_when_validated_then_copilot_invalid() {
         let long_desc = "a".repeat(501);
-        let content = format!("---\nname: test\ndescription: {long_desc}\n---\n# Content");
+        let content = skrills_test_utils::skill_md("test", &long_desc, "# Content");
         let result = validate_copilot(&PathBuf::from("skill.md"), &content);
 
         assert!(!result.copilot_valid);
@@ -400,7 +400,7 @@ mod tests {
     #[test]
     fn given_name_at_max_length_when_validated_then_copilot_valid() {
         let name = "a".repeat(100); // Exactly MAX_NAME_LENGTH
-        let content = format!("---\nname: {name}\ndescription: Test\n---\n# Content");
+        let content = skrills_test_utils::skill_md(&name, "Test", "# Content");
         let result = validate_copilot(&PathBuf::from("skill.md"), &content);
 
         assert!(result.copilot_valid);
@@ -409,7 +409,7 @@ mod tests {
     #[test]
     fn given_description_at_max_length_when_validated_then_copilot_valid() {
         let desc = "a".repeat(500); // Exactly MAX_DESCRIPTION_LENGTH
-        let content = format!("---\nname: test\ndescription: {desc}\n---\n# Content");
+        let content = skrills_test_utils::skill_md("test", &desc, "# Content");
         let result = validate_copilot(&PathBuf::from("skill.md"), &content);
 
         assert!(result.copilot_valid);

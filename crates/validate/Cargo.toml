@@ -1,6 +1,6 @@
 [package]
 name = "skrills-validate"
-version = "0.7.7"
+version = "0.8.0"
 edition.workspace = true
 description = "Skill validation for Claude Code and Codex CLI"
 license = "MIT"
@@ -20,11 +20,13 @@ walkdir = { workspace = true }
 semver = { workspace = true }
 tracing = { workspace = true }
 notify = { version = "8", optional = true }
+libc = { workspace = true, optional = true }
 
 [features]
 default = ["watch"]
-watch = ["notify"]
+watch = ["notify", "libc"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
 proptest = "1.4"
+skrills_test_utils = { path = "../test-utils" }

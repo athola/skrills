@@ -154,7 +154,7 @@ skrills serve --skill-dir ~/.custom/skills  # Custom skill directory
 
 The MCP server exposes 36 tools for validation, analysis, sync, intelligence, and research directly to your AI assistant. The HTTP mode serves a browser dashboard with skills explorer, metrics, and activity feed.
 
-Skrills also ships a self-contained HTML portal (`skrills-portal.html`) that works offline without a running server. It includes a skills browser, validator with autofix, token analyzer, cross-CLI converter, and full CLI/MCP reference. Open it directly in any browser or upload it into AI application portals.
+Skrills can generate a self-contained HTML portal (`skrills-portal.html`) via the `html-portal-generator` skill. It works offline without a running server and includes a skills browser, validator with autofix, token analyzer, cross-CLI converter, and full CLI/MCP reference. Open it directly in any browser or upload it into AI application portals. The file is git-ignored; regenerate as part of release prep.
 
 ## Working with Subagents
 

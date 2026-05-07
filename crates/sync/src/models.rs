@@ -82,9 +82,7 @@ impl OpenAiModel {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Model Mapping Tables
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Claude → OpenAI mapping table.
 static CLAUDE_TO_OPENAI: LazyLock<HashMap<ClaudeModel, OpenAiModel>> = LazyLock::new(|| {
@@ -106,9 +104,7 @@ static OPENAI_TO_CLAUDE: LazyLock<HashMap<OpenAiModel, ClaudeModel>> = LazyLock:
     ])
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Public API
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Transform a model name from source platform to target platform.
 ///

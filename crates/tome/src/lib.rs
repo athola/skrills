@@ -13,6 +13,7 @@
 pub mod cache;
 pub mod citations;
 pub mod clients;
+pub mod dispatcher;
 pub mod error;
 pub mod knowledge_graph;
 pub mod models;

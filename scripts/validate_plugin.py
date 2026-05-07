@@ -1,0 +1,390 @@
+#!/usr/bin/env python3
+"""Validate Claude Code plugin structure.
+
+Validate plugin structure against official Claude Code documentation.
+
+Ported from claude-night-market plugins/abstract/scripts/validate_plugin.py.
+Self-contained: stdlib only.
+"""
+
+import json
+import re
+import sys
+from pathlib import Path
+from typing import Any
+
+FRONTMATTER_PARTS_MIN = 3
+MIN_ARGS = 2  # Script name + plugin directory
+
+
+class Colors:
+    """ANSI color codes for terminal output."""
+
+    RED = "\033[91m"
+    YELLOW = "\033[93m"
+    GREEN = "\033[92m"
+    BLUE = "\033[94m"
+    BOLD = "\033[1m"
+    END = "\033[0m"
+
+
+class PluginValidator:
+    """Validate Claude Code plugin structure."""
+
+    def __init__(self, plugin_path: Path) -> None:
+        self.plugin_path = plugin_path.resolve()
+        self.config: dict[str, Any] | None = None
+        self.issues: dict[str, list[str]] = {
+            "critical": [],
+            "warnings": [],
+            "recommendations": [],
+            "info": [],
+        }
+
+    def validate(self) -> int:
+        self._validate_plugin_json_exists()
+        if self.config is not None:
+            self._validate_plugin_name()
+            self._validate_recommended_fields()
+            self._validate_paths()
+            self._validate_dependencies()
+            self._validate_directory_structure()
+            self._validate_skills()
+            self._validate_claude_config()
+        self._print_report()
+        return 1 if self.issues["critical"] else 0
+
+    def _validate_plugin_json_exists(self) -> None:
+        json_path = self.plugin_path / ".claude-plugin" / "plugin.json"
+        if not json_path.exists():
+            wrong_path = self.plugin_path / "plugin.json"
+            if wrong_path.exists():
+                self.issues["critical"].append(
+                    "plugin.json found at root but should be at "
+                    ".claude-plugin/plugin.json",
+                )
+                self.issues["info"].append(
+                    "Run: mkdir -p .claude-plugin && mv plugin.json .claude-plugin/",
+                )
+            else:
+                self.issues["critical"].append(".claude-plugin/plugin.json not found")
+            return
+        try:
+            with open(json_path) as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                self.issues["critical"].append(
+                    "plugin.json must contain a JSON object at the top level",
+                )
+                return
+            self.config = data
+            self.issues["info"].append(
+                "[OK] .claude-plugin/plugin.json exists and is valid JSON",
+            )
+        except json.JSONDecodeError as e:
+            self.issues["critical"].append(f"plugin.json is not valid JSON: {e}")
+
+    def _require_config(self) -> dict[str, Any]:
+        if self.config is None:
+            msg = "plugin.json not loaded"
+            raise RuntimeError(msg)
+        return self.config
+
+    def _validate_plugin_name(self) -> None:
+        config = self._require_config()
+        if "name" not in config:
+            self.issues["critical"].append("Missing required field: name")
+            return
+        name = config["name"]
+        if not isinstance(name, str):
+            self.issues["critical"].append(
+                "Plugin name must be a string (kebab-case)",
+            )
+            return
+        if not re.match(r"^[a-z0-9]+(-[a-z0-9]+)*$", name):
+            self.issues["critical"].append(
+                f"Invalid plugin name: '{name}' "
+                "(must be kebab-case: lowercase with hyphens)",
+            )
+            self.issues["info"].append(
+                "Example valid names: 'my-plugin', 'ai-assistant', 'code-helper'",
+            )
+        else:
+            self.issues["info"].append(
+                f"[OK] Plugin name '{name}' follows kebab-case convention",
+            )
+
+    def _validate_recommended_fields(self) -> None:
+        config = self._require_config()
+        recommended = {
+            "version": "Semantic version (e.g., '1.0.0')",
+            "description": "Clear description of plugin functionality",
+            "author": "Author name or object with name/email",
+            "license": "License identifier (e.g., 'MIT')",
+            "keywords": "Array of discovery keywords (e.g., ['git', 'workflow'])",
+        }
+        for field, description in recommended.items():
+            if field not in config:
+                self.issues["recommendations"].append(
+                    f"Missing recommended field: {field} - {description}",
+                )
+        if "version" in config:
+            version = config["version"]
+            if not isinstance(version, str):
+                self.issues["warnings"].append(
+                    "Version should be a string following semantic versioning",
+                )
+                return
+            if not re.match(r"^\d+\.\d+\.\d+", version):
+                self.issues["warnings"].append(
+                    f"Version '{version}' should follow semantic versioning "
+                    "(e.g., '1.0.0')",
+                )
+
+    def _validate_paths(self) -> None:
+        config = self._require_config()
+        path_fields = ["skills", "commands", "agents"]
+        for field in path_fields:
+            if field not in config:
+                continue
+            value = config[field]
+            if isinstance(value, str):
+                paths = [value]
+            elif isinstance(value, list):
+                paths = [p for p in value if isinstance(p, str)]
+            else:
+                paths = []
+            for path in paths:
+                self._validate_path_entry(field, path)
+        self._validate_hooks_path(config)
+
+    def _validate_path_entry(self, field: str, path: str) -> None:
+        if not path.startswith("./") and not path.startswith(field + "/"):
+            self.issues["warnings"].append(
+                f"{field} path should use relative format: {path}",
+            )
+        clean_path = path.lstrip("./")
+        check_paths = [
+            self.plugin_path / clean_path,
+            self.plugin_path / f"{clean_path}.md",
+            self.plugin_path / clean_path / "SKILL.md",
+        ]
+        if not any(p.exists() for p in check_paths):
+            self.issues["critical"].append(
+                f"Referenced {field} path not found: {path}",
+            )
+
+    def _validate_hooks_path(self, config: dict[str, Any]) -> None:
+        if "hooks" not in config:
+            return
+        hooks_value = config["hooks"]
+        if isinstance(hooks_value, list):
+            for ref in hooks_value:
+                if isinstance(ref, str):
+                    clean = ref.lstrip("./").rstrip("/")
+                    if clean == "hooks/hooks.json":
+                        self.issues["critical"].append(
+                            f"Duplicate hooks.json ref: '{ref}' is auto-loaded "
+                            "by Claude Code and must not be listed explicitly "
+                            "in plugin.json hooks array",
+                        )
+        if not isinstance(hooks_value, str):
+            return
+        clean_path = hooks_value.lstrip("./")
+        hooks_path = self.plugin_path / clean_path
+        if not hooks_path.exists():
+            self.issues["critical"].append(
+                f"Referenced hooks path not found: {hooks_value}",
+            )
+            return
+        try:
+            with open(hooks_path, encoding="utf-8") as f:
+                hooks_data = json.load(f)
+            if not isinstance(hooks_data, (dict, list)):
+                self.issues["warnings"].append(
+                    "hooks.json should contain a JSON object or array",
+                )
+            else:
+                msg = f"[OK] hooks path '{hooks_value}' exists and is valid JSON"
+                self.issues["info"].append(msg)
+        except json.JSONDecodeError as e:
+            self.issues["critical"].append(
+                f"hooks.json is not valid JSON: {e}",
+            )
+
+    def _validate_dependencies(self) -> None:
+        config = self._require_config()
+        if "dependencies" not in config:
+            return
+        deps = config["dependencies"]
+        if isinstance(deps, list):
+            self.issues["recommendations"].append(
+                "Dependencies should be an object with versions, not an array. "
+                'Example: {"abstract": ">=2.0.0"}',
+            )
+            return
+        if isinstance(deps, dict):
+            for dep_name, version in deps.items():
+                if not isinstance(version, str):
+                    self.issues["warnings"].append(
+                        f"Dependency '{dep_name}' version should be a string",
+                    )
+                    continue
+                if not re.match(r"^[><=\^~]*\d+\.\d+\.\d+", version):
+                    self.issues["warnings"].append(
+                        f"Dependency '{dep_name}' should use semantic "
+                        f"versioning (found: '{version}')",
+                    )
+
+    def _validate_directory_structure(self) -> None:
+        config = self._require_config()
+        if config.get("skills"):
+            if not (self.plugin_path / "skills").exists():
+                self.issues["warnings"].append(
+                    "Plugin references skills but skills/ directory is missing",
+                )
+        if config.get("commands"):
+            if not (self.plugin_path / "commands").exists():
+                self.issues["warnings"].append(
+                    "Plugin references commands but commands/ directory is missing",
+                )
+        if "agents" in config and config.get("agents"):
+            if not (self.plugin_path / "agents").exists():
+                self.issues["warnings"].append(
+                    "Plugin references agents but agents/ directory is missing",
+                )
+        for dirname in ["skills", "commands", "agents", "hooks"]:
+            wrong_location = self.plugin_path / ".claude-plugin" / dirname
+            if wrong_location.exists():
+                self.issues["critical"].append(
+                    f"{dirname}/ should be at plugin root, not inside .claude-plugin/",
+                )
+                self.issues["info"].append(f"Run: mv .claude-plugin/{dirname} ./")
+        shared_dir = self.plugin_path / "skills" / "shared"
+        if shared_dir.exists() and shared_dir.is_dir():
+            shared_modules = list(shared_dir.rglob("*.md"))
+            if shared_modules:
+                self.issues["warnings"].append(
+                    f"Deprecated pattern: skills/shared/ directory found with "
+                    f"{len(shared_modules)} module(s). Move shared modules into "
+                    "skill-specific modules/ directories instead.",
+                )
+
+    def _validate_skills(self) -> None:
+        config = self._require_config()
+        if "skills" not in config:
+            return
+        skills_list = config["skills"]
+        if not isinstance(skills_list, list):
+            return
+        for skill_path in skills_list:
+            if not isinstance(skill_path, str):
+                continue
+            clean_path = skill_path.lstrip("./")
+            possible_paths = [
+                self.plugin_path / f"{clean_path}.md",
+                self.plugin_path / clean_path / "SKILL.md",
+            ]
+            skill_file = next((p for p in possible_paths if p.exists()), None)
+            if skill_file:
+                self._validate_skill_file(skill_file, skill_path)
+
+    def _validate_skill_file(self, skill_file: Path, skill_path: str) -> None:
+        try:
+            with open(skill_file) as f:
+                content = f.read()
+            if not content.startswith("---"):
+                self.issues["warnings"].append(
+                    f"Skill {skill_path} should start with YAML frontmatter (---)",
+                )
+                return
+            parts = content.split("---", 2)
+            if len(parts) < FRONTMATTER_PARTS_MIN:
+                self.issues["warnings"].append(
+                    f"Skill {skill_path} has incomplete YAML frontmatter",
+                )
+                return
+            frontmatter = parts[1]
+            if "name:" not in frontmatter:
+                self.issues["warnings"].append(
+                    f"Skill {skill_path} missing 'name' in frontmatter",
+                )
+            if "description:" not in frontmatter:
+                self.issues["recommendations"].append(
+                    f"Skill {skill_path} missing 'description' in frontmatter",
+                )
+        except Exception as e:
+            self.issues["warnings"].append(f"Error validating skill {skill_path}: {e}")
+
+    def _validate_claude_config(self) -> None:
+        config = self._require_config()
+        if "claude" not in config:
+            self.issues["recommendations"].append(
+                "Consider adding 'claude' configuration object for enhanced metadata",
+            )
+            return
+        claude_config = config["claude"]
+        if not isinstance(claude_config, dict):
+            self.issues["warnings"].append(
+                "claude configuration should be a JSON object",
+            )
+            return
+        recommended_claude_fields = {
+            "skill_prefix": "Prefix for skill names",
+            "auto_load": "Whether to auto-load plugin",
+            "categories": "Plugin categorization",
+        }
+        for field, description in recommended_claude_fields.items():
+            if field not in claude_config:
+                self.issues["recommendations"].append(
+                    f"Consider adding claude.{field} - {description}",
+                )
+
+    def _print_report(self) -> None:
+        name = self.config.get("name", "unknown") if self.config else "unknown"
+        print(f"\n{Colors.BOLD}Plugin Validation Report: {name}{Colors.END}\n")
+        if self.issues["critical"]:
+            print(f"{Colors.RED}{Colors.BOLD}Critical Issues:{Colors.END}")
+            for issue in self.issues["critical"]:
+                print(f"  {Colors.RED}FAIL{Colors.END} {issue}")
+            print()
+        if self.issues["warnings"]:
+            print(f"{Colors.YELLOW}{Colors.BOLD}Warnings:{Colors.END}")
+            for issue in self.issues["warnings"]:
+                print(f"  {Colors.YELLOW}[WARN]{Colors.END} {issue}")
+            print()
+        if self.issues["recommendations"]:
+            print(f"{Colors.BLUE}{Colors.BOLD}Recommendations:{Colors.END}")
+            for issue in self.issues["recommendations"]:
+                print(f"  {Colors.BLUE}->{Colors.END} {issue}")
+            print()
+        if self.issues["info"]:
+            print(f"{Colors.GREEN}{Colors.BOLD}Info:{Colors.END}")
+            for info in self.issues["info"]:
+                print(f"  {Colors.GREEN}OK{Colors.END} {info}")
+            print()
+        if not self.issues["critical"] and not self.issues["warnings"]:
+            print(f"{Colors.GREEN}{Colors.BOLD}OK Plugin validation passed{Colors.END}")
+        elif self.issues["critical"]:
+            print(f"{Colors.RED}{Colors.BOLD}FAIL Plugin validation failed{Colors.END}")
+        else:
+            print(f"{Colors.YELLOW}{Colors.BOLD}[WARN] Plugin has warnings{Colors.END}")
+
+
+def main() -> int:
+    if len(sys.argv) < MIN_ARGS:
+        print(f"Usage: {sys.argv[0]} <plugin-directory>", file=sys.stderr)
+        return 1
+    plugin_path = Path(sys.argv[1]).expanduser()
+    if not plugin_path.exists():
+        print(f"Error: Path does not exist: {plugin_path}", file=sys.stderr)
+        return 1
+    if not plugin_path.is_dir():
+        print(f"Error: Path is not a directory: {plugin_path}", file=sys.stderr)
+        return 1
+    validator = PluginValidator(plugin_path)
+    return validator.validate()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

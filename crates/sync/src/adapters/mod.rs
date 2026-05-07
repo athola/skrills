@@ -4,6 +4,8 @@ mod claude;
 mod codex;
 mod copilot;
 mod cursor;
+#[cfg(test)]
+mod tests_common;
 pub mod traits;
 pub(crate) mod utils;
 

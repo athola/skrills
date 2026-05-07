@@ -10,9 +10,7 @@ use serde::{Deserialize, Serialize};
 use similar::{ChangeTag, TextDiff};
 use std::fmt;
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Types
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// The kind of change detected during conflict analysis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,9 +158,7 @@ pub struct ResolvedConflict {
     pub resolution: Resolution,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Detection
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Result of comparing a single item against its baseline.
 enum ItemStatus {
@@ -275,9 +271,7 @@ where
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Diff formatting
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Formats a unified diff between two strings.
 ///
@@ -367,9 +361,7 @@ fn truncate_or_pad(s: &str, width: usize) -> String {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Interactive resolution
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Strategy for how to handle conflicts during sync.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -488,9 +480,7 @@ fn terminal_width() -> Option<usize> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

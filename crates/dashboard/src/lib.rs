@@ -22,6 +22,7 @@
 #![warn(missing_docs)]
 
 pub mod app;
+pub mod cold_window;
 mod events;
 pub mod ui;
 

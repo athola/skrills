@@ -68,7 +68,7 @@ chmod +x .git/hooks/pre-commit
 
 #### Mandatory Requirements
 - [ ] **Strictly enforce TLS 1.3** for any network-exposed deployments.
-- [ ] **Use robust API keys** (with 256+ bits of entropy) if authentication is required.
+- [ ] **Use API keys with 256+ bits of entropy** if authentication is required.
 - [ ] **Secure file permissions** appropriately.
 - [ ] **Operate with a dedicated service account** (avoiding root privileges).
 
@@ -203,7 +203,7 @@ We apply rigorous input validation at all trust boundaries and strict path sanit
 ### Data Privacy
 - **GDPR**: Skrills does not store user data persistently, aligning with GDPR principles.
 - **CCPA**: Follows privacy-by-design principles.
-- **SOC 2**: Supports SOC 2 requirements via robust audit logging and access controls.
+- **SOC 2**: Supports SOC 2 evidence collection via tracing-based audit logging (see [`audit-logging.md`](audit-logging.md)) and skill-directory-level access controls.
 
 **See**: [Compliance section in Audit Logging](audit-logging.md#compliance)
 

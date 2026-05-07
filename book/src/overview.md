@@ -42,7 +42,7 @@ skrills serve --http --open      # Browser dashboard with REST API
 ```
 
 ### HTML Portal
-Skrills ships with a self-contained HTML portal (`skrills-portal.html`) that provides an interactive browser-based interface for exploring skills, validating content, analyzing tokens, converting between CLI formats, and browsing the full MCP tool and CLI command reference. The portal works offline on `file://` protocol and can be uploaded into AI application portals.
+Skrills can generate a self-contained HTML portal on demand via the `html-portal-generator` skill. The generated `skrills-portal.html` provides an interactive browser-based interface for exploring skills, validating content, analyzing tokens, converting between CLI formats, and browsing the full MCP tool and CLI command reference. The portal works offline on `file://` protocol and can be uploaded into AI application portals. The file is git-ignored — regenerate per release rather than committing snapshots.
 
 ## Quick Start
 

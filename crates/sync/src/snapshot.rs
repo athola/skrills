@@ -450,9 +450,7 @@ pub fn collect_target_paths(
     paths.into_iter().collect()
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Internal helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 fn read_manifest(path: &Path) -> Result<SnapshotManifest> {
     let data = fs::read_to_string(path)

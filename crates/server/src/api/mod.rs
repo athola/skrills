@@ -1,6 +1,8 @@
 //! REST API endpoints for the skrills visualization dashboard.
 
 #[cfg(feature = "http-transport")]
+pub mod cold_window;
+#[cfg(feature = "http-transport")]
 pub mod mcp_servers;
 #[cfg(feature = "http-transport")]
 pub mod metrics;
@@ -9,6 +11,8 @@ pub mod rules;
 #[cfg(feature = "http-transport")]
 pub mod skills;
 
+#[cfg(feature = "http-transport")]
+pub use cold_window::{cold_window_routes, ColdWindowDashboardState};
 #[cfg(feature = "http-transport")]
 pub use mcp_servers::mcp_servers_routes;
 #[cfg(feature = "http-transport")]

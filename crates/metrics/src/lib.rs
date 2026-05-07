@@ -23,11 +23,16 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod baseline;
 mod collector;
 mod error;
 mod schema;
 mod types;
 
+pub use baseline::{
+    BaselineQuery, METRIC_RULE_DURATION_MS, METRIC_SKILL_DURATION_MS, METRIC_SKILL_TOKENS,
+    MIN_BASELINE_SAMPLES,
+};
 pub use collector::{MetricsCollector, StorageMode};
 pub use error::{MetricsError, Result};
 pub use types::{

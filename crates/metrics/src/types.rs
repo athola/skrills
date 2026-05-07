@@ -13,7 +13,7 @@ pub enum SyncOperation {
 }
 
 impl SyncOperation {
-    /// Returns the operation as a string slice.
+    /// Returns `"push"` or `"pull"` — the database column representation.
     pub fn as_str(&self) -> &str {
         match self {
             Self::Push => "push",
@@ -42,7 +42,7 @@ pub enum SyncStatus {
 }
 
 impl SyncStatus {
-    /// Returns the status as a string slice.
+    /// Returns `"success"`, `"in_progress"`, or `"failed"` — the database column representation.
     pub fn as_str(&self) -> &str {
         match self {
             Self::Success => "success",
@@ -109,7 +109,7 @@ pub enum RuleOutcome {
 }
 
 impl RuleOutcome {
-    /// Returns the outcome as a string slice.
+    /// Returns `"pass"`, `"fail"`, `"skip"`, or `"error"` — the database column representation.
     pub fn as_str(&self) -> &str {
         match self {
             Self::Pass => "pass",

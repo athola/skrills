@@ -66,7 +66,7 @@ fn render_to_string(terminal: &Terminal<TestBackend>) -> String {
     output
 }
 
-// ── Header Tests ──
+// Header Tests
 
 #[test]
 fn header_shows_skill_counts_and_timestamp() {
@@ -124,7 +124,7 @@ fn header_shows_dash_when_no_refresh() {
     );
 }
 
-// ── Skills Panel Tests ──
+// Skills Panel Tests
 
 #[test]
 fn skills_panel_renders_skill_names() {
@@ -260,7 +260,7 @@ fn skills_panel_empty_state() {
     );
 }
 
-// ── Activity Panel Tests ──
+// Activity Panel Tests
 
 #[test]
 fn activity_panel_renders_events() {
@@ -304,7 +304,7 @@ fn activity_panel_truncates_to_visible_area() {
     );
 }
 
-// ── Metrics Panel Tests ──
+// Metrics Panel Tests
 
 #[test]
 fn metrics_panel_shows_selected_skill_info() {
@@ -367,7 +367,7 @@ fn metrics_panel_no_skill_selected() {
     );
 }
 
-// ── Footer Tests ──
+// Footer Tests
 
 #[test]
 fn footer_shows_keyboard_shortcuts() {
@@ -401,7 +401,7 @@ fn footer_shows_keyboard_shortcuts() {
     );
 }
 
-// ── Help Overlay Tests ──
+// Help Overlay Tests
 
 #[test]
 fn help_overlay_toggles_on_question_mark() {
@@ -443,7 +443,7 @@ fn help_overlay_toggles_on_f1() {
     assert!(!app.show_help, "F1 again should toggle help off");
 }
 
-// ── Focus / Navigation Tests ──
+// Focus / Navigation Tests
 
 #[test]
 fn tab_cycles_panel_focus() {
@@ -533,7 +533,7 @@ fn navigation_on_empty_skills_does_not_panic() {
     assert_eq!(app.skill_index, 0);
 }
 
-// ── Sort Tests ──
+// Sort Tests
 
 #[test]
 fn sort_toggle_reorders_skills() {
@@ -586,7 +586,7 @@ fn sort_resets_selection_to_top() {
     assert_eq!(app.skill_list_state.selected(), Some(0));
 }
 
-// ── Quit Tests ──
+// Quit Tests
 
 #[test]
 fn q_quits() {
@@ -604,7 +604,7 @@ fn esc_quits() {
     assert!(app.should_quit);
 }
 
-// ── Metric Event Processing Tests ──
+// Metric Event Processing Tests
 
 #[test]
 fn metric_event_skill_invocation_success() {
@@ -723,7 +723,7 @@ fn metric_event_rule_trigger() {
     assert!(app2.activity[0].message.contains("OK"));
 }
 
-// ── Rendering at Different Terminal Sizes ──
+// Rendering at Different Terminal Sizes
 
 #[test]
 fn renders_at_minimum_terminal_size() {
@@ -750,7 +750,7 @@ fn renders_at_large_terminal_size() {
     assert!(output.contains("deploy"));
 }
 
-// ── Panel Focus Highlighting ──
+// Panel Focus Highlighting
 
 #[test]
 fn focused_panel_has_different_style() {
@@ -775,7 +775,7 @@ fn focused_panel_has_different_style() {
     );
 }
 
-// ── Full Dashboard Snapshot ──
+// Full Dashboard Snapshot
 
 #[test]
 fn full_dashboard_snapshot() {
@@ -801,7 +801,7 @@ fn full_dashboard_snapshot() {
     assert!(output.contains("Invocations: 42"), "Skill metrics present");
 }
 
-// ── MCP Servers Panel Tests ──
+// MCP Servers Panel Tests
 
 #[test]
 fn mcp_panel_hidden_when_no_servers() {

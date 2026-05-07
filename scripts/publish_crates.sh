@@ -50,6 +50,7 @@ publish_one() {
 require_token
 
 # Level 0: leaf crates (no internal dependencies)
+publish_one skrills-snapshot
 publish_one skrills-validate
 publish_one skrills-state
 publish_one skrills-discovery

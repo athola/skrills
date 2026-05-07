@@ -22,6 +22,7 @@ use walkdir::WalkDir;
 /// Adapter for Codex CLI configuration.
 pub struct CodexAdapter {
     root: PathBuf,
+    kill_switch: Option<skrills_snapshot::KillSwitch>,
 }
 
 impl CodexAdapter {
@@ -30,12 +31,25 @@ impl CodexAdapter {
         let home = dirs::home_dir().context("Could not determine home directory")?;
         Ok(Self {
             root: home.join(".codex"),
+            kill_switch: None,
         })
     }
 
     /// Creates a CodexAdapter with a custom root (for testing).
     pub fn with_root(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            kill_switch: None,
+        }
+    }
+
+    /// Attach a [`KillSwitch`](skrills_snapshot::KillSwitch) so that mutating
+    /// operations refuse with [`SyncError::TokenBudgetExceeded`](crate::SyncError)
+    /// when the cold-window engine has engaged it (FR12).
+    #[must_use]
+    pub fn with_kill_switch(mut self, switch: skrills_snapshot::KillSwitch) -> Self {
+        self.kill_switch = Some(switch);
+        self
     }
 
     fn prompts_dir(&self) -> PathBuf {
@@ -389,6 +403,7 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn write_commands(&self, commands: &[Command]) -> Result<WriteReport> {
+        super::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         let dir = self.prompts_dir();
         fs::create_dir_all(&dir)?;
 
@@ -416,6 +431,7 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn write_mcp_servers(&self, servers: &HashMap<String, McpServer>) -> Result<WriteReport> {
+        super::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         let path = self.settings_path();
 
         let mut settings: serde_json::Value = if path.exists() {
@@ -467,6 +483,7 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn write_preferences(&self, prefs: &Preferences) -> Result<WriteReport> {
+        super::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         let path = self.settings_path();
 
         let mut settings: serde_json::Value = if path.exists() {
@@ -492,6 +509,7 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn write_skills(&self, skills: &[Command]) -> Result<WriteReport> {
+        super::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         let dir = self.skills_dir();
         fs::create_dir_all(&dir)?;
 
@@ -634,11 +652,13 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn write_hooks(&self, _hooks: &[Command]) -> Result<WriteReport> {
+        super::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         // Codex does not support hooks
         Ok(WriteReport::default())
     }
 
     fn write_agents(&self, agents: &[Command]) -> Result<WriteReport> {
+        super::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         // Codex does not have native agent support, but we can convert agents to skills.
         // Agents are written as skills with an "agent-" prefix to distinguish them.
         // This allows Claude agents to be used as Codex skills until official support arrives.
@@ -703,6 +723,7 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn write_instructions(&self, _instructions: &[Command]) -> Result<WriteReport> {
+        super::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         // Codex does not support instructions
         Ok(WriteReport::default())
     }
@@ -725,8 +746,7 @@ mod tests {
     fn read_commands_empty_dir() {
         let tmp = tempdir().unwrap();
         let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
-        let commands = adapter.read_commands(false).unwrap();
-        assert!(commands.is_empty());
+        crate::adapters::tests_common::assert_read_commands_empty(&adapter);
     }
 
     #[test]

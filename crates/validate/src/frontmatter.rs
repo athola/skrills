@@ -937,7 +937,7 @@ name: duplicate
             name in "[a-z][a-z0-9-]{0,20}",
             desc in "[A-Za-z][A-Za-z0-9 ]{0,48}[A-Za-z0-9]",
         ) {
-            let content = format!("---\nname: {}\ndescription: {}\n---\n# Content\nBody.", name, desc);
+            let content = skrills_test_utils::skill_md(&name, &desc, "# Content\nBody.");
             let parsed = parse_frontmatter(&content).unwrap();
             let fm = parsed.frontmatter.unwrap();
             assert_eq!(fm.name, Some(name));
@@ -949,10 +949,7 @@ name: duplicate
             name in "[a-z][a-z0-9-]{0,98}",
             desc in "[A-Za-z][A-Za-z0-9]{0,49}",
         ) {
-            let content = format!(
-                "---\nname: {}\ndescription: {}\n---\n# Content\nBody.",
-                name, desc,
-            );
+            let content = skrills_test_utils::skill_md(&name, &desc, "# Content\nBody.");
             let result = crate::codex::validate_codex(
                 std::path::Path::new("test.md"),
                 &content,
@@ -968,10 +965,7 @@ name: duplicate
         fn descriptions_within_length_limit_pass_codex_validation(
             desc in "[A-Za-z][A-Za-z0-9]{0,498}",
         ) {
-            let content = format!(
-                "---\nname: test-skill\ndescription: {}\n---\n# Content\nBody.",
-                desc,
-            );
+            let content = skrills_test_utils::skill_md("test-skill", &desc, "# Content\nBody.");
             let result = crate::codex::validate_codex(
                 std::path::Path::new("test.md"),
                 &content,

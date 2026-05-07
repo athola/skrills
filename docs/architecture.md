@@ -90,4 +90,5 @@ Command handlers move to submodules as the CLI grows to align CLI commands with 
 - [ADR 0002: Skill Dependency Resolution](adr/0002-skill-dependency-resolution.md)
 - [ADR 0003: CLI Parity for Intelligence Tools](adr/0003-cli-parity-intelligence-tools.md)
 - [ADR 0004: Intelligence Crate Versioning](adr/0004-intelligence-crate-versioning.md)
+- [ADR 0007: Cold-Window Architecture](adr/0007-cold-window-architecture.md)
 - [Book: Overview](../book/src/overview.md)
