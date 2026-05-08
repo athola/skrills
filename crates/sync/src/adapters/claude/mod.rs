@@ -988,4 +988,77 @@ mod tests {
             "config.json should not be marked executable"
         );
     }
+
+    #[test]
+    fn read_plugin_assets_synthesizes_missing_manifest_in_full_mirror() {
+        // GIVEN a plugin with no .claude-plugin/plugin.json (e.g. typescript-lsp /
+        // pyright-lsp from claude-plugins-official), only README + LICENSE
+        let tmp = tempdir().unwrap();
+        let plugin = tmp
+            .path()
+            .join("plugins/cache/claude-plugins-official/typescript-lsp/1.0.0");
+        fs::create_dir_all(&plugin).unwrap();
+        fs::write(
+            plugin.join("README.md"),
+            b"# typescript-lsp\n\nTypeScript/JavaScript language server for Claude Code, providing\
+              code intelligence features like go-to-definition, find references, and error checking.\n",
+        )
+        .unwrap();
+        fs::write(plugin.join("LICENSE"), b"MIT").unwrap();
+
+        // WHEN reading plugin assets in full_mirror mode (Cursor-style)
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let assets = adapter.read_plugin_assets(true).unwrap();
+
+        // THEN a synthetic .claude-plugin/plugin.json is included so the plugin
+        // shows up in the target's plugin list rather than being silently dropped.
+        let manifest = assets
+            .iter()
+            .find(|a| a.relative_path == std::path::Path::new(".claude-plugin/plugin.json"))
+            .expect("synthetic manifest should be emitted");
+
+        assert_eq!(manifest.plugin_name, "typescript-lsp");
+        assert_eq!(manifest.publisher, "claude-plugins-official");
+        assert_eq!(manifest.version, "1.0.0");
+        assert!(!manifest.executable);
+
+        let json: serde_json::Value = serde_json::from_slice(&manifest.content)
+            .expect("synthetic manifest should be valid JSON");
+        assert_eq!(json["name"], "typescript-lsp");
+        assert_eq!(json["version"], "1.0.0");
+        assert!(
+            json["description"].is_string(),
+            "description should be present (derived from README or default)"
+        );
+    }
+
+    #[test]
+    fn read_plugin_assets_does_not_synthesize_when_real_manifest_present() {
+        // GIVEN a plugin that already has a manifest
+        let tmp = tempdir().unwrap();
+        let plugin = tmp.path().join("plugins/cache/market/plug/1.0.0");
+        fs::create_dir_all(plugin.join(".claude-plugin")).unwrap();
+        fs::write(
+            plugin.join(".claude-plugin/plugin.json"),
+            br#"{"name":"plug","version":"1.0.0","description":"real"}"#,
+        )
+        .unwrap();
+        fs::write(plugin.join("README.md"), b"# plug\n").unwrap();
+
+        // WHEN reading plugin assets in full_mirror mode
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let assets = adapter.read_plugin_assets(true).unwrap();
+
+        // THEN the real manifest is preserved, not overwritten
+        let manifest = assets
+            .iter()
+            .find(|a| a.relative_path == std::path::Path::new(".claude-plugin/plugin.json"))
+            .expect("real manifest should be present");
+        let json: serde_json::Value =
+            serde_json::from_slice(&manifest.content).expect("manifest should parse");
+        assert_eq!(
+            json["description"], "real",
+            "real manifest must not be replaced by a synthetic one"
+        );
+    }
 }

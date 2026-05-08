@@ -239,16 +239,65 @@ pub(super) fn read_plugin_assets_impl(
                         .contains(".claude-plugin/plugin.json")
                 });
                 if !has_manifest {
-                    tracing::warn!(
+                    let description = derive_description(&version_path, &plugin_name);
+                    let manifest = synthesize_manifest(&plugin_name, &version, &description);
+                    tracing::info!(
                         plugin = %plugin_name,
                         version = %version,
-                        "Plugin has no .claude-plugin/plugin.json manifest; \
-                         it will not appear in the target's plugin list"
+                        "Synthesized .claude-plugin/plugin.json for manifest-less plugin"
                     );
+                    assets.push(PluginAsset::new(
+                        plugin_name.clone(),
+                        publisher.clone(),
+                        version.clone(),
+                        std::path::PathBuf::from(".claude-plugin/plugin.json"),
+                        manifest,
+                        false,
+                    ));
                 }
             }
         }
     }
 
     Ok(assets)
+}
+
+/// Build a minimal `plugin.json` body for plugins that ship without one.
+///
+/// Loaders only need name + version to recognize the plugin; the empty
+/// component arrays make it explicit that this plugin contributes no
+/// commands/skills/agents/hooks (matching the on-disk reality for
+/// e.g. typescript-lsp / pyright-lsp, which are MCP-server-only).
+fn synthesize_manifest(name: &str, version: &str, description: &str) -> Vec<u8> {
+    let body = serde_json::json!({
+        "name": name,
+        "version": version,
+        "description": description,
+        "commands": [],
+        "skills": [],
+        "agents": [],
+        "hooks": [],
+        "_synthesized": true,
+    });
+    let mut out = serde_json::to_vec_pretty(&body).unwrap_or_else(|_| Vec::new());
+    out.push(b'\n');
+    out
+}
+
+/// Pull a one-line description from README.md (first non-empty,
+/// non-heading paragraph). Falls back to a generic string so the
+/// manifest always has a `description` field.
+fn derive_description(version_path: &std::path::Path, plugin_name: &str) -> String {
+    let readme = version_path.join("README.md");
+    if let Ok(text) = fs::read_to_string(&readme) {
+        for raw in text.lines() {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            // Stop at the first prose line; truncate to keep manifests compact.
+            return line.chars().take(280).collect();
+        }
+    }
+    format!("Plugin '{plugin_name}' (manifest synthesized by skrills sync)")
 }
