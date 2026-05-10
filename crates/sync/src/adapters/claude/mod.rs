@@ -1000,8 +1000,7 @@ mod tests {
         fs::create_dir_all(&plugin).unwrap();
         fs::write(
             plugin.join("README.md"),
-            b"# typescript-lsp\n\nTypeScript/JavaScript language server for Claude Code, providing\
-              code intelligence features like go-to-definition, find references, and error checking.\n",
+            b"# typescript-lsp\n\nTypeScript/JavaScript language server for Claude Code.\n",
         )
         .unwrap();
         fs::write(plugin.join("LICENSE"), b"MIT").unwrap();
@@ -1026,9 +1025,80 @@ mod tests {
             .expect("synthetic manifest should be valid JSON");
         assert_eq!(json["name"], "typescript-lsp");
         assert_eq!(json["version"], "1.0.0");
+
+        // AND the description is derived from the README's first prose line
+        // (skipping the heading), pinning the README-extraction contract.
+        assert_eq!(
+            json["description"], "TypeScript/JavaScript language server for Claude Code.",
+            "description should be the first non-heading prose line from README.md"
+        );
+
+        // AND the audit marker is present so future tooling can distinguish
+        // synthesized manifests from real ones.
+        assert_eq!(
+            json["_synthesized"], true,
+            "_synthesized: true marker is required for downstream audits"
+        );
+
+        // AND the component arrays are present and empty, matching the
+        // on-disk reality of MCP-server-only plugins.
+        for field in ["commands", "skills", "agents", "hooks"] {
+            let arr = json[field]
+                .as_array()
+                .unwrap_or_else(|| panic!("synthetic manifest must have `{field}` as array"));
+            assert!(
+                arr.is_empty(),
+                "synthetic manifest's `{field}` must be an empty array, got {arr:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn read_plugin_assets_synthesized_description_falls_back_when_no_readme() {
+        // GIVEN a manifest-less plugin that also ships no README.md
+        let tmp = tempdir().unwrap();
+        let plugin = tmp.path().join("plugins/cache/market/lonely/2.3.4");
+        fs::create_dir_all(&plugin).unwrap();
+        fs::write(plugin.join("LICENSE"), b"MIT").unwrap();
+
+        // WHEN reading plugin assets in full_mirror mode
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let assets = adapter.read_plugin_assets(true).unwrap();
+
+        // THEN the synthesized manifest uses the documented fallback string,
+        // ensuring `description` is always populated even without a README.
+        let manifest = assets
+            .iter()
+            .find(|a| a.relative_path == std::path::Path::new(".claude-plugin/plugin.json"))
+            .expect("synthetic manifest should still be emitted without a README");
+        let json: serde_json::Value =
+            serde_json::from_slice(&manifest.content).expect("manifest should parse");
+        assert_eq!(
+            json["description"], "Plugin 'lonely' (manifest synthesized by skrills sync)",
+            "fallback description must reference the plugin name and synthesis source"
+        );
+    }
+
+    #[test]
+    fn read_plugin_assets_does_not_synthesize_in_skill_mirror_mode() {
+        // GIVEN a manifest-less plugin (same shape as typescript-lsp)
+        let tmp = tempdir().unwrap();
+        let plugin = tmp.path().join("plugins/cache/market/skill-only/1.0.0");
+        fs::create_dir_all(&plugin).unwrap();
+        fs::write(plugin.join("README.md"), b"# skill-only\n\nA plugin.\n").unwrap();
+
+        // WHEN reading plugin assets WITHOUT full_mirror (Codex-style skill sync)
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let assets = adapter.read_plugin_assets(false).unwrap();
+
+        // THEN no synthetic manifest is emitted: skill-mirror targets do not
+        // need plugin.json files, and synthesis is gated to full_mirror only.
         assert!(
-            json["description"].is_string(),
-            "description should be present (derived from README or default)"
+            !assets
+                .iter()
+                .any(|a| a.relative_path == std::path::Path::new(".claude-plugin/plugin.json")),
+            "synthesis must be gated to full_mirror; skill-mirror should leave \
+             manifest-less plugins as-is"
         );
     }
 
