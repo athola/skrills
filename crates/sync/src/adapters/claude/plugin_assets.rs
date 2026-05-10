@@ -233,11 +233,15 @@ pub(super) fn read_plugin_assets_impl(
             }
 
             if full_mirror {
-                let has_manifest = assets[assets_before..].iter().any(|a| {
-                    a.relative_path
-                        .to_string_lossy()
-                        .contains(".claude-plugin/plugin.json")
-                });
+                // Use a structurally-built path so the comparison is correct on
+                // Windows (where `strip_prefix` produces backslash separators)
+                // as well as Unix. A `to_string_lossy().contains("/")` check
+                // would silently miss real Windows manifests and double-emit a
+                // synthetic one.
+                let manifest_rel_path = std::path::Path::new(".claude-plugin").join("plugin.json");
+                let has_manifest = assets[assets_before..]
+                    .iter()
+                    .any(|a| a.relative_path == manifest_rel_path);
                 if !has_manifest {
                     let description = derive_description(&version_path, &plugin_name);
                     let manifest = synthesize_manifest(&plugin_name, &version, &description);
@@ -250,7 +254,7 @@ pub(super) fn read_plugin_assets_impl(
                         plugin_name.clone(),
                         publisher.clone(),
                         version.clone(),
-                        std::path::PathBuf::from(".claude-plugin/plugin.json"),
+                        manifest_rel_path,
                         manifest,
                         false,
                     ));
@@ -279,7 +283,12 @@ fn synthesize_manifest(name: &str, version: &str, description: &str) -> Vec<u8> 
         "hooks": [],
         "_synthesized": true,
     });
-    let mut out = serde_json::to_vec_pretty(&body).unwrap_or_else(|_| Vec::new());
+    // Serialization of a `serde_json::Value` built from primitive fields
+    // cannot fail. Using `expect` instead of `unwrap_or_else` ensures any
+    // future refactor that breaks this invariant surfaces loudly rather
+    // than emitting a 1-byte file that masquerades as a valid manifest.
+    let mut out =
+        serde_json::to_vec_pretty(&body).expect("static JSON value cannot fail to serialize");
     out.push(b'\n');
     out
 }
