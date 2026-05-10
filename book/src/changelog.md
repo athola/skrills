@@ -3,7 +3,7 @@
 ## 0.8.1 (2026-05-09)
 
 - **Fix: Synthesize `plugin.json` for manifest-less plugins**: Plugins shipped without `.claude-plugin/plugin.json` (e.g. `typescript-lsp`, `pyright-lsp`) are no longer dropped during `claude --to cursor` full-mirror sync. `read_plugin_assets` now emits a minimal manifest with `name` / `version` from the cache layout, `description` from the README's first prose line (or a documented fallback), empty component arrays, and a `_synthesized: true` audit marker. Real manifests are never overwritten; synthesis is gated to `full_mirror=true` so skill-mirror targets stay untouched. See [Sync Guide → Plugin Assets and Manifest Synthesis](sync-guide.md#plugin-assets-and-manifest-synthesis).
-- **Testing: Pin manifest-synthesis contract**: Three tests in `crates/sync/src/adapters/claude/mod.rs` lock description sourcing, no-README fallback, and full-mirror gating against silent regressions.
+- **Testing: Pin manifest-synthesis contract**: Three new and strengthened tests in `crates/sync/src/adapters/claude/mod.rs` lock description sourcing, no-README fallback, and full-mirror gating against silent regressions; the pre-existing `read_plugin_assets_does_not_synthesize_when_real_manifest_present` continues to guard real-manifest preservation.
 
 ## 0.8.0 (2026-04-28)
 

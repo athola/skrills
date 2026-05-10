@@ -1087,16 +1087,35 @@ mod tests {
         fs::create_dir_all(&plugin).unwrap();
         fs::write(plugin.join("README.md"), b"# skill-only\n\nA plugin.\n").unwrap();
 
-        // WHEN reading plugin assets WITHOUT full_mirror (Codex-style skill sync)
+        // WHEN reading plugin assets in BOTH modes against the same fixture
+        // (running both calls on one fixture is what differentiates "gating
+        // works" from "synthesis is missing entirely" — without the
+        // full-mirror call, this test would also pass against a reverted
+        // implementation that never synthesizes anything).
         let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
-        let assets = adapter.read_plugin_assets(false).unwrap();
+        let full_mirror_assets = adapter.read_plugin_assets(true).unwrap();
+        let skill_mirror_assets = adapter.read_plugin_assets(false).unwrap();
 
-        // THEN no synthetic manifest is emitted: skill-mirror targets do not
-        // need plugin.json files, and synthesis is gated to full_mirror only.
+        let manifest_rel_path = std::path::Path::new(".claude-plugin").join("plugin.json");
+
+        // THEN full-mirror mode synthesizes a manifest for the manifest-less
+        // plugin. Asserting this is what makes the test fail on revert:
+        // pre-fix code never synthesized in any mode, so a skill-mirror-only
+        // assertion would silently pass against a reverted implementation.
         assert!(
-            !assets
+            full_mirror_assets
                 .iter()
-                .any(|a| a.relative_path == std::path::Path::new(".claude-plugin/plugin.json")),
+                .any(|a| a.relative_path == manifest_rel_path),
+            "full-mirror mode should synthesize a manifest for the manifest-less plugin"
+        );
+
+        // AND skill-mirror mode does NOT — synthesis must be gated to
+        // full_mirror=true so Codex-style skill-only sync targets stay
+        // untouched.
+        assert!(
+            !skill_mirror_assets
+                .iter()
+                .any(|a| a.relative_path == manifest_rel_path),
             "synthesis must be gated to full_mirror; skill-mirror should leave \
              manifest-less plugins as-is"
         );

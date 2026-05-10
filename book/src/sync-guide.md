@@ -85,7 +85,7 @@ skrills sync-preferences --from claude --to copilot
 
 ### Plugin Assets and Manifest Synthesis
 
-Plugin assets are synced from `~/.claude/plugins/cache/` to `~/.cursor/plugins/cache/` so Cursor sees the same companion scripts, binaries, and config files that Claude Code installed. Registration manifests are written separately to `~/.cursor/plugins/local/<plugin>/.cursor-plugin/plugin.json` so Cursor's plugin system recognizes the plugin as installed. Cursor discovers the actual content from the shared cache, not from `local/`.
+Plugin asset registration writes manifests to `~/.cursor/plugins/local/<plugin>/.cursor-plugin/plugin.json` so Cursor's plugin system recognizes the plugin as installed. Cursor reads plugin content directly from `~/.claude/plugins/cache/` — the same cache Claude Code populates — so no cache-to-cache copy is needed. Stale entries under `~/.cursor/plugins/local/` are pruned automatically on each sync.
 
 When a Claude plugin ships without `.claude-plugin/plugin.json` (some upstream plugins, including `typescript-lsp` and `pyright-lsp` from `claude-plugins-official`, ship only a README and source tree), full-mirror sync now synthesizes a minimal manifest instead of dropping the plugin from the target. Synthesis follows a fixed contract:
 
