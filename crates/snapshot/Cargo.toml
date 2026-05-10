@@ -1,6 +1,6 @@
 [package]
 name = "skrills-snapshot"
-version = "0.8.0"
+version = "0.8.1"
 edition.workspace = true
 description = "Wire-format types for skrills cold-window real-time analysis (TUI + browser)"
 license = "MIT"

@@ -160,7 +160,7 @@ skill lifecycle management (`skill-deprecate`, `skill-rollback`,
 Validate skills in pull requests with the reusable GitHub Action:
 
 ```yaml
-- uses: athola/skrills/.github/actions/validate-skills@v0.8.0
+- uses: athola/skrills/.github/actions/validate-skills@v0.8.1
   with:
     targets: all
     strict: true
@@ -186,7 +186,10 @@ Each cell reflects what the adapter reads and writes today:
 Plugin asset sync writes `.cursor-plugin/plugin.json` manifests to
 `~/.cursor/plugins/local/` so Cursor recognizes synced plugins.
 Cursor discovers actual plugin content from `~/.claude/plugins/cache/`
-natively. Stale plugin entries are pruned automatically during sync.
+natively. Plugins shipped without a `plugin.json` (e.g. `typescript-lsp`,
+`pyright-lsp`) get a minimal synthesized manifest with a `_synthesized: true`
+audit marker rather than being dropped from the target. Stale plugin
+entries are pruned automatically during sync.
 
 Cursor rules (`.mdc` files) are mapped bidirectionally via mode
 derivation (`alwaysApply`, glob-scoped, agent-requested).
@@ -208,6 +211,7 @@ workflows.
 | `discovery` | Skill discovery and ranking |
 | `state` | Environment config, manifest settings, runtime overrides, validation cache, network detection |
 | `metrics` | SQLite-based telemetry for invocations, validations, sync |
+| `snapshot` | Wire-format types for cold-window real-time analysis (producer → TUI / browser SSE consumers) |
 | `subagents` | Shared subagent runtime and backends |
 | `tome` | Research API orchestration, caching, PDF serving |
 | `test-utils` | Shared test infrastructure (fixtures, RAII guards, temp dirs) |
@@ -275,8 +279,9 @@ plugin marketplaces:
 make lint test --quiet
 ```
 
-Requires Rust 1.75+. See [development guide](book/src/development.md)
-for test coverage, CI, and contribution workflow.
+Builds on stable Rust (CI uses `dtolnay/rust-toolchain@stable`).
+See [development guide](book/src/development.md) for test coverage,
+CI, and contribution workflow.
 
 ## Contributing
 
