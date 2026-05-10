@@ -33,6 +33,9 @@ skrills-demo.html
 .refinement-evidence.md
 .ai-hygiene-report.md
 .unbloat-report.md
+# PR-review workflow artifacts (session-local; the review content
+# is posted to GitHub as PR comments, not committed in-tree)
+reviews/
 # Python script ports (scripts/*.py + tests/unit/) byproducts
 __pycache__/
 .pytest_cache/
