@@ -1,5 +1,9 @@
 # Changelog Highlights
 
+## 0.8.2 (unreleased)
+
+- **Feature: Cold-Window TUI surface (`skrills cold-window --tui`)**: The cold-window panes now mount in a crossterm raw-mode loop, completing the surface the v0.8.0 panes were built for. `--tui` renders alerts, ranked hints, the research panel, and the token/budget status bar live in the current terminal, subscribing to the same engine bus as the browser surface; both can run together. Quit with `q` or `Ctrl-C`; `--no-bell` silences the WARNING-tier bell. First paint is asserted under the spec § 6 SC3 500ms budget (`cold_window_tui_startup_under_five_hundred_ms`, previously `#[ignore]`d for the missing launch path). See [`Cold-Window Real-Time Analysis`](cold-window.md).
+
 ## 0.8.1 (2026-05-09)
 
 - **Fix: Synthesize `plugin.json` for manifest-less plugins**: Plugins shipped without `.claude-plugin/plugin.json` (e.g. `typescript-lsp`, `pyright-lsp`) are no longer dropped during `claude --to cursor` full-mirror sync. `read_plugin_assets` now emits a minimal manifest with `name` / `version` from the cache layout, `description` from the README's first prose line (or a documented fallback), empty component arrays, and a `_synthesized: true` audit marker. Real manifests are never overwritten; synthesis is gated to `full_mirror=true` so skill-mirror targets stay untouched. See [Sync Guide → Plugin Assets and Manifest Synthesis](sync-guide.md#plugin-assets-and-manifest-synthesis).

@@ -4,16 +4,15 @@
 //! surface together. Listens for SIGINT and SIGTERM and cleanly tears
 //! everything down within the 2-second budget.
 //!
-//! **Browser-mode** is the primary surface. The TUI
-//! panes (`skrills_dashboard::cold_window`) are fully implemented and
-//! tested as library code; mounting them into a crossterm raw-mode
-//! loop lands as a follow-up. Users today run:
+//! Two surfaces are available, independently or together:
 //!
-//! ```text
-//! skrills cold-window --browser --port 8888
-//! ```
+//! - **Browser** (`--browser`): serves the SSE dashboard at
+//!   `http://localhost:<port>/dashboard`.
+//! - **TUI** (`--tui`): mounts the `skrills_dashboard::cold_window`
+//!   panes into a crossterm raw-mode loop in the current terminal
+//!   (requires a TTY). Quit with `q` or `Ctrl-C`.
 //!
-//! and open `http://localhost:8888/dashboard`.
+//! With neither flag the engine still ticks but no surface attaches.
 
 #![cfg(feature = "http-transport")]
 
@@ -40,9 +39,6 @@ use crate::discovery::merge_extra_dirs;
 const MIN_TICK_MS: u64 = 50;
 
 /// CLI flags for `skrills cold-window`.
-///
-/// The `--no-bell` flag is a TUI-only concern and lands when
-/// the TUI surface is wired up.
 #[derive(Debug, Clone, Args)]
 pub struct ColdWindowArgs {
     /// Token budget ceiling. Above this the LayeredAlertPolicy fires
@@ -67,6 +63,17 @@ pub struct ColdWindowArgs {
     /// Browser port (only meaningful with `--browser`).
     #[arg(long, default_value_t = 8888)]
     pub port: u16,
+
+    /// Render the live dashboard as a TUI in the current terminal.
+    /// Requires a TTY. Can run alongside `--browser`. Quit with `q`
+    /// or `Ctrl-C`.
+    #[arg(long, default_value_t = false)]
+    pub tui: bool,
+
+    /// Suppress the terminal bell the TUI rings when a new WARNING
+    /// alert fires.
+    #[arg(long, default_value_t = false)]
+    pub no_bell: bool,
 
     /// Override the base tick rate in milliseconds (default 2_000ms).
     #[arg(long, value_name = "MILLIS")]
@@ -181,6 +188,52 @@ pub async fn run(args: ColdWindowArgs) -> Result<()> {
     } else {
         None
     };
+
+    // TUI surface owns the foreground when requested: it watches the
+    // same shutdown channel and also quits on `q`/`Ctrl-C`. When it
+    // returns, tear the producer/browser down through the shared
+    // 2-second budget and surface any TUI error.
+    #[cfg(feature = "dashboard")]
+    if args.tui {
+        use skrills_dashboard::cold_window::{run_tui, QuotaFn, TuiOptions};
+        use skrills_snapshot::ResearchQuota;
+
+        let quota_dispatcher = Arc::clone(&dispatcher);
+        let quota: QuotaFn = Box::new(move || {
+            // Mirror `ResearchQuotaSource for Arc<BucketedBudget>`: floor
+            // available so a partial token never advertises a fetch that
+            // would block, and derive used = total - available.
+            let s = quota_dispatcher.current_state();
+            let available = s.available().max(0.0).floor() as u32;
+            let total = s.rate_per_hour();
+            ResearchQuota::new(total.saturating_sub(available), total)
+        });
+        let opts = TuiOptions {
+            budget_ceiling: args.alert_budget,
+            bell_enabled: !args.no_bell,
+        };
+        let tui_result = run_tui(engine.subscribe(), shutdown_rx.clone(), Some(quota), opts).await;
+
+        let _ = shutdown_tx.send(true);
+        let cleanup = async {
+            await_task_handle(producer_handle, "producer").await;
+            if let Some(h) = server_handle {
+                await_task_handle(h, "server").await;
+            }
+        };
+        if tokio::time::timeout(Duration::from_secs(2), cleanup)
+            .await
+            .is_err()
+        {
+            tracing::warn!("shutdown did not complete within 2s; tasks aborted by drop");
+        }
+        return tui_result;
+    }
+
+    #[cfg(not(feature = "dashboard"))]
+    if args.tui {
+        anyhow::bail!("--tui requires the `dashboard` feature, which was not compiled in");
+    }
 
     // Wait for SIGINT or SIGTERM.
     wait_for_shutdown_signal().await;
@@ -646,6 +699,8 @@ mod tests {
         assert_eq!(cli.args.research_rate, 10);
         assert_eq!(cli.args.port, 8888);
         assert!(!cli.args.browser);
+        assert!(!cli.args.tui);
+        assert!(!cli.args.no_bell);
         assert!(!cli.args.no_adaptive);
         assert!(cli.args.tick_rate_ms.is_none());
     }
@@ -841,6 +896,8 @@ mod tests {
             "--port",
             "9000",
             "--browser",
+            "--tui",
+            "--no-bell",
             "--no-adaptive",
             "--tick-rate-ms",
             "500",
@@ -851,6 +908,8 @@ mod tests {
         assert_eq!(cli.args.research_rate, 5);
         assert_eq!(cli.args.port, 9000);
         assert!(cli.args.browser);
+        assert!(cli.args.tui);
+        assert!(cli.args.no_bell);
         assert!(cli.args.no_adaptive);
         assert_eq!(cli.args.tick_rate_ms, Some(500));
         assert_eq!(cli.args.skill_dirs.len(), 1);

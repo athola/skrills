@@ -11,22 +11,31 @@ Two render targets, both consuming the same `WindowSnapshot`
 artifact:
 
 - **TUI**: ratatui-based panes in `skrills-dashboard::cold_window`
-  (alert pane, hint pane, research pane, status bar). Available as
-  library code today; CLI mounting lands in a follow-up.
+  (alert pane, hint pane, research pane, status bar), mounted in a
+  crossterm raw-mode loop. Run with `--tui` (v0.8.2).
 - **Browser**: HTML page + Server-Sent Events stream in
-  `skrills-server::api::cold_window`. Available as a CLI subcommand
-  in v0.8.0.
+  `skrills-server::api::cold_window`. Run with `--browser` (v0.8.0).
+
+Both consume the same bus, so they can run together.
 
 ## Quick start
 
-Run the browser surface against the engine's demo producer:
+Run the TUI against the engine's demo producer, right in your
+terminal:
+
+```bash
+skrills cold-window --tui
+```
+
+Quit with `q` or `Ctrl-C`. Prefer a browser? Run the SSE surface
+instead (or alongside):
 
 ```bash
 skrills cold-window --browser --port 8888
 ```
 
-Open `http://localhost:8888/dashboard` in any modern browser. The
-page renders four panes:
+Open `http://localhost:8888/dashboard` in any modern browser. Either
+surface renders four panes:
 
 - **Status bar**: tick cadence with adaptive label
   (`tick: 2.0s [base]`, `tick: 4.0s [load 0.78]`,
@@ -58,6 +67,8 @@ drains.
 | `--research-rate <N>` | `10` | Tome dispatcher fetches per hour. The bucket persists across restarts at `~/.skrills/research-quota.json` and refills pro-rata by elapsed time. |
 | `--port <N>` | `8888` | Browser HTTP port (only with `--browser`). |
 | `--browser` | off | Run the HTTP browser surface. |
+| `--tui` | off | Render the live TUI in the current terminal (requires a TTY). Quit with `q` or `Ctrl-C`. |
+| `--no-bell` | off | Suppress the terminal bell the TUI rings on a newly-fired WARNING alert. |
 | `--no-adaptive` | off | Disable load-aware cadence; fix tick rate to base. |
 | `--tick-rate-ms <N>` | `2000` | Override base tick rate. |
 | `--skill-dir <DIR>` | (none) | Repeatable. Adds skill directories beyond the defaults. |
@@ -274,7 +285,6 @@ the matching signal in the snapshot:
 
 ## Roadmap
 
-- TUI mounting in the CLI (currently library code only).
 - Production tick producer using `analyze::tokens::count_tokens_attributed`
   against real discovery output (replaces the demo producer).
 - Per-tier configurable thresholds (community evidence supports

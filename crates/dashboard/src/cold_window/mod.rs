@@ -24,9 +24,11 @@ pub mod hint_pane;
 pub mod research_pane;
 pub mod state;
 pub mod status_bar;
+pub mod tui;
 
 pub use alert_pane::{AlertAction, AlertPane};
 pub use hint_pane::{HintAction, HintPane, HintPaneState};
 pub use research_pane::{ResearchAction, ResearchPane, ResearchPaneState};
 pub use state::ColdWindowState;
 pub use status_bar::StatusBar;
+pub use tui::{draw, handle_key, run as run_tui, KeyOutcome, QuotaFn, TuiOptions};
