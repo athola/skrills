@@ -47,9 +47,12 @@ impl ColdWindowState {
         }
     }
 
-    /// Apply a new snapshot. Returns `true` when at least one
-    /// previously-unseen WARNING-tier alert is present (caller may
-    /// ring the bell if [`Self::bell_enabled`] is true).
+    /// Apply a new snapshot, updating the current view. Returns `true`
+    /// when the caller **should ring the terminal bell** — that is,
+    /// when this snapshot introduces a previously-unseen WARNING-tier
+    /// alert *and* [`Self::bell_enabled`] is set. The `bell_enabled`
+    /// gate is applied here, so a `true` return means ring
+    /// unconditionally; the caller does not re-check the flag.
     pub fn ingest(&mut self, snapshot: Arc<WindowSnapshot>) -> bool {
         let mut new_warning = false;
         for alert in &snapshot.alerts {

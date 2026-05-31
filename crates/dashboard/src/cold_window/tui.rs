@@ -275,9 +275,11 @@ fn is_actionable(key: &KeyEvent) -> bool {
 /// Run the cold-window TUI to completion.
 ///
 /// Owns the terminal: enters raw mode + the alternate screen, installs
-/// a panic hook that restores the terminal, then loops until `q`,
-/// `Ctrl-C`, the `shutdown` watch flips true, or the snapshot bus
-/// closes. Restores the terminal on every exit path.
+/// a panic hook that restores the terminal (raw mode off, leave the
+/// alternate screen, show the cursor), then loops until `q`, `Ctrl-C`,
+/// the `shutdown` watch flips true, or the snapshot bus closes.
+/// Restores the terminal on every exit path, and reinstates the prior
+/// panic hook on normal exit so nothing leaks into the host process.
 pub async fn run(
     mut snapshots: broadcast::Receiver<Arc<WindowSnapshot>>,
     mut shutdown: watch::Receiver<bool>,
@@ -285,13 +287,20 @@ pub async fn run(
     opts: TuiOptions,
 ) -> Result<()> {
     // Restore the terminal even if a render or pane panics, otherwise
-    // the user is left in raw mode on a wrecked screen.
-    let original_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
-        original_hook(info);
-    }));
+    // the user is left in raw mode on a wrecked screen. The hook is
+    // shared via `Arc` so the normal-exit path below can reinstate the
+    // prior hook instead of leaking ours into the rest of the process.
+    let original_hook = Arc::new(std::panic::take_hook());
+    {
+        let original_hook = Arc::clone(&original_hook);
+        std::panic::set_hook(Box::new(move |info| {
+            let _ = disable_raw_mode();
+            // Mirror the normal-exit teardown order, including
+            // `Show`: a panic must not leave the cursor hidden.
+            let _ = execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show);
+            original_hook(info);
+        }));
+    }
 
     enable_raw_mode().context("enable raw mode")?;
     let mut stdout = io::stdout();
@@ -312,6 +321,12 @@ pub async fn run(
     let _ = disable_raw_mode();
     let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
     let _ = terminal.show_cursor();
+
+    // Reinstate the prior panic hook on the normal-exit path so our
+    // terminal-restoring hook does not persist for the rest of the
+    // process. (On a panic we never reach here — the hook fires during
+    // unwinding, which is exactly when we still need it.)
+    std::panic::set_hook(Box::new(move |info| original_hook(info)));
 
     loop_result
 }
@@ -354,6 +369,11 @@ async fn event_loop(
     };
 
     paint(terminal, &snap_state, &hint_state, &research_state)?;
+    // `interval` yields its first tick immediately; without this reset
+    // the first `select!` iteration would repaint again right after the
+    // explicit paint above. Reset so the first floor-repaint lands one
+    // full period out.
+    repaint.reset();
 
     loop {
         if *shutdown.borrow() {
@@ -369,6 +389,10 @@ async fn event_loop(
             recv = snapshots.recv() => {
                 match recv {
                     Ok(snap) => {
+                        // `ingest` returns true only when this snapshot
+                        // should ring the bell (new WARNING + bell
+                        // enabled); the `bell_enabled` gate lives inside
+                        // `ingest`, so we ring unconditionally here.
                         if snap_state.ingest(snap) {
                             // BEL is audio-only; it does not perturb the
                             // alternate-screen buffer ratatui owns.
