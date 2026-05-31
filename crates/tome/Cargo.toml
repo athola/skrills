@@ -1,6 +1,6 @@
 [package]
 name = "skrills-tome"
-version = "0.8.1"
+version = "0.8.2"
 edition = "2021"
 description = "Research API orchestration, caching, and knowledge graph for skrills."
 license = "MIT"
@@ -16,7 +16,7 @@ dirs.workspace = true
 time.workspace = true
 thiserror.workspace = true
 parking_lot.workspace = true
-skrills-snapshot = { path = "../snapshot", version = "0.8.1" }
+skrills-snapshot = { path = "../snapshot", version = "0.8.2" }
 
 # Tome-specific deps
 rusqlite = { version = "0.39", features = ["bundled"] }

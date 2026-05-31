@@ -138,7 +138,7 @@ details.
 Validate skills on every pull request with the reusable GitHub Action:
 
 ```yaml
-- uses: athola/skrills/.github/actions/validate-skills@v0.8.1
+- uses: athola/skrills/.github/actions/validate-skills@v0.8.2
   with:
     targets: all
     strict: true

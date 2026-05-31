@@ -1,6 +1,6 @@
 [package]
 name = "skrills-dashboard"
-version = "0.8.1"
+version = "0.8.2"
 edition.workspace = true
 description = "Terminal UI dashboard for skrills metrics and monitoring"
 license = "MIT"
@@ -13,10 +13,10 @@ categories = ["development-tools", "visualization"]
 publish = true
 
 [dependencies]
-skrills-metrics = { path = "../metrics", version = "0.8.1" }
-skrills-discovery = { path = "../discovery", version = "0.8.1" }
-skrills_sync = { path = "../sync", version = "0.8.1" }
-skrills-snapshot = { path = "../snapshot", version = "0.8.1" }
+skrills-metrics = { path = "../metrics", version = "0.8.2" }
+skrills-discovery = { path = "../discovery", version = "0.8.2" }
+skrills_sync = { path = "../sync", version = "0.8.2" }
+skrills-snapshot = { path = "../snapshot", version = "0.8.2" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
