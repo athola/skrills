@@ -16,6 +16,8 @@
 
 #![cfg(feature = "http-transport")]
 
+#[cfg(feature = "dashboard")]
+use std::io::IsTerminal;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -96,16 +98,21 @@ pub struct ColdWindowArgs {
     pub plugins_dir: Option<PathBuf>,
 }
 
-/// Await a spawned task handle, surfacing any `JoinError` instead of
-/// silently dropping it. A clean exit is logged at trace level
-/// (callers may upgrade); a panic is logged at error level so it shows
-/// up in production logs by default; an unexpected end (cancellation,
-/// abort) is a warning. The `kind` argument is interpolated into the
-/// message and into the structured fields so log filters can target
-/// just the producer or just the server.
+/// Await a spawned task handle, surfacing any failure instead of
+/// silently dropping it. A clean exit (`Ok(Ok(()))`) is silent; a task
+/// that returns `Err(...)` is logged at error level so a failed
+/// producer/server never exits the TUI as if nothing went wrong; a
+/// panic is logged at error level so it shows up in production logs by
+/// default; an unexpected end (cancellation, abort) is a warning. The
+/// `kind` argument is interpolated into the message and into the
+/// structured fields so log filters can target just the producer or
+/// just the server.
 async fn await_task_handle(handle: tokio::task::JoinHandle<Result<()>>, kind: &str) {
     match handle.await {
-        Ok(_) => {}
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::error!(kind = %kind, error = %e, "{kind} task failed");
+        }
         Err(e) if e.is_panic() => {
             tracing::error!(kind = %kind, error = ?e, "{kind} task panicked");
         }
@@ -128,6 +135,18 @@ pub async fn run(args: ColdWindowArgs) -> Result<()> {
         browser = args.browser,
         "starting cold-window subcommand"
     );
+
+    // Fail fast before spawning any background work: the raw-mode TUI
+    // needs a real terminal. Without this guard a piped/redirected
+    // `--tui` either surfaces a bare "enable raw mode" error or leaks
+    // alternate-screen escapes into the redirected stream. Mirrors the
+    // canonical guard in `crates/server/src/tui.rs`.
+    #[cfg(feature = "dashboard")]
+    if args.tui && !std::io::stdout().is_terminal() {
+        anyhow::bail!(
+            "cold-window --tui requires a TTY; use --browser for non-interactive environments"
+        );
+    }
 
     // Mint one shared kill-switch. Cloned into the engine via
     // `with_kill_switch`, then handed to any sync adapter constructed
@@ -784,6 +803,39 @@ mod tests {
         assert!(
             !logs.contains("ended unexpectedly"),
             "clean exit must not log unexpected end, got:\n{logs}"
+        );
+    }
+
+    #[tokio::test]
+    async fn await_task_handle_logs_error_when_task_returns_err() {
+        // A task that joins cleanly but returns `Err(...)` is a real
+        // failure (e.g. the browser server bound a busy port). The old
+        // `Ok(_) => {}` arm swallowed it; the inner error must now
+        // surface at ERROR level.
+        let writer = CaptureWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(writer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let handle: tokio::task::JoinHandle<Result<()>> =
+            tokio::spawn(async { Err(anyhow::anyhow!("simulated server bind failure")) });
+        await_task_handle(handle, "server").await;
+
+        let logs = writer.contents();
+        assert!(
+            logs.contains("ERROR"),
+            "expected ERROR-level log, got:\n{logs}"
+        );
+        assert!(
+            logs.contains("server task failed"),
+            "expected task-failed message, got:\n{logs}"
+        );
+        assert!(
+            logs.contains("simulated server bind failure"),
+            "expected the inner error to be surfaced, got:\n{logs}"
         );
     }
 

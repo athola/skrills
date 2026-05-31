@@ -29,7 +29,7 @@ use skrills_snapshot::{ResearchChannel, ResearchFinding};
 use super::state::ColdWindowState;
 
 /// Mutable state owned by the research pane.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ResearchPaneState {
     /// True when the pane renders as a collapsed one-liner.
     pub collapsed: bool,
@@ -38,6 +38,15 @@ pub struct ResearchPaneState {
     pub seen_keys: HashSet<String>,
     /// Number of findings considered "new" (not yet acknowledged).
     pub badge_count: u32,
+}
+
+impl Default for ResearchPaneState {
+    /// Delegates to [`ResearchPaneState::new`] so the pane starts
+    /// collapsed. A `#[derive(Default)]` would set `collapsed = false`
+    /// (the `bool` default) and silently open the pane on launch.
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ResearchPaneState {
@@ -257,6 +266,17 @@ mod tests {
         let s = ResearchPaneState::new();
         assert!(s.collapsed);
         assert_eq!(s.badge_count, 0);
+    }
+
+    #[test]
+    fn derived_default_matches_new_and_starts_collapsed() {
+        // The live TUI builds state via `Default`, not `new()`; the two
+        // must agree, otherwise research opens expanded against the
+        // documented "collapsed by default" contract.
+        let d = ResearchPaneState::default();
+        assert!(d.collapsed, "Default must start collapsed, like new()");
+        assert_eq!(d.badge_count, 0);
+        assert!(d.seen_keys.is_empty());
     }
 
     #[test]

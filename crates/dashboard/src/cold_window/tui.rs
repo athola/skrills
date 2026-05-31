@@ -26,7 +26,7 @@ use crossterm::terminal::{
 };
 use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::Frame;
 use ratatui::Terminal;
 use skrills_snapshot::{ResearchQuota, WindowSnapshot};
@@ -61,11 +61,157 @@ pub enum KeyOutcome {
     Redraw,
 }
 
-/// Compose the four panes into a single frame.
+/// Width at or above which the two-column layout becomes legible.
+/// Below it the panes stack into a single full-width column (phones,
+/// split panes); the actual narrow maximum is therefore one less than
+/// this (`MEDIUM_MIN_WIDTH - 1`).
+const MEDIUM_MIN_WIDTH: u16 = 60;
+/// Width at or above which the roomy three-column layout is used. The
+/// band in between ([`MEDIUM_MIN_WIDTH`], `WIDE_MIN_WIDTH`) is the
+/// medium tier: still two columns, but the research column is slimmed
+/// so the alert/hint text keeps its width.
+const WIDE_MIN_WIDTH: u16 = 80;
+
+/// Which of the three responsive tiers the current terminal falls into.
 ///
-/// Layout: a one-line status bar pinned to the bottom; above it a
-/// 60/40 split with alerts (top-left) over hints (bottom-left) and the
-/// research pane filling the right column.
+/// The tier is chosen by width alone: height never changes the
+/// *topology* (status bar stays pinned, panes keep their relative
+/// order), only how much room each pane gets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LayoutMode {
+    /// `width >= 80`: alerts over hints in a 60% left column, research
+    /// filling the 40% right column.
+    Wide,
+    /// `60 <= width < 80`: same two-column topology as [`LayoutMode::Wide`], but the
+    /// research column is narrowed so the left text stays readable.
+    Medium,
+    /// `width < 60`: every pane full-width, stacked top to bottom.
+    Narrow,
+}
+
+/// Pick the responsive tier for `area`.
+pub fn layout_mode(area: Rect) -> LayoutMode {
+    if area.width >= WIDE_MIN_WIDTH {
+        LayoutMode::Wide
+    } else if area.width >= MEDIUM_MIN_WIDTH {
+        LayoutMode::Medium
+    } else {
+        LayoutMode::Narrow
+    }
+}
+
+/// Where each pane is drawn for a given frame. Produced by
+/// [`plan_layout`] and consumed by [`draw`]; pure and `Rect`-only so it
+/// can be unit-tested without a terminal.
+///
+/// The fields are `pub` for ergonomic read access, but the load-bearing
+/// invariants (status pinned to the bottom row; the four rects tile
+/// `area`) are upheld only by the private constructors (`plan_for`,
+/// `columnar`). `#[non_exhaustive]` keeps external crates from
+/// hand-building an instance that violates them and reserves room for a
+/// future tier without a breaking change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ColdWindowLayout {
+    /// Alert list region.
+    pub alerts: Rect,
+    /// Hint list region.
+    pub hints: Rect,
+    /// Research panel region.
+    pub research: Rect,
+    /// One-line status bar region (always pinned to the bottom row).
+    pub status: Rect,
+}
+
+/// Plan pane rectangles for `area`, choosing the tier by width.
+///
+/// `research_collapsed` only affects the [`LayoutMode::Narrow`] stack,
+/// where a collapsed research pane is a 3-line badge and an expanded
+/// one earns a share of the vertical space.
+pub fn plan_layout(area: Rect, research_collapsed: bool) -> ColdWindowLayout {
+    plan_for(layout_mode(area), area, research_collapsed)
+}
+
+/// Plan pane rectangles for an explicit `mode`. Split out from
+/// [`plan_layout`] so tests can compare tiers at a fixed `area`.
+fn plan_for(mode: LayoutMode, area: Rect, research_collapsed: bool) -> ColdWindowLayout {
+    // One-line status bar pinned to the bottom in every tier.
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(area);
+    let body = rows[0];
+    let status = rows[1];
+
+    match mode {
+        // Roomy three-column layout: 60% left (alerts over hints),
+        // 40% research.
+        LayoutMode::Wide => columnar(body, status, 60),
+        // Same topology, but a slimmer research column buys the
+        // alert/hint text back some width.
+        LayoutMode::Medium => columnar(body, status, 68),
+        // Phones / split panes: stack everything full-width. A
+        // collapsed research pane is a fixed 3-line badge; expanded it
+        // takes a share of the column.
+        LayoutMode::Narrow => {
+            let constraints = if research_collapsed {
+                [
+                    Constraint::Min(3),
+                    Constraint::Min(3),
+                    Constraint::Length(3),
+                ]
+            } else {
+                [
+                    Constraint::Percentage(35),
+                    Constraint::Percentage(30),
+                    Constraint::Percentage(35),
+                ]
+            };
+            let stack = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(constraints)
+                .split(body);
+            ColdWindowLayout {
+                alerts: stack[0],
+                hints: stack[1],
+                research: stack[2],
+                status,
+            }
+        }
+    }
+}
+
+/// Two-column body: a `left_pct`% column with alerts (55%) over hints
+/// (45%), and the research pane filling the remaining right column.
+fn columnar(body: Rect, status: Rect, left_pct: u16) -> ColdWindowLayout {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(left_pct),
+            Constraint::Percentage(100 - left_pct),
+        ])
+        .split(body);
+    let left = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(cols[0]);
+    ColdWindowLayout {
+        alerts: left[0],
+        hints: left[1],
+        research: cols[1],
+        status,
+    }
+}
+
+/// Compose the four panes into a single frame, adapting to the
+/// terminal size.
+///
+/// The arrangement is chosen by [`plan_layout`] from the frame's width:
+/// a roomy three-column layout on wide terminals, a slimmer two-column
+/// variant in the medium band, and a full-width vertical stack on
+/// phone-sized screens. The one-line status bar is pinned to the bottom
+/// in every tier.
 pub fn draw(
     frame: &mut Frame<'_>,
     snap_state: &ColdWindowState,
@@ -74,26 +220,18 @@ pub fn draw(
     research_quota: Option<ResearchQuota>,
     budget_ceiling: u64,
 ) {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
-        .split(frame.area());
-    let body = rows[0];
-    let status = rows[1];
+    let layout = plan_layout(frame.area(), research_state.collapsed);
 
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-        .split(body);
-    let left = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-        .split(cols[0]);
-
-    AlertPane::render(snap_state, frame, left[0]);
-    HintPane::render(snap_state, hint_state, frame, left[1]);
-    ResearchPane::render(snap_state, research_state, frame, cols[1]);
-    StatusBar::render(snap_state, research_quota, budget_ceiling, frame, status);
+    AlertPane::render(snap_state, frame, layout.alerts);
+    HintPane::render(snap_state, hint_state, frame, layout.hints);
+    ResearchPane::render(snap_state, research_state, frame, layout.research);
+    StatusBar::render(
+        snap_state,
+        research_quota,
+        budget_ceiling,
+        frame,
+        layout.status,
+    );
 }
 
 /// Route a keystroke to the panes.
@@ -284,8 +422,8 @@ mod tests {
 
     use ratatui::backend::TestBackend;
     use skrills_snapshot::{
-        Alert, AlertBand, Hint, HintCategory, LoadSample, ScoredHint, Severity, TokenEntry,
-        TokenLedger,
+        Alert, AlertBand, Hint, HintCategory, LoadSample, ResearchChannel, ResearchFinding,
+        ScoredHint, Severity, TokenEntry, TokenLedger,
     };
 
     fn rich_snapshot() -> Arc<WindowSnapshot> {
@@ -355,16 +493,28 @@ mod tests {
 
     #[test]
     fn draw_survives_tiny_and_huge_areas() {
-        // R9: the composite must not panic across terminal sizes.
+        // R9: the composite must not panic across terminal sizes, with
+        // research both collapsed and expanded. The expanded pass at
+        // `(44, 4)` drives the height-starved expanded-Narrow arm
+        // (`Percentage(35/30/35)`) the collapsed default never reaches.
         let mut snap_state = ColdWindowState::new();
         snap_state.ingest(rich_snapshot());
         let hint_state = HintPaneState::new();
-        let research_state = ResearchPaneState::default();
-        for (w, h) in [(20u16, 5u16), (40, 12), (200, 60), (8, 2)] {
-            let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-            terminal
-                .draw(|f| draw(f, &snap_state, &hint_state, &research_state, None, 100_000))
-                .unwrap_or_else(|e| panic!("draw panicked at {w}x{h}: {e}"));
+        let collapsed = ResearchPaneState::default();
+        let mut expanded = ResearchPaneState::new();
+        expanded.collapsed = false;
+        for research_state in [&collapsed, &expanded] {
+            for (w, h) in [(20u16, 5u16), (40, 12), (200, 60), (8, 2), (44, 4)] {
+                let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+                terminal
+                    .draw(|f| draw(f, &snap_state, &hint_state, research_state, None, 100_000))
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "draw panicked at {w}x{h} (collapsed={}): {e}",
+                            research_state.collapsed
+                        )
+                    });
+            }
         }
     }
 
@@ -399,6 +549,193 @@ mod tests {
             elapsed < Duration::from_millis(500),
             "SC3 first paint took {elapsed:?}, exceeds 500 ms budget"
         );
+    }
+
+    // --- Responsive layout (R9: adapt to terminal size) -------------
+
+    fn area(w: u16, h: u16) -> Rect {
+        Rect::new(0, 0, w, h)
+    }
+
+    #[test]
+    fn mode_thresholds_map_width_to_tier() {
+        assert_eq!(layout_mode(area(80, 24)), LayoutMode::Wide);
+        assert_eq!(layout_mode(area(120, 40)), LayoutMode::Wide);
+        assert_eq!(layout_mode(area(79, 24)), LayoutMode::Medium);
+        assert_eq!(layout_mode(area(60, 24)), LayoutMode::Medium);
+        assert_eq!(layout_mode(area(59, 24)), LayoutMode::Narrow);
+        assert_eq!(layout_mode(area(40, 30)), LayoutMode::Narrow);
+    }
+
+    #[test]
+    fn status_bar_is_always_one_line_at_the_bottom() {
+        for (w, h) in [(120u16, 40u16), (70, 30), (44, 30)] {
+            let l = plan_layout(area(w, h), true);
+            assert_eq!(l.status.height, 1, "{w}x{h}: status must be one row");
+            assert_eq!(l.status.width, w, "{w}x{h}: status spans full width");
+            assert_eq!(
+                l.status.y,
+                h - 1,
+                "{w}x{h}: status pinned to the bottom row"
+            );
+        }
+    }
+
+    #[test]
+    fn wide_and_medium_are_columnar() {
+        for mode in [LayoutMode::Wide, LayoutMode::Medium] {
+            let l = plan_for(mode, area(100, 40), true);
+            // Research sits to the right of the alert/hint column.
+            assert!(
+                l.research.x > l.alerts.x,
+                "{mode:?}: research must be the right column"
+            );
+            // Alerts stack above hints in a shared left column.
+            assert_eq!(l.alerts.x, l.hints.x, "{mode:?}: left column shared");
+            assert!(l.alerts.y < l.hints.y, "{mode:?}: alerts above hints");
+        }
+    }
+
+    #[test]
+    fn medium_gives_left_panes_more_room_than_wide() {
+        // Width 70 is inside the Medium band (60..=79), so the 68%
+        // left-column constant is exercised at a size Medium actually
+        // occupies — not at 100, which `layout_mode` routes to Wide.
+        let wide = plan_for(LayoutMode::Wide, area(70, 40), true);
+        let medium = plan_for(LayoutMode::Medium, area(70, 40), true);
+        assert!(
+            medium.alerts.width > wide.alerts.width,
+            "medium left column ({}) should be wider than wide ({})",
+            medium.alerts.width,
+            wide.alerts.width
+        );
+        assert!(
+            medium.research.width < wide.research.width,
+            "medium research ({}) should be slimmer than wide ({})",
+            medium.research.width,
+            wide.research.width
+        );
+    }
+
+    #[test]
+    fn research_collapsed_only_affects_the_narrow_stack() {
+        // `plan_layout`'s contract says `research_collapsed` reshapes
+        // only the Narrow vertical stack. Pin it: the two columnar tiers
+        // must produce byte-identical layouts regardless of the flag.
+        for mode in [LayoutMode::Wide, LayoutMode::Medium] {
+            assert_eq!(
+                plan_for(mode, area(100, 40), true),
+                plan_for(mode, area(100, 40), false),
+                "{mode:?}: research_collapsed must not change the columnar layout"
+            );
+        }
+        // ...and it *does* change the Narrow stack, so the assertion
+        // above is guarding a real distinction, not a constant.
+        assert_ne!(
+            plan_for(LayoutMode::Narrow, area(44, 30), true),
+            plan_for(LayoutMode::Narrow, area(44, 30), false),
+            "Narrow: research_collapsed must reshape the stack"
+        );
+    }
+
+    #[test]
+    fn narrow_stacks_panes_in_a_single_full_width_column() {
+        let w = 44;
+        let l = plan_layout(area(w, 30), true);
+        for (name, r) in [
+            ("alerts", l.alerts),
+            ("hints", l.hints),
+            ("research", l.research),
+        ] {
+            assert_eq!(r.x, 0, "{name} must start at the left edge");
+            assert_eq!(r.width, w, "{name} must span the full width");
+        }
+        assert!(l.alerts.y < l.hints.y, "alerts above hints");
+        assert!(l.hints.y < l.research.y, "hints above research");
+    }
+
+    #[test]
+    fn narrow_research_grows_when_expanded() {
+        let collapsed = plan_layout(area(44, 30), true);
+        let expanded = plan_layout(area(44, 30), false);
+        assert_eq!(
+            collapsed.research.height, 3,
+            "collapsed research is a 3-line badge"
+        );
+        assert!(
+            expanded.research.height > collapsed.research.height,
+            "expanded research ({}) should be taller than collapsed ({})",
+            expanded.research.height,
+            collapsed.research.height
+        );
+    }
+
+    /// Flatten a rendered `TestBackend` buffer into one plain string so
+    /// tests can assert on visible text without caring about cell
+    /// coordinates.
+    fn buffer_text(terminal: &Terminal<TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    /// `rich_snapshot` with a single research finding attached, so the
+    /// expanded research pane has a row to render.
+    fn snapshot_with_research() -> Arc<WindowSnapshot> {
+        let mut snap = (*rich_snapshot()).clone();
+        snap.research_findings = vec![ResearchFinding {
+            fingerprint: "fp1".into(),
+            channel: ResearchChannel::GitHub,
+            title: "responsive layout".into(),
+            url: "https://example.com/fp1".into(),
+            score: 9.0,
+            fetched_at_ms: 0,
+        }];
+        Arc::new(snap)
+    }
+
+    #[test]
+    fn draw_renders_expanded_research_in_narrow_and_medium_tiers() {
+        // The pure-function tests pin the *geometry* of the Medium tier
+        // and the narrow expanded-research arm, but neither is ever
+        // pushed through the real `ResearchPane::render`. A regression
+        // that handed an expanded pane the collapsed badge's 3-line slot
+        // would satisfy the geometry tests yet truncate the live render.
+        // Drive both tiers through `draw` to guard the seam.
+        let mut snap_state = ColdWindowState::new();
+        snap_state.ingest(snapshot_with_research());
+        let hint_state = HintPaneState::new();
+        // collapsed: false exercises the Percentage(35/30/35) narrow arm
+        // and the expanded render path that lists findings.
+        let research_state = ResearchPaneState {
+            collapsed: false,
+            ..ResearchPaneState::default()
+        };
+
+        // Narrow tier (width < 60): expanded research stacks full-width
+        // with real vertical room. Its title carries the "findings"
+        // marker that the collapsed badge ("press R to expand") never
+        // shows, proving the expanded path reached the row renderer.
+        let mut narrow = Terminal::new(TestBackend::new(44, 30)).unwrap();
+        narrow
+            .draw(|f| draw(f, &snap_state, &hint_state, &research_state, None, 100_000))
+            .expect("narrow expanded draw must not panic");
+        assert!(
+            buffer_text(&narrow).contains("findings"),
+            "expanded research must render its findings list in the narrow stack"
+        );
+
+        // Medium tier (60 <= width < 80): the slimmer columnar arm that
+        // no `draw` test exercised before. Guard it against renderer
+        // panics with the expanded pane in the right column.
+        let mut medium = Terminal::new(TestBackend::new(70, 30)).unwrap();
+        medium
+            .draw(|f| draw(f, &snap_state, &hint_state, &research_state, None, 100_000))
+            .expect("medium expanded draw must not panic");
     }
 
     fn key(code: KeyCode) -> KeyEvent {

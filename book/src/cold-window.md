@@ -55,6 +55,20 @@ surface renders four panes:
   through the tome dispatcher. Empty by default; the dispatcher
   respects a token-bucket quota.
 
+The TUI arranges those panes to fit the terminal, re-flowing live on
+resize:
+
+- **Wide** (≥ 80 columns): alerts over hints in a 60% left column,
+  research filling the 40% right column.
+- **Medium** (60–79 columns): the same two-column layout with a
+  slimmer research column so the alert and hint text keep their width.
+- **Narrow** (< 60 columns, e.g. a phone session or a split pane):
+  every pane stacks full-width top to bottom. A collapsed research
+  pane shrinks to a fixed three-line badge so alerts and hints keep
+  the room.
+
+The status bar stays pinned to the bottom row in every tier.
+
 `Ctrl-C` exits cleanly within the 2-second shutdown budget. The
 browser sees a `status` event with `reconnecting…` while the server
 drains.
