@@ -9,11 +9,11 @@ use serde::{Deserialize, Serialize};
 /// Target CLI for generated skill output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TargetCli {
-    /// Claude Code — full YAML frontmatter.
+    /// Claude Code, full YAML frontmatter.
     Claude,
-    /// Cursor IDE — no YAML frontmatter (plain markdown).
+    /// Cursor IDE, no YAML frontmatter (plain markdown).
     Cursor,
-    /// Codex CLI — minimal frontmatter (name + description only).
+    /// Codex CLI, minimal frontmatter (name and description only).
     Codex,
 }
 
@@ -132,7 +132,7 @@ pub fn generate_skill(
     })?;
 
     let title = to_title_case(skill_name);
-    let description = format!("{} — generated from '{}' template", title, template.name);
+    let description = format!("{} (generated from '{}' template)", title, template.name);
 
     // Start from the raw template and substitute placeholders.
     let rendered = template

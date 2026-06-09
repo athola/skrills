@@ -192,7 +192,7 @@ pub struct AlertBand {
 /// See [`AlertBand::new`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BandError {
-    /// `low > high` — the fire thresholds are inverted.
+    /// `low > high`: the fire thresholds are inverted.
     MisorderedThresholds,
     /// One or more thresholds is `NaN`.
     NaNValue,
@@ -336,9 +336,9 @@ pub struct Hint {
     pub message: String,
     /// How often this hint surfaces (frequency signal).
     pub frequency: u32,
-    /// Estimated impact magnitude (0.0–10.0).
+    /// Estimated impact magnitude (0.0-10.0).
     pub impact: f64,
-    /// Estimated remediation ease (0.0–10.0; higher = easier).
+    /// Estimated remediation ease (0.0-10.0; higher = easier).
     pub ease_score: f64,
     /// Age in days since the underlying signal first appeared.
     pub age_days: f64,
@@ -503,7 +503,7 @@ pub struct LoadSample {
 /// implementation (`skrills_tome::dispatcher::BucketedBudget` in
 /// production). Co-located with [`WindowSnapshot`] because the
 /// trait's argument type lives here and the trait itself is part of
-/// the producer–consumer contract this crate carries.
+/// the producer-consumer contract this crate carries.
 pub trait ResearchBudget: Send + Sync {
     /// Return true when an external fetch is permitted for the given
     /// fingerprint at this moment, false when the budget refuses.

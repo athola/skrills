@@ -1,5 +1,5 @@
-/* Skrills Dashboard — warm ocean palette
-   Inspired by Anthropic's clean warmth + the skrill underwater pixel-art:
+/* Skrills Dashboard: warm ocean palette
+   Inspired by Anthropic's clean warmth and the skrill underwater pixel-art:
    deep navy sea, coral/terracotta highlights, sandy text, teal accents. */
 :root {
     --bg-deep:      #0c1222;
@@ -158,7 +158,7 @@ main {
 
 /* ── Scrollable lists ────────────────────────── */
 .skill-list {
-    /* no internal scroll — page scrolls instead */
+    /* no internal scroll; page scrolls instead */
 }
 
 .activity-list {

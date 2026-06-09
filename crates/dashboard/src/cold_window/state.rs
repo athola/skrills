@@ -48,7 +48,7 @@ impl ColdWindowState {
     }
 
     /// Apply a new snapshot, updating the current view. Returns `true`
-    /// when the caller **should ring the terminal bell** — that is,
+    /// when the caller **should ring the terminal bell**, that is,
     /// when this snapshot introduces a previously-unseen WARNING-tier
     /// alert *and* [`Self::bell_enabled`] is set. The `bell_enabled`
     /// gate is applied here, so a `true` return means ring
@@ -346,7 +346,7 @@ mod tests {
         s.ingest(snap1);
         s.master_ack();
         assert!(s.visible_alerts().is_empty());
-        // Next tick (version 2) — caution still present, but if it
+        // Next tick (version 2), caution still present, but if it
         // re-fires (a new alert object), version > master_ack_version
         // means it becomes visible again.
         let snap2 = snapshot(2, vec![alert("c1", Severity::Caution, 200)]);

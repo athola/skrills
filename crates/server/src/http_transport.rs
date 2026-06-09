@@ -457,7 +457,7 @@ fn open_in_browser(url: &str) {
                 target: "skrills::http",
                 error = %e,
                 url,
-                "Failed to open browser — open manually"
+                "Failed to open browser; open manually"
             );
         }
     }
@@ -788,7 +788,7 @@ mod tests {
             let blocker = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let blocked_addr = blocker.local_addr().unwrap();
 
-            // Ask for the occupied port — should fall back to blocked_port + 1..+9
+            // Ask for the occupied port, should fall back to blocked_port + 1..+9
             let (listener, actual) = bind_with_fallback(blocked_addr).await.unwrap();
             assert_ne!(
                 actual.port(),
@@ -808,7 +808,7 @@ mod tests {
         async fn bind_with_fallback_errors_when_all_ports_occupied() {
             // Occupy 10 consecutive ports (the original + 9 fallbacks).
             // Use a fixed high port to avoid ephemeral-range race conditions.
-            // If we can't block all 10, skip — another process holds one.
+            // If we can't block all 10, skip, another process holds one.
             let base_port: u16 = 19_100;
             let base_addr = SocketAddr::new("127.0.0.1".parse().unwrap(), base_port);
 
@@ -818,7 +818,7 @@ mod tests {
                 match tokio::net::TcpListener::bind(addr).await {
                     Ok(l) => blockers.push(l),
                     Err(_) => {
-                        // Can't block all ports — skip test rather than flake
+                        // Can't block all ports, skip test rather than flake
                         eprintln!(
                             "skipping: port {} already in use by another process",
                             base_port + offset

@@ -613,7 +613,7 @@ mod tests {
         let roots = default_roots(tmp.path());
         let labels: Vec<_> = roots.iter().map(|r| r.source.label()).collect();
         // Note: "copilot" appears twice - once for XDG path (~/.config/copilot/skills)
-        // and once for legacy path (~/.copilot/skills) to ensure comprehensive discovery
+        // and once for legacy path (~/.copilot/skills) so both paths are discovered
         assert_eq!(
             labels,
             vec![

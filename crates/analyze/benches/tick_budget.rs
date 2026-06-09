@@ -16,7 +16,7 @@ use skrills_analyze::cold_window::engine::TickInput;
 use skrills_analyze::cold_window::ColdWindowEngine;
 use skrills_test_utils::cold_window_fixtures::standard_snapshot;
 
-/// SC1 median budget — assertion runs separately as a `#[test]`
+/// SC1 median budget, assertion runs separately as a `#[test]`
 /// (criterion benches don't fail the build on regression).
 const _MEDIAN_BUDGET_MS: u128 = 50;
 /// SC1 p99 budget.

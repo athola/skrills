@@ -6,7 +6,7 @@
 //! `app/mod.rs::run()` so `skrills cold-window …` dispatches.
 //! Existing browser-integration tests construct the axum `Router`
 //! directly (`cold_window_routes(state)`) and never go through CLI
-//! dispatch — so when the dispatch arm was initially missing,
+//! dispatch, so when the dispatch arm was initially missing,
 //! `cargo test` was green but `make cold-window` (real binary) failed
 //! with "unrecognized subcommand". Dogfooding caught it; this file
 //! ensures no future refactor can re-introduce the defect silently.
@@ -37,7 +37,7 @@ fn pick_free_port() -> u16 {
 }
 
 /// Issue a raw HTTP/1.1 GET /dashboard to the given port and return
-/// the full response (status line + headers + body). `Connection:
+/// the full response (status line, headers, and body). `Connection:
 /// close` makes the server close after one response so
 /// `read_to_end` terminates promptly.
 fn http_get_dashboard(port: u16) -> std::io::Result<String> {
@@ -64,7 +64,7 @@ fn cold_window_help_dispatches() {
         .expect("spawn skrills cold-window --help");
     assert!(
         output.status.success(),
-        "`skrills cold-window --help` exited non-zero — \
+        "`skrills cold-window --help` exited non-zero; \
          likely a missing Commands::ColdWindow arm in app/mod.rs::run() \
          (T031b).\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
@@ -122,7 +122,7 @@ fn cold_window_browser_surface_serves_dashboard() {
     let _ = child.wait();
 
     let body = response.expect(
-        "dashboard did not respond within 5 s — \
+        "dashboard did not respond within 5 s; \
          either the binary failed to bind or the dispatch arm regressed",
     );
     assert!(

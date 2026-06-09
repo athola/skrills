@@ -15,7 +15,7 @@
 
 Write a skill once, use it everywhere. Skrills validates and syncs
 skills, commands, agents, MCP servers, and hooks across **Claude Code,
-Codex CLI, GitHub Copilot CLI, and Cursor** — from a single Rust binary.
+Codex CLI, GitHub Copilot CLI, and Cursor**, all from a single Rust binary.
 
 [Install](book/src/installation.md) ·
 [User Guide](https://athola.github.io/skrills/) ·
@@ -42,7 +42,7 @@ service setup.
 
 ## Everyday use
 
-Skrills lives in the loop of writing skills and keeping every CLI
+Skrills handles the loop of writing skills and keeping every CLI
 current. The common jobs:
 
 **Make your Claude skills work everywhere.** Codex and Copilot are
@@ -54,8 +54,8 @@ skrills validate --target both --autofix   # fix missing/invalid frontmatter and
 skrills sync-all                            # mirror everything to all four CLIs
 ```
 
-**Keep two environments in sync.** Edit in one, mirror to another —
-file hashing preserves manual edits on both sides:
+**Keep two environments in sync.** Edit in one, mirror to another.
+File hashing preserves manual edits on both sides:
 
 ```bash
 skrills sync --from cursor --to claude
@@ -189,7 +189,7 @@ make lint test --quiet
 
 Builds on stable Rust. See the
 [development guide](book/src/development.md) and
-[process guidelines](docs/process-guidelines.md) — update docs and tests
+[process guidelines](docs/process-guidelines.md). Update docs and tests
 with code. Report bugs with your OS, `skrills --version`, and logs
 (`--trace-wire` for MCP). For security, see the
 [security policy](docs/security.md).

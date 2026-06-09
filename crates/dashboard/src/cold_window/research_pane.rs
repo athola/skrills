@@ -116,7 +116,7 @@ pub enum ResearchAction {
     },
 }
 
-/// Stateless renderer + key handler for the research pane.
+/// Stateless renderer and key handler for the research pane.
 pub struct ResearchPane;
 
 impl ResearchPane {
@@ -194,7 +194,7 @@ impl ResearchPane {
             ),
             Span::raw("  "),
             Span::raw(finding.title.clone()),
-            Span::raw("  —  "),
+            Span::raw(": "),
             Span::styled(finding.url.clone(), Style::default().fg(Color::DarkGray)),
         ]);
         ListItem::new(line)

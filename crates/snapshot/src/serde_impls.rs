@@ -3,8 +3,8 @@
 //! # Why this module exists
 //!
 //! This module calls for `#[serde(tag = "kind")]`
-//! on every snapshot enum so that a future variant carrying a payload —
-//! shipped alongside the gRPC follow-up — can be added without
+//! on every snapshot enum so that a future variant carrying a payload,
+//! shipped alongside the gRPC follow-up, can be added without
 //! a wire-breaking change. Today every variant is unit-only and
 //! serializes as a bare lowercase string (e.g. `"warning"`).
 //!

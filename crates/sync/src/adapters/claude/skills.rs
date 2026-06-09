@@ -1,10 +1,10 @@
 //! Skill discovery and writing for the Claude adapter.
 //!
 //! Split out of `claude/mod.rs` (FU-2). Combines:
-//! - `read_skills_impl` — walks both `~/.claude/skills/` and the
+//! - `read_skills_impl`: walks both `~/.claude/skills/` and the
 //!   plugins-cache layout `plugins/cache/<pub>/<plugin>/<ver>/`,
 //!   keeping the most-recently-modified version per skill name.
-//! - `write_skills_impl` — emits SKILL.md inside per-skill
+//! - `write_skills_impl`: emits SKILL.md inside per-skill
 //!   directories with companion module files alongside.
 
 use crate::adapters::utils::{collect_module_files, hash_content, is_hidden_path, sanitize_name};

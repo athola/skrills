@@ -225,7 +225,7 @@ impl MetricsCollector {
         match self.sender.send(event) {
             Ok(_) => {}
             Err(_) => {
-                // No active subscribers — this is normal when no dashboard is running.
+                // No active subscribers, this is normal when no dashboard is running.
                 tracing::trace!("no active metric event subscribers");
             }
         }
@@ -1499,7 +1499,7 @@ mod tests {
     fn test_get_validation_summary_uses_latest_run() {
         let collector = MetricsCollector::in_memory().unwrap();
 
-        // skill-a first fails, then passes — summary should show valid
+        // skill-a first fails, then passes, summary should show valid
         collector
             .record_validation("skill-a", &[], &["check1"])
             .unwrap();
@@ -1885,7 +1885,7 @@ mod tests {
                     "MetricColumn::{c:?} contains forbidden char {ch:?}: {s:?}"
                 );
             }
-            // Must be a valid SQL identifier (ASCII alphanumeric + underscore).
+            // Must be a valid SQL identifier (ASCII alphanumeric and underscore).
             assert!(
                 s.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_'),
                 "MetricColumn::{c:?} is not a bare identifier: {s:?}"
@@ -1916,7 +1916,7 @@ mod tests {
     /// "Property-style" check: try every (table, column) pair the enum
     /// algebra can produce and assert the resulting SQL is well-formed
     /// (i.e. SQLite can prepare it). Because the enum is closed, this
-    /// enumerates the entire input space — there is no way to construct
+    /// enumerates the entire input space, there is no way to construct
     /// an invalid pair from the outside.
     #[test]
     fn test_metric_enum_combinations_yield_preparable_sql() {
@@ -1934,7 +1934,7 @@ mod tests {
                      AND created_at >= datetime('now', '-' || ?1 || ' seconds')"
                 );
                 // Some pairs are semantically nonsensical (e.g. tokens_used
-                // on rule_triggers) — those should fail with a column-missing
+                // on rule_triggers), those should fail with a column-missing
                 // error from SQLite, never an unrelated parse error. The
                 // important guarantee is that no metacharacters slip through.
                 let prepared = conn.prepare(&sql);
@@ -1999,7 +1999,7 @@ mod tests {
         assert!(unknown.is_empty());
 
         // Hostile names that previously could have been interpolated must
-        // still just hit the unknown branch and return empty — never error,
+        // still just hit the unknown branch and return empty, never error,
         // never inject.
         for hostile in [
             "skill_tokens; DROP TABLE skill_invocations;--",

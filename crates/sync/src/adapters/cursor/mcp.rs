@@ -68,7 +68,7 @@ pub fn read_mcp_servers(root: &Path) -> Result<HashMap<String, McpServer>> {
 
     let mut servers = HashMap::new();
     for (name, entry) in config.mcp_servers {
-        // Skip entries with neither command nor URL — they produce broken configs
+        // Skip entries with neither command nor URL, they produce broken configs
         if entry.command.is_none() && entry.url.is_none() {
             warn!(
                 name = %name,

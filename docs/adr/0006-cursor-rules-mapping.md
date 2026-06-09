@@ -48,7 +48,7 @@ This polymorphic reuse avoids adding a Cursor-specific trait method.
    Rejected: adds methods only one adapter implements, violates ISP for all others.
 
 2. **Store rules as commands instead of instructions**.
-   Rejected: semantic mismatch — rules are project-level guidance, not
+   Rejected: semantic mismatch; rules are project-level guidance, not
    user-invoked actions.
 
 3. **Always use `alwaysApply: true`**.

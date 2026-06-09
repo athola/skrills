@@ -20,7 +20,7 @@
 //!   the Feb 2026 HN "Expensively Quadratic" analysis).
 //! - 50K total → `Caution` (Willison "too many MCPs" overhead range).
 //! - 80% of budget → `Warning`.
-//! - 100% of budget → `Warning` + kill-switch.
+//! - 100% of budget → `Warning` and kill-switch.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -48,7 +48,7 @@ pub const HYSTERESIS_CLEAR_RATIO: f64 = 0.95;
 
 /// Number of samples the rolling baseline window holds before it
 /// switches from static thresholds to adaptive (mean ± k·σ) thresholds.
-/// Sized for ~1 minute of activity at 1 Hz tick — small enough for
+/// Sized for ~1 minute of activity at 1 Hz tick, small enough for
 /// responsive adaptation, large enough that early jitter does not
 /// dominate the sample mean. Spec § 4.3 (rolling baseline).
 pub const MIN_BASELINE_SAMPLES: usize = 60;
@@ -79,7 +79,7 @@ pub enum PolicyError {
     /// `advisory_threshold < caution_threshold < budget_ceiling`.
     MisorderedTiers,
     /// `min_dwell_ticks` was zero (would render dwell semantics
-    /// vacuous — every observation would fire immediately).
+    /// vacuous, every observation would fire immediately).
     ZeroDwell,
 }
 
@@ -100,13 +100,13 @@ impl std::error::Error for PolicyError {}
 /// Rolling baseline window of token-total samples.
 ///
 /// Maintained internally by [`LayeredAlertPolicy`]; a fresh window is
-/// created per policy instance. We compute mean + sample-stddev on
+/// created per policy instance. We compute mean and sample-stddev on
 /// demand at evaluate-time; the per-tick cost is `O(N)` with `N` ≤
 /// [`MAX_BASELINE_SAMPLES`], which at the engine's tight tick budget
 /// (~50 ms) is comfortably under the SC1 budget for any realistic N.
 ///
 /// Pre-warmup behavior (size < [`MIN_BASELINE_SAMPLES`]): no
-/// adaptation — the policy's static thresholds drive classification.
+/// adaptation, the policy's static thresholds drive classification.
 #[derive(Debug, Default)]
 pub struct BaselineWindow {
     samples: VecDeque<u64>,
@@ -148,7 +148,7 @@ impl BaselineWindow {
     }
 
     /// True when the window has not yet reached
-    /// [`MIN_BASELINE_SAMPLES`] — adaptive thresholds disabled.
+    /// [`MIN_BASELINE_SAMPLES`]: adaptive thresholds disabled.
     pub fn pre_warmup(&self) -> bool {
         self.samples.len() < MIN_BASELINE_SAMPLES
     }
@@ -182,14 +182,14 @@ impl BaselineWindow {
     }
 }
 
-/// Layered alert policy with hysteresis + min-dwell + 4-tier severity
-/// + rolling-baseline adaptation.
+/// Layered alert policy with hysteresis, min-dwell, 4-tier severity,
+/// and rolling-baseline adaptation.
 ///
 /// All configuration knobs are crate-private and reachable only
 /// through the validating builders. Builders return
 /// `Result<Self, PolicyError>` so callers cannot construct an
 /// inconsistent policy. The legacy non-fallible builders are
-/// preserved as wrappers that `panic!` on invalid input — these are
+/// preserved as wrappers that `panic!` on invalid input, these are
 /// used in tests and in code paths where the inputs are static
 /// constants known to be valid; mark them with `expect` rather than
 /// silently swallowing errors.
@@ -215,7 +215,7 @@ pub struct LayeredAlertPolicy {
 
 impl LayeredAlertPolicy {
     /// Construct with spec defaults; `budget_ceiling` is required
-    /// (no sensible default — user-configured per `--alert-budget`).
+    /// (no sensible default, user-configured per `--alert-budget`).
     pub fn new(budget_ceiling: u64) -> Self {
         Self {
             budget_ceiling,
@@ -418,7 +418,7 @@ impl AlertPolicy for LayeredAlertPolicy {
         // `high_clear`. The signal must drop to or below `high_clear`
         // for the alarm to be considered *truly* cleared (dwell reset
         // and `cleared` flag set). A brief dip into the hysteresis
-        // zone — signal in `(high_clear, high)` — is *not* a clear:
+        // zone, signal in `(high_clear, high)`, is *not* a clear:
         // the alarm event persists, dwell is preserved, and re-arm
         // is unnecessary because the alarm never actually disengaged.
         //
@@ -427,7 +427,7 @@ impl AlertPolicy for LayeredAlertPolicy {
         // and re-accumulate dwell, defeating both min-dwell and
         // hysteresis. With it, a true clear requires re-crossing the
         // `high_clear` boundary (matches FAA AC 25.1322-1 § 5.3
-        // dwell semantics + ISA-18.2 alarm management).
+        // dwell semantics and ISA-18.2 alarm management).
         let signal = total as f64;
         for (fp, entry) in history.fingerprints.iter_mut() {
             if active_fingerprint.as_deref() != Some(fp.as_str()) {
@@ -436,7 +436,7 @@ impl AlertPolicy for LayeredAlertPolicy {
                     entry.dwell_ticks = 0;
                     entry.cleared = true;
                 }
-                // else: keep dwell + cleared=false; signal is
+                // else: keep dwell and cleared=false; signal is
                 // still inside the hysteresis zone, alarm remains
                 // logically active.
             }
@@ -698,7 +698,7 @@ mod tests {
     #[test]
     fn b6_signal_below_high_clear_truly_clears() {
         // Spec § 3.4: a drop to or below high_clear is a true
-        // clear — dwell resets and the alarm must re-accumulate
+        // clear, dwell resets and the alarm must re-accumulate
         // min_dwell ticks before firing again.
         let policy = LayeredAlertPolicy::new(100_000).with_min_dwell(2);
         let mut history = AlertHistory::new();
@@ -783,7 +783,7 @@ mod tests {
     #[test]
     fn ni1_baseline_window_pre_warmup_uses_static_thresholds() {
         // Before MIN_BASELINE_SAMPLES samples accumulate, the policy
-        // must use its static thresholds — adaptive scheme disabled.
+        // must use its static thresholds, adaptive scheme disabled.
         let policy = LayeredAlertPolicy::new(100_000).with_min_dwell(1);
         // First evaluate: pushes one sample. Static advisory=20K still applies.
         let alerts = policy.evaluate(
@@ -852,7 +852,7 @@ mod tests {
         assert_eq!(bw.len(), MIN_BASELINE_SAMPLES);
     }
 
-    // ---------- Field privacy + builder validation ----------
+    // ---------- Field privacy and builder validation ----------
 
     #[test]
     fn ni6_validate_rejects_misordered_tiers() {

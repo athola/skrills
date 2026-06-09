@@ -3,7 +3,7 @@
 ## 0.8.2 (2026-05-30)
 
 - **Feature: Cold-Window TUI surface (`skrills cold-window --tui`)**: The cold-window panes now mount in a crossterm raw-mode loop, completing the surface the v0.8.0 panes were built for. `--tui` renders alerts, ranked hints, the research panel, and the token/budget status bar live in the current terminal, subscribing to the same engine bus as the browser surface; both can run together. Quit with `q` or `Ctrl-C`; `--no-bell` silences the WARNING-tier bell. First paint is asserted under the spec § 6 SC3 500ms budget (`cold_window_tui_startup_under_five_hundred_ms`, previously `#[ignore]`d for the missing launch path). See [`Cold-Window Real-Time Analysis`](cold-window.md).
-- **Feature: Responsive `--tui` layout**: The panes re-flow live on resize across three width tiers — wide (≥ 80 cols) keeps the 60/40 two-column layout, medium (60–79 cols) slims the research column so alert/hint text stays readable, and narrow (< 60 cols) stacks every pane full-width with a collapsed research pane as a three-line badge. The status bar stays pinned to the bottom in every tier. Layout is a pure `plan_layout` function tested without a terminal. Also fixes `ResearchPaneState::default` to start collapsed (matching `new()`) instead of silently opening the pane on launch.
+- **Feature: Responsive `--tui` layout**: The panes re-flow live on resize across three width tiers: wide (≥ 80 cols) keeps the 60/40 two-column layout, medium (60-79 cols) slims the research column so alert/hint text stays readable, and narrow (< 60 cols) stacks every pane full-width with a collapsed research pane as a three-line badge. The status bar stays pinned to the bottom in every tier. Layout is a pure `plan_layout` function tested without a terminal. Also fixes `ResearchPaneState::default` to start collapsed (matching `new()`) instead of silently opening the pane on launch.
 
 ## 0.8.1 (2026-05-09)
 
@@ -50,7 +50,7 @@
 
 ## 0.7.4 (2026-04-02)
 
-- **NEW: Research MCP Tools**: 9 tools expose the `tome` crate over MCP -- `search-papers`, `search-discussions`, `resolve-doi`, `fetch-pdf`, `query-knowledge-graph`, `add-knowledge-node`, `link-knowledge`, `track-citations`, `resolve-contradiction` (27 → 36 tools).
+- **NEW: Research MCP Tools**: 9 tools expose the `tome` crate over MCP: `search-papers`, `search-discussions`, `resolve-doi`, `fetch-pdf`, `query-knowledge-graph`, `add-knowledge-node`, `link-knowledge`, `track-citations`, `resolve-contradiction` (27 → 36 tools).
 - **Fix: Paper Model**: Refined `Paper` model fields and research handler argument parsing.
 
 ## 0.7.3 (2026-03-29)
@@ -117,7 +117,7 @@
 
 ## 0.5.3 (2026-01-23)
 
-- **Docs**: Streamlined README with navigation links and simplified installation section.
+- **Docs**: Trimmed README with navigation links and simplified installation section.
 - **NEW: Config File Support**: Added `--config` flag and `skrills.toml` config file for persistent server settings.
 - **NEW: TLS Auto-Generation**: Generate self-signed TLS certificates with `--tls-generate` for development HTTPS.
 

@@ -2,7 +2,7 @@
 //!
 //! T2.7 migration: replaces the prior `pub type Error = anyhow::Error`
 //! alias with a `thiserror`-based enum. Callers that consumed errors
-//! via the `Error` type alias keep working — `DiscoveryError`
+//! via the `Error` type alias keep working, `DiscoveryError`
 //! implements `std::error::Error`, converts into `anyhow::Error`
 //! automatically, and renders the same `Display` text the old
 //! `anyhow!` constructions did.

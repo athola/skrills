@@ -5,7 +5,7 @@
 //! same switch before performing any mutating I/O and refuse with a typed
 //! error when it is engaged.
 //!
-//! `KillSwitch` lives in the snapshot crate because it is the only crate
+//! `KillSwitch` is in the snapshot crate because it is the only crate
 //! already shared between the producer (`skrills_analyze::cold_window`) and
 //! the consumer (`skrills_sync`); placing the type here avoids a circular
 //! dependency through the engine.
@@ -37,7 +37,7 @@ use std::sync::Arc;
 
 /// A shared, thread-safe kill-switch flag.
 ///
-/// Cloning is cheap (`Arc` bump) — every clone observes and mutates the
+/// Cloning is cheap (`Arc` bump), every clone observes and mutates the
 /// same underlying flag. Engagement is `SeqCst` to keep the producer/
 /// consumer ordering trivially auditable; reads use `Acquire` so a
 /// consumer that observes `true` is guaranteed to see all prior writes

@@ -992,7 +992,7 @@ mod tests {
     #[test]
     fn read_plugin_assets_synthesizes_missing_manifest_in_full_mirror() {
         // GIVEN a plugin with no .claude-plugin/plugin.json (e.g. typescript-lsp /
-        // pyright-lsp from claude-plugins-official), only README + LICENSE
+        // pyright-lsp from claude-plugins-official), only README and LICENSE
         let tmp = tempdir().unwrap();
         let plugin = tmp
             .path()
@@ -1089,7 +1089,7 @@ mod tests {
 
         // WHEN reading plugin assets in BOTH modes against the same fixture
         // (running both calls on one fixture is what differentiates "gating
-        // works" from "synthesis is missing entirely" — without the
+        // works" from "synthesis is missing entirely", without the
         // full-mirror call, this test would also pass against a reverted
         // implementation that never synthesizes anything).
         let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
@@ -1109,7 +1109,7 @@ mod tests {
             "full-mirror mode should synthesize a manifest for the manifest-less plugin"
         );
 
-        // AND skill-mirror mode does NOT — synthesis must be gated to
+        // AND skill-mirror mode does NOT, synthesis must be gated to
         // full_mirror=true so Codex-style skill-only sync targets stay
         // untouched.
         assert!(

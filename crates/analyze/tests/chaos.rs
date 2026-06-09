@@ -1,8 +1,8 @@
 //! Synthetic chaos test for alert hygiene budget.
 //!
-//! Validates that with hysteresis + min-dwell + tier filtering,
+//! Validates that with hysteresis, min-dwell, and tier filtering,
 //! a 10-minute chaos mutation stream produces fewer than 12
-//! user-visible alerts per hour. SC7 targets *flapping* — repeated
+//! user-visible alerts per hour. SC7 targets *flapping*, repeated
 //! re-fires of the same condition due to noisy signals oscillating
 //! around a threshold. A monotonic ramp (Advisory → Caution →
 //! Warning) is a legitimate escalation, not flapping; what SC7 must
@@ -12,7 +12,7 @@
 //! Two streams exercised:
 //!
 //! 1. `chaos_sequence` (monotonic ramp): asserts at most 4 distinct
-//!    alerts fire (one per tier — Advisory, Caution, Warning,
+//!    alerts fire (one per tier, Advisory, Caution, Warning,
 //!    kill-switch). This is a steady-state escalation; SC7 budget
 //!    on a 60 min basis is comfortably met.
 //! 2. `oscillating_chaos` (bouncing around 20 K Advisory boundary):
@@ -222,7 +222,7 @@ fn chaos_stream_eventually_fires_at_least_one_alert() {
     }
     assert!(
         any_alert,
-        "chaos stream should fire at least one alert — hysteresis suspected stuck"
+        "chaos stream should fire at least one alert; hysteresis suspected stuck"
     );
 }
 

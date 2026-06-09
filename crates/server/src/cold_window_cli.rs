@@ -124,7 +124,7 @@ async fn await_task_handle(handle: tokio::task::JoinHandle<Result<()>>, kind: &s
 
 /// Run the cold-window subcommand to completion (or until SIGINT/SIGTERM).
 ///
-/// The async runtime is created/used by the caller — this function
+/// The async runtime is created/used by the caller, this function
 /// is meant to be invoked from inside `tokio::main` or
 /// `tokio::runtime::Runtime::block_on`.
 pub async fn run(args: ColdWindowArgs) -> Result<()> {
@@ -160,7 +160,7 @@ pub async fn run(args: ColdWindowArgs) -> Result<()> {
     let bus = engine.bus_sender();
 
     // Mint the research-budget dispatcher from the parsed CLI rate.
-    // In-memory variant — persistent path is the daemon's job
+    // In-memory variant, persistent path is the daemon's job
     // (`skrills daemon`), not the cold-window subcommand.
     let dispatcher = Arc::new(BucketedBudget::in_memory(args.research_rate));
 
@@ -176,7 +176,7 @@ pub async fn run(args: ColdWindowArgs) -> Result<()> {
         );
     }
 
-    // Shutdown channel: producer + server both watch this.
+    // Shutdown channel: producer and server both watch this.
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     // Spawn the producer task (fixture-driven for v0.8.0 demo).
@@ -320,8 +320,8 @@ async fn producer_loop(
                     );
                     continue;
                 };
-                // Real plugin participation each tick. Cold rewalk —
-                // never cached — per the spec contract. The
+                // Real plugin participation each tick. Cold rewalk,
+                // never cached, per the spec contract. The
                 // walk runs on the blocking pool so the runtime's
                 // worker threads stay free for IO-bound tasks (SSE
                 // subscribers, signal handlers).
@@ -368,7 +368,7 @@ async fn producer_loop(
                         // Replace the synthetic `skill://demo` entries
                         // with real attribution from the configured
                         // skill_dirs while preserving demo per_mcp /
-                        // per_plugin (no MCP collector lives in v0.8.0).
+                        // per_plugin (no MCP collector exists in v0.8.0).
                         input.token_ledger.per_skill = skill_output.entries;
                         let skill_sum: u64 = input
                             .token_ledger
@@ -416,12 +416,12 @@ async fn producer_loop(
 /// Token totals scale with `tick_count` so a long-running session
 /// crosses Advisory → Caution → Warning thresholds; the chaos-style
 /// trajectory shows the dashboard "doing something" during a demo.
-/// Replace with real discovery + analyze::tokens attribution in a
+/// Replace with real discovery and analyze::tokens attribution in a
 /// follow-up.
 ///
 /// Returns `None` when the system clock precedes `UNIX_EPOCH` (NTP
 /// recovery, container time-warp, VM resume). The caller must skip
-/// the tick rather than fabricate `timestamp_ms = 0` — a synthesized
+/// the tick rather than fabricate `timestamp_ms = 0`, a synthesized
 /// zero would propagate through the engine's monotonic guards and
 /// silently corrupt cadence/dwell/alert hysteresis.
 fn build_demo_input(tick_count: u64, no_adaptive: bool) -> Option<TickInput> {
@@ -695,11 +695,11 @@ mod tests {
 
         assert!(
             found_alpha,
-            "alpha skill missing from per_skill — flag was dropped"
+            "alpha skill missing from per_skill, flag was dropped"
         );
         assert!(
             found_beta,
-            "beta skill missing from per_skill — flag was dropped"
+            "beta skill missing from per_skill, flag was dropped"
         );
     }
 
@@ -885,8 +885,8 @@ mod tests {
     fn kill_switch_engages_when_engine_observes_budget_breach() {
         // A switch shared with the engine engages once
         // a tick crosses the budget ceiling. We construct the engine
-        // exactly the way `run` does — via `with_defaults` then
-        // `with_kill_switch` — so any drift in that chain breaks this
+        // exactly the way `run` does, via `with_defaults` then
+        // `with_kill_switch`, so any drift in that chain breaks this
         // assertion.
         use skrills_analyze::cold_window::engine::TickInput;
         let kill_switch = KillSwitch::new();

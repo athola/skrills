@@ -8,7 +8,7 @@ Use these guidelines to build AI coding agents that produce functional, high-qua
 
 Prioritize small, functional changes. They are safer and easier to debug than large rewrites. Adapt to each project's conventions rather than applying external rules rigidly.
 
-Balance trade-offs like performance, readability, and security based on evidence (profiling, metrics) rather than intuition. Explore multiple solutions before committing to one to avoid "mode collapse." Favor simple, standard solutions—code that requires extensive comments often needs refactoring.
+Balance trade-offs like performance, readability, and security based on evidence (profiling, metrics) rather than intuition. Explore multiple solutions before committing to one to avoid "mode collapse." Favor simple, standard solutions. Code that requires extensive comments often needs refactoring.
 
 Each component should serve one distinct purpose (Single Responsibility Principle). Defer abstraction until a clear pattern emerges (e.g., Rule of Three). Explicitly document assumptions, trade-offs, and confidence levels to maintain transparency.
 
@@ -264,7 +264,7 @@ find . -name "*.py" | head -10
 Skills and agents are discovered dynamically at runtime. To view available resources:
 
 ```bash
-# Inspect the last skill scan (paths + hashes)
+# Inspect the last skill scan (paths and hashes)
 jq -r '.skills[].path' ~/.codex/skills-cache.json
 
 # Or enumerate from disk
@@ -291,7 +291,7 @@ Skills are automatically discovered from these locations (in priority order):
 Skill names come from the `name:` field in `SKILL.md` frontmatter and should be treated as opaque strings.
 They may include punctuation such as `:` for namespacing (for example, `pensive:shared`).
 
-When parsing a rendered “skills list” (session headers, logs, etc.), do **not** split on `:` to extract the
+When parsing a rendered "skills list" (session headers, logs, etc.), do **not** split on `:` to extract the
 name or description. Prefer extracting the `(file: …/SKILL.md)` path or reading the frontmatter directly.
 
 ### Agent Registration

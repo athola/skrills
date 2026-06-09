@@ -15,8 +15,8 @@ Terminal UI and browser dashboard for skrills skill visualization and metrics.
 
 The `app` and `ui` modules are re-exported as `pub` for embedding in custom tooling:
 
-- `app` — `App` state machine and `Dashboard` entry point
-- `ui` — Ratatui rendering functions
+- `app`: `App` state machine and `Dashboard` entry point
+- `ui`: Ratatui rendering functions
 
 ## Usage
 

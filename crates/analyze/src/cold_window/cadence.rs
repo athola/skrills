@@ -104,7 +104,7 @@ impl Default for LoadAwareCadence {
 
 impl CadenceStrategy for LoadAwareCadence {
     fn next_tick(&self, sample: LoadSample) -> Duration {
-        // Recent edit takes priority — keep the feedback loop tight
+        // Recent edit takes priority, keep the feedback loop tight
         // even when the system is also under load.
         if let Some(age_ms) = sample.last_edit_age_ms {
             if age_ms < RECENT_EDIT_THRESHOLD_MS {

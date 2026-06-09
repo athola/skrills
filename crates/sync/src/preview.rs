@@ -184,7 +184,7 @@ mod tests {
     fn given_non_utf8_content_when_compute_diff_then_does_not_panic() {
         let old: &[u8] = &[0xff, 0xfe, 0x0a];
         let new: &[u8] = &[0xfe, 0xff, 0x0a];
-        // Should not panic — lossy conversion handles invalid UTF-8
+        // Should not panic, lossy conversion handles invalid UTF-8
         let _diff = compute_diff(old, new);
     }
 

@@ -11,4 +11,4 @@ This project is in its `0.x` release series and follows the API evolution guidel
 Pin dependencies to an exact `0.x.y` version and review release notes for changes.
 
 ---
-**Reference**: [RFC 1105 – API evolution](https://rust-lang.github.io/rfcs/1105-api-evolution.html).
+**Reference**: [RFC 1105 - API evolution](https://rust-lang.github.io/rfcs/1105-api-evolution.html).

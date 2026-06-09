@@ -9,7 +9,7 @@
 //! - Max tick over 50 iterations < 200 ms (SC1 p99 is statistical;
 //!   max-of-50 is a strictly-tighter substitute for a CI gate).
 //!
-//! The full distribution lives in the criterion bench and reports
+//! The full distribution is in the criterion bench and reports
 //! to `target/criterion/` for human review.
 
 use std::time::Instant;
@@ -27,7 +27,7 @@ fn standard_fixture_tick_meets_sc1_floor() {
     let engine = ColdWindowEngine::with_defaults(100_000);
     let fixture = standard_snapshot();
 
-    // Warmup: one tick to amortize allocator + first-use costs.
+    // Warmup: one tick to amortize allocator and first-use costs.
     let _ = engine.tick(
         TickInput::empty()
             .with_timestamp_ms(fixture.timestamp_ms)

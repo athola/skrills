@@ -246,7 +246,7 @@ fn cursor_pruning_surfaces_warning_on_unreadable_subentry() {
     fs::set_permissions(&stale, perms).unwrap();
 
     // Defer perm restoration so the tempdir cleanup doesn't fail when the
-    // test finishes — this is best-effort and runs even on test panic.
+    // test finishes, this is best-effort and runs even on test panic.
     struct PermsGuard<'a>(&'a Path);
     impl Drop for PermsGuard<'_> {
         fn drop(&mut self) {
@@ -261,7 +261,7 @@ fn cursor_pruning_surfaces_warning_on_unreadable_subentry() {
 
     // Run with NO matching plugin asset, so the pruning loop tries to
     // remove `stale-plugin` and fails. (Empty asset list still triggers
-    // the read_dir + prune branch because `assets.is_empty()` returns
+    // the read_dir and prune branch because `assets.is_empty()` returns
     // early on `Ok(report)`. To force the prune branch, supply a
     // non-empty asset list referencing a different plugin.)
     let adapter = CursorAdapter::with_root(root.to_path_buf());

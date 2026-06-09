@@ -607,7 +607,7 @@ deps-update:
 	@echo "Dependencies updated. Run 'make test' to verify."
 
 # =============================================================================
-# Dogfood targets — v0.8.0 cold-window surfaces + script ports.
+# Dogfood targets: v0.8.0 cold-window surfaces and script ports.
 # Goal: every new CLI/TUI/browser/SSE/script entrypoint executes against
 # real fixtures and is validated for exit code, output shape, or contract.
 # =============================================================================
@@ -680,7 +680,7 @@ dogfood-cold-window-browser: build
 
 # TUI/dashboard contract: under a TTY, render until SIGTERM (rc 124/143).
 # Without a TTY (CI, redirected stdio), exit cleanly with a "requires a TTY"
-# message — that graceful refusal is itself a contract worth testing.
+# message, that graceful refusal is itself a contract worth testing.
 dogfood-tui: build demo-fixtures
 	@echo "==> [tui] TTY-or-graceful-refusal contract (skrills tui)"
 	@TMP=$(DOGFOOD_TMP).tui.err ; \

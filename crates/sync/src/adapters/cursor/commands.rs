@@ -85,7 +85,7 @@ pub fn write_commands(root: &Path, commands: &[Command]) -> Result<WriteReport> 
         let name = sanitize_name(&cmd.name);
         let path = dir.join(format!("{}.md", name));
 
-        // Strip all frontmatter — Cursor commands don't support YAML frontmatter.
+        // Strip all frontmatter, Cursor commands don't support YAML frontmatter.
         // Frontmatter fields (allowed-tools, description, etc.) cause Cursor to
         // display "--- (user)" instead of the command description.
         let content_str = String::from_utf8_lossy(&cmd.content);

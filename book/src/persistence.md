@@ -91,9 +91,9 @@ default_backend = "codex"
 
 Skrills keeps these things temporary:
 
-- **Validation results** — Run `skrills validate` each time
-- **Analysis results** — Run `skrills analyze` each time
-- **User prompts** — Never written to disk
+- **Validation results**: Run `skrills validate` each time
+- **Analysis results**: Run `skrills analyze` each time
+- **User prompts**: Never written to disk
 
 ## Checking What's Stored
 

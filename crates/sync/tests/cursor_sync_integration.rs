@@ -37,7 +37,7 @@ impl CursorSyncTestSetup {
     fn setup_claude_config(&self) {
         let root = self.claude_dir.path();
 
-        // Skills with frontmatter + modules
+        // Skills with frontmatter and modules
         let skills_dir = root.join("skills");
         fs::create_dir_all(skills_dir.join("code-review/modules")).unwrap();
         fs::write(
@@ -89,7 +89,7 @@ impl CursorSyncTestSetup {
         )
         .unwrap();
 
-        // MCP config — Claude reads from settings.json
+        // MCP config, Claude reads from settings.json
         let settings = serde_json::json!({
             "mcpServers": {
                 "skrills": {
@@ -621,7 +621,7 @@ fn full_cursor_to_claude_sync() {
 #[test]
 fn sync_to_cursor_with_empty_source() {
     let setup = CursorSyncTestSetup::new().unwrap();
-    // Don't set up any config — empty source
+    // Don't set up any config, empty source
 
     let source = ClaudeAdapter::with_root(setup.claude_dir.path().to_path_buf());
     let target = CursorAdapter::with_root(setup.cursor_dir.path().to_path_buf());
@@ -787,7 +787,7 @@ fn plugin_assets_synced_from_claude_to_cursor() {
     );
 
     // Non-manifest files (scripts, hooks, bin) are NOT written by
-    // the manifest-only writer — Cursor discovers them natively from
+    // the manifest-only writer, Cursor discovers them natively from
     // ~/.claude/plugins/cache/.
     let cursor_cache = setup
         .cursor_dir

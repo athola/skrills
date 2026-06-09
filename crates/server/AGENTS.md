@@ -1,21 +1,16 @@
 # AI Agent Development Guidelines
 
-This document provides essential guidelines for building AI coding agents that produce functional, high-quality code.
+Use these guidelines to build AI coding agents that produce functional, high-quality code.
 
 ---
 
 ## Guiding Principles
 
-- **Iterate Incrementally**: Prioritize small, functional changes. They are safer and easier to manage than large rewrites.
-- **Adapt to Project Conventions**: Each project has its own conventions. Adapt to them rather than sticking to external rules.
-- **Engineer Pragmatically**: Balance trade-offs like performance, readability, and security within the context.
-- **Base Decisions on Evidence**: Ground technical decisions in data (profiling, metrics) rather than intuition.
-- **Explore Diverse Solutions**: Generate and evaluate multiple approaches before committing to one.
-- **Prioritize Simplicity**: Favor simple, standard solutions. Code that needs extensive comments usually needs refactoring.
-- **Single Responsibility Principle**: Each component should serve one distinct, clearly defined purpose.
-- **Defer Abstraction**: Avoid abstractions until a clear pattern is identified (e.g., Rule of Three).
-- **Document Assumptions**: Explicitly document advantages, disadvantages, and confidence levels. This fosters transparency.
-- **Cultivate Design Diversity**: Explore different approaches to avoid applying the same pattern to every problem ("mode collapse").
+Prioritize small, functional changes. They are safer and easier to debug than large rewrites. Adapt to each project's conventions rather than applying external rules rigidly.
+
+Balance trade-offs like performance, readability, and security based on evidence (profiling, metrics) rather than intuition. Explore multiple solutions before committing to one to avoid "mode collapse." Favor simple, standard solutions. Code that requires extensive comments often needs refactoring.
+
+Each component should serve one distinct purpose (Single Responsibility Principle). Defer abstraction until a clear pattern emerges (e.g., Rule of Three). Explicitly document assumptions, trade-offs, and confidence levels to maintain transparency.
 
 ---
 
@@ -42,8 +37,7 @@ If you fail three times:
 
 ### Session Management
 
-- Use session history to analyze errors and monitor progress.
-- For complex tasks, document the current state, then clear the session and restart.
+Use session history to analyze errors and monitor progress. For complex tasks, document the current state, then clear the session and restart.
 
 ---
 
@@ -69,10 +63,11 @@ make fmt lint test --quiet build
 
 ### Effective Prompting
 
-A structured prompt increases the chance of high-quality results. Request detailed comparisons, implementation outlines, trade-offs, and complexity assessments.
+Structured prompts produce better results. Request detailed comparisons, implementation outlines, trade-offs, and complexity assessments.
 
 ### Role Prompting
-Assigning a specific role to an agent can enhance its performance by providing a focused perspective (e.g., a security expert or a senior developer). The precision of the role definition directly correlates with the quality of the agent's output.
+
+Assigning a specific role (e.g., security expert, senior developer) focuses the agent's perspective. Precise role definitions improve output quality.
 
 Using XML tags can also help structure prompts and responses:
 ```xml
@@ -90,75 +85,81 @@ Review the authentication implementation for OWASP Top 10 vulnerabilities.
 </output_format>
 ```
 
-**Role Prompting Best Practices:**
-- Position role definitions prominently at the top of relevant project configuration files.
-- Ensure the assigned role aligns accurately with the specific domain of the task.
-- For optimal results, integrate role definitions with structured XML and provide concrete examples.
-- Experiment with varying levels of role specificity to fine-tune agent behavior.
-- Maintain consistency in XML tag names across all prompts for clarity and parseability.
+**Best Practices:**
+- Place role definitions at the top of configuration files.
+- Align the role with the task's domain.
+- Integrate role definitions with structured XML and concrete examples.
+- Experiment with specificity to fine-tune behavior.
+- Use consistent XML tag names.
 
 ### Creative Problem-Solving
-1. **Diverge**: Generate a minimum of five distinct approaches to the problem, deliberately withholding initial judgment.
-2. **Converge**: Systematically evaluate the trade-offs and inherent constraints associated with each generated approach.
-3. **Select**: Choose the most suitable approach and thoroughly document the underlying reasoning for its selection.
-4. **Document**: Record all other approaches considered, along with the justifications for their rejection. This provides valuable context for future developers.
+
+1. **Diverge**: Generate at least five distinct approaches, withholding initial judgment.
+2. **Converge**: Evaluate the trade-offs and constraints of each approach.
+3. **Select**: Choose the most suitable approach and document the reasoning.
+4. **Document**: Record rejected approaches to provide context for future developers.
 
 ---
 
 ## Architecture
 
-Robust architecture facilitates long-term manageability and adaptability.
-
 ### Design
-- **Favor Composition Over Inheritance**: Prioritize composition and delegation over deep class hierarchies to enhance flexibility and reduce tight coupling.
-- **Promote Explicitness**: Write code that is unambiguously clear and easy to understand, actively avoiding 'clever' tricks or implicit behaviors.
-- **Utilize Dependency Injection**: Employ dependency injection to pass required dependencies into components, thereby simplifying testing and promoting reusability, rather than relying on singletons.
-- **Design for API Stability**: Design public APIs to be stable, minimizing breaking changes. Internal refactoring efforts should not impact external users of the API.
-- **Handle Errors Gracefully**: Implement precise error handling, avoiding broad `except:` clauses that can inadvertently mask bugs. Be specific about the types of errors being caught.
+
+- **Favor Composition**: Use composition and delegation to reduce coupling.
+- **Be Explicit**: Avoid implicit behaviors or "clever" tricks.
+- **Use Dependency Injection**: Pass dependencies to simplify testing and reuse.
+- **Design for API Stability**: Minimize breaking changes in public APIs. Internal refactoring should not affect external users.
+- **Handle Errors Gracefully**: Catch specific errors; avoid broad `except:` clauses.
 
 ### Decision-Making
-When evaluating and selecting between different approaches, the following factors should be carefully considered:
-- **Testability**: Assess the ease with which the proposed solution can be thoroughly tested.
-- **Readability**: Consider whether a new developer joining the project would easily comprehend the code within a reasonable timeframe (e.g., six months).
-- **Consistency**: Evaluate how well the solution integrates with existing patterns and conventions within the codebase.
-- **Simplicity**: Prioritize the simplest effective solution that addresses the problem.
-- **Reversibility**: Assess the complexity and effort required to revert the decision if it proves suboptimal.
-- **Maintainability**: Consider the ease with which other developers can understand, modify, and extend the code.
+
+Consider these factors when selecting an approach:
+- **Testability**: Can the solution be thoroughly tested?
+- **Readability**: Will a new developer understand the code quickly?
+- **Consistency**: Does it fit existing patterns?
+- **Simplicity**: Is it the simplest effective solution?
+- **Reversibility**: How hard is it to revert if wrong?
+- **Maintainability**: Can others modify and extend the code easily?
 
 ### Security
-- **Integrate Security Early**: Incorporate security considerations from the outset of the development lifecycle, rather than treating it as an afterthought.
-- **Multi-Layered Defense**: Implement a "defense in depth" strategy by deploying multiple layers of security controls.
-- **Principle of Least Privilege**: Adhere to the principle of least privilege by granting only the minimum necessary permissions.
-- **Separate Secrets from Code**: Strictly avoid committing secrets to version control systems.
-- **Validate All Inputs**: Treat all data originating from external sources as inherently untrusted and subject to rigorous validation.
-- **Use Parameterized Queries**: Employ parameterized queries for database interactions, specifically avoiding string concatenation to construct SQL queries.
-- **Monitor System Behavior**: Continuously monitor system behavior in real-time to proactively detect anomalies and potential threats.
-- **Scan for Covert Threats**: Implement scanning mechanisms to detect malicious content potentially hidden within file uploads or other data streams.
+
+- **Integrate Security Early**: Design auth/authz before writing code.
+- **Multi-Layered Defense**: Use defense in depth.
+- **Least Privilege**: Grant only minimum necessary permissions.
+- **Separate Secrets**: Keep secrets out of version control.
+- **Validate Inputs**: Validate all external data.
+- **Use Parameterized Queries**: Prevent SQL injection.
+- **Monitor Behavior**: Watch for anomalies.
+- **Scan for Threats**: Check file uploads and data streams.
 
 ### Performance
-- **Measure Before Optimizing**: Avoid premature optimization; first, identify performance bottlenecks through profiling tools before attempting to optimize code.
-- **Prioritize Macro-Optimizations**: Recognize that algorithmic and architectural improvements yield significantly greater performance impacts compared to micro-optimizations.
-- **Document Performance Trade-offs**: If a security measure introduces a performance impact, document this trade-off and provide a clear explanation of its necessity.
-- **Strategize Cache Invalidation**: Develop a reliable strategy for invalidating caches whenever underlying data undergoes modification.
+
+- **Measure First**: Profile before optimizing.
+- **Macro-Optimizations**: Focus on algorithms and architecture.
+- **Document Trade-offs**: Explain performance costs of security measures.
+- **Cache Invalidation**: Plan for invalidation when data changes.
 
 ---
 
 ## Integrating with Existing Codebases
 
 ### Learning a New Codebase
+
 Before starting:
-1. Identify at least three existing features similar to what you intend to build.
+1. Identify three existing features similar to what you intend to build.
 2. Identify patterns for error handling, testing, and naming.
 3. Use established libraries and utility functions.
 4. Follow established testing patterns.
 
 ### Tooling and Dependencies
+
 - Use established tools and systems.
 - Avoid new tools or external dependencies without a clear justification.
 - Stick to project conventions.
 - Prefer built-in functionality over new dependencies.
 
 ### Automation and Consistency
+
 - Use automation (e.g., GitHub Actions) for PR checks.
 - Ensure consistent configuration (especially in monorepos).
 - Maintain consistent patterns across projects.
@@ -168,7 +169,8 @@ Before starting:
 ## Context Management
 
 ### Command Optimization
-To maintain clear context and avoid overwhelming output, avoid executing commands that generate excessive output. Be specific.
+
+Excessive output floods the context window. Avoid commands that generate large amounts of text.
 
 **Verbose commands to avoid:**
 - `npm install` or `pip install` without a quiet flag.
@@ -181,6 +183,7 @@ To maintain clear context and avoid overwhelming output, avoid executing command
 - `ls -1 | head -20` or `find . -name "*.py" | head -10`.
 
 ### Session Management
+
 - Use `/context` to monitor token usage.
 - Use `/compact` cautiously (it can hide errors).
 - Use `/clear` and `/catchup` to clean up sessions.
@@ -191,26 +194,29 @@ To maintain clear context and avoid overwhelming output, avoid executing command
 ## Common Anti-Patterns
 
 ### Code Quality
-- **Over-engineering**: Constructing overly complex systems to address straightforward problems.
-- **Hidden Fragility**: Overlooking edge cases and intricate system interactions.
-- **Library Misuse**: Employing libraries without a clear understanding of their functionality or implications.
-- **"AI Slop"**: Characterized by the use of generic identifiers (e.g., `data`) or an excessive focus on rigid, "machine-perfect" formatting.
+
+- **Over-engineering**: Building complex systems for simple problems.
+- **Hidden Fragility**: Ignoring edge cases and system interactions.
+- **Library Misuse**: Using libraries without understanding them.
+- **"AI Slop"**: Using generic identifiers (e.g., `data`) or rigid, "machine-perfect" formatting.
 
 ### Security
-- **"Eyeball Test"**: Assuming code security based solely on superficial review.
-- **Static Defense**: Relying exclusively on input filtering rather than a dynamic approach that includes monitoring system behavior.
-- **Ignoring Invisible Content**: Failing to scan for threats within metadata or other non-visible data components.
-- **Input-Centric Governance**: Focusing exclusively on preventing malicious inputs, without ensuring the safety and integrity of outputs.
+
+- **"Eyeball Test"**: Assuming security based on a quick review.
+- **Static Defense**: Relying only on input filtering, ignoring runtime behavior.
+- **Ignoring Invisible Content**: Failing to scan metadata or hidden data.
+- **Input-Centric Governance**: Focusing only on inputs, neglecting output safety.
 
 ### Workflow
-- **"Big Bang" Changes**: Implementing large, untested commits that introduce significant risk.
-- **Premature Abstraction**: Introducing complex abstractions for inherently simple problems.
-- **Documentation Debt**: Neglecting to update documentation concurrently with code changes.
-- **Commits Lacking Context**: Commit messages that fail to adequately explain the rationale behind the change.
-- **Skipping Tests**: Deferring the creation of necessary test cases.
-- **Ignoring Linting**: Disregarding linter warnings, which often highlight genuine issues or potential bugs.
-- **"Cargo Culting"**: Blindly copying code or patterns without a fundamental understanding of their underlying principles.
-- **Analysis Paralysis**: Excessive planning and deliberation that hinders decisive action.
+
+- **"Big Bang" Changes**: Large, untested commits.
+- **Premature Abstraction**: Abstracting simple problems too early.
+- **Documentation Debt**: Changing code without updating docs.
+- **Commits Lacking Context**: Unclear commit messages.
+- **Skipping Tests**: Not writing tests.
+- **Ignoring Linting**: Ignoring linter warnings.
+- **"Cargo Culting"**: Copying code without understanding.
+- **Analysis Paralysis**: Over-planning.
 
 ---
 
@@ -236,20 +242,19 @@ find . -name "*.py" | head -10
 ```
 
 ### Decision Checklist
-Before proceeding with the implementation of a solution, consider the following questions:
-- Is the problem thoroughly understood?
-- Have multiple distinct approaches been generated?
-- Has the simplest effective solution been selected?
-- Have tests been written prior to implementation?
-- Do the changes adhere to the project's existing patterns?
+
+- Do you understand the problem?
+- Did you consider multiple approaches?
+- Is this the simplest effective solution?
+- Did you write tests first?
+- Do the changes follow project patterns?
 
 ### Commit Checklist
-Prior to committing changes, ensure the following:
+
 - The code compiles or builds successfully.
 - All tests pass without errors.
 - New functionality is covered by corresponding new tests.
 - The codebase is free of linting errors.
-
 - The commit message clearly explains the change's rationale.
 
 ---
@@ -259,7 +264,7 @@ Prior to committing changes, ensure the following:
 Skills and agents are discovered dynamically at runtime. To view available resources:
 
 ```bash
-# Inspect the last skill scan (paths + hashes)
+# Inspect the last skill scan (paths and hashes)
 jq -r '.skills[].path' ~/.codex/skills-cache.json
 
 # Or enumerate from disk
@@ -286,7 +291,7 @@ Skills are automatically discovered from these locations (in priority order):
 Skill names come from the `name:` field in `SKILL.md` frontmatter and should be treated as opaque strings.
 They may include punctuation such as `:` for namespacing (for example, `pensive:shared`).
 
-When parsing a rendered “skills list” (session headers, logs, etc.), do **not** split on `:` to extract the
+When parsing a rendered "skills list" (session headers, logs, etc.), do **not** split on `:` to extract the
 name or description. Prefer extracting the `(file: …/SKILL.md)` path or reading the frontmatter directly.
 
 ### Agent Registration

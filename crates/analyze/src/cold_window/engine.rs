@@ -9,11 +9,11 @@
 //!
 //! State carried across ticks:
 //!
-//! - **Last snapshot** — used as `prev` by [`SnapshotDiff`] and
+//! - **Last snapshot**, used as `prev` by [`SnapshotDiff`] and
 //!   [`AlertPolicy`].
-//! - **Alert history** — per-fingerprint dwell counters that drive
+//! - **Alert history**, per-fingerprint dwell counters that drive
 //!   the min-dwell timer in `LayeredAlertPolicy`.
-//! - **Snapshot version** — monotonic, increments per tick.
+//! - **Snapshot version**, monotonic, increments per tick.
 //!
 //! The engine uses `Box<dyn TraitName>` for strategies so callers
 //! can swap in custom implementations at runtime. Default
@@ -41,7 +41,7 @@ use super::{ActivityRing, ACTIVITY_RING_CAPACITY, SNAPSHOT_CHANNEL_CAPACITY};
 use tokio::sync::broadcast;
 
 /// First-tick baseline for the snapshot diff. Constructed once and
-/// shared by every engine instance — `WindowSnapshot` is `Send + Sync`
+/// shared by every engine instance, `WindowSnapshot` is `Send + Sync`
 /// and the diff/alert policy only borrows it immutably (avoids
 /// per-tick deep clone of the previous snapshot).
 fn empty_window_snapshot_baseline() -> &'static WindowSnapshot {
@@ -64,7 +64,7 @@ fn empty_window_snapshot_baseline() -> &'static WindowSnapshot {
 /// Producers (discovery walk, token attribution, MCP enumeration,
 /// metrics queries, tome dispatcher) collect their results into one
 /// of these structs and hand it to [`ColdWindowEngine::tick`]. The
-/// engine adds version + alerts + hints + cadence and broadcasts.
+/// engine adds version, alerts, hints, and cadence and broadcasts.
 #[derive(Debug, Clone)]
 pub struct TickInput {
     /// Wall-clock timestamp at tick start (UNIX epoch milliseconds).
@@ -331,7 +331,7 @@ impl ColdWindowEngine {
         self.activity.lock().snapshot()
     }
 
-    /// Snapshot the carried alert history (for tests + status bar).
+    /// Snapshot the carried alert history (for tests and the status bar).
     pub fn alert_history(&self) -> AlertHistory {
         self.state.lock().alert_history.clone()
     }
@@ -342,7 +342,7 @@ impl ColdWindowEngine {
     }
 
     /// Run a single tick: produce a `WindowSnapshot` from the input,
-    /// run alert policy + hint scorer + diff against the carried
+    /// run alert policy, hint scorer, and diff against the carried
     /// state, broadcast, and return the new snapshot.
     pub fn tick(&self, input: TickInput) -> Arc<WindowSnapshot> {
         let tick_start = Instant::now();
@@ -403,8 +403,8 @@ impl ColdWindowEngine {
             .evaluate(prev, &snapshot, &mut state.alert_history);
 
         // Append CAUTION alerts for malformed plugin health.toml files
-        // (FR11 EC5). These are deterministic — no hysteresis, no
-        // min-dwell — because user configuration errors need
+        // (FR11 EC5). These are deterministic, no hysteresis, no
+        // min-dwell, because user configuration errors need
         // immediate visibility. Stable fingerprint allows downstream
         // dispatchers to dedupe across ticks.
         if !malformed_plugins.is_empty() {
@@ -433,7 +433,7 @@ impl ColdWindowEngine {
             };
             let elapsed_ms = elapsed.as_millis() as u64;
             let budget_ms = self.tick_budget.as_millis() as u64;
-            // Hysteresis band over (budget_ms .. elapsed_ms+1) — the
+            // Hysteresis band over (budget_ms .. elapsed_ms+1), the
             // alert is "value-driven" so a band is informative even
             // though the gate logic is just elapsed > budget.
             let high = (elapsed_ms.max(budget_ms + 1)) as f64;
@@ -462,7 +462,7 @@ impl ColdWindowEngine {
 
         // Surface broadcast send failures via a throttled debug log.
         // SendError occurs only when the channel has zero live
-        // receivers — common during startup (no SSE clients yet) and
+        // receivers, common during startup (no SSE clients yet) and
         // benign once consumers attach. Logging on every tick spams.
         match self.tx.send(Arc::clone(&snap_arc)) {
             Ok(_) => {
@@ -669,7 +669,7 @@ mod tests {
 
     #[test]
     fn default_hint_scorer_adapts_intelligence_scorer() {
-        // Compile-time + behavioral guard: DefaultHintScorer impls
+        // Compile-time and behavioral guard: DefaultHintScorer impls
         // analyze's HintScorer trait by wrapping intelligence's
         // MultiSignalScorer. Bridges the trait-shape duplication
         // between the two crates.
@@ -720,7 +720,7 @@ mod tests {
     fn collector_output_routes_to_plugin_health_and_alerts() {
         // FR11 + EC5: CollectorOutput.healths populates snapshot,
         // CollectorOutput.malformed becomes CAUTION alerts. The two
-        // streams are disjoint — a malformed plugin never appears in
+        // streams are disjoint, a malformed plugin never appears in
         // plugin_health.
         use skrills_snapshot::HealthStatus;
         let engine = ColdWindowEngine::with_defaults(100_000);
@@ -943,7 +943,7 @@ mod tests {
             let _ = rx.recv().await;
         }
         // No assertion on internal counter (private), but the receive
-        // side observed each tick — the send path must have succeeded.
+        // side observed each tick, the send path must have succeeded.
     }
 
     #[test]

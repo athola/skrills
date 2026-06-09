@@ -34,7 +34,7 @@ pub fn empty_snapshot() -> WindowSnapshot {
 /// Contents:
 /// - 3 skills (each ~300 tokens)
 /// - 2 plugins (sums of skill totals)
-/// - 1 MCP server (40K tokens — well above the Caution threshold)
+/// - 1 MCP server (40K tokens, well above the Caution threshold)
 /// - 1 plugin health report with one passing check
 /// - Total tokens 40K + 3*300 + 2*450 = 41,800
 pub fn standard_snapshot() -> WindowSnapshot {

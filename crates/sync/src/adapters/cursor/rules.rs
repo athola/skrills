@@ -193,7 +193,7 @@ fn derive_rule_mode(
         return (fields, body.to_string());
     }
 
-    // Default: agent-requested mode (description + no globs + alwaysApply false)
+    // Default: agent-requested mode (description, no globs, and alwaysApply false)
     fields.insert("alwaysApply".to_string(), "false".to_string());
     fields.insert(
         "description".to_string(),

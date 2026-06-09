@@ -1,14 +1,14 @@
 //! Concurrency / robustness tests for `BucketedBudget`.
 //!
 //! Each test guards a specific boundary contract:
-//! - `concurrent_dispatch_never_oversells_capacity` — TOCTOU race
-//! - `corrupt_persistence_file_recovers_at_full` — corrupt file
-//! - `persist_bucket_atomic_no_temp_leakage` — N7 (atomic write)
-//! - `load_clamps_negative_available_to_zero` — negative available
-//! - `load_rejects_nan_available` — NaN available
+//! - `concurrent_dispatch_never_oversells_capacity`: TOCTOU race
+//! - `corrupt_persistence_file_recovers_at_full`: corrupt file
+//! - `persist_bucket_atomic_no_temp_leakage`: N7 (atomic write)
+//! - `load_clamps_negative_available_to_zero`: negative available
+//! - `load_rejects_nan_available`: NaN available
 //!
 //! Clock-warp is asserted via the unit-test path in
-//! `dispatcher.rs::tests` — see `clock_warp_does_not_saturate_bucket`.
+//! `dispatcher.rs::tests`: see `clock_warp_does_not_saturate_bucket`.
 //! Re-routing the system clock from an integration test would require
 //! a public clock-provider trait, which exceeds the surface budget of
 //! this fix; the in-crate unit test exercises the same code path
@@ -69,7 +69,7 @@ fn concurrent_dispatch_never_oversells_capacity() {
 fn concurrent_dispatch_dedupes_same_fingerprint_under_race() {
     // Sharper: N threads racing the SAME fingerprint. With the
     // pre-fix three-critical-section structure, multiple threads can
-    // pass the dedup check, each consume a token, and each record —
+    // pass the dedup check, each consume a token, and each record,
     // resulting in more than one Allowed verdict for one fingerprint.
     // Expected: exactly one Allowed; the rest DuplicateInWindow.
     let rate: u32 = 1000; // generous, isolate dedup from quota

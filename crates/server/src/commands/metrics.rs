@@ -375,12 +375,12 @@ A test skill.
         // High quality skill (complete frontmatter, good content)
         let high_quality = r#"---
 name: high-quality
-description: A comprehensive skill with good documentation
+description: A thorough skill with good documentation
 ---
 # High Quality Skill
 
 ## Overview
-This skill provides comprehensive functionality.
+This skill provides the full feature set.
 
 ## Usage
 ```bash

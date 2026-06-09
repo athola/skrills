@@ -2,8 +2,8 @@
 //!
 //! Verifies that the TUI render surface and the
 //! browser render surface emit the same semantic content for a fixed
-//! `WindowSnapshot`. "Semantic" means user-visible text — alert
-//! titles + messages, hint URIs + messages, research titles, and
+//! `WindowSnapshot`. "Semantic" means user-visible text, alert
+//! titles and messages, hint URIs and messages, research titles, and
 //! status-bar fields. Presentation differences (ANSI colors vs CSS
 //! classes, ratatui borders vs HTML `<ul>`) are intentionally ignored.
 //!
@@ -16,7 +16,7 @@
 //! (`server` and `dashboard`) already dev-depend on `skrills_test_utils`,
 //! so the original layout creates a dependency cycle. This file lives
 //! in `skrills-server`'s tests instead, where every required dev-dep
-//! already exists. The semantic guarantee — SC4 — is identical.
+//! already exists. The semantic guarantee, SC4, is identical.
 //!
 //! ## Test strategy
 //!
@@ -30,7 +30,7 @@
 //!    `reqwest` GET to `/dashboard.sse`, send the snapshot via the
 //!    broadcast bus once the handler subscribes, and read SSE bytes
 //!    until all four named events arrive (or a 2 s timeout). Strip
-//!    HTML tags + decode entities to recover plain text.
+//!    HTML tags and decode entities to recover plain text.
 //! 4. Assert each user-visible string from the snapshot appears in
 //!    both flattened texts.
 
@@ -55,7 +55,7 @@ use tokio::sync::broadcast;
 
 /// Token-budget ceiling shared by both surfaces. The "Caution"
 /// tier example uses 50K so the snapshot's 25K total
-/// renders as 50% — far enough below the 80% bar threshold that the
+/// renders as 50%, far enough below the 80% bar threshold that the
 /// status bar should NOT show the warn class, and far enough above 0
 /// that the bar isn't empty.
 const BUDGET: u64 = 50_000;
@@ -208,7 +208,7 @@ fn flatten_buffer(backend: &TestBackend) -> String {
 /// issue a reqwest SSE GET, send a snapshot via the broadcast bus once
 /// the handler has subscribed, and collect bytes until all four named
 /// events arrive (or a 2 s timeout). The returned string is HTML
-/// fragments stripped of their tags + decoded entities.
+/// fragments stripped of their tags and decoded entities.
 async fn render_browser_text(snap: Arc<WindowSnapshot>) -> String {
     let (tx, _keep_rx) = broadcast::channel(16);
     let dash_state = ColdWindowDashboardState {
@@ -271,9 +271,9 @@ async fn render_browser_text(snap: Arc<WindowSnapshot>) -> String {
         }
     }
     // S9: the "subscribe before send" wait above is the correct
-    // synchronization point — once `receiver_count() >= 2` the SSE
+    // synchronization point, once `receiver_count() >= 2` the SSE
     // handler is guaranteed to be subscribed, so a single send is
-    // sufficient. The previous 5x send + sleep loop only masked
+    // sufficient. The previous 5x send-and-sleep loop only masked
     // races caused by sending too early.
     let _ = tx.send(snap.clone());
 
@@ -321,10 +321,10 @@ async fn tui_and_browser_render_semantic_parity() {
     );
     assert!(
         !browser_text.trim().is_empty(),
-        "browser render produced empty text — SSE never delivered any events"
+        "browser render produced empty text; SSE never delivered any events"
     );
 
-    // Alert title + message must appear in both surfaces.
+    // Alert title and message must appear in both surfaces.
     for alert in &snap.alerts {
         assert!(
             tui_text.contains(&alert.title),
@@ -350,7 +350,7 @@ async fn tui_and_browser_render_semantic_parity() {
         );
     }
 
-    // Hint URI + message must appear in both.
+    // Hint URI and message must appear in both.
     for h in &snap.hints {
         assert!(
             tui_text.contains(&h.hint.uri),
@@ -388,7 +388,7 @@ async fn tui_and_browser_render_semantic_parity() {
         );
     }
 
-    // Status fields: cadence label + token total + research quota.
+    // Status fields: cadence label, token total, and research quota.
     assert!(
         tui_text.contains("tick: 4.0s"),
         "TUI status missing cadence label"

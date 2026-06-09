@@ -2,7 +2,7 @@
 # Block decorative separator-comment blocks in Rust source.
 #
 # Pattern: `// ─{20,}` (20+ box-drawing characters in a comment).
-# See M1 in the AI hygiene report — these are an AI generation
+# See M1 in the AI hygiene report; these are an AI generation
 # signature that adds no semantic content. Fail the build to keep
 # them from creeping back in.
 #

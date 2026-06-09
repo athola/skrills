@@ -9,7 +9,7 @@
 //! [`cold_window_dashboard_first_paint_under_one_second`]. We bind an
 //! ephemeral-port server, send a snapshot through the bus, then issue
 //! a single GET against `/dashboard` (the HTML shell, not the SSE
-//! stream — first paint = HTML byte arrival) and assert
+//! stream, first paint = HTML byte arrival) and assert
 //! the elapsed time is under 1 s.
 //!
 //! SC3 (TUI startup) needs a real crossterm raw-mode loop, which is
@@ -92,10 +92,10 @@ async fn cold_window_tui_startup_under_five_hundred_ms() {
     //
     // The TUI launch path is `skrills cold-window --tui`, which drives
     // `skrills_dashboard::cold_window::run_tui`. Its first-paint cost is
-    // a bus `recv` followed by ingest + one composite `draw`; the real
+    // a bus `recv` followed by ingest and one composite `draw`; the real
     // crossterm loop adds only raw-mode setup, which needs a TTY and so
-    // can't run in CI. We measure the render path — the part that can
-    // regress — against a `TestBackend` fed through a broadcast bus,
+    // can't run in CI. We measure the render path, the part that can
+    // regress, against a `TestBackend` fed through a broadcast bus,
     // matching how `run_tui` consumes `ColdWindowEngine::subscribe`.
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;

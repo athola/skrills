@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Strict mode (default) — fails the check if any errors are found.
+      # Strict mode (default): fails the check if any errors are found.
       - name: Validate skills (all targets)
         uses: ./.github/actions/validate-skills
         with:

@@ -3,7 +3,7 @@
 #
 # Strategy:
 #   1. If NIGHT_MARKET_ROOT (or a discovered ~/claude-night-market checkout)
-#      contains the upstream sanctum/abstract scripts, use those — they are
+#      contains the upstream sanctum/abstract scripts, use those; they are
 #      the source of truth and may include Phase 2-4 features.
 #   2. Otherwise fall back to the in-tree ports under scripts/.
 #

@@ -186,7 +186,7 @@ impl ServerHandler for SkillService {
             let result = match canonical_name.as_str() {
                 "create-skill" => self.create_skill_tool(args).await,
                 "search-skills-github" => self.search_skills_github_tool(args).await,
-                // Research tools (async — require HTTP calls to external APIs)
+                // Research tools (async, require HTTP calls to external APIs)
                 "search-papers" => self.search_papers_tool(args).await,
                 "search-discussions" => self.search_discussions_tool(args).await,
                 "resolve-doi" => self.resolve_doi_tool(args).await,
@@ -718,7 +718,7 @@ impl ServerHandler for SkillService {
                         let stats = self.context_stats.snapshot();
                         crate::mcp_gateway::get_context_stats(stats)
                     }
-                    // Research tools (sync — local database operations)
+                    // Research tools (sync, local database operations)
                     "query-knowledge-graph" => {
                         let args = request.arguments.clone().unwrap_or_default();
                         self.query_knowledge_graph_tool(args)
@@ -980,7 +980,7 @@ mod tests {
         let cases: Vec<(&str, serde_json::Value)> = vec![
             (
                 "query_knowledge_graph",
-                serde_json::json!({}), // stats mode — no args needed
+                serde_json::json!({}), // stats mode, no args needed
             ),
             (
                 "add_knowledge_node",
@@ -1044,7 +1044,7 @@ mod tests {
 
         // Each (snake_case_name, minimal_valid_args) pair for async research tools.
         // These tools require HTTP clients, so they may fail with network errors,
-        // but they must NOT fail with "unknown tool" — that would mean the
+        // but they must NOT fail with "unknown tool", that would mean the
         // snake_case → kebab-case normalization did not dispatch them.
         let cases: Vec<(&str, serde_json::Value)> = vec![
             ("search_papers", serde_json::json!({"query": "test"})),
@@ -1074,7 +1074,7 @@ mod tests {
             });
 
             // The tool must be dispatched (no "unknown tool" error).
-            // Network errors are acceptable — they prove the tool was found
+            // Network errors are acceptable, they prove the tool was found
             // and attempted execution rather than being rejected at dispatch.
             match &result {
                 Ok(_) => {} // tool succeeded (unlikely without network, but fine)

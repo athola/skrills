@@ -145,16 +145,16 @@ impl TokenCategory {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TokenSource {
-    /// Skill body (frontmatter + prose + code blocks).
+    /// Skill body (frontmatter, prose, and code blocks).
     #[default]
     Skill,
     /// Plugin (sum of skills + commands + agents).
     Plugin,
-    /// MCP server (tool descriptions especially — see Willison's
+    /// MCP server (tool descriptions especially, see Willison's
     /// "Too many MCP servers" note: a single MCP can swallow 55K
     /// tokens of tool description overhead).
     Mcp,
-    /// Active conversation (cache reads + writes).
+    /// Active conversation (cache reads and writes).
     Conversation,
 }
 

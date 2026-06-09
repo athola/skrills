@@ -2,16 +2,16 @@
 //!
 //! Two endpoints:
 //!
-//! - `GET /dashboard` — initial HTML page with an `EventSource`
+//! - `GET /dashboard`: initial HTML page with an `EventSource`
 //!   pointing at `/dashboard.sse`. No JavaScript framework: the
 //!   browser is a paint surface.
-//! - `GET /dashboard.sse` — Server-Sent Events stream. Each tick
+//! - `GET /dashboard.sse`: Server-Sent Events stream. Each tick
 //!   from the bus emits four named events (`alert`, `hint`,
 //!   `research`, `status`) carrying pre-rendered HTML fragments.
 //!
 //! HTTP/2 negotiation (per R8 mitigation): when running behind
 //! TLS via `axum-server` with rustls, ALPN advertises `h2`. The
-//! browser stream-multiplexes — multiple dashboard tabs in the same
+//! browser stream-multiplexes, multiple dashboard tabs in the same
 //! origin all stay subscribed without bumping into HTTP/1.1's
 //! 6-connection-per-origin limit.
 //!
@@ -86,7 +86,7 @@ pub struct ColdWindowDashboardState {
 }
 
 impl ColdWindowDashboardState {
-    /// Construct from a bus + budget ceiling, no research quota.
+    /// Construct from a bus and budget ceiling, no research quota.
     pub fn new(bus: broadcast::Sender<Arc<WindowSnapshot>>, budget_ceiling: u64) -> Self {
         Self {
             bus,
@@ -151,7 +151,7 @@ async fn serve_dashboard_sse(
                     yield Ok::<Event, Infallible>(event);
                 }
                 Err(broadcast::error::RecvError::Closed) => {
-                    tracing::info!("cold-window SSE stream closing — emitting shutdown event");
+                    tracing::info!("cold-window SSE stream closing; emitting shutdown event");
                     yield Ok::<Event, Infallible>(
                         Event::default().event("shutdown").data("{}"),
                     );
@@ -273,7 +273,7 @@ fn render_alert_fragment(snap: &WindowSnapshot) -> String {
         let class = severity_class(alert.severity);
         let label = alert.severity.short_label();
         out.push_str(&format!(
-            r#"<li><span class="tier-tag {class}">{label}</span><span class="severity-{class}">{title}</span> — {message}</li>"#,
+            r#"<li><span class="tier-tag {class}">{label}</span><span class="severity-{class}">{title}</span>: {message}</li>"#,
             class = class,
             label = label,
             title = html_escape(&alert.title),
@@ -301,7 +301,7 @@ fn render_hint_fragment(snap: &WindowSnapshot) -> String {
         let pin = if h.pinned { "[*] " } else { "[ ] " };
         let pin_class = if h.pinned { "pinned" } else { "" };
         out.push_str(&format!(
-            r#"<li><span class="{pin_class}">{pin}</span><strong>{score:.1}</strong> [{cat}] {uri} — {msg}</li>"#,
+            r#"<li><span class="{pin_class}">{pin}</span><strong>{score:.1}</strong> [{cat}] {uri}: {msg}</li>"#,
             pin_class = pin_class,
             pin = pin,
             score = h.score,
@@ -693,7 +693,7 @@ mod tests {
     #[test]
     fn sanitize_external_href_rejects_javascript_scheme() {
         assert_eq!(sanitize_external_href("javascript:alert(1)"), "#");
-        // Mixed case + leading whitespace are common payload tricks.
+        // Mixed case and leading whitespace are common payload tricks.
         assert_eq!(sanitize_external_href("  JavaScript:alert(1)"), "#");
         assert_eq!(sanitize_external_href("JaVaScRiPt:alert(1)"), "#");
     }
@@ -939,7 +939,7 @@ mod tests {
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            // Capacity is 1 so the second send + a draining recv pair
+            // Capacity is 1 so the second send and a draining recv pair
             // on the slow consumer overflow into the Lagged arm.
             for _ in 0..5 {
                 let _ = tx_clone.send(Arc::new(empty_snap()));

@@ -165,7 +165,7 @@ async fn start_test_server(skill_dirs: Vec<PathBuf>) -> (String, tokio::task::Jo
     (base_url, handle)
 }
 
-/// Launch a headless Chrome browser and return the browser + handler task.
+/// Launch a headless Chrome browser and return the browser and handler task.
 async fn launch_browser() -> (Browser, tokio::task::JoinHandle<()>) {
     let config = BrowserConfig::builder()
         .no_sandbox()
@@ -177,7 +177,7 @@ async fn launch_browser() -> (Browser, tokio::task::JoinHandle<()>) {
 
     let (browser, mut handler) = Browser::launch(config)
         .await
-        .expect("Failed to launch Chrome — is Google Chrome installed?");
+        .expect("Failed to launch Chrome; is Google Chrome installed?");
 
     let handle = tokio::spawn(async move { while handler.next().await.is_some() {} });
 

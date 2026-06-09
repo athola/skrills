@@ -192,7 +192,7 @@ fn estimate_token_diff(a: &str, b: &str) -> i64 {
     tokens_b as i64 - tokens_a as i64
 }
 
-/// Simple token estimation (words + punctuation).
+/// Simple token estimation (words and punctuation).
 fn estimate_tokens(content: &str) -> usize {
     // Rough estimate: ~4 chars per token for English text
     content.len() / 4

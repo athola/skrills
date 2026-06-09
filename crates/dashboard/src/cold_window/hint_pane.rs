@@ -30,7 +30,7 @@ use super::state::ColdWindowState;
 /// File name used by [`HintPaneState::with_default_persistence`].
 pub const PIN_FILE_NAME: &str = "cold-window-pins.json";
 
-/// Mutable state owned by the hint pane: filter + pin set + path
+/// Mutable state owned by the hint pane: filter, pin set, and path
 /// for persistence.
 #[derive(Debug, Clone, Default)]
 pub struct HintPaneState {
@@ -125,7 +125,7 @@ impl HintPaneState {
         self.filter = filter;
     }
 
-    /// Filter + sort the snapshot's hints. Pinned hints sort to the
+    /// Filter and sort the snapshot's hints. Pinned hints sort to the
     /// top regardless of score; within each group, descending score.
     pub fn visible_hints<'a>(&self, snap_state: &'a ColdWindowState) -> Vec<&'a ScoredHint> {
         let snap = match snap_state.current.as_deref() {
@@ -176,7 +176,7 @@ pub enum HintAction {
     },
 }
 
-/// Stateless renderer + key handler for the hint pane.
+/// Stateless renderer and key handler for the hint pane.
 pub struct HintPane;
 
 impl HintPane {
@@ -229,7 +229,7 @@ impl HintPane {
             Span::styled(format!("[{category}]"), Style::default().fg(Color::Cyan)),
             Span::raw("  "),
             Span::raw(hint.hint.uri.clone()),
-            Span::raw("  —  "),
+            Span::raw(": "),
             Span::raw(hint.hint.message.clone()),
         ]);
         ListItem::new(line)

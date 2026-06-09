@@ -1,6 +1,6 @@
 ---
 name: test-writer
-description: Write comprehensive tests following TDD and BDD principles
+description: Write thorough tests following TDD and BDD principles
 ---
 
 # Test Writer

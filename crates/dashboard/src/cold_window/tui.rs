@@ -237,7 +237,7 @@ pub fn draw(
 /// Route a keystroke to the panes.
 ///
 /// Global keys win first: `q`/`Esc`/`Ctrl-C` quit. Everything else is
-/// forwarded to all three pane handlers — their keybindings are
+/// forwarded to all three pane handlers, their keybindings are
 /// disjoint (`A`/`d` for alerts, `0`-`5`/`P` for hints, `R` for
 /// research), so there is no focus model to manage.
 pub fn handle_key(
@@ -274,7 +274,7 @@ fn is_actionable(key: &KeyEvent) -> bool {
 
 /// Run the cold-window TUI to completion.
 ///
-/// Owns the terminal: enters raw mode + the alternate screen, installs
+/// Owns the terminal: enters raw mode and the alternate screen, installs
 /// a panic hook that restores the terminal (raw mode off, leave the
 /// alternate screen, show the cursor), then loops until `q`, `Ctrl-C`,
 /// the `shutdown` watch flips true, or the snapshot bus closes.
@@ -324,7 +324,7 @@ pub async fn run(
 
     // Reinstate the prior panic hook on the normal-exit path so our
     // terminal-restoring hook does not persist for the rest of the
-    // process. (On a panic we never reach here — the hook fires during
+    // process. (On a panic we never reach here, the hook fires during
     // unwinding, which is exactly when we still need it.)
     std::panic::set_hook(Box::new(move |info| original_hook(info)));
 
@@ -390,8 +390,8 @@ async fn event_loop(
                 match recv {
                     Ok(snap) => {
                         // `ingest` returns true only when this snapshot
-                        // should ring the bell (new WARNING + bell
-                        // enabled); the `bell_enabled` gate lives inside
+                        // should ring the bell (new WARNING and bell
+                        // enabled); the `bell_enabled` gate is inside
                         // `ingest`, so we ring unconditionally here.
                         if snap_state.ingest(snap) {
                             // BEL is audio-only; it does not perturb the
@@ -545,7 +545,7 @@ mod tests {
     #[test]
     fn first_paint_reflects_snapshot_under_500ms() {
         // SC3: startup-to-first-snapshot must beat 500 ms. The launch
-        // path's cost is dominated by ingest + a single composite
+        // path's cost is dominated by ingest and a single composite
         // render; we measure exactly that against a real backend.
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
         let hint_state = HintPaneState::new();
@@ -624,7 +624,7 @@ mod tests {
     fn medium_gives_left_panes_more_room_than_wide() {
         // Width 70 is inside the Medium band (60..=79), so the 68%
         // left-column constant is exercised at a size Medium actually
-        // occupies — not at 100, which `layout_mode` routes to Wide.
+        // occupies, not at 100, which `layout_mode` routes to Wide.
         let wide = plan_for(LayoutMode::Wide, area(70, 40), true);
         let medium = plan_for(LayoutMode::Medium, area(70, 40), true);
         assert!(

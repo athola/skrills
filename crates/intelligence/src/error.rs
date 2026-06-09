@@ -5,7 +5,7 @@
 //! rippling type changes across all callers (server, analyze, the
 //! cold-window engine). [`IntelligenceError`] is exposed alongside
 //! `anyhow::Error` for callers that want to match on specific
-//! failure modes — e.g. retry on `GitHubApi { status: 502 .. }`.
+//! failure modes, e.g. retry on `GitHubApi { status: 502 .. }`.
 //!
 //! Internal call sites currently use `anyhow::bail!` for ergonomics.
 //! Migration of those sites to construct [`IntelligenceError`]
@@ -17,7 +17,7 @@ use std::path::PathBuf;
 
 /// Errors that may arise from the intelligence crate.
 ///
-/// Variants enumerate the *user-meaningful* failure modes — the
+/// Variants enumerate the *user-meaningful* failure modes, the
 /// situations a caller might want to handle differently (retry,
 /// fall back, surface to user) rather than just propagate.
 #[derive(Debug, thiserror::Error)]
@@ -44,7 +44,7 @@ pub enum IntelligenceError {
     /// Could not determine the user's home directory.
     ///
     /// Surfaces when neither `$HOME` (Unix) nor `%USERPROFILE%`
-    /// (Windows) is set — typically only in stripped CI environments.
+    /// (Windows) is set, typically only in stripped CI environments.
     #[error("Cannot determine home directory")]
     HomeDirectoryNotFound,
 

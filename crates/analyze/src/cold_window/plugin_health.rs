@@ -7,9 +7,9 @@
 //! directory, parses each `health.toml`, and produces a
 //! [`CollectorOutput`] split into:
 //!
-//! - `healths` — successfully parsed [`PluginHealth`] reports that
+//! - `healths`: successfully parsed [`PluginHealth`] reports that
 //!   participate in the snapshot (FR11, SC15).
-//! - `malformed` — plugins whose `health.toml` failed to parse.
+//! - `malformed`: plugins whose `health.toml` failed to parse.
 //!   The engine surfaces these as `Caution`-tier [`Alert`]s (EC5)
 //!   and excludes them from the snapshot until fixed.
 //!
@@ -103,7 +103,7 @@ impl PluginHealthCollector {
     /// Walk the plugins directory once and return parsed reports +
     /// malformed-file diagnostics.
     ///
-    /// Plugins without a `health.toml` are silently excluded — a
+    /// Plugins without a `health.toml` are silently excluded, a
     /// missing file is the opt-out signal, not an error (FR11).
     /// A non-existent or unreadable plugins directory yields an
     /// empty result; the cold-window must never crash on user
@@ -135,7 +135,7 @@ impl PluginHealthCollector {
 
         // Surface per-entry I/O errors instead of silently dropping them.
         // The root read failure is raised to a CAUTION alert; the per-entry
-        // fan-out below repeats the same hazard at the next level — a single
+        // fan-out below repeats the same hazard at the next level, a single
         // restricted permission or flapping NFS mount would silently disappear
         // from the health report, leaving operators looking at "plugin healthy"
         // when the plugin couldn't even be inspected. Push each per-entry

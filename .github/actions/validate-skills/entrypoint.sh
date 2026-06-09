@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# entrypoint.sh — run skrills validate and emit GitHub annotations.
+# entrypoint.sh: run skrills validate and emit GitHub annotations.
 # Expected env vars (set by action.yml):
-#   INPUT_TARGETS  — validation target (claude, codex, copilot, all, both)
-#   INPUT_STRICT   — "true" to fail on errors, "false" for annotations only
-#   INPUT_PATH     — skills directory path
+#   INPUT_TARGETS: validation target (claude, codex, copilot, all, both)
+#   INPUT_STRICT: "true" to fail on errors, "false" for annotations only
+#   INPUT_PATH: skills directory path
 set -euo pipefail
 
 targets="${INPUT_TARGETS:-all}"

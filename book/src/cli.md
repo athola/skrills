@@ -193,7 +193,7 @@ skrills sync-agents --path custom.md      # Write to different file
 
 **Skill naming caveat:**
 
-Skills are named from the `name:` field in `SKILL.md` frontmatter. Treat these names as opaque strings—they may include punctuation like `:` for namespacing (e.g., `pensive:shared`).
+Skills are named from the `name:` field in `SKILL.md` frontmatter. Treat these names as opaque strings; they may include punctuation like `:` for namespacing (e.g., `pensive:shared`).
 
 When comparing skills between session headers and disk, don't parse by splitting on `:`. Instead, extract the `(file: …/SKILL.md)` path or read the frontmatter directly.
 

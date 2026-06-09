@@ -8,7 +8,7 @@
 v0.8.0 adds a continuously-refreshing analysis surface ("cold window") that
 monitors token usage, hint signals, plugin health, and external research in
 real time. Two render targets were required: a ratatui TUI for terminal users
-and a browser surface (SSE + HTML fragments) for remote/shared access.
+and a browser surface (SSE and HTML fragments) for remote/shared access.
 
 The design had to satisfy competing constraints: disk-state freshness (no
 warm-cache shortcuts), bounded memory growth in long-running daemon mode,
@@ -28,7 +28,7 @@ no staleness window. This is only viable because the SC1 budget (p99 < 200 ms
 per tick) fits the current ecosystem scale; Prometheus `file_sd` uses the
 same pattern.
 
-**SSE + server-side HTML fragments for the browser surface.**
+**SSE and server-side HTML fragments for the browser surface.**
 WebSocket and gRPC were evaluated and deferred. SSE is one-way (sufficient
 for this use case), HTTP/2-multiplexable (solves the 6-connection-per-origin
 limit without client-side changes), and forward-compatible with the v0.9.0
@@ -38,7 +38,7 @@ gRPC roadmap. The wire-format crate (`skrills-snapshot`) is proto3-compatible.
 Maps to FAA AC 25.1322-1 cockpit CAS. Warning-tier is reserved for limits
 that require immediate user action; the kill-switch only engages at Warning.
 CHI 2025 evidence on alarm fatigue is honored by keeping Caution and below
-panel-only with hysteresis + min-dwell.
+panel-only with hysteresis and min-dwell.
 
 **Research dispatcher as an AlertManager-style token-bucket.**
 External fetches are quota-gated and restart-resilient via JSON persistence
@@ -55,7 +55,7 @@ Key red-team challenges resolved before implementation:
 
 | Challenge | Resolution |
 |---|---|
-| HTTP/1.1 6-connection browser limit | HTTP/2 via axum-server + rustls ALPN |
+| HTTP/1.1 6-connection browser limit | HTTP/2 via axum-server and rustls ALPN |
 | Token-bucket bypass via restart | Persist quota to JSON, refill pro-rata on load |
 | No graceful SIGINT handling | 2 s cleanup budget; SSE merges shutdown notify |
 | Memory growth in daemon mode | Broadcast channel cap 16; activity ring cap 100 |
@@ -68,22 +68,22 @@ Key red-team challenges resolved before implementation:
   unaffected.
 - **SSE insufficient for interactivity** → add WebSocket surface as an opt-in
   alongside SSE; no removal required.
-- **4-tier taxonomy too granular** → collapse Warning+Caution → critical,
-  Advisory+Status → info. Single enum rename; snapshot contract otherwise
-  unchanged.
+- **4-tier taxonomy too granular** → collapse Warning and Caution into
+  critical, Advisory and Status into info. Single enum rename; snapshot
+  contract otherwise unchanged.
 - **gRPC v0.9.0 infeasible** → retire external-client surface; v0.8.0 users
   are unaffected.
 
 ## Watch points
 
-- p99 tick duration on real ecosystems — target < 200 ms; alert field
+- p99 tick duration on real ecosystems: target < 200 ms; alert field
   telemetry if > 500 ms.
-- Alerts-per-hour on active users — target < 12; feature is likely too noisy
+- Alerts-per-hour on active users: target < 12; feature is likely too noisy
   if a user disables within 24 h of opt-in.
-- HTTP/2 negotiation rate — alert if browsers fall back to HTTP/1.1 for > 5%
+- HTTP/2 negotiation rate: alert if browsers fall back to HTTP/1.1 for > 5%
   of sessions (TLS or proxy issue).
-- Memory RSS growth over 24 h — alert if delta > 100 MB.
-- Quota persistence write errors — alert on any failure.
+- Memory RSS growth over 24 h: alert if delta > 100 MB.
+- Quota persistence write errors: alert on any failure.
 
 ## Consequences
 

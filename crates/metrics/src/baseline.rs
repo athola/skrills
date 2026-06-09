@@ -7,7 +7,7 @@
 //! so the consumer can fall back to constants instead of producing
 //! spurious alerts off a thin sample.
 //!
-//! No new schema is added — queries run against the existing
+//! No new schema is added, queries run against the existing
 //! `skill_invocations`, `validation_runs`, and `rule_triggers`
 //! tables.
 
@@ -62,7 +62,7 @@ impl BaselineQuery for MetricsCollector {
 ///
 /// Uses nearest-rank ordering: `values[round((n-1) * q)]`. This is
 /// less sophisticated than linear interpolation but plays well with
-/// the heuristic-bound nature of token estimation — a few extra digits of precision would lie about
+/// the heuristic-bound nature of token estimation, a few extra digits of precision would lie about
 /// the underlying signal.
 fn quantile(values: &mut [f64], q: f64) -> f64 {
     values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -148,7 +148,7 @@ mod tests {
     #[test]
     fn fewer_than_min_samples_returns_none() {
         let collector = MetricsCollector::new().unwrap();
-        // Only 3 samples — below MIN_BASELINE_SAMPLES = 5.
+        // Only 3 samples, below MIN_BASELINE_SAMPLES = 5.
         for tokens in [100, 200, 300] {
             collector
                 .record_skill_invocation("demo", 50, true, Some(tokens))

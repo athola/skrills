@@ -586,7 +586,7 @@ pub(crate) fn sync_agents_with_assets(
 
 /// Synchronizes agent markdown files from Claude into the Codex agents root (e.g. `~/.codex/agents`).
 ///
-/// This intentionally does **not** write to `~/.codex/skills-mirror` — skills are materialized
+/// This intentionally does **not** write to `~/.codex/skills-mirror`: skills are materialized
 /// into `~/.codex/skills` via `sync_skills_only_from_claude`.
 pub(crate) fn sync_agents_only_from_claude(
     claude_root: &Path,

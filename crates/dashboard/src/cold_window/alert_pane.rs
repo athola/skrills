@@ -1,9 +1,9 @@
 //! Alert pane.
 //!
-//! Renders the visible alerts (filtered + sorted by `ColdWindowState`)
+//! Renders the visible alerts (filtered and sorted by `ColdWindowState`)
 //! as a colored ratatui list. Handles two keystrokes:
 //!
-//! - `A` (uppercase): master-acknowledge — clears all CAUTION,
+//! - `A` (uppercase): master-acknowledge, clears all CAUTION,
 //!   ADVISORY, and STATUS alerts in one stroke.
 //! - `d`: dismiss the focused WARNING-tier alert (per-row ack).
 //!
@@ -38,7 +38,7 @@ pub enum AlertAction {
     },
 }
 
-/// Stateless renderer + key handler for the alert pane.
+/// Stateless renderer and key handler for the alert pane.
 pub struct AlertPane;
 
 impl AlertPane {
@@ -79,7 +79,7 @@ impl AlertPane {
             ),
             Span::raw(" "),
             Span::styled(alert.title.clone(), Style::default().fg(color)),
-            Span::raw("  —  "),
+            Span::raw(": "),
             Span::raw(alert.message.clone()),
         ]);
         ListItem::new(line)

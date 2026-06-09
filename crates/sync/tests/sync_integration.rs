@@ -40,7 +40,7 @@ impl SyncTestSetup {
 
         fs::write(
             cmd_dir.join("generate-docs.md"),
-            "# Generate Documentation\nGenerate comprehensive documentation for the project.",
+            "# Generate Documentation\nGenerate full documentation for the project.",
         )
         .unwrap();
 

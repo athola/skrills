@@ -318,7 +318,7 @@ pub fn restore_snapshot(
                 ));
             }
         } else {
-            // File was created by sync — remove it
+            // File was created by sync, remove it
             if target_path.exists() {
                 match fs::remove_file(&target_path) {
                     Ok(()) => deleted += 1,
@@ -404,7 +404,7 @@ pub fn prune_snapshots(config: &SnapshotConfig) -> Result<PruneResult> {
                 }
             }
             Err(_) => {
-                // Corrupt manifest — prune it too
+                // Corrupt manifest, prune it too
                 if fs::remove_dir_all(&path).is_ok() {
                     pruned += 1;
                 } else {
@@ -970,7 +970,7 @@ mod tests {
             &[],
         );
 
-        // Dedup: the duplicate hello.md (cmd + skill) collapses to one entry.
+        // Dedup: the duplicate hello.md (cmd and skill) collapses to one entry.
         assert_eq!(paths.len(), 2);
         assert!(paths.contains(&PathBuf::from("greet.md")));
         assert!(paths.contains(&PathBuf::from("hello.md")));
@@ -983,7 +983,7 @@ mod tests {
         );
 
         // Stronger dedup check: build a set from the result and confirm no
-        // collapse happened — guards against future impls that drop dedup.
+        // collapse happened, guards against future impls that drop dedup.
         let unique: std::collections::HashSet<_> = paths.iter().cloned().collect();
         assert_eq!(unique.len(), paths.len(), "result must be unique");
     }

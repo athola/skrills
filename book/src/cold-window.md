@@ -13,7 +13,7 @@ artifact:
 - **TUI**: ratatui-based panes in `skrills-dashboard::cold_window`
   (alert pane, hint pane, research pane, status bar), mounted in a
   crossterm raw-mode loop. Run with `--tui` (v0.8.2).
-- **Browser**: HTML page + Server-Sent Events stream in
+- **Browser**: HTML page and Server-Sent Events stream in
   `skrills-server::api::cold_window`. Run with `--browser` (v0.8.0).
 
 Both consume the same bus, so they can run together.
@@ -60,7 +60,7 @@ resize:
 
 - **Wide** (≥ 80 columns): alerts over hints in a 60% left column,
   research filling the 40% right column.
-- **Medium** (60–79 columns): the same two-column layout with a
+- **Medium** (60-79 columns): the same two-column layout with a
   slimmer research column so the alert and hint text keep their width.
 - **Narrow** (< 60 columns, e.g. a phone session or a split pane):
   every pane stacks full-width top to bottom. A collapsed research
@@ -102,7 +102,7 @@ the artifact is the contract.
 │   tick(input) → Arc<WindowSnapshot>                    │
 │                                                        │
 │   ↳ FieldwiseDiff       (snapshot diff)                │
-│   ↳ LayeredAlertPolicy  (4-tier + hysteresis)          │
+│   ↳ LayeredAlertPolicy  (4-tier and hysteresis)        │
 │   ↳ DefaultHintScorer   (intelligence::MultiSignal)    │
 │   ↳ LoadAwareCadence    (load-ratio backoff)           │
 └────────────────────┬───────────────────────────────────┘
@@ -135,7 +135,7 @@ Defaults are research-backed:
   [Too many Model Context Protocol servers](https://simonwillison.net/2025/Aug/22/too-many-mcps/)
   range).
 - **80% of `--alert-budget`** → `Warning`.
-- **100% of `--alert-budget`** → `Warning` + kill-switch engaged
+- **100% of `--alert-budget`** → `Warning` and kill-switch engaged
   (mutating sync operations refuse until master-acked).
 
 All thresholds are configurable via builder methods on
@@ -147,12 +147,12 @@ Two layers of XSS defense:
 
 1. The server `html_escape`s every user-derived string before it
    lands in a fragment.
-2. The browser swap path uses `DOMParser` + `replaceChildren`, which
+2. The browser swap path uses `DOMParser` and `replaceChildren`, which
    parses `<script>` tags into nodes that **do not execute** when
-   later attached to the document — even if Layer 1 ever regresses,
+   later attached to the document. Even if Layer 1 ever regresses,
    an injected payload can't run.
 
-When TLS is configured (`axum-server` + rustls), ALPN advertises
+When TLS is configured (`axum-server` and rustls), ALPN advertises
 `h2`. Multiple browser tabs in the same origin all stay subscribed
 past HTTP/1.1's 6-connection-per-origin limit because HTTP/2
 multiplexes streams.
@@ -179,7 +179,7 @@ name = "deps"
 status = "warn"
 ```
 
-Plugins without a `health.toml` are silently excluded — a missing
+Plugins without a `health.toml` are silently excluded. A missing
 file is the opt-out signal, not an error. **Malformed**
 `health.toml` files (parse error, unknown status string) trigger a
 deterministic `Caution`-tier alert with a stable fingerprint
@@ -195,12 +195,12 @@ implementations.
 
 | Pattern | Reference | Skrills' choice |
 |---|---|---|
-| Single-snapshot fan-out to TUI + browser | [ccboard](https://github.com/FlorianBruniaux/ccboard), [vector top](https://github.com/vectordotdev/vector/pull/4702), [Glances](https://github.com/nicolargo/glances) | `Arc<WindowSnapshot>` over a bounded broadcast channel; both surfaces are pure renderers. |
+| Single-snapshot fan-out to TUI and browser | [ccboard](https://github.com/FlorianBruniaux/ccboard), [vector top](https://github.com/vectordotdev/vector/pull/4702), [Glances](https://github.com/nicolargo/glances) | `Arc<WindowSnapshot>` over a bounded broadcast channel; both surfaces are pure renderers. |
 | Cold rewalk every tick | [Prometheus file_sd](https://github.com/prometheus/prometheus/blob/main/docs/http_sd.md), [fluent-bit `in_tail`](https://github.com/fluent/fluent-bit) | Full filesystem walk per tick within the SC1 200 ms p99 budget; no warm cache. |
 | Tick rate vs frame rate separation | [ratatui async-template](https://github.com/ratatui/async-template) | Adaptive cadence (state advance) is decoupled from SSE keep-alive (redraw). |
-| Hysteresis + min-dwell + tier filtering | [Prometheus Alertmanager `aggrGroup`](https://github.com/prometheus/alertmanager/blob/main/dispatch/dispatch.go), [ISA-18.2 alarm management](https://github.com/alerta/alerta) | 4-tier model with hysteresis clear ratio 0.95 and min-dwell 2 ticks. |
+| Hysteresis, min-dwell, and tier filtering | [Prometheus Alertmanager `aggrGroup`](https://github.com/prometheus/alertmanager/blob/main/dispatch/dispatch.go), [ISA-18.2 alarm management](https://github.com/alerta/alerta) | 4-tier model with hysteresis clear ratio 0.95 and min-dwell 2 ticks. |
 | Token-bucket quota with restart-resilient persistence | [governor](https://github.com/boinkor-net/governor), Sensu `dedup-key-template` | AlertManager-style research dispatcher with quota persisted at `~/.skrills/research-quota.json`. |
-| Defense-in-depth XSS posture | [axum-htmx](https://github.com/robertwayne/axum-htmx) | Server `html_escape` + browser `DOMParser` + `replaceChildren`. |
+| Defense-in-depth XSS posture | [axum-htmx](https://github.com/robertwayne/axum-htmx) | Server `html_escape`, then browser `DOMParser` and `replaceChildren`. |
 
 The user-pain quotes that anchor the threshold defaults
 (20 K Advisory, 50 K Caution) come from the
@@ -241,12 +241,12 @@ candidate or after touching the engine, browser, or shutdown code:
 
 ```sh
 make dogfood-cold-window-headless   # engine ticks 3 s, expects clean SIGTERM
-make dogfood-cold-window-chaos      # --no-adaptive + budget=1, kill-switch path
-make dogfood-cold-window-browser    # HTML+SSE parity + 2 s shutdown budget
+make dogfood-cold-window-chaos      # --no-adaptive and budget=1, kill-switch path
+make dogfood-cold-window-browser    # HTML/SSE parity and 2 s shutdown budget
 make dogfood-tui                    # tui TTY-or-graceful-refusal contract
 make dogfood-dashboard              # dashboard TTY-or-graceful-refusal contract
 make dogfood-skill-diff             # skill-diff --format json round-trips
-make dogfood-all                    # everything above + the original dogfood
+make dogfood-all                    # everything above and the original dogfood
 ```
 
 The browser target is the load-bearing one: it boots
@@ -258,7 +258,7 @@ emits matching `event:` lines plus at least four `data:`
 payloads. After that it sends `SIGTERM` and asserts the process
 exits inside the 2 s graceful-shutdown
 budget. The contract being tested is "the HTML page's listener
-set equals the SSE endpoint's emitter set" — the same parity
+set equals the SSE endpoint's emitter set", the same parity
 guarantee that the in-tree integration test
 [`crates/server/tests/cold_window_parity.rs`](https://github.com/athola/skrills/blob/master/crates/server/tests/cold_window_parity.rs)
 verifies via the broadcast bus directly. Together they cover
@@ -279,21 +279,21 @@ pattern (`crates/server/src/tui.rs:20-22` and
 The hint scorer surfaces these operational patterns when it detects
 the matching signal in the snapshot:
 
-1. **Hysteresis flapping** — if a Caution fires within min-dwell of
+1. **Hysteresis flapping**: if a Caution fires within min-dwell of
    the previous Caution on the same fingerprint, suggest raising
    the hysteresis floor by 5% (the signal is oscillating near the
    trigger boundary).
-2. **Research quota storm** — if the research dispatcher drains
+2. **Research quota storm**: if the research dispatcher drains
    > 80% of its hourly bucket in under the group interval, suggest
    widening the fetch interval or adding an inhibition rule for
    low-tier alerts.
-3. **Chattering Warning** — if a Warning resolves and re-fires
+3. **Chattering Warning**: if a Warning resolves and re-fires
    within the repeat interval, suggest adding a dead-band or
    shelving per ISA-18.2.
-4. **Cascade suppression** — if an Emergency alert fires while a
+4. **Cascade suppression**: if an Emergency alert fires while a
    Critical on the same fingerprint is unacked, surface a
    keystroke hint to master-ack the superseded Critical.
-5. **Span-of-control overload** — if the hint pane shows > 7
+5. **Span-of-control overload**: if the hint pane shows > 7
    active hints simultaneously, suggest shelving advisories or
    raising the Caution floor (ISA-18.2 §6.4 operator limit).
 

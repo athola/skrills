@@ -15,7 +15,7 @@
     async function refresh() {
         try {
             // On first load, fetch page 1. On subsequent refreshes, only
-            // update the total count — don't nuke already-loaded skills.
+            // update the total count; don't nuke already-loaded skills.
             const res = await fetch('/api/skills?limit=' + PAGE_SIZE);
             const data = await res.json();
             skillsTotal = data.total || 0;
@@ -176,7 +176,7 @@
     }
 
     function eventDetail(event) {
-        // No escapeHtml needed — callers set this via .textContent which is XSS-safe
+        // No escapeHtml needed; callers set this via .textContent which is XSS-safe
         if (event.type === 'SkillInvocation') {
             return (event.skill_name || '') + ' - ' + (event.success ? 'OK' : 'FAIL');
         }

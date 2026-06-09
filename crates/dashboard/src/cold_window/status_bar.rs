@@ -3,7 +3,7 @@
 //! Bottom-of-screen one-liner that surfaces the cold-window's
 //! operating profile so the user always knows what's active:
 //!
-//! - **tick rate + adaptive label**: `tick: 2.0s [base]`,
+//! - **tick rate and adaptive label**: `tick: 2.0s [base]`,
 //!   `tick: 4.0s [load 0.78]`, `tick: 1.0s [active edit]`.
 //! - **token budget**: `68K / 100K`.
 //! - **alert counts per tier**: `W:1 C:0 A:2 S:0`.
