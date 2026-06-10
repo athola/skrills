@@ -91,6 +91,13 @@ pub fn bindings() -> &'static [Binding] {
         },
         Binding {
             scope: BindingScope::Global,
+            keys: ":",
+            action: "commands",
+            codes: &[KeyCode::Char(':')],
+            modifier: false,
+        },
+        Binding {
+            scope: BindingScope::Global,
             keys: "Enter",
             action: "open detail",
             codes: &[KeyCode::Enter],
@@ -172,6 +179,97 @@ pub fn bindings_for(scope: BindingScope) -> Vec<&'static Binding> {
     bindings().iter().filter(|b| b.scope == scope).collect()
 }
 
+/// One command-palette row: a human-searchable label and the key code
+/// the command is equivalent to. Executing a palette entry replays its
+/// code through the normal key routing, so the palette can never drift
+/// from what the keys themselves do (k9s `:` pattern, TR-006).
+#[derive(Debug, Clone, Copy)]
+pub struct PaletteEntry {
+    /// Searchable label shown in the palette list.
+    pub label: &'static str,
+    /// The key code the entry replays on execution.
+    pub code: KeyCode,
+}
+
+/// Every command reachable from the `:` palette. Multi-key bindings
+/// (the `1`-`5` hint filters) expand to one labeled entry per key so
+/// the labels say what each key actually filters.
+pub fn palette_commands() -> &'static [PaletteEntry] {
+    const COMMANDS: &[PaletteEntry] = &[
+        PaletteEntry {
+            label: "help",
+            code: KeyCode::Char('?'),
+        },
+        PaletteEntry {
+            label: "next pane",
+            code: KeyCode::Tab,
+        },
+        PaletteEntry {
+            label: "open detail",
+            code: KeyCode::Enter,
+        },
+        PaletteEntry {
+            label: "zoom pane",
+            code: KeyCode::Char('z'),
+        },
+        PaletteEntry {
+            label: "ack all non-warnings",
+            code: KeyCode::Char('A'),
+        },
+        PaletteEntry {
+            label: "dismiss top warning",
+            code: KeyCode::Char('d'),
+        },
+        PaletteEntry {
+            label: "filter hints: token",
+            code: KeyCode::Char('1'),
+        },
+        PaletteEntry {
+            label: "filter hints: validation",
+            code: KeyCode::Char('2'),
+        },
+        PaletteEntry {
+            label: "filter hints: redundancy",
+            code: KeyCode::Char('3'),
+        },
+        PaletteEntry {
+            label: "filter hints: sync-drift",
+            code: KeyCode::Char('4'),
+        },
+        PaletteEntry {
+            label: "filter hints: quality",
+            code: KeyCode::Char('5'),
+        },
+        PaletteEntry {
+            label: "clear hint filter",
+            code: KeyCode::Char('0'),
+        },
+        PaletteEntry {
+            label: "pin top hint",
+            code: KeyCode::Char('P'),
+        },
+        PaletteEntry {
+            label: "toggle research panel",
+            code: KeyCode::Char('R'),
+        },
+        PaletteEntry {
+            label: "quit",
+            code: KeyCode::Char('q'),
+        },
+    ];
+    COMMANDS
+}
+
+/// Palette entries whose labels contain `query`, case-insensitively.
+/// An empty query matches everything.
+pub fn palette_matches(query: &str) -> Vec<&'static PaletteEntry> {
+    let needle = query.to_lowercase();
+    palette_commands()
+        .iter()
+        .filter(|e| e.label.to_lowercase().contains(&needle))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,6 +330,34 @@ mod tests {
                 "table is missing the {expected:?} binding"
             );
         }
+    }
+
+    #[test]
+    fn every_palette_command_replays_a_key_the_table_owns() {
+        // Sync guard (TR-006): a palette entry whose code no binding
+        // claims would silently do nothing when executed.
+        let owned: Vec<KeyCode> = bindings().iter().flat_map(|b| b.codes.to_vec()).collect();
+        for entry in palette_commands() {
+            assert!(
+                owned.contains(&entry.code),
+                "palette entry '{}' replays unbound key {:?}",
+                entry.label,
+                entry.code
+            );
+        }
+    }
+
+    #[test]
+    fn palette_matching_is_case_insensitive_substring() {
+        assert_eq!(
+            palette_matches("").len(),
+            palette_commands().len(),
+            "empty query matches everything"
+        );
+        let pins = palette_matches("PIN");
+        assert_eq!(pins.len(), 1);
+        assert_eq!(pins[0].label, "pin top hint");
+        assert!(palette_matches("no-such-command").is_empty());
     }
 
     #[test]

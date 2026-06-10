@@ -181,7 +181,7 @@ fn render_tui_text(snap: Arc<WindowSnapshot>) -> String {
                 Some(ResearchQuota::new(3, 10)),
                 BUDGET,
                 FocusTarget::Alerts,
-                false,
+                None,
                 f,
                 chunks[3],
             );

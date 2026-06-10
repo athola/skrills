@@ -90,6 +90,7 @@ bottom hint line shows only the keys valid for the focused pane, and
 | `q` / `Ctrl-C` | global | Quit (`q` closes an open overlay first) |
 | `Esc` | global | Close the topmost overlay; unzoom; no-op at base |
 | `?` | global | Toggle the help overlay |
+| `:` | global | Open the command palette (type to filter, Enter runs) |
 | `Tab` / `Shift-Tab` | global | Cycle pane focus |
 | `Up`/`Down`, `j`/`k` | global | Move the focused pane's selection |
 | `Enter` | global | Open detail for the selected item |

@@ -416,7 +416,7 @@ pub fn draw(
         research_quota,
         budget_ceiling,
         ui.focus,
-        !ui.overlays.is_empty(),
+        ui.overlays.top(),
         frame,
         layout.status,
     );
@@ -453,6 +453,12 @@ pub fn handle_key(
         return KeyOutcome::Quit;
     }
 
+    // The palette is a text-input surface: it must see raw characters
+    // (including `q` and `?`) before any global binding fires.
+    if matches!(ui.overlays.top(), Some(Overlay::Palette { .. })) {
+        return handle_palette_key(key.code, ui, snap_state, hint_state, research_state);
+    }
+
     match key.code {
         KeyCode::Char('q') | KeyCode::Char('Q') => {
             return if ui.overlays.pop().is_some() {
@@ -480,6 +486,16 @@ pub fn handle_key(
         } else {
             ui.overlays.push(Overlay::Help);
         }
+        return KeyOutcome::Redraw;
+    }
+
+    // `:` opens the command palette (the novice-expert bridge; k9s
+    // pattern). The palette branch above then owns the keyboard.
+    if key.code == KeyCode::Char(':') {
+        ui.overlays.push(Overlay::Palette {
+            query: String::new(),
+            selected: 0,
+        });
         return KeyOutcome::Redraw;
     }
 
@@ -545,6 +561,77 @@ fn focused_list_len(
             .as_deref()
             .map(|s| s.research_findings.len())
             .unwrap_or(0),
+    }
+}
+
+/// Keystroke routing while the command palette is the topmost overlay.
+///
+/// Characters edit the query, `Up`/`Down` move the selection within
+/// the filtered list, `Enter` closes the palette and replays the
+/// selected command's key through [`handle_key`] (so palette execution
+/// can never drift from what the key itself does), and `Esc` closes
+/// without running anything.
+fn handle_palette_key(
+    code: KeyCode,
+    ui: &mut UiState,
+    snap_state: &mut ColdWindowState,
+    hint_state: &mut HintPaneState,
+    research_state: &mut ResearchPaneState,
+) -> KeyOutcome {
+    use super::focus::{clamped_selection, step_selection};
+    use super::keymap::palette_matches;
+
+    // Take the palette off the stack, mutate, and decide whether to
+    // put it back; avoids aliasing the stack while editing its top.
+    let Some(Overlay::Palette {
+        mut query,
+        mut selected,
+    }) = ui.overlays.pop()
+    else {
+        return KeyOutcome::Redraw;
+    };
+
+    match code {
+        KeyCode::Esc => KeyOutcome::Redraw, // closed, nothing run
+        KeyCode::Enter => {
+            let matches = palette_matches(&query);
+            let Some(index) = clamped_selection(selected, matches.len()) else {
+                // No matching command: keep the palette open so the
+                // user can fix the query.
+                ui.overlays.push(Overlay::Palette { query, selected });
+                return KeyOutcome::Redraw;
+            };
+            let replay = matches[index].code;
+            handle_key(
+                KeyEvent::new(replay, KeyModifiers::NONE),
+                ui,
+                snap_state,
+                hint_state,
+                research_state,
+            )
+        }
+        KeyCode::Up | KeyCode::Down => {
+            let len = palette_matches(&query).len();
+            selected = step_selection(selected, code == KeyCode::Down, len);
+            ui.overlays.push(Overlay::Palette { query, selected });
+            KeyOutcome::Redraw
+        }
+        KeyCode::Backspace => {
+            query.pop();
+            selected = 0;
+            ui.overlays.push(Overlay::Palette { query, selected });
+            KeyOutcome::Redraw
+        }
+        KeyCode::Char(c) => {
+            query.push(c);
+            selected = 0;
+            ui.overlays.push(Overlay::Palette { query, selected });
+            KeyOutcome::Redraw
+        }
+        _ => {
+            ui.overlays.push(Overlay::Palette { query, selected });
+            KeyOutcome::Redraw
+        }
     }
 }
 
@@ -1507,6 +1594,23 @@ mod tests {
         let narrow = bottom_row(&UiState::new(), 40, 12);
         assert!(narrow.contains("? help"), "got: {narrow:?}");
         assert!(narrow.contains('…'), "truncation marked, got: {narrow:?}");
+
+        // T11: the palette gets its own hint line; `q close` would be
+        // a lie there since q types into the query.
+        let mut palette_ui = UiState::new();
+        palette_ui.overlays.push(Overlay::Palette {
+            query: String::new(),
+            selected: 0,
+        });
+        let with_palette = bottom_row(&palette_ui, 120, 40);
+        assert!(
+            with_palette.contains("Enter run"),
+            "palette hints shown, got: {with_palette}"
+        );
+        assert!(
+            !with_palette.contains("q close"),
+            "generic overlay hints would mislead in the palette, got: {with_palette}"
+        );
     }
 
     #[test]
@@ -1555,6 +1659,115 @@ mod tests {
         assert!(
             ui.overlays.is_empty(),
             "Enter with nothing selected must not open a blank popup"
+        );
+    }
+
+    #[test]
+    fn colon_opens_the_palette_and_typed_keys_edit_the_query() {
+        // T11: inside the palette, `q` and `?` are text, not globals.
+        let mut ui = UiState::new();
+        let mut s = ColdWindowState::new();
+        s.ingest(rich_snapshot());
+        let mut h = HintPaneState::new();
+        let mut r = ResearchPaneState::default();
+
+        handle_key(key(KeyCode::Char(':')), &mut ui, &mut s, &mut h, &mut r);
+        assert!(matches!(ui.overlays.top(), Some(Overlay::Palette { .. })));
+
+        let outcome = handle_key(key(KeyCode::Char('q')), &mut ui, &mut s, &mut h, &mut r);
+        assert_eq!(
+            outcome,
+            KeyOutcome::Redraw,
+            "q must not quit in the palette"
+        );
+        handle_key(key(KeyCode::Char('?')), &mut ui, &mut s, &mut h, &mut r);
+        match ui.overlays.top() {
+            Some(Overlay::Palette { query, .. }) => {
+                assert_eq!(query, "q?", "typed characters land in the query")
+            }
+            other => panic!("palette must stay open, got {other:?}"),
+        }
+
+        handle_key(key(KeyCode::Backspace), &mut ui, &mut s, &mut h, &mut r);
+        match ui.overlays.top() {
+            Some(Overlay::Palette { query, .. }) => assert_eq!(query, "q"),
+            other => panic!("expected palette, got {other:?}"),
+        }
+
+        handle_key(key(KeyCode::Esc), &mut ui, &mut s, &mut h, &mut r);
+        assert!(ui.overlays.is_empty(), "Esc closes the palette");
+    }
+
+    #[test]
+    fn palette_enter_replays_the_selected_command() {
+        // T11/TR-006: executing 'zoom pane' must behave exactly like
+        // pressing `z`, because the palette replays the key.
+        let mut ui = UiState::new();
+        let mut s = ColdWindowState::new();
+        s.ingest(rich_snapshot());
+        let mut h = HintPaneState::new();
+        let mut r = ResearchPaneState::default();
+
+        handle_key(key(KeyCode::Char(':')), &mut ui, &mut s, &mut h, &mut r);
+        for c in "zoom".chars() {
+            handle_key(key(KeyCode::Char(c)), &mut ui, &mut s, &mut h, &mut r);
+        }
+        handle_key(key(KeyCode::Enter), &mut ui, &mut s, &mut h, &mut r);
+        assert!(ui.zoomed, "palette 'zoom pane' must zoom");
+        assert!(ui.overlays.is_empty(), "palette closes after running");
+
+        // 'quit' from the palette quits, exactly like q at the base.
+        handle_key(key(KeyCode::Char(':')), &mut ui, &mut s, &mut h, &mut r);
+        for c in "quit".chars() {
+            handle_key(key(KeyCode::Char(c)), &mut ui, &mut s, &mut h, &mut r);
+        }
+        let outcome = handle_key(key(KeyCode::Enter), &mut ui, &mut s, &mut h, &mut r);
+        assert_eq!(outcome, KeyOutcome::Quit);
+
+        // A query matching nothing keeps the palette open on Enter.
+        let mut ui2 = UiState::new();
+        handle_key(key(KeyCode::Char(':')), &mut ui2, &mut s, &mut h, &mut r);
+        handle_key(key(KeyCode::Char('x')), &mut ui2, &mut s, &mut h, &mut r);
+        handle_key(key(KeyCode::Char('x')), &mut ui2, &mut s, &mut h, &mut r);
+        handle_key(key(KeyCode::Enter), &mut ui2, &mut s, &mut h, &mut r);
+        assert!(
+            matches!(ui2.overlays.top(), Some(Overlay::Palette { .. })),
+            "Enter with no match keeps the palette for query fixes"
+        );
+    }
+
+    #[test]
+    fn palette_renders_query_and_filtered_commands() {
+        let mut snap_state = ColdWindowState::new();
+        snap_state.ingest(rich_snapshot());
+        let hint_state = HintPaneState::new();
+        let research_state = ResearchPaneState::default();
+        let mut ui = UiState::new();
+        ui.overlays.push(Overlay::Palette {
+            query: "filter".into(),
+            selected: 1,
+        });
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|f| {
+                draw(
+                    f,
+                    &ui,
+                    &snap_state,
+                    &hint_state,
+                    &research_state,
+                    None,
+                    100_000,
+                )
+            })
+            .unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains("Commands"), "palette frame visible: {text}");
+        assert!(text.contains("filter hints: token"), "matches listed");
+        assert!(
+            !text.contains("zoom pane"),
+            "non-matching commands filtered out"
         );
     }
 

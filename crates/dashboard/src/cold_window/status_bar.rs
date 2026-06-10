@@ -21,6 +21,7 @@ use skrills_snapshot::{ResearchQuota, WindowSnapshot};
 
 use super::focus::FocusTarget;
 use super::keymap::{bindings_for, BindingScope};
+use super::overlay::Overlay;
 use super::state::ColdWindowState;
 
 /// Minimum hint-segment width: room for the always-present `? help`
@@ -42,7 +43,7 @@ impl StatusBar {
         research_quota: Option<ResearchQuota>,
         budget_ceiling: u64,
         focus: FocusTarget,
-        overlay_open: bool,
+        topmost_overlay: Option<&Overlay>,
         frame: &mut Frame<'_>,
         area: Rect,
     ) {
@@ -51,7 +52,7 @@ impl StatusBar {
 
         // Hints overdraw the left segment's tail when space runs out:
         // discoverability beats a clipped token count (FR-2.3).
-        let hints = hint_text(focus, overlay_open);
+        let hints = hint_text(focus, topmost_overlay);
         let want = u16::try_from(hints.chars().count()).unwrap_or(u16::MAX);
         let width = want.min(area.width).max(MIN_HINT_WIDTH.min(area.width));
         let shown = truncate_with_ellipsis(&hints, width);
@@ -120,11 +121,16 @@ fn build_line<'a>(
 ///
 /// `? help` leads so it survives right-truncation; the focused pane's
 /// keys follow, then the globals. With an overlay open, the overlay's
-/// keys replace the pane keys entirely (FR-2.2). Content derives from
-/// the keymap table, the single source of truth.
-pub fn hint_text(focus: FocusTarget, overlay_open: bool) -> String {
-    if overlay_open {
-        return "? help  Esc close  q close".to_string();
+/// keys replace the pane keys entirely (FR-2.2); the palette gets its
+/// own line because `q` types there instead of closing. Content
+/// derives from the keymap table, the single source of truth.
+pub fn hint_text(focus: FocusTarget, topmost_overlay: Option<&Overlay>) -> String {
+    match topmost_overlay {
+        Some(Overlay::Palette { .. }) => {
+            return "Enter run  Up/Down select  Esc close".to_string();
+        }
+        Some(_) => return "? help  Esc close  q close".to_string(),
+        None => {}
     }
     let scope = match focus {
         FocusTarget::Alerts => BindingScope::Alerts,
@@ -331,7 +337,7 @@ mod tests {
                     None,
                     100_000,
                     FocusTarget::Alerts,
-                    false,
+                    None,
                     f,
                     f.area(),
                 )

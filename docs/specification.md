@@ -112,6 +112,21 @@ requires CONTROL/ALT modifiers.
 - FR-7.2: Pane content styling uses semantic colors with meaning duplicated in text
   (severity tags remain textual). No animation, fade, or spinner in the base surface.
 
+### FR-8: Command palette (added post-mission by user directive)
+
+- FR-8.1: `:` opens a palette overlay listing all commands; typing filters the list
+  case-insensitively; Up/Down move the selection; Esc closes without running.
+- FR-8.2: Inside the palette, printable keys (including `q` and `?`) edit the query;
+  they never trigger global bindings.
+- FR-8.3: Enter executes the selected command by replaying its key code through the
+  normal key routing (single source of execution semantics); Enter with no match keeps
+  the palette open.
+- FR-8.4: Every palette entry's key code must be owned by the keymap table (sync test).
+
+Acceptance: tests colon_opens_the_palette_and_typed_keys_edit_the_query,
+palette_enter_replays_the_selected_command, palette_renders_query_and_filtered_commands,
+every_palette_command_replays_a_key_the_table_owns.
+
 ## Non-Functional Requirements
 
 - NFR-1: All new logic (layout planning, focus, overlay stack, hint bar content) is
@@ -127,7 +142,6 @@ requires CONTROL/ALT modifiers.
 
 ## Out of Scope
 
-- Command palette (`:`) - deferred to backlog (brief decision 7, last priority).
 - Server TUI implementation changes beyond doc alignment.
 - Mouse interaction, browser surface, new permanent panes.
 

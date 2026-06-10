@@ -31,6 +31,14 @@ pub enum Overlay {
         /// Pre-formatted body lines.
         lines: Vec<String>,
     },
+    /// The `:` command palette: type to filter, `Enter` runs the
+    /// selected command by replaying its key (k9s pattern, TR-006).
+    Palette {
+        /// Current filter text.
+        query: String,
+        /// Cursor into the filtered command list.
+        selected: usize,
+    },
 }
 
 /// LIFO stack of modal overlays. Empty stack means the base surface
@@ -83,7 +91,49 @@ pub fn render(stack: &OverlayStack, focus: FocusTarget, frame: &mut Frame<'_>) {
     match top {
         Overlay::Help => render_help(focus, frame, area),
         Overlay::Detail { title, lines } => render_detail(title, lines, frame, area),
+        Overlay::Palette { query, selected } => render_palette(query, *selected, frame, area),
     }
+}
+
+fn render_palette(query: &str, selected: usize, frame: &mut Frame<'_>, area: Rect) {
+    use super::focus::clamped_selection;
+    use super::keymap::palette_matches;
+
+    let matches = palette_matches(query);
+    let cursor = clamped_selection(selected, matches.len());
+    let mut lines = vec![Line::from(vec![
+        Span::styled(" : ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(query.to_string()),
+        Span::styled("_", Style::default().add_modifier(Modifier::SLOW_BLINK)),
+    ])];
+    if matches.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "   no matching command",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+    for (i, entry) in matches.iter().enumerate() {
+        let marker = if cursor == Some(i) { " > " } else { "   " };
+        let style = if cursor == Some(i) {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{marker}{}", entry.label),
+            style,
+        )));
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().add_modifier(Modifier::BOLD))
+        .title(" Commands (Enter run, Esc close) ");
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn render_help(focus: FocusTarget, frame: &mut Frame<'_>, area: Rect) {

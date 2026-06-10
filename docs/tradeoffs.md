@@ -18,6 +18,7 @@ we deliberately gave up. Records the *why*, not just the *what*.
 | TR-003 | proposed | Compact tier hides unfocused panes instead of squeezing all panes | 2026-06-10 |
 | TR-004 | proposed | Overlay stack implemented in-tree; no tui-popup dependency | 2026-06-10 |
 | TR-005 | proposed | Add minimal per-pane selection cursors to enable Enter drill-down | 2026-06-10 |
+| TR-006 | proposed | Command palette executes by replaying key codes through handle_key | 2026-06-10 |
 
 ## Decisions
 
@@ -160,6 +161,34 @@ Add clamped selection indices (T5) rendered with a non-color marker; research pa
 ### Y-statement
 
 In the context of drill-down, we chose minimal selection cursors over a selection-free model so any item is inspectable, accepting new pane state.
+
+## TR-006: Command palette executes by replaying key codes through handle_key
+
+- Status: proposed
+- Date: 2026-06-10
+- Phase: execute
+- Deciders: -
+- Links: ['docs/specification.md FR-8', 'crates/dashboard/src/cold_window/keymap.rs palette_commands']
+<!-- key: fe3dff49a731 -->
+
+### Context & problem
+
+The ':' palette (FR-8, deferred item picked up by user directive) needs to execute commands. Alternatives: a dedicated command enum with its own execution functions, or replaying the equivalent key code through the existing routing.
+
+### Options considered
+
+| Option | Pros | Cons / what it sacrifices |
+|--------|------|---------------------------|
+| Replay the entry key code through handle_key after closing the palette (chosen) | single source of execution semantics; palette can never drift from keybindings; sync test enforces every entry maps to an owned key; ~60 lines total | commands are limited to what keys can express; one level of controlled recursion |
+| Dedicated PaletteCommand enum with explicit execution arms | commands could take arguments later | duplicates every action; help/hint/palette can disagree; more code to keep in sync |
+
+### Decision
+
+Palette entries carry a label plus the KeyCode they replay; Enter pops the palette and re-enters handle_key with a synthetic key event (TR-006).
+
+### Y-statement
+
+In the context of palette execution, we chose key replay over a command enum so the palette and keybindings share one behavior, accepting key-expressible commands only.
 
 ## Archive
 
