@@ -121,6 +121,11 @@ pub enum KeyOutcome {
     Redraw,
 }
 
+/// Width at or above which the stacked Narrow layout still has room
+/// for three readable panes. Below it (phone SSH sessions, slim split
+/// panes) the Compact tier shows only the focused pane: hiding panes
+/// beats squeezing them into unreadable slivers (TR-003).
+const NARROW_MIN_WIDTH: u16 = 45;
 /// Width at or above which the two-column layout becomes legible.
 /// Below it the panes stack into a single full-width column (phones,
 /// split panes); the actual narrow maximum is therefore one less than
@@ -146,8 +151,13 @@ pub enum LayoutMode {
     /// `60 <= width < 80`: same two-column topology as [`LayoutMode::Wide`], but the
     /// research column is narrowed so the left text stays readable.
     Medium,
-    /// `width < 60`: every pane full-width, stacked top to bottom.
+    /// `45 <= width < 60`: every pane full-width, stacked top to
+    /// bottom.
     Narrow,
+    /// `width < 45`: only the focused pane plus the status bar; focus
+    /// is visibility (`Tab` switches which pane shows). The mobile
+    /// tier (FR-6).
+    Compact,
 }
 
 /// Pick the responsive tier for `area`.
@@ -156,9 +166,22 @@ pub fn layout_mode(area: Rect) -> LayoutMode {
         LayoutMode::Wide
     } else if area.width >= MEDIUM_MIN_WIDTH {
         LayoutMode::Medium
-    } else {
+    } else if area.width >= NARROW_MIN_WIDTH {
         LayoutMode::Narrow
+    } else {
+        LayoutMode::Compact
     }
+}
+
+/// Hard floor below which panes are unrenderable; [`draw`] shows a
+/// one-line guard message instead of clipped pane fragments (FR-6.3).
+const GUARD_MIN_WIDTH: u16 = 20;
+/// See [`GUARD_MIN_WIDTH`].
+const GUARD_MIN_HEIGHT: u16 = 6;
+
+/// True when `area` is below the renderable floor.
+pub fn below_size_floor(area: Rect) -> bool {
+    area.width < GUARD_MIN_WIDTH || area.height < GUARD_MIN_HEIGHT
 }
 
 /// Where each pane is drawn for a given frame. Produced by
@@ -198,13 +221,22 @@ pub fn plan_layout(area: Rect, research_collapsed: bool) -> ColdWindowLayout {
 /// `zoom = Some(pane)` hands that pane the entire body at every tier;
 /// the other panes get zero-sized rects (ratatui draws nothing into an
 /// empty `Rect`). The status bar stays pinned regardless.
+///
+/// The Compact tier (FR-6) reuses the same single-pane shape: below
+/// [`NARROW_MIN_WIDTH`] columns the focused pane is the layout,
+/// whether or not the user zoomed.
 pub fn plan_layout_with(
     area: Rect,
     research_collapsed: bool,
     zoom: Option<FocusTarget>,
 ) -> ColdWindowLayout {
-    let Some(pane) = zoom else {
-        return plan_for(layout_mode(area), area, research_collapsed);
+    let mode = layout_mode(area);
+    let pane = match (zoom, mode) {
+        (Some(p), _) => p,
+        // Compact without an explicit zoom target falls back to the
+        // first pane; `draw` always passes the focused pane here.
+        (None, LayoutMode::Compact) => FocusTarget::Alerts,
+        (None, _) => return plan_for(mode, area, research_collapsed),
     };
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -279,6 +311,15 @@ fn plan_for(mode: LayoutMode, area: Rect, research_collapsed: bool) -> ColdWindo
                 status,
             }
         }
+        // Single-pane tier: handled by `plan_layout_with`, which knows
+        // the focused pane; reaching here without one means a direct
+        // `plan_for` call, where alerts is the only sensible default.
+        LayoutMode::Compact => ColdWindowLayout {
+            alerts: body,
+            hints: Rect::default(),
+            research: Rect::default(),
+            status,
+        },
     }
 }
 
@@ -321,10 +362,26 @@ pub fn draw(
     research_quota: Option<ResearchQuota>,
     budget_ceiling: u64,
 ) {
+    let area = frame.area();
+    // Below the hard floor nothing renders usefully: show the guard
+    // line instead of clipped pane fragments (FR-6.3).
+    if below_size_floor(area) {
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new(format!(
+                "terminal too small (need >= {GUARD_MIN_WIDTH}x{GUARD_MIN_HEIGHT})"
+            )),
+            area,
+        );
+        return;
+    }
+
+    // Compact (FR-6) and zoom (FR-5.2) share the single-pane layout:
+    // either way the focused pane owns the body.
+    let compact = layout_mode(area) == LayoutMode::Compact;
     let layout = plan_layout_with(
-        frame.area(),
+        area,
         research_state.collapsed,
-        ui.zoomed.then_some(ui.focus),
+        (ui.zoomed || compact).then_some(ui.focus),
     );
 
     // The selection cursor renders only on the focused pane; unfocused
@@ -892,7 +949,9 @@ mod tests {
         assert_eq!(layout_mode(area(79, 24)), LayoutMode::Medium);
         assert_eq!(layout_mode(area(60, 24)), LayoutMode::Medium);
         assert_eq!(layout_mode(area(59, 24)), LayoutMode::Narrow);
-        assert_eq!(layout_mode(area(40, 30)), LayoutMode::Narrow);
+        assert_eq!(layout_mode(area(45, 24)), LayoutMode::Narrow);
+        assert_eq!(layout_mode(area(44, 24)), LayoutMode::Compact);
+        assert_eq!(layout_mode(area(40, 30)), LayoutMode::Compact);
     }
 
     #[test]
@@ -968,7 +1027,7 @@ mod tests {
 
     #[test]
     fn narrow_stacks_panes_in_a_single_full_width_column() {
-        let w = 44;
+        let w = 50;
         let l = plan_layout(area(w, 30), true);
         for (name, r) in [
             ("alerts", l.alerts),
@@ -984,8 +1043,8 @@ mod tests {
 
     #[test]
     fn narrow_research_grows_when_expanded() {
-        let collapsed = plan_layout(area(44, 30), true);
-        let expanded = plan_layout(area(44, 30), false);
+        let collapsed = plan_layout(area(50, 30), true);
+        let expanded = plan_layout(area(50, 30), false);
         assert_eq!(
             collapsed.research.height, 3,
             "collapsed research is a 3-line badge"
@@ -1049,7 +1108,7 @@ mod tests {
         // with real vertical room. Its title carries the "findings"
         // marker that the collapsed badge ("press R to expand") never
         // shows, proving the expanded path reached the row renderer.
-        let mut narrow = Terminal::new(TestBackend::new(44, 30)).unwrap();
+        let mut narrow = Terminal::new(TestBackend::new(50, 30)).unwrap();
         narrow
             .draw(|f| {
                 draw(
@@ -1267,6 +1326,80 @@ mod tests {
             "unselected row must not carry the marker, got: {first:?}"
         );
         assert!(second.contains("second-alert"), "marker on the right row");
+    }
+
+    #[test]
+    fn compact_tier_draws_only_the_focused_pane() {
+        // FR-6.1/FR-6.2: below 45 columns, focus is visibility; the
+        // other panes' titles must not appear anywhere on the frame.
+        let mut snap_state = ColdWindowState::new();
+        snap_state.ingest(rich_snapshot());
+        let hint_state = HintPaneState::new();
+        let research_state = ResearchPaneState::default();
+        let mut ui = UiState::new();
+        ui.focus = FocusTarget::Hints;
+
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        terminal
+            .draw(|f| {
+                draw(
+                    f,
+                    &ui,
+                    &snap_state,
+                    &hint_state,
+                    &research_state,
+                    None,
+                    100_000,
+                )
+            })
+            .unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains("> Hints"), "focused pane visible: {text}");
+        assert!(
+            !text.contains("Alerts  W:"),
+            "alert pane must be hidden in compact, got: {text}"
+        );
+    }
+
+    #[test]
+    fn size_guard_replaces_panes_below_the_floor() {
+        // FR-6.3: 20x6 is the floor; below it (either dimension) the
+        // guard message is the whole frame.
+        let snap_state = ColdWindowState::new();
+        let hint_state = HintPaneState::new();
+        let research_state = ResearchPaneState::default();
+        let ui = UiState::new();
+
+        let render_at = |w: u16, h: u16| -> String {
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+            terminal
+                .draw(|f| {
+                    draw(
+                        f,
+                        &ui,
+                        &snap_state,
+                        &hint_state,
+                        &research_state,
+                        None,
+                        100_000,
+                    )
+                })
+                .unwrap();
+            buffer_text(&terminal)
+        };
+
+        assert!(
+            render_at(19, 10).contains("terminal too small"),
+            "width below floor must show the guard"
+        );
+        assert!(
+            render_at(30, 5).contains("terminal too small"),
+            "height below floor must show the guard"
+        );
+        assert!(
+            !render_at(20, 6).contains("terminal too small"),
+            "exactly at the floor the panes render"
+        );
     }
 
     #[test]

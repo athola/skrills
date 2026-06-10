@@ -103,8 +103,12 @@ requires CONTROL/ALT modifiers.
 
 ### FR-7: Restraint invariants (regression guards)
 
-- FR-7.1: Repaints occur only on snapshot/key/resize events (already true; add a test
-  or doc-test asserting no timer-driven render path exists).
+- FR-7.1 (amended during execution): Repaints occur on snapshot/key/resize events plus
+  the pre-existing, deliberate 250ms repaint floor that keeps the status bar's
+  quota/clock fresh (the original "already true" claim was wrong - the floor predates
+  this mission and is load-bearing). Acceptable because ratatui diffs buffers: an idle
+  floor repaint with unchanged content emits zero terminal writes, so screen readers
+  and scrollback are not spammed. No new timer-driven render paths may be added.
 - FR-7.2: Pane content styling uses semantic colors with meaning duplicated in text
   (severity tags remain textual). No animation, fade, or spinner in the base surface.
 

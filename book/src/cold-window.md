@@ -27,7 +27,8 @@ terminal:
 skrills cold-window --tui
 ```
 
-Quit with `q` or `Ctrl-C`. Prefer a browser? Run the SSE surface
+Quit with `q` or `Ctrl-C`; press `?` for contextual help. Prefer
+a browser? Run the SSE surface
 instead (or alongside):
 
 ```bash
@@ -62,12 +63,48 @@ resize:
   research filling the 40% right column.
 - **Medium** (60-79 columns): the same two-column layout with a
   slimmer research column so the alert and hint text keep their width.
-- **Narrow** (< 60 columns, e.g. a phone session or a split pane):
-  every pane stacks full-width top to bottom. A collapsed research
-  pane shrinks to a fixed three-line badge so alerts and hints keep
-  the room.
+- **Narrow** (45-59 columns, e.g. a split pane): every pane stacks
+  full-width top to bottom. A collapsed research pane shrinks to a
+  fixed three-line badge so alerts and hints keep the room.
+- **Compact** (< 45 columns, e.g. a phone SSH session): only the
+  focused pane renders; `Tab` switches which pane is visible. Hiding
+  panes beats squeezing them into unreadable slivers.
 
-The status bar stays pinned to the bottom row in every tier.
+Below a hard floor of 20x6 the panes give way to a one-line
+"terminal too small" guard. The status bar stays pinned to the
+bottom row in every tier, with the contextual key hints for the
+focused pane right-aligned on it. `z` zooms the focused pane to the
+full body at any tier: the escape hatch when one pane needs all the
+room.
+
+## Keybindings
+
+The default surface is deliberately minimal: every data-rich or
+configuration view opens as a modal overlay (drill-down details,
+keybinding help), so depth never costs permanent screen space. The
+bottom hint line shows only the keys valid for the focused pane, and
+`?` opens the full reference scoped to it.
+
+| Key | Scope | Action |
+|---|---|---|
+| `q` / `Ctrl-C` | global | Quit (`q` closes an open overlay first) |
+| `Esc` | global | Close the topmost overlay; unzoom; no-op at base |
+| `?` | global | Toggle the help overlay |
+| `Tab` / `Shift-Tab` | global | Cycle pane focus |
+| `Up`/`Down`, `j`/`k` | global | Move the focused pane's selection |
+| `Enter` | global | Open detail for the selected item |
+| `z` | global | Zoom the focused pane |
+| `A` | alerts | Acknowledge all non-warning alerts |
+| `d` | alerts | Dismiss the top warning |
+| `1`-`5` / `0` | hints | Filter by category / clear filter |
+| `P` | hints | Pin the top hint |
+| `R` | research | Expand or collapse the findings panel |
+
+Breaking change in 0.8.2: `Esc` no longer quits. It dismisses
+overlays (and zoom) the way it does in lazygit, gitui, and k9s; `q`
+and `Ctrl-C` remain the quit keys. Every action is reachable without
+CTRL/ALT modifiers, so the TUI stays usable from phone keyboards
+over SSH.
 
 `Ctrl-C` exits cleanly within the 2-second shutdown budget. The
 browser sees a `status` event with `reconnecting…` while the server

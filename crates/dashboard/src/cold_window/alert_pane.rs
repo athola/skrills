@@ -213,6 +213,35 @@ mod tests {
     }
 
     #[test]
+    fn severity_stays_textual_so_meaning_survives_without_color() {
+        // FR-7.2: tier colors are decoration; the severity tag itself
+        // is text, so a monochrome terminal loses nothing semantic.
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = ColdWindowState::new();
+        state.ingest(snap(vec![
+            alert("w1", Severity::Warning),
+            alert("c1", Severity::Caution),
+        ]));
+        terminal
+            .draw(|f| AlertPane::render(&state, f, f.area(), false, None))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        for severity in [Severity::Warning, Severity::Caution] {
+            assert!(
+                text.contains(severity.short_label()),
+                "severity {severity:?} must appear as text, got: {text}"
+            );
+        }
+    }
+
+    #[test]
     fn render_does_not_panic_on_empty_state() {
         let backend = TestBackend::new(80, 10);
         let mut terminal = Terminal::new(backend).unwrap();

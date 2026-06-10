@@ -131,7 +131,8 @@ Code: gitui, atuin, lazygit, yazi, zellij, taskwarrior-tui, crates-tui, ratatui 
 ratatui/tui-widgets, ratatui/templates, awesome-ratatui.
 Discourse: HN 45878578 (lazygit, 436 pts), Jesse Duffield "Lazygit Turns 5", Lobsters
 "Why TUIs are back", Lobsters "The text mode lie", Jens Roemer "TUI design", Changelog
-#511 (Will McGugan), cosyra.com "TUI apps on phone", awesometui.com, rothgar/awesome-tuis.
+episode 511 (Will McGugan), cosyra.com "TUI apps on phone", awesometui.com,
+rothgar/awesome-tuis.
 Academic: Shneiderman 1996 (VL); Bach et al. 2022 (TVCG); Sarikaya et al. 2018 (TVCG);
 Cockburn et al. 2014 (CSUR); Tak et al. 2013 (IwC); Cui et al. 2019 (CHI); Kim et al.
 2021 (CGF); Elmqvist & Fekete 2009 (TVCG); Heer & Shneiderman 2012 (CACM); Springer &
