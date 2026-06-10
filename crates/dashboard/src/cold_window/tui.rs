@@ -32,9 +32,30 @@ use ratatui::Terminal;
 use skrills_snapshot::{ResearchQuota, WindowSnapshot};
 use tokio::sync::{broadcast, watch};
 
+use super::focus::FocusTarget;
+use super::overlay::{self, Overlay, OverlayStack};
 use super::{
     AlertPane, ColdWindowState, HintPane, HintPaneState, ResearchPane, ResearchPaneState, StatusBar,
 };
+
+/// Interface-level state that belongs to the TUI shell rather than any
+/// pane: which pane holds focus and the modal overlay stack (and, in a
+/// later increment, the zoom flag). Kept separate from pane state so
+/// panes stay ignorant of the focus and overlay models.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UiState {
+    /// The pane currently holding focus (default: alerts).
+    pub focus: FocusTarget,
+    /// Open modal overlays; the topmost consumes all keys.
+    pub overlays: OverlayStack,
+}
+
+impl UiState {
+    /// Fresh interface state: focus on alerts.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
 
 /// A pull-on-demand research-quota source. The runner calls it once
 /// per repaint so the status bar reflects live bucket drain rather
@@ -214,6 +235,7 @@ fn columnar(body: Rect, status: Rect, left_pct: u16) -> ColdWindowLayout {
 /// in every tier.
 pub fn draw(
     frame: &mut Frame<'_>,
+    ui: &UiState,
     snap_state: &ColdWindowState,
     hint_state: &HintPaneState,
     research_state: &ResearchPaneState,
@@ -222,9 +244,26 @@ pub fn draw(
 ) {
     let layout = plan_layout(frame.area(), research_state.collapsed);
 
-    AlertPane::render(snap_state, frame, layout.alerts);
-    HintPane::render(snap_state, hint_state, frame, layout.hints);
-    ResearchPane::render(snap_state, research_state, frame, layout.research);
+    AlertPane::render(
+        snap_state,
+        frame,
+        layout.alerts,
+        ui.focus == FocusTarget::Alerts,
+    );
+    HintPane::render(
+        snap_state,
+        hint_state,
+        frame,
+        layout.hints,
+        ui.focus == FocusTarget::Hints,
+    );
+    ResearchPane::render(
+        snap_state,
+        research_state,
+        frame,
+        layout.research,
+        ui.focus == FocusTarget::Research,
+    );
     StatusBar::render(
         snap_state,
         research_quota,
@@ -232,29 +271,82 @@ pub fn draw(
         frame,
         layout.status,
     );
+
+    // Modal surfaces draw last, over the panes (FR-4.3).
+    overlay::render(&ui.overlays, ui.focus, frame);
 }
 
-/// Route a keystroke to the panes.
+/// Route a keystroke to the interface state and panes.
 ///
-/// Global keys win first: `q`/`Esc`/`Ctrl-C` quit. Everything else is
-/// forwarded to all three pane handlers, their keybindings are
-/// disjoint (`A`/`d` for alerts, `0`-`5`/`P` for hints, `R` for
-/// research), so there is no focus model to manage.
+/// Routing order (FR-4):
+///
+/// 1. `Ctrl-C` always quits.
+/// 2. `q` closes the topmost overlay; at the base surface it quits.
+/// 3. `Esc` closes the topmost overlay; at the base surface it does
+///    nothing (BREAKING since 0.8.x: `Esc` no longer quits).
+/// 4. An open overlay consumes every other key.
+/// 5. Globals: `Tab`/`Shift-Tab` move focus.
+/// 6. Everything else is forwarded to all three pane handlers; their
+///    keybindings are disjoint (`A`/`d` alerts, `0`-`5`/`P` hints,
+///    `R` research), so focus does not gate them (FR-1.4): focus
+///    governs only what the hint bar describes and what `Enter`/`z`
+///    target.
 pub fn handle_key(
     key: KeyEvent,
+    ui: &mut UiState,
     snap_state: &mut ColdWindowState,
     hint_state: &mut HintPaneState,
     research_state: &mut ResearchPaneState,
 ) -> KeyOutcome {
     let ctrl_c = key.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'));
-    if ctrl_c
-        || matches!(
-            key.code,
-            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc
-        )
-    {
+    if ctrl_c {
         return KeyOutcome::Quit;
+    }
+
+    match key.code {
+        KeyCode::Char('q') | KeyCode::Char('Q') => {
+            return if ui.overlays.pop().is_some() {
+                KeyOutcome::Redraw
+            } else {
+                KeyOutcome::Quit
+            };
+        }
+        KeyCode::Esc => {
+            // Pops the topmost overlay; harmless no-op at the base.
+            let _ = ui.overlays.pop();
+            return KeyOutcome::Redraw;
+        }
+        _ => {}
+    }
+
+    // `?` toggles help: opens it at the base, closes it when help is
+    // already the topmost overlay (FR-3.1, FR-3.3).
+    if key.code == KeyCode::Char('?') {
+        if matches!(ui.overlays.top(), Some(Overlay::Help)) {
+            let _ = ui.overlays.pop();
+        } else {
+            ui.overlays.push(Overlay::Help);
+        }
+        return KeyOutcome::Redraw;
+    }
+
+    // The topmost overlay holds the keyboard: pane keys must not leak
+    // underneath it (FR-3.3, FR-4.1).
+    if !ui.overlays.is_empty() {
+        return KeyOutcome::Redraw;
+    }
+
+    match key.code {
+        KeyCode::Tab => {
+            ui.focus = ui.focus.next();
+            return KeyOutcome::Redraw;
+        }
+        KeyCode::BackTab => {
+            ui.focus = ui.focus.prev();
+            return KeyOutcome::Redraw;
+        }
+        _ => {}
     }
 
     // Disjoint keymaps: forwarding the same code to each handler is
@@ -340,6 +432,7 @@ async fn event_loop(
     quota: Option<&(dyn Fn() -> ResearchQuota + Send + Sync)>,
     opts: TuiOptions,
 ) -> Result<()> {
+    let mut ui = UiState::new();
     let mut snap_state = ColdWindowState::new();
     snap_state.bell_enabled = opts.bell_enabled;
     let mut hint_state = HintPaneState::new();
@@ -350,6 +443,7 @@ async fn event_loop(
     let mut repaint = tokio::time::interval(Duration::from_millis(250));
 
     let paint = |term: &mut Terminal<CrosstermBackend<io::Stdout>>,
+                 ui: &UiState,
                  snap_state: &ColdWindowState,
                  hint_state: &HintPaneState,
                  research_state: &ResearchPaneState|
@@ -358,6 +452,7 @@ async fn event_loop(
         term.draw(|f| {
             draw(
                 f,
+                ui,
                 snap_state,
                 hint_state,
                 research_state,
@@ -368,7 +463,7 @@ async fn event_loop(
         Ok(())
     };
 
-    paint(terminal, &snap_state, &hint_state, &research_state)?;
+    paint(terminal, &ui, &snap_state, &hint_state, &research_state)?;
     // `interval` yields its first tick immediately; without this reset
     // the first `select!` iteration would repaint again right after the
     // explicit paint above. Reset so the first floor-repaint lands one
@@ -407,20 +502,20 @@ async fn event_loop(
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
-                paint(terminal, &snap_state, &hint_state, &research_state)?;
+                paint(terminal, &ui, &snap_state, &hint_state, &research_state)?;
             }
             maybe = events.next() => {
                 match maybe {
                     Some(Ok(CEvent::Key(key))) if is_actionable(&key) => {
-                        match handle_key(key, &mut snap_state, &mut hint_state, &mut research_state) {
+                        match handle_key(key, &mut ui, &mut snap_state, &mut hint_state, &mut research_state) {
                             KeyOutcome::Quit => break,
                             KeyOutcome::Redraw => {
-                                paint(terminal, &snap_state, &hint_state, &research_state)?;
+                                paint(terminal, &ui, &snap_state, &hint_state, &research_state)?;
                             }
                         }
                     }
                     Some(Ok(CEvent::Resize(_, _))) => {
-                        paint(terminal, &snap_state, &hint_state, &research_state)?;
+                        paint(terminal, &ui, &snap_state, &hint_state, &research_state)?;
                     }
                     Some(Ok(_)) => {}
                     Some(Err(e)) => {
@@ -431,7 +526,7 @@ async fn event_loop(
                 }
             }
             _ = repaint.tick() => {
-                paint(terminal, &snap_state, &hint_state, &research_state)?;
+                paint(terminal, &ui, &snap_state, &hint_state, &research_state)?;
             }
         }
     }
@@ -501,10 +596,12 @@ mod tests {
         snap_state.ingest(rich_snapshot());
         let hint_state = HintPaneState::new();
         let research_state = ResearchPaneState::default();
+        let ui = UiState::new();
         terminal
             .draw(|f| {
                 draw(
                     f,
+                    &ui,
                     &snap_state,
                     &hint_state,
                     &research_state,
@@ -524,6 +621,7 @@ mod tests {
         let mut snap_state = ColdWindowState::new();
         snap_state.ingest(rich_snapshot());
         let hint_state = HintPaneState::new();
+        let ui = UiState::new();
         let collapsed = ResearchPaneState::default();
         let mut expanded = ResearchPaneState::new();
         expanded.collapsed = false;
@@ -531,7 +629,17 @@ mod tests {
             for (w, h) in [(20u16, 5u16), (40, 12), (200, 60), (8, 2), (44, 4)] {
                 let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
                 terminal
-                    .draw(|f| draw(f, &snap_state, &hint_state, research_state, None, 100_000))
+                    .draw(|f| {
+                        draw(
+                            f,
+                            &ui,
+                            &snap_state,
+                            &hint_state,
+                            research_state,
+                            None,
+                            100_000,
+                        )
+                    })
                     .unwrap_or_else(|e| {
                         panic!(
                             "draw panicked at {w}x{h} (collapsed={}): {e}",
@@ -550,6 +658,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
         let hint_state = HintPaneState::new();
         let research_state = ResearchPaneState::default();
+        let ui = UiState::new();
 
         let t0 = Instant::now();
         let mut snap_state = ColdWindowState::new();
@@ -558,6 +667,7 @@ mod tests {
             .draw(|f| {
                 draw(
                     f,
+                    &ui,
                     &snap_state,
                     &hint_state,
                     &research_state,
@@ -739,6 +849,7 @@ mod tests {
             collapsed: false,
             ..ResearchPaneState::default()
         };
+        let ui = UiState::new();
 
         // Narrow tier (width < 60): expanded research stacks full-width
         // with real vertical room. Its title carries the "findings"
@@ -746,7 +857,17 @@ mod tests {
         // shows, proving the expanded path reached the row renderer.
         let mut narrow = Terminal::new(TestBackend::new(44, 30)).unwrap();
         narrow
-            .draw(|f| draw(f, &snap_state, &hint_state, &research_state, None, 100_000))
+            .draw(|f| {
+                draw(
+                    f,
+                    &ui,
+                    &snap_state,
+                    &hint_state,
+                    &research_state,
+                    None,
+                    100_000,
+                )
+            })
             .expect("narrow expanded draw must not panic");
         assert!(
             buffer_text(&narrow).contains("findings"),
@@ -758,7 +879,17 @@ mod tests {
         // panics with the expanded pane in the right column.
         let mut medium = Terminal::new(TestBackend::new(70, 30)).unwrap();
         medium
-            .draw(|f| draw(f, &snap_state, &hint_state, &research_state, None, 100_000))
+            .draw(|f| {
+                draw(
+                    f,
+                    &ui,
+                    &snap_state,
+                    &hint_state,
+                    &research_state,
+                    None,
+                    100_000,
+                )
+            })
             .expect("medium expanded draw must not panic");
     }
 
@@ -767,30 +898,231 @@ mod tests {
     }
 
     #[test]
-    fn q_and_esc_quit() {
+    fn q_quits_at_base_but_esc_does_not() {
+        // BREAKING (FR-4.2): Esc stopped quitting when the overlay
+        // stack landed; it only closes overlays now.
+        let mut ui = UiState::new();
         let mut s = ColdWindowState::new();
         let mut h = HintPaneState::new();
         let mut r = ResearchPaneState::default();
         assert_eq!(
-            handle_key(key(KeyCode::Char('q')), &mut s, &mut h, &mut r),
-            KeyOutcome::Quit
+            handle_key(key(KeyCode::Esc), &mut ui, &mut s, &mut h, &mut r),
+            KeyOutcome::Redraw,
+            "Esc at the base surface must not quit"
         );
         assert_eq!(
-            handle_key(key(KeyCode::Esc), &mut s, &mut h, &mut r),
+            handle_key(key(KeyCode::Char('q')), &mut ui, &mut s, &mut h, &mut r),
             KeyOutcome::Quit
         );
     }
 
     #[test]
+    fn esc_and_q_pop_overlays_before_anything_else() {
+        // FR-4.2: Esc pops; q pops too and only quits at the base.
+        let mut ui = UiState::new();
+        let mut s = ColdWindowState::new();
+        let mut h = HintPaneState::new();
+        let mut r = ResearchPaneState::default();
+
+        ui.overlays.push(Overlay::Help);
+        ui.overlays.push(Overlay::Help);
+        assert_eq!(
+            handle_key(key(KeyCode::Esc), &mut ui, &mut s, &mut h, &mut r),
+            KeyOutcome::Redraw
+        );
+        assert_eq!(
+            handle_key(key(KeyCode::Char('q')), &mut ui, &mut s, &mut h, &mut r),
+            KeyOutcome::Redraw,
+            "q with an overlay open closes it instead of quitting"
+        );
+        assert!(ui.overlays.is_empty(), "both overlays popped");
+        assert_eq!(
+            handle_key(key(KeyCode::Char('q')), &mut ui, &mut s, &mut h, &mut r),
+            KeyOutcome::Quit,
+            "q at the base quits"
+        );
+    }
+
+    #[test]
+    fn open_overlay_consumes_pane_and_focus_keys() {
+        // FR-4.1: the topmost overlay holds the keyboard; pane state
+        // and focus must not change underneath it.
+        let mut ui = UiState::new();
+        let mut s = ColdWindowState::new();
+        s.ingest(rich_snapshot());
+        let mut h = HintPaneState::new();
+        let mut r = ResearchPaneState::default();
+        ui.overlays.push(Overlay::Help);
+
+        let warnings_before = s.visible_alerts().len();
+        handle_key(key(KeyCode::Char('d')), &mut ui, &mut s, &mut h, &mut r);
+        assert_eq!(
+            s.visible_alerts().len(),
+            warnings_before,
+            "'d' must not reach the alert pane through an overlay"
+        );
+        handle_key(key(KeyCode::Tab), &mut ui, &mut s, &mut h, &mut r);
+        assert_eq!(
+            ui.focus,
+            FocusTarget::Alerts,
+            "Tab must not move focus through an overlay"
+        );
+        handle_key(key(KeyCode::Char('R')), &mut ui, &mut s, &mut h, &mut r);
+        assert!(
+            r.collapsed,
+            "'R' must not toggle the research pane through an overlay"
+        );
+    }
+
+    #[test]
+    fn question_mark_toggles_the_help_overlay() {
+        // FR-3.1: `?` opens help; `?` again (with help topmost) closes
+        // it. The rendered overlay carries the help title.
+        let mut ui = UiState::new();
+        let mut s = ColdWindowState::new();
+        s.ingest(rich_snapshot());
+        let mut h = HintPaneState::new();
+        let mut r = ResearchPaneState::default();
+
+        handle_key(key(KeyCode::Char('?')), &mut ui, &mut s, &mut h, &mut r);
+        assert!(
+            matches!(ui.overlays.top(), Some(Overlay::Help)),
+            "? must open the help overlay"
+        );
+
+        let hint_state = HintPaneState::new();
+        let research_state = ResearchPaneState::default();
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|f| draw(f, &ui, &s, &hint_state, &research_state, None, 100_000))
+            .unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains("Help"), "help overlay must render");
+        assert!(
+            text.contains("next pane"),
+            "help must list the keymap table's actions"
+        );
+
+        handle_key(key(KeyCode::Char('?')), &mut ui, &mut s, &mut h, &mut r);
+        assert!(ui.overlays.is_empty(), "? must close an open help overlay");
+    }
+
+    #[test]
+    fn draw_renders_topmost_overlay_over_panes() {
+        // FR-4.3: an open overlay is visible on the composed frame.
+        let mut snap_state = ColdWindowState::new();
+        snap_state.ingest(rich_snapshot());
+        let hint_state = HintPaneState::new();
+        let research_state = ResearchPaneState::default();
+        let mut ui = UiState::new();
+        ui.overlays.push(Overlay::Detail {
+            title: "OVERLAY-TITLE".into(),
+            lines: vec!["overlay-body".into()],
+        });
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|f| {
+                draw(
+                    f,
+                    &ui,
+                    &snap_state,
+                    &hint_state,
+                    &research_state,
+                    None,
+                    100_000,
+                )
+            })
+            .unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains("OVERLAY-TITLE"), "overlay must draw on top");
+    }
+
+    #[test]
     fn ctrl_c_quits_but_plain_c_does_not() {
+        let mut ui = UiState::new();
         let mut s = ColdWindowState::new();
         let mut h = HintPaneState::new();
         let mut r = ResearchPaneState::default();
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        assert_eq!(handle_key(ctrl_c, &mut s, &mut h, &mut r), KeyOutcome::Quit);
         assert_eq!(
-            handle_key(key(KeyCode::Char('c')), &mut s, &mut h, &mut r),
+            handle_key(ctrl_c, &mut ui, &mut s, &mut h, &mut r),
+            KeyOutcome::Quit
+        );
+        assert_eq!(
+            handle_key(key(KeyCode::Char('c')), &mut ui, &mut s, &mut h, &mut r),
             KeyOutcome::Redraw
+        );
+    }
+
+    #[test]
+    fn tab_cycles_focus_and_backtab_reverses() {
+        let mut ui = UiState::new();
+        let mut s = ColdWindowState::new();
+        let mut h = HintPaneState::new();
+        let mut r = ResearchPaneState::default();
+        assert_eq!(ui.focus, FocusTarget::Alerts, "default focus is alerts");
+        assert_eq!(
+            handle_key(key(KeyCode::Tab), &mut ui, &mut s, &mut h, &mut r),
+            KeyOutcome::Redraw
+        );
+        assert_eq!(ui.focus, FocusTarget::Hints);
+        handle_key(key(KeyCode::Tab), &mut ui, &mut s, &mut h, &mut r);
+        assert_eq!(ui.focus, FocusTarget::Research);
+        handle_key(key(KeyCode::Tab), &mut ui, &mut s, &mut h, &mut r);
+        assert_eq!(ui.focus, FocusTarget::Alerts, "Tab wraps around");
+        handle_key(key(KeyCode::BackTab), &mut ui, &mut s, &mut h, &mut r);
+        assert_eq!(ui.focus, FocusTarget::Research, "BackTab reverses");
+    }
+
+    #[test]
+    fn focused_pane_marker_follows_focus() {
+        // FR-1.3: the `>` title marker must sit on exactly the focused
+        // pane, and move when focus moves: legible without color.
+        let mut snap_state = ColdWindowState::new();
+        snap_state.ingest(rich_snapshot());
+        let hint_state = HintPaneState::new();
+        let research_state = ResearchPaneState::default();
+
+        let render_with = |focus: FocusTarget| -> String {
+            let ui = UiState {
+                focus,
+                ..UiState::default()
+            };
+            let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+            terminal
+                .draw(|f| {
+                    draw(
+                        f,
+                        &ui,
+                        &snap_state,
+                        &hint_state,
+                        &research_state,
+                        None,
+                        100_000,
+                    )
+                })
+                .unwrap();
+            buffer_text(&terminal)
+        };
+
+        let alerts_focused = render_with(FocusTarget::Alerts);
+        assert!(
+            alerts_focused.contains("> Alerts"),
+            "alerts focused: marker must prefix the alerts title"
+        );
+        assert!(
+            !alerts_focused.contains("> Hints"),
+            "alerts focused: hints must not carry the marker"
+        );
+
+        let hints_focused = render_with(FocusTarget::Hints);
+        assert!(
+            hints_focused.contains("> Hints"),
+            "hints focused: marker must prefix the hints title"
+        );
+        assert!(
+            !hints_focused.contains("> Alerts"),
+            "hints focused: alerts must not carry the marker"
         );
     }
 
@@ -818,9 +1150,10 @@ mod tests {
             next_tick_ms: 2_000,
         }));
         assert_eq!(s.visible_alerts().len(), 1);
+        let mut ui = UiState::new();
         let mut h = HintPaneState::new();
         let mut r = ResearchPaneState::default();
-        let outcome = handle_key(key(KeyCode::Char('A')), &mut s, &mut h, &mut r);
+        let outcome = handle_key(key(KeyCode::Char('A')), &mut ui, &mut s, &mut h, &mut r);
         assert_eq!(outcome, KeyOutcome::Redraw);
         assert!(
             s.visible_alerts().is_empty(),

@@ -23,9 +23,10 @@ use crossterm::event::KeyCode;
 use ratatui::layout::Rect;
 use ratatui::prelude::*;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{List, ListItem, Paragraph};
 use skrills_snapshot::{ResearchChannel, ResearchFinding};
 
+use super::focus::pane_block;
 use super::state::ColdWindowState;
 
 /// Mutable state owned by the research pane.
@@ -120,21 +121,28 @@ pub enum ResearchAction {
 pub struct ResearchPane;
 
 impl ResearchPane {
-    /// Render the pane into `area`.
+    /// Render the pane into `area`. `focused` emphasizes the border
+    /// (see [`pane_block`]).
     pub fn render(
         snap_state: &ColdWindowState,
         pane_state: &ResearchPaneState,
         frame: &mut Frame<'_>,
         area: Rect,
+        focused: bool,
     ) {
         if pane_state.collapsed {
-            Self::render_collapsed(pane_state, frame, area);
+            Self::render_collapsed(pane_state, frame, area, focused);
         } else {
-            Self::render_expanded(snap_state, frame, area);
+            Self::render_expanded(snap_state, frame, area, focused);
         }
     }
 
-    fn render_collapsed(pane_state: &ResearchPaneState, frame: &mut Frame<'_>, area: Rect) {
+    fn render_collapsed(
+        pane_state: &ResearchPaneState,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        focused: bool,
+    ) {
         let badge = if pane_state.badge_count > 0 {
             Span::styled(
                 format!(" [{} new] ", pane_state.badge_count),
@@ -156,11 +164,16 @@ impl ResearchPane {
             badge,
             Span::raw("  press R to expand"),
         ]);
-        let paragraph = Paragraph::new(line).block(Block::default().borders(Borders::ALL));
+        let paragraph = Paragraph::new(line).block(pane_block(String::new(), focused));
         frame.render_widget(paragraph, area);
     }
 
-    fn render_expanded(snap_state: &ColdWindowState, frame: &mut Frame<'_>, area: Rect) {
+    fn render_expanded(
+        snap_state: &ColdWindowState,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        focused: bool,
+    ) {
         let snap = snap_state.current.as_deref();
         let findings: Vec<&ResearchFinding> = match snap {
             Some(s) => s.research_findings.iter().collect(),
@@ -171,7 +184,7 @@ impl ResearchPane {
             findings.len()
         );
         let items: Vec<ListItem> = findings.iter().map(|f| Self::render_row(f)).collect();
-        let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
+        let list = List::new(items).block(pane_block(title, focused));
         frame.render_widget(list, area);
     }
 
@@ -361,7 +374,7 @@ mod tests {
         let snap_state = ColdWindowState::new();
         let pane_state = ResearchPaneState::new();
         terminal
-            .draw(|f| ResearchPane::render(&snap_state, &pane_state, f, f.area()))
+            .draw(|f| ResearchPane::render(&snap_state, &pane_state, f, f.area(), false))
             .unwrap();
     }
 
@@ -377,7 +390,7 @@ mod tests {
         let mut pane_state = ResearchPaneState::new();
         pane_state.collapsed = false;
         terminal
-            .draw(|f| ResearchPane::render(&snap_state, &pane_state, f, f.area()))
+            .draw(|f| ResearchPane::render(&snap_state, &pane_state, f, f.area(), false))
             .unwrap();
     }
 }

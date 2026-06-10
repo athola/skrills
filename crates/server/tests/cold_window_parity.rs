@@ -170,9 +170,9 @@ fn render_tui_text(snap: Arc<WindowSnapshot>) -> String {
                     Constraint::Length(5),  // status bar
                 ])
                 .split(area);
-            AlertPane::render(&state, f, chunks[0]);
-            HintPane::render(&state, &hint_state, f, chunks[1]);
-            ResearchPane::render(&state, &research_state, f, chunks[2]);
+            AlertPane::render(&state, f, chunks[0], false);
+            HintPane::render(&state, &hint_state, f, chunks[1], false);
+            ResearchPane::render(&state, &research_state, f, chunks[2], false);
             // 3 used of 10 → status renders "quota: 7/10" (the
             // historical `available/total` form).
             StatusBar::render(

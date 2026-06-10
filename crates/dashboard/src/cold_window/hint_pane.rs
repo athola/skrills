@@ -21,10 +21,11 @@ use crossterm::event::KeyCode;
 use ratatui::layout::Rect;
 use ratatui::prelude::*;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Borders, List, ListItem};
+use ratatui::widgets::{List, ListItem};
 use serde::{Deserialize, Serialize};
 use skrills_snapshot::{HintCategory, ScoredHint};
 
+use super::focus::pane_block;
 use super::state::ColdWindowState;
 
 /// File name used by [`HintPaneState::with_default_persistence`].
@@ -180,12 +181,14 @@ pub enum HintAction {
 pub struct HintPane;
 
 impl HintPane {
-    /// Render the visible hints into `area`.
+    /// Render the visible hints into `area`. `focused` emphasizes the
+    /// border (see [`pane_block`]).
     pub fn render(
         snap_state: &ColdWindowState,
         pane_state: &HintPaneState,
         frame: &mut Frame<'_>,
         area: Rect,
+        focused: bool,
     ) {
         let title = match pane_state.filter {
             None => " Hints  (1=tok 2=val 3=red 4=sync 5=qual 0=all  P=pin) ".to_string(),
@@ -198,7 +201,7 @@ impl HintPane {
             .collect();
 
         let list = List::new(items)
-            .block(Block::default().borders(Borders::ALL).title(title))
+            .block(pane_block(title, focused))
             .style(Style::default());
         frame.render_widget(list, area);
     }
@@ -447,7 +450,7 @@ mod tests {
             let backend = TestBackend::new(size.0, size.1);
             let mut terminal = Terminal::new(backend).unwrap();
             terminal
-                .draw(|f| HintPane::render(&snap_state, &pane_state, f, f.area()))
+                .draw(|f| HintPane::render(&snap_state, &pane_state, f, f.area(), false))
                 .unwrap();
         }
     }

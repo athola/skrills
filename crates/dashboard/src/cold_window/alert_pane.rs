@@ -16,9 +16,10 @@ use crossterm::event::KeyCode;
 use ratatui::layout::Rect;
 use ratatui::prelude::*;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Borders, List, ListItem};
+use ratatui::widgets::{List, ListItem};
 use skrills_snapshot::{Alert, Severity};
 
+use super::focus::pane_block;
 use super::state::ColdWindowState;
 
 /// Action returned by the pane after handling a keystroke.
@@ -42,8 +43,9 @@ pub enum AlertAction {
 pub struct AlertPane;
 
 impl AlertPane {
-    /// Render the visible alerts inside `area`.
-    pub fn render(state: &ColdWindowState, frame: &mut Frame<'_>, area: Rect) {
+    /// Render the visible alerts inside `area`. `focused` emphasizes
+    /// the border (see [`pane_block`]).
+    pub fn render(state: &ColdWindowState, frame: &mut Frame<'_>, area: Rect, focused: bool) {
         let counts = state.alert_counts_by_tier();
         let title = format!(
             " Alerts  W:{w}  C:{c}  A:{a}  S:{s} ",
@@ -60,7 +62,7 @@ impl AlertPane {
             .collect();
 
         let list = List::new(items)
-            .block(Block::default().borders(Borders::ALL).title(title))
+            .block(pane_block(title, focused))
             .style(Style::default());
         frame.render_widget(list, area);
     }
@@ -207,7 +209,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let state = ColdWindowState::new();
         terminal
-            .draw(|f| AlertPane::render(&state, f, f.area()))
+            .draw(|f| AlertPane::render(&state, f, f.area(), false))
             .unwrap();
     }
 
@@ -221,7 +223,7 @@ mod tests {
             .collect();
         state.ingest(snap(alerts));
         terminal
-            .draw(|f| AlertPane::render(&state, f, f.area()))
+            .draw(|f| AlertPane::render(&state, f, f.area(), false))
             .unwrap();
     }
 
@@ -234,7 +236,7 @@ mod tests {
             let backend = TestBackend::new(size.0, size.1);
             let mut terminal = Terminal::new(backend).unwrap();
             terminal
-                .draw(|f| AlertPane::render(&state, f, f.area()))
+                .draw(|f| AlertPane::render(&state, f, f.area(), false))
                 .unwrap();
         }
     }

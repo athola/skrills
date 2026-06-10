@@ -99,7 +99,9 @@ async fn cold_window_tui_startup_under_five_hundred_ms() {
     // matching how `run_tui` consumes `ColdWindowEngine::subscribe`.
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    use skrills_dashboard::cold_window::{draw, ColdWindowState, HintPaneState, ResearchPaneState};
+    use skrills_dashboard::cold_window::{
+        draw, ColdWindowState, HintPaneState, ResearchPaneState, UiState,
+    };
     use tokio::sync::broadcast;
 
     let (tx, mut rx) = broadcast::channel(16);
@@ -113,7 +115,7 @@ async fn cold_window_tui_startup_under_five_hundred_ms() {
     let mut state = ColdWindowState::new();
     state.ingest(snap);
     terminal
-        .draw(|f| draw(f, &state, &hint, &research, None, 100_000))
+        .draw(|f| draw(f, &UiState::new(), &state, &hint, &research, None, 100_000))
         .expect("first paint");
     let elapsed = t0.elapsed();
 
