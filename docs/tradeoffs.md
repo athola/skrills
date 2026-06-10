@@ -13,18 +13,18 @@ we deliberately gave up. Records the *why*, not just the *what*.
 
 | ID | Status | Title | Date |
 |----|--------|-------|------|
-| TR-001 | proposed | Esc pops overlays instead of quitting the cold-window TUI | 2026-06-10 |
-| TR-002 | proposed | Hybrid focus model: focus governs hints/Enter/zoom, disjoint pane keys preserved | 2026-06-10 |
-| TR-003 | proposed | Compact tier hides unfocused panes instead of squeezing all panes | 2026-06-10 |
-| TR-004 | proposed | Overlay stack implemented in-tree; no tui-popup dependency | 2026-06-10 |
-| TR-005 | proposed | Add minimal per-pane selection cursors to enable Enter drill-down | 2026-06-10 |
-| TR-006 | proposed | Command palette executes by replaying key codes through handle_key | 2026-06-10 |
+| TR-001 | accepted | Esc pops overlays instead of quitting the cold-window TUI | 2026-06-10 |
+| TR-002 | accepted | Hybrid focus model: focus governs hints/Enter/zoom, disjoint pane keys preserved | 2026-06-10 |
+| TR-003 | accepted | Compact tier hides unfocused panes instead of squeezing all panes | 2026-06-10 |
+| TR-004 | accepted | Overlay stack implemented in-tree; no tui-popup dependency | 2026-06-10 |
+| TR-005 | accepted | Add minimal per-pane selection cursors to enable Enter drill-down | 2026-06-10 |
+| TR-006 | accepted | Command palette executes by replaying key codes through handle_key | 2026-06-10 |
 
 ## Decisions
 
 ## TR-001: Esc pops overlays instead of quitting the cold-window TUI
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-06-10
 - Phase: specify
 - Deciders: -
@@ -52,7 +52,7 @@ In the context of adopting an overlay stack, facing the need for a dismiss key, 
 
 ## TR-002: Hybrid focus model: focus governs hints/Enter/zoom, disjoint pane keys preserved
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-06-10
 - Phase: specify
 - Deciders: -
@@ -80,7 +80,7 @@ In the context of adding discoverability to a focus-less TUI, we chose a hybrid 
 
 ## TR-003: Compact tier hides unfocused panes instead of squeezing all panes
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-06-10
 - Phase: specify
 - Deciders: -
@@ -108,7 +108,7 @@ In the context of phone-width terminals, we chose focus-equals-visibility over s
 
 ## TR-004: Overlay stack implemented in-tree; no tui-popup dependency
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-06-10
 - Phase: specify
 - Deciders: -
@@ -136,7 +136,7 @@ In the context of adding modal overlays, we chose an in-tree stack over the tui-
 
 ## TR-005: Add minimal per-pane selection cursors to enable Enter drill-down
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-06-10
 - Phase: plan
 - Deciders: -
@@ -164,7 +164,7 @@ In the context of drill-down, we chose minimal selection cursors over a selectio
 
 ## TR-006: Command palette executes by replaying key codes through handle_key
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-06-10
 - Phase: execute
 - Deciders: -
