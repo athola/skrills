@@ -26,7 +26,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{List, ListItem, Paragraph};
 use skrills_snapshot::{ResearchChannel, ResearchFinding};
 
-use super::focus::pane_block;
+use super::focus::{clamped_selection, pane_block, select_row};
 use super::state::ColdWindowState;
 
 /// Mutable state owned by the research pane.
@@ -122,18 +122,20 @@ pub struct ResearchPane;
 
 impl ResearchPane {
     /// Render the pane into `area`. `focused` emphasizes the border
-    /// (see [`pane_block`]).
+    /// (see [`pane_block`]); `selected` highlights one finding row in
+    /// the expanded list (ignored while collapsed).
     pub fn render(
         snap_state: &ColdWindowState,
         pane_state: &ResearchPaneState,
         frame: &mut Frame<'_>,
         area: Rect,
         focused: bool,
+        selected: Option<usize>,
     ) {
         if pane_state.collapsed {
             Self::render_collapsed(pane_state, frame, area, focused);
         } else {
-            Self::render_expanded(snap_state, frame, area, focused);
+            Self::render_expanded(snap_state, frame, area, focused, selected);
         }
     }
 
@@ -173,6 +175,7 @@ impl ResearchPane {
         frame: &mut Frame<'_>,
         area: Rect,
         focused: bool,
+        selected: Option<usize>,
     ) {
         let snap = snap_state.current.as_deref();
         let findings: Vec<&ResearchFinding> = match snap {
@@ -183,12 +186,17 @@ impl ResearchPane {
             " Research  ({} findings)  press R to collapse ",
             findings.len()
         );
-        let items: Vec<ListItem> = findings.iter().map(|f| Self::render_row(f)).collect();
+        let cursor = selected.and_then(|s| clamped_selection(s, findings.len()));
+        let items: Vec<ListItem> = findings
+            .iter()
+            .enumerate()
+            .map(|(i, f)| select_row(Self::render_row(f), cursor == Some(i)))
+            .collect();
         let list = List::new(items).block(pane_block(title, focused));
         frame.render_widget(list, area);
     }
 
-    fn render_row(finding: &ResearchFinding) -> ListItem<'_> {
+    fn render_row(finding: &ResearchFinding) -> Line<'_> {
         let channel = finding.channel.short_label();
         let line = Line::from(vec![
             Span::styled(
@@ -210,7 +218,7 @@ impl ResearchPane {
             Span::raw(": "),
             Span::styled(finding.url.clone(), Style::default().fg(Color::DarkGray)),
         ]);
-        ListItem::new(line)
+        line
     }
 
     /// Handle a keystroke. `R` toggles collapsed/expanded.
@@ -374,7 +382,7 @@ mod tests {
         let snap_state = ColdWindowState::new();
         let pane_state = ResearchPaneState::new();
         terminal
-            .draw(|f| ResearchPane::render(&snap_state, &pane_state, f, f.area(), false))
+            .draw(|f| ResearchPane::render(&snap_state, &pane_state, f, f.area(), false, None))
             .unwrap();
     }
 
@@ -390,7 +398,7 @@ mod tests {
         let mut pane_state = ResearchPaneState::new();
         pane_state.collapsed = false;
         terminal
-            .draw(|f| ResearchPane::render(&snap_state, &pane_state, f, f.area(), false))
+            .draw(|f| ResearchPane::render(&snap_state, &pane_state, f, f.area(), false, None))
             .unwrap();
     }
 }

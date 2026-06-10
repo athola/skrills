@@ -48,6 +48,45 @@ pub struct UiState {
     pub focus: FocusTarget,
     /// Open modal overlays; the topmost consumes all keys.
     pub overlays: OverlayStack,
+    /// Per-pane selection cursors (FR-5). Stored raw and clamped
+    /// against the live list length at render/use time, since lists
+    /// shrink between snapshots.
+    pub selected: SelectionState,
+    /// When true the focused pane takes the whole body (FR-5.2); the
+    /// escape hatch for tiny terminals. `z` toggles, `Esc` clears.
+    pub zoomed: bool,
+}
+
+/// One selection index per pane. Indices persist across focus changes
+/// so returning to a pane lands on the row the user left.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SelectionState {
+    /// Cursor into the visible-alerts list.
+    pub alerts: usize,
+    /// Cursor into the visible-hints list.
+    pub hints: usize,
+    /// Cursor into the research findings list.
+    pub research: usize,
+}
+
+impl SelectionState {
+    /// The cursor for `focus`, mutably.
+    pub fn for_focus_mut(&mut self, focus: FocusTarget) -> &mut usize {
+        match focus {
+            FocusTarget::Alerts => &mut self.alerts,
+            FocusTarget::Hints => &mut self.hints,
+            FocusTarget::Research => &mut self.research,
+        }
+    }
+
+    /// The cursor for `focus`.
+    pub fn for_focus(&self, focus: FocusTarget) -> usize {
+        match focus {
+            FocusTarget::Alerts => self.alerts,
+            FocusTarget::Hints => self.hints,
+            FocusTarget::Research => self.research,
+        }
+    }
 }
 
 impl UiState {
@@ -151,7 +190,47 @@ pub struct ColdWindowLayout {
 /// where a collapsed research pane is a 3-line badge and an expanded
 /// one earns a share of the vertical space.
 pub fn plan_layout(area: Rect, research_collapsed: bool) -> ColdWindowLayout {
-    plan_for(layout_mode(area), area, research_collapsed)
+    plan_layout_with(area, research_collapsed, None)
+}
+
+/// [`plan_layout`] with an optional zoom override (FR-5.2/FR-5.3).
+///
+/// `zoom = Some(pane)` hands that pane the entire body at every tier;
+/// the other panes get zero-sized rects (ratatui draws nothing into an
+/// empty `Rect`). The status bar stays pinned regardless.
+pub fn plan_layout_with(
+    area: Rect,
+    research_collapsed: bool,
+    zoom: Option<FocusTarget>,
+) -> ColdWindowLayout {
+    let Some(pane) = zoom else {
+        return plan_for(layout_mode(area), area, research_collapsed);
+    };
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(area);
+    let body = rows[0];
+    let status = rows[1];
+    let none = Rect::default();
+    ColdWindowLayout {
+        alerts: if pane == FocusTarget::Alerts {
+            body
+        } else {
+            none
+        },
+        hints: if pane == FocusTarget::Hints {
+            body
+        } else {
+            none
+        },
+        research: if pane == FocusTarget::Research {
+            body
+        } else {
+            none
+        },
+        status,
+    }
 }
 
 /// Plan pane rectangles for an explicit `mode`. Split out from
@@ -242,13 +321,22 @@ pub fn draw(
     research_quota: Option<ResearchQuota>,
     budget_ceiling: u64,
 ) {
-    let layout = plan_layout(frame.area(), research_state.collapsed);
+    let layout = plan_layout_with(
+        frame.area(),
+        research_state.collapsed,
+        ui.zoomed.then_some(ui.focus),
+    );
+
+    // The selection cursor renders only on the focused pane; unfocused
+    // panes keep a plain gutter so the cursor reads as "where I am".
+    let cursor = |pane: FocusTarget| (ui.focus == pane).then(|| ui.selected.for_focus(pane));
 
     AlertPane::render(
         snap_state,
         frame,
         layout.alerts,
         ui.focus == FocusTarget::Alerts,
+        cursor(FocusTarget::Alerts),
     );
     HintPane::render(
         snap_state,
@@ -256,6 +344,7 @@ pub fn draw(
         frame,
         layout.hints,
         ui.focus == FocusTarget::Hints,
+        cursor(FocusTarget::Hints),
     );
     ResearchPane::render(
         snap_state,
@@ -263,11 +352,14 @@ pub fn draw(
         frame,
         layout.research,
         ui.focus == FocusTarget::Research,
+        cursor(FocusTarget::Research),
     );
     StatusBar::render(
         snap_state,
         research_quota,
         budget_ceiling,
+        ui.focus,
+        !ui.overlays.is_empty(),
         frame,
         layout.status,
     );
@@ -313,8 +405,11 @@ pub fn handle_key(
             };
         }
         KeyCode::Esc => {
-            // Pops the topmost overlay; harmless no-op at the base.
-            let _ = ui.overlays.pop();
+            // Pops the topmost overlay; with none open it unzooms;
+            // harmless no-op at the bare base surface.
+            if ui.overlays.pop().is_none() {
+                ui.zoomed = false;
+            }
             return KeyOutcome::Redraw;
         }
         _ => {}
@@ -346,6 +441,26 @@ pub fn handle_key(
             ui.focus = ui.focus.prev();
             return KeyOutcome::Redraw;
         }
+        // Zoom the focused pane to the full body (FR-5.2).
+        KeyCode::Char('z') => {
+            ui.zoomed = !ui.zoomed;
+            return KeyOutcome::Redraw;
+        }
+        // Drill into the focused pane's selected item (FR-5.1).
+        KeyCode::Enter => {
+            if let Some(detail) = detail_overlay(ui, snap_state, hint_state) {
+                ui.overlays.push(detail);
+            }
+            return KeyOutcome::Redraw;
+        }
+        // Selection moves within the focused pane only (FR-5).
+        KeyCode::Up | KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('k') => {
+            let down = matches!(key.code, KeyCode::Down | KeyCode::Char('j'));
+            let len = focused_list_len(ui.focus, snap_state, hint_state);
+            let cursor = ui.selected.for_focus_mut(ui.focus);
+            *cursor = super::focus::step_selection(*cursor, down, len);
+            return KeyOutcome::Redraw;
+        }
         _ => {}
     }
 
@@ -355,6 +470,85 @@ pub fn handle_key(
     let _ = HintPane::handle_key(snap_state, hint_state, key.code);
     let _ = ResearchPane::handle_key(snap_state, research_state, key.code);
     KeyOutcome::Redraw
+}
+
+/// Length of the list the focused pane is showing, for selection
+/// clamping. The research pane counts its findings whether or not the
+/// pane is expanded (the cursor is simply invisible while collapsed).
+fn focused_list_len(
+    focus: FocusTarget,
+    snap_state: &ColdWindowState,
+    hint_state: &HintPaneState,
+) -> usize {
+    match focus {
+        FocusTarget::Alerts => snap_state.visible_alerts().len(),
+        FocusTarget::Hints => hint_state.visible_hints(snap_state).len(),
+        FocusTarget::Research => snap_state
+            .current
+            .as_deref()
+            .map(|s| s.research_findings.len())
+            .unwrap_or(0),
+    }
+}
+
+/// Build the drill-down detail overlay for the focused pane's selected
+/// item (FR-5.1). `None` when the focused list is empty, so `Enter`
+/// degrades to a no-op instead of opening a blank popup.
+fn detail_overlay(
+    ui: &UiState,
+    snap_state: &ColdWindowState,
+    hint_state: &HintPaneState,
+) -> Option<Overlay> {
+    let index = ui.selected.for_focus(ui.focus);
+    match ui.focus {
+        FocusTarget::Alerts => {
+            let visible = snap_state.visible_alerts();
+            let alert = visible.get(super::focus::clamped_selection(index, visible.len())?)?;
+            Some(Overlay::Detail {
+                title: alert.title.clone(),
+                lines: vec![
+                    format!("severity:    {}", alert.severity.short_label()),
+                    format!("fingerprint: {}", alert.fingerprint),
+                    format!("fired at:    {} ms", alert.fired_at_ms),
+                    format!("dwell ticks: {}", alert.dwell_ticks),
+                    String::new(),
+                    alert.message.clone(),
+                ],
+            })
+        }
+        FocusTarget::Hints => {
+            let visible = hint_state.visible_hints(snap_state);
+            let hint = visible.get(super::focus::clamped_selection(index, visible.len())?)?;
+            Some(Overlay::Detail {
+                title: hint.hint.uri.clone(),
+                lines: vec![
+                    format!("category:  {}", hint.hint.category.label()),
+                    format!("score:     {:.1}", hint.score),
+                    format!("frequency: {}", hint.hint.frequency),
+                    format!("impact:    {:.1}", hint.hint.impact),
+                    format!("ease:      {:.1}", hint.hint.ease_score),
+                    format!("age:       {:.1} days", hint.hint.age_days),
+                    String::new(),
+                    hint.hint.message.clone(),
+                ],
+            })
+        }
+        FocusTarget::Research => {
+            let snap = snap_state.current.as_deref()?;
+            let findings = &snap.research_findings;
+            let finding = findings.get(super::focus::clamped_selection(index, findings.len())?)?;
+            Some(Overlay::Detail {
+                title: finding.title.clone(),
+                lines: vec![
+                    format!("channel:    {}", finding.channel.short_label()),
+                    format!("score:      {:.1}", finding.score),
+                    format!("fetched at: {} ms", finding.fetched_at_ms),
+                    String::new(),
+                    finding.url.clone(),
+                ],
+            })
+        }
+    }
 }
 
 /// True for key *press* events. crossterm reports press, repeat, and
@@ -971,6 +1165,263 @@ mod tests {
         assert!(
             r.collapsed,
             "'R' must not toggle the research pane through an overlay"
+        );
+    }
+
+    /// Snapshot with two warnings so the alert list has two rows to
+    /// move a selection across.
+    fn two_warning_snapshot() -> Arc<WindowSnapshot> {
+        let mut snap = (*rich_snapshot()).clone();
+        snap.alerts = vec![
+            Alert {
+                fingerprint: "w-first".into(),
+                severity: Severity::Warning,
+                title: "first-alert".into(),
+                message: "m1".into(),
+                band: None,
+                fired_at_ms: 200,
+                dwell_ticks: 1,
+            },
+            Alert {
+                fingerprint: "w-second".into(),
+                severity: Severity::Warning,
+                title: "second-alert".into(),
+                message: "m2".into(),
+                band: None,
+                fired_at_ms: 100,
+                dwell_ticks: 1,
+            },
+        ];
+        Arc::new(snap)
+    }
+
+    /// One terminal row as trimmed text.
+    fn row_text(terminal: &Terminal<TestBackend>, y: u16) -> String {
+        let buf = terminal.backend().buffer();
+        (0..buf.area.width)
+            .map(|x| buf[(x, y)].symbol())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn jk_and_arrows_move_selection_in_the_focused_pane_only() {
+        // FR-5/T5: selection keys act on the focused pane's cursor and
+        // leave the other panes' cursors untouched.
+        let mut ui = UiState::new();
+        let mut s = ColdWindowState::new();
+        s.ingest(two_warning_snapshot());
+        let mut h = HintPaneState::new();
+        let mut r = ResearchPaneState::default();
+
+        handle_key(key(KeyCode::Char('j')), &mut ui, &mut s, &mut h, &mut r);
+        assert_eq!(ui.selected.alerts, 1, "j moves the alerts cursor down");
+        assert_eq!(ui.selected.hints, 0, "hints cursor untouched");
+        handle_key(key(KeyCode::Char('k')), &mut ui, &mut s, &mut h, &mut r);
+        assert_eq!(ui.selected.alerts, 0, "k moves it back up");
+        handle_key(key(KeyCode::Down), &mut ui, &mut s, &mut h, &mut r);
+        assert_eq!(ui.selected.alerts, 1, "Down mirrors j");
+        handle_key(key(KeyCode::Up), &mut ui, &mut s, &mut h, &mut r);
+        assert_eq!(ui.selected.alerts, 0, "Up mirrors k");
+
+        // Clamping: two items means the cursor never reaches index 2.
+        handle_key(key(KeyCode::Char('j')), &mut ui, &mut s, &mut h, &mut r);
+        handle_key(key(KeyCode::Char('j')), &mut ui, &mut s, &mut h, &mut r);
+        handle_key(key(KeyCode::Char('j')), &mut ui, &mut s, &mut h, &mut r);
+        assert_eq!(ui.selected.alerts, 1, "cursor clamps at the last row");
+
+        // Focus hints: same keys now drive the hints cursor (one hint
+        // in the snapshot, so it stays clamped at 0).
+        handle_key(key(KeyCode::Tab), &mut ui, &mut s, &mut h, &mut r);
+        handle_key(key(KeyCode::Char('j')), &mut ui, &mut s, &mut h, &mut r);
+        assert_eq!(ui.selected.hints, 0, "single hint clamps at 0");
+        assert_eq!(ui.selected.alerts, 1, "alerts cursor persists");
+    }
+
+    #[test]
+    fn selected_row_carries_a_cursor_marker_visible_without_color() {
+        // FR-5/T5: the `> ` row marker must sit on exactly the selected
+        // row of the focused pane.
+        let mut s = ColdWindowState::new();
+        s.ingest(two_warning_snapshot());
+        let hint_state = HintPaneState::new();
+        let research_state = ResearchPaneState::default();
+        let mut ui = UiState::new();
+        ui.selected.alerts = 1;
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal
+            .draw(|f| draw(f, &ui, &s, &hint_state, &research_state, None, 100_000))
+            .unwrap();
+        // Alert rows start under the top border: row 1 is the first
+        // alert, row 2 the second (selected) one.
+        // Rows begin with the pane's left border glyph; the marker (or
+        // its two-space gutter) comes immediately after it.
+        let first = row_text(&terminal, 1);
+        let second = row_text(&terminal, 2);
+        assert!(
+            second.starts_with("│>"),
+            "selected row must carry the > marker after the border, got: {second:?}"
+        );
+        assert!(
+            !first.contains('>'),
+            "unselected row must not carry the marker, got: {first:?}"
+        );
+        assert!(second.contains("second-alert"), "marker on the right row");
+    }
+
+    #[test]
+    fn zoom_gives_the_focused_pane_the_full_body_at_every_tier() {
+        // FR-5.2/FR-5.3: zoom is a layout-level override, independent
+        // of the responsive tier; the status bar stays pinned.
+        for (w, h) in [(44u16, 30u16), (70, 30), (120, 40)] {
+            let a = area(w, h);
+            let l = plan_layout_with(a, true, Some(FocusTarget::Hints));
+            assert_eq!(
+                l.hints,
+                Rect::new(0, 0, w, h - 1),
+                "{w}x{h}: zoomed pane must own the full body"
+            );
+            assert_eq!(l.alerts, Rect::default(), "{w}x{h}: alerts hidden");
+            assert_eq!(l.research, Rect::default(), "{w}x{h}: research hidden");
+            assert_eq!(l.status.y, h - 1, "{w}x{h}: status stays pinned");
+        }
+    }
+
+    #[test]
+    fn z_toggles_zoom_and_esc_unzooms_only_with_no_overlay() {
+        let mut ui = UiState::new();
+        let mut s = ColdWindowState::new();
+        let mut h = HintPaneState::new();
+        let mut r = ResearchPaneState::default();
+
+        handle_key(key(KeyCode::Char('z')), &mut ui, &mut s, &mut h, &mut r);
+        assert!(ui.zoomed, "z zooms");
+
+        // An open overlay absorbs Esc first; zoom survives.
+        ui.overlays.push(Overlay::Help);
+        handle_key(key(KeyCode::Esc), &mut ui, &mut s, &mut h, &mut r);
+        assert!(ui.zoomed, "Esc closes the overlay before unzooming");
+        assert!(ui.overlays.is_empty());
+
+        handle_key(key(KeyCode::Esc), &mut ui, &mut s, &mut h, &mut r);
+        assert!(!ui.zoomed, "Esc at the base unzooms");
+
+        handle_key(key(KeyCode::Char('z')), &mut ui, &mut s, &mut h, &mut r);
+        handle_key(key(KeyCode::Char('z')), &mut ui, &mut s, &mut h, &mut r);
+        assert!(!ui.zoomed, "z toggles back off");
+    }
+
+    #[test]
+    fn hint_bar_tracks_focus_and_overlays() {
+        // FR-2: the bottom row shows the focused pane's keys, swaps to
+        // overlay keys while one is open, and always offers `? help`.
+        let mut snap_state = ColdWindowState::new();
+        snap_state.ingest(rich_snapshot());
+        let hint_state = HintPaneState::new();
+        let research_state = ResearchPaneState::default();
+
+        let bottom_row = |ui: &UiState, w: u16, h: u16| -> String {
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+            terminal
+                .draw(|f| {
+                    draw(
+                        f,
+                        ui,
+                        &snap_state,
+                        &hint_state,
+                        &research_state,
+                        None,
+                        100_000,
+                    )
+                })
+                .unwrap();
+            row_text(&terminal, h - 1)
+        };
+
+        let alerts = bottom_row(&UiState::new(), 120, 40);
+        assert!(alerts.contains("? help"), "got: {alerts}");
+        assert!(
+            alerts.contains("ack all non-warnings"),
+            "alerts focus shows alert keys, got: {alerts}"
+        );
+
+        let mut hints_ui = UiState::new();
+        hints_ui.focus = FocusTarget::Hints;
+        let hints = bottom_row(&hints_ui, 120, 40);
+        assert!(
+            hints.contains("P pin top hint"),
+            "hints focus shows hint keys, got: {hints}"
+        );
+        assert!(
+            !hints.contains("ack all non-warnings"),
+            "alert keys must leave when focus moves, got: {hints}"
+        );
+
+        let mut overlay_ui = UiState::new();
+        overlay_ui.overlays.push(Overlay::Help);
+        let with_overlay = bottom_row(&overlay_ui, 120, 40);
+        assert!(
+            with_overlay.contains("Esc close"),
+            "overlay keys replace pane keys, got: {with_overlay}"
+        );
+        assert!(
+            !with_overlay.contains("ack all"),
+            "pane keys hidden under an overlay, got: {with_overlay}"
+        );
+
+        // FR-2.3: at width 40 the hints truncate with an ellipsis but
+        // `? help` survives.
+        let narrow = bottom_row(&UiState::new(), 40, 12);
+        assert!(narrow.contains("? help"), "got: {narrow:?}");
+        assert!(narrow.contains('…'), "truncation marked, got: {narrow:?}");
+    }
+
+    #[test]
+    fn enter_opens_detail_for_the_selected_item_and_esc_returns() {
+        // FR-5.1/T6: Enter drills into the focused pane's selection;
+        // Esc lands back on the unchanged base surface.
+        let mut ui = UiState::new();
+        let mut s = ColdWindowState::new();
+        s.ingest(two_warning_snapshot());
+        let mut h = HintPaneState::new();
+        let mut r = ResearchPaneState::default();
+
+        handle_key(key(KeyCode::Char('j')), &mut ui, &mut s, &mut h, &mut r);
+        handle_key(key(KeyCode::Enter), &mut ui, &mut s, &mut h, &mut r);
+        match ui.overlays.top() {
+            Some(Overlay::Detail { title, lines }) => {
+                assert_eq!(title, "second-alert", "detail shows the selected item");
+                assert!(
+                    lines.iter().any(|l| l.contains("w-second")),
+                    "detail body carries the fingerprint"
+                );
+            }
+            other => panic!("expected a Detail overlay, got {other:?}"),
+        }
+        handle_key(key(KeyCode::Esc), &mut ui, &mut s, &mut h, &mut r);
+        assert!(ui.overlays.is_empty(), "Esc returns to the base surface");
+
+        // Hints pane: Enter opens the hint's detail.
+        handle_key(key(KeyCode::Tab), &mut ui, &mut s, &mut h, &mut r);
+        handle_key(key(KeyCode::Enter), &mut ui, &mut s, &mut h, &mut r);
+        match ui.overlays.top() {
+            Some(Overlay::Detail { title, .. }) => {
+                assert_eq!(title, "skill://refactor", "hint detail titled by URI");
+            }
+            other => panic!("expected a hint Detail overlay, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enter_on_an_empty_list_is_a_noop() {
+        let mut ui = UiState::new();
+        let mut s = ColdWindowState::new(); // no snapshot at all
+        let mut h = HintPaneState::new();
+        let mut r = ResearchPaneState::default();
+        handle_key(key(KeyCode::Enter), &mut ui, &mut s, &mut h, &mut r);
+        assert!(
+            ui.overlays.is_empty(),
+            "Enter with nothing selected must not open a blank popup"
         );
     }
 

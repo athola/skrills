@@ -11,7 +11,8 @@
 //! `>` marker prefixed to its title so focus reads without color.
 
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Borders};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, ListItem};
 
 /// Which body pane holds focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -66,12 +67,69 @@ pub fn pane_block(title: String, focused: bool) -> Block<'static> {
     }
 }
 
+/// Wrap a list row in the selection treatment: a `> ` marker prefix
+/// plus `REVERSED` styling when selected, a two-space gutter when not.
+/// The marker keeps the cursor legible without color (FR-5/T5).
+pub fn select_row(mut line: Line<'_>, selected: bool) -> ListItem<'_> {
+    let marker = if selected { "> " } else { "  " };
+    line.spans.insert(
+        0,
+        Span::styled(marker, Style::default().add_modifier(Modifier::BOLD)),
+    );
+    let item = ListItem::new(line);
+    if selected {
+        item.style(Style::default().add_modifier(Modifier::REVERSED))
+    } else {
+        item
+    }
+}
+
+/// Clamp a stored selection index against the current list length.
+/// Lists shrink between snapshots; the cursor stays on the last row
+/// rather than pointing past the end. `None` when the list is empty.
+pub fn clamped_selection(index: usize, len: usize) -> Option<usize> {
+    if len == 0 {
+        None
+    } else {
+        Some(index.min(len - 1))
+    }
+}
+
+/// Move a selection index by one step, clamped to `[0, len)`.
+pub fn step_selection(index: usize, down: bool, len: usize) -> usize {
+    let Some(current) = clamped_selection(index, len) else {
+        return 0;
+    };
+    if down {
+        (current + 1).min(len - 1)
+    } else {
+        current.saturating_sub(1)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
     use ratatui::widgets::Paragraph;
     use ratatui::Terminal;
+
+    #[test]
+    fn clamped_selection_handles_empty_and_shrunk_lists() {
+        assert_eq!(clamped_selection(0, 0), None);
+        assert_eq!(clamped_selection(5, 3), Some(2), "shrunk list clamps");
+        assert_eq!(clamped_selection(1, 3), Some(1));
+    }
+
+    #[test]
+    fn step_selection_clamps_at_both_ends() {
+        assert_eq!(step_selection(0, false, 3), 0, "up at top stays");
+        assert_eq!(step_selection(2, true, 3), 2, "down at bottom stays");
+        assert_eq!(step_selection(0, true, 3), 1);
+        assert_eq!(step_selection(2, false, 3), 1);
+        assert_eq!(step_selection(7, true, 3), 2, "stale index clamps first");
+        assert_eq!(step_selection(0, true, 0), 0, "empty list is safe");
+    }
 
     #[test]
     fn default_focus_is_alerts() {

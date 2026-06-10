@@ -25,7 +25,7 @@ use ratatui::widgets::{List, ListItem};
 use serde::{Deserialize, Serialize};
 use skrills_snapshot::{HintCategory, ScoredHint};
 
-use super::focus::pane_block;
+use super::focus::{clamped_selection, pane_block, select_row};
 use super::state::ColdWindowState;
 
 /// File name used by [`HintPaneState::with_default_persistence`].
@@ -182,22 +182,26 @@ pub struct HintPane;
 
 impl HintPane {
     /// Render the visible hints into `area`. `focused` emphasizes the
-    /// border (see [`pane_block`]).
+    /// border (see [`pane_block`]); `selected` highlights one row with
+    /// the `> ` cursor (pass `None` when the pane is unfocused).
     pub fn render(
         snap_state: &ColdWindowState,
         pane_state: &HintPaneState,
         frame: &mut Frame<'_>,
         area: Rect,
         focused: bool,
+        selected: Option<usize>,
     ) {
         let title = match pane_state.filter {
             None => " Hints  (1=tok 2=val 3=red 4=sync 5=qual 0=all  P=pin) ".to_string(),
             Some(c) => format!(" Hints  filter:{}  (0=clear) ", c.label()),
         };
         let visible = pane_state.visible_hints(snap_state);
+        let cursor = selected.and_then(|s| clamped_selection(s, visible.len()));
         let items: Vec<ListItem> = visible
             .iter()
-            .map(|h| Self::render_row(h, pane_state))
+            .enumerate()
+            .map(|(i, h)| select_row(Self::render_row(h, pane_state), cursor == Some(i)))
             .collect();
 
         let list = List::new(items)
@@ -206,7 +210,7 @@ impl HintPane {
         frame.render_widget(list, area);
     }
 
-    fn render_row<'a>(hint: &'a ScoredHint, pane_state: &HintPaneState) -> ListItem<'a> {
+    fn render_row<'a>(hint: &'a ScoredHint, pane_state: &HintPaneState) -> Line<'a> {
         let pinned = pane_state.pinned.contains(&hint.hint.uri);
         let pin_marker = if pinned { "[*] " } else { "[ ] " };
         let score_str = format!("{:>5.1}", hint.score);
@@ -235,7 +239,7 @@ impl HintPane {
             Span::raw(": "),
             Span::raw(hint.hint.message.clone()),
         ]);
-        ListItem::new(line)
+        line
     }
 
     /// Handle a keystroke; mutate state if relevant, return action.
@@ -450,7 +454,7 @@ mod tests {
             let backend = TestBackend::new(size.0, size.1);
             let mut terminal = Terminal::new(backend).unwrap();
             terminal
-                .draw(|f| HintPane::render(&snap_state, &pane_state, f, f.area(), false))
+                .draw(|f| HintPane::render(&snap_state, &pane_state, f, f.area(), false, None))
                 .unwrap();
         }
     }

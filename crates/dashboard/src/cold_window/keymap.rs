@@ -90,6 +90,32 @@ pub fn bindings() -> &'static [Binding] {
             modifier: false,
         },
         Binding {
+            scope: BindingScope::Global,
+            keys: "Enter",
+            action: "open detail",
+            codes: &[KeyCode::Enter],
+            modifier: false,
+        },
+        Binding {
+            scope: BindingScope::Global,
+            keys: "z",
+            action: "zoom pane",
+            codes: &[KeyCode::Char('z')],
+            modifier: false,
+        },
+        Binding {
+            scope: BindingScope::Global,
+            keys: "j/k",
+            action: "select item",
+            codes: &[
+                KeyCode::Char('j'),
+                KeyCode::Char('k'),
+                KeyCode::Up,
+                KeyCode::Down,
+            ],
+            modifier: false,
+        },
+        Binding {
             scope: BindingScope::Alerts,
             keys: "A",
             action: "ack all non-warnings",

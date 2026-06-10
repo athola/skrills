@@ -16,27 +16,50 @@ use ratatui::layout::Rect;
 use ratatui::prelude::*;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use skrills_snapshot::{ResearchQuota, WindowSnapshot};
 
+use super::focus::FocusTarget;
+use super::keymap::{bindings_for, BindingScope};
 use super::state::ColdWindowState;
+
+/// Minimum hint-segment width: room for the always-present `? help`
+/// plus a truncation ellipsis (FR-2.3).
+const MIN_HINT_WIDTH: u16 = 9;
 
 /// Stateless renderer for the status bar.
 pub struct StatusBar;
 
 impl StatusBar {
-    /// Render the status line into `area`.
+    /// Render the status line into `area`: state summary on the left,
+    /// the contextual key hints for `focus` right-aligned (FR-2).
+    ///
+    /// Rendered borderless: the bar owns a single terminal row, and a
+    /// `Borders::TOP` block at height 1 used to swallow the content,
+    /// leaving only a title rule on screen.
     pub fn render(
         state: &ColdWindowState,
         research_quota: Option<ResearchQuota>,
         budget_ceiling: u64,
+        focus: FocusTarget,
+        overlay_open: bool,
         frame: &mut Frame<'_>,
         area: Rect,
     ) {
         let line = build_line(state, research_quota, budget_ceiling);
-        let paragraph =
-            Paragraph::new(line).block(Block::default().borders(Borders::TOP).title(" Status "));
-        frame.render_widget(paragraph, area);
+        frame.render_widget(Paragraph::new(line), area);
+
+        // Hints overdraw the left segment's tail when space runs out:
+        // discoverability beats a clipped token count (FR-2.3).
+        let hints = hint_text(focus, overlay_open);
+        let want = u16::try_from(hints.chars().count()).unwrap_or(u16::MAX);
+        let width = want.min(area.width).max(MIN_HINT_WIDTH.min(area.width));
+        let shown = truncate_with_ellipsis(&hints, width);
+        let rect = Rect::new(area.right().saturating_sub(width), area.y, width, 1);
+        frame.render_widget(
+            Paragraph::new(Span::styled(shown, Style::default().fg(Color::DarkGray))),
+            rect,
+        );
     }
 
     /// Render to a plain string (useful for testing without a terminal
@@ -91,6 +114,46 @@ fn build_line<'a>(
         ));
     }
     Line::from(spans)
+}
+
+/// The contextual hint text for the current interface state (FR-2).
+///
+/// `? help` leads so it survives right-truncation; the focused pane's
+/// keys follow, then the globals. With an overlay open, the overlay's
+/// keys replace the pane keys entirely (FR-2.2). Content derives from
+/// the keymap table, the single source of truth.
+pub fn hint_text(focus: FocusTarget, overlay_open: bool) -> String {
+    if overlay_open {
+        return "? help  Esc close  q close".to_string();
+    }
+    let scope = match focus {
+        FocusTarget::Alerts => BindingScope::Alerts,
+        FocusTarget::Hints => BindingScope::Hints,
+        FocusTarget::Research => BindingScope::Research,
+    };
+    let mut parts = vec!["? help".to_string()];
+    parts.extend(
+        bindings_for(scope)
+            .iter()
+            .map(|b| format!("{} {}", b.keys, b.action)),
+    );
+    parts.push("Tab panes".to_string());
+    parts.push("q quit".to_string());
+    parts.join("  ")
+}
+
+/// Right-truncate `s` to `width` columns, marking the cut with `…`.
+fn truncate_with_ellipsis(s: &str, width: u16) -> String {
+    let width = width as usize;
+    if s.chars().count() <= width {
+        return s.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut out: String = s.chars().take(width - 1).collect();
+    out.push('…');
+    out
 }
 
 fn line_to_plain_string(line: &Line<'_>) -> String {
@@ -262,7 +325,17 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let state = ColdWindowState::new();
         terminal
-            .draw(|f| StatusBar::render(&state, None, 100_000, f, f.area()))
+            .draw(|f| {
+                StatusBar::render(
+                    &state,
+                    None,
+                    100_000,
+                    FocusTarget::Alerts,
+                    false,
+                    f,
+                    f.area(),
+                )
+            })
             .unwrap();
     }
 }

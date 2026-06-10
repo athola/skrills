@@ -44,7 +44,8 @@ use ratatui::backend::TestBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::Terminal;
 use skrills_dashboard::cold_window::{
-    AlertPane, ColdWindowState, HintPane, HintPaneState, ResearchPane, ResearchPaneState, StatusBar,
+    AlertPane, ColdWindowState, FocusTarget, HintPane, HintPaneState, ResearchPane,
+    ResearchPaneState, StatusBar,
 };
 use skrills_server::api::{cold_window_routes, ColdWindowDashboardState};
 use skrills_snapshot::{
@@ -170,15 +171,17 @@ fn render_tui_text(snap: Arc<WindowSnapshot>) -> String {
                     Constraint::Length(5),  // status bar
                 ])
                 .split(area);
-            AlertPane::render(&state, f, chunks[0], false);
-            HintPane::render(&state, &hint_state, f, chunks[1], false);
-            ResearchPane::render(&state, &research_state, f, chunks[2], false);
+            AlertPane::render(&state, f, chunks[0], false, None);
+            HintPane::render(&state, &hint_state, f, chunks[1], false, None);
+            ResearchPane::render(&state, &research_state, f, chunks[2], false, None);
             // 3 used of 10 → status renders "quota: 7/10" (the
             // historical `available/total` form).
             StatusBar::render(
                 &state,
                 Some(ResearchQuota::new(3, 10)),
                 BUDGET,
+                FocusTarget::Alerts,
+                false,
                 f,
                 chunks[3],
             );

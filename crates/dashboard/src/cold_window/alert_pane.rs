@@ -19,7 +19,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{List, ListItem};
 use skrills_snapshot::{Alert, Severity};
 
-use super::focus::pane_block;
+use super::focus::{clamped_selection, pane_block, select_row};
 use super::state::ColdWindowState;
 
 /// Action returned by the pane after handling a keystroke.
@@ -44,8 +44,15 @@ pub struct AlertPane;
 
 impl AlertPane {
     /// Render the visible alerts inside `area`. `focused` emphasizes
-    /// the border (see [`pane_block`]).
-    pub fn render(state: &ColdWindowState, frame: &mut Frame<'_>, area: Rect, focused: bool) {
+    /// the border (see [`pane_block`]); `selected` highlights one row
+    /// with the `> ` cursor (pass `None` when the pane is unfocused).
+    pub fn render(
+        state: &ColdWindowState,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        focused: bool,
+        selected: Option<usize>,
+    ) {
         let counts = state.alert_counts_by_tier();
         let title = format!(
             " Alerts  W:{w}  C:{c}  A:{a}  S:{s} ",
@@ -56,9 +63,11 @@ impl AlertPane {
         );
 
         let visible = state.visible_alerts();
+        let cursor = selected.and_then(|s| clamped_selection(s, visible.len()));
         let items: Vec<ListItem> = visible
             .iter()
-            .map(|alert| Self::render_row(alert))
+            .enumerate()
+            .map(|(i, alert)| select_row(Self::render_row(alert), cursor == Some(i)))
             .collect();
 
         let list = List::new(items)
@@ -68,7 +77,7 @@ impl AlertPane {
     }
 
     /// Build one ratatui list row for an alert.
-    fn render_row(alert: &Alert) -> ListItem<'_> {
+    fn render_row(alert: &Alert) -> Line<'_> {
         let color = tier_color(alert.severity);
         let tag = alert.severity.short_label();
         let line = Line::from(vec![
@@ -84,7 +93,7 @@ impl AlertPane {
             Span::raw(": "),
             Span::raw(alert.message.clone()),
         ]);
-        ListItem::new(line)
+        line
     }
 
     /// Handle a keystroke; mutate state if relevant and return the action.
@@ -209,7 +218,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let state = ColdWindowState::new();
         terminal
-            .draw(|f| AlertPane::render(&state, f, f.area(), false))
+            .draw(|f| AlertPane::render(&state, f, f.area(), false, None))
             .unwrap();
     }
 
@@ -223,7 +232,7 @@ mod tests {
             .collect();
         state.ingest(snap(alerts));
         terminal
-            .draw(|f| AlertPane::render(&state, f, f.area(), false))
+            .draw(|f| AlertPane::render(&state, f, f.area(), false, None))
             .unwrap();
     }
 
@@ -236,7 +245,7 @@ mod tests {
             let backend = TestBackend::new(size.0, size.1);
             let mut terminal = Terminal::new(backend).unwrap();
             terminal
-                .draw(|f| AlertPane::render(&state, f, f.area(), false))
+                .draw(|f| AlertPane::render(&state, f, f.area(), false, None))
                 .unwrap();
         }
     }
