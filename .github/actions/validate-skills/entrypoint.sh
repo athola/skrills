@@ -28,21 +28,26 @@ fi
 
 # ---- run validation (JSON output) ------------------------------------------
 json_out="${RUNNER_TEMP:-/tmp}/skrills-validate.json"
+err_out="${RUNNER_TEMP:-/tmp}/skrills-validate.err"
 
+# skrills emits tracing logs (e.g. "Skill discovery complete") to stdout,
+# which would poison the JSON document jq parses below. Silence them with
+# RUST_LOG=off and keep stderr in its own file rather than merging it into
+# the JSON stream, so the captured stdout stays a clean JSON array.
 # Capture exit code; skrills validate currently always exits 0 but may change.
 set +e
-skrills validate \
+RUST_LOG="${RUST_LOG:-off}" skrills validate \
   --skill-dir "$skill_path" \
   --target "$targets" \
   --format json \
-  > "$json_out" 2>&1
+  > "$json_out" 2> "$err_out"
 validate_exit=$?
 set -e
 
 # If the command itself failed (not validation errors, but a crash), bail out.
 if [ $validate_exit -ne 0 ] && [ ! -s "$json_out" ]; then
   echo "::error::skrills validate exited with code ${validate_exit}"
-  cat "$json_out" >&2 || true
+  cat "$err_out" >&2 || true
   exit 1
 fi
 
