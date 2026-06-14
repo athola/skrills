@@ -97,6 +97,8 @@ layout {
 Already inside a Zellij session? Open it in a split without a layout
 file: `zellij run -d down -- bash -c 'until skrills cold-window --tui; do sleep 2; done'`.
 
+![Skrills cold-window TUI](assets/gifs/cold-window.gif)
+
 **Let other tools call Skrills.** The MCP server exposes 36 tools
 (validation, sync, intelligence, research) over stdio or HTTP:
 

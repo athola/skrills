@@ -9,14 +9,19 @@ Set Width 1200
 Set Height 700
 Set Theme "Catppuccin Mocha"
 Set Padding 20
-Set TypingSpeed 50ms
+Set TypingSpeed 25ms
 Set Shell "bash"
 
-# Set up environment - use demo skills from repo
-Env PATH "/Users/alex.thola/skrills/target/release:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-Env SKRILLS_SKILL_DIR "/Users/alex.thola/skrills/assets/demo-skills"
+# Set up environment - use demo skills from repo.
+# Absolute paths: VHS launches ttyd via Go, which refuses relative PATH
+# entries, so the binary and ttyd dirs must be absolute. Adjust the repo
+# and ttyd directories for your machine before recording.
+Env PATH "/home/alext/skrills/target/release:/home/alext/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Env SKRILLS_SKILL_DIR "/home/alext/skrills/assets/demo-skills"
 Env SKRILLS_INCLUDE_CLAUDE "1"
 Env HOME "/tmp/skrills-demo"
+# Quiet the tracing logs so command output stays clean on screen.
+Env RUST_LOG "off"
 
 # Title
 Type "# Skrills: Unified Skills across Claude, Codex, Copilot & Cursor"
