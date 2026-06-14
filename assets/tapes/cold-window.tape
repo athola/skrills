@@ -33,10 +33,19 @@ Type "clear"
 Enter
 Show
 
-# --- title ---
+# --- title + narrated intro ---
+# Typed comments are the only captions VHS can render, and only at a shell
+# prompt. The in-TUI captions (during the live surface) are burned in after
+# recording by assets/tapes/cold-window-overlay.sh -- rerun it on reshoot.
 Type "# skrills cold-window --tui: a live, governed skills analysis surface"
 Enter
-Sleep 1200ms
+Sleep 900ms
+Type "# Watch the token meter climb past its 2.0K ceiling,"
+Enter
+Sleep 800ms
+Type "# the 4-tier policy fire a WARNING, and ? reveal the keymap."
+Enter
+Sleep 1100ms
 Type "clear"
 Enter
 Sleep 400ms
