@@ -81,14 +81,19 @@ SELECT_ASSET_URL()
   need_cmd curl
   release_json=$(curl -fsSL "$url_json") || fail "failed to fetch release metadata from $url_json"
   target="$(TARGET)"
-  # Try jq first (cleanest), fall back to awk for pure POSIX shell
+  # Match the .tar.gz tarball, not the .sha256 checksum sidecar: both
+  # carry the target triple in their name, so a bare substring match
+  # would grab whichever GitHub lists first (the checksum), and tar
+  # would choke on the plain-text file ("not in gzip format").
+  # Try jq first (cleanest), fall back to awk for pure POSIX shell.
   if command -v jq >/dev/null 2>&1; then
-    _jq_urls=$(echo "$release_json" | jq -r --arg target "$target" '.assets[] | select(.name | contains($target)) | .browser_download_url')
+    _jq_urls=$(echo "$release_json" | jq -r --arg target "$target" '.assets[] | select(.name | contains($target)) | select(.name | endswith(".tar.gz")) | .browser_download_url')
     echo "$_jq_urls" | head -n1
   else
-    # Pure awk fallback: find asset block with matching name, extract URL
+    # Pure awk fallback: find asset block whose name matches the target
+    # AND ends in .tar.gz, then extract the URL.
     echo "$release_json" | awk -v target="$target" '
-      /"name":/ && index($0, target) { found=1 }
+      /"name":/ && index($0, target) && index($0, ".tar.gz") { found=1 }
       found && /"browser_download_url":/ {
         gsub(/.*"browser_download_url": *"/, "")
         gsub(/".*/, "")
