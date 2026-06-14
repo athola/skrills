@@ -31,12 +31,14 @@ json_out="${RUNNER_TEMP:-/tmp}/skrills-validate.json"
 err_out="${RUNNER_TEMP:-/tmp}/skrills-validate.err"
 
 # skrills emits tracing logs (e.g. "Skill discovery complete") to stdout,
-# which would poison the JSON document jq parses below. Silence them with
-# RUST_LOG=off and keep stderr in its own file rather than merging it into
-# the JSON stream, so the captured stdout stays a clean JSON array.
+# which would poison the JSON document jq parses below. Force RUST_LOG=off
+# to silence them -- it must be hardcoded, not "${RUST_LOG:-off}", because
+# CI runners export RUST_LOG, so a default-only guard never engages. Keep
+# stderr in its own file rather than merging it into the JSON stream, so
+# the captured stdout stays a clean JSON array.
 # Capture exit code; skrills validate currently always exits 0 but may change.
 set +e
-RUST_LOG="${RUST_LOG:-off}" skrills validate \
+RUST_LOG=off skrills validate \
   --skill-dir "$skill_path" \
   --target "$targets" \
   --format json \
