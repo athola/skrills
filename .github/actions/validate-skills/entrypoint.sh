@@ -27,24 +27,31 @@ if [ ! -d "$skill_path" ]; then
 fi
 
 # ---- run validation (JSON output) ------------------------------------------
+raw_out="${RUNNER_TEMP:-/tmp}/skrills-validate.raw"
 json_out="${RUNNER_TEMP:-/tmp}/skrills-validate.json"
 err_out="${RUNNER_TEMP:-/tmp}/skrills-validate.err"
 
-# skrills emits tracing logs (e.g. "Skill discovery complete") to stdout,
-# which would poison the JSON document jq parses below. Force RUST_LOG=off
-# to silence them -- it must be hardcoded, not "${RUST_LOG:-off}", because
-# CI runners export RUST_LOG, so a default-only guard never engages. Keep
-# stderr in its own file rather than merging it into the JSON stream, so
-# the captured stdout stays a clean JSON array.
+# skrills emits tracing logs (e.g. "Skill discovery complete") onto stdout,
+# interleaved with the JSON document jq parses below. RUST_LOG=off should
+# silence them, but CI runners that export RUST_LOG can re-enable logging,
+# so we ALSO strip the logs from the captured output (see below). Stderr
+# goes to its own file so it never mixes into the JSON stream.
 # Capture exit code; skrills validate currently always exits 0 but may change.
 set +e
 RUST_LOG=off skrills validate \
   --skill-dir "$skill_path" \
   --target "$targets" \
   --format json \
-  > "$json_out" 2> "$err_out"
+  > "$raw_out" 2> "$err_out"
 validate_exit=$?
 set -e
+
+# Strip tracing log lines from stdout, leaving a clean JSON document.
+# Pretty-printed JSON lines start with whitespace or a bracket; tracing
+# logs start with a bare ISO-8601 timestamp ("2026-06-14T05:00:00Z ...").
+# Dropping timestamp-led lines removes the logs wherever they land,
+# regardless of whether RUST_LOG=off was honored.
+grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z' "$raw_out" > "$json_out" || true
 
 # If the command itself failed (not validation errors, but a crash), bail out.
 if [ $validate_exit -ne 0 ] && [ ! -s "$json_out" ]; then
@@ -57,6 +64,15 @@ fi
 # Requires jq. GitHub-hosted runners include it; self-hosted may not.
 if ! command -v jq >/dev/null 2>&1; then
   echo "::error::jq is required to parse validation output but was not found."
+  exit 1
+fi
+
+# Defensive: if the stripped output still is not valid JSON, surface the
+# raw output so the failure is debuggable instead of a bare jq error.
+if ! jq empty "$json_out" >/dev/null 2>&1; then
+  echo "::error::skrills validate did not produce valid JSON after log stripping."
+  echo "----- raw validate output (first 20 lines) -----" >&2
+  head -n 20 "$raw_out" >&2 || true
   exit 1
 fi
 
