@@ -223,7 +223,7 @@ pub fn plan_layout(area: Rect, research_collapsed: bool) -> ColdWindowLayout {
 /// empty `Rect`). The status bar stays pinned regardless.
 ///
 /// The Compact tier (FR-6) reuses the same single-pane shape: below
-/// [`NARROW_MIN_WIDTH`] columns the focused pane is the layout,
+/// `NARROW_MIN_WIDTH` columns the focused pane is the layout,
 /// whether or not the user zoomed.
 pub fn plan_layout_with(
     area: Rect,
