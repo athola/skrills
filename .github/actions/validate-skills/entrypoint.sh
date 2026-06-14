@@ -46,12 +46,15 @@ RUST_LOG=off skrills validate \
 validate_exit=$?
 set -e
 
-# Strip tracing log lines from stdout, leaving a clean JSON document.
-# Pretty-printed JSON lines start with whitespace or a bracket; tracing
-# logs start with a bare ISO-8601 timestamp ("2026-06-14T05:00:00Z ...").
-# Dropping timestamp-led lines removes the logs wherever they land,
-# regardless of whether RUST_LOG=off was honored.
-grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z' "$raw_out" > "$json_out" || true
+# Extract the JSON document from stdout. skrills prepends human-readable
+# noise that pollutes the stream jq parses: an unconfigured runner prints
+# a "Skrills is not configured on this system." banner, and tracing may
+# emit ISO-8601-timestamped log lines. The JSON document itself begins at
+# the first line that opens an array or object, so drop everything before
+# it, then strip any timestamped log lines interleaved within. This is
+# robust regardless of configuration state or whether RUST_LOG=off held.
+awk 'p || /^[[{]/ { p = 1; print }' "$raw_out" \
+  | grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z' > "$json_out" || true
 
 # If the command itself failed (not validation errors, but a crash), bail out.
 if [ $validate_exit -ne 0 ] && [ ! -s "$json_out" ]; then
