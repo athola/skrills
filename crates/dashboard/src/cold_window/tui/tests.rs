@@ -20,9 +20,7 @@ use super::input::{handle_key, KeyOutcome};
 use super::layout::{layout_mode, plan_for, plan_layout, plan_layout_with, LayoutMode};
 use super::render::draw;
 use super::UiState;
-use crate::cold_window::{
-    ColdWindowState, FocusTarget, HintPaneState, Overlay, ResearchPaneState,
-};
+use crate::cold_window::{ColdWindowState, FocusTarget, HintPaneState, Overlay, ResearchPaneState};
 
 fn rich_snapshot() -> Arc<WindowSnapshot> {
     Arc::new(WindowSnapshot {

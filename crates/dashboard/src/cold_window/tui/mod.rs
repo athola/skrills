@@ -14,10 +14,10 @@
 //!
 //! Submodule layout:
 //!
-//! - [`layout`] picks the responsive tier and places the panes.
-//! - [`render`] composes the panes (and overlays) into one frame.
-//! - [`input`] routes keystrokes to overlays, globals, and panes.
-//! - [`runner`] owns the terminal and the live event loop.
+//! - `layout` picks the responsive tier and places the panes.
+//! - `render` composes the panes (and overlays) into one frame.
+//! - `input` routes keystrokes to overlays, globals, and panes.
+//! - `runner` owns the terminal and the live event loop.
 //!
 //! This root holds only the interface-level shell state ([`UiState`])
 //! shared across those concerns, and re-exports the public surface.

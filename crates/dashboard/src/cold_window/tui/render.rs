@@ -19,7 +19,7 @@ use crate::cold_window::{
 /// Compose the four panes into a single frame, adapting to the
 /// terminal size.
 ///
-/// The arrangement is chosen by [`plan_layout`] from the frame's width:
+/// The arrangement is chosen by [`plan_layout`](super::plan_layout) from the frame's width:
 /// a roomy three-column layout on wide terminals, a slimmer two-column
 /// variant in the medium band, and a full-width vertical stack on
 /// phone-sized screens. The one-line status bar is pinned to the bottom

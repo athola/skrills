@@ -60,7 +60,7 @@ pub fn layout_mode(area: Rect) -> LayoutMode {
     }
 }
 
-/// Hard floor below which panes are unrenderable; [`draw`] shows a
+/// Hard floor below which panes are unrenderable; [`draw`](super::draw) shows a
 /// one-line guard message instead of clipped pane fragments (FR-6.3).
 pub(crate) const GUARD_MIN_WIDTH: u16 = 20;
 /// See [`GUARD_MIN_WIDTH`].
@@ -72,7 +72,7 @@ pub fn below_size_floor(area: Rect) -> bool {
 }
 
 /// Where each pane is drawn for a given frame. Produced by
-/// [`plan_layout`] and consumed by [`draw`]; pure and `Rect`-only so it
+/// [`plan_layout`] and consumed by [`draw`](super::draw); pure and `Rect`-only so it
 /// can be unit-tested without a terminal.
 ///
 /// The fields are `pub` for ergonomic read access, but the load-bearing

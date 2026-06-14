@@ -244,7 +244,10 @@ fn detail_overlay(
     match ui.focus {
         FocusTarget::Alerts => {
             let visible = snap_state.visible_alerts();
-            let alert = visible.get(crate::cold_window::focus::clamped_selection(index, visible.len())?)?;
+            let alert = visible.get(crate::cold_window::focus::clamped_selection(
+                index,
+                visible.len(),
+            )?)?;
             Some(Overlay::Detail {
                 title: alert.title.clone(),
                 lines: vec![
@@ -259,7 +262,10 @@ fn detail_overlay(
         }
         FocusTarget::Hints => {
             let visible = hint_state.visible_hints(snap_state);
-            let hint = visible.get(crate::cold_window::focus::clamped_selection(index, visible.len())?)?;
+            let hint = visible.get(crate::cold_window::focus::clamped_selection(
+                index,
+                visible.len(),
+            )?)?;
             Some(Overlay::Detail {
                 title: hint.hint.uri.clone(),
                 lines: vec![
@@ -277,7 +283,10 @@ fn detail_overlay(
         FocusTarget::Research => {
             let snap = snap_state.current.as_deref()?;
             let findings = &snap.research_findings;
-            let finding = findings.get(crate::cold_window::focus::clamped_selection(index, findings.len())?)?;
+            let finding = findings.get(crate::cold_window::focus::clamped_selection(
+                index,
+                findings.len(),
+            )?)?;
             Some(Overlay::Detail {
                 title: finding.title.clone(),
                 lines: vec![
