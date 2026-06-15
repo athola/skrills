@@ -51,41 +51,46 @@ Enter
 Sleep 400ms
 
 # --- launch the live TUI ---
-# Low budget so the 4-tier policy fires a WARNING on screen; fast tick so
-# the real-time meter visibly climbs within the recording window.
-Type "skrills cold-window --tui --skill-dir assets/demo-skills --tick-rate-ms 150 --alert-budget 2000 --no-bell"
+# Low budget so the 4-tier policy fires a WARNING on screen. A steady,
+# deliberately slow 500ms cadence (--no-adaptive pins it) makes each
+# real-time tick a discrete, trackable step: the demo ledger adds ~750
+# tokens per tick, so the meter starts under the 2.0K ceiling (~1.8K on
+# the first tick) and visibly steps over it on the next.
+Type "skrills cold-window --tui --skill-dir assets/demo-skills --tick-rate-ms 500 --no-adaptive --alert-budget 2000 --no-bell"
 Sleep 800ms
 Enter
-# First paint, then a few ticks: panes appear, token meter climbs past the
-# 2.0K ceiling, and the WARNING alert lights up the Alerts pane.
-Sleep 3500ms
+# Hold on the live surface long enough to *watch it update*: panes paint,
+# then the token meter climbs one visible step per tick, crosses the 2.0K
+# ceiling, and the WARNING alert lights up the Alerts pane in real time.
+Sleep 7000ms
 
 # --- discoverability: the help overlay shows the full keymap ---
 Type "?"
-Sleep 2600ms
+Sleep 4200ms
 Type "?"
 Sleep 600ms
 
 # --- the command palette: the novice-to-expert bridge (k9s pattern) ---
 Type ":"
-Sleep 2400ms
+Sleep 4200ms
 Escape
 Sleep 600ms
 
 # --- the focus model: Tab cycles Alerts -> Hints -> Research ---
+# Hold on each focus state so the moving highlight is legible.
 Tab
-Sleep 900ms
+Sleep 1500ms
 Tab
-Sleep 900ms
+Sleep 1500ms
 Tab
-Sleep 700ms
+Sleep 1300ms
 
 # --- drill into the fired alert for its governance detail ---
 Enter
-Sleep 2400ms
+Sleep 4200ms
 Escape
 Sleep 700ms
 
 # --- graceful shutdown within the 2-second budget ---
 Ctrl+C
-Sleep 1200ms
+Sleep 2200ms

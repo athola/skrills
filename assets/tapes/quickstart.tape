@@ -52,7 +52,7 @@ Enter
 Sleep 500ms
 Type "ls ~/.claude/skills"
 Enter
-Sleep 2s
+Sleep 3500ms
 
 # Validate skills across all four CLIs
 Type "# Step 2: validate them against all four CLIs (--autofix repairs)"
@@ -60,7 +60,7 @@ Enter
 Sleep 500ms
 Type "skrills validate --target both --autofix"
 Enter
-Sleep 3s
+Sleep 5s
 
 # Analyze skills for token usage
 Type "# Step 3: analyze token cost, with reduction suggestions"
@@ -68,7 +68,7 @@ Enter
 Sleep 500ms
 Type "skrills analyze --suggestions"
 Enter
-Sleep 4s
+Sleep 6s
 
 # Show metrics
 Type "# Step 4: review aggregate metrics across every skill"
@@ -76,7 +76,7 @@ Enter
 Sleep 500ms
 Type "skrills metrics"
 Enter
-Sleep 4s
+Sleep 6s
 
 # Sync skills to all CLIs
 Type "# Step 5: sync from Claude Code out to every other CLI"
@@ -84,7 +84,7 @@ Enter
 Sleep 500ms
 Type "skrills sync-all"
 Enter
-Sleep 3s
+Sleep 5s
 
 # Verify sync
 Type "# Step 5 done: the same skills landed in Codex and Copilot"
@@ -92,9 +92,9 @@ Enter
 Sleep 500ms
 Type "find ~/.codex/skills ~/.copilot/skills -name 'SKILL.md' 2>/dev/null | head -5"
 Enter
-Sleep 2s
+Sleep 3500ms
 
 # Final message
 Type "echo '# Skills now work across all four platforms!'"
 Enter
-Sleep 2s
+Sleep 3500ms

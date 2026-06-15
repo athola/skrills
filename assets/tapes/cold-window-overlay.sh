@@ -22,12 +22,13 @@ trap 'rm -f "$TMP"' EXIT
 # Caption schedule: "START END TEXT" (seconds). Windows sit inside each
 # phase with gaps at the boundaries so no caption bleeds across a cut.
 CAPTIONS=(
-  "13.2 16.0 Token meter breaches the 2.0K ceiling -- WARNING fires"
-  "16.5 18.7 ?  reveals the full keymap"
-  "19.2 21.2 :  opens the command palette"
-  "21.6 23.7 Tab cycles focus:  Alerts > Hints > Research"
-  "24.1 26.1 Enter opens the alert governance detail"
-  "27.0 28.0 Ctrl-C:  graceful shutdown within budget"
+  "13.2 16.4 Live surface -- metrics refresh on every tick"
+  "16.9 19.6 Token meter steps past the 2.0K ceiling -- WARNING fires"
+  "20.0 23.8 ?  reveals the full keymap"
+  "24.3 28.1 :  opens the command palette"
+  "28.5 32.4 Tab cycles focus:  Alerts > Hints > Research"
+  "32.8 36.6 Enter opens the alert governance detail"
+  "37.5 39.5 Ctrl-C:  graceful shutdown within budget"
 )
 
 # Build the drawtext chain. Single quotes protect filtergraph-level
