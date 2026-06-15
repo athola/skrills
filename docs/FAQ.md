@@ -71,4 +71,4 @@ Your prompt instructions here...
 
 ### Security considerations?
 
-Skrills operates with standard I/O and no bundled secrets. You control exposed skill directories. always review third-party skills.
+Skrills operates with standard I/O and no bundled secrets. You control exposed skill directories. Always review third-party skills.

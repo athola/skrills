@@ -28,7 +28,7 @@ we deliberately gave up. Records the *why*, not just the *what*.
 - Date: 2026-06-10
 - Phase: specify
 - Deciders: -
-- Links: ['docs/specification.md FR-4.2']
+- Links: ['book/src/cold-window.md (keybindings)', 'crates/dashboard/src/cold_window/keymap.rs']
 <!-- key: 967f84e27b4f -->
 
 ### Context & problem
@@ -56,7 +56,7 @@ In the context of adopting an overlay stack, facing the need for a dismiss key, 
 - Date: 2026-06-10
 - Phase: specify
 - Deciders: -
-- Links: ['docs/specification.md FR-1']
+- Links: ['crates/dashboard/src/cold_window/focus.rs']
 <!-- key: 1af567ea9322 -->
 
 ### Context & problem
@@ -84,7 +84,7 @@ In the context of adding discoverability to a focus-less TUI, we chose a hybrid 
 - Date: 2026-06-10
 - Phase: specify
 - Deciders: -
-- Links: ['docs/specification.md FR-6', 'docs/research/2026-06-09-minimalist-tui-interface-design.md theme 4']
+- Links: ['book/src/cold-window.md (Design model and research basis)', 'crates/dashboard/src/cold_window/tui']
 <!-- key: 24f66be2e7ed -->
 
 ### Context & problem
@@ -112,7 +112,7 @@ In the context of phone-width terminals, we chose focus-equals-visibility over s
 - Date: 2026-06-10
 - Phase: specify
 - Deciders: -
-- Links: ['docs/specification.md FR-4, NFR-2']
+- Links: ['crates/dashboard/src/cold_window/overlay.rs']
 <!-- key: 45576312e0f3 -->
 
 ### Context & problem
@@ -140,7 +140,7 @@ In the context of adding modal overlays, we chose an in-tree stack over the tui-
 - Date: 2026-06-10
 - Phase: plan
 - Deciders: -
-- Links: ['docs/implementation-plan.md T5', 'docs/specification.md FR-5']
+- Links: ['crates/dashboard/src/cold_window/state.rs']
 <!-- key: be0ec74d0131 -->
 
 ### Context & problem
@@ -168,7 +168,7 @@ In the context of drill-down, we chose minimal selection cursors over a selectio
 - Date: 2026-06-10
 - Phase: execute
 - Deciders: -
-- Links: ['docs/specification.md FR-8', 'crates/dashboard/src/cold_window/keymap.rs palette_commands']
+- Links: ['crates/dashboard/src/cold_window/keymap.rs palette_commands']
 <!-- key: fe3dff49a731 -->
 
 ### Context & problem

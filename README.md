@@ -129,11 +129,12 @@ what the adapter reads and writes today:
 | Preferences | Y | Y | Y | -- |
 | Plugin Assets | Y | -- | -- | Y |
 
-Gaps are real, not omissions: Copilot CLI has no slash commands, and
-Cursor preferences aren't mapped yet. Plugin assets sync to Cursor's
-`plugins/local/` so synced plugins appear installed; stale entries are
-pruned automatically. See the [sync guide](book/src/sync-guide.md) for
-details.
+A dash means that asset doesn't sync to that CLI, either because the CLI
+has no equivalent (Copilot CLI has no slash commands) or because the
+mapping isn't built yet (Cursor preferences). Plugin assets sync to
+Cursor's `plugins/local/` so synced plugins appear installed, and
+stale entries are pruned automatically. See the
+[sync guide](book/src/sync-guide.md) for details.
 
 ## CI integration
 

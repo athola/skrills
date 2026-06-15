@@ -27,7 +27,7 @@ terminal:
 skrills cold-window --tui
 ```
 
-Quit with `q` or `Ctrl-C`; press `?` for contextual help. Prefer
+Quit with `q` or `Ctrl-C`. Press `?` for contextual help. Prefer
 a browser? Run the SSE surface
 instead (or alongside):
 
@@ -44,7 +44,7 @@ surface renders four panes:
   bar (green → cyan → yellow → red), per-tier alert counts, optional
   research-quota remaining.
 - **Alerts**: 4-tier list (Warning / Caution / Advisory / Status)
-  sorted tier-then-recency. Per-tier coloring; alerts carry a
+  sorted tier-then-recency, with per-tier coloring. Alerts carry a
   hysteresis band so re-arming requires re-crossing the matching
   `*_clear` value.
 - **Hints**: ranked by `MultiSignalScorer` formula
@@ -53,7 +53,7 @@ surface renders four panes:
   to the top regardless of score.
 - **Research**: pull-only side panel. Findings from GitHub, Hacker
   News, Lobsters, papers, and TRIZ analogies arrive asynchronously
-  through the tome dispatcher. Empty by default; the dispatcher
+  through the tome dispatcher. Empty by default. The dispatcher
   respects a token-bucket quota.
 
 The TUI arranges those panes to fit the terminal, re-flowing live on
@@ -67,7 +67,7 @@ resize:
   full-width top to bottom. A collapsed research pane shrinks to a
   fixed three-line badge so alerts and hints keep the room.
 - **Compact** (< 45 columns, e.g. a phone SSH session): only the
-  focused pane renders; `Tab` switches which pane is visible. Hiding
+  focused pane renders, and `Tab` switches which pane is visible. Hiding
   panes beats squeezing them into unreadable slivers.
 
 Below a hard floor of 20x6 the panes give way to a one-line
@@ -102,7 +102,7 @@ bottom hint line shows only the keys valid for the focused pane, and
 | `R` | research | Expand or collapse the findings panel |
 
 Breaking change in 0.8.2: `Esc` no longer quits. It dismisses
-overlays (and zoom) the way it does in lazygit, gitui, and k9s; `q`
+overlays (and zoom) the way it does in lazygit, gitui, and k9s. `q`
 and `Ctrl-C` remain the quit keys. Every action is reachable without
 CTRL/ALT modifiers, so the TUI stays usable from phone keyboards
 over SSH.
@@ -110,6 +110,36 @@ over SSH.
 `Ctrl-C` exits cleanly within the 2-second shutdown budget. The
 browser sees a `status` event with `reconnecting…` while the server
 drains.
+
+## Design model and research basis
+
+The TUI follows the "lazygit/gitui model": a small fixed set of panes
+as the default surface, every data-rich or configurable view behind a
+modal overlay or drill-down, a one-line contextual hint bar for
+discoverability, and width-conditional layout collapse instead of a
+separate mobile build. gitui's in-tree popup stack and atuin's
+select-to-reveal inspector are the direct implementation references.
+
+Three principles shape the restraint:
+
+- **Details on demand.** Shneiderman's mantra (overview first, zoom
+  and filter, then details) and dashboard surveys that name
+  information overload as the dominant failure mode argue for a
+  bounded default with depth behind interaction, not more panes.
+- **Density without decoration.** Terminal users self-select for
+  speed, so meaning is carried by text and semantic color (it
+  survives a color-stripped buffer), with no animation or fade. The
+  surface repaints on state change, and ratatui's buffer diffing
+  makes the idle repaint floor a zero-write no-op rather than
+  screen-reader spam.
+- **Single-key reachability.** On phones over SSH the keyboard layer,
+  not width, is the real constraint, so every action is reachable
+  without CTRL/ALT modifiers and the `:` palette bridges novice and
+  expert use.
+
+The design decisions and the alternatives weighed against them are
+recorded as TR-001 through TR-006 in
+[docs/tradeoffs.md](https://github.com/athola/skrills/blob/master/docs/tradeoffs.md).
 
 ## CLI flags
 
@@ -156,7 +186,7 @@ TUI panes        SSE handler     Tome worker
 ```
 
 Resource bounds (R11 mitigation): the broadcast channel caps at 16
-queued snapshots; lagging subscribers drop and the SSE handler emits
+queued snapshots. Lagging subscribers drop and the SSE handler emits
 a `status` banner ("subscriber lagged by N ticks") rather than
 blocking the producer. The activity ring caps at 100 entries with
 oldest-evict.
@@ -204,7 +234,7 @@ Each tick the engine cold-walks the configured plugins root
 `<plugin>/health.toml` it finds. Schema:
 
 ```toml
-plugin_name = "my-plugin"   # optional; defaults to directory name
+plugin_name = "my-plugin"   # optional, defaults to directory name
 overall = "ok"              # ok | warn | error | unknown
 
 [[checks]]
@@ -256,13 +286,13 @@ to the 50 K tier.
   Claude Code's auto-compact trigger. Community evidence
   ([anthropics/claude-code#28728](https://github.com/anthropics/claude-code/issues/28728),
   [#46695](https://github.com/anthropics/claude-code/issues/46695))
-  suggests 75 % may be safer for sessions you intend to compact;
+  suggests 75 % may be safer for sessions you intend to compact.
   v0.9.0 is expected to make this configurable per-tier.
 - **Kill-switch override**: there is no "ignore the kill-switch"
   flag in v0.8.0. If you hit 100 %, raise `--alert-budget` and
   restart. This matches the safer-than-sorry posture of cockpit
-  Warning alerts in FAA AC 25.1322-1; if it proves too restrictive
-  in practice we may add an opt-in `--allow-budget-override`.
+  Warning alerts in FAA AC 25.1322-1. If it proves too restrictive
+  in practice, we may add an opt-in `--allow-budget-override`.
 - **SSE shutdown semantics**: the browser surface merges a
   shutdown notify into the SSE response stream so `Ctrl-C` returns
   within the 2 s budget. Without the merge, a pending
@@ -305,7 +335,7 @@ contract.
 
 The `tui` and `dashboard` targets validate the TTY-guard
 contract: under a real terminal the process renders until the
-3 s timeout fires (rc 124 / 143); under a non-TTY environment
+3 s timeout fires (rc 124 / 143). Under a non-TTY environment
 (CI, redirected stdio) the process exits 1 with a clear
 `requires a TTY` message rather than crashing on a termios
 syscall against `/dev/null`. Both surfaces use the same guard
@@ -340,7 +370,7 @@ the matching signal in the snapshot:
 - Production tick producer using `analyze::tokens::count_tokens_attributed`
   against real discovery output (replaces the demo producer).
 - Per-tier configurable thresholds (community evidence supports
-  75 % Warning; defer to v0.9.0).
+  75 % Warning, deferred to v0.9.0).
 - Clippy-style `Applicability` axis for hints (MachineApplicable /
   MaybeIncorrect / HasPlaceholders / Unspecified) orthogonal to
   severity ([rust-clippy precedent](https://github.com/rust-lang/rust-clippy/blob/master/clippy_lints/src/needless_late_init.rs)).

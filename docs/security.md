@@ -110,7 +110,7 @@ EOF
 ### Current Implementation
 
 #### Authentication & Authorization
-In local deployments using standard I/O (stdio) mode, security relies on process isolation and filesystem permissions, where the MCP server runs as the user's process. For network-exposed deployments, we plan to implement mTLS client authentication with X.509 certificate verification.
+In local deployments using standard I/O (stdio) mode, security relies on process isolation and filesystem permissions, since the MCP server runs with the invoking user's privileges. For network-exposed deployments, we plan to implement mTLS client authentication with X.509 certificate verification.
 
 #### Network Security
 The system supports TLS 1.3, prioritizing modern cipher suites like AES-256-GCM and ChaCha20-Poly1305 to enforce forward secrecy. It validates CA certificates, hostnames, and expiration dates for all connections.

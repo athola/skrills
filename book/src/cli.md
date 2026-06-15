@@ -154,7 +154,7 @@ skrills serve --skill-dir ~/.custom/skills  # Custom skill directory
 
 The MCP server exposes 36 tools for validation, analysis, sync, intelligence, and research directly to your AI assistant. The HTTP mode serves a browser dashboard with skills explorer, metrics, and activity feed.
 
-Skrills can generate a self-contained HTML portal (`skrills-portal.html`) via the `html-portal-generator` skill. It works offline without a running server and includes a skills browser, validator with autofix, token analyzer, cross-CLI converter, and full CLI/MCP reference. Open it directly in any browser or upload it into AI application portals. The file is git-ignored; regenerate as part of release prep.
+Skrills can generate a self-contained HTML portal (`skrills-portal.html`) via the `html-portal-generator` skill. It works offline without a running server and includes a skills browser, validator with autofix, token analyzer, cross-CLI converter, and full CLI/MCP reference. Open it directly in any browser or upload it into AI application portals. The file is git-ignored, so regenerate it as part of release prep.
 
 ## Working with Subagents
 
@@ -193,7 +193,7 @@ skrills sync-agents --path custom.md      # Write to different file
 
 **Skill naming caveat:**
 
-Skills are named from the `name:` field in `SKILL.md` frontmatter. Treat these names as opaque strings; they may include punctuation like `:` for namespacing (e.g., `pensive:shared`).
+Skills are named from the `name:` field in `SKILL.md` frontmatter. Treat these names as opaque strings. They may include punctuation like `:` for namespacing (e.g., `pensive:shared`).
 
 When comparing skills between session headers and disk, don't parse by splitting on `:`. Instead, extract the `(file: …/SKILL.md)` path or read the frontmatter directly.
 

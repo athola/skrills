@@ -68,7 +68,7 @@ Specify phase summarized module doc comments and skipped the run loop body where
 
 ### Recommendation / action item
 
-FR-7.1 amended in docs/specification.md with the rationale (ratatui buffer diffing makes idle floor repaints zero-write). Rule going forward: every 'already true' claim in a spec gets a code citation (file:line) before it is written down.
+The repaint-floor invariant was corrected against the code (ratatui buffer diffing makes idle-floor repaints zero-write) and now lives in book/src/cold-window.md under "Design model and research basis". Rule going forward: every 'already true' claim gets a code citation (file:line) before it is written down.
 
 ## Archive
 

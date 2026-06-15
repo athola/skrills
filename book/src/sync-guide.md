@@ -29,11 +29,11 @@ skrills sync-all --from cursor --to claude
 
 Skills are copied between skill directories:
 - **Claude**: `~/.claude/skills/`
-- **Codex**: `~/.codex/skills/` (discovery root; skills must be `**/SKILL.md`)
+- **Codex**: `~/.codex/skills/` (discovery root, skills must be `**/SKILL.md`)
 - **Copilot**: `~/.copilot/skills/` (same SKILL.md format as Codex)
 - **Cursor**: `~/.cursor/skills/{name}/SKILL.md` (frontmatter stripped on write)
 
-Codex skills are disabled by default; enable them in `~/.codex/config.toml`:
+Codex skills are disabled by default. Enable them in `~/.codex/config.toml`:
 
 ```toml
 [features]
@@ -97,7 +97,7 @@ When a Claude plugin ships without `.claude-plugin/plugin.json` (some upstream p
 | `commands` / `skills` / `agents` / `hooks` | Empty arrays, matching on-disk reality for plugins that ship no registered components |
 | `_synthesized` | `true`, an audit marker so downstream tools can distinguish synthesized manifests from real ones |
 
-Synthesis is gated to **full-mirror sync only** (the default for `--to cursor`). Skill-mirror targets such as Codex, which only consume `skills/` and never read `plugin.json`, leave manifest-less plugins as-is. Real manifests are never overwritten; synthesis runs only when the plugin walk finds no `plugin.json` on disk.
+Synthesis is gated to **full-mirror sync only** (the default for `--to cursor`). Skill-mirror targets such as Codex, which only consume `skills/` and never read `plugin.json`, leave manifest-less plugins as-is. Real manifests are never overwritten. Synthesis runs only when the plugin walk finds no `plugin.json` on disk.
 
 To audit synthesized manifests after a sync, query the marker:
 

@@ -63,7 +63,7 @@ five parity invariants across the workspace:
    workspace and each entry's `source` path exists on disk.
 
 For a live inventory before running the parity tests, use
-`make demo-release-consistency`; it prints the actual on-disk
+`make demo-release-consistency`, which prints the actual on-disk
 versions and command counts before invoking the test suite.
 
 The same tests are picked up by `make test` and `make test-integration`
