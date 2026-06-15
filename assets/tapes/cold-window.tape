@@ -40,10 +40,10 @@ Show
 Type "# skrills cold-window --tui: a live, governed skills analysis surface"
 Enter
 Sleep 900ms
-Type "# Watch the token meter climb past its 2.0K ceiling,"
+Type "# Watch the 4-tier policy step Advisory -> Caution -> Warning,"
 Enter
 Sleep 800ms
-Type "# the 4-tier policy fire a WARNING, and ? reveal the keymap."
+Type "# hints rank themselves, and research stream in -- all live."
 Enter
 Sleep 1100ms
 Type "clear"
@@ -51,18 +51,34 @@ Enter
 Sleep 400ms
 
 # --- launch the live TUI ---
-# Low budget so the 4-tier policy fires a WARNING on screen. A steady,
-# deliberately slow 500ms cadence (--no-adaptive pins it) makes each
-# real-time tick a discrete, trackable step: the demo ledger adds ~750
-# tokens per tick, so the meter starts under the 2.0K ceiling (~1.8K on
-# the first tick) and visibly steps over it on the next.
-Type "skrills cold-window --tui --skill-dir assets/demo-skills --tick-rate-ms 500 --no-adaptive --alert-budget 2000 --no-bell"
+# Default 100K ceiling so every tier is reachable: the demo ledger adds
+# ~8K tokens per tick, so the meter steps Advisory (20K) -> Caution (50K)
+# -> Warning (80K) -> kill-switch (100K) over the hold below. A slow,
+# deliberate 500ms base cadence (--no-adaptive pins it) makes each
+# real-time tick a discrete, trackable step.
+Type "skrills cold-window --tui --skill-dir assets/demo-skills --tick-rate-ms 500 --no-adaptive --alert-budget 100000 --no-bell"
 Sleep 800ms
 Enter
-# Hold on the live surface long enough to *watch it update*: panes paint,
-# then the token meter climbs one visible step per tick, crosses the 2.0K
-# ceiling, and the WARNING alert lights up the Alerts pane in real time.
-Sleep 7000ms
+
+# Hold on the live surface long enough to *watch it work*: panes paint,
+# the Hints pane fills in one ranked row per tick, and the token meter
+# climbs one visible step per tick. First the Advisory alert lights up
+# the Alerts pane (cyan), as the ledger crosses the 20K inflection.
+Sleep 4000ms
+
+# --- research is pull-only: open it so findings stream in live ---
+# R expands the Research panel; with a couple of findings already fetched,
+# the rest trickle in (HN, Lobsters, GitHub, Paper, TRIZ) as the hold runs.
+Type "R"
+Sleep 4000ms
+
+# Keep watching: the meter crosses 50K and the alert escalates to Caution
+# (yellow), then crosses 80K into a Warning (red) token-budget breach.
+Sleep 4200ms
+
+# Past 100K the hard kill-switch engages -- still a Warning, now with the
+# system refusing mutating operations. The full 4-tier story on one screen.
+Sleep 3200ms
 
 # --- discoverability: the help overlay shows the full keymap ---
 Type "?"

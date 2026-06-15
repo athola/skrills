@@ -28,7 +28,10 @@ use clap::Args;
 use skrills_analyze::cold_window::cadence::read_loadavg_1min;
 use skrills_analyze::cold_window::engine::TickInput;
 use skrills_analyze::cold_window::{ColdWindowEngine, PluginHealthCollector, SkillCollector};
-use skrills_snapshot::{KillSwitch, LoadSample, TokenEntry, TokenLedger};
+use skrills_snapshot::{
+    Hint, HintCategory, KillSwitch, LoadSample, ResearchChannel, ResearchFinding, TokenEntry,
+    TokenLedger,
+};
 use skrills_tome::dispatcher::{current_ms_checked, BucketedBudget};
 use tokio::sync::watch;
 
@@ -411,13 +414,170 @@ async fn producer_loop(
     Ok(())
 }
 
+/// Synthetic per-tick token growth for the demo producer.
+///
+/// Sized so a session steps through every tier of the 4-tier policy —
+/// Advisory (20K) → Caution (50K) → Warning (80% of ceiling) →
+/// kill-switch (100%) — within ~13 ticks. At the README recording's
+/// 500 ms tick that is a watchable ~6.5 s climb against the default
+/// 100K ceiling, with each tier a discrete on-screen step rather than
+/// a single jump straight to the budget Warning.
+const DEMO_TOKENS_PER_TICK: u64 = 8_000;
+
+/// Demo hint catalog: `(uri, category, message, frequency, impact,
+/// ease_score, age_days)`. One row is revealed per tick so the Hints
+/// pane visibly fills in during the demo instead of starting (and
+/// staying) empty. Spans the recommender's category taxonomy so the
+/// `1`–`5` category filters all have something to match. Replace with
+/// real recommender output alongside the token-attribution follow-up.
+const DEMO_HINTS: &[(&str, HintCategory, &str, u32, f64, f64, f64)] = &[
+    (
+        "skill://verbose-guide",
+        HintCategory::Token,
+        "split into modules to shed ~1.2K idle tokens",
+        12,
+        8.4,
+        7.0,
+        3.0,
+    ),
+    (
+        "mcp://github",
+        HintCategory::Redundancy,
+        "36 tools exposed; prune unused to cut ~4.8K tokens",
+        7,
+        7.1,
+        5.5,
+        1.0,
+    ),
+    (
+        "skill://api-helper",
+        HintCategory::Validation,
+        "frontmatter fails schema since v0.7.2",
+        5,
+        6.8,
+        8.0,
+        6.0,
+    ),
+    (
+        "skill://review",
+        HintCategory::SyncDrift,
+        "Claude Code copy is 3 edits ahead of Codex",
+        4,
+        5.6,
+        6.5,
+        2.0,
+    ),
+    (
+        "skill://old-notes",
+        HintCategory::Quality,
+        "score 0.41 — below the 0.60 quality floor",
+        3,
+        4.9,
+        4.0,
+        9.0,
+    ),
+    (
+        "skill://git-commit",
+        HintCategory::Redundancy,
+        "duplicates skill://acp commit-message logic",
+        6,
+        6.2,
+        5.0,
+        4.0,
+    ),
+];
+
+/// Demo research catalog: `(fingerprint, channel, title, url, score)`.
+/// Research is pull-only and arrives asynchronously, so the demo
+/// reveals one finding every other tick — a slower trickle than the
+/// hints — to mimic the dispatcher fetching in the background.
+const DEMO_RESEARCH: &[(&str, ResearchChannel, &str, &str, f64)] = &[
+    (
+        "token-budget-advisory",
+        ResearchChannel::HackerNews,
+        "Expensively Quadratic: why long contexts cost more",
+        "https://news.ycombinator.com/item?id=43210000",
+        284.0,
+    ),
+    (
+        "mcp-overhead",
+        ResearchChannel::Lobsters,
+        "Taming MCP token overhead in practice",
+        "https://lobste.rs/s/mcp-overhead",
+        96.0,
+    ),
+    (
+        "skill-schema",
+        ResearchChannel::GitHub,
+        "anthropics/skills — canonical skill schema",
+        "https://github.com/anthropics/skills",
+        1820.0,
+    ),
+    (
+        "mode-collapse",
+        ResearchChannel::Paper,
+        "Verbalized Sampling mitigates mode collapse",
+        "https://arxiv.org/abs/2510.01234",
+        0.91,
+    ),
+    (
+        "alarm-management",
+        ResearchChannel::Triz,
+        "Aviation CRM two-challenge rule → agent retry guards",
+        "https://example.org/triz/crm",
+        0.78,
+    ),
+];
+
+/// Reveal the first `tick_count` demo hints, capped at the catalog
+/// size, so the Hints pane fills in one row per tick.
+fn demo_hints(tick_count: u64) -> Vec<Hint> {
+    let visible = (tick_count as usize).min(DEMO_HINTS.len());
+    DEMO_HINTS[..visible]
+        .iter()
+        .map(
+            |&(uri, category, message, frequency, impact, ease_score, age_days)| Hint {
+                uri: uri.to_string(),
+                category,
+                message: message.to_string(),
+                frequency,
+                impact,
+                ease_score,
+                age_days,
+            },
+        )
+        .collect()
+}
+
+/// Reveal one demo research finding every other tick, capped at the
+/// catalog size, so the Research pane populates as a background trickle.
+fn demo_research(tick_count: u64, fetched_at_ms: u64) -> Vec<ResearchFinding> {
+    let visible = (tick_count / 2) as usize;
+    let visible = visible.min(DEMO_RESEARCH.len());
+    DEMO_RESEARCH[..visible]
+        .iter()
+        .map(
+            |&(fingerprint, channel, title, url, score)| ResearchFinding {
+                fingerprint: fingerprint.to_string(),
+                channel,
+                title: title.to_string(),
+                url: url.to_string(),
+                score,
+                fetched_at_ms,
+            },
+        )
+        .collect()
+}
+
 /// Build a synthetic `TickInput` that exercises the alert pipeline.
 ///
 /// Token totals scale with `tick_count` so a long-running session
 /// crosses Advisory → Caution → Warning thresholds; the chaos-style
-/// trajectory shows the dashboard "doing something" during a demo.
-/// Replace with real discovery and analyze::tokens attribution in a
-/// follow-up.
+/// trajectory shows the dashboard "doing something" during a demo. The
+/// producer also reveals hints and research findings progressively (see
+/// [`demo_hints`] and [`demo_research`]) so the Hints and Research panes
+/// fill in live rather than staying empty. Replace with real discovery
+/// and analyze::tokens attribution in a follow-up.
 ///
 /// Returns `None` when the system clock precedes `UNIX_EPOCH` (NTP
 /// recovery, container time-warp, VM resume). The caller must skip
@@ -426,7 +586,7 @@ async fn producer_loop(
 /// silently corrupt cadence/dwell/alert hysteresis.
 fn build_demo_input(tick_count: u64, no_adaptive: bool) -> Option<TickInput> {
     let timestamp_ms = current_ms_checked()?;
-    let total = tick_count.saturating_mul(1_500);
+    let total = tick_count.saturating_mul(DEMO_TOKENS_PER_TICK);
     let load_sample = if no_adaptive {
         LoadSample::default()
     } else {
@@ -453,7 +613,9 @@ fn build_demo_input(tick_count: u64, no_adaptive: bool) -> Option<TickInput> {
         TickInput::empty()
             .with_timestamp_ms(timestamp_ms)
             .with_token_ledger(token_ledger)
-            .with_load_sample(load_sample),
+            .with_load_sample(load_sample)
+            .with_raw_hints(demo_hints(tick_count))
+            .with_research_findings(demo_research(tick_count, timestamp_ms)),
     )
 }
 
@@ -551,9 +713,84 @@ mod tests {
         let i1 = build_demo_input(1, true).expect("clock available in test env");
         let i10 = build_demo_input(10, true).expect("clock available in test env");
         let i100 = build_demo_input(100, true).expect("clock available in test env");
-        assert_eq!(i1.token_ledger.total, 1_500);
-        assert_eq!(i10.token_ledger.total, 15_000);
-        assert_eq!(i100.token_ledger.total, 150_000);
+        assert_eq!(i1.token_ledger.total, DEMO_TOKENS_PER_TICK);
+        assert_eq!(i10.token_ledger.total, 10 * DEMO_TOKENS_PER_TICK);
+        assert_eq!(i100.token_ledger.total, 100 * DEMO_TOKENS_PER_TICK);
+    }
+
+    #[test]
+    fn build_demo_input_token_trajectory_crosses_every_alert_tier() {
+        // The reshot README demo must visibly step through the full
+        // 4-tier policy, not just the budget Warning. With the default
+        // 100K ceiling the static Advisory (20K) and Caution (50K)
+        // thresholds and the 80%/100% Warning bands must all be reached
+        // within a watchable handful of ticks.
+        let advisory = 20_000u64;
+        let caution = 50_000u64;
+        let warning = 80_000u64; // 80% of the 100K demo ceiling
+        let kill = 100_000u64; // hard ceiling
+        let total_at = |t: u64| {
+            build_demo_input(t, true)
+                .expect("clock available")
+                .token_ledger
+                .total
+        };
+        assert!(total_at(3) >= advisory, "advisory crossed by ~tick 3");
+        assert!(total_at(7) >= caution, "caution crossed by ~tick 7");
+        assert!(total_at(10) >= warning, "warning crossed by ~tick 10");
+        assert!(total_at(13) >= kill, "kill-switch crossed by ~tick 13");
+        // Still ramps gradually so each tier is a discrete on-screen step.
+        assert!(total_at(2) < advisory, "tier 1 not skipped on tick 2");
+    }
+
+    #[test]
+    fn build_demo_input_populates_hints_progressively_then_caps() {
+        // Hints pane starts empty in the legacy fixture; the reshoot
+        // requires it to fill in over the first few ticks (a "live"
+        // feel) and then hold steady at the catalog size.
+        let early = build_demo_input(1, true).expect("clock available");
+        let mid = build_demo_input(4, true).expect("clock available");
+        let late = build_demo_input(50, true).expect("clock available");
+        assert!(
+            early.raw_hints.len() < mid.raw_hints.len(),
+            "hints must accrue as ticks advance ({} !< {})",
+            early.raw_hints.len(),
+            mid.raw_hints.len()
+        );
+        assert_eq!(
+            late.raw_hints.len(),
+            DEMO_HINTS.len(),
+            "hints cap at the catalog size once fully revealed"
+        );
+    }
+
+    #[test]
+    fn build_demo_input_hints_span_multiple_categories() {
+        use std::collections::HashSet;
+        let i = build_demo_input(50, true).expect("clock available");
+        let cats: HashSet<_> = i.raw_hints.iter().map(|h| h.category).collect();
+        assert!(
+            cats.len() >= 3,
+            "demo hints should exercise >=3 categories, got {}",
+            cats.len()
+        );
+    }
+
+    #[test]
+    fn build_demo_input_populates_research_progressively_then_caps() {
+        // Research is pull-only and trickles in asynchronously; the
+        // demo should show it populating over time, slower than hints.
+        let early = build_demo_input(1, true).expect("clock available");
+        let late = build_demo_input(50, true).expect("clock available");
+        assert!(
+            early.research_findings.len() < late.research_findings.len(),
+            "research must populate as ticks advance"
+        );
+        assert_eq!(
+            late.research_findings.len(),
+            DEMO_RESEARCH.len(),
+            "research caps at the catalog size once fully fetched"
+        );
     }
 
     #[test]

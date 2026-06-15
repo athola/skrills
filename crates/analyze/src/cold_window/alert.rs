@@ -335,41 +335,65 @@ impl LayeredAlertPolicy {
         )
     }
 
-    /// Classify a token total into `(severity, band)` if alertable.
-    /// Returns `None` for totals below the lowest tier threshold.
-    fn classify_token_total(&self, total: u64) -> Option<(Severity, AlertBand)> {
-        // Helper: build a one-sided high-band with the standard hysteresis-clear ratio.
-        // Static thresholds are validated by construction so `expect` is safe.
-        fn band_for(high: f64) -> AlertBand {
-            AlertBand::new(0.0, 0.0, high, high * HYSTERESIS_CLEAR_RATIO)
-                .expect("static thresholds are valid (non-NaN, ordered)")
-        }
+    /// Build a one-sided high-band with the standard hysteresis-clear
+    /// ratio. Static thresholds are validated by construction so `expect`
+    /// is safe.
+    fn band_for(high: f64) -> AlertBand {
+        AlertBand::new(0.0, 0.0, high, high * HYSTERESIS_CLEAR_RATIO)
+            .expect("static thresholds are valid (non-NaN, ordered)")
+    }
 
+    /// Every tier whose threshold the current token total has breached,
+    /// returned low-severity-first as `(severity, fingerprint, band)`.
+    ///
+    /// The tiers are nested thresholds on a single signal (token total),
+    /// so a higher tier does **not** suppress the lower tiers it subsumes:
+    /// at 90K the total is simultaneously past the advisory (20K), caution
+    /// (50K), and 80%-budget warning bands, so all three are active at
+    /// once. The caller runs each through its own dwell/hysteresis gate and
+    /// emits all that fire, so the surface shows concurrent alerts rather
+    /// than a single collapsed row. Returns an empty vec below the lowest
+    /// tier.
+    fn active_tiers(&self, total: u64) -> Vec<(Severity, &'static str, AlertBand)> {
         let budget = self.budget_ceiling as f64;
         let warning_threshold = budget * WARNING_BUDGET_FRACTION;
         let (advisory_eff, caution_eff) = self.effective_thresholds();
-
-        // Hard kill-switch: at or above ceiling.
-        if total >= self.budget_ceiling {
-            return Some((Severity::Warning, band_for(budget)));
-        }
-
-        // Soft warning at 80% of budget.
-        if (total as f64) >= warning_threshold {
-            return Some((Severity::Warning, band_for(warning_threshold)));
-        }
-
-        // Caution at MCP-overhead range (or rolling-baseline floor).
-        if total >= caution_eff {
-            return Some((Severity::Caution, band_for(caution_eff as f64)));
-        }
+        let mut tiers = Vec::new();
 
         // Advisory at quadratic inflection (or rolling-baseline floor).
         if total >= advisory_eff {
-            return Some((Severity::Advisory, band_for(advisory_eff as f64)));
+            tiers.push((
+                Severity::Advisory,
+                Self::fingerprint_for(Severity::Advisory),
+                Self::band_for(advisory_eff as f64),
+            ));
+        }
+        // Caution at MCP-overhead range (or rolling-baseline floor).
+        if total >= caution_eff {
+            tiers.push((
+                Severity::Caution,
+                Self::fingerprint_for(Severity::Caution),
+                Self::band_for(caution_eff as f64),
+            ));
+        }
+        // Soft warning at 80% of budget; at or above the hard ceiling the
+        // same Warning tier anchors its band at the ceiling so the re-arm
+        // boundary matches 100% (the kill-switch itself is engaged by the
+        // engine via `kill_switch_engaged`).
+        if (total as f64) >= warning_threshold {
+            let high = if total >= self.budget_ceiling {
+                budget
+            } else {
+                warning_threshold
+            };
+            tiers.push((
+                Severity::Warning,
+                Self::fingerprint_for(Severity::Warning),
+                Self::band_for(high),
+            ));
         }
 
-        None
+        tiers
     }
 
     fn title_for(severity: Severity) -> &'static str {
@@ -407,30 +431,34 @@ impl AlertPolicy for LayeredAlertPolicy {
         // detection). Lock acquisition is contention-free on the
         // engine's per-tick path.
         self.baseline.lock().push(total);
-        let classification = self.classify_token_total(total);
-        let active_fingerprint = classification
-            .as_ref()
-            .map(|(sev, _)| Self::fingerprint_for(*sev).to_string());
+
+        // Every tier the signal currently breaches; nested thresholds
+        // on one signal stay concurrently active (see `active_tiers`).
+        let active = self.active_tiers(total);
+        let active_fingerprints: std::collections::HashSet<&'static str> =
+            active.iter().map(|(_, fp, _)| *fp).collect();
 
         // Hysteresis enforcement (re-arm gate, spec § 3.4):
         // any tracked fingerprint whose condition is no longer
-        // classified as active is checked against its remembered
-        // `high_clear`. The signal must drop to or below `high_clear`
-        // for the alarm to be considered *truly* cleared (dwell reset
-        // and `cleared` flag set). A brief dip into the hysteresis
-        // zone, signal in `(high_clear, high)`, is *not* a clear:
-        // the alarm event persists, dwell is preserved, and re-arm
-        // is unnecessary because the alarm never actually disengaged.
+        // active is checked against its remembered `high_clear`. The
+        // signal must drop to or below `high_clear` for the alarm to be
+        // considered *truly* cleared (dwell reset and `cleared` flag
+        // set). A brief dip into the hysteresis zone, signal in
+        // `(high_clear, high)`, is *not* a clear: the alarm event
+        // persists, dwell is preserved, and re-arm is unnecessary
+        // because the alarm never actually disengaged.
         //
         // Without this, an oscillating signal that bounces between
         // `high` and just-above-`high_clear` would alternately reset
         // and re-accumulate dwell, defeating both min-dwell and
         // hysteresis. With it, a true clear requires re-crossing the
         // `high_clear` boundary (matches FAA AC 25.1322-1 § 5.3
-        // dwell semantics and ISA-18.2 alarm management).
+        // dwell semantics and ISA-18.2 alarm management). Each tier is
+        // gated independently so a lower tier never clears just because
+        // a higher one activated.
         let signal = total as f64;
         for (fp, entry) in history.fingerprints.iter_mut() {
-            if active_fingerprint.as_deref() != Some(fp.as_str()) {
+            if !active_fingerprints.contains(fp.as_str()) {
                 let truly_cleared = entry.last_high_clear.map(|hc| signal <= hc).unwrap_or(true);
                 if truly_cleared {
                     entry.dwell_ticks = 0;
@@ -442,9 +470,11 @@ impl AlertPolicy for LayeredAlertPolicy {
             }
         }
 
-        if let Some((severity, band)) = classification {
-            let fingerprint = Self::fingerprint_for(severity);
-
+        // Each active tier accrues dwell on every tick its condition
+        // holds and fires once min-dwell is met; emitting all of them
+        // surfaces the full escalation concurrently rather than only the
+        // highest tier.
+        for (severity, fingerprint, band) in active {
             // Increment dwell on every tick where the condition holds,
             // regardless of whether the alert ultimately fires. This
             // is what lets min_dwell > 1 actually fire.
@@ -460,8 +490,8 @@ impl AlertPolicy for LayeredAlertPolicy {
             entry.dwell_ticks = entry.dwell_ticks.saturating_add(1);
             entry.cleared = false;
             // Remember the band's `high_clear` so subsequent ticks
-            // can decide whether a non-classified signal counts as
-            // a true clear (re-arm gate, spec § 3.4).
+            // can decide whether a non-active signal counts as a true
+            // clear (re-arm gate, spec § 3.4).
             entry.last_high_clear = Some(band.high_clear());
             let dwell_ticks = entry.dwell_ticks;
 
@@ -628,15 +658,79 @@ mod tests {
     }
 
     #[test]
-    fn budget_ordering_warning_outranks_caution() {
-        // At 80K with budget 100K, the warning band must fire (not caution),
-        // because 80K is above the warning threshold AND above the caution
-        // threshold. Severity classification picks the highest tier.
+    fn budget_tiers_fire_concurrently_not_exclusively() {
+        // The tiers are nested thresholds on one signal (token total), so a
+        // higher tier does NOT suppress the lower tiers it subsumes. At 80K
+        // with budget 100K the total is past advisory (20K), caution (50K),
+        // and the 80% warning band (80K) at once, so all three alerts must
+        // populate concurrently and the pane shows the full escalation, not
+        // a single collapsed row.
         let policy = LayeredAlertPolicy::new(100_000).with_min_dwell(1);
         let curr = snapshot_with_tokens(80_000);
         let alerts = policy.evaluate(&snapshot_with_tokens(0), &curr, &mut AlertHistory::new());
-        assert_eq!(alerts.len(), 1);
-        assert!(matches!(alerts[0].severity, Severity::Warning));
+        let sevs: std::collections::HashSet<_> = alerts.iter().map(|a| a.severity).collect();
+        assert_eq!(alerts.len(), 3, "all three breached tiers fire at once");
+        assert!(sevs.contains(&Severity::Warning));
+        assert!(sevs.contains(&Severity::Caution));
+        assert!(sevs.contains(&Severity::Advisory));
+    }
+
+    #[test]
+    fn concurrent_tiers_all_fire_when_total_breaches_each_threshold() {
+        // At 90K (budget 100K) the total is simultaneously past every lower
+        // tier; with min_dwell=1 each fires on first observation.
+        let policy = LayeredAlertPolicy::new(100_000).with_min_dwell(1);
+        let curr = snapshot_with_tokens(90_000);
+        let alerts = policy.evaluate(&snapshot_with_tokens(0), &curr, &mut AlertHistory::new());
+        let sevs: std::collections::HashSet<_> = alerts.iter().map(|a| a.severity).collect();
+        assert_eq!(
+            sevs,
+            [Severity::Advisory, Severity::Caution, Severity::Warning]
+                .into_iter()
+                .collect()
+        );
+    }
+
+    #[test]
+    fn lower_tiers_persist_as_total_climbs_into_higher_tiers() {
+        // As the meter climbs the pane must accumulate alerts -- A, then
+        // A+C, then A+C+W -- rather than replacing the prior tier. This is
+        // the on-screen "multiple concurrent alerts" the surface promises.
+        let policy = LayeredAlertPolicy::new(100_000).with_min_dwell(1);
+        let mut history = AlertHistory::new();
+        let sev = |a: &[Alert]| {
+            a.iter()
+                .map(|x| x.severity)
+                .collect::<std::collections::HashSet<_>>()
+        };
+        let a1 = policy.evaluate(
+            &snapshot_with_tokens(0),
+            &snapshot_with_tokens(30_000),
+            &mut history,
+        );
+        assert_eq!(sev(&a1), [Severity::Advisory].into_iter().collect());
+        let a2 = policy.evaluate(
+            &snapshot_with_tokens(30_000),
+            &snapshot_with_tokens(60_000),
+            &mut history,
+        );
+        assert_eq!(
+            sev(&a2),
+            [Severity::Advisory, Severity::Caution]
+                .into_iter()
+                .collect()
+        );
+        let a3 = policy.evaluate(
+            &snapshot_with_tokens(60_000),
+            &snapshot_with_tokens(90_000),
+            &mut history,
+        );
+        assert_eq!(
+            sev(&a3),
+            [Severity::Advisory, Severity::Caution, Severity::Warning]
+                .into_iter()
+                .collect()
+        );
     }
 
     // ---------- high_clear re-arm gate (spec § 3.4) ----------
