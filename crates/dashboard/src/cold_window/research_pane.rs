@@ -26,7 +26,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{List, ListItem, Paragraph};
 use skrills_snapshot::{ResearchChannel, ResearchFinding};
 
-use super::focus::{clamped_selection, pane_block, select_row};
+use super::focus::{clamped_selection, pane_block, select_row, truncate_with_ellipsis};
 use super::state::ColdWindowState;
 
 /// Mutable state owned by the research pane.
@@ -187,18 +187,28 @@ impl ResearchPane {
             findings.len()
         );
         let cursor = selected.and_then(|s| clamped_selection(s, findings.len()));
+        let inner_width = (area.width as usize).saturating_sub(4);
         let items: Vec<ListItem> = findings
             .iter()
             .enumerate()
-            .map(|(i, f)| select_row(Self::render_row(f), cursor == Some(i)))
+            .map(|(i, f)| select_row(Self::render_row(f, inner_width), cursor == Some(i)))
             .collect();
         let list = List::new(items).block(pane_block(title, focused));
         frame.render_widget(list, area);
     }
 
-    fn render_row(finding: &ResearchFinding) -> Line<'_> {
+    /// Build one ratatui list row for a research finding, truncating
+    /// with `"..."` when title and URL together exceed available width.
+    /// Fixed chars: `" {chan:>10} "` (12) + `"  "` (2) + score (5) +
+    /// `"  "` (2) = 21.
+    fn render_row(finding: &ResearchFinding, inner_width: usize) -> Line<'_> {
         let channel = finding.channel.short_label();
-        let line = Line::from(vec![
+        // " {chan:>10} " (12) + "  " (2) + score (5) + "  " (2) = 21
+        let available = inner_width.saturating_sub(21);
+        let title_chars = finding.title.chars().count();
+        let url_chars = finding.url.chars().count();
+
+        let mut spans = vec![
             Span::styled(
                 format!(" {channel:>10} "),
                 Style::default()
@@ -214,11 +224,28 @@ impl ResearchPane {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
-            Span::raw(finding.title.clone()),
-            Span::raw(": "),
-            Span::styled(finding.url.clone(), Style::default().fg(Color::DarkGray)),
-        ]);
-        line
+        ];
+
+        if title_chars + 2 + url_chars <= available {
+            spans.push(Span::raw(finding.title.clone()));
+            spans.push(Span::raw(": "));
+            spans.push(Span::styled(
+                finding.url.clone(),
+                Style::default().fg(Color::DarkGray),
+            ));
+        } else if title_chars + 2 < available {
+            let url_space = available - title_chars - 2;
+            spans.push(Span::raw(finding.title.clone()));
+            spans.push(Span::raw(": "));
+            spans.push(Span::styled(
+                truncate_with_ellipsis(&finding.url, url_space),
+                Style::default().fg(Color::DarkGray),
+            ));
+        } else {
+            spans.push(Span::raw(truncate_with_ellipsis(&finding.title, available)));
+        }
+
+        Line::from(spans)
     }
 
     /// Handle a keystroke. `R` toggles collapsed/expanded.
@@ -372,6 +399,101 @@ mod tests {
         assert_eq!(
             pane_state.badge_count, 2,
             "different channels with same fingerprint should both count"
+        );
+    }
+
+    #[test]
+    fn long_finding_row_truncates_at_narrow_width() {
+        // inner_width = 40 - 4 = 36, available = 36 - 21 = 15
+        // title "a very long title here" (22 chars) > 15 → must end with "..."
+        let backend = TestBackend::new(40, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut snap_state = ColdWindowState::new();
+        snap_state.ingest(snap(vec![ResearchFinding {
+            fingerprint: "fp".into(),
+            channel: ResearchChannel::GitHub,
+            title: "a very long title here".into(),
+            url: "https://example.com/fp".into(),
+            score: 5.0,
+            fetched_at_ms: 0,
+        }]));
+        let mut pane_state = ResearchPaneState::new();
+        pane_state.collapsed = false;
+        terminal
+            .draw(|f| ResearchPane::render(&snap_state, &pane_state, f, f.area(), false, None))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            text.contains("..."),
+            "long title must truncate with '...', got: {text}"
+        );
+    }
+
+    #[test]
+    fn finding_row_truncates_url_when_title_fits_but_url_is_long() {
+        // inner_width = 80 - 4 = 76, available = 76 - 21 = 55
+        // title "short" (5) + ": " (2) = 7 < 55 → URL path
+        // url "https://example.com/" + 50 chars > 55 - 7 = 48 → truncated
+        let backend = TestBackend::new(80, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut snap_state = ColdWindowState::new();
+        snap_state.ingest(snap(vec![ResearchFinding {
+            fingerprint: "fp".into(),
+            channel: ResearchChannel::HackerNews,
+            title: "short".into(),
+            url: "https://example.com/this/is/a/very/long/url/path/that/overflows".into(),
+            score: 5.0,
+            fetched_at_ms: 0,
+        }]));
+        let mut pane_state = ResearchPaneState::new();
+        pane_state.collapsed = false;
+        terminal
+            .draw(|f| ResearchPane::render(&snap_state, &pane_state, f, f.area(), false, None))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            text.contains("short"),
+            "title must survive when URL is truncated, got: {text}"
+        );
+        assert!(
+            text.contains("..."),
+            "truncated URL must end with '...', got: {text}"
+        );
+    }
+
+    #[test]
+    fn short_finding_row_needs_no_truncation() {
+        let backend = TestBackend::new(120, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut snap_state = ColdWindowState::new();
+        snap_state.ingest(snap(vec![finding("fp", ResearchChannel::GitHub)]));
+        let mut pane_state = ResearchPaneState::new();
+        pane_state.collapsed = false;
+        terminal
+            .draw(|f| ResearchPane::render(&snap_state, &pane_state, f, f.area(), false, None))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            !text.contains("..."),
+            "short finding must not be truncated, got: {text}"
         );
     }
 

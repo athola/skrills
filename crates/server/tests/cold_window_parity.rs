@@ -157,7 +157,7 @@ fn render_tui_text(snap: Arc<WindowSnapshot>) -> String {
         ..ResearchPaneState::default()
     };
 
-    let backend = TestBackend::new(160, 60);
+    let backend = TestBackend::new(200, 60);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
         .draw(|f| {

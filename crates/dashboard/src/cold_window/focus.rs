@@ -107,6 +107,23 @@ pub fn step_selection(index: usize, down: bool, len: usize) -> usize {
     }
 }
 
+/// Truncate `s` to at most `max_chars` Unicode scalar values, appending
+/// `"..."` (three ASCII dots) when cut. When `max_chars <= 3` there is
+/// no room for the three-dot marker, so the first `max_chars` characters
+/// are returned without any suffix.
+pub fn truncate_with_ellipsis(s: &str, max_chars: usize) -> String {
+    let count = s.chars().count();
+    if count <= max_chars {
+        return s.to_string();
+    }
+    if max_chars <= 3 {
+        return s.chars().take(max_chars).collect();
+    }
+    let mut out: String = s.chars().take(max_chars - 3).collect();
+    out.push_str("...");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,6 +185,39 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect()
+    }
+
+    #[test]
+    fn truncate_ellipsis_short_string_is_unchanged() {
+        assert_eq!(super::truncate_with_ellipsis("hello", 10), "hello");
+        assert_eq!(super::truncate_with_ellipsis("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_ellipsis_long_string_ends_with_three_ascii_dots() {
+        let result = super::truncate_with_ellipsis("hello world", 8);
+        assert_eq!(result, "hello...");
+        assert!(
+            result.ends_with("..."),
+            "must end with '...', got: {result}"
+        );
+        assert_eq!(result.chars().count(), 8);
+    }
+
+    #[test]
+    fn truncate_ellipsis_zero_width_returns_empty() {
+        assert_eq!(super::truncate_with_ellipsis("hello", 0), "");
+    }
+
+    #[test]
+    fn truncate_ellipsis_narrow_width_no_dots() {
+        assert_eq!(super::truncate_with_ellipsis("hello", 1), "h");
+        assert_eq!(super::truncate_with_ellipsis("hello", 3), "hel");
+    }
+
+    #[test]
+    fn truncate_ellipsis_four_chars_has_one_visible_plus_dots() {
+        assert_eq!(super::truncate_with_ellipsis("hello", 4), "h...");
     }
 
     #[test]

@@ -138,6 +138,8 @@ pub fn hint_text(focus: FocusTarget, topmost_overlay: Option<&Overlay>) -> Strin
         FocusTarget::Research => BindingScope::Research,
     };
     let mut parts = vec!["? help".to_string()];
+    parts.push("j/k select".to_string());
+    parts.push("Enter detail".to_string());
     parts.extend(
         bindings_for(scope)
             .iter()

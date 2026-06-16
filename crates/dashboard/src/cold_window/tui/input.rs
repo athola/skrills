@@ -5,6 +5,7 @@
 //! whether the loop should redraw or quit.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use skrills_snapshot::ResearchChannel;
 
 use super::UiState;
 use crate::cold_window::overlay::Overlay;
@@ -270,7 +271,7 @@ fn detail_overlay(
                 title: hint.hint.uri.clone(),
                 lines: vec![
                     format!("category:  {}", hint.hint.category.label()),
-                    format!("score:     {:.1}", hint.score),
+                    format!("score:     {:.1}  (composite priority)", hint.score),
                     format!("frequency: {}", hint.hint.frequency),
                     format!("impact:    {:.1}", hint.hint.impact),
                     format!("ease:      {:.1}", hint.hint.ease_score),
@@ -291,12 +292,26 @@ fn detail_overlay(
                 title: finding.title.clone(),
                 lines: vec![
                     format!("channel:    {}", finding.channel.short_label()),
-                    format!("score:      {:.1}", finding.score),
+                    format!(
+                        "score:      {:.1}  ({})",
+                        finding.score,
+                        channel_score_label(finding.channel)
+                    ),
                     format!("fetched at: {} ms", finding.fetched_at_ms),
                     String::new(),
                     finding.url.clone(),
                 ],
             })
         }
+    }
+}
+
+fn channel_score_label(channel: ResearchChannel) -> &'static str {
+    match channel {
+        ResearchChannel::HackerNews => "HN points",
+        ResearchChannel::GitHub => "GitHub stars",
+        ResearchChannel::Paper => "semantic relevance",
+        ResearchChannel::Lobsters => "channel score",
+        ResearchChannel::Triz => "channel score",
     }
 }

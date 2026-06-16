@@ -802,6 +802,97 @@ fn enter_on_an_empty_list_is_a_noop() {
 }
 
 #[test]
+fn hint_detail_includes_composite_priority_label() {
+    // The score line in the hints detail overlay must explain what the
+    // number means, since it is not obvious from the bare value.
+    let mut ui = UiState::new();
+    let mut s = ColdWindowState::new();
+    s.ingest(rich_snapshot()); // contains one hint: skill://refactor
+    let mut h = HintPaneState::new();
+    let mut r = ResearchPaneState::default();
+
+    // Tab to hints pane, then Enter to open detail.
+    handle_key(key(KeyCode::Tab), &mut ui, &mut s, &mut h, &mut r);
+    handle_key(key(KeyCode::Enter), &mut ui, &mut s, &mut h, &mut r);
+    match ui.overlays.top() {
+        Some(Overlay::Detail { lines, .. }) => {
+            let score_line = lines
+                .iter()
+                .find(|l| l.starts_with("score:"))
+                .expect("score line must be present");
+            assert!(
+                score_line.contains("composite priority"),
+                "hint score line must label what the number means, got: {score_line}"
+            );
+        }
+        other => panic!("expected Detail overlay, got {other:?}"),
+    }
+}
+
+#[test]
+fn research_detail_includes_channel_score_label() {
+    // The score line in the research detail overlay must name the
+    // channel-specific unit (e.g. "GitHub stars").
+    let mut ui = UiState::new();
+    let mut s = ColdWindowState::new();
+    s.ingest(snapshot_with_research()); // GitHub finding
+    let mut h = HintPaneState::new();
+    let mut r = ResearchPaneState {
+        collapsed: false, // open so Enter can reach the finding
+        ..ResearchPaneState::default()
+    };
+
+    // Tab to research (Alerts → Hints → Research).
+    handle_key(key(KeyCode::Tab), &mut ui, &mut s, &mut h, &mut r);
+    handle_key(key(KeyCode::Tab), &mut ui, &mut s, &mut h, &mut r);
+    handle_key(key(KeyCode::Enter), &mut ui, &mut s, &mut h, &mut r);
+    match ui.overlays.top() {
+        Some(Overlay::Detail { lines, .. }) => {
+            let score_line = lines
+                .iter()
+                .find(|l| l.starts_with("score:"))
+                .expect("score line must be present");
+            assert!(
+                score_line.contains("GitHub stars"),
+                "GitHub finding score line must say 'GitHub stars', got: {score_line}"
+            );
+        }
+        other => panic!("expected Detail overlay, got {other:?}"),
+    }
+}
+
+#[test]
+fn hint_bar_shows_enter_detail_hint() {
+    // Discoverability: Enter detail must appear in the status bar so
+    // users know the overlay is reachable without reading the docs.
+    let mut snap_state = ColdWindowState::new();
+    snap_state.ingest(rich_snapshot());
+    let hint_state = HintPaneState::new();
+    let research_state = ResearchPaneState::default();
+    let ui = UiState::new();
+
+    let mut terminal = Terminal::new(TestBackend::new(200, 10)).unwrap();
+    terminal
+        .draw(|f| {
+            draw(
+                f,
+                &ui,
+                &snap_state,
+                &hint_state,
+                &research_state,
+                None,
+                100_000,
+            )
+        })
+        .unwrap();
+    let last_row = row_text(&terminal, 9);
+    assert!(
+        last_row.contains("Enter detail"),
+        "status bar must surface 'Enter detail' for discoverability, got: {last_row}"
+    );
+}
+
+#[test]
 fn colon_opens_the_palette_and_typed_keys_edit_the_query() {
     // T11: inside the palette, `q` and `?` are text, not globals.
     let mut ui = UiState::new();
