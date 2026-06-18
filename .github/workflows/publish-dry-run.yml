@@ -14,6 +14,12 @@ jobs:
   publish-dry-run:
     name: Dry-run cargo publish (all crates)
     runs-on: ubuntu-latest
+    # Disable HTTP/2 multiplexing and raise retries: cargo's parallel
+    # crates.io downloads intermittently fail with "[16] Error in the
+    # HTTP2 framing layer" on the CDN. HTTP/1.1 plus retries is resilient.
+    env:
+      CARGO_HTTP_MULTIPLEXING: "false"
+      CARGO_NET_RETRY: "5"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
