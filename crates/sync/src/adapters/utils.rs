@@ -66,7 +66,7 @@ pub fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
 
         (Some(frontmatter_str), body)
     } else {
-        // No closing delimiter — treat entire content as body
+        // No closing delimiter, treat entire content as body
         (None, content)
     }
 }
@@ -97,7 +97,7 @@ pub fn is_path_contained(target_path: &Path, base_dir: &Path) -> bool {
         return resolved.starts_with(&canonical_base);
     }
 
-    // Target doesn't exist yet — try canonicalizing the parent chain
+    // Target doesn't exist yet, try canonicalizing the parent chain
     let resolved = target_path
         .parent()
         .and_then(|p| p.canonicalize().ok())
@@ -110,11 +110,11 @@ pub fn is_path_contained(target_path: &Path, base_dir: &Path) -> bool {
         return resolved.starts_with(&canonical_base);
     }
 
-    // Neither target nor its parent exist — check if base_dir exists and
+    // Neither target nor its parent exist, check if base_dir exists and
     // verify that the relative path between them has no traversal
     let canonical_base = match base_dir.canonicalize() {
         Ok(b) => b,
-        Err(_) => return false, // Base doesn't exist — deny
+        Err(_) => return false, // Base doesn't exist, deny
     };
 
     // If target_path starts with base_dir, strip the prefix and check for ..
@@ -133,7 +133,7 @@ pub fn is_path_contained(target_path: &Path, base_dir: &Path) -> bool {
             .any(|c| matches!(c, std::path::Component::ParentDir));
     }
 
-    false // Cannot determine containment — deny (fail-closed)
+    false // Cannot determine containment, deny (fail-closed)
 }
 
 /// Computes a SHA-256 hash of the given content, returning a lowercase hex string.

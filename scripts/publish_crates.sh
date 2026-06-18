@@ -9,18 +9,24 @@ require_token() {
   fi
 }
 
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "$1 is required but was not found on PATH." >&2
+    exit 1
+  }
+}
+
+# Read a workspace member's version from `cargo metadata` via jq. Robust to
+# workspace-inherited versions, unlike grepping a crate's Cargo.toml.
 crate_version() {
-  python3 -c '
-import json, sys, subprocess
-crate = sys.argv[1]
-meta = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"]))
-for pkg in meta["packages"]:
-    if pkg["name"] == crate:
-        print(pkg["version"])
-        sys.exit(0)
-print("crate not found: " + crate, file=sys.stderr)
-sys.exit(1)
-' "$1"
+  local crate="$1" version
+  version=$(cargo metadata --no-deps --format-version 1 \
+    | jq -r --arg crate "$crate" 'first(.packages[] | select(.name == $crate) | .version) // empty')
+  if [ -z "$version" ]; then
+    echo "crate not found: $crate" >&2
+    return 1
+  fi
+  printf '%s\n' "$version"
 }
 
 already_published() {
@@ -48,6 +54,7 @@ publish_one() {
 }
 
 require_token
+require_cmd jq
 
 # Level 0: leaf crates (no internal dependencies)
 publish_one skrills-snapshot

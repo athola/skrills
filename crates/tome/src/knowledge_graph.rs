@@ -217,7 +217,7 @@ impl KnowledgeGraph {
         }
     }
 
-    /// Query: "what do I know about X?" -- find nodes matching a label pattern.
+    /// Query: "what do I know about X?", find nodes matching a label pattern.
     pub fn search_nodes(&self, query: &str, kind: Option<NodeKind>) -> TomeResult<Vec<Node>> {
         let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
         let pattern = format!("%{query}%");
@@ -442,7 +442,7 @@ mod tests {
     }
 
     /// GIVEN NodeKind::all()
-    /// WHEN each variant is round-tripped through as_str + parse
+    /// WHEN each variant is round-tripped through as_str and parse
     /// THEN all variants are covered and parseable
     #[test]
     fn node_kind_all_covers_every_variant() {
@@ -464,7 +464,7 @@ mod tests {
     }
 
     /// GIVEN EdgeKind::all()
-    /// WHEN each variant is round-tripped through as_str + parse
+    /// WHEN each variant is round-tripped through as_str and parse
     /// THEN all variants are covered and parseable
     #[test]
     fn edge_kind_all_covers_every_variant() {
@@ -557,7 +557,7 @@ mod tests {
         kg.add_node("a", NodeKind::Paper, "Paper A", None).unwrap();
         kg.add_node("b", NodeKind::Paper, "Paper B", None).unwrap();
 
-        // Same node pair, different edge types (PK is source_id + target_id + kind)
+        // Same node pair, different edge types (PK is source_id, target_id, and kind)
         kg.add_edge("a", "b", EdgeKind::Cites, 1.0, None).unwrap();
         kg.add_edge("a", "b", EdgeKind::Extends, 0.8, None).unwrap();
         kg.add_edge("a", "b", EdgeKind::Contradicts, 0.3, None)

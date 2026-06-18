@@ -60,7 +60,7 @@ impl FocusPanel {
     }
 }
 
-/// A single discovered location for a skill (source + path).
+/// A single discovered location for a skill (source and path).
 #[derive(Debug, Clone)]
 pub struct SkillLocation {
     /// Discovery source label (e.g. "claude", "marketplace", "cache").
@@ -299,7 +299,7 @@ impl App {
                 self.visible_count = (self.visible_count + PAGE_SIZE).min(self.skills.len());
                 self.skill_index += 1;
             } else {
-                // All skills visible — wrap to top
+                // All skills visible, wrap to top
                 self.skill_index = 0;
             }
         } else {
@@ -357,11 +357,11 @@ impl App {
         for i in 0..self.activity.len() {
             let entry = &self.activity[i];
             let matches = match (&entry.key, key) {
-                // Both have keys — compare keys
+                // Both have keys, compare keys
                 (Some(existing_key), Some(k)) => existing_key == k,
-                // Neither has a key — compare messages
+                // Neither has a key, compare messages
                 (None, None) => entry.message == msg,
-                // One has a key, the other doesn't — no match
+                // One has a key, the other doesn't, no match
                 _ => false,
             };
             if matches {
@@ -607,7 +607,7 @@ impl Dashboard {
     ///
     /// Discovery names are relative paths like
     /// `leyline-v1.3.0/skills/plugin-validation/SKILL.md`.
-    /// We produce `leyline:plugin-validation` — preserving the plugin
+    /// We produce `leyline:plugin-validation`, preserving the plugin
     /// namespace so distinct plugins with the same skill name stay separate,
     /// while version-only differences are consolidated.
     fn base_skill_name(raw: &str) -> String {
@@ -949,7 +949,7 @@ mod tests {
         app.add_activity_keyed("refresh".into(), "Refreshed: 162 skills discovered".into());
         app.add_activity_keyed("refresh".into(), "Refreshed: 160 skills discovered".into());
 
-        // Should be 2 entries: one refresh (consolidated) + one invocation
+        // Should be 2 entries: one refresh (consolidated) plus one invocation
         assert_eq!(app.activity.len(), 2);
         // Refresh entry should be at front with count 3 and the latest message
         assert_eq!(app.activity[0].message, "Refreshed: 160 skills discovered");
@@ -1198,7 +1198,7 @@ mod tests {
     #[test]
     fn test_end_key_on_empty_skills_is_noop() {
         let mut app = App::new();
-        // No skills loaded — End should not panic or change state
+        // No skills loaded, End should not panic or change state
         assert!(app.skills.is_empty());
         app.on_key(KeyCode::End);
         assert_eq!(app.skill_index, 0);

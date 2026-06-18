@@ -11,7 +11,7 @@ graph TD
     App --> SkillService
     SkillService --> Discovery[discovery & validation]
     SkillService --> State[manifest & cache TTL]
-    App --> Sync[sync + mirror]
+    App --> Sync[sync and mirror]
     App --> Setup[setup]
     App --> Tui[tui flow]
     App --> Doctor[doctor diagnostics]
@@ -27,7 +27,7 @@ graph TD
     server --> analyze[analyze]
     server --> intelligence[intelligence]
     server --> subagents[subagents]
-    server --> dashboard[dashboard<br/>TUI + browser UI]
+    server --> dashboard[dashboard<br/>TUI and browser UI]
     server --> metrics[metrics<br/>SQLite telemetry]
     server --> tome[tome<br/>research APIs, caching]
     sync --> validate

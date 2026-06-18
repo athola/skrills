@@ -35,6 +35,7 @@ jobs:
               - 'Cargo.lock'
               - 'scripts/**'
               - 'build.rs'
+              - '.github/actions/validate-skills/**'
               - '.github/workflows/ci.yml'
             book:
               - 'book/**'
@@ -60,6 +61,34 @@ jobs:
 
       - name: Tests (all features)
         run: cargo test --workspace --all-features
+
+  dogfood:
+    name: Dogfood output contracts
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install jq + tmux
+        run: sudo apt-get update && sudo apt-get install -y jq tmux
+      # install.sh helper-function tests (OS/arch/target detection, asset
+      # selection incl. the .sha256 sidecar regression). No build needed.
+      - name: install.sh contract tests
+        run: ./scripts/test-install.sh
+      # The validate JSON output contract drives the real binary through the
+      # real validate-skills action entrypoint, so build the release binary.
+      # Default features pull in skrills-server's `dashboard` feature, so the
+      # cold-window TUI is compiled in for the PTY scenarios below.
+      - name: Build release binary
+        run: cargo build --release --bin skrills
+      - name: Dogfood output contracts (validate JSON + asset selection)
+        run: BIN_PATH=target/release/skrills ./scripts/dogfood-contracts.sh
+      # Drive the interactive TUI under a real PTY (tmux) on the headless
+      # runner; also covers the no-TTY graceful-refusal contracts.
+      - name: Dogfood TUI contracts (PTY via tmux)
+        run: BIN_PATH=target/release/skrills ./scripts/dogfood-tui.sh
 
   docs:
     needs: changes
@@ -111,7 +140,7 @@ jobs:
           export GIT_DIR="$git_root/.git"
           export GIT_WORK_TREE="$git_root"
           if ! cargo +nightly public-api diff --deny removed --deny changed origin/master..HEAD; then
-            echo "::warning::Public API diff detected changes or tool failure — review manually"
+            echo "::warning::Public API diff detected changes or tool failure; review manually"
           fi
 
   release-build-check:

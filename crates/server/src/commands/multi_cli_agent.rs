@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn find_binary_returns_first_when_all_available() {
-        // Both "sh" and "bash" should exist — first one wins
+        // Both "sh" and "bash" should exist, first one wins
         let result = find_binary(&["sh", "bash"]);
         assert_eq!(result, Some("sh"));
     }

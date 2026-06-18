@@ -184,7 +184,7 @@ flowchart TD
 **See**: [Audit Logging](audit-logging.md)
 
 #### Secrets Management
-- Robust key rotation.
+- Key rotation.
 - HSM integration.
 - Encrypted storage.
 - Documentation procedures.

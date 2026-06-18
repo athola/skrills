@@ -26,7 +26,7 @@ pub struct SyncParams {
     /// Skip confirmation prompts and override `skip_existing_*` flags.
     ///
     /// When `force` is true, `skip_existing_commands` and `skip_existing_instructions`
-    /// are ignored — all items are written regardless.
+    /// are ignored, all items are written regardless.
     pub force: bool,
     /// Sync skills
     #[serde(default = "default_true")]
@@ -227,7 +227,7 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
     /// Performs the sync operation.
     ///
     /// Logs [`crate::adapters::traits::FieldSupport`] mismatches for observability but always delegates
-    /// to the target adapter — adapters may implement creative mappings for
+    /// to the target adapter, adapters may implement creative mappings for
     /// fields they don't "natively" support (e.g., Copilot maps commands to
     /// prompts, Codex converts agents to skills).
     pub fn sync(&self, params: &SyncParams) -> Result<SyncReport> {
@@ -931,7 +931,7 @@ mod tests {
         };
 
         let report = orchestrator.sync(&params).unwrap();
-        // dry_run + force: should report written but not actually write
+        // dry_run and force: should report written but not actually write
         assert_eq!(report.commands.written, 1);
         let tgt_file = tgt_dir.path().join("prompts/cmd.md");
         assert!(

@@ -1,9 +1,9 @@
 //! Alert pane.
 //!
-//! Renders the visible alerts (filtered + sorted by `ColdWindowState`)
+//! Renders the visible alerts (filtered and sorted by `ColdWindowState`)
 //! as a colored ratatui list. Handles two keystrokes:
 //!
-//! - `A` (uppercase): master-acknowledge — clears all CAUTION,
+//! - `A` (uppercase): master-acknowledge, clears all CAUTION,
 //!   ADVISORY, and STATUS alerts in one stroke.
 //! - `d`: dismiss the focused WARNING-tier alert (per-row ack).
 //!
@@ -16,9 +16,10 @@ use crossterm::event::KeyCode;
 use ratatui::layout::Rect;
 use ratatui::prelude::*;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Borders, List, ListItem};
+use ratatui::widgets::{List, ListItem};
 use skrills_snapshot::{Alert, Severity};
 
+use super::focus::{clamped_selection, pane_block, select_row, truncate_with_ellipsis};
 use super::state::ColdWindowState;
 
 /// Action returned by the pane after handling a keystroke.
@@ -38,12 +39,20 @@ pub enum AlertAction {
     },
 }
 
-/// Stateless renderer + key handler for the alert pane.
+/// Stateless renderer and key handler for the alert pane.
 pub struct AlertPane;
 
 impl AlertPane {
-    /// Render the visible alerts inside `area`.
-    pub fn render(state: &ColdWindowState, frame: &mut Frame<'_>, area: Rect) {
+    /// Render the visible alerts inside `area`. `focused` emphasizes
+    /// the border (see [`pane_block`]); `selected` highlights one row
+    /// with the `> ` cursor (pass `None` when the pane is unfocused).
+    pub fn render(
+        state: &ColdWindowState,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        focused: bool,
+        selected: Option<usize>,
+    ) {
         let counts = state.alert_counts_by_tier();
         let title = format!(
             " Alerts  W:{w}  C:{c}  A:{a}  S:{s} ",
@@ -54,22 +63,33 @@ impl AlertPane {
         );
 
         let visible = state.visible_alerts();
+        let cursor = selected.and_then(|s| clamped_selection(s, visible.len()));
+        let inner_width = (area.width as usize).saturating_sub(4);
         let items: Vec<ListItem> = visible
             .iter()
-            .map(|alert| Self::render_row(alert))
+            .enumerate()
+            .map(|(i, alert)| select_row(Self::render_row(alert, inner_width), cursor == Some(i)))
             .collect();
 
         let list = List::new(items)
-            .block(Block::default().borders(Borders::ALL).title(title))
+            .block(pane_block(title, focused))
             .style(Style::default());
         frame.render_widget(list, area);
     }
 
-    /// Build one ratatui list row for an alert.
-    fn render_row(alert: &Alert) -> ListItem<'_> {
+    /// Build one ratatui list row for an alert, truncating with `"..."`
+    /// when the title and message together exceed `inner_width - 7`
+    /// characters. The 7 fixed chars are the severity badge `" WARN "`
+    /// (6) plus the space that follows (1).
+    fn render_row(alert: &Alert, inner_width: usize) -> Line<'_> {
         let color = tier_color(alert.severity);
         let tag = alert.severity.short_label();
-        let line = Line::from(vec![
+        // " WARN " (6) + " " (1)
+        let available = inner_width.saturating_sub(7);
+        let title_chars = alert.title.chars().count();
+        let msg_chars = alert.message.chars().count();
+
+        let mut spans = vec![
             Span::styled(
                 format!(" {tag} "),
                 Style::default()
@@ -78,11 +98,31 @@ impl AlertPane {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
-            Span::styled(alert.title.clone(), Style::default().fg(color)),
-            Span::raw("  —  "),
-            Span::raw(alert.message.clone()),
-        ]);
-        ListItem::new(line)
+        ];
+
+        if title_chars + 2 + msg_chars <= available {
+            spans.push(Span::styled(
+                alert.title.clone(),
+                Style::default().fg(color),
+            ));
+            spans.push(Span::raw(": "));
+            spans.push(Span::raw(alert.message.clone()));
+        } else if title_chars + 2 < available {
+            let msg_space = available - title_chars - 2;
+            spans.push(Span::styled(
+                alert.title.clone(),
+                Style::default().fg(color),
+            ));
+            spans.push(Span::raw(": "));
+            spans.push(Span::raw(truncate_with_ellipsis(&alert.message, msg_space)));
+        } else {
+            spans.push(Span::styled(
+                truncate_with_ellipsis(&alert.title, available),
+                Style::default().fg(color),
+            ));
+        }
+
+        Line::from(spans)
     }
 
     /// Handle a keystroke; mutate state if relevant and return the action.
@@ -202,12 +242,41 @@ mod tests {
     }
 
     #[test]
+    fn severity_stays_textual_so_meaning_survives_without_color() {
+        // FR-7.2: tier colors are decoration; the severity tag itself
+        // is text, so a monochrome terminal loses nothing semantic.
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = ColdWindowState::new();
+        state.ingest(snap(vec![
+            alert("w1", Severity::Warning),
+            alert("c1", Severity::Caution),
+        ]));
+        terminal
+            .draw(|f| AlertPane::render(&state, f, f.area(), false, None))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        for severity in [Severity::Warning, Severity::Caution] {
+            assert!(
+                text.contains(severity.short_label()),
+                "severity {severity:?} must appear as text, got: {text}"
+            );
+        }
+    }
+
+    #[test]
     fn render_does_not_panic_on_empty_state() {
         let backend = TestBackend::new(80, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         let state = ColdWindowState::new();
         terminal
-            .draw(|f| AlertPane::render(&state, f, f.area()))
+            .draw(|f| AlertPane::render(&state, f, f.area(), false, None))
             .unwrap();
     }
 
@@ -221,8 +290,108 @@ mod tests {
             .collect();
         state.ingest(snap(alerts));
         terminal
-            .draw(|f| AlertPane::render(&state, f, f.area()))
+            .draw(|f| AlertPane::render(&state, f, f.area(), false, None))
             .unwrap();
+    }
+
+    #[test]
+    fn long_alert_row_truncates_at_narrow_width() {
+        // inner_width = 30 - 4 = 26, available = 26 - 7 = 19
+        // title (25 chars) > available (19) → row must end with "..."
+        let backend = TestBackend::new(30, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = ColdWindowState::new();
+        state.ingest(snap(vec![Alert {
+            fingerprint: "x".into(),
+            severity: Severity::Warning,
+            title: "this title is very long indeed".into(),
+            message: "m".into(),
+            band: Some(AlertBand::new(0.0, 0.0, 1.0, 0.95).expect("test")),
+            fired_at_ms: 0,
+            dwell_ticks: 1,
+        }]));
+        terminal
+            .draw(|f| AlertPane::render(&state, f, f.area(), false, None))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            text.contains("..."),
+            "long row must end with '...', got: {text}"
+        );
+    }
+
+    #[test]
+    fn alert_row_truncates_message_when_title_fits_but_message_is_long() {
+        // inner_width = 60 - 4 = 56, available = 56 - 7 = 49
+        // title "short" (5) + ": " (2) = 7 < 49 → message path
+        // message 50 chars > 49 - 7 = 42 → truncated with "..."
+        let backend = TestBackend::new(60, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = ColdWindowState::new();
+        state.ingest(snap(vec![Alert {
+            fingerprint: "z".into(),
+            severity: Severity::Advisory,
+            title: "short".into(),
+            message: "this message is long enough to overflow the available space indeed".into(),
+            band: None,
+            fired_at_ms: 0,
+            dwell_ticks: 1,
+        }]));
+        terminal
+            .draw(|f| AlertPane::render(&state, f, f.area(), false, None))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            text.contains("short"),
+            "title must survive when message is truncated, got: {text}"
+        );
+        assert!(
+            text.contains("..."),
+            "truncated message must end with '...', got: {text}"
+        );
+    }
+
+    #[test]
+    fn short_alert_row_needs_no_truncation() {
+        // title "AB" + ": " + message "CD" = 6 chars; fits at any sane width.
+        let backend = TestBackend::new(40, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = ColdWindowState::new();
+        state.ingest(snap(vec![Alert {
+            fingerprint: "y".into(),
+            severity: Severity::Status,
+            title: "AB".into(),
+            message: "CD".into(),
+            band: None,
+            fired_at_ms: 0,
+            dwell_ticks: 1,
+        }]));
+        terminal
+            .draw(|f| AlertPane::render(&state, f, f.area(), false, None))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            !text.contains("..."),
+            "short row must not be truncated, got: {text}"
+        );
     }
 
     #[test]
@@ -234,7 +403,7 @@ mod tests {
             let backend = TestBackend::new(size.0, size.1);
             let mut terminal = Terminal::new(backend).unwrap();
             terminal
-                .draw(|f| AlertPane::render(&state, f, f.area()))
+                .draw(|f| AlertPane::render(&state, f, f.area(), false, None))
                 .unwrap();
         }
     }

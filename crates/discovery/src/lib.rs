@@ -45,7 +45,7 @@ pub use error::DiscoveryError;
 /// errors via `?` into `anyhow::Result` contexts (the workspace-wide
 /// convention). Internal call sites that surface
 /// structured failure modes return [`DiscoveryError`] directly; the
-/// `?` operator converts seamlessly into `anyhow::Error`.
+/// `?` operator converts into `anyhow::Error`.
 pub type Error = anyhow::Error;
 /// Result type for discovery operations.
 pub type Result<T> = std::result::Result<T, Error>;

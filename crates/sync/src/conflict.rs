@@ -162,7 +162,7 @@ pub struct ResolvedConflict {
 
 /// Result of comparing a single item against its baseline.
 enum ItemStatus {
-    /// No conflict — item can be synced normally.
+    /// No conflict, item can be synced normally.
     NoConflict,
     /// A conflict was detected.
     Conflict(Conflict),
@@ -173,15 +173,15 @@ enum ItemStatus {
 /// For each source item that also exists on the target, compares both against
 /// the stored baseline hash to determine if one or both sides changed.
 ///
-/// Returns only items where `ConflictKind::BothChanged` — the true conflicts
+/// Returns only items where `ConflictKind::BothChanged`: the true conflicts
 /// that require user resolution. `SourceChanged` items can be synced normally,
 /// and `TargetChanged` items are skipped.
 ///
 /// # Arguments
-/// * `source_items` — items read from the source adapter
-/// * `target_items` — items read from the target adapter
-/// * `artifact_type` — what kind of artifact these are
-/// * `get_baseline_hash` — closure that returns the last-synced hash for a name
+/// * `source_items`: items read from the source adapter
+/// * `target_items`: items read from the target adapter
+/// * `artifact_type`: what kind of artifact these are
+/// * `get_baseline_hash`: closure that returns the last-synced hash for a name
 pub fn detect_conflicts<F>(
     source_items: &[Command],
     target_items: &[Command],
@@ -198,11 +198,11 @@ where
 
     for source in source_items {
         let Some(target) = target_map.get(source.name.as_str()) else {
-            // New item — no conflict possible.
+            // New item, no conflict possible.
             continue;
         };
 
-        // Same hash on both sides — no conflict.
+        // Same hash on both sides, no conflict.
         if source.hash == target.hash {
             continue;
         }
@@ -243,20 +243,20 @@ where
                 (false, true) => ConflictKind::TargetChanged,
                 (false, false) => {
                     // Neither changed from baseline but hashes differ from each
-                    // other — this shouldn't happen with consistent hashing, but
+                    // other, this shouldn't happen with consistent hashing, but
                     // treat as BothChanged to be safe.
                     ConflictKind::BothChanged
                 }
             }
         }
         None => {
-            // No baseline — both sides have the item with different content.
+            // No baseline, both sides have the item with different content.
             // Since we can't tell who changed, treat as BothChanged.
             ConflictKind::BothChanged
         }
     };
 
-    // Only return true conflicts (BothChanged) — the others are handled normally.
+    // Only return true conflicts (BothChanged), the others are handled normally.
     match kind {
         ConflictKind::BothChanged => ItemStatus::Conflict(Conflict {
             artifact_type,
@@ -599,7 +599,7 @@ mod tests {
         let source = vec![make_command("skill-a", "new source")];
         let target = vec![make_command("skill-a", "original content")];
 
-        // Baseline matches target — only source changed
+        // Baseline matches target, only source changed
         let baseline_hash =
             crate::adapters::utils::hash_content(b"original content");
 
@@ -611,7 +611,7 @@ mod tests {
             }
         });
 
-        // SourceChanged is not a true conflict — it should be synced normally
+        // SourceChanged is not a true conflict, it should be synced normally
         assert!(conflicts.is_empty());
     }
 
@@ -620,7 +620,7 @@ mod tests {
         let source = vec![make_command("skill-a", "original content")];
         let target = vec![make_command("skill-a", "new target")];
 
-        // Baseline matches source — only target changed
+        // Baseline matches source, only target changed
         let baseline_hash =
             crate::adapters::utils::hash_content(b"original content");
 
@@ -632,7 +632,7 @@ mod tests {
             }
         });
 
-        // TargetChanged is not a true conflict — target version should be preserved
+        // TargetChanged is not a true conflict, target version should be preserved
         assert!(conflicts.is_empty());
     }
 

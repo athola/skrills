@@ -2,7 +2,7 @@
 //!
 //! Cursor skills are directories containing `SKILL.md` plus optional
 //! companion files, located in `.cursor/skills/`. Unlike Claude skills,
-//! Cursor skills have **no YAML frontmatter** — the content is pure markdown.
+//! Cursor skills have **no YAML frontmatter**, the content is pure markdown.
 //!
 //! When writing Claude skills to Cursor, YAML frontmatter is stripped.
 //! The `description` field is preserved as a plain-text first line (Cursor

@@ -59,14 +59,14 @@ Design the portal as a single-page app with tab navigation.
 
 | Feature Type | View Pattern |
 |---|---|
-| Entity browsing (skills, packages, endpoints) | Card grid with search/filter/sort + detail panel |
-| Validation/checking | Split editor (textarea input) + results panel |
-| Analysis/metrics | Input + stat cards + bar charts |
-| Configuration/creation | Form inputs + live preview + download |
+| Entity browsing (skills, packages, endpoints) | Card grid with search/filter/sort and detail panel |
+| Validation/checking | Split editor (textarea input) and results panel |
+| Analysis/metrics | Input, stat cards, and bar charts |
+| Configuration/creation | Form inputs, live preview, and download |
 | Format conversion | Side-by-side input/output with target selector |
 | Reference docs (commands, APIs) | Searchable/filterable list with copy-on-click |
 | Status/compatibility | Matrix grid or table |
-| Dashboard/overview | Stat cards + quick actions + recent items |
+| Dashboard/overview | Stat cards, quick actions, and recent items |
 
 **Every view must work 100% standalone.** No external API calls required. Embed demo data. Add optional live-server connection as a bonus.
 
@@ -130,13 +130,13 @@ Build the HTML file following these rules:
 - Reference items: copy to clipboard on click
 - Status indicators: show tooltip with explanation on hover
 - External links: open in new tab with `target="_blank" rel="noopener"`
-- Quick actions: run in-browser if possible, otherwise copy CLI command + link to docs
+- Quick actions: run in-browser if possible, otherwise copy CLI command and link to docs
 
 ### Phase 6: Feature Implementation Patterns
 
 **Entity Browser (the main catalog view):**
 ```
-- Search input (filters by name + description)
+- Search input (filters by name and description)
 - Source/category dropdown filter
 - Quality/status dropdown filter
 - Sort selector (alpha, by source, by status)
@@ -208,7 +208,7 @@ Build the HTML file following these rules:
 - Stat cards row (total items, categories, etc.)
 - Quick Actions panel:
   - In-browser actions (green "runs here" badge): actually execute
-  - CLI-only actions (muted "CLI only" badge): copy command + link to docs
+  - CLI-only actions (muted "CLI only" badge): copy command and link to docs
 - Supporting info panels with clickable items
 - Recent items grid linking to the browser view
 ```

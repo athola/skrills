@@ -656,7 +656,7 @@ pub enum Commands {
     /// Manage TLS certificates for HTTPS transport.
     #[command(subcommand)]
     Cert(CertAction),
-    /// Run the cold-window real-time analysis surface (TUI library + browser).
+    /// Run the cold-window real-time analysis surface (TUI library and browser).
     ///
     /// Continuously re-reads authoritative state on each tick, runs a
     /// 4-tier alert policy, ranks hints, and (with `--browser`)

@@ -125,10 +125,11 @@ assert_contains "$API_LATEST" "athola/skrills" "API_URL contains repo"
 API_VERSIONED=$(SKRILLS_VERSION=1.2.3 API_URL)
 assert_contains "$API_VERSIONED" "releases/tags/v1.2.3" "API_URL with version"
 
-# Test 8: awk JSON parser (used when jq unavailable)
+# Test 8: asset selection (SELECT_ASSET_FROM_JSON) — exercises the REAL
+# install.sh selection logic, not a copy. Each scenario runs through both the
+# jq path and the awk fallback (SKRILLS_FORCE_NO_JQ=1) so neither drifts.
 echo ""
-echo "--- awk JSON Parser Test ---"
-# Simulate GitHub releases API response
+echo "--- Asset Selection: happy path (tarball present) ---"
 MOCK_RELEASE_JSON='{
   "assets": [
     {
@@ -142,29 +143,62 @@ MOCK_RELEASE_JSON='{
   ]
 }'
 
-# Test awk parser directly
-awk_parse_url() {
-    local json="$1"
-    local target="$2"
-    echo "$json" | awk -v target="$target" '
-      /"name":/ && index($0, target) { found=1 }
-      found && /"browser_download_url":/ {
-        gsub(/.*"browser_download_url": *"/, "")
-        gsub(/".*/, "")
-        print
-        exit
-      }
-    '
-}
+for impl in jq awk; do
+    [[ "$impl" == awk ]] && export SKRILLS_FORCE_NO_JQ=1 || unset SKRILLS_FORCE_NO_JQ
+    R=$(SELECT_ASSET_FROM_JSON "$MOCK_RELEASE_JSON" "x86_64-unknown-linux-gnu")
+    assert_eq "$R" "https://example.com/linux-x64.tar.gz" "[$impl] selects linux tarball URL"
+    R=$(SELECT_ASSET_FROM_JSON "$MOCK_RELEASE_JSON" "aarch64-apple-darwin")
+    assert_eq "$R" "https://example.com/darwin-arm64.tar.gz" "[$impl] selects darwin tarball URL"
+    R=$(SELECT_ASSET_FROM_JSON "$MOCK_RELEASE_JSON" "nonexistent-target")
+    assert_eq "$R" "" "[$impl] returns empty for no match"
+done
+unset SKRILLS_FORCE_NO_JQ
 
-AWK_RESULT=$(awk_parse_url "$MOCK_RELEASE_JSON" "x86_64-unknown-linux-gnu")
-assert_eq "$AWK_RESULT" "https://example.com/linux-x64.tar.gz" "awk parses linux target URL"
+# Regression: releases ship a .tar.gz.sha256 checksum next to each tarball.
+# Both names carry the target triple, and the sidecar name contains the
+# substring ".tar.gz". When GitHub lists the sidecar FIRST, a substring
+# match grabs the 106-byte checksum and tar fails "not in gzip format".
+# (commit a6419c2 for jq; the awk fallback fix follows here.)
+echo ""
+echo "--- Asset Selection: .sha256 sidecar listed FIRST (negative test) ---"
+MOCK_SIDECAR_FIRST='{
+  "assets": [
+    {
+      "name": "skrills-x86_64-unknown-linux-gnu.tar.gz.sha256",
+      "browser_download_url": "https://example.com/linux-x64.tar.gz.sha256"
+    },
+    {
+      "name": "skrills-x86_64-unknown-linux-gnu.tar.gz",
+      "browser_download_url": "https://example.com/linux-x64.tar.gz"
+    }
+  ]
+}'
 
-AWK_RESULT2=$(awk_parse_url "$MOCK_RELEASE_JSON" "aarch64-apple-darwin")
-assert_eq "$AWK_RESULT2" "https://example.com/darwin-arm64.tar.gz" "awk parses darwin target URL"
+for impl in jq awk; do
+    [[ "$impl" == awk ]] && export SKRILLS_FORCE_NO_JQ=1 || unset SKRILLS_FORCE_NO_JQ
+    R=$(SELECT_ASSET_FROM_JSON "$MOCK_SIDECAR_FIRST" "x86_64-unknown-linux-gnu")
+    assert_eq "$R" "https://example.com/linux-x64.tar.gz" "[$impl] skips .sha256 sidecar, picks tarball"
+done
+unset SKRILLS_FORCE_NO_JQ
 
-AWK_NOMATCH=$(awk_parse_url "$MOCK_RELEASE_JSON" "nonexistent-target")
-assert_eq "$AWK_NOMATCH" "" "awk returns empty for no match"
+# Edge case: only a checksum is published (tarball upload failed). We must
+# return nothing rather than hand a .sha256 URL to tar.
+echo ""
+echo "--- Asset Selection: only a .sha256 sidecar exists (edge case) ---"
+MOCK_ONLY_SIDECAR='{
+  "assets": [
+    {
+      "name": "skrills-x86_64-unknown-linux-gnu.tar.gz.sha256",
+      "browser_download_url": "https://example.com/linux-x64.tar.gz.sha256"
+    }
+  ]
+}'
+for impl in jq awk; do
+    [[ "$impl" == awk ]] && export SKRILLS_FORCE_NO_JQ=1 || unset SKRILLS_FORCE_NO_JQ
+    R=$(SELECT_ASSET_FROM_JSON "$MOCK_ONLY_SIDECAR" "x86_64-unknown-linux-gnu")
+    assert_eq "$R" "" "[$impl] returns empty when only a sidecar is published"
+done
+unset SKRILLS_FORCE_NO_JQ
 
 # Summary
 echo ""

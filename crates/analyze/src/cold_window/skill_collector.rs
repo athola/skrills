@@ -5,8 +5,8 @@
 //! `(source, token_estimate)` entries that the producer feeds into the
 //! tick's `TokenLedger::per_skill` attribution.
 //!
-//! Token estimation uses a deliberate **byte-based proxy** — file size
-//! divided by 4 — so the cold rewalk stays cheap. This is wrong-in-the-
+//! Token estimation uses a deliberate **byte-based proxy**, file size
+//! divided by 4, so the cold rewalk stays cheap. This is wrong-in-the-
 //! detail (a Markdown file is not 4 chars per token) but right-in-the-
 //! shape: skills that grow show as larger consumers, skills that shrink
 //! pull back. A real BPE tokenizer is a follow-up; until then
@@ -16,7 +16,7 @@
 //! The collector is **deliberately stateless and side-effect free**,
 //! mirroring the plugin collector's "cold rewalk" contract. Errors
 //! reading individual entries are surfaced via `malformed`, not
-//! silently dropped — same discipline applied elsewhere.
+//! silently dropped, same discipline applied elsewhere.
 
 use std::path::{Path, PathBuf};
 

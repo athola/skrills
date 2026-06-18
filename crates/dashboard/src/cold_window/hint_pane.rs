@@ -21,16 +21,17 @@ use crossterm::event::KeyCode;
 use ratatui::layout::Rect;
 use ratatui::prelude::*;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Borders, List, ListItem};
+use ratatui::widgets::{List, ListItem};
 use serde::{Deserialize, Serialize};
 use skrills_snapshot::{HintCategory, ScoredHint};
 
+use super::focus::{clamped_selection, pane_block, select_row, truncate_with_ellipsis};
 use super::state::ColdWindowState;
 
 /// File name used by [`HintPaneState::with_default_persistence`].
 pub const PIN_FILE_NAME: &str = "cold-window-pins.json";
 
-/// Mutable state owned by the hint pane: filter + pin set + path
+/// Mutable state owned by the hint pane: filter, pin set, and path
 /// for persistence.
 #[derive(Debug, Clone, Default)]
 pub struct HintPaneState {
@@ -125,7 +126,7 @@ impl HintPaneState {
         self.filter = filter;
     }
 
-    /// Filter + sort the snapshot's hints. Pinned hints sort to the
+    /// Filter and sort the snapshot's hints. Pinned hints sort to the
     /// top regardless of score; within each group, descending score.
     pub fn visible_hints<'a>(&self, snap_state: &'a ColdWindowState) -> Vec<&'a ScoredHint> {
         let snap = match snap_state.current.as_deref() {
@@ -176,39 +177,64 @@ pub enum HintAction {
     },
 }
 
-/// Stateless renderer + key handler for the hint pane.
+/// Stateless renderer and key handler for the hint pane.
 pub struct HintPane;
 
 impl HintPane {
-    /// Render the visible hints into `area`.
+    /// Render the visible hints into `area`. `focused` emphasizes the
+    /// border (see [`pane_block`]); `selected` highlights one row with
+    /// the `> ` cursor (pass `None` when the pane is unfocused).
     pub fn render(
         snap_state: &ColdWindowState,
         pane_state: &HintPaneState,
         frame: &mut Frame<'_>,
         area: Rect,
+        focused: bool,
+        selected: Option<usize>,
     ) {
         let title = match pane_state.filter {
             None => " Hints  (1=tok 2=val 3=red 4=sync 5=qual 0=all  P=pin) ".to_string(),
             Some(c) => format!(" Hints  filter:{}  (0=clear) ", c.label()),
         };
         let visible = pane_state.visible_hints(snap_state);
+        let cursor = selected.and_then(|s| clamped_selection(s, visible.len()));
+        let inner_width = (area.width as usize).saturating_sub(4);
         let items: Vec<ListItem> = visible
             .iter()
-            .map(|h| Self::render_row(h, pane_state))
+            .enumerate()
+            .map(|(i, h)| {
+                select_row(
+                    Self::render_row(h, pane_state, inner_width),
+                    cursor == Some(i),
+                )
+            })
             .collect();
 
         let list = List::new(items)
-            .block(Block::default().borders(Borders::ALL).title(title))
+            .block(pane_block(title, focused))
             .style(Style::default());
         frame.render_widget(list, area);
     }
 
-    fn render_row<'a>(hint: &'a ScoredHint, pane_state: &HintPaneState) -> ListItem<'a> {
+    /// Build one ratatui list row for a hint, truncating with `"..."`
+    /// when the URI and message together exceed the available width.
+    /// Fixed chars: pin marker (4) + score (5) + `"  "` (2) +
+    /// `"[{category}]"` (2 + cat_len) + `"  "` (2) = 15 + cat_len.
+    fn render_row<'a>(
+        hint: &'a ScoredHint,
+        pane_state: &HintPaneState,
+        inner_width: usize,
+    ) -> Line<'a> {
         let pinned = pane_state.pinned.contains(&hint.hint.uri);
         let pin_marker = if pinned { "[*] " } else { "[ ] " };
         let score_str = format!("{:>5.1}", hint.score);
         let category = hint.hint.category.label();
-        let line = Line::from(vec![
+        // 4 + 5 + 2 + 2 + cat_len + 2 = 15 + cat_len
+        let available = inner_width.saturating_sub(15 + category.chars().count());
+        let uri_chars = hint.hint.uri.chars().count();
+        let msg_chars = hint.hint.message.chars().count();
+
+        let mut spans = vec![
             Span::styled(
                 pin_marker.to_string(),
                 Style::default()
@@ -228,11 +254,25 @@ impl HintPane {
             Span::raw("  "),
             Span::styled(format!("[{category}]"), Style::default().fg(Color::Cyan)),
             Span::raw("  "),
-            Span::raw(hint.hint.uri.clone()),
-            Span::raw("  —  "),
-            Span::raw(hint.hint.message.clone()),
-        ]);
-        ListItem::new(line)
+        ];
+
+        if uri_chars + 2 + msg_chars <= available {
+            spans.push(Span::raw(hint.hint.uri.clone()));
+            spans.push(Span::raw(": "));
+            spans.push(Span::raw(hint.hint.message.clone()));
+        } else if uri_chars + 2 < available {
+            let msg_space = available - uri_chars - 2;
+            spans.push(Span::raw(hint.hint.uri.clone()));
+            spans.push(Span::raw(": "));
+            spans.push(Span::raw(truncate_with_ellipsis(
+                &hint.hint.message,
+                msg_space,
+            )));
+        } else {
+            spans.push(Span::raw(truncate_with_ellipsis(&hint.hint.uri, available)));
+        }
+
+        Line::from(spans)
     }
 
     /// Handle a keystroke; mutate state if relevant, return action.
@@ -436,6 +476,102 @@ mod tests {
     }
 
     #[test]
+    fn long_hint_row_truncates_at_narrow_width() {
+        // inner_width = 30 - 4 = 26
+        // category "token" (5) → fixed = 15+5 = 20, available = 6
+        // uri "skill://example-really-long" > 6 → must truncate with "..."
+        let mut snap_state = ColdWindowState::new();
+        snap_state.ingest(snap(vec![hint(
+            "skill://example-really-long",
+            HintCategory::Token,
+            5.0,
+        )]));
+        let pane_state = HintPaneState::new();
+        let backend = TestBackend::new(30, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| HintPane::render(&snap_state, &pane_state, f, f.area(), false, None))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            text.contains("..."),
+            "long URI must truncate with '...', got: {text}"
+        );
+    }
+
+    #[test]
+    fn hint_row_truncates_message_when_uri_fits_but_message_is_long() {
+        // inner_width = 60 - 4 = 56, category "token"(5), fixed=20, available=36
+        // uri "sk://x" (6) + ": " (2) = 8 < 36 → message path
+        // message 40 chars > 36 - 8 = 28 → truncated
+        let mut snap_state = ColdWindowState::new();
+        snap_state.ingest(snap(vec![ScoredHint {
+            hint: Hint {
+                uri: "sk://x".into(),
+                category: HintCategory::Token,
+                message: "this message is quite long and will overflow the remaining space here"
+                    .into(),
+                frequency: 1,
+                impact: 1.0,
+                ease_score: 1.0,
+                age_days: 0.0,
+            },
+            score: 1.0,
+            pinned: false,
+        }]));
+        let pane_state = HintPaneState::new();
+        let backend = TestBackend::new(60, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| HintPane::render(&snap_state, &pane_state, f, f.area(), false, None))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            text.contains("sk://x"),
+            "URI must survive when message is truncated, got: {text}"
+        );
+        assert!(
+            text.contains("..."),
+            "truncated message must end with '...', got: {text}"
+        );
+    }
+
+    #[test]
+    fn short_hint_row_needs_no_truncation() {
+        let mut snap_state = ColdWindowState::new();
+        snap_state.ingest(snap(vec![hint("sk://x", HintCategory::Token, 1.0)]));
+        let pane_state = HintPaneState::new();
+        let backend = TestBackend::new(80, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| HintPane::render(&snap_state, &pane_state, f, f.area(), false, None))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            !text.contains("..."),
+            "short URI must not be truncated, got: {text}"
+        );
+    }
+
+    #[test]
     fn render_does_not_panic_at_various_sizes() {
         let mut snap_state = ColdWindowState::new();
         snap_state.ingest(snap(vec![
@@ -447,7 +583,7 @@ mod tests {
             let backend = TestBackend::new(size.0, size.1);
             let mut terminal = Terminal::new(backend).unwrap();
             terminal
-                .draw(|f| HintPane::render(&snap_state, &pane_state, f, f.area()))
+                .draw(|f| HintPane::render(&snap_state, &pane_state, f, f.area(), false, None))
                 .unwrap();
         }
     }

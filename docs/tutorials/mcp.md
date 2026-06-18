@@ -211,7 +211,7 @@ All tools accept both kebab-case (`search-papers`) and snake_case
 |------|-------------|
 | `search-papers` | Search arXiv, Semantic Scholar, and OpenAlex |
 | `search-discussions` | Search Hacker News via Algolia |
-| `resolve-doi` | Resolve DOI metadata via CrossRef + Unpaywall |
+| `resolve-doi` | Resolve DOI metadata via CrossRef and Unpaywall |
 | `fetch-pdf` | Download and cache a paper's PDF |
 | `query-knowledge-graph` | Query nodes, edges, and stats |
 | `add-knowledge-node` | Add a node (topic, paper, implementation, discussion) |

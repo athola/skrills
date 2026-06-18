@@ -6,7 +6,7 @@
 //! fraction of `total` that the breakdown sums to.
 //!
 //! Fixture-bound: this test does **not**
-//! validate that token *counts* match real wire-level usage — that
+//! validate that token *counts* match real wire-level usage, that
 //! would require running against a live Anthropic API call and is
 //! What it validates is that the cold-window
 //! pipeline does not lose attribution detail as snapshots flow
@@ -122,7 +122,7 @@ fn each_attributed_source_has_nonempty_uri() {
 
 #[test]
 fn attribution_ratio_handles_partial_attribution() {
-    // Synthetic case: attributed sources cover 96 % of total —
+    // Synthetic case: attributed sources cover 96 % of total,
     // still passes SC5 even though some tokens are unaccounted.
     use skrills_snapshot::{TokenEntry, TokenLedger};
     let mut snap = standard_snapshot();

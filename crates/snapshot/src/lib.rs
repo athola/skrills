@@ -418,7 +418,7 @@ mod tests {
 
     #[test]
     fn research_quota_new_stores_used_then_total() {
-        // The constructor signature is `new(used, total)` — named
+        // The constructor signature is `new(used, total)`, named
         // accessors prevent silent inversion at call sites.
         let q = ResearchQuota::new(3, 10);
         assert_eq!(q.used(), 3);

@@ -23,7 +23,7 @@ fn cadence() -> LoadAwareCadence {
 
 #[test]
 fn baseline_load_returns_base_tick() {
-    // load_ratio = 0.4 / 4 = 0.1 — well below MODERATE_LOAD_THRESHOLD.
+    // load_ratio = 0.4 / 4 = 0.1, well below MODERATE_LOAD_THRESHOLD.
     let sample = LoadSample {
         loadavg_1min: 0.4,
         last_edit_age_ms: None,
@@ -54,13 +54,13 @@ fn heavy_load_quadruples_tick_capped_at_max() {
         last_edit_age_ms: None,
     };
     let tick = cadence().next_tick(sample);
-    // base * 4 = 8s, max = 8s — clamped equality.
+    // base * 4 = 8s, max = 8s, clamped equality.
     assert_eq!(tick, Duration::from_secs(8));
 }
 
 #[test]
 fn heavy_load_clamps_at_max_even_with_higher_ratio() {
-    // load_ratio = 16.0 / 4 = 4.0 — way above HEAVY threshold.
+    // load_ratio = 16.0 / 4 = 4.0, way above HEAVY threshold.
     let sample = LoadSample {
         loadavg_1min: 16.0,
         last_edit_age_ms: None,
@@ -131,7 +131,7 @@ fn recent_edit_takes_priority_over_load() {
 #[test]
 fn moderate_threshold_is_strictly_exclusive_at_boundary() {
     // Brief § 4.2: `load_ratio > 0.7` (strict). Exactly at the
-    // threshold falls through to base — verifies no spurious
+    // threshold falls through to base, verifies no spurious
     // doubling on a borderline-quiet system.
     let sample = LoadSample {
         loadavg_1min: MODERATE_LOAD_THRESHOLD * CORES as f64,

@@ -75,28 +75,56 @@ API_URL()
 }
 
 # Pick download URL by matching target in asset name
+# jq implementation of asset selection. $1=release JSON, $2=target triple.
+_SELECT_ASSET_JQ()
+{
+  echo "$1" | jq -r --arg target "$2" \
+    '.assets[] | select(.name | contains($target)) | select(.name | endswith(".tar.gz")) | .browser_download_url' \
+    | head -n1
+}
+
+# Pure-POSIX awk fallback for asset selection. $1=release JSON, $2=target.
+# The name must END in .tar.gz: the checksum sidecar is named
+# "<target>.tar.gz.sha256", so a substring match on ".tar.gz" matches it
+# too. Anchor on the closing quote (.tar.gz") so only the tarball matches.
+_SELECT_ASSET_AWK()
+{
+  echo "$1" | awk -v target="$2" '
+    /"name":/ && index($0, target) && /\.tar\.gz"/ { found=1 }
+    found && /"browser_download_url":/ {
+      gsub(/.*"browser_download_url": *"/, "")
+      gsub(/".*/, "")
+      print
+      exit
+    }
+  '
+}
+
+# Choose the .tar.gz tarball URL for $2 from the release JSON in $1.
+# Network-free and side-effect-free so the install test suite can exercise
+# the real selection logic instead of a drifting copy. Prefers jq, falls
+# back to awk for pure POSIX shells.
+SELECT_ASSET_FROM_JSON()
+{
+  # SKRILLS_FORCE_NO_JQ=1 forces the awk path so tests can cover it even
+  # when jq is installed.
+  if [ "${SKRILLS_FORCE_NO_JQ:-0}" != 1 ] && command -v jq >/dev/null 2>&1; then
+    _SELECT_ASSET_JQ "$1" "$2"
+  else
+    _SELECT_ASSET_AWK "$1" "$2"
+  fi
+}
+
 SELECT_ASSET_URL()
 {
   url_json="$(API_URL)"
   need_cmd curl
   release_json=$(curl -fsSL "$url_json") || fail "failed to fetch release metadata from $url_json"
-  target="$(TARGET)"
-  # Try jq first (cleanest), fall back to awk for pure POSIX shell
-  if command -v jq >/dev/null 2>&1; then
-    _jq_urls=$(echo "$release_json" | jq -r --arg target "$target" '.assets[] | select(.name | contains($target)) | .browser_download_url')
-    echo "$_jq_urls" | head -n1
-  else
-    # Pure awk fallback: find asset block with matching name, extract URL
-    echo "$release_json" | awk -v target="$target" '
-      /"name":/ && index($0, target) { found=1 }
-      found && /"browser_download_url":/ {
-        gsub(/.*"browser_download_url": *"/, "")
-        gsub(/".*/, "")
-        print
-        exit
-      }
-    '
-  fi
+  # Match the .tar.gz tarball, not the .sha256 checksum sidecar: both carry
+  # the target triple in their name, so a bare substring match would grab
+  # whichever GitHub lists first (the checksum), and tar would choke on the
+  # plain-text file ("not in gzip format").
+  SELECT_ASSET_FROM_JSON "$release_json" "$(TARGET)"
 }
 
 DOWNLOAD_AND_EXTRACT()

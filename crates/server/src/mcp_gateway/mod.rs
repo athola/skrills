@@ -12,7 +12,7 @@
 //! Large MCP servers (like Playwright, Notion, etc.) can consume 10-20K tokens
 //! just for their tool definitions. This gateway reduces context pressure by:
 //!
-//! 1. Exposing a lightweight tool index (name + description only)
+//! 1. Exposing a lightweight tool index (name and description only)
 //! 2. Loading full schemas on-demand via `describe-mcp-tool`
 //! 3. Tracking which tools are "hot" for intelligent preloading
 //!

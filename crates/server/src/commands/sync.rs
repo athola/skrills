@@ -69,7 +69,7 @@ pub(crate) fn handle_mirror_command(
         ..Default::default()
     };
     let sync_report = orch.sync(&params)?;
-    // Refresh AGENTS.md with skills + agents (mirror roots now populated)
+    // Refresh AGENTS.md with skills and agents (mirror roots now populated)
     handle_sync_agents_command(None, vec![])?;
 
     println!(

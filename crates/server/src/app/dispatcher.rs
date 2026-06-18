@@ -1,4 +1,4 @@
-//! CLI dispatch — the `skrills` binary entry point.
+//! CLI dispatch, the `skrills` binary entry point.
 //!
 //! Split out of `app/mod.rs` to keep dispatch routing separate from business logic.
 //! This file owns nothing except the routing of parsed [`Cli`]
@@ -322,10 +322,10 @@ pub fn run() -> Result<()> {
                 }
 
                 // Skip skills sync for Claude→Codex (handled above with special logic).
-                // For →Cursor: skip flat skills copy — Cursor discovers skills from
+                // For →Cursor: skip flat skills copy, Cursor discovers skills from
                 // its own plugins/cache/ which is synced via plugin_assets.
                 let sync_skills = !(target.is_cursor() || from.is_claude() && target.is_codex());
-                // Cursor needs a full plugin mirror (including skills + manifests)
+                // Cursor needs a full plugin mirror (including skills and manifests)
                 // since it has its own plugin cache at ~/.cursor/plugins/cache/
                 let full_plugin_mirror = target.is_cursor();
                 let params = SyncParams {
@@ -688,7 +688,7 @@ pub fn run() -> Result<()> {
         #[cfg(feature = "http-transport")]
         Commands::ColdWindow(args) => {
             // The cold-window subcommand owns its own tokio runtime so
-            // it can drive the producer + browser server concurrently
+            // it can drive the producer and browser server concurrently
             // and listen for SIGINT/SIGTERM via tokio signals. The
             // outer `run()` is sync (anyhow::Result) by design.
             let runtime = tokio::runtime::Builder::new_multi_thread()

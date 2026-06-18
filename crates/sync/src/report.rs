@@ -185,7 +185,7 @@ impl SyncReport {
             + self.plugin_assets.duplicates;
         if total_dups > 0 {
             out.push_str(&format!(
-                "\n  ⚠ {} duplicate name(s) detected — first occurrence kept, others dropped.\n    Run with RUST_LOG=warn for details.\n",
+                "\n  ⚠ {} duplicate name(s) detected; first occurrence kept, others dropped.\n    Run with RUST_LOG=warn for details.\n",
                 total_dups
             ));
         }

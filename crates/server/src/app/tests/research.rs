@@ -578,13 +578,13 @@ fn research_tool_schemas_have_correct_required_fields() {
     assert!(required.contains(&json!("target_id")));
     assert!(required.contains(&json!("kind")));
 
-    // track-citations requires only "paper_id" (T4: title is optional — only needed for track action)
+    // track-citations requires only "paper_id" (T4: title is optional, only needed for track action)
     let schema = tool_map["track-citations"].input_schema.as_ref();
     let required = schema.get("required").unwrap().as_array().unwrap();
     assert!(required.contains(&json!("paper_id")));
     assert!(
         !required.contains(&json!("title")),
-        "title should not be in required — only needed for action=track"
+        "title should not be in required; only needed for action=track"
     );
 
     // resolve-contradiction requires "improve", "degrades"
@@ -660,7 +660,7 @@ fn query_knowledge_graph_search_by_query() {
 }
 
 /// GIVEN nodes in the knowledge graph
-/// WHEN query_knowledge_graph_tool is called with query + kind filter
+/// WHEN query_knowledge_graph_tool is called with query and kind filter
 /// THEN it filters by kind
 #[test]
 fn query_knowledge_graph_search_with_kind_filter() {
@@ -862,7 +862,7 @@ fn query_knowledge_graph_direction_to() {
         .unwrap();
     service.link_knowledge_tool(args).unwrap();
 
-    // Query with direction="to" — should get only incoming edges
+    // Query with direction="to", should get only incoming edges
     let args = json!({"node_id": "center", "direction": "to"})
         .as_object()
         .cloned()
@@ -881,7 +881,7 @@ fn query_knowledge_graph_direction_to() {
 }
 
 // -------------------------------------------------------------------------
-// Enum sync test — verify TRIZ parameter, NodeKind, and EdgeKind
+// Enum sync test, verify TRIZ parameter, NodeKind, and EdgeKind
 //     enums are consistent between schema and handler
 // -------------------------------------------------------------------------
 

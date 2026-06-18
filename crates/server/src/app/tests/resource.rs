@@ -154,7 +154,7 @@ Base skill.
         .read_resource_sync(skill_a_uri)
         .expect("read resource with resolve");
 
-    // Should return requested skill + all transitive dependencies (B, C, D)
+    // Should return requested skill and all transitive dependencies (B, C, D)
     assert_eq!(result.contents.len(), 4);
 
     // First item should be the requested skill

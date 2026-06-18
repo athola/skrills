@@ -26,7 +26,7 @@
 //! single `Mutex<DispatcherInner>`. Splitting the dedup map and the
 //! bucket across separate locks (the previous design) admitted a
 //! TOCTOU race where two threads with the same fingerprint could
-//! both pass dedup, both consume tokens, and both record — violating
+//! both pass dedup, both consume tokens, and both record, violating
 //! the SC10 capacity invariant. Collapsing the critical sections
 //! restores that invariant.
 //!
@@ -268,7 +268,7 @@ impl BucketedBudget {
     /// `last_refill_ms`. This is what closes the restart-exploit:
     /// if the user kills the daemon and immediately restarts, the
     /// tokens that have accrued in the (zero) elapsed time are
-    /// (zero) — quota does not reset.
+    /// (zero), quota does not reset.
     ///
     /// **Recovery.** If the persistence file is corrupt
     /// (half-written from a SIGKILL) or contains an unrecoverable
@@ -315,7 +315,7 @@ impl BucketedBudget {
         } else {
             PersistedBucket::full(rate_per_hour, now_ms)
         };
-        // Only top up at boot if we got a usable clock — otherwise we
+        // Only top up at boot if we got a usable clock, otherwise we
         // would compute elapsed against a sentinel and saturate.
         if let Some(real_now) = now_ms_opt {
             bucket.refill(real_now);
@@ -343,7 +343,7 @@ impl BucketedBudget {
     }
 
     /// Ask whether we should dispatch a fetch for the given
-    /// fingerprint right now. This applies group + dedup + bucket
+    /// fingerprint right now. This applies group, dedup, and bucket
     /// in sequence; inhibit by channel is a separate `try_dispatch`
     /// step.
     ///
@@ -388,7 +388,7 @@ impl BucketedBudget {
                 return DispatchVerdict::QuotaExhausted;
             }
 
-            // Record the dispatch — same critical section as the
+            // Record the dispatch, same critical section as the
             // dedup check and the bucket consume.
             let entry = inner
                 .in_flight
@@ -471,7 +471,7 @@ impl ResearchBudget for BucketedBudget {
     /// with [`BucketedBudget::try_dispatch`], which performs the
     /// authoritative atomic dedup-and-consume. Repeatedly calling
     /// `should_query` without a follow-up `try_dispatch` is allowed
-    /// and does not exhaust quota — it is intentionally cheap so the
+    /// and does not exhaust quota, it is intentionally cheap so the
     /// cold-window engine can poll it.
     ///
     /// The trait's per-channel ignorance (no channel argument) is
@@ -535,7 +535,7 @@ fn persist_bucket(path: &Path, bucket: &PersistedBucket) -> TomeResult<()> {
 
     std::fs::write(&tmp_path, &bytes)?;
     if let Err(e) = std::fs::rename(&tmp_path, path) {
-        // Rename failed — clean up the tmp file so we don't leak.
+        // Rename failed, clean up the tmp file so we don't leak.
         let _ = std::fs::remove_file(&tmp_path);
         return Err(e.into());
     }
@@ -544,7 +544,7 @@ fn persist_bucket(path: &Path, bucket: &PersistedBucket) -> TomeResult<()> {
 
 /// Build a sibling temp path with high collision resistance under
 /// concurrent dispatchers (multiple processes pointed at the same
-/// quota file). Uses pid + a coarse nanosecond suffix.
+/// quota file). Uses pid and a coarse nanosecond suffix.
 fn tmp_sibling(path: &Path) -> PathBuf {
     let pid = std::process::id();
     let nanos = SystemTime::now()
@@ -564,7 +564,7 @@ fn tmp_sibling(path: &Path) -> PathBuf {
 
 /// Fallible UNIX-millis clock. Returns `None` if `SystemTime::now()`
 /// precedes `UNIX_EPOCH` (NTP recovery, container time-warp).
-/// Callers must not fabricate `0` on `None` — see the clock-warp
+/// Callers must not fabricate `0` on `None`; see the clock-warp
 /// for the saturation-guard rationale. Re-exported for the cold-window
 /// CLI producer so the second clock site cannot
 /// drift from this contract.
@@ -579,7 +579,7 @@ pub fn current_ms_checked() -> Option<u64> {
 /// Pick a sentinel timestamp for `last_refill_ms` at construction
 /// time. If the clock is usable, use it. If not, use `u64::MAX` so
 /// that the first `refill` after the clock recovers computes
-/// `now.saturating_sub(MAX) == 0` elapsed — preventing the bucket
+/// `now.saturating_sub(MAX) == 0` elapsed, preventing the bucket
 /// from saturating to capacity on the recovery tick.
 fn bootstrap_ms(now_ms_opt: Option<u64>) -> u64 {
     now_ms_opt.unwrap_or(u64::MAX)
@@ -612,7 +612,7 @@ mod tests {
         for _ in 0..5 {
             let v = budget.try_dispatch("fp-unique", ResearchChannel::GitHub);
             // After the first, subsequent same-fingerprint dispatches
-            // are deduped — use distinct fingerprints to test bucket.
+            // are deduped, use distinct fingerprints to test bucket.
             assert!(matches!(
                 v,
                 DispatchVerdict::Allowed | DispatchVerdict::DuplicateInWindow
@@ -665,7 +665,7 @@ mod tests {
         let budget = BucketedBudget::in_memory(100);
         let v1 = budget.try_dispatch("fp", ResearchChannel::Triz);
         // Even though Triz fired first, GitHub (higher confidence)
-        // is not inhibited — it gets a fresh dispatch.
+        // is not inhibited, it gets a fresh dispatch.
         let v2 = budget.try_dispatch("fp", ResearchChannel::GitHub);
         assert_eq!(v1, DispatchVerdict::Allowed);
         assert_eq!(v2, DispatchVerdict::Allowed);
@@ -702,7 +702,7 @@ mod tests {
             let _ = budget.try_dispatch("fp2", ResearchChannel::GitHub);
             budget.flush_persistence().unwrap();
         }
-        // Reopen — bucket should reflect the consumed tokens.
+        // Reopen, bucket should reflect the consumed tokens.
         let budget = BucketedBudget::persistent(10, path).unwrap();
         let state = budget.current_state();
         assert!(state.available <= 8.5);

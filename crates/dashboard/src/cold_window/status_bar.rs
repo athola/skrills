@@ -3,7 +3,7 @@
 //! Bottom-of-screen one-liner that surfaces the cold-window's
 //! operating profile so the user always knows what's active:
 //!
-//! - **tick rate + adaptive label**: `tick: 2.0s [base]`,
+//! - **tick rate and adaptive label**: `tick: 2.0s [base]`,
 //!   `tick: 4.0s [load 0.78]`, `tick: 1.0s [active edit]`.
 //! - **token budget**: `68K / 100K`.
 //! - **alert counts per tier**: `W:1 C:0 A:2 S:0`.
@@ -16,27 +16,51 @@ use ratatui::layout::Rect;
 use ratatui::prelude::*;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use skrills_snapshot::{ResearchQuota, WindowSnapshot};
 
+use super::focus::FocusTarget;
+use super::keymap::{bindings_for, BindingScope};
+use super::overlay::Overlay;
 use super::state::ColdWindowState;
+
+/// Minimum hint-segment width: room for the always-present `? help`
+/// plus a truncation ellipsis (FR-2.3).
+const MIN_HINT_WIDTH: u16 = 9;
 
 /// Stateless renderer for the status bar.
 pub struct StatusBar;
 
 impl StatusBar {
-    /// Render the status line into `area`.
+    /// Render the status line into `area`: state summary on the left,
+    /// the contextual key hints for `focus` right-aligned (FR-2).
+    ///
+    /// Rendered borderless: the bar owns a single terminal row, and a
+    /// `Borders::TOP` block at height 1 used to swallow the content,
+    /// leaving only a title rule on screen.
     pub fn render(
         state: &ColdWindowState,
         research_quota: Option<ResearchQuota>,
         budget_ceiling: u64,
+        focus: FocusTarget,
+        topmost_overlay: Option<&Overlay>,
         frame: &mut Frame<'_>,
         area: Rect,
     ) {
         let line = build_line(state, research_quota, budget_ceiling);
-        let paragraph =
-            Paragraph::new(line).block(Block::default().borders(Borders::TOP).title(" Status "));
-        frame.render_widget(paragraph, area);
+        frame.render_widget(Paragraph::new(line), area);
+
+        // Hints overdraw the left segment's tail when space runs out:
+        // discoverability beats a clipped token count (FR-2.3).
+        let hints = hint_text(focus, topmost_overlay);
+        let want = u16::try_from(hints.chars().count()).unwrap_or(u16::MAX);
+        let width = want.min(area.width).max(MIN_HINT_WIDTH.min(area.width));
+        let shown = truncate_with_ellipsis(&hints, width);
+        let rect = Rect::new(area.right().saturating_sub(width), area.y, width, 1);
+        frame.render_widget(
+            Paragraph::new(Span::styled(shown, Style::default().fg(Color::DarkGray))),
+            rect,
+        );
     }
 
     /// Render to a plain string (useful for testing without a terminal
@@ -91,6 +115,53 @@ fn build_line<'a>(
         ));
     }
     Line::from(spans)
+}
+
+/// The contextual hint text for the current interface state (FR-2).
+///
+/// `? help` leads so it survives right-truncation; the focused pane's
+/// keys follow, then the globals. With an overlay open, the overlay's
+/// keys replace the pane keys entirely (FR-2.2); the palette gets its
+/// own line because `q` types there instead of closing. Content
+/// derives from the keymap table, the single source of truth.
+pub fn hint_text(focus: FocusTarget, topmost_overlay: Option<&Overlay>) -> String {
+    match topmost_overlay {
+        Some(Overlay::Palette { .. }) => {
+            return "Enter run  Up/Down select  Esc close".to_string();
+        }
+        Some(_) => return "? help  Esc close  q close".to_string(),
+        None => {}
+    }
+    let scope = match focus {
+        FocusTarget::Alerts => BindingScope::Alerts,
+        FocusTarget::Hints => BindingScope::Hints,
+        FocusTarget::Research => BindingScope::Research,
+    };
+    let mut parts = vec!["? help".to_string()];
+    parts.push("j/k select".to_string());
+    parts.push("Enter detail".to_string());
+    parts.extend(
+        bindings_for(scope)
+            .iter()
+            .map(|b| format!("{} {}", b.keys, b.action)),
+    );
+    parts.push("Tab panes".to_string());
+    parts.push("q quit".to_string());
+    parts.join("  ")
+}
+
+/// Right-truncate `s` to `width` columns, marking the cut with `…`.
+fn truncate_with_ellipsis(s: &str, width: u16) -> String {
+    let width = width as usize;
+    if s.chars().count() <= width {
+        return s.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut out: String = s.chars().take(width - 1).collect();
+    out.push('…');
+    out
 }
 
 fn line_to_plain_string(line: &Line<'_>) -> String {
@@ -262,7 +333,17 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let state = ColdWindowState::new();
         terminal
-            .draw(|f| StatusBar::render(&state, None, 100_000, f, f.area()))
+            .draw(|f| {
+                StatusBar::render(
+                    &state,
+                    None,
+                    100_000,
+                    FocusTarget::Alerts,
+                    None,
+                    f,
+                    f.area(),
+                )
+            })
             .unwrap();
     }
 }

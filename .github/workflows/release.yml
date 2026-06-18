@@ -169,6 +169,11 @@ jobs:
     if: needs.create-release.outputs.is-draft == 'true'
     env:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      # Disable HTTP/2 multiplexing and raise retries: cargo's parallel
+      # crates.io downloads intermittently fail with "[16] Error in the
+      # HTTP2 framing layer" on the CDN. HTTP/1.1 plus retries is resilient.
+      CARGO_HTTP_MULTIPLEXING: "false"
+      CARGO_NET_RETRY: "5"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

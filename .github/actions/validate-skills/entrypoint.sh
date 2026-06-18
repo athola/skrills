@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# entrypoint.sh — run skrills validate and emit GitHub annotations.
+# entrypoint.sh: run skrills validate and emit GitHub annotations.
 # Expected env vars (set by action.yml):
-#   INPUT_TARGETS  — validation target (claude, codex, copilot, all, both)
-#   INPUT_STRICT   — "true" to fail on errors, "false" for annotations only
-#   INPUT_PATH     — skills directory path
+#   INPUT_TARGETS: validation target (claude, codex, copilot, all, both)
+#   INPUT_STRICT: "true" to fail on errors, "false" for annotations only
+#   INPUT_PATH: skills directory path
 set -euo pipefail
 
 targets="${INPUT_TARGETS:-all}"
@@ -27,22 +27,39 @@ if [ ! -d "$skill_path" ]; then
 fi
 
 # ---- run validation (JSON output) ------------------------------------------
+raw_out="${RUNNER_TEMP:-/tmp}/skrills-validate.raw"
 json_out="${RUNNER_TEMP:-/tmp}/skrills-validate.json"
+err_out="${RUNNER_TEMP:-/tmp}/skrills-validate.err"
 
+# skrills emits tracing logs (e.g. "Skill discovery complete") onto stdout,
+# interleaved with the JSON document jq parses below. RUST_LOG=off should
+# silence them, but CI runners that export RUST_LOG can re-enable logging,
+# so we ALSO strip the logs from the captured output (see below). Stderr
+# goes to its own file so it never mixes into the JSON stream.
 # Capture exit code; skrills validate currently always exits 0 but may change.
 set +e
-skrills validate \
+RUST_LOG=off skrills validate \
   --skill-dir "$skill_path" \
   --target "$targets" \
   --format json \
-  > "$json_out" 2>&1
+  > "$raw_out" 2> "$err_out"
 validate_exit=$?
 set -e
+
+# Extract the JSON document from stdout. skrills prepends human-readable
+# noise that pollutes the stream jq parses: an unconfigured runner prints
+# a "Skrills is not configured on this system." banner, and tracing may
+# emit ISO-8601-timestamped log lines. The JSON document itself begins at
+# the first line that opens an array or object, so drop everything before
+# it, then strip any timestamped log lines interleaved within. This is
+# robust regardless of configuration state or whether RUST_LOG=off held.
+awk 'p || /^[[{]/ { p = 1; print }' "$raw_out" \
+  | grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z' > "$json_out" || true
 
 # If the command itself failed (not validation errors, but a crash), bail out.
 if [ $validate_exit -ne 0 ] && [ ! -s "$json_out" ]; then
   echo "::error::skrills validate exited with code ${validate_exit}"
-  cat "$json_out" >&2 || true
+  cat "$err_out" >&2 || true
   exit 1
 fi
 
@@ -50,6 +67,15 @@ fi
 # Requires jq. GitHub-hosted runners include it; self-hosted may not.
 if ! command -v jq >/dev/null 2>&1; then
   echo "::error::jq is required to parse validation output but was not found."
+  exit 1
+fi
+
+# Defensive: if the stripped output still is not valid JSON, surface the
+# raw output so the failure is debuggable instead of a bare jq error.
+if ! jq empty "$json_out" >/dev/null 2>&1; then
+  echo "::error::skrills validate did not produce valid JSON after log stripping."
+  echo "----- raw validate output (first 20 lines) -----" >&2
+  head -n 20 "$raw_out" >&2 || true
   exit 1
 fi
 

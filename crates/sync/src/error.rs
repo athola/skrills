@@ -17,7 +17,7 @@ pub enum SyncError {
     /// instructed sync to refuse further mutating writes.
     ///
     /// `tokens` is the most recent observed total; `ceiling` is the
-    /// configured budget. Both fields are advisory only — the gate is
+    /// configured budget. Both fields are advisory only, the gate is
     /// the boolean kill-switch, not the numeric comparison.
     #[error(
         "cold-window kill-switch engaged: token usage {tokens} exceeded ceiling {ceiling}; \

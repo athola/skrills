@@ -542,7 +542,7 @@ async fn pagination_offset_beyond_total() {
 
 // ── Analytics & Validation & Sync & Rules Metrics API Tests ──
 
-/// Build a metrics app with seed data for comprehensive testing.
+/// Build a metrics app with seed data for the integration tests.
 fn seeded_metrics_app() -> Router {
     let collector = Arc::new(
         skrills_metrics::MetricsCollector::new().expect("Failed to create metrics collector"),

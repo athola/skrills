@@ -361,7 +361,7 @@ mod tests {
     #[test]
     fn rwlock_survives_panic_in_writer() {
         let state = ApiState::new(vec![]);
-        // parking_lot::RwLock does not poison — the lock is released on panic
+        // parking_lot::RwLock does not poison, the lock is released on panic
         let cache = state.cache.clone();
         let _ = std::thread::spawn(move || {
             let _guard = cache.write();

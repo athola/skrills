@@ -430,7 +430,7 @@ fn skills_module_path_traversal_blocked() {
     let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
 
     let mut skill = make_skill_with_frontmatter("safe-skill");
-    // Use ../malicious.md — the parent (.../skills/) exists after skill dir is created,
+    // Use ../malicious.md, the parent (.../skills/) exists after skill dir is created,
     // so is_path_contained can canonicalize the parent and detect the escape.
     skill.modules = vec![ModuleFile {
         relative_path: std::path::PathBuf::from("../malicious.md"),
@@ -543,7 +543,7 @@ fn rules_subdirectory_name_collision() {
         "Both top-level and subdirectory rules should be read"
     );
 
-    // Verify the names — currently both flatten to "foo-bar" which is a known
+    // Verify the names, currently both flatten to "foo-bar" which is a known
     // limitation. The important thing is that neither file is silently dropped.
     let names: Vec<&str> = rules.iter().map(|r| r.name.as_str()).collect();
     assert!(
@@ -1057,7 +1057,7 @@ fn plugin_assets_path_traversal_sanitized() {
     let report = adapter.write_plugin_assets(&[malicious]).unwrap();
 
     assert_eq!(report.written, 1);
-    // The traversal components are stripped — file lands inside plugins/local/
+    // The traversal components are stripped, file lands inside plugins/local/
     assert!(
         !tmp.path().join("tmp/evil").exists(),
         "Path traversal must not escape plugins/local/"
@@ -1067,7 +1067,7 @@ fn plugin_assets_path_traversal_sanitized() {
     assert!(local_dir.exists(), "plugins/local should exist");
 }
 
-/// Non-manifest assets (scripts, binaries) are silently ignored — only
+/// Non-manifest assets (scripts, binaries) are silently ignored, only
 /// `.claude-plugin/plugin.json` files are processed by the manifest writer.
 #[test]
 fn plugin_assets_ignores_non_manifest_files() {
@@ -1181,7 +1181,7 @@ fn plugin_assets_prune_preserves_current_when_unchanged() {
     std::fs::create_dir_all(&stale).unwrap();
     std::fs::write(stale.join("plugin.json"), b"{\"name\": \"removed\"}").unwrap();
 
-    // Sync same content — should be skipped (unchanged) but stale should be pruned
+    // Sync same content, should be skipped (unchanged) but stale should be pruned
     let asset = PluginAsset::new(
         "current-plugin".to_string(),
         "market".to_string(),
@@ -1357,7 +1357,7 @@ fn plugin_assets_prune_ignores_non_directory_entries() {
     let report = adapter.write_plugin_assets(&[asset]).unwrap();
 
     assert_eq!(report.written, 1);
-    // The README file should survive — it's not a plugin directory so
+    // The README file should survive, it's not a plugin directory so
     // remove_dir_all won't succeed on it, but the pruning loop should
     // not crash. (It will appear in warnings if remove_dir_all fails
     // on a file, but that's acceptable.)

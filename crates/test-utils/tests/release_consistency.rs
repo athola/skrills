@@ -6,7 +6,7 @@
 //!
 //! Pattern adopted from `claude-night-market` v1.9.3
 //! (`plugins/sanctum/tests/test_release_consistency.py`), adapted for a
-//! Rust cargo workspace + `plugin.json` plugin manifest layout.
+//! Rust cargo workspace and `plugin.json` plugin manifest layout.
 //!
 //! The five invariants:
 //! 1. All `crates/*/Cargo.toml` versions agree.
@@ -15,7 +15,7 @@
 //! 3. Every command path in `plugin.json.commands` exists on disk.
 //! 4. Top-level `plugins/skrills/commands/*.md` count equals
 //!    `plugin.json.commands.length` (the `-maxdepth 1` analog from
-//!    night-market — guards against helper sub-files inflating counts
+//!    night-market, guards against helper sub-files inflating counts
 //!    if a future commands/<name>/modules/ subdir is introduced).
 //! 5. `.claude-plugin/marketplace.json` plugin entries (and optional
 //!    `metadata.version`) agree with the workspace, and each entry's
@@ -53,7 +53,7 @@ fn marketplace_json_path() -> PathBuf {
 }
 
 /// Canonical workspace version, asserted to be uniform across all crates.
-/// Panics if crates disagree — that's invariant #1's job; this helper
+/// Panics if crates disagree, that's invariant #1's job; this helper
 /// short-circuits for the tests that depend on a single value.
 fn canonical_workspace_version() -> String {
     let crate_versions = collect_crate_versions();
@@ -173,7 +173,7 @@ fn plugin_command_count_matches_top_level_disk() {
         .len();
 
     let commands_dir = plugin_dir().join("commands");
-    // Top-level only — analog of `find commands/ -maxdepth 1 -name '*.md'`.
+    // Top-level only, analog of `find commands/ -maxdepth 1 -name '*.md'`.
     // If a future commands/<name>/modules/ helper layout appears, helper
     // sub-files must not inflate the canonical command count.
     let on_disk = fs::read_dir(&commands_dir)

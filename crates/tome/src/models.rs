@@ -155,7 +155,7 @@ mod tests {
     fn research_session_legacy_timestamp_field_rejected() {
         // Old format used field name "timestamp" with a plain string.
         // After migration to created_at: OffsetDateTime, old JSON is
-        // a breaking change — verify it fails cleanly rather than panicking.
+        // a breaking change, verify it fails cleanly rather than panicking.
         let old_json = r#"{
             "id": "sess-old",
             "query": "test",

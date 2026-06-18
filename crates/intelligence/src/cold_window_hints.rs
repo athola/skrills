@@ -24,9 +24,9 @@
 //! different weights or implementing your own `HintScorer`.
 //!
 //! This module does not depend on `skrills_analyze`. The
-//! `HintScorer` trait lives in `skrills_analyze::cold_window::traits`;
+//! `HintScorer` trait is defined in `skrills_analyze::cold_window::traits`;
 //! `skrills_analyze::cold_window::engine::DefaultHintScorer` is the
-//! adapter that wraps [`MultiSignalScorer`] for the engine — see its
+//! adapter that wraps [`MultiSignalScorer`] for the engine, see its
 //! definition for the boundary contract.
 
 use skrills_snapshot::{Hint, ScoredHint};
@@ -170,7 +170,7 @@ impl MultiSignalScorer {
 
     /// Compute the unpinned score for a single hint.
     ///
-    /// Pin status is intentionally not part of the numeric score —
+    /// Pin status is intentionally not part of the numeric score,
     /// pinned hints sort ahead of unpinned in [`Self::rank_with_pins`]
     /// regardless of how high the unpinned hint scores.
     pub fn score_one(&self, hint: &Hint) -> f64 {
@@ -196,7 +196,7 @@ impl MultiSignalScorer {
     ///
     /// Sort order: pinned hints first (regardless of score), then by
     /// score descending within each group. Pin status is a primary
-    /// sort key, not a score boost — this matches the spec
+    /// sort key, not a score boost, this matches the spec
     /// requirement that pinned hints "stick to the top regardless of
     /// score".
     pub fn rank_with_pins<F>(&self, hints: Vec<Hint>, is_pinned: F) -> Vec<ScoredHint>
@@ -337,7 +337,7 @@ mod tests {
 
     #[test]
     fn higher_ease_lowers_priority() {
-        // Ease is in the denominator — high ease means "easy fix,
+        // Ease is in the denominator, high ease means "easy fix,
         // don't surface loudly" so the score goes down. This matches
         // the spec formula: frequency * impact / ease emphasizes
         // hints that are simultaneously high-frequency, high-impact,

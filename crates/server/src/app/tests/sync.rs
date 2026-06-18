@@ -88,7 +88,7 @@ fn sync_skills_tool_uses_default_target_when_to_omitted() {
     let mut args = serde_json::Map::new();
     args.insert("from".into(), serde_json::json!("claude"));
     args.insert("dry_run".into(), serde_json::json!(true));
-    // No "to" parameter — should default to "codex" per default_target_for("claude")
+    // No "to" parameter, should default to "codex" per default_target_for("claude")
 
     let result = service.sync_skills_tool(args);
     // Should NOT error with "cannot be the same" since default target differs from source

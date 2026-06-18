@@ -29,7 +29,7 @@ If the error persists with a third-party MCP server, consider proxying problemat
 Yes. Use `skrills sync-all` to sync everything (skills, commands, MCP servers, preferences):
 
 ```bash
-# Claude → ALL other CLIs (Codex + Copilot + Cursor) - no flags needed
+# Claude → ALL other CLIs (Codex, Copilot, and Cursor) - no flags needed
 skrills sync-all
 
 # Claude → specific CLI only

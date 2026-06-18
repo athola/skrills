@@ -1,4 +1,4 @@
-//! Tome — research API orchestration, caching, and knowledge graph.
+//! Tome, research API orchestration, caching, and knowledge graph.
 //!
 //! Provides clients for academic and technical research:
 //! - Semantic Scholar, arXiv, OpenAlex paper search

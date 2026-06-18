@@ -129,7 +129,7 @@ mod tests {
     /// Under that condition `tui_flow` must short-circuit with the
     /// canonical "TUI requires a TTY" error rather than calling into
     /// `inquire`, which would crash on the closed stdin. The mirror
-    /// guard for `Commands::Dashboard` lives in `app/dispatcher.rs`
+    /// guard for `Commands::Dashboard` is in `app/dispatcher.rs`
     /// and is exercised end-to-end by `make dogfood-dashboard`.
     #[test]
     fn tui_flow_refuses_when_stdout_is_not_a_tty() {

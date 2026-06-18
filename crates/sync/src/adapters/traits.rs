@@ -60,8 +60,8 @@ pub trait AgentAdapter: Send + Sync {
     /// Read plugin assets (scripts, binaries, libraries) from plugin cache.
     ///
     /// When `full_mirror` is true, includes skills, manifests, and all plugin
-    /// contents — used when the target needs a complete plugin copy (e.g., Cursor).
-    /// Default implementation returns empty — only adapters with a plugin cache
+    /// contents, used when the target needs a complete plugin copy (e.g., Cursor).
+    /// Default implementation returns empty, only adapters with a plugin cache
     /// (like Claude) need to override this.
     fn read_plugin_assets(&self, _full_mirror: bool) -> Result<Vec<PluginAsset>> {
         Ok(vec![])
@@ -106,7 +106,7 @@ pub trait AgentAdapter: Send + Sync {
 
     /// Write plugin assets (scripts, binaries, libraries) to target location.
     ///
-    /// Default implementation is a no-op — only adapters that support plugin
+    /// Default implementation is a no-op, only adapters that support plugin
     /// assets (like Cursor, which mirrors the Claude plugin cache) need to
     /// override this.
     fn write_plugin_assets(&self, _assets: &[PluginAsset]) -> Result<WriteReport> {

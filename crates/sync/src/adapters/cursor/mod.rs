@@ -12,7 +12,7 @@
 //!   `alwaysApply`) in `.cursor/rules/`. No other adapter writes this format.
 //! - **Hooks**: Cursor supports 18+ lifecycle events (camelCase) vs Claude's 8
 //!   (PascalCase). Event name mapping is handled in the hooks module.
-//! - **Skills**: Cursor skills have no YAML frontmatter — Claude frontmatter is stripped
+//! - **Skills**: Cursor skills have no YAML frontmatter, Claude frontmatter is stripped
 //!   on write, but `description` is preserved as a plain-text first line and `model_hint`
 //!   as an HTML comment. **Partially lossy**: a Claude→Cursor→Claude roundtrip loses
 //!   most frontmatter metadata (name, dependencies, version, tags).
@@ -170,7 +170,7 @@ impl AgentAdapter for CursorAdapter {
 
     /// Writes plugin manifests to `~/.cursor/plugins/local/<plugin>/.cursor-plugin/plugin.json`.
     ///
-    /// Only writes the manifest files — Cursor discovers actual plugin content
+    /// Only writes the manifest files, Cursor discovers actual plugin content
     /// (skills, agents, hooks) from `~/.claude/plugins/cache/` natively.
     /// The local manifests exist solely so `/plugins` shows installed plugins.
     fn write_plugin_assets(&self, assets: &[PluginAsset]) -> Result<WriteReport> {
@@ -195,7 +195,7 @@ impl AgentAdapter for CursorAdapter {
         let mut seen_plugins: HashSet<String> = HashSet::new();
 
         for asset in assets {
-            // Register this plugin before filtering — protects it from pruning
+            // Register this plugin before filtering, protects it from pruning
             // even if the batch only contains non-manifest files for it.
             let safe_name = sanitize_name(&asset.plugin_name);
             seen_plugins.insert(safe_name.clone());

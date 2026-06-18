@@ -21,14 +21,14 @@ Primary Mitigations:
 
 ## Production Checklist
 
-1. **Operate as an unprivileged service account**; configure strict file permissions (`chmod 600`) for sensitive configuration files.
+1. **Operate as an unprivileged service account** and configure strict file permissions (`chmod 600`) for sensitive configuration files.
 2. **Enable audit logging** (once available) and review logs regularly.
 3. **Restrict skill sources**: Only load skills from trusted directories.
 4. **Monitor skill content**: Review skill files for suspicious content before use.
 
 ## Secrets Management
 
-- Store secrets securely in environment variables or integrate with a dedicated secrets manager; never commit them to version control.
+- Store secrets securely in environment variables or integrate with a dedicated secrets manager. Never commit them to version control.
 - Apply `chmod 600` permissions to configuration files containing sensitive data.
 - Plan for regular credential rotations where applicable.
 

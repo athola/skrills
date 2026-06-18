@@ -187,7 +187,7 @@ pub fn write_hooks(root: &Path, hooks: &[Command]) -> Result<WriteReport> {
         // Parse hook content based on its declared format
         let content_str = String::from_utf8_lossy(&hook.content);
         let entries: Vec<HookEntry> = if hook.content_format == ContentFormat::Json {
-            // JSON source — attempt parse, skip gracefully on failure
+            // JSON source, attempt parse, skip gracefully on failure
             match serde_json::from_str(&content_str) {
                 Ok(e) => e,
                 Err(e) => {
@@ -205,7 +205,7 @@ pub fn write_hooks(root: &Path, hooks: &[Command]) -> Result<WriteReport> {
                 }
             }
         } else {
-            // Markdown/plain text — try JSON first, skip if unparseable
+            // Markdown/plain text, try JSON first, skip if unparseable
             match serde_json::from_str(&content_str) {
                 Ok(e) => e,
                 Err(e) => {
@@ -410,7 +410,7 @@ mod tests {
         let write_report = write_hooks(root, &hooks).unwrap();
         assert_eq!(write_report.written, 2);
 
-        // Read back — should get Claude PascalCase names
+        // Read back, should get Claude PascalCase names
         let read_back = read_hooks(root).unwrap();
         let names: Vec<&str> = read_back.iter().map(|h| h.name.as_str()).collect();
         assert!(
@@ -439,7 +439,7 @@ mod tests {
             plugin_origin: None,
         }];
 
-        // Should NOT error — should gracefully skip
+        // Should NOT error, should gracefully skip
         let report = write_hooks(root, &hooks).unwrap();
         assert_eq!(report.written, 0);
         assert_eq!(report.skipped.len(), 1);
@@ -465,7 +465,7 @@ mod tests {
             plugin_origin: None,
         }];
 
-        // Should NOT error — should warn and proceed with fresh config
+        // Should NOT error, should warn and proceed with fresh config
         let report = write_hooks(root, &hooks).unwrap();
         assert_eq!(report.written, 1);
         assert!(

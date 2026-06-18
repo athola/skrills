@@ -9,17 +9,22 @@ Set Width 1200
 Set Height 700
 Set Theme "Catppuccin Mocha"
 Set Padding 20
-Set TypingSpeed 50ms
+Set TypingSpeed 25ms
 Set Shell "bash"
 
-# Set up environment - use demo skills from repo
-Env PATH "/Users/alex.thola/skrills/target/release:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-Env SKRILLS_SKILL_DIR "/Users/alex.thola/skrills/assets/demo-skills"
+# Set up environment - use demo skills from repo.
+# Absolute paths: VHS launches ttyd via Go, which refuses relative PATH
+# entries, so the binary and ttyd dirs must be absolute. Adjust the repo
+# and ttyd directories for your machine before recording.
+Env PATH "/home/alext/skrills/target/release:/home/alext/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Env SKRILLS_SKILL_DIR "/home/alext/skrills/assets/demo-skills"
 Env SKRILLS_INCLUDE_CLAUDE "1"
 Env HOME "/tmp/skrills-demo"
+# Quiet the tracing logs so command output stays clean on screen.
+Env RUST_LOG "off"
 
 # Title
-Type "# Skrills: Unified Skills across Claude, Codex, Copilot & Cursor"
+Type "# Skrills: one set of skills, four AI CLIs -- Claude, Codex, Copilot, Cursor"
 Enter
 Sleep 800ms
 Type "clear"
@@ -27,7 +32,7 @@ Enter
 Sleep 400ms
 
 # Setup demo environment with skills in Claude directory
-Type "# Set up demo environment with sample skills"
+Type "# Step 1: seed sample skills into Claude Code"
 Enter
 Sleep 300ms
 Type "mkdir -p ~/.claude/skills ~/.codex/skills ~/.copilot/skills"
@@ -42,54 +47,54 @@ Enter
 Sleep 500ms
 
 # Show available skills
-Type "# Skills in Claude Code directory"
+Type "# Step 1 done: the skills now live in Claude Code"
 Enter
 Sleep 500ms
 Type "ls ~/.claude/skills"
 Enter
-Sleep 2s
+Sleep 3500ms
 
 # Validate skills across all four CLIs
-Type "# Validate skills for Claude, Codex, Copilot, and Cursor"
+Type "# Step 2: validate them against all four CLIs (--autofix repairs)"
 Enter
 Sleep 500ms
 Type "skrills validate --target both --autofix"
 Enter
-Sleep 3s
+Sleep 5s
 
 # Analyze skills for token usage
-Type "# Analyze token usage and get optimization suggestions"
+Type "# Step 3: analyze token cost, with reduction suggestions"
 Enter
 Sleep 500ms
 Type "skrills analyze --suggestions"
 Enter
-Sleep 4s
+Sleep 6s
 
 # Show metrics
-Type "# View aggregate metrics about discovered skills"
+Type "# Step 4: review aggregate metrics across every skill"
 Enter
 Sleep 500ms
 Type "skrills metrics"
 Enter
-Sleep 4s
+Sleep 6s
 
 # Sync skills to all CLIs
-Type "# Sync skills from Claude Code to all other CLIs"
+Type "# Step 5: sync from Claude Code out to every other CLI"
 Enter
 Sleep 500ms
 Type "skrills sync-all"
 Enter
-Sleep 3s
+Sleep 5s
 
 # Verify sync
-Type "# Verify skills synced to Codex and Copilot"
+Type "# Step 5 done: the same skills landed in Codex and Copilot"
 Enter
 Sleep 500ms
 Type "find ~/.codex/skills ~/.copilot/skills -name 'SKILL.md' 2>/dev/null | head -5"
 Enter
-Sleep 2s
+Sleep 3500ms
 
 # Final message
 Type "echo '# Skills now work across all four platforms!'"
 Enter
-Sleep 2s
+Sleep 3500ms

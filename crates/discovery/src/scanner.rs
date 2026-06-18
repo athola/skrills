@@ -173,7 +173,7 @@ fn file_hash(path: &Path) -> Result<String> {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    // Using size + mtime gives us a cheap fingerprint without reading file contents.
+    // Using size and mtime gives us a cheap fingerprint without reading file contents.
     // Hash only a small prefix to stay cheap but content-sensitive.
     let mut hasher = Blake2b256::new();
     hasher.update(size.to_le_bytes());
@@ -183,7 +183,7 @@ fn file_hash(path: &Path) -> Result<String> {
         if let Ok(mut file) = fs::File::open(path) {
             // Saturation-guard expresses intent
             // explicitly. Pre-fix pattern was `1024.min(usize::try_from(size).unwrap_or(usize::MAX))`
-            // — benign today (the outer `.min(1024)` clamps back) but a
+            //, benign today (the outer `.min(1024)` clamps back) but a
             // refactor reordering the operands was one OOM allocation
             // away. The new shape caps at the prefix length up front.
             let prefix_len = usize::try_from(size).unwrap_or(1024).min(1024);
@@ -272,7 +272,7 @@ fn collect_skills_from(
     let mut seen: std::collections::HashMap<String, (String, String)> =
         std::collections::HashMap::new(); // name -> (source, root)
                                           // Frontmatter-name-based dedup: catches duplicates across roots with different paths
-                                          // but the same frontmatter identity (name + similar description).
+                                          // but the same frontmatter identity (name and similar description).
     let mut seen_by_fm_name: std::collections::HashMap<String, (String, String, Option<String>)> =
         std::collections::HashMap::new();
     // key: lowercased frontmatter name
@@ -371,7 +371,7 @@ fn collect_skills_from(
                 continue;
             }
 
-            // Frontmatter-name dedup: same frontmatter name + similar description = duplicate
+            // Frontmatter-name dedup: same frontmatter name and similar description means duplicate
             if let Some(ref fm_name) = frontmatter_name {
                 let fm_key = fm_name.to_lowercase();
                 if let Some((prev_src, prev_root, prev_desc)) = seen_by_fm_name.get(&fm_key) {

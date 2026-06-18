@@ -131,11 +131,11 @@ pub fn transform_model(model: &str, source: &str, target: &str) -> Option<String
             let claude_model = OPENAI_TO_CLAUDE.get(&openai_model)?;
             Some(claude_model.as_str().to_string())
         }
-        // Cursor accepts Claude model IDs directly — pass through
+        // Cursor accepts Claude model IDs directly, pass through
         ("claude", "cursor") => Some(model.to_string()),
         // Cursor special values: "inherit" = use parent model, "fast" = lightweight model
         ("cursor", "claude") => match model {
-            "inherit" => None, // No model preference — let target decide
+            "inherit" => None, // No model preference, let target decide
             "fast" => Some("haiku".to_string()),
             _ => {
                 // Cursor may use Claude model IDs directly

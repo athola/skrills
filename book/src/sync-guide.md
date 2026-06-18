@@ -29,11 +29,11 @@ skrills sync-all --from cursor --to claude
 
 Skills are copied between skill directories:
 - **Claude**: `~/.claude/skills/`
-- **Codex**: `~/.codex/skills/` (discovery root; skills must be `**/SKILL.md`)
+- **Codex**: `~/.codex/skills/` (discovery root, skills must be `**/SKILL.md`)
 - **Copilot**: `~/.copilot/skills/` (same SKILL.md format as Codex)
 - **Cursor**: `~/.cursor/skills/{name}/SKILL.md` (frontmatter stripped on write)
 
-Codex skills are disabled by default; enable them in `~/.codex/config.toml`:
+Codex skills are disabled by default. Enable them in `~/.codex/config.toml`:
 
 ```toml
 [features]
@@ -85,7 +85,7 @@ skrills sync-preferences --from claude --to copilot
 
 ### Plugin Assets and Manifest Synthesis
 
-Plugin asset registration writes manifests to `~/.cursor/plugins/local/<plugin>/.cursor-plugin/plugin.json` so Cursor's plugin system recognizes the plugin as installed. Cursor reads plugin content directly from `~/.claude/plugins/cache/` — the same cache Claude Code populates — so no cache-to-cache copy is needed. Stale entries under `~/.cursor/plugins/local/` are pruned automatically on each sync.
+Plugin asset registration writes manifests to `~/.cursor/plugins/local/<plugin>/.cursor-plugin/plugin.json` so Cursor's plugin system recognizes the plugin as installed. Cursor reads plugin content directly from `~/.claude/plugins/cache/` (the same cache Claude Code populates), so no cache-to-cache copy is needed. Stale entries under `~/.cursor/plugins/local/` are pruned automatically on each sync.
 
 When a Claude plugin ships without `.claude-plugin/plugin.json` (some upstream plugins, including `typescript-lsp` and `pyright-lsp` from `claude-plugins-official`, ship only a README and source tree), full-mirror sync now synthesizes a minimal manifest instead of dropping the plugin from the target. Synthesis follows a fixed contract:
 
@@ -94,10 +94,10 @@ When a Claude plugin ships without `.claude-plugin/plugin.json` (some upstream p
 | `name` | Plugin directory name in the cache layout |
 | `version` | Version segment of the cache path (e.g. `.../typescript-lsp/1.0.0/`) |
 | `description` | First non-heading prose line of `README.md`, or `"Plugin '<name>' (manifest synthesized by skrills sync)"` when no README exists |
-| `commands` / `skills` / `agents` / `hooks` | Empty arrays — matches on-disk reality for plugins that ship no registered components |
-| `_synthesized` | `true` — audit marker so downstream tools can distinguish synthesized manifests from real ones |
+| `commands` / `skills` / `agents` / `hooks` | Empty arrays, matching on-disk reality for plugins that ship no registered components |
+| `_synthesized` | `true`, an audit marker so downstream tools can distinguish synthesized manifests from real ones |
 
-Synthesis is gated to **full-mirror sync only** (the default for `--to cursor`). Skill-mirror targets such as Codex, which only consume `skills/` and never read `plugin.json`, leave manifest-less plugins as-is. Real manifests are never overwritten — synthesis runs only when the plugin walk finds no `plugin.json` on disk.
+Synthesis is gated to **full-mirror sync only** (the default for `--to cursor`). Skill-mirror targets such as Codex, which only consume `skills/` and never read `plugin.json`, leave manifest-less plugins as-is. Real manifests are never overwritten. Synthesis runs only when the plugin walk finds no `plugin.json` on disk.
 
 To audit synthesized manifests after a sync, query the marker:
 

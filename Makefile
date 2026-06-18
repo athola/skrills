@@ -76,6 +76,7 @@ endef
 # Phony targets: dogfood (v0.8.0 cold-window + script ports)
 .PHONY: dogfood-cold-window-headless dogfood-cold-window-chaos dogfood-cold-window-browser \
 	dogfood-tui dogfood-dashboard dogfood-skill-diff dogfood-all \
+	dogfood-validate-contract dogfood-tui-interactive dogfood-precommit \
 	plugin-validate-direct plugin-modernize-direct plugin-registrations-direct
 .NOTPARALLEL: demo-all demo-setup-all
 .SILENT: demo-doctor demo-empirical demo-cli demo-all demo-setup-claude demo-setup-codex demo-setup-both \
@@ -158,6 +159,9 @@ help:
 	@printf "  %-23s %s\n" "demo-fixtures" "prepare demo HOME sandbox"
 	@printf "\nDogfood (v0.8.0 cold-window + script ports)\n"
 	@printf "  %-23s %s\n" "dogfood-all" "run dogfood + all v0.8.0 surface checks"
+	@printf "  %-23s %s\n" "dogfood-validate-contract" "BDD: validate --format json + install asset contracts"
+	@printf "  %-23s %s\n" "dogfood-tui-interactive" "BDD: drive the cold-window TUI under a real PTY (tmux)"
+	@printf "  %-23s %s\n" "dogfood-precommit" "truncated dogfood for the pre-commit hook"
 	@printf "  %-23s %s\n" "dogfood-cold-window-headless" "engine ticks for 3s, expects clean SIGTERM exit"
 	@printf "  %-23s %s\n" "dogfood-cold-window-chaos" "--no-adaptive + tiny budget; exercises kill-switch"
 	@printf "  %-23s %s\n" "dogfood-cold-window-browser" "HTML+SSE parity check + 2s graceful-shutdown budget"
@@ -413,11 +417,11 @@ demo-release-consistency:
 	@grep -E '"version":' plugins/skrills/.claude-plugin/plugin.json | head -1 | sed 's/^[[:space:]]*//'
 	@echo "--- Invariants 3 & 4: command parity"
 	@printf "    plugin.json commands.length: "
-	@python3 -c "import json; print(len(json.load(open('plugins/skrills/.claude-plugin/plugin.json'))['commands']))"
+	@jq '.commands | length' plugins/skrills/.claude-plugin/plugin.json
 	@printf "    plugins/skrills/commands/*.md (top-level): "
 	@find plugins/skrills/commands -maxdepth 1 -name '*.md' | wc -l
 	@echo "--- Invariant 5: marketplace.json plugin entries + sources"
-	@python3 -c "import json; d=json.load(open('.claude-plugin/marketplace.json')); meta=d.get('metadata',{}).get('version','-'); print(f'    metadata.version: {meta}'); [print(f'    plugins[{i}] {p[\"name\"]} v{p[\"version\"]} source={p[\"source\"]}') for i,p in enumerate(d['plugins'])]"
+	@jq -r '"    metadata.version: \(.metadata.version // "-")", (.plugins | to_entries[] | "    plugins[\(.key)] \(.value.name) v\(.value.version) source=\(.value.source)")' .claude-plugin/marketplace.json
 	@echo "--- Running parity test suite"
 	$(CARGO_CMD) test -p skrills_test_utils --test release_consistency
 	@echo "==> Release-consistency demo complete"
@@ -570,7 +574,7 @@ ci: fmt lint lint-hygiene test
 verify-publish:
 	@if bash -c 'declare -A x 2>/dev/null'; then bash scripts/verify_publish_order.sh; else echo "[SKIP] verify-publish requires bash 4+ (found $$(bash --version | head -1))"; fi
 
-precommit: fmt-check lint lint-md lint-hygiene test test-install verify-publish
+precommit: fmt-check lint lint-md lint-hygiene test test-install dogfood-precommit verify-publish
 
 hooks:
 	@git config core.hooksPath githooks
@@ -607,7 +611,7 @@ deps-update:
 	@echo "Dependencies updated. Run 'make test' to verify."
 
 # =============================================================================
-# Dogfood targets — v0.8.0 cold-window surfaces + script ports.
+# Dogfood targets: v0.8.0 cold-window surfaces and script ports.
 # Goal: every new CLI/TUI/browser/SSE/script entrypoint executes against
 # real fixtures and is validated for exit code, output shape, or contract.
 # =============================================================================
@@ -680,7 +684,7 @@ dogfood-cold-window-browser: build
 
 # TUI/dashboard contract: under a TTY, render until SIGTERM (rc 124/143).
 # Without a TTY (CI, redirected stdio), exit cleanly with a "requires a TTY"
-# message — that graceful refusal is itself a contract worth testing.
+# message, that graceful refusal is itself a contract worth testing.
 dogfood-tui: build demo-fixtures
 	@echo "==> [tui] TTY-or-graceful-refusal contract (skrills tui)"
 	@TMP=$(DOGFOOD_TMP).tui.err ; \
@@ -721,6 +725,31 @@ dogfood-skill-diff: build demo-fixtures
 	rm -f $$TMP
 	@echo "==> [skill-diff] OK"
 
+# BDD output-contract dogfood (validate --format json + install asset
+# selection). Drives the real binary through the real validate-skills action
+# entrypoint; see scripts/dogfood-contracts.sh for the Given/When/Then specs.
+dogfood-validate-contract: build
+	@BIN_PATH=$(BIN_PATH) $(SHELL) ./scripts/dogfood-contracts.sh
+
+# Interactive TUI dogfood: drive the cold-window TUI under a real PTY (tmux)
+# and assert first paint, help overlay, command palette, and clean Ctrl-C
+# quit. Falls back to the no-TTY refusal contracts when tmux is unavailable.
+dogfood-tui-interactive: build
+	@BIN_PATH=$(BIN_PATH) $(SHELL) ./scripts/dogfood-tui.sh
+
+# Truncated dogfood for the pre-commit hook: run the validate JSON output
+# contract against an already-built binary. It does NOT force a release build,
+# so commits stay fast; CI and `make dogfood-all` run the full set. Install
+# asset selection is already covered by `test-install` in the precommit chain.
+dogfood-precommit:
+	@if [ -x "$(BIN_PATH)" ]; then \
+	  BIN_PATH=$(BIN_PATH) $(SHELL) ./scripts/dogfood-contracts.sh ; \
+	  BIN_PATH=$(BIN_PATH) $(SHELL) ./scripts/dogfood-tui.sh ; \
+	else \
+	  echo "==> [dogfood] skipping validate JSON + TUI contracts: $(BIN_PATH) not built" ; \
+	  echo "    build with 'make build'; the full contracts run in CI" ; \
+	fi
+
 # Direct-script targets: exercise the in-tree Python ports under scripts/
 # even when audit-plugins.sh would route to NIGHT_MARKET_ROOT instead.
 plugin-validate-direct:
@@ -745,6 +774,7 @@ plugin-registrations-direct:
 
 dogfood-all: dogfood \
              dogfood-cold-window-headless dogfood-cold-window-chaos dogfood-cold-window-browser \
-             dogfood-tui dogfood-dashboard dogfood-skill-diff \
+             dogfood-tui dogfood-dashboard dogfood-skill-diff dogfood-validate-contract \
+             dogfood-tui-interactive \
              plugin-validate-direct plugin-modernize-direct plugin-registrations-direct
 	@echo "==> Full v0.8.0 dogfood pass complete"

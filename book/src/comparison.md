@@ -4,12 +4,12 @@ This table compares `skrills` against alternative approaches for managing and de
 
 | Project Type | Key Components | Transport/Runtime | Automation Interface | Key Strengths | Distinguishing Gaps (vs. `skrills`) |
 |---|---|---|---|---|---|
-| **skrills** | MCP server, CLI, validation/analysis crates, skill synchronization utilities | MCP over stdio; single binary | CLI, MCP tools, release artifacts per target | Unified MCP layer, cross-agent synchronization, skill validation with autofix, token analysis, TUI/CLI feature parity | — |
+| **skrills** | MCP server, CLI, validation/analysis crates, skill synchronization utilities | MCP over stdio, single binary | CLI, MCP tools, release artifacts per target | Unified MCP layer, cross-agent synchronization, skill validation with autofix, token analysis, TUI/CLI feature parity | None |
 | Static skill bundles | Ready-to-use skill files | None (static) | Manual copy | Straightforward, drop-in content deployment | Lacks validation, analysis, or synchronization. No MCP server or Codex bridging. |
-| CI doc/render pipelines | Build-time converters | Build-time only | CI (GitHub Actions, custom pipelines) | Automates documentation rendering | No runtime server, skill discovery, or synchronization; limited to prompt-only operations. |
+| CI doc/render pipelines | Build-time converters | Build-time only | CI (GitHub Actions, custom pipelines) | Automates documentation rendering | No runtime server, skill discovery, or synchronization. Limited to prompt-only operations. |
 | Shared rules repositories | Curated collections of rules and skills | Not applicable (static) | Manual consumption | Provides common baseline ruleset | Lacks installer, automation, or MCP bridge. |
-| Local skill sync CLIs | CLI or TUI for local skill synchronization | Local synchronization only; no MCP | CLI/TUI | Allows effective local curation and mirroring | No MCP server, no validation/analysis, limited to basic file sync. |
-| Tutorials/how-to guides | Instructional content for authoring skills | Not applicable | Article/docs | Educational | Lacks integrated tooling; relies on manual steps. |
+| Local skill sync CLIs | CLI or TUI for local skill synchronization | Local synchronization only, no MCP | CLI/TUI | Allows effective local curation and mirroring | No MCP server, no validation/analysis, limited to basic file sync. |
+| Tutorials/how-to guides | Instructional content for authoring skills | Not applicable | Article/docs | Educational | Lacks integrated tooling and relies on manual steps. |
 
 ## Core Differentiators
 

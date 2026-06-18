@@ -100,4 +100,4 @@ Common validation failures often stem from missing YAML frontmatter, specificall
 
 ## Best Practices
 
-Write skills with Codex/Copilot requirements in mind; if they pass strict validation, they will work everywhere. Integrate validation into your CI pipeline using `skrills validate --target both --errors-only` to catch issues early. When using `--autofix`, review the changes before committing, especially since generated descriptions might need manual refinement. Finally, run validation after syncing to verify that no incompatible changes were introduced.
+Write skills with Codex/Copilot requirements in mind. If they pass strict validation, they will work everywhere. Integrate validation into your CI pipeline using `skrills validate --target both --errors-only` to catch issues early. When using `--autofix`, review the changes before committing, especially since generated descriptions might need manual refinement. Finally, run validation after syncing to verify that no incompatible changes were introduced.

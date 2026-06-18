@@ -67,7 +67,7 @@ pub fn parse_frontmatter(content: &str) -> (HashMap<String, String>, &str) {
             continue;
         }
 
-        // Flush previous multi-line key — strip quotes from assembled value
+        // Flush previous multi-line key, strip quotes from assembled value
         // since YAML quotes span the full multi-line string.
         if let Some(key) = current_key.take() {
             fields.insert(key, strip_yaml_quotes(&current_value));
@@ -118,7 +118,7 @@ pub fn strip_frontmatter(content: &str) -> &str {
     body
 }
 
-/// Renders YAML frontmatter fields + body into a complete document.
+/// Renders YAML frontmatter fields and body into a complete document.
 ///
 /// Fields are written in sorted order for deterministic output.
 pub fn render_frontmatter(fields: &HashMap<String, String>, body: &str) -> String {
@@ -333,7 +333,7 @@ mod tests {
         let (fields, _body) = parse_frontmatter(content);
         assert_eq!(fields.get("name").unwrap(), "test");
         assert_eq!(fields.get("version").unwrap(), "1.0");
-        // tags is a list — stored as empty string since it's `tags:` with no inline value
+        // tags is a list, stored as empty string since it's `tags:` with no inline value
         assert_eq!(fields.get("tags").unwrap(), "");
     }
 

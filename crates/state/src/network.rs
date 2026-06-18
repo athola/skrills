@@ -43,7 +43,7 @@ impl std::fmt::Display for NetworkStatus {
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Known endpoints to probe for connectivity.
-/// We try DNS resolution + TCP connect to common reliable hosts.
+/// We try DNS resolution and TCP connect to common reliable hosts.
 const PROBE_TARGETS: &[&str] = &["1.1.1.1:443", "8.8.8.8:443"];
 
 /// Check if the system has network connectivity.

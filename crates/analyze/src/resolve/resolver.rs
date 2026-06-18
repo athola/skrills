@@ -2,7 +2,7 @@
 //!
 //! Use `DependencyResolver` when skill lookup must be dynamic (HTTP fetches,
 //! filesystem polling, plugin discovery). For static skill sets, build a
-//! `super::graph::DependencyGraph` instead — it caches and avoids string
+//! `super::graph::DependencyGraph` instead, it caches and avoids string
 //! hashing during traversal.
 
 use super::types::{ResolutionResult, ResolveError, ResolveOptions, ResolvedDependency, SkillInfo};

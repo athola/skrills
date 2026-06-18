@@ -1,6 +1,6 @@
 //! Plugin-cache asset walker for the Claude adapter.
 //!
-//! Split out of `claude/mod.rs` — this is the largest single trait method in the adapter
+//! Split out of `claude/mod.rs`, the largest single trait method in the adapter
 //! (~205 LOC) and pure recursion over the plugin cache layout
 //! `cache/<marketplace>/<plugin>/<version>/`. It carries its own
 //! filtering rules (synced vs skipped directories) which are easier
@@ -161,7 +161,7 @@ pub(super) fn read_plugin_assets_impl(
                     Err(_) => continue,
                 };
 
-                // Skip hidden files — but in full_mirror mode, allow
+                // Skip hidden files, but in full_mirror mode, allow
                 // .claude-plugin/ (plugin manifests needed by targets like Cursor)
                 if is_hidden_path(rel_path)
                     && (!full_mirror
@@ -268,7 +268,7 @@ pub(super) fn read_plugin_assets_impl(
 
 /// Build a minimal `plugin.json` body for plugins that ship without one.
 ///
-/// Loaders only need name + version to recognize the plugin; the empty
+/// Loaders only need name and version to recognize the plugin; the empty
 /// component arrays make it explicit that this plugin contributes no
 /// commands/skills/agents/hooks (matching the on-disk reality for
 /// e.g. typescript-lsp / pyright-lsp, which are MCP-server-only).

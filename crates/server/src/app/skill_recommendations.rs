@@ -1,7 +1,7 @@
 //! Skill recommendation engine for `SkillService`.
 //!
-//! The largest single method on `SkillService` — dependency walking,
-//! sibling detection, and quality scoring — isolated here so it has
+//! The largest single method on `SkillService`: dependency walking,
+//! sibling detection, and quality scoring, isolated here so it has
 //! one grep target alongside its supporting types.
 
 use crate::cache::SkillCache;
