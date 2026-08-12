@@ -1151,3 +1151,117 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    /// T1: README with only headings (no prose lines) asserts fallback string is used
+    #[test]
+    fn t1_readme_only_headings_uses_fallback() {
+        let dir = tempdir().unwrap();
+        let plugin_dir = dir.path().join("my-plugin/1.0.0");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        fs::write(plugin_dir.join("README.md"), "# Title\n# Subtitle\n").unwrap();
+        let manifest = synthesize_plugin_manifest(dir.path()).unwrap();
+        assert!(
+            manifest.description.starts_with("No description available"),
+            "expected fallback description for headings-only README"
+        );
+    }
+
+    /// T2: README with leading blank lines asserts first-line extraction skips blanks
+    #[test]
+    fn t2_readme_leading_blank_lines_skips() {
+        let dir = tempdir().unwrap();
+        let plugin_dir = dir.path().join("my-plugin/1.0.0");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        fs::write(plugin_dir.join("README.md"), "\n\n\nFirst real line.\n").unwrap();
+        let manifest = synthesize_plugin_manifest(dir.path()).unwrap();
+        assert!(
+            manifest.description.contains("First real line."),
+            "expected first-line extraction to skip leading blanks"
+        );
+    }
+
+    /// T3: 280-char truncation with multi-byte UTF-8 asserts valid output
+    #[test]
+    fn t3_280_char_truncation_multibyte_utf8() {
+        let dir = tempdir().unwrap();
+        let plugin_dir = dir.path().join("my-plugin/1.0.0");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        let emoji_line = "🦀".repeat(200);
+        fs::write(plugin_dir.join("README.md"), format!("{}\n", emoji_line)).unwrap();
+        let manifest = synthesize_plugin_manifest(dir.path()).unwrap();
+        assert!(
+            manifest.description.chars().count() <= 280,
+            "expected truncation to respect 280-char limit with multi-byte UTF-8"
+        );
+        assert!(std::str::from_utf8(manifest.description.as_bytes()).is_ok());
+    }
+
+    /// T4: Non-UTF-8 README bytes asserts silent fallback today
+    #[test]
+    fn t4_non_utf8_readme_bytes() {
+        let dir = tempdir().unwrap();
+        let plugin_dir = dir.path().join("my-plugin/1.0.0");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        // Latin-1 bytes: 0x80..=0xFF are invalid UTF-8
+        fs::write(plugin_dir.join("README.md"), [0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x80, 0x81]).unwrap();
+        let manifest = synthesize_plugin_manifest(dir.path()).unwrap();
+        assert!(
+            manifest.description.starts_with("No description available"),
+            "expected fallback for non-UTF-8 README bytes"
+        );
+    }
+
+    /// T5: Multiple version directories under one plugin asserts latest semver wins
+    #[test]
+    fn t5_multiple_version_directories_latest_wins() {
+        let dir = tempdir().unwrap();
+        let plugin_dir = dir.path().join("my-plugin");
+        for v in &["1.0.0", "2.0.0", "1.5.0"] {
+            let ver_dir = plugin_dir.join(v);
+            fs::create_dir_all(&ver_dir).unwrap();
+            fs::write(ver_dir.join("README.md"), format!("Version {}\n", v)).unwrap();
+        }
+        let manifest = synthesize_plugin_manifest(dir.path()).unwrap();
+        assert!(
+            manifest.description.contains("Version 2.0.0"),
+            "expected latest semver (2.0.0) to win over 1.0.0 and 1.5.0"
+        );
+    }
+
+    /// T6: Plugin name needing JSON escaping asserts produced JSON parses and round-trips
+    #[cfg(unix)]
+    #[test]
+    fn t6_plugin_name_needing_json_escaping() {
+        let dir = tempdir().unwrap();
+        let plugin_dir = dir.path().join("foo\"bar/1.0.0");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        fs::write(plugin_dir.join("README.md"), "Escaped name test\n").unwrap();
+        let manifest = synthesize_plugin_manifest(dir.path()).unwrap();
+        let json = serde_json::to_string(&manifest).expect("manifest should serialize to JSON");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("JSON should parse");
+        assert_eq!(
+            parsed["name"].as_str().unwrap(),
+            "foo\"bar",
+            "expected name field to round-trip correctly through JSON"
+        );
+    }
+
+    /// T7: Empty plugin directory (no README, no LICENSE) asserts synthesis emits fallback
+    #[test]
+    fn t7_empty_plugin_directory_fallback() {
+        let dir = tempdir().unwrap();
+        let plugin_dir = dir.path().join("empty-plugin/1.0.0");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        let manifest = synthesize_plugin_manifest(dir.path()).unwrap();
+        assert!(
+            manifest.description.starts_with("No description available"),
+            "expected fallback description for empty plugin directory"
+        );
+    }
+}
