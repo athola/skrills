@@ -835,6 +835,44 @@ mod tests {
         }
     }
 
+    /// `--allowed-hosts` is the only way to reach a non-loopback bind once the
+    /// MCP transport validates `Host`, so it must arrive from the flag and from
+    /// the environment the config file writes.
+    #[test]
+    fn parse_serve_allowed_hosts_from_flag_and_env() {
+        let _guard = env_guard();
+
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "serve",
+            "--http",
+            "0.0.0.0:8080",
+            "--allowed-hosts",
+            "skrills.internal:8080,10.0.0.5:8080",
+        ])
+        .expect("serve with --allowed-hosts should parse");
+        match cli.command {
+            Some(Commands::Serve { allowed_hosts, .. }) => assert_eq!(
+                allowed_hosts,
+                vec![
+                    "skrills.internal:8080".to_string(),
+                    "10.0.0.5:8080".to_string()
+                ]
+            ),
+            _ => unreachable!("expected Serve command"),
+        }
+
+        let _hosts_env = set_env_var("SKRILLS_ALLOWED_HOSTS", Some("from.env:9000"));
+        let cli = Cli::try_parse_from(["skrills", "serve", "--http", "0.0.0.0:8080"])
+            .expect("serve with env allowed hosts should parse");
+        match cli.command {
+            Some(Commands::Serve { allowed_hosts, .. }) => {
+                assert_eq!(allowed_hosts, vec!["from.env:9000".to_string()])
+            }
+            _ => unreachable!("expected Serve command"),
+        }
+    }
+
     #[test]
     fn parse_serve_cors_from_env() {
         let _guard = env_guard();

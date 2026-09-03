@@ -164,6 +164,8 @@ skrills serve --http 0.0.0.0:8080 --allowed-hosts skrills.internal:8080
 ```
 
 Supplied hosts are added to the loopback set, never substituted for it.
+The same list is settable in the config file as `allowed_hosts` under
+`[serve]`, or through `SKRILLS_ALLOWED_HOSTS`.
 
 The MCP server exposes 36 tools for validation, analysis, sync, intelligence, and research directly to your AI assistant. The HTTP mode serves a browser dashboard with skills explorer, metrics, and activity feed.
 
