@@ -379,31 +379,11 @@ struct RawAgentFrontmatter {
 ///
 /// Returns (frontmatter_yaml, body_content).
 fn split_agent_frontmatter(content: &str) -> (Option<String>, String) {
-    let trimmed = content.trim_start();
-
-    if !trimmed.starts_with("---") {
-        return (None, content.to_string());
-    }
-
-    // Find content after opening ---
-    let after_open = &trimmed[3..];
-    let after_open = after_open.trim_start_matches(['\r', '\n']);
-
-    // Find closing ---
-    if let Some(end_pos) = after_open.find("\n---") {
-        let yaml = &after_open[..end_pos];
-        let rest = &after_open[end_pos + 4..];
-        let rest = rest.trim_start_matches(['\r', '\n']);
-        (Some(yaml.to_string()), rest.to_string())
-    } else if let Some(end_pos) = after_open.find("\r\n---") {
-        let yaml = &after_open[..end_pos];
-        let rest = &after_open[end_pos + 5..];
-        let rest = rest.trim_start_matches(['\r', '\n']);
-        (Some(yaml.to_string()), rest.to_string())
-    } else {
-        // No closing ---, treat entire content as body
-        (None, content.to_string())
-    }
+    // Delegates to the canonical splitter in skrills-validate. This used to be
+    // a byte-for-byte copy of it; keeping the copy meant a skill could be split
+    // one way here and another during validation.
+    let (frontmatter, body, _line) = skrills_validate::frontmatter::split_frontmatter(content);
+    (frontmatter, body)
 }
 
 /// Parse comma-separated string into a vector of trimmed strings.

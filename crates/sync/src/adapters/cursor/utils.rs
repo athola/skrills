@@ -38,7 +38,10 @@ fn is_open_quoted(value: &str) -> bool {
 ///
 /// Frontmatter is delimited by `---` on its own line at the start of the file.
 /// Returns `(empty_map, full_content)` if no frontmatter is found.
-pub fn parse_frontmatter(content: &str) -> (HashMap<String, String>, &str) {
+///
+/// The body is owned: the canonical splitter normalizes line endings rather
+/// than slicing the input.
+pub fn parse_frontmatter(content: &str) -> (HashMap<String, String>, String) {
     let (raw, body) = split_frontmatter(content);
 
     let Some(frontmatter_str) = raw else {
@@ -113,7 +116,7 @@ pub fn parse_frontmatter(content: &str) -> (HashMap<String, String>, &str) {
 /// Strips YAML frontmatter from content, returning only the body.
 ///
 /// Used when writing Claude skills to Cursor (Cursor skills have no frontmatter).
-pub fn strip_frontmatter(content: &str) -> &str {
+pub fn strip_frontmatter(content: &str) -> String {
     let (_fields, body) = parse_frontmatter(content);
     body
 }

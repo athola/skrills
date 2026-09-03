@@ -15,6 +15,7 @@ categories = ["development-tools", "filesystem"]
 path = "src/lib.rs"
 
 [dependencies]
+skrills-validate = { path = "../validate", version = "0.8.2" }
 anyhow.workspace = true
 thiserror.workspace = true
 dirs.workspace = true

@@ -166,7 +166,7 @@ fn translate_agent_frontmatter(content: &str) -> String {
     result.push_str("\n---\n");
     if !body.is_empty() {
         result.push('\n');
-        result.push_str(body);
+        result.push_str(&body);
     }
     result
 }

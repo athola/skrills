@@ -33,42 +33,20 @@ pub(crate) fn ensure_not_engaged(switch: Option<&KillSwitch>) -> Result<()> {
     Ok(())
 }
 
-/// Splits content into raw frontmatter string and body.
+/// Splits YAML frontmatter from the body.
 ///
-/// Frontmatter is delimited by `---` on its own line at the start of the file.
-/// Returns `(Some(raw_frontmatter), body)` if frontmatter is found,
-/// or `(None, full_content)` if not.
+/// Delegates to [`skrills_validate::frontmatter::split_frontmatter`], the
+/// canonical splitter. There used to be three implementations of this and they
+/// disagreed: this one stripped exactly one line ending after the opening
+/// `---` and a trailing `\r` from the block, while validate's stripped every
+/// leading newline and kept the `\r`. A skill could therefore be split one way
+/// for validation and another for writing.
 ///
-/// This is the single source of truth for frontmatter delimiter scanning.
-pub fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
-    let trimmed = content.trim_start();
-    if !trimmed.starts_with("---") {
-        return (None, content);
-    }
-
-    // Find the closing `---`
-    // Strip the line ending after the opening `---` (handles both \n and \r\n)
-    let after_open = &trimmed[3..];
-    let after_open = after_open
-        .strip_prefix("\r\n")
-        .or_else(|| after_open.strip_prefix('\n'))
-        .unwrap_or(after_open);
-
-    if let Some(close_pos) = after_open.find("\n---") {
-        let frontmatter_str = &after_open[..close_pos];
-        // Trim trailing \r from frontmatter (last line before \n---)
-        let frontmatter_str = frontmatter_str
-            .strip_suffix('\r')
-            .unwrap_or(frontmatter_str);
-        let body_start = close_pos + 4; // skip "\n---"
-        let body = &after_open[body_start..];
-        let body = body.trim_start_matches(['\n', '\r']);
-
-        (Some(frontmatter_str), body)
-    } else {
-        // No closing delimiter, treat entire content as body
-        (None, content)
-    }
+/// Returns owned strings because the canonical splitter normalizes rather than
+/// slicing.
+pub fn split_frontmatter(content: &str) -> (Option<String>, String) {
+    let (frontmatter, body, _line) = skrills_validate::frontmatter::split_frontmatter(content);
+    (frontmatter, body)
 }
 
 /// Returns true if the name starts with a dot (hidden file/directory).

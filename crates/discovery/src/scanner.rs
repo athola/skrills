@@ -203,26 +203,12 @@ fn file_hash(path: &Path) -> Result<String> {
 /// Parses frontmatter between `---` delimiters to extract the `name` and `description` fields.
 /// Returns `(None, None)` if no frontmatter is present.
 fn extract_frontmatter_identity(content: &str) -> (Option<String>, Option<String>) {
-    let trimmed = content.trim_start();
-    if !trimmed.starts_with("---") {
+    // Splitting delegates to skrills-validate so discovery and validation agree
+    // on where the frontmatter block ends. Only the identity projection below
+    // is specific to discovery.
+    let Some(yaml) = skrills_validate::frontmatter::split_frontmatter(content).0 else {
         return (None, None);
-    }
-
-    // Find content after opening ---
-    let after_open = match trimmed.get(3..) {
-        Some(s) => s.trim_start_matches(['\r', '\n']),
-        None => return (None, None),
     };
-
-    // Find closing ---
-    let end_pos = match after_open
-        .find("\n---")
-        .or_else(|| after_open.find("\r\n---"))
-    {
-        Some(pos) => pos,
-        None => return (None, None),
-    };
-    let yaml = &after_open[..end_pos];
 
     // Parse YAML to extract name and description fields
     // Use a minimal struct to avoid pulling in complex types
@@ -232,7 +218,7 @@ fn extract_frontmatter_identity(content: &str) -> (Option<String>, Option<String
         description: Option<String>,
     }
 
-    match serde_yaml::from_str::<MinimalFrontmatter>(yaml) {
+    match serde_yaml::from_str::<MinimalFrontmatter>(&yaml) {
         Ok(fm) => {
             let name = fm.name.filter(|n| !n.trim().is_empty());
             let description = fm.description.filter(|d| !d.trim().is_empty());

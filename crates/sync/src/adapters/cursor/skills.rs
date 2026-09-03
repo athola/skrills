@@ -233,7 +233,7 @@ pub fn write_skills(root: &Path, skills: &[Command]) -> Result<WriteReport> {
         let model_hint = fields.get("model_hint").cloned();
 
         // Trim non-essential sections from the body
-        let trimmed = trim_skill_body(raw_body);
+        let trimmed = trim_skill_body(&raw_body);
 
         // Inject description as plain text (Cursor shows the first line as
         // the skill subtitle) and model_hint as an HTML comment for routing.
