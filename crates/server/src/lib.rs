@@ -58,7 +58,6 @@ pub mod discovery;
 /// Server runtime.
 pub mod runtime;
 /// Signal handling for graceful shutdown.
-pub mod signals;
 /// Tracing and logging configuration.
 pub mod trace;
 

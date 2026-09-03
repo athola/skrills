@@ -78,9 +78,14 @@ API_URL()
 # jq implementation of asset selection. $1=release JSON, $2=target triple.
 _SELECT_ASSET_JQ()
 {
-  echo "$1" | jq -r --arg target "$2" \
-    '.assets[] | select(.name | contains($target)) | select(.name | endswith(".tar.gz")) | .browser_download_url' \
-    | head -n1
+  # `printf '%s\n'`, not `echo`: under dash and macOS /bin/sh, `echo` expands
+  # backslash escapes, so a release note containing \n turns the JSON body into
+  # a literal newline and jq rejects the whole document.
+  #
+  # `first(...)` rather than `| head -n1`: under pipefail, head closing the pipe
+  # early makes jq exit 141 and takes the installer down with it.
+  printf '%s\n' "$1" | jq -r --arg target "$2" \
+    'first(.assets[] | select(.name | contains($target)) | select(.name | endswith(".tar.gz")) | .browser_download_url) // empty'
 }
 
 # Pure-POSIX awk fallback for asset selection. $1=release JSON, $2=target.
@@ -89,7 +94,7 @@ _SELECT_ASSET_JQ()
 # too. Anchor on the closing quote (.tar.gz") so only the tarball matches.
 _SELECT_ASSET_AWK()
 {
-  echo "$1" | awk -v target="$2" '
+  printf '%s\n' "$1" | awk -v target="$2" '
     /"name":/ && index($0, target) && /\.tar\.gz"/ { found=1 }
     found && /"browser_download_url":/ {
       gsub(/.*"browser_download_url": *"/, "")

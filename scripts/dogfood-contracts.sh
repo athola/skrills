@@ -127,6 +127,22 @@ SIDECAR_FIRST='{ "assets": [
   { "name": "skrills-x86_64-unknown-linux-gnu.tar.gz.sha256", "browser_download_url": "https://example.com/x.tar.gz.sha256" },
   { "name": "skrills-x86_64-unknown-linux-gnu.tar.gz",        "browser_download_url": "https://example.com/x.tar.gz" } ] }'
 
+# Run through /bin/sh, not this bash: install.sh's shebang is `env sh`, and
+# under dash and macOS /bin/sh `echo` expands backslash escapes. Sourcing the
+# slice into bash (as the scenarios below do) cannot see that class of bug --
+# a release note containing \n broke asset selection for every `curl | sh`
+# user while the whole test suite stayed green.
+scenario "asset selection survives escape sequences in the release body (/bin/sh)"
+NEWLINE_JSON='{ "body": "notes\nwith newline", "assets": [
+  { "name": "skrills-x86_64-unknown-linux-gnu.tar.gz", "browser_download_url": "https://example.com/x.tar.gz" } ] }'
+sh_got="$(/bin/sh -c '
+  . "$1"
+  SELECT_ASSET_FROM_JSON "$2" "$3"
+' _ "$WORK/install-slice.sh" "$NEWLINE_JSON" "x86_64-unknown-linux-gnu" 2>&1 | tail -1)"
+[ "$sh_got" = "https://example.com/x.tar.gz" ] \
+  && ok "[/bin/sh] chose the tarball despite escapes in the body" \
+  || bad "[/bin/sh] got '$sh_got' (expected the .tar.gz tarball)"
+
 for impl in jq awk; do
   scenario "asset selection via $impl skips a sidecar listed first"
   if [ "$impl" = awk ]; then export SKRILLS_FORCE_NO_JQ=1; else unset SKRILLS_FORCE_NO_JQ; fi
@@ -136,6 +152,22 @@ for impl in jq awk; do
     || bad "[$impl] chose '$got' (expected the .tar.gz tarball)"
 done
 unset SKRILLS_FORCE_NO_JQ
+
+# ===========================================================================
+feature "subcommands can still run subprocesses"
+# run() used to install SIG_IGN|SA_NOCLDWAIT for SIGCHLD, which makes waitpid
+# return ECHILD, so every Command::status()/output() in the process failed with
+# "No child processes". Unit tests never saw it: they call the command
+# functions directly and never go through run(). The visible symptom was
+# analyze-project-context returning an empty git_keywords list in a repo with
+# history, because the `git log` it shells out to could not be waited on.
+scenario "analyze-project-context extracts keywords from git history"
+kw_count="$("$BIN_PATH" analyze-project-context --include-git true --format json 2>/dev/null \
+  | sed -n '/^{/,$p' | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("git_keywords", [])))' 2>/dev/null || echo 0)"
+case "${kw_count}" in
+  0) bad "git_keywords empty; the process cannot wait on child processes" ;;
+  *) ok "git_keywords populated (${kw_count} keywords from git log)" ;;
+esac
 
 # ---- summary ---------------------------------------------------------------
 printf "\n========================================\n"

@@ -28,7 +28,6 @@ use crate::commands::{
 };
 use crate::discovery::merge_extra_dirs;
 use crate::doctor::doctor_report;
-use crate::signals::ignore_sigchld;
 use crate::sync::mirror_source_root;
 use crate::tui::tui_flow;
 use anyhow::{anyhow, Result};
@@ -58,7 +57,6 @@ pub(crate) fn run_sync_with_adapters(
 
 /// Main application entry point.
 pub fn run() -> Result<()> {
-    ignore_sigchld()?;
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
