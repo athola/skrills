@@ -137,6 +137,16 @@ impl AgentAdapter for ClaudeAdapter {
         }
     }
 
+    /// Claude is the plugin cache's owner: it reads plugin assets and never
+    /// writes them, so `write_plugin_assets` is not implemented and the trait
+    /// default would report a successful write of nothing.
+    fn write_support(&self) -> FieldSupport {
+        FieldSupport {
+            plugin_assets: false,
+            ..self.supported_fields()
+        }
+    }
+
     fn read_commands(&self, include_marketplace: bool) -> Result<Vec<Command>> {
         commands::read_commands_impl(self, include_marketplace)
     }

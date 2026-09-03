@@ -97,6 +97,16 @@ impl AgentAdapter for CursorAdapter {
         }
     }
 
+    /// Cursor receives the plugin mirror and is never a source for it:
+    /// `read_plugin_assets` is not implemented, and the trait default's empty
+    /// result is indistinguishable from a source that genuinely had none.
+    fn read_support(&self) -> FieldSupport {
+        FieldSupport {
+            plugin_assets: false,
+            ..self.supported_fields()
+        }
+    }
+
     fn read_commands(&self, _include_marketplace: bool) -> Result<Vec<Command>> {
         commands::read_commands(&self.root)
     }
