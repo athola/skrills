@@ -168,17 +168,21 @@ impl AgentAdapter for CursorAdapter {
         rules::write_rules(&self.root, instructions)
     }
 
-    /// Writes plugin manifests to `~/.cursor/plugins/local/<plugin>/.cursor-plugin/plugin.json`.
+    /// Mirrors plugin content into `~/.cursor/plugins/local/<plugin>/`,
+    /// preserving each file's path within the plugin.
     ///
-    /// Only writes the manifest files, Cursor discovers actual plugin content
-    /// (skills, agents, hooks) from `~/.claude/plugins/cache/` natively.
-    /// The local manifests exist solely so `/plugins` shows installed plugins.
+    /// This is the only path that carries skill bodies and runtime scripts to
+    /// Cursor: `sync_skills` is off for Cursor targets, because the flat
+    /// `~/.cursor/skills` copy it produces would duplicate plugin content.
+    /// Claude's `.claude-plugin/` manifest directory is renamed to the
+    /// `.cursor-plugin/` name Cursor reads.
     fn write_plugin_assets(&self, assets: &[PluginAsset]) -> Result<WriteReport> {
         crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
-        use crate::adapters::utils::sanitize_name;
+        use crate::adapters::utils::{is_path_contained, sanitize_name};
         use crate::report::SkipReason;
         use std::collections::HashSet;
         use std::fs;
+        use std::path::PathBuf;
         use tracing::debug;
 
         let mut report = WriteReport::default();
@@ -195,47 +199,70 @@ impl AgentAdapter for CursorAdapter {
         let mut seen_plugins: HashSet<String> = HashSet::new();
 
         for asset in assets {
-            // Register this plugin before filtering, protects it from pruning
-            // even if the batch only contains non-manifest files for it.
             let safe_name = sanitize_name(&asset.plugin_name);
             seen_plugins.insert(safe_name.clone());
 
-            // Only process plugin.json manifest files
-            let rel_str = asset.relative_path.to_string_lossy();
-            if !rel_str.ends_with("plugin.json") || !rel_str.contains(".claude-plugin") {
+            let plugin_dir = local_dir.join(&safe_name);
+            // Created up front: containment resolution below fails closed when
+            // the base directory does not exist yet.
+            fs::create_dir_all(&plugin_dir)?;
+
+            let relative = match asset.relative_path.strip_prefix(".claude-plugin") {
+                Ok(rest) => PathBuf::from(".cursor-plugin").join(rest),
+                Err(_) => asset.relative_path.clone(),
+            };
+            let dest = plugin_dir.join(&relative);
+
+            if !is_path_contained(&dest, &plugin_dir) {
+                let msg = format!(
+                    "Skipped plugin asset escaping its plugin directory: {}/{}",
+                    safe_name,
+                    asset.relative_path.display()
+                );
+                tracing::warn!(
+                    plugin = %safe_name,
+                    path = %asset.relative_path.display(),
+                    "Plugin asset path escapes plugins/local, skipping"
+                );
+                report.warnings.push(msg);
                 continue;
             }
 
-            let manifest_dir = local_dir.join(&safe_name).join(".cursor-plugin");
-            let manifest_path = manifest_dir.join("plugin.json");
-
-            // Check if unchanged
-            if manifest_path.exists() {
-                let existing = match fs::read(&manifest_path) {
+            if dest.exists() {
+                let existing = match fs::read(&dest) {
                     Ok(data) => data,
                     Err(e) => {
                         debug!(
-                            path = %manifest_path.display(),
+                            path = %dest.display(),
                             error = %e,
-                            "Could not read existing manifest for hash comparison, will re-write"
+                            "Could not read existing asset for hash comparison, will re-write"
                         );
                         vec![]
                     }
                 };
                 if crate::adapters::utils::hash_content(&existing) == asset.hash {
                     report.skipped.push(SkipReason::Unchanged {
-                        item: format!("{}/.cursor-plugin/plugin.json", safe_name),
+                        item: format!("{}/{}", safe_name, relative.display()),
                     });
                     continue;
                 }
             }
 
-            fs::create_dir_all(&manifest_dir)?;
-            fs::write(&manifest_path, &asset.content)?;
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&dest, &asset.content)?;
+
+            #[cfg(unix)]
+            if asset.executable {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&dest, fs::Permissions::from_mode(0o755))?;
+            }
 
             debug!(
                 plugin = %safe_name,
-                "Wrote plugin manifest to Cursor plugins/local"
+                path = %relative.display(),
+                "Wrote plugin asset to Cursor plugins/local"
             );
             report.written += 1;
         }

@@ -322,8 +322,8 @@ pub fn run() -> Result<()> {
                 }
 
                 // Skip skills sync for Claude→Codex (handled above with special logic).
-                // For →Cursor: skip flat skills copy, Cursor discovers skills from
-                // its own plugins/cache/ which is synced via plugin_assets.
+                // For →Cursor: skip the flat ~/.cursor/skills copy, skill bodies
+                // ride the plugin mirror into plugins/local/<plugin>/skills/.
                 let sync_skills = !(target.is_cursor() || from.is_claude() && target.is_codex());
                 // Cursor needs a full plugin mirror (including skills and manifests)
                 // since it has its own plugin cache at ~/.cursor/plugins/cache/

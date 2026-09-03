@@ -131,9 +131,9 @@ what the adapter reads and writes today:
 
 A dash means that asset doesn't sync to that CLI, either because the CLI
 has no equivalent (Copilot CLI has no slash commands) or because the
-mapping isn't built yet (Cursor preferences). Plugin assets sync to
-Cursor's `plugins/local/` so synced plugins appear installed, and
-stale entries are pruned automatically. See the
+mapping isn't built yet (Cursor preferences). Plugin assets mirror the
+whole plugin tree into Cursor's `plugins/local/`, carrying skill bodies
+and runtime scripts, and stale entries are pruned automatically. See the
 [sync guide](book/src/sync-guide.md) for details.
 
 ## CI integration

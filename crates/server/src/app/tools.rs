@@ -1066,9 +1066,9 @@ impl SkillService {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        // Skip flat skills copy, Cursor discovers skills from its own
-        // plugins/cache/ which is populated by the plugin_assets sync.
-        // Copying skills separately creates duplicates that inflate context.
+        // Skip the flat ~/.cursor/skills copy: skill bodies ride the plugin
+        // mirror into plugins/local/<plugin>/skills/, and copying them
+        // separately creates duplicates that inflate context.
         let params = SyncParams {
             from: Some(from.to_string()),
             dry_run,
