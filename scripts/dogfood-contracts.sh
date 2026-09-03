@@ -114,6 +114,14 @@ feature "install.sh selects the tarball, never the .sha256 checksum sidecar"
 sed -n '/^fail()/,/^# --- main/p' scripts/install.sh | sed '$d' > "$WORK/install-slice.sh"
 # shellcheck source=/dev/null
 . "$WORK/install-slice.sh"
+# The slice is delimited by two cosmetic markers in install.sh. If either
+# drifts the slice comes out empty, `.` still succeeds, and these scenarios
+# would silently stop running -- the same silent-skip this block already had
+# once. Fail loudly instead.
+command -v SELECT_ASSET_FROM_JSON >/dev/null 2>&1 || {
+  printf 'install.sh slice extraction failed: SELECT_ASSET_FROM_JSON undefined\n' >&2
+  exit 2
+}
 
 SIDECAR_FIRST='{ "assets": [
   { "name": "skrills-x86_64-unknown-linux-gnu.tar.gz.sha256", "browser_download_url": "https://example.com/x.tar.gz.sha256" },

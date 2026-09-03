@@ -54,12 +54,24 @@ RG_ARGS=(
   -e "\\b(${BANNED})\\b"
 )
 
-if rg "${RG_ARGS[@]}" .; then
-  echo "" >&2
-  echo "ERROR: AI-slop vocabulary detected in non-archive prose." >&2
-  echo "Banned words: ${BANNED//|/, }" >&2
-  echo "Replace with concrete language. Allowed in docs/archive/, CHANGELOG.md." >&2
-  exit 1
-fi
+# ripgrep exits 0 on a match, 1 on no match and 2 on error. Testing it
+# directly in an `if` made an error read as "no match", so a bad glob or an
+# unreadable file reported the gate clean and disabled it silently.
+rg_rc=0
+rg "${RG_ARGS[@]}" . || rg_rc=$?
+case "${rg_rc}" in
+  0)
+    echo "" >&2
+    echo "ERROR: AI-slop vocabulary detected in non-archive prose." >&2
+    echo "Banned words: ${BANNED//|/, }" >&2
+    echo "Replace with concrete language. Allowed in docs/archive/, CHANGELOG.md." >&2
+    exit 1
+    ;;
+  1) ;;
+  *)
+    echo "ERROR: ripgrep failed (exit ${rg_rc}); prose lint did not run." >&2
+    exit 2
+    ;;
+esac
 
 echo "prose-slop lint clean (no banned vocabulary in user-facing docs)"
