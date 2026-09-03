@@ -14,6 +14,70 @@ fn make_skill_with_frontmatter(name: &str) -> Command {
     make_command(name, &content)
 }
 
+/// The manifest is written under the sanitized plugin name while the skill
+/// body used the raw one, so any plugin name the sanitizer rewrites put the
+/// two in different directories and Cursor found a plugin with no skills.
+#[test]
+fn write_skills_puts_manifest_and_skill_in_the_same_plugin_dir() {
+    let tmp = TempDir::new().unwrap();
+    let mut skill = make_skill_with_frontmatter("deep-work");
+    skill.plugin_origin = Some(crate::common::PluginOrigin {
+        plugin_name: "my.plugin".to_string(),
+        publisher: "market".to_string(),
+        version: "1.0.0".to_string(),
+    });
+
+    super::skills::write_skills(tmp.path(), &[skill]).unwrap();
+
+    let local = tmp.path().join("plugins/local");
+    let manifest_dirs: Vec<_> = std::fs::read_dir(&local)
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+        .collect();
+    assert_eq!(
+        manifest_dirs.len(),
+        1,
+        "manifest and skill body should share one plugin directory, got {manifest_dirs:?}"
+    );
+    let plugin_dir = local.join(&manifest_dirs[0]);
+    assert!(
+        plugin_dir.join(".cursor-plugin/plugin.json").exists(),
+        "manifest missing from {}",
+        plugin_dir.display()
+    );
+    assert!(
+        plugin_dir.join("skills/deep-work/SKILL.md").exists(),
+        "skill body missing from {}",
+        plugin_dir.display()
+    );
+}
+
+/// A plugin name is upstream metadata, so it must not be able to steer a write
+/// out of `plugins/local/`.
+#[test]
+fn write_skills_refuses_traversal_in_plugin_name() {
+    let tmp = TempDir::new().unwrap();
+    let mut skill = make_skill_with_frontmatter("deep-work");
+    skill.plugin_origin = Some(crate::common::PluginOrigin {
+        plugin_name: "../../escaped".to_string(),
+        publisher: "market".to_string(),
+        version: "1.0.0".to_string(),
+    });
+
+    super::skills::write_skills(tmp.path(), &[skill]).unwrap();
+
+    // `plugins/local/../../escaped` resolves to `<root>/escaped`: inside the
+    // temp dir, but outside the directory the adapter is allowed to write.
+    assert!(
+        !tmp.path().join("escaped").exists(),
+        "plugin name must not escape plugins/local"
+    );
+    assert!(
+        tmp.path().join("plugins/local").exists(),
+        "the write should still land under plugins/local"
+    );
+}
+
 fn make_skill_with_modules(name: &str) -> Command {
     let mut cmd = make_skill_with_frontmatter(name);
     cmd.modules = vec![ModuleFile {

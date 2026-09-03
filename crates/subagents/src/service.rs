@@ -552,11 +552,14 @@ impl SubagentService {
         ))
     }
 
+    /// Reported as a tool-level error, not a success: the tool is advertised in
+    /// the list, so a caller that branches on `is_error` would otherwise treat
+    /// "not implemented" as a transcript it can read.
     async fn handle_transcript(&self) -> Result<CallToolResult> {
         Ok(tool_result(
             vec![Content::text("secure transcripts are not yet implemented")],
             Some(json!({"status": "unimplemented"})),
-            false,
+            true,
         ))
     }
 }

@@ -20,7 +20,8 @@
 //! of truth for skills that originated in Claude.
 
 use super::paths::skills_dir;
-use super::utils::{parse_frontmatter, sanitize_name, strip_yaml_quotes, trim_skill_body};
+use super::utils::{parse_frontmatter, strip_yaml_quotes, trim_skill_body};
+use crate::adapters::utils::sanitize_name_kebab;
 use crate::adapters::utils::{collect_module_files, hash_content};
 use crate::common::{Command, ContentFormat, PluginOrigin};
 use crate::report::{SkipReason, WriteReport};
@@ -203,11 +204,17 @@ pub fn write_skills(root: &Path, skills: &[Command]) -> Result<WriteReport> {
     let mut seen_plugins: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for skill in skills {
-        let name = sanitize_name(&skill.name);
+        let name = sanitize_name_kebab(&skill.name);
 
         // Decide write target: plugin-local dir if origin is known, flat dir otherwise
         let skill_dir = if let Some(ref origin) = skill.plugin_origin {
-            let plugin_dir = local_plugins_dir.join(&origin.plugin_name);
+            // Sanitized with the same function `ensure_cursor_plugin_manifest`
+            // uses, so the manifest and the skill body share one directory. The
+            // raw name also came straight from upstream plugin metadata, so
+            // joining it unfiltered let `../` steer the write out of
+            // `plugins/local/`.
+            let safe_plugin = crate::adapters::utils::sanitize_name(&origin.plugin_name);
+            let plugin_dir = local_plugins_dir.join(&safe_plugin);
             // Ensure .cursor-plugin/plugin.json manifest exists (once per plugin)
             if seen_plugins.insert(origin.plugin_name.clone()) {
                 ensure_cursor_plugin_manifest(root, origin);

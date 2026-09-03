@@ -330,7 +330,7 @@ fn collect_skills_from(
 
         let metas: Vec<_> = entries
             .par_iter()
-            .map(|entry| {
+            .filter_map(|entry| {
                 let path = entry.path().to_path_buf();
                 let raw_name = diff_paths(&path, root)
                     .and_then(|p| p.to_str().map(|s| s.to_owned()))
@@ -344,7 +344,22 @@ fn collect_skills_from(
                 } else {
                     raw_name
                 };
-                let hash = file_hash(&path)?;
+                // Skipped rather than propagated: a file that vanishes between
+                // the walk and the stat is routine while ~/.claude/plugins/cache
+                // is rewritten, and failing the whole scan for one entry made
+                // discovery return nothing. The read below already tolerates
+                // exactly this.
+                let hash = match file_hash(&path) {
+                    Ok(hash) => hash,
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "could not hash skill file (entry skipped)"
+                        );
+                        return None;
+                    }
+                };
                 // Extract frontmatter identity (best-effort, log errors)
                 let (frontmatter_name, description) = match fs::read_to_string(&path) {
                     Ok(content) => extract_frontmatter_identity(&content),
@@ -353,9 +368,9 @@ fn collect_skills_from(
                         (None, None)
                     }
                 };
-                Ok((name, path, hash, frontmatter_name, description))
+                Some((name, path, hash, frontmatter_name, description))
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect();
 
         for (name, path, hash, frontmatter_name, description) in metas {
             if let Some((seen_src, seen_root)) = seen.get(&name) {

@@ -217,13 +217,6 @@ pub fn trim_skill_body(body: &str) -> String {
     format!("{trimmed}\n")
 }
 
-/// Sanitizes a name to kebab-case suitable for Cursor file/directory names.
-///
-/// Re-exports the shared `sanitize_name_kebab` from `adapters::utils`.
-pub fn sanitize_name(name: &str) -> String {
-    crate::adapters::utils::sanitize_name_kebab(name)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,15 +288,19 @@ mod tests {
         );
     }
 
+    /// Cursor names every artifact in kebab-case, so this pins the shared
+    /// helper's behavior from the adapter that depends on it.
     #[test]
     fn sanitize_name_converts_to_kebab() {
-        assert_eq!(sanitize_name("My Skill Name"), "my-skill-name");
+        use crate::adapters::utils::sanitize_name_kebab;
+
+        assert_eq!(sanitize_name_kebab("My Skill Name"), "my-skill-name");
         assert_eq!(
-            sanitize_name("skill_with_underscores"),
+            sanitize_name_kebab("skill_with_underscores"),
             "skill-with-underscores"
         );
-        assert_eq!(sanitize_name("Already-Kebab"), "already-kebab");
-        assert_eq!(sanitize_name("file.name.ext"), "file-name-ext");
+        assert_eq!(sanitize_name_kebab("Already-Kebab"), "already-kebab");
+        assert_eq!(sanitize_name_kebab("file.name.ext"), "file-name-ext");
     }
 
     #[test]

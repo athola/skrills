@@ -604,8 +604,12 @@ impl MetricsCollector {
 
         for row in rows {
             let (_skill_name, passed_json, failed_json) = row?;
-            let passed: Vec<String> = serde_json::from_str(&passed_json).unwrap_or_default();
-            let failed: Vec<String> = serde_json::from_str(&failed_json).unwrap_or_default();
+            // Not `unwrap_or_default()`: an unreadable `checks_failed` would
+            // decode as an empty list, and an empty failure list is how a skill
+            // is counted valid. A corrupt row would inflate the pass count
+            // rather than report that the run could not be read.
+            let passed: Vec<String> = serde_json::from_str(&passed_json)?;
+            let failed: Vec<String> = serde_json::from_str(&failed_json)?;
 
             summary.total_skills += 1;
             if failed.is_empty() {
@@ -653,8 +657,10 @@ impl MetricsCollector {
         let mut skills = Vec::new();
         for row in rows {
             let (id, skill_name, passed_json, failed_json, created_at) = row?;
-            let checks_passed: Vec<String> = serde_json::from_str(&passed_json).unwrap_or_default();
-            let checks_failed: Vec<String> = serde_json::from_str(&failed_json).unwrap_or_default();
+            // See `get_validation_summary`: decoding a corrupt row as empty
+            // would report the skill as valid instead of surfacing the problem.
+            let checks_passed: Vec<String> = serde_json::from_str(&passed_json)?;
+            let checks_failed: Vec<String> = serde_json::from_str(&failed_json)?;
 
             let status = if checks_failed.is_empty() {
                 "valid"
@@ -1096,6 +1102,34 @@ mod tests {
         let stats = collector.get_skill_stats("test-skill").unwrap();
         assert_eq!(stats.total_invocations(), 1);
         assert_eq!(stats.failed_invocations, 1);
+    }
+
+    /// A corrupt `checks_failed` column used to decode as an empty list, and
+    /// an empty failure list is exactly how a skill is counted valid: the
+    /// summary reported a failing skill as passing instead of reporting that
+    /// the row could not be read.
+    #[test]
+    fn validation_summary_reports_corrupt_row_instead_of_counting_it_valid() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        collector
+            .record_validation("broken-skill", &["check1"], &["check2"])
+            .unwrap();
+        {
+            let conn = collector.conn.lock();
+            conn.execute(
+                "UPDATE validation_runs SET checks_failed = ?1 WHERE skill_name = ?2",
+                rusqlite::params!["{not json", "broken-skill"],
+            )
+            .unwrap();
+        }
+
+        let result = collector.get_validation_summary();
+
+        assert!(
+            matches!(result, Err(MetricsError::Json(_))),
+            "corrupt checks_failed should surface as a JSON error, got {:?}",
+            result.map(|s| (s.total_skills, s.valid))
+        );
     }
 
     #[test]
