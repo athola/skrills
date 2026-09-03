@@ -153,7 +153,7 @@ impl ActivityEntry {
 
         if max_width <= overhead + 3 {
             // Not enough room even for "..."
-            return format!("{}{}", &self.timestamp, count_suffix);
+            return format!("{}{}", self.timestamp, count_suffix);
         }
 
         let msg_budget = max_width - overhead;

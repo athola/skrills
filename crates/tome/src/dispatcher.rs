@@ -283,34 +283,32 @@ impl BucketedBudget {
         let now_ms_opt = (clock)();
         let now_ms = bootstrap_ms(now_ms_opt);
         let mut bucket = if path.exists() {
-            match std::fs::read(&path) {
-                Ok(bytes) => match serde_json::from_slice::<PersistedBucket>(&bytes) {
-                    Ok(loaded) => match loaded.validated(rate_per_hour) {
-                        Some(b) => b,
-                        None => {
-                            tracing::warn!(
-                                path = %path.display(),
-                                tier = "CAUTION",
-                                "research quota file held unrecoverable values \
-                                 (NaN/Inf in `available`); recovering with fresh \
-                                 full bucket",
-                            );
-                            PersistedBucket::full(rate_per_hour, now_ms)
-                        }
-                    },
-                    Err(err) => {
+            let bytes = std::fs::read(&path)?;
+            match serde_json::from_slice::<PersistedBucket>(&bytes) {
+                Ok(loaded) => match loaded.validated(rate_per_hour) {
+                    Some(b) => b,
+                    None => {
                         tracing::warn!(
                             path = %path.display(),
-                            error = %err,
                             tier = "CAUTION",
-                            "research quota file is corrupt (likely a \
-                             half-written SIGKILL artifact); recovering with \
-                             fresh full bucket",
+                            "research quota file held unrecoverable values \
+                             (NaN/Inf in `available`); recovering with fresh \
+                             full bucket",
                         );
                         PersistedBucket::full(rate_per_hour, now_ms)
                     }
                 },
-                Err(io_err) => return Err(io_err.into()),
+                Err(err) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %err,
+                        tier = "CAUTION",
+                        "research quota file is corrupt (likely a \
+                         half-written SIGKILL artifact); recovering with \
+                         fresh full bucket",
+                    );
+                    PersistedBucket::full(rate_per_hour, now_ms)
+                }
             }
         } else {
             PersistedBucket::full(rate_per_hour, now_ms)
