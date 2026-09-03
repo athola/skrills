@@ -17,6 +17,7 @@ pub(crate) mod config;
 mod doctor;
 mod handler;
 pub mod mcp_gateway;
+mod mcp_result;
 pub(crate) mod metrics_types;
 mod setup;
 mod skill_trace;

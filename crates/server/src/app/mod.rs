@@ -399,9 +399,12 @@ impl SkillService {
             if !self.expose_agents_doc()? {
                 return Err(anyhow!("resource not found"));
             }
-            return Ok(ReadResourceResult {
-                contents: vec![text_with_location(AGENTS_TEXT, uri, None, "global")],
-            });
+            return Ok(ReadResourceResult::new(vec![text_with_location(
+                AGENTS_TEXT,
+                uri,
+                None,
+                "global",
+            )]));
         }
         if !uri.starts_with("skill://") {
             return Err(anyhow!("unsupported uri"));
@@ -462,7 +465,7 @@ impl SkillService {
             }
         }
 
-        Ok(ReadResourceResult { contents })
+        Ok(ReadResourceResult::new(contents))
     }
 
     /// Reads skill content from disk.

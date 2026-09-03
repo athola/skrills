@@ -109,6 +109,7 @@ pub fn run() -> Result<()> {
         tls_cert: None,
         tls_key: None,
         cors_origins: Vec::new(),
+        allowed_hosts: Vec::new(),
         tls_auto: false,
         open: false,
     }) {
@@ -124,6 +125,7 @@ pub fn run() -> Result<()> {
             tls_cert,
             tls_key,
             cors_origins,
+            allowed_hosts,
             tls_auto,
             open,
         } => handle_serve_command(
@@ -138,6 +140,7 @@ pub fn run() -> Result<()> {
             tls_cert,
             tls_key,
             cors_origins,
+            allowed_hosts,
             tls_auto,
             open,
         ),

@@ -74,6 +74,16 @@ pub enum Commands {
             value_delimiter = ','
         )]
         cors_origins: Vec<String>,
+        /// Extra `Host` values the MCP transport accepts, on top of localhost,
+        /// 127.0.0.1 and ::1. Required when binding a non-loopback address:
+        /// Host validation blocks DNS-rebinding attacks and rejects the rest.
+        #[arg(
+            long,
+            value_name = "HOSTS",
+            env = "SKRILLS_ALLOWED_HOSTS",
+            value_delimiter = ','
+        )]
+        allowed_hosts: Vec<String>,
         /// Auto-generate self-signed TLS certificate for development.
         /// Stores certificate in ~/.skrills/tls/. Overrides --tls-cert and --tls-key.
         #[arg(long, env = "SKRILLS_TLS_AUTO")]
@@ -710,6 +720,7 @@ mod tests {
                 tls_cert,
                 tls_key,
                 cors_origins,
+                allowed_hosts: _,
                 tls_auto,
                 open,
             }) => {

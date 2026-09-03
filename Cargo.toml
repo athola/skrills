@@ -21,8 +21,10 @@ resolver = "2"
 edition = "2021"
 
 [workspace.dependencies]
-# rmcp updated to 0.10.0 which uses pastey instead of paste (maintained)
-rmcp = { version = "0.10", features = ["server", "transport-io", "transport-streamable-http-server", "tower"] }
+# rmcp >=1.4 closes RUSTSEC-2026-0189 (DNS rebinding in the Streamable HTTP
+# server transport). 1.x marks its model types #[non_exhaustive], so they are
+# built through constructors rather than struct literals.
+rmcp = { version = "1.4", features = ["server", "transport-io", "transport-streamable-http-server", "tower"] }
 pastey = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -132,20 +132,14 @@ fn test_describe_mcp_tool_returns_schema() {
 
     let finder = |name: &str| -> Option<Tool> {
         if name == "sync-skills" {
-            Some(Tool {
-                name: "sync-skills".into(),
-                title: Some("Sync Skills".into()),
-                description: Some("Synchronize skills".into()),
-                input_schema: {
+            Some(
+                Tool::new("sync-skills", "Synchronize skills", {
                     let mut map = serde_json::Map::new();
                     map.insert("type".into(), json!("object"));
                     Arc::new(map)
-                },
-                output_schema: None,
-                annotations: None,
-                icons: None,
-                meta: None,
-            })
+                })
+                .with_title("Sync Skills"),
+            )
         } else {
             None
         }

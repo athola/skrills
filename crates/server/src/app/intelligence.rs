@@ -301,17 +301,16 @@ impl SkillService {
             all_recommendations.len()
         );
 
-        Ok(CallToolResult {
-            content: vec![Content::text(text)],
-            structured_content: Some(json!({
+        Ok(crate::mcp_result::tool_result(
+            vec![Content::text(text)],
+            Some(json!({
                 "total_found": total_found,
                 "recommendations": all_recommendations,
                 "include_usage": include_usage,
                 "include_context": include_context,
             })),
-            is_error: Some(false),
-            meta: None,
-        })
+            false,
+        ))
     }
 
     /// Analyze project context for skill recommendations.
@@ -377,12 +376,11 @@ impl SkillService {
                 .sum::<usize>()
         );
 
-        Ok(CallToolResult {
-            content: vec![Content::text(text)],
-            structured_content: Some(serde_json::to_value(&profile)?),
-            is_error: Some(false),
-            meta: None,
-        })
+        Ok(crate::mcp_result::tool_result(
+            vec![Content::text(text)],
+            Some(serde_json::to_value(&profile)?),
+            false,
+        ))
     }
 
     /// Suggest new skills to create based on project needs.
@@ -507,12 +505,11 @@ impl SkillService {
             analysis.suggestions.len()
         );
 
-        Ok(CallToolResult {
-            content: vec![Content::text(text)],
-            structured_content: Some(serde_json::to_value(&analysis)?),
-            is_error: Some(false),
-            meta: None,
-        })
+        Ok(crate::mcp_result::tool_result(
+            vec![Content::text(text)],
+            Some(serde_json::to_value(&analysis)?),
+            false,
+        ))
     }
 
     /// Create a new skill via GitHub search, LLM generation, or both.
@@ -634,17 +631,16 @@ impl SkillService {
                         e
                     );
                     errors.push(error_msg.clone());
-                    return Ok(CallToolResult {
-                        content: vec![Content::text(error_msg)],
-                        structured_content: Some(json!({
+                    return Ok(crate::mcp_result::tool_result(
+                        vec![Content::text(error_msg)],
+                        Some(json!({
                             "success": false,
                             "method": method_str,
                             "name": name,
                             "errors": errors,
                         })),
-                        is_error: Some(true),
-                        meta: None,
-                    });
+                        true,
+                    ));
                 }
             };
 
@@ -660,9 +656,9 @@ impl SkillService {
                              --method both for production use.",
                             events.len()
                         );
-                        return Ok(CallToolResult {
-                            content: vec![Content::text(&preview_msg)],
-                            structured_content: Some(json!({
+                        return Ok(crate::mcp_result::tool_result(
+                            vec![Content::text(&preview_msg)],
+                            Some(json!({
                                 "success": true,
                                 "method": method_str,
                                 "name": name,
@@ -671,9 +667,8 @@ impl SkillService {
                                 "session_events": events.len(),
                                 "message": preview_msg,
                             })),
-                            is_error: Some(false),
-                            meta: None,
-                        });
+                            false,
+                        ));
                     }
                     Ok(events) => {
                         errors.push(format!(
@@ -750,9 +745,9 @@ impl SkillService {
             format!("Failed to create skill: {}", errors.join("; "))
         };
 
-        Ok(CallToolResult {
-            content: vec![Content::text(text)],
-            structured_content: Some(json!({
+        Ok(crate::mcp_result::tool_result(
+            vec![Content::text(text)],
+            Some(json!({
                 "success": success,
                 "method": method_str,
                 "name": name,
@@ -762,9 +757,8 @@ impl SkillService {
                 "written_path": written_path,
                 "errors": errors,
             })),
-            is_error: Some(!success),
-            meta: None,
-        })
+            !success,
+        ))
     }
 
     /// Search GitHub for existing SKILL.md files.
@@ -797,16 +791,15 @@ impl SkillService {
             )
         };
 
-        Ok(CallToolResult {
-            content: vec![Content::text(text)],
-            structured_content: Some(json!({
+        Ok(crate::mcp_result::tool_result(
+            vec![Content::text(text)],
+            Some(json!({
                 "query": query,
                 "total_found": results.len(),
                 "results": results,
             })),
-            is_error: Some(false),
-            meta: None,
-        })
+            false,
+        ))
     }
 
     /// Sync wrapper for create-skill in CLI contexts.
@@ -940,9 +933,9 @@ impl SkillService {
             lines.join("\n")
         };
 
-        Ok(CallToolResult {
-            content: vec![Content::text(text)],
-            structured_content: Some(json!({
+        Ok(crate::mcp_result::tool_result(
+            vec![Content::text(text)],
+            Some(json!({
                 "query": query,
                 "threshold": threshold,
                 "total_found": results.len(),
@@ -954,9 +947,8 @@ impl SkillService {
                     "matched_field": format!("{:?}", m.matched_field),
                 })).collect::<Vec<_>>(),
             })),
-            is_error: Some(false),
-            meta: None,
-        })
+            false,
+        ))
     }
 }
 

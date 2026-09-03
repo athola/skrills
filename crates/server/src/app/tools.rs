@@ -257,12 +257,11 @@ impl SkillService {
             }
         }
 
-        Ok(CallToolResult {
-            content: vec![Content::text(text)],
-            structured_content: Some(structured),
-            is_error: Some(false),
-            meta: None,
-        })
+        Ok(crate::mcp_result::tool_result(
+            vec![Content::text(text)],
+            Some(structured),
+            false,
+        ))
     }
 
     /// Compares a skill across Claude, Codex, and Copilot to show differences.
@@ -324,18 +323,17 @@ impl SkillService {
 
         // Check if skill exists anywhere
         if claude_skill.is_none() && codex_skill.is_none() && copilot_skill.is_none() {
-            return Ok(CallToolResult {
-                content: vec![Content::text(format!(
+            return Ok(crate::mcp_result::tool_result(
+                vec![Content::text(format!(
                     "Skill '{}' not found in any location",
                     name
                 ))],
-                is_error: Some(true),
-                structured_content: Some(json!({
+                Some(json!({
                     "error": "skill_not_found",
                     "name": name
                 })),
-                meta: None,
-            });
+                true,
+            ));
         }
 
         // Generate diffs
@@ -543,18 +541,17 @@ impl SkillService {
             }
         }
 
-        Ok(CallToolResult {
-            content: vec![Content::text(summary)],
-            is_error: Some(false),
-            structured_content: Some(json!({
+        Ok(crate::mcp_result::tool_result(
+            vec![Content::text(summary)],
+            Some(json!({
                 "name": name,
                 "locations": locations,
                 "comparisons": diffs,
                 "token_counts": token_counts,
                 "context_lines": context_lines
             })),
-            meta: None,
-        })
+            false,
+        ))
     }
 
     /// Syncs configuration (commands, skills, MCP servers, preferences) between Claude and Codex.
@@ -634,13 +631,12 @@ impl SkillService {
 
         let report = sync_between(from, to, &params)?;
 
-        Ok(CallToolResult {
-            content: vec![Content::text(format!(
+        Ok(crate::mcp_result::tool_result(
+            vec![Content::text(format!(
                 "{}\nSkills: {} copied, {} skipped",
                 report.summary, skill_report.copied, skill_report.skipped
             ))],
-            is_error: Some(false),
-            structured_content: Some(json!({
+            Some(json!({
                 "report": report,
                 "skill_report": {
                     "copied": skill_report.copied,
@@ -649,8 +645,8 @@ impl SkillService {
                 "dry_run": dry_run,
                 "skip_existing_commands": skip_existing_commands
             })),
-            meta: None,
-        })
+            false,
+        ))
     }
 
     /// Gets skill loading status for observability and debugging.
@@ -697,15 +693,14 @@ impl SkillService {
         let home = home_dir()?;
         let status = skill_trace::status(&home, target, &opts)?;
 
-        Ok(CallToolResult {
-            content: vec![Content::text(format!(
+        Ok(crate::mcp_result::tool_result(
+            vec![Content::text(format!(
                 "Skill loading status: found {} skill files; markers in {} files",
                 status.skill_files_found, status.instrumented_markers_found
             ))],
-            structured_content: Some(serde_json::to_value(status)?),
-            is_error: Some(false),
-            meta: None,
-        })
+            Some(serde_json::to_value(status)?),
+            false,
+        ))
     }
 
     /// Enables skill tracing for debugging and observability.
@@ -760,8 +755,8 @@ impl SkillService {
         let home = home_dir()?;
         let report = skill_trace::enable_trace(&home, target, opts)?;
 
-        Ok(CallToolResult {
-            content: vec![Content::text(format!(
+        Ok(crate::mcp_result::tool_result(
+            vec![Content::text(format!(
                 "Enabled skill trace{}: installed trace={}, probe={}, instrumented={} (skipped={})",
                 if report.warnings.iter().any(|w| w.contains("failed to read")) {
                     " (with warnings)"
@@ -773,10 +768,9 @@ impl SkillService {
                 report.instrumented_files,
                 report.skipped_files
             ))],
-            structured_content: Some(serde_json::to_value(report)?),
-            is_error: Some(false),
-            meta: None,
-        })
+            Some(serde_json::to_value(report)?),
+            false,
+        ))
     }
 
     /// Disables skill tracing by removing trace skills and instrumentation.
@@ -802,15 +796,14 @@ impl SkillService {
         let home = home_dir()?;
         let removed = skill_trace::disable_trace(&home, target, dry_run)?;
 
-        Ok(CallToolResult {
-            content: vec![Content::text(format!(
+        Ok(crate::mcp_result::tool_result(
+            vec![Content::text(format!(
                 "{} trace/probe skill directories",
                 if dry_run { "Would remove" } else { "Removed" }
             ))],
-            structured_content: Some(json!({ "dry_run": dry_run, "removed": removed })),
-            is_error: Some(false),
-            meta: None,
-        })
+            Some(json!({ "dry_run": dry_run, "removed": removed })),
+            false,
+        ))
     }
 
     /// Runs a self-test to verify skill loading is working correctly.
@@ -846,11 +839,11 @@ impl SkillService {
             format!("{:x}", now)
         };
 
-        Ok(CallToolResult {
-            content: vec![Content::text(
+        Ok(crate::mcp_result::tool_result(
+            vec![Content::text(
                 "Skill selftest prepared. Send the probe line shown in structured_content.",
             )],
-            structured_content: Some(json!({
+            Some(json!({
                 "target": target,
                 "probe_skill_installed": installed,
                 "probe_line": format!("SKRILLS_PROBE:{token}"),
@@ -860,9 +853,8 @@ impl SkillService {
                     "If you also enabled skill tracing, every assistant response will end with a SKRILLS_SKILLS_LOADED footer."
                 ]
             })),
-            is_error: Some(false),
-            meta: None,
-        })
+            false,
+        ))
     }
 
     // Copilot sync tools
@@ -912,17 +904,16 @@ impl SkillService {
             SyncOrchestrator::new(source, target).sync(&params)?
         };
 
-        Ok(CallToolResult {
-            content: vec![Content::text(report.summary.clone())],
-            is_error: Some(!report.success),
-            structured_content: Some(json!({
+        Ok(crate::mcp_result::tool_result(
+            vec![Content::text(report.summary.clone())],
+            Some(json!({
                 "from": "copilot",
                 "to": to,
                 "dry_run": dry_run,
                 "report": report
             })),
-            meta: None,
-        })
+            !report.success,
+        ))
     }
 
     /// Sync to GitHub Copilot CLI from Claude, Codex, or Cursor.
@@ -977,17 +968,16 @@ impl SkillService {
             SyncOrchestrator::new(source, target).sync(&params)?
         };
 
-        Ok(CallToolResult {
-            content: vec![Content::text(report.summary.clone())],
-            is_error: Some(!report.success),
-            structured_content: Some(json!({
+        Ok(crate::mcp_result::tool_result(
+            vec![Content::text(report.summary.clone())],
+            Some(json!({
                 "from": from,
                 "to": "copilot",
                 "dry_run": dry_run,
                 "report": report
             })),
-            meta: None,
-        })
+            !report.success,
+        ))
     }
 
     /// Sync from Cursor IDE to Claude, Codex, or Copilot.
@@ -1034,17 +1024,16 @@ impl SkillService {
             }
         };
 
-        Ok(CallToolResult {
-            content: vec![Content::text(report.summary.clone())],
-            is_error: Some(!report.success),
-            structured_content: Some(json!({
+        Ok(crate::mcp_result::tool_result(
+            vec![Content::text(report.summary.clone())],
+            Some(json!({
                 "from": "cursor",
                 "to": to,
                 "dry_run": dry_run,
                 "report": report
             })),
-            meta: None,
-        })
+            !report.success,
+        ))
     }
 
     /// Sync to Cursor IDE from Claude, Codex, or Copilot.
@@ -1098,17 +1087,16 @@ impl SkillService {
             }
         };
 
-        Ok(CallToolResult {
-            content: vec![Content::text(report.summary.clone())],
-            is_error: Some(!report.success),
-            structured_content: Some(json!({
+        Ok(crate::mcp_result::tool_result(
+            vec![Content::text(report.summary.clone())],
+            Some(json!({
                 "from": from,
                 "to": "cursor",
                 "dry_run": dry_run,
                 "report": report
             })),
-            meta: None,
-        })
+            !report.success,
+        ))
     }
 
     /// Syncs skills between Claude, Codex, Copilot, and Cursor.
@@ -1239,10 +1227,9 @@ impl SkillService {
             }
         };
 
-        Ok(CallToolResult {
-            content: vec![Content::text(report.summary.clone())],
-            is_error: Some(!report.success),
-            structured_content: Some(json!({
+        Ok(crate::mcp_result::tool_result(
+            vec![Content::text(report.summary.clone())],
+            Some(json!({
                 "from": from,
                 "to": to,
                 "dry_run": dry_run,
@@ -1253,7 +1240,7 @@ impl SkillService {
                     "skipped": report.skills.skipped.len(),
                 }
             })),
-            meta: None,
-        })
+            !report.success,
+        ))
     }
 }

@@ -26,8 +26,8 @@ use crate::sync::mirror_source_root;
 use crate::tool_schemas;
 use anyhow::{anyhow, Result};
 use rmcp::model::{
-    CallToolRequestParam, CallToolResult, Content, ListResourcesResult, ListToolsResult,
-    PaginatedRequestParam, ReadResourceRequestParam, ReadResourceResult,
+    CallToolRequestParams, CallToolResult, Content, ListResourcesResult, ListToolsResult,
+    PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult,
 };
 use rmcp::ServerHandler;
 use serde_json::json;
@@ -43,7 +43,7 @@ struct SyncToolArgs {
 }
 
 impl SyncToolArgs {
-    fn from_request(request: &CallToolRequestParam) -> Self {
+    fn from_request(request: &CallToolRequestParams) -> Self {
         let args = request.arguments.as_ref();
         Self {
             from: args
@@ -71,7 +71,7 @@ impl ServerHandler for SkillService {
     /// List all available resources, including skills and the AGENTS.md document.
     fn list_resources(
         &self,
-        _request: Option<PaginatedRequestParam>,
+        _request: Option<PaginatedRequestParams>,
         __context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListResourcesResult, rmcp::ErrorData>> + Send + '_
     {
@@ -80,6 +80,7 @@ impl ServerHandler for SkillService {
             .map(|resources| ListResourcesResult {
                 resources,
                 next_cursor: None,
+                meta: None,
             })
             .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None));
         std::future::ready(result)
@@ -88,7 +89,7 @@ impl ServerHandler for SkillService {
     /// Read the content of a specific resource identified by its URI.
     fn read_resource(
         &self,
-        request: ReadResourceRequestParam,
+        request: ReadResourceRequestParams,
         __context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ReadResourceResult, rmcp::ErrorData>> + Send + '_
     {
@@ -107,7 +108,7 @@ impl ServerHandler for SkillService {
     /// Tool schemas are defined in the `tool_schemas` module for maintainability.
     fn list_tools(
         &self,
-        _request: Option<PaginatedRequestParam>,
+        _request: Option<PaginatedRequestParams>,
         __context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListToolsResult, rmcp::ErrorData>> + Send + '_
     {
@@ -125,6 +126,7 @@ impl ServerHandler for SkillService {
         std::future::ready(Ok(ListToolsResult {
             tools,
             next_cursor: None,
+            meta: None,
         }))
     }
 
@@ -135,7 +137,7 @@ impl ServerHandler for SkillService {
     /// configurations between Claude Code and Codex CLI.
     fn call_tool(
         &self,
-        request: CallToolRequestParam,
+        request: CallToolRequestParams,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<CallToolResult, rmcp::ErrorData>> + Send + '_
     {
@@ -222,9 +224,7 @@ impl ServerHandler for SkillService {
                             )
                         };
                         let (priority, rank_map) = priority_labels_and_rank_map();
-                        Ok(CallToolResult {
-                            content: vec![Content::text(text)],
-                            structured_content: Some(json!({
+                        Ok(crate::mcp_result::tool_result(vec![Content::text(text)], Some(json!({
                                 "report": {
                                     "copied": report.copied,
                                     "skipped": report.skipped,
@@ -234,10 +234,7 @@ impl ServerHandler for SkillService {
                                     "priority": priority,
                                     "priority_rank_by_source": rank_map
                                 }
-                            })),
-                            is_error: Some(false),
-                            meta: None,
-                        })
+                            })), false))
                     }
                     // Copilot-specific sync tools
                     "sync-from-copilot" => {
@@ -289,18 +286,13 @@ impl ServerHandler for SkillService {
 
                         let report = sync_between(&args.from, to, &params)?;
 
-                        Ok(CallToolResult {
-                            content: vec![Content::text(report.summary.clone())],
-                            is_error: Some(false),
-                            structured_content: Some(json!({
+                        Ok(crate::mcp_result::tool_result(vec![Content::text(report.summary.clone())], Some(json!({
                                 "from": args.from,
                                 "to": to,
                                 "report": report,
                                 "dry_run": args.dry_run,
                                 "skip_existing_commands": args.skip_existing_commands
-                            })),
-                            meta: None,
-                        })
+                            })), false))
                     }
                     "sync-mcp-servers" => {
                         use skrills_sync::{default_target_for, sync_between, SyncParams};
@@ -327,17 +319,12 @@ impl ServerHandler for SkillService {
 
                         let report = sync_between(&args.from, to, &params)?;
 
-                        Ok(CallToolResult {
-                            content: vec![Content::text(report.summary.clone())],
-                            is_error: Some(false),
-                            structured_content: Some(json!({
+                        Ok(crate::mcp_result::tool_result(vec![Content::text(report.summary.clone())], Some(json!({
                                 "from": args.from,
                                 "to": to,
                                 "report": report,
                                 "dry_run": args.dry_run
-                            })),
-                            meta: None,
-                        })
+                            })), false))
                     }
                     "sync-preferences" => {
                         use skrills_sync::{default_target_for, sync_between, SyncParams};
@@ -364,17 +351,12 @@ impl ServerHandler for SkillService {
 
                         let report = sync_between(&args.from, to, &params)?;
 
-                        Ok(CallToolResult {
-                            content: vec![Content::text(report.summary.clone())],
-                            is_error: Some(false),
-                            structured_content: Some(json!({
+                        Ok(crate::mcp_result::tool_result(vec![Content::text(report.summary.clone())], Some(json!({
                                 "from": args.from,
                                 "to": to,
                                 "report": report,
                                 "dry_run": args.dry_run
-                            })),
-                            meta: None,
-                        })
+                            })), false))
                     }
                     "sync-all" => {
                         let args = request.arguments.clone().unwrap_or_default();
@@ -406,20 +388,15 @@ impl ServerHandler for SkillService {
 
                         let report = sync_between(&args.from, to, &params)?;
 
-                        Ok(CallToolResult {
-                            content: vec![Content::text(format!(
+                        Ok(crate::mcp_result::tool_result(vec![Content::text(format!(
                                 "Sync Preview ({} → {})\n{}",
                                 args.from, to, report.summary
-                            ))],
-                            is_error: Some(false),
-                            structured_content: Some(json!({
+                            ))], Some(json!({
                                 "preview": true,
                                 "from": args.from,
                                 "to": to,
                                 "report": report
-                            })),
-                            meta: None,
-                        })
+                            })), false))
                     }
                     "validate-skills" => {
                         let args = request.arguments.clone().unwrap_or_default();
@@ -511,15 +488,10 @@ impl ServerHandler for SkillService {
                                 .sum::<u64>()
                         );
 
-                        Ok(CallToolResult {
-                            content: vec![Content::text(text)],
-                            structured_content: Some(json!({
+                        Ok(crate::mcp_result::tool_result(vec![Content::text(text)], Some(json!({
                                 "total": analyses.len(),
                                 "analyses": analyses
-                            })),
-                            is_error: Some(false),
-                            meta: None,
-                        })
+                            })), false))
                     }
                     "resolve-dependencies" => {
                         let args = request.arguments.clone().unwrap_or_default();
@@ -579,18 +551,13 @@ impl ServerHandler for SkillService {
                             uri
                         );
 
-                        Ok(CallToolResult {
-                            content: vec![Content::text(text)],
-                            structured_content: Some(json!({
+                        Ok(crate::mcp_result::tool_result(vec![Content::text(text)], Some(json!({
                                 "uri": uri,
                                 "direction": direction,
                                 "transitive": transitive,
                                 "results": results,
                                 "count": results.len()
-                            })),
-                            is_error: Some(false),
-                            meta: None,
-                        })
+                            })), false))
                     }
                     "skill-metrics" => {
                         let args = request.arguments.clone().unwrap_or_default();
@@ -608,12 +575,7 @@ impl ServerHandler for SkillService {
                             metrics.by_quality.high
                         );
 
-                        Ok(CallToolResult {
-                            content: vec![Content::text(summary)],
-                            structured_content: Some(serde_json::to_value(&metrics)?),
-                            is_error: Some(false),
-                            meta: None,
-                        })
+                        Ok(crate::mcp_result::tool_result(vec![Content::text(summary)], Some(serde_json::to_value(&metrics)?), false))
                     }
                     "recommend-skills" => {
                         let args = request.arguments.clone().unwrap_or_default();
@@ -652,12 +614,7 @@ impl ServerHandler for SkillService {
                                 .count(),
                         );
 
-                        Ok(CallToolResult {
-                            content: vec![Content::text(summary)],
-                            structured_content: Some(serde_json::to_value(&recommendations)?),
-                            is_error: Some(false),
-                            meta: None,
-                        })
+                        Ok(crate::mcp_result::tool_result(vec![Content::text(summary)], Some(serde_json::to_value(&recommendations)?), false))
                     }
                     "skill-loading-status" => {
                         let args = request.arguments.clone().unwrap_or_default();
@@ -754,12 +711,11 @@ mod tests {
     use super::*;
     use crate::discovery::AGENTS_URI;
     use crate::test_support;
-    use rmcp::model::{Extensions, Meta, RequestId};
+    use rmcp::model::RequestId;
     use rmcp::service::{serve_directly, RequestContext, RunningService};
     use std::future::Future;
     use std::time::Duration;
     use tempfile::tempdir;
-    use tokio_util::sync::CancellationToken;
 
     fn service_with_context(
         service: SkillService,
@@ -770,13 +726,7 @@ mod tests {
     ) {
         let (client, server) = tokio::io::duplex(64);
         let running = serve_directly::<rmcp::RoleServer, _, _, _, _>(service, server, None);
-        let context = RequestContext {
-            ct: CancellationToken::new(),
-            id: RequestId::Number(1),
-            meta: Meta::new(),
-            extensions: Extensions::new(),
-            peer: running.peer().clone(),
-        };
+        let context = RequestContext::new(RequestId::Number(1), running.peer().clone());
         (running, context, client)
     }
 
@@ -891,13 +841,7 @@ mod tests {
             let (running, context, _client) = service_with_context(service);
             running
                 .service()
-                .call_tool(
-                    CallToolRequestParam {
-                        name: "does-not-exist".into(),
-                        arguments: None,
-                    },
-                    context,
-                )
+                .call_tool(CallToolRequestParams::new("does-not-exist"), context)
                 .await
         });
 
@@ -936,18 +880,15 @@ mod tests {
             running
                 .service()
                 .call_tool(
-                    CallToolRequestParam {
-                        name: "resolve_contradiction".into(),
-                        arguments: Some(
-                            serde_json::json!({
-                                "improve": "performance",
-                                "degrades": "reliability"
-                            })
-                            .as_object()
-                            .cloned()
-                            .unwrap(),
-                        ),
-                    },
+                    CallToolRequestParams::new("resolve_contradiction").with_arguments(
+                        serde_json::json!({
+                            "improve": "performance",
+                            "degrades": "reliability"
+                        })
+                        .as_object()
+                        .cloned()
+                        .unwrap(),
+                    ),
                     context,
                 )
                 .await
@@ -1008,10 +949,8 @@ mod tests {
                 running
                     .service()
                     .call_tool(
-                        CallToolRequestParam {
-                            name: name.into(),
-                            arguments: Some(args.as_object().cloned().unwrap()),
-                        },
+                        CallToolRequestParams::new(name)
+                            .with_arguments(args.as_object().cloned().unwrap()),
                         context,
                     )
                     .await
@@ -1064,10 +1003,8 @@ mod tests {
                 running
                     .service()
                     .call_tool(
-                        CallToolRequestParam {
-                            name: name.into(),
-                            arguments: Some(args.as_object().cloned().unwrap()),
-                        },
+                        CallToolRequestParams::new(name)
+                            .with_arguments(args.as_object().cloned().unwrap()),
                         context,
                     )
                     .await

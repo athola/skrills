@@ -75,6 +75,7 @@ pub(crate) fn handle_serve_command(
     tls_cert: Option<PathBuf>,
     tls_key: Option<PathBuf>,
     cors_origins: Vec<String>,
+    allowed_hosts: Vec<String>,
     tls_auto: bool,
     open_browser: bool,
 ) -> Result<()> {
@@ -137,6 +138,7 @@ pub(crate) fn handle_serve_command(
                 tls_cert: resolved_cert,
                 tls_key: resolved_key,
                 cors_origins,
+                allowed_hosts,
             };
 
             // Show certificate status on startup if available
@@ -163,7 +165,14 @@ pub(crate) fn handle_serve_command(
         #[cfg(not(feature = "http-transport"))]
         {
             let _ = bind_addr; // suppress unused warning
-            let _ = (auth_token, tls_cert, tls_key, cors_origins, tls_auto); // suppress unused warnings
+            let _ = (
+                auth_token,
+                tls_cert,
+                tls_key,
+                cors_origins,
+                allowed_hosts,
+                tls_auto,
+            ); // suppress unused warnings
             return Err(anyhow!(
                 "HTTP transport requested but not available (built without 'http-transport' feature)"
             ));
