@@ -1,11 +1,11 @@
 //! CLI handler for the `recommend` command.
 
-use crate::app::{RecommendationRelationship, SkillRecommendations};
 use crate::cli::OutputFormat;
-use crate::discovery::merge_extra_dirs;
 use anyhow::Result;
 use skrills_analyze::{analyze_skill, DependencyType, RelationshipGraph};
 use skrills_discovery::{discover_skills, extra_skill_roots};
+use skrills_server::app::{RecommendationRelationship, SkillRecommendations};
+use skrills_server::discovery::merge_extra_dirs;
 use std::collections::{HashMap, HashSet};
 
 /// Handle the `recommend` command.
@@ -103,7 +103,7 @@ pub(crate) fn handle_recommend_command(
             None
         };
         let score = 3.0 + quality.unwrap_or(0.0);
-        recommendations.push(crate::app::SkillRecommendation {
+        recommendations.push(skrills_server::app::SkillRecommendation {
             uri: dep_uri.clone(),
             relationship: RecommendationRelationship::Dependency,
             quality_score: quality,
@@ -118,7 +118,7 @@ pub(crate) fn handle_recommend_command(
             None
         };
         let score = 2.0 + quality.unwrap_or(0.0);
-        recommendations.push(crate::app::SkillRecommendation {
+        recommendations.push(skrills_server::app::SkillRecommendation {
             uri: dep_uri.clone(),
             relationship: RecommendationRelationship::Dependent,
             quality_score: quality,
@@ -133,7 +133,7 @@ pub(crate) fn handle_recommend_command(
             None
         };
         let score = 1.0 + quality.unwrap_or(0.0);
-        recommendations.push(crate::app::SkillRecommendation {
+        recommendations.push(skrills_server::app::SkillRecommendation {
             uri: sib_uri.clone(),
             relationship: RecommendationRelationship::Sibling,
             quality_score: quality,

@@ -35,10 +35,16 @@ for crate_src in crates/*/src; do
       stem="${base%.rs}"
     fi
 
-    if ! grep -rqE "^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?mod[[:space:]]+${stem}[[:space:]]*;" \
+    # A file is declared either by `mod <stem>;` or by a `#[path = "..."]`
+    # attribute naming it. Both compile it; only an undeclared file does not.
+    if grep -rqE "^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?mod[[:space:]]+${stem}[[:space:]]*;" \
       "${crate_src}"; then
-      orphans="${orphans}${file}"$'\n'
+      continue
     fi
+    if grep -rqF "#[path = \"${base}\"]" "${crate_src}"; then
+      continue
+    fi
+    orphans="${orphans}${file}"$'\n' 
   done < <(find "${crate_src}" -name '*.rs' -type f)
 done
 

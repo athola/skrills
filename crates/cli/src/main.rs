@@ -6,5 +6,5 @@
 #![deny(unsafe_code)]
 
 fn main() -> anyhow::Result<()> {
-    skrills_server::run()
+    skrills::run()
 }

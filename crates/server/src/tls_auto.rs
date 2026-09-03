@@ -133,7 +133,7 @@ pub fn ensure_auto_tls_certs() -> Result<(PathBuf, PathBuf)> {
 ///
 /// Returns (certificate_pem, private_key_pem).
 #[cfg(feature = "http-transport")]
-pub(crate) fn generate_self_signed_cert() -> Result<(String, String)> {
+pub fn generate_self_signed_cert() -> Result<(String, String)> {
     use rcgen::{CertificateParams, DnType, KeyPair, SanType};
 
     // Generate key pair

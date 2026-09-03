@@ -26,12 +26,12 @@ use crate::commands::{
     handle_suggest_new_skills_command, handle_sync_agents_command, handle_sync_command,
     handle_sync_pull_command, handle_validate_command,
 };
-use crate::discovery::merge_extra_dirs;
 use crate::doctor::doctor_report;
-use crate::sync::mirror_source_root;
 use crate::tui::tui_flow;
 use anyhow::{anyhow, Result};
 use clap::Parser;
+use skrills_server::discovery::merge_extra_dirs;
+use skrills_server::sync::mirror_source_root;
 use skrills_state::home_dir;
 
 /// Sync helper used by Sync* command branches.
@@ -66,7 +66,7 @@ pub fn run() -> Result<()> {
 
     // Load config file and apply settings to env vars before CLI parsing.
     // This ensures precedence: CLI > ENV > config file.
-    crate::config::apply_config_to_env();
+    skrills_server::config::apply_config_to_env();
 
     let cli = Cli::parse();
 
@@ -78,13 +78,13 @@ pub fn run() -> Result<()> {
     let is_batch = matches!(command_ref, Some(Commands::SyncAll { .. }));
 
     if !is_serve && !is_setup && !is_batch {
-        if let Ok(true) = crate::setup::is_first_run() {
-            if let Ok(true) = crate::setup::prompt_first_run_setup() {
+        if let Ok(true) = skrills_server::setup::is_first_run() {
+            if let Ok(true) = skrills_server::setup::prompt_first_run_setup() {
                 // Run interactive setup
-                let config = crate::setup::interactive_setup(
+                let config = skrills_server::setup::interactive_setup(
                     None, None, false, false, false, false, false, None,
                 )?;
-                crate::setup::run_setup(config)?;
+                skrills_server::setup::run_setup(config)?;
                 tracing::info!(
                     "you can now use skrills; run your command again or explore 'skrills --help'"
                 );
@@ -296,12 +296,12 @@ pub fn run() -> Result<()> {
                     let home = home_dir()?;
                     let claude_root = mirror_source_root(&home);
                     let codex_skills_root = home.join(".codex/skills");
-                    let skill_report = crate::sync::sync_skills_only_from_claude(
+                    let skill_report = skrills_server::sync::sync_skills_only_from_claude(
                         &claude_root,
                         &codex_skills_root,
                         include_marketplace,
                     )?;
-                    if let Err(err) = crate::setup::ensure_codex_skills_feature_enabled(
+                    if let Err(err) = skrills_server::setup::ensure_codex_skills_feature_enabled(
                         &home.join(".codex/config.toml"),
                     ) {
                         // Surface filesystem errors
@@ -438,7 +438,7 @@ pub fn run() -> Result<()> {
                 {
                     match entry {
                         Ok(e) => {
-                            if crate::discovery::is_skill_file(&e) {
+                            if skrills_server::discovery::is_skill_file(&e) {
                                 skill_count += 1;
                             }
                         }
@@ -702,3 +702,7 @@ pub fn run() -> Result<()> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "dispatcher_sync_tests.rs"]
+mod sync_tests;

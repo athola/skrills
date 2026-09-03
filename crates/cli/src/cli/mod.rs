@@ -682,7 +682,7 @@ mod tests {
     use super::*;
     use clap::Parser;
 
-    use crate::test_support::{env_guard, set_env_var};
+    use skrills_test_utils::{env_guard, set_env_var};
 
     #[test]
     fn parse_defaults_to_serve_when_no_subcommand() {

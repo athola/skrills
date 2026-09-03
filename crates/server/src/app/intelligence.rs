@@ -21,7 +21,7 @@ impl SkillService {
     // -------------------------------------------------------------------------
 
     /// Smart skill recommendations combining dependency graph, usage patterns, and project context.
-    pub(crate) fn recommend_skills_smart_tool(
+    pub fn recommend_skills_smart_tool(
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
@@ -314,7 +314,7 @@ impl SkillService {
     }
 
     /// Analyze project context for skill recommendations.
-    pub(crate) fn analyze_project_context_tool(
+    pub fn analyze_project_context_tool(
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
@@ -384,10 +384,7 @@ impl SkillService {
     }
 
     /// Suggest new skills to create based on project needs.
-    pub(crate) fn suggest_new_skills_tool(
-        &self,
-        args: JsonMap<String, Value>,
-    ) -> Result<CallToolResult> {
+    pub fn suggest_new_skills_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
         use skrills_intelligence::{analyze_project, SkillGap, SkillGapAnalysis};
 
         let project_dir = resolve_project_dir(
@@ -803,10 +800,7 @@ impl SkillService {
     }
 
     /// Sync wrapper for create-skill in CLI contexts.
-    pub(crate) fn create_skill_tool_sync(
-        &self,
-        args: JsonMap<String, Value>,
-    ) -> Result<CallToolResult> {
+    pub fn create_skill_tool_sync(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -814,7 +808,7 @@ impl SkillService {
     }
 
     /// Sync wrapper for search-skills-github in CLI contexts.
-    pub(crate) fn search_skills_github_tool_sync(
+    pub fn search_skills_github_tool_sync(
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
@@ -827,10 +821,7 @@ impl SkillService {
     /// Fuzzy search for installed skills using trigram matching.
     ///
     /// Tolerates typos and finds similar skill names.
-    pub(crate) fn search_skills_fuzzy_tool(
-        &self,
-        args: JsonMap<String, Value>,
-    ) -> Result<CallToolResult> {
+    pub fn search_skills_fuzzy_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
         use anyhow::Context;
         use skrills_intelligence::{find_similar_skills, SkillInfo, DEFAULT_THRESHOLD};
 

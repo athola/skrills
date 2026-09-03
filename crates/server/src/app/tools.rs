@@ -1112,7 +1112,7 @@ impl SkillService {
     /// # Returns
     ///
     /// A `CallToolResult` with sync summary and structured report.
-    pub(crate) fn sync_skills_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
+    pub fn sync_skills_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
         use skrills_sync::{
             ClaudeAdapter, CodexAdapter, CopilotAdapter, CursorAdapter, SyncOrchestrator,
             SyncParams,

@@ -70,7 +70,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// Most methods take `&mut self` because they may trigger a cache refresh when the
 /// TTL has expired. The `_raw` suffix methods are exceptions that take `&self` but
 /// should only be called after ensuring the cache is fresh via `ensure_fresh()`.
-pub(crate) struct SkillCache {
+pub struct SkillCache {
     roots: Vec<SkillRoot>,
     ttl: Duration,
     last_scan: Option<Instant>,
@@ -84,7 +84,7 @@ pub(crate) struct SkillCache {
 }
 
 #[derive(Serialize, Deserialize)]
-pub(crate) struct SkillCacheSnapshot {
+pub struct SkillCacheSnapshot {
     roots: Vec<String>,
     last_scan: u64,
     skills: Vec<SkillMeta>,
@@ -408,7 +408,7 @@ impl SkillCache {
     }
 
     /// Retrieve a skill by its URI.
-    pub(crate) fn skill_by_uri(&mut self, uri: &str) -> Result<SkillMeta> {
+    pub fn skill_by_uri(&mut self, uri: &str) -> Result<SkillMeta> {
         self.refresh_if_stale()?;
         if let Some(idx) = self.uri_index.get(uri).copied() {
             return Ok(self.skills[idx].clone());
@@ -417,13 +417,13 @@ impl SkillCache {
     }
 
     /// Get transitive dependencies for a skill URI.
-    pub(crate) fn resolve_dependencies(&mut self, uri: &str) -> Result<Vec<String>> {
+    pub fn resolve_dependencies(&mut self, uri: &str) -> Result<Vec<String>> {
         self.refresh_if_stale()?;
         Ok(self.dep_graph.resolve(uri))
     }
 
     /// Get direct (non-transitive) dependencies for a skill URI.
-    pub(crate) fn get_direct_dependencies(&mut self, uri: &str) -> Result<Vec<String>> {
+    pub fn get_direct_dependencies(&mut self, uri: &str) -> Result<Vec<String>> {
         self.refresh_if_stale()?;
         let deps = self.dep_graph.dependencies(uri);
         let mut result: Vec<String> = deps.into_iter().collect();
@@ -454,18 +454,18 @@ impl SkillCache {
     }
 
     /// Ensure the cache is refreshed if stale.
-    pub(crate) fn ensure_fresh(&mut self) -> Result<()> {
+    pub fn ensure_fresh(&mut self) -> Result<()> {
         self.refresh_if_stale()
     }
 
     /// Get skills that depend on the given skill URI.
-    pub(crate) fn get_dependents(&mut self, uri: &str) -> Result<Vec<String>> {
+    pub fn get_dependents(&mut self, uri: &str) -> Result<Vec<String>> {
         self.refresh_if_stale()?;
         Ok(self.dep_graph.dependents(uri))
     }
 
     /// Get all skills that transitively depend on the given skill URI.
-    pub(crate) fn get_transitive_dependents(&mut self, uri: &str) -> Result<Vec<String>> {
+    pub fn get_transitive_dependents(&mut self, uri: &str) -> Result<Vec<String>> {
         self.refresh_if_stale()?;
         Ok(self.dep_graph.transitive_dependents(uri))
     }

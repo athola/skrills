@@ -1,8 +1,8 @@
-use crate::discovery::merge_extra_dirs;
-use crate::sync::{
+use anyhow::Result;
+use skrills_server::discovery::merge_extra_dirs;
+use skrills_server::sync::{
     mirror_source_root, sync_agents, sync_agents_only_from_claude, sync_skills_only_from_claude,
 };
-use anyhow::Result;
 use skrills_state::home_dir;
 use std::path::PathBuf;
 
@@ -24,7 +24,9 @@ pub(crate) fn handle_sync_command(include_marketplace: bool) -> Result<()> {
         &home.join(".codex/skills"),
         include_marketplace,
     )?;
-    let _ = crate::setup::ensure_codex_skills_feature_enabled(&home.join(".codex/config.toml"));
+    let _ = skrills_server::setup::ensure_codex_skills_feature_enabled(
+        &home.join(".codex/config.toml"),
+    );
     println!("copied: {}, skipped: {}", report.copied, report.skipped);
     Ok(())
 }
@@ -53,7 +55,9 @@ pub(crate) fn handle_mirror_command(
         &home.join(".codex/skills"),
         include_marketplace,
     )?;
-    let _ = crate::setup::ensure_codex_skills_feature_enabled(&home.join(".codex/config.toml"));
+    let _ = skrills_server::setup::ensure_codex_skills_feature_enabled(
+        &home.join(".codex/config.toml"),
+    );
     // Mirror commands/mcp/prefs
     let source = skrills_sync::ClaudeAdapter::new()?;
     let target = skrills_sync::CodexAdapter::new()?;
@@ -105,12 +109,12 @@ mod tests {
 
     #[test]
     fn mirror_command_does_not_create_skills_mirror_dir() -> Result<()> {
-        let _guard = crate::test_support::env_guard();
+        let _guard = skrills_test_utils::env_guard();
 
         let tmp = tempdir()?;
         let home = tmp.path();
 
-        let _home_guard = crate::test_support::set_env_var("HOME", Some(home.to_str().unwrap()));
+        let _home_guard = skrills_test_utils::set_env_var("HOME", Some(home.to_str().unwrap()));
 
         let original_cwd = std::env::current_dir()?;
         std::env::set_current_dir(home)?;

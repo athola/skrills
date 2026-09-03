@@ -781,7 +781,7 @@ pub(crate) fn research_tools() -> Vec<Tool> {
 /// Returns all MCP tools.
 ///
 /// This combines all tool groups and is used by the `list_tools()` handler.
-pub(crate) fn all_tools() -> Vec<Tool> {
+pub fn all_tools() -> Vec<Tool> {
     let mut tools = Vec::new();
     tools.extend(sync_tools());
     tools.extend(validation_tools());

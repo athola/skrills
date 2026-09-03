@@ -1,9 +1,9 @@
-use crate::app::SkillService;
 use crate::cli::{CreateSkillMethod, OutputFormat};
-use crate::discovery::merge_extra_dirs;
 use anyhow::Result;
 use rmcp::model::CallToolResult;
 use serde_json::{json, Map as JsonMap, Value};
+use skrills_server::app::SkillService;
+use skrills_server::discovery::merge_extra_dirs;
 use skrills_state::{cache_ttl, load_manifest_settings};
 use std::path::PathBuf;
 
@@ -296,7 +296,7 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
-    use crate::test_support::set_env_var;
+    use skrills_test_utils::set_env_var;
 
     fn create_skill(dir: &std::path::Path, name: &str, content: &str) {
         let skill_dir = dir.join(name);
@@ -327,7 +327,7 @@ A test skill.
 
     #[test]
     fn test_handle_recommend_skills_smart_command() {
-        let _guard = crate::test_support::env_guard();
+        let _guard = skrills_test_utils::env_guard();
         let home_dir = tempdir().unwrap();
         let _home = set_env_var("HOME", Some(home_dir.path().to_str().unwrap()));
 
@@ -364,7 +364,7 @@ A test skill.
 
     #[test]
     fn test_handle_suggest_new_skills_command() {
-        let _guard = crate::test_support::env_guard();
+        let _guard = skrills_test_utils::env_guard();
         let home_dir = tempdir().unwrap();
         let _home = set_env_var("HOME", Some(home_dir.path().to_str().unwrap()));
 
@@ -399,7 +399,7 @@ A test skill.
 
     #[test]
     fn test_handle_export_import_analytics_roundtrip() {
-        let _guard = crate::test_support::env_guard();
+        let _guard = skrills_test_utils::env_guard();
         let home_dir = tempdir().unwrap();
         let _home = set_env_var("HOME", Some(home_dir.path().to_str().unwrap()));
 
@@ -433,7 +433,7 @@ A test skill.
 
     #[test]
     fn test_auto_persist_flag_creates_cache() {
-        let _guard = crate::test_support::env_guard();
+        let _guard = skrills_test_utils::env_guard();
         let home_dir = tempdir().unwrap();
         let _home = set_env_var("HOME", Some(home_dir.path().to_str().unwrap()));
 
@@ -478,7 +478,7 @@ A test skill.
 
     #[test]
     fn test_auto_persist_env_var_creates_cache() {
-        let _guard = crate::test_support::env_guard();
+        let _guard = skrills_test_utils::env_guard();
         let home_dir = tempdir().unwrap();
         let _home = set_env_var("HOME", Some(home_dir.path().to_str().unwrap()));
         let _auto_persist = set_env_var("SKRILLS_AUTO_PERSIST", Some("1"));
