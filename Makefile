@@ -571,8 +571,23 @@ clean-demo:
 
 ci: fmt lint lint-hygiene test
 
+# verify_publish_order.sh needs associative arrays, so it needs bash 4+.
+# Stock macOS /bin/bash is 3.2, so probe the usual Homebrew locations before
+# giving up: on a machine with a newer bash this gate runs locally instead of
+# only in the publish-dry-run and release CI jobs.
 verify-publish:
-	@if bash -c 'declare -A x 2>/dev/null'; then bash scripts/verify_publish_order.sh; else echo "[SKIP] verify-publish requires bash 4+ (found $$(bash --version | head -1))"; fi
+	@vp_bash=""; \
+	for b in bash /opt/homebrew/bin/bash /usr/local/bin/bash; do \
+	  command -v "$$b" >/dev/null 2>&1 || continue; \
+	  "$$b" -c 'declare -A probe' >/dev/null 2>&1 || continue; \
+	  vp_bash="$$b"; break; \
+	done; \
+	if [ -n "$$vp_bash" ]; then \
+	  "$$vp_bash" scripts/verify_publish_order.sh; \
+	else \
+	  echo "[SKIP] verify-publish needs bash 4+ for associative arrays; found $$(bash --version | head -1)"; \
+	  echo "       'brew install bash' runs it locally; publish-dry-run covers it in CI"; \
+	fi
 
 precommit: fmt-check lint lint-md lint-hygiene test test-install dogfood-precommit verify-publish
 
@@ -743,7 +758,7 @@ dogfood-tui-interactive: build
 # asset selection is already covered by `test-install` in the precommit chain.
 dogfood-precommit:
 	@if [ -x "$(BIN_PATH)" ]; then \
-	  BIN_PATH=$(BIN_PATH) $(SHELL) ./scripts/dogfood-contracts.sh ; \
+	  BIN_PATH=$(BIN_PATH) $(SHELL) ./scripts/dogfood-contracts.sh && \
 	  BIN_PATH=$(BIN_PATH) $(SHELL) ./scripts/dogfood-tui.sh ; \
 	else \
 	  echo "==> [dogfood] skipping validate JSON + TUI contracts: $(BIN_PATH) not built" ; \

@@ -108,8 +108,12 @@ feature "install.sh selects the tarball, never the .sha256 checksum sidecar"
 # Releases ship <target>.tar.gz alongside <target>.tar.gz.sha256. Picking the
 # sidecar feeds a 106-byte text file to tar ("not in gzip format"). We source
 # the REAL selection function and assert across jq and the awk fallback.
+# Sourced from a real file, not `source <(...)`: bash 3.2 (stock macOS
+# /bin/bash) silently stops reading a sourced process substitution partway,
+# so SELECT_ASSET_FROM_JSON went undefined and these scenarios never ran.
+sed -n '/^fail()/,/^# --- main/p' scripts/install.sh | sed '$d' > "$WORK/install-slice.sh"
 # shellcheck source=/dev/null
-source <(sed -n '/^fail()/,/^# --- main/p' scripts/install.sh | sed '$d')
+. "$WORK/install-slice.sh"
 
 SIDECAR_FIRST='{ "assets": [
   { "name": "skrills-x86_64-unknown-linux-gnu.tar.gz.sha256", "browser_download_url": "https://example.com/x.tar.gz.sha256" },
