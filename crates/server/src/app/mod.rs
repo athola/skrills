@@ -12,18 +12,14 @@
 //! On Unix, a `SIGCHLD` handler prevents zombie processes.
 //! Keep this file under ~2500 LOC; split modules if needed.
 
-mod dispatcher;
 mod intelligence;
 mod mcp_registry;
 mod research;
 mod skill_recommendations;
 mod tools;
 
-pub use dispatcher::run;
 use mcp_registry::build_mcp_registry;
 
-#[cfg(test)]
-pub(crate) use dispatcher::run_sync_with_adapters;
 #[cfg(test)]
 pub(crate) use intelligence::{resolve_project_dir, select_default_skill_root};
 
@@ -66,7 +62,7 @@ pub use crate::metrics_types::{
 /// Uses in-memory caching for performance.
 pub struct SkillService {
     /// The cache for skill metadata.
-    pub(crate) cache: Arc<Mutex<SkillCache>>,
+    pub cache: Arc<Mutex<SkillCache>>,
     /// Optional subagent service (enabled via `subagents` feature).
     #[cfg(feature = "subagents")]
     pub(crate) subagents: Option<skrills_subagents::SubagentService>,
@@ -78,7 +74,7 @@ pub struct SkillService {
 
 /// Starts a filesystem watcher to invalidate caches on changes.
 #[cfg(feature = "watch")]
-pub(crate) fn start_fs_watcher(service: &SkillService) -> Result<RecommendedWatcher> {
+pub fn start_fs_watcher(service: &SkillService) -> Result<RecommendedWatcher> {
     let cache = service.cache.clone();
     let roots = {
         let guard = cache.lock();
@@ -107,7 +103,7 @@ pub(crate) fn start_fs_watcher(service: &SkillService) -> Result<RecommendedWatc
 ///
 /// Returns an error if called.
 #[cfg(not(feature = "watch"))]
-pub(crate) fn start_fs_watcher(_service: &SkillService) -> Result<()> {
+pub fn start_fs_watcher(_service: &SkillService) -> Result<()> {
     Err(anyhow!(
         "watch feature is disabled; rebuild with --features watch"
     ))
@@ -186,19 +182,19 @@ impl SkillService {
     }
 
     /// Resolves transitive dependencies for a skill URI.
-    pub(crate) fn resolve_dependencies(&self, uri: &str) -> Result<Vec<String>> {
+    pub fn resolve_dependencies(&self, uri: &str) -> Result<Vec<String>> {
         let mut cache = self.cache.lock();
         cache.resolve_dependencies(uri)
     }
 
     /// Gets direct dependents for a skill URI.
-    pub(crate) fn get_dependents(&self, uri: &str) -> Result<Vec<String>> {
+    pub fn get_dependents(&self, uri: &str) -> Result<Vec<String>> {
         let mut cache = self.cache.lock();
         cache.get_dependents(uri)
     }
 
     /// Gets transitive dependents for a skill URI.
-    pub(crate) fn get_transitive_dependents(&self, uri: &str) -> Result<Vec<String>> {
+    pub fn get_transitive_dependents(&self, uri: &str) -> Result<Vec<String>> {
         let mut cache = self.cache.lock();
         cache.get_transitive_dependents(uri)
     }
@@ -399,9 +395,12 @@ impl SkillService {
             if !self.expose_agents_doc()? {
                 return Err(anyhow!("resource not found"));
             }
-            return Ok(ReadResourceResult {
-                contents: vec![text_with_location(AGENTS_TEXT, uri, None, "global")],
-            });
+            return Ok(ReadResourceResult::new(vec![text_with_location(
+                AGENTS_TEXT,
+                uri,
+                None,
+                "global",
+            )]));
         }
         if !uri.starts_with("skill://") {
             return Err(anyhow!("unsupported uri"));
@@ -462,7 +461,7 @@ impl SkillService {
             }
         }
 
-        Ok(ReadResourceResult { contents })
+        Ok(ReadResourceResult::new(contents))
     }
 
     /// Reads skill content from disk.

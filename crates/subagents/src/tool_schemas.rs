@@ -138,113 +138,84 @@ pub fn all_tools() -> Vec<Tool> {
     let agents_output_schema = agents_output_schema();
 
     let mut tools = vec![
-        Tool {
-            name: "list-subagents".into(),
-            title: Some("List subagent templates".into()),
-            description: Some("List available subagent templates and capabilities".into()),
-            input_schema: Arc::new(JsonObject::default()),
-            output_schema: Some(list_output_schema),
-            annotations: None,
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "list-agents".into(),
-            title: Some("List discovered agents".into()),
-            description: Some(
-                "List all discovered agent definitions from standard locations".into(),
-            ),
-            input_schema: Arc::new(JsonObject::default()),
-            output_schema: Some(agents_output_schema),
-            annotations: None,
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "run-subagent".into(),
-            title: Some("Run a subagent".into()),
-            description: Some("Run a subagent with optional backend/template selection".into()),
-            input_schema: run_schema.clone(),
-            output_schema: Some(run_output_schema.clone()),
-            annotations: None,
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "get-run-status".into(),
-            title: Some("Get subagent run status".into()),
-            description: Some("Fetch status for a run".into()),
-            input_schema: run_id_schema.clone(),
-            output_schema: Some(run_output_schema.clone()),
-            annotations: None,
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "stop-run".into(),
-            title: Some("Stop a running subagent".into()),
-            description: Some("Attempt to cancel a running subagent".into()),
-            input_schema: run_id_schema.clone(),
-            output_schema: Some(run_output_schema.clone()),
-            annotations: None,
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "get-run-history".into(),
-            title: Some("Recent runs".into()),
-            description: Some("Return recent subagent runs".into()),
-            input_schema: history_schema,
-            output_schema: Some(run_output_schema.clone()),
-            annotations: None,
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "get-run-events".into(),
-            title: Some("Get run events".into()),
-            description: Some(
-                "Poll for events from a run. Use since_index for incremental fetching.".into(),
-            ),
-            input_schema: events_schema,
-            output_schema: Some(events_output_schema),
-            annotations: None,
-            icons: None,
-            meta: None,
-        },
+        Tool::new(
+            "list-subagents",
+            "List available subagent templates and capabilities",
+            Arc::new(JsonObject::default()),
+        )
+        .with_title("List subagent templates")
+        .with_raw_output_schema(list_output_schema),
+        Tool::new(
+            "list-agents",
+            "List all discovered agent definitions from standard locations",
+            Arc::new(JsonObject::default()),
+        )
+        .with_title("List discovered agents")
+        .with_raw_output_schema(agents_output_schema),
+        Tool::new(
+            "run-subagent",
+            "Run a subagent with optional backend/template selection",
+            run_schema.clone(),
+        )
+        .with_title("Run a subagent")
+        .with_raw_output_schema(run_output_schema.clone()),
+        Tool::new(
+            "get-run-status",
+            "Fetch status for a run",
+            run_id_schema.clone(),
+        )
+        .with_title("Get subagent run status")
+        .with_raw_output_schema(run_output_schema.clone()),
+        Tool::new(
+            "stop-run",
+            "Attempt to cancel a running subagent",
+            run_id_schema.clone(),
+        )
+        .with_title("Stop a running subagent")
+        .with_raw_output_schema(run_output_schema.clone()),
+        Tool::new(
+            "get-run-history",
+            "Return recent subagent runs",
+            history_schema,
+        )
+        .with_title("Recent runs")
+        .with_raw_output_schema(run_output_schema.clone()),
+        Tool::new(
+            "get-run-events",
+            "Poll for events from a run. Use since_index for incremental fetching.",
+            events_schema,
+        )
+        .with_title("Get run events")
+        .with_raw_output_schema(events_output_schema),
     ];
 
     // Codex-only extended tools
-    tools.push(Tool {
-        name: "run-subagent-async".into(),
-        title: Some("Run subagent asynchronously".into()),
-        description: Some("Start background run (Codex-capable backends).".into()),
-        input_schema: run_schema,
-        output_schema: Some(run_output_schema.clone()),
-        annotations: None,
-        icons: None,
-        meta: None,
-    });
-    tools.push(Tool {
-        name: "get-async-status".into(),
-        title: Some("Status for async run".into()),
-        description: Some("Fetch status for async runs".into()),
-        input_schema: run_id_schema,
-        output_schema: Some(run_output_schema),
-        annotations: None,
-        icons: None,
-        meta: None,
-    });
-    tools.push(Tool {
-        name: "download-transcript-secure".into(),
-        title: Some("Download secure transcript".into()),
-        description: Some("Fetch encrypted reasoning transcript (Codex only)".into()),
-        input_schema: Arc::new(JsonObject::default()),
-        output_schema: None,
-        annotations: None,
-        icons: None,
-        meta: None,
-    });
+    tools.push(
+        Tool::new(
+            "run-subagent-async",
+            "Start background run (Codex-capable backends).",
+            run_schema,
+        )
+        .with_title("Run subagent asynchronously")
+        .with_raw_output_schema(run_output_schema.clone()),
+    );
+    tools.push(
+        Tool::new(
+            "get-async-status",
+            "Fetch status for async runs",
+            run_id_schema,
+        )
+        .with_title("Status for async run")
+        .with_raw_output_schema(run_output_schema),
+    );
+    tools.push(
+        Tool::new(
+            "download-transcript-secure",
+            "Fetch encrypted reasoning transcript (Codex only)",
+            Arc::new(JsonObject::default()),
+        )
+        .with_title("Download secure transcript"),
+    );
 
     tools
 }

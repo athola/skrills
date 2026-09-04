@@ -4,7 +4,7 @@
 //! subagent backends, and MCP protocol for subagent execution.
 
 use rmcp::transport::TokioChildProcess;
-use rmcp::{model::CallToolRequestParam, service::serve_client};
+use rmcp::{model::CallToolRequestParams, service::serve_client};
 use serde_json::json;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -66,15 +66,14 @@ async fn wait_for_run_succeeded(
 
     loop {
         let status = peer
-            .call_tool(CallToolRequestParam {
-                name: "get-run-status".into(),
-                arguments: Some(
+            .call_tool(
+                CallToolRequestParams::new("get-run-status").with_arguments(
                     json!({ "run_id": run_id })
                         .as_object()
                         .cloned()
                         .expect("run_id args should be object"),
                 ),
-            })
+            )
             .await?;
         let content = status.structured_content.unwrap_or(serde_json::Value::Null);
         last_payload.replace(content.clone());
@@ -191,9 +190,10 @@ async fn given_skrills_server_with_subagents_when_executing_run_subagent_then_co
         "execution_mode": "api"
     });
     let result = peer
-        .call_tool(CallToolRequestParam {
-            name: "run-subagent".into(),
-            arguments: args.as_object().cloned(),
+        .call_tool({
+            let mut param = CallToolRequestParams::new("run-subagent");
+            param.arguments = args.as_object().cloned();
+            param
         })
         .await?;
     let run_id = result
@@ -289,9 +289,10 @@ async fn given_server_with_multiple_backends_when_switching_default_then_routes_
         "execution_mode": "api"
     });
     let result = peer
-        .call_tool(CallToolRequestParam {
-            name: "run-subagent".into(),
-            arguments: args.as_object().cloned(),
+        .call_tool({
+            let mut param = CallToolRequestParams::new("run-subagent");
+            param.arguments = args.as_object().cloned();
+            param
         })
         .await?;
 
@@ -356,9 +357,10 @@ async fn given_server_when_streaming_enabled_then_emits_events() -> anyhow::Resu
         "execution_mode": "api"
     });
     let result = peer
-        .call_tool(CallToolRequestParam {
-            name: "run-subagent".into(),
-            arguments: args.as_object().cloned(),
+        .call_tool({
+            let mut param = CallToolRequestParams::new("run-subagent");
+            param.arguments = args.as_object().cloned();
+            param
         })
         .await?;
 
@@ -373,15 +375,14 @@ async fn given_server_when_streaming_enabled_then_emits_events() -> anyhow::Resu
     let _content = wait_for_run_succeeded(&peer, &run_id, Duration::from_secs(10)).await?;
 
     let events_result = peer
-        .call_tool(CallToolRequestParam {
-            name: "get-run-events".into(),
-            arguments: Some(
+        .call_tool(
+            CallToolRequestParams::new("get-run-events").with_arguments(
                 json!({ "run_id": run_id })
                     .as_object()
                     .cloned()
                     .expect("get-run-events args should be object"),
             ),
-        })
+        )
         .await?;
 
     let events = events_result

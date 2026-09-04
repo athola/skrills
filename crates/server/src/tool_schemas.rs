@@ -94,138 +94,17 @@ pub(crate) fn sync_tools() -> Vec<Tool> {
     let sync_schema = sync_schema();
 
     vec![
-        Tool {
-            name: "sync-from-claude".into(),
-            title: Some("Copy ~/.claude skills into ~/.codex".into()),
-            description: Some(
-                "Copy SKILL.md files from ~/.claude into ~/.codex/skills (Codex discovery root)"
-                    .into(),
-            ),
-            input_schema: schema_empty.clone(),
-            output_schema: result_output_schema(),
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "sync-from-copilot".into(),
-            title: Some("Sync from GitHub Copilot CLI".into()),
-            description: Some(
-                "Sync skills and instructions from GitHub Copilot CLI (~/.config/github-copilot) to Claude or Codex."
-                    .into(),
-            ),
-            input_schema: sync_schema.clone(),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "sync-to-copilot".into(),
-            title: Some("Sync to GitHub Copilot CLI".into()),
-            description: Some(
-                "Sync skills and instructions from Claude or Codex to GitHub Copilot CLI (~/.config/github-copilot)."
-                    .into(),
-            ),
-            input_schema: sync_schema.clone(),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "sync-from-cursor".into(),
-            title: Some("Sync from Cursor IDE".into()),
-            description: Some(
-                "Sync skills, commands, agents, hooks, rules, and MCP servers from Cursor (~/.cursor) to Claude or Codex."
-                    .into(),
-            ),
-            input_schema: sync_schema.clone(),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "sync-to-cursor".into(),
-            title: Some("Sync to Cursor IDE".into()),
-            description: Some(
-                "Sync skills, commands, agents, hooks, rules (.mdc), and MCP servers from Claude or Codex to Cursor (~/.cursor)."
-                    .into(),
-            ),
-            input_schema: sync_schema.clone(),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "sync-skills".into(),
-            title: Some("Sync skills between agents".into()),
-            description: Some(
-                "Sync SKILL.md files between Claude, Codex, Copilot, and Cursor. Use --from and --to to specify source and target."
-                    .into(),
-            ),
-            input_schema: sync_schema.clone(),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "sync-commands".into(),
-            title: Some("Sync slash commands between agents".into()),
-            description: Some("Sync slash command definitions between Claude, Codex, Copilot, and Cursor.".into()),
-            input_schema: sync_schema.clone(),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "sync-mcp-servers".into(),
-            title: Some("Sync MCP server configurations".into()),
-            description: Some("Sync MCP server configurations between Claude, Codex, Copilot, and Cursor.".into()),
-            input_schema: sync_schema.clone(),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "sync-preferences".into(),
-            title: Some("Sync preferences between agents".into()),
-            description: Some(
-                "Sync compatible settings/preferences between Claude, Codex, Copilot, and Cursor.".into(),
-            ),
-            input_schema: sync_schema.clone(),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "sync-all".into(),
-            title: Some("Sync all configurations".into()),
-            description: Some(
-                "Sync skills, commands, hooks, MCP servers, and preferences between Claude, Codex, Copilot, and Cursor in one operation.".into(),
-            ),
-            input_schema: sync_schema.clone(),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "sync-status".into(),
-            title: Some("Preview sync changes".into()),
-            description: Some("Show what would be synced without making changes (dry run).".into()),
-            input_schema: sync_schema,
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
+        { let mut tool = Tool::new("sync-from-claude", "Copy SKILL.md files from ~/.claude into ~/.codex/skills (Codex discovery root)", schema_empty.clone()).with_title("Copy ~/.claude skills into ~/.codex").with_annotations(ToolAnnotations::default()); tool.output_schema = result_output_schema(); tool },
+        Tool::new("sync-from-copilot", "Sync skills and instructions from GitHub Copilot CLI (~/.config/github-copilot) to Claude or Codex.", sync_schema.clone()).with_title("Sync from GitHub Copilot CLI").with_annotations(ToolAnnotations::default()),
+        Tool::new("sync-to-copilot", "Sync skills and instructions from Claude or Codex to GitHub Copilot CLI (~/.config/github-copilot).", sync_schema.clone()).with_title("Sync to GitHub Copilot CLI").with_annotations(ToolAnnotations::default()),
+        Tool::new("sync-from-cursor", "Sync skills, commands, agents, hooks, rules, and MCP servers from Cursor (~/.cursor) to Claude or Codex.", sync_schema.clone()).with_title("Sync from Cursor IDE").with_annotations(ToolAnnotations::default()),
+        Tool::new("sync-to-cursor", "Sync skills, commands, agents, hooks, rules (.mdc), and MCP servers from Claude or Codex to Cursor (~/.cursor).", sync_schema.clone()).with_title("Sync to Cursor IDE").with_annotations(ToolAnnotations::default()),
+        Tool::new("sync-skills", "Sync SKILL.md files between Claude, Codex, Copilot, and Cursor. Use --from and --to to specify source and target.", sync_schema.clone()).with_title("Sync skills between agents").with_annotations(ToolAnnotations::default()),
+        Tool::new("sync-commands", "Sync slash command definitions between Claude, Codex, Copilot, and Cursor.", sync_schema.clone()).with_title("Sync slash commands between agents").with_annotations(ToolAnnotations::default()),
+        Tool::new("sync-mcp-servers", "Sync MCP server configurations between Claude, Codex, Copilot, and Cursor.", sync_schema.clone()).with_title("Sync MCP server configurations").with_annotations(ToolAnnotations::default()),
+        Tool::new("sync-preferences", "Sync compatible settings/preferences between Claude, Codex, Copilot, and Cursor.", sync_schema.clone()).with_title("Sync preferences between agents").with_annotations(ToolAnnotations::default()),
+        Tool::new("sync-all", "Sync skills, commands, hooks, MCP servers, and preferences between Claude, Codex, Copilot, and Cursor in one operation.", sync_schema.clone()).with_title("Sync all configurations").with_annotations(ToolAnnotations::default()),
+        Tool::new("sync-status", "Show what would be synced without making changes (dry run).", sync_schema).with_title("Preview sync changes").with_annotations(ToolAnnotations::default()),
     ]
 }
 
@@ -234,13 +113,7 @@ pub(crate) fn sync_tools() -> Vec<Tool> {
 /// Tools: validate-skills, analyze-skills
 pub(crate) fn validation_tools() -> Vec<Tool> {
     vec![
-        Tool {
-            name: "validate-skills".into(),
-            title: Some("Validate skills for CLI compatibility".into()),
-            description: Some(
-                "Validate skills for Claude Code, Codex, and/or Copilot CLI compatibility. Returns validation errors and warnings.".into(),
-            ),
-            input_schema: Arc::new({
+        { let mut tool = Tool::new("validate-skills", "Validate skills for Claude Code, Codex, and/or Copilot CLI compatibility. Returns validation errors and warnings.", Arc::new({
                 let mut schema = JsonMap::new();
                 schema.insert("type".into(), json!("object"));
                 schema.insert(
@@ -271,19 +144,8 @@ pub(crate) fn validation_tools() -> Vec<Tool> {
                 );
                 schema.insert("additionalProperties".into(), json!(false));
                 schema
-            }),
-            output_schema: array_output_schema("Validation results per skill"),
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "analyze-skills".into(),
-            title: Some("Analyze skills for token usage and optimization".into()),
-            description: Some(
-                "Analyze skills for token usage, dependencies, and optimization suggestions. Returns detailed analysis with quality scores.".into(),
-            ),
-            input_schema: Arc::new({
+            })).with_title("Validate skills for CLI compatibility").with_annotations(ToolAnnotations::default()); tool.output_schema = array_output_schema("Validation results per skill"); tool },
+        Tool::new("analyze-skills", "Analyze skills for token usage, dependencies, and optimization suggestions. Returns detailed analysis with quality scores.", Arc::new({
                 let mut schema = JsonMap::new();
                 schema.insert("type".into(), json!("object"));
                 schema.insert(
@@ -302,21 +164,9 @@ pub(crate) fn validation_tools() -> Vec<Tool> {
                 );
                 schema.insert("additionalProperties".into(), json!(false));
                 schema
-            }),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "skill-diff".into(),
-            title: Some("Compare skill versions across CLIs".into()),
-            description: Some(
-                "Compare a skill across Claude, Codex, and Copilot to identify differences in content and frontmatter. \
-                 Shows unified diff, frontmatter variations, and token count differences."
-                    .into(),
-            ),
-            input_schema: Arc::new({
+            })).with_title("Analyze skills for token usage and optimization").with_annotations(ToolAnnotations::default()),
+        Tool::new("skill-diff", "Compare a skill across Claude, Codex, and Copilot to identify differences in content and frontmatter. \
+                 Shows unified diff, frontmatter variations, and token count differences.", Arc::new({
                 let mut schema = JsonMap::new();
                 schema.insert("type".into(), json!("object"));
                 schema.insert(
@@ -336,12 +186,7 @@ pub(crate) fn validation_tools() -> Vec<Tool> {
                 schema.insert("required".into(), json!(["name"]));
                 schema.insert("additionalProperties".into(), json!(false));
                 schema
-            }),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
+            })).with_title("Compare skill versions across CLIs").with_annotations(ToolAnnotations::default()),
     ]
 }
 
@@ -349,11 +194,7 @@ pub(crate) fn validation_tools() -> Vec<Tool> {
 ///
 /// Tools: resolve-dependencies
 pub(crate) fn dependency_tools() -> Vec<Tool> {
-    vec![Tool {
-        name: "resolve-dependencies".into(),
-        title: Some("Resolve skill dependencies".into()),
-        description: Some("Get transitive dependencies or dependents for a skill.".into()),
-        input_schema: Arc::new({
+    vec![Tool::new("resolve-dependencies", "Get transitive dependencies or dependents for a skill.", Arc::new({
             let mut schema = JsonMap::new();
             schema.insert("type".into(), json!("object"));
             schema.insert(
@@ -378,25 +219,14 @@ pub(crate) fn dependency_tools() -> Vec<Tool> {
             );
             schema.insert("required".into(), json!(["uri"]));
             schema
-        }),
-        output_schema: None,
-        annotations: Some(ToolAnnotations::default()),
-        icons: None,
-        meta: None,
-    }]
+        })).with_title("Resolve skill dependencies").with_annotations(ToolAnnotations::default())]
 }
 
 /// Returns recommendation tools.
 ///
 /// Tools: recommend-skills
 pub(crate) fn recommend_tools() -> Vec<Tool> {
-    vec![Tool {
-        name: "recommend-skills".into(),
-        title: Some("Get skill recommendations".into()),
-        description: Some(
-            "Recommends related skills based on dependency relationships. Given a skill URI, suggests dependencies, dependents, and sibling skills (those sharing common dependencies).".into(),
-        ),
-        input_schema: Arc::new({
+    vec![Tool::new("recommend-skills", "Recommends related skills based on dependency relationships. Given a skill URI, suggests dependencies, dependents, and sibling skills (those sharing common dependencies).", Arc::new({
             let mut schema = JsonMap::new();
             schema.insert("type".into(), json!("object"));
             schema.insert(
@@ -420,25 +250,14 @@ pub(crate) fn recommend_tools() -> Vec<Tool> {
             );
             schema.insert("required".into(), json!(["uri"]));
             schema
-        }),
-        output_schema: None,
-        annotations: Some(ToolAnnotations::default()),
-        icons: None,
-        meta: None,
-    }]
+        })).with_title("Get skill recommendations").with_annotations(ToolAnnotations::default())]
 }
 
 /// Returns metrics tools.
 ///
 /// Tools: skill-metrics
 pub(crate) fn metrics_tools() -> Vec<Tool> {
-    vec![Tool {
-        name: "skill-metrics".into(),
-        title: Some("Get skill statistics and metrics".into()),
-        description: Some(
-            "Returns aggregate statistics about discovered skills including counts, quality distribution, dependency patterns, and token usage.".into(),
-        ),
-        input_schema: Arc::new({
+    vec![Tool::new("skill-metrics", "Returns aggregate statistics about discovered skills including counts, quality distribution, dependency patterns, and token usage.", Arc::new({
             let mut schema = JsonMap::new();
             schema.insert("type".into(), json!("object"));
             schema.insert(
@@ -453,12 +272,7 @@ pub(crate) fn metrics_tools() -> Vec<Tool> {
             );
             schema.insert("additionalProperties".into(), json!(false));
             schema
-        }),
-        output_schema: None,
-        annotations: Some(ToolAnnotations::default()),
-        icons: None,
-        meta: None,
-    }]
+        })).with_title("Get skill statistics and metrics").with_annotations(ToolAnnotations::default())]
 }
 
 /// Returns skill trace and instrumentation tools.
@@ -466,13 +280,7 @@ pub(crate) fn metrics_tools() -> Vec<Tool> {
 /// Tools: skill-loading-status, enable-skill-trace, disable-skill-trace, skill-loading-selftest
 pub(crate) fn trace_tools() -> Vec<Tool> {
     vec![
-        Tool {
-            name: "skill-loading-status".into(),
-            title: Some("Skill loading status (filesystem + instrumentation)".into()),
-            description: Some(
-                "Checks skill roots on disk and reports whether trace/probe skills are installed and whether skill files are instrumented with skrills markers.".into(),
-            ),
-            input_schema: Arc::new({
+        Tool::new("skill-loading-status", "Checks skill roots on disk and reports whether trace/probe skills are installed and whether skill files are instrumented with skrills markers.", Arc::new({
                 let mut schema = JsonMap::new();
                 schema.insert("type".into(), json!("object"));
                 schema.insert(
@@ -487,19 +295,8 @@ pub(crate) fn trace_tools() -> Vec<Tool> {
                 );
                 schema.insert("additionalProperties".into(), json!(false));
                 schema
-            }),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "enable-skill-trace".into(),
-            title: Some("Enable deterministic skill tracing".into()),
-            description: Some(
-                "Installs skrills trace/probe skills and (optionally) instruments SKILL.md files with markers so the trace skill can report which skills were loaded.".into(),
-            ),
-            input_schema: Arc::new({
+            })).with_title("Skill loading status (filesystem + instrumentation)").with_annotations(ToolAnnotations::default()),
+        Tool::new("enable-skill-trace", "Installs skrills trace/probe skills and (optionally) instruments SKILL.md files with markers so the trace skill can report which skills were loaded.", Arc::new({
                 let mut schema = JsonMap::new();
                 schema.insert("type".into(), json!("object"));
                 schema.insert(
@@ -517,19 +314,8 @@ pub(crate) fn trace_tools() -> Vec<Tool> {
                 );
                 schema.insert("additionalProperties".into(), json!(false));
                 schema
-            }),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "disable-skill-trace".into(),
-            title: Some("Disable skill tracing".into()),
-            description: Some(
-                "Removes the skrills trace/probe skill directories from primary Claude/Codex skill roots (does not remove instrumentation markers).".into(),
-            ),
-            input_schema: Arc::new({
+            })).with_title("Enable deterministic skill tracing").with_annotations(ToolAnnotations::default()),
+        Tool::new("disable-skill-trace", "Removes the skrills trace/probe skill directories from primary Claude/Codex skill roots (does not remove instrumentation markers).", Arc::new({
                 let mut schema = JsonMap::new();
                 schema.insert("type".into(), json!("object"));
                 schema.insert(
@@ -541,19 +327,8 @@ pub(crate) fn trace_tools() -> Vec<Tool> {
                 );
                 schema.insert("additionalProperties".into(), json!(false));
                 schema
-            }),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "skill-loading-selftest".into(),
-            title: Some("Skill loading selftest (probe)".into()),
-            description: Some(
-                "Ensures the probe skill exists and returns a one-shot probe line + expected response to confirm skills are loading in the current session.".into(),
-            ),
-            input_schema: Arc::new({
+            })).with_title("Disable skill tracing").with_annotations(ToolAnnotations::default()),
+        Tool::new("skill-loading-selftest", "Ensures the probe skill exists and returns a one-shot probe line + expected response to confirm skills are loading in the current session.", Arc::new({
                 let mut schema = JsonMap::new();
                 schema.insert("type".into(), json!("object"));
                 schema.insert(
@@ -565,12 +340,7 @@ pub(crate) fn trace_tools() -> Vec<Tool> {
                 );
                 schema.insert("additionalProperties".into(), json!(false));
                 schema
-            }),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
+            })).with_title("Skill loading selftest (probe)").with_annotations(ToolAnnotations::default()),
     ]
 }
 
@@ -580,15 +350,8 @@ pub(crate) fn trace_tools() -> Vec<Tool> {
 /// create-skill, search-skills-github
 pub(crate) fn intelligence_tools() -> Vec<Tool> {
     vec![
-        Tool {
-            name: "recommend-skills-smart".into(),
-            title: Some("Smart skill recommendations".into()),
-            description: Some(
-                "Enhanced recommendations combining dependency relationships, usage patterns, \
-                 and project context. Returns scored recommendations with explanations."
-                    .into(),
-            ),
-            input_schema: Arc::new({
+        Tool::new("recommend-skills-smart", "Enhanced recommendations combining dependency relationships, usage patterns, \
+                 and project context. Returns scored recommendations with explanations.", Arc::new({
                 let mut schema = JsonMap::new();
                 schema.insert("type".into(), json!("object"));
                 schema.insert(
@@ -625,21 +388,9 @@ pub(crate) fn intelligence_tools() -> Vec<Tool> {
                 );
                 schema.insert("additionalProperties".into(), json!(false));
                 schema
-            }),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "analyze-project-context".into(),
-            title: Some("Analyze project context".into()),
-            description: Some(
-                "Analyzes the current project to build a context profile including \
-                 languages, dependencies, frameworks, and keywords."
-                    .into(),
-            ),
-            input_schema: Arc::new({
+            })).with_title("Smart skill recommendations").with_annotations(ToolAnnotations::default()),
+        Tool::new("analyze-project-context", "Analyzes the current project to build a context profile including \
+                 languages, dependencies, frameworks, and keywords.", Arc::new({
                 let mut schema = JsonMap::new();
                 schema.insert("type".into(), json!("object"));
                 schema.insert(
@@ -663,21 +414,9 @@ pub(crate) fn intelligence_tools() -> Vec<Tool> {
                 );
                 schema.insert("additionalProperties".into(), json!(false));
                 schema
-            }),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "suggest-new-skills".into(),
-            title: Some("Suggest skills to create".into()),
-            description: Some(
-                "Identifies gaps in your skill library based on project context \
-                 and usage patterns, suggesting new skills to create."
-                    .into(),
-            ),
-            input_schema: Arc::new({
+            })).with_title("Analyze project context").with_annotations(ToolAnnotations::default()),
+        Tool::new("suggest-new-skills", "Identifies gaps in your skill library based on project context \
+                 and usage patterns, suggesting new skills to create.", Arc::new({
                 let mut schema = JsonMap::new();
                 schema.insert("type".into(), json!("object"));
                 schema.insert(
@@ -696,21 +435,9 @@ pub(crate) fn intelligence_tools() -> Vec<Tool> {
                 );
                 schema.insert("additionalProperties".into(), json!(false));
                 schema
-            }),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "create-skill".into(),
-            title: Some("Create a new skill".into()),
-            description: Some(
-                "Creates a new skill via GitHub search, LLM generation, or both. \
-                 Default behavior: search GitHub first, then generate if not found."
-                    .into(),
-            ),
-            input_schema: Arc::new({
+            })).with_title("Suggest skills to create").with_annotations(ToolAnnotations::default()),
+        Tool::new("create-skill", "Creates a new skill via GitHub search, LLM generation, or both. \
+                 Default behavior: search GitHub first, then generate if not found.", Arc::new({
                 let mut schema = JsonMap::new();
                 schema.insert("type".into(), json!("object"));
                 schema.insert(
@@ -743,19 +470,8 @@ pub(crate) fn intelligence_tools() -> Vec<Tool> {
                 );
                 schema.insert("required".into(), json!(["name", "description"]));
                 schema
-            }),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "search-skills-github".into(),
-            title: Some("Search GitHub for skills".into()),
-            description: Some(
-                "Searches GitHub for existing SKILL.md files matching the query.".into(),
-            ),
-            input_schema: Arc::new({
+            })).with_title("Create a new skill").with_annotations(ToolAnnotations::default()),
+        Tool::new("search-skills-github", "Searches GitHub for existing SKILL.md files matching the query.", Arc::new({
                 let mut schema = JsonMap::new();
                 schema.insert("type".into(), json!("object"));
                 schema.insert(
@@ -774,22 +490,10 @@ pub(crate) fn intelligence_tools() -> Vec<Tool> {
                 );
                 schema.insert("required".into(), json!(["query"]));
                 schema
-            }),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "search-skills-fuzzy".into(),
-            title: Some("Search installed skills".into()),
-            description: Some(
-                "Search installed skills using trigram-based fuzzy matching. \
+            })).with_title("Search GitHub for skills").with_annotations(ToolAnnotations::default()),
+        Tool::new("search-skills-fuzzy", "Search installed skills using trigram-based fuzzy matching. \
                  Tolerates typos and finds similar skill names (e.g., 'databas' finds 'database'). \
-                 Aligns with CLI command: `skrills search-skills`."
-                    .into(),
-            ),
-            input_schema: Arc::new({
+                 Aligns with CLI command: `skrills search-skills`.", Arc::new({
                 let mut schema = JsonMap::new();
                 schema.insert("type".into(), json!("object"));
                 schema.insert(
@@ -820,12 +524,7 @@ pub(crate) fn intelligence_tools() -> Vec<Tool> {
                 );
                 schema.insert("required".into(), json!(["query"]));
                 schema
-            }),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
+            })).with_title("Search installed skills").with_annotations(ToolAnnotations::default()),
     ]
 }
 
@@ -837,13 +536,7 @@ pub(crate) fn intelligence_tools() -> Vec<Tool> {
 pub(crate) fn research_tools() -> Vec<Tool> {
     vec![
         // --- #168 Tools (Research API) ---
-        Tool {
-            name: "search-papers".into(),
-            title: Some("Search academic papers".into()),
-            description: Some(
-                "Search for academic papers across Semantic Scholar, arXiv, and OpenAlex. Deduplicates results by DOI.".into(),
-            ),
-            input_schema: Arc::new({
+        Tool::new("search-papers", "Search for academic papers across Semantic Scholar, arXiv, and OpenAlex. Deduplicates results by DOI.", Arc::new({
                 let mut schema = JsonMap::new();
                 schema.insert("type".into(), json!("object"));
                 schema.insert(
@@ -872,19 +565,8 @@ pub(crate) fn research_tools() -> Vec<Tool> {
                 schema.insert("required".into(), json!(["query"]));
                 schema.insert("additionalProperties".into(), json!(false));
                 schema
-            }),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "search-discussions".into(),
-            title: Some("Search community discussions".into()),
-            description: Some(
-                "Search Hacker News for community discussions about a topic.".into(),
-            ),
-            input_schema: Arc::new({
+            })).with_title("Search academic papers").with_annotations(ToolAnnotations::default()),
+        Tool::new("search-discussions", "Search Hacker News for community discussions about a topic.", Arc::new({
                 let mut schema = JsonMap::new();
                 schema.insert("type".into(), json!("object"));
                 schema.insert(
@@ -905,19 +587,8 @@ pub(crate) fn research_tools() -> Vec<Tool> {
                 schema.insert("required".into(), json!(["query"]));
                 schema.insert("additionalProperties".into(), json!(false));
                 schema
-            }),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "resolve-doi".into(),
-            title: Some("Resolve DOI metadata".into()),
-            description: Some(
-                "Resolve a DOI to full metadata via CrossRef, with open-access PDF URL from Unpaywall.".into(),
-            ),
-            input_schema: Arc::new({
+            })).with_title("Search community discussions").with_annotations(ToolAnnotations::default()),
+        Tool::new("resolve-doi", "Resolve a DOI to full metadata via CrossRef, with open-access PDF URL from Unpaywall.", Arc::new({
                 let mut schema = JsonMap::new();
                 schema.insert("type".into(), json!("object"));
                 schema.insert(
@@ -932,19 +603,8 @@ pub(crate) fn research_tools() -> Vec<Tool> {
                 schema.insert("required".into(), json!(["doi"]));
                 schema.insert("additionalProperties".into(), json!(false));
                 schema
-            }),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "fetch-pdf".into(),
-            title: Some("Download and cache academic PDF".into()),
-            description: Some(
-                "Download the open-access PDF for a DOI via Unpaywall and cache it locally. Returns the local file path.".into(),
-            ),
-            input_schema: Arc::new({
+            })).with_title("Resolve DOI metadata").with_annotations(ToolAnnotations::default()),
+        Tool::new("fetch-pdf", "Download the open-access PDF for a DOI via Unpaywall and cache it locally. Returns the local file path.", Arc::new({
                 let mut schema = JsonMap::new();
                 schema.insert("type".into(), json!("object"));
                 schema.insert(
@@ -959,20 +619,9 @@ pub(crate) fn research_tools() -> Vec<Tool> {
                 schema.insert("required".into(), json!(["doi"]));
                 schema.insert("additionalProperties".into(), json!(false));
                 schema
-            }),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
+            })).with_title("Download and cache academic PDF").with_annotations(ToolAnnotations::default()),
         // --- #169 Tools (Advanced Features) ---
-        Tool {
-            name: "query-knowledge-graph".into(),
-            title: Some("Search and traverse knowledge graph".into()),
-            description: Some(
-                "Search nodes or traverse edges in the research knowledge graph. Provide query to search, or node_id to get connections.".into(),
-            ),
-            input_schema: Arc::new({
+        Tool::new("query-knowledge-graph", "Search nodes or traverse edges in the research knowledge graph. Provide query to search, or node_id to get connections.", Arc::new({
                 let mut schema = JsonMap::new();
                 schema.insert("type".into(), json!("object"));
                 schema.insert(
@@ -1000,19 +649,8 @@ pub(crate) fn research_tools() -> Vec<Tool> {
                 );
                 schema.insert("additionalProperties".into(), json!(false));
                 schema
-            }),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "add-knowledge-node".into(),
-            title: Some("Add a node to the knowledge graph".into()),
-            description: Some(
-                "Add a node to the persistent research knowledge graph.".into(),
-            ),
-            input_schema: Arc::new({
+            })).with_title("Search and traverse knowledge graph").with_annotations(ToolAnnotations::default()),
+        Tool::new("add-knowledge-node", "Add a node to the persistent research knowledge graph.", Arc::new({
                 let mut schema = JsonMap::new();
                 schema.insert("type".into(), json!("object"));
                 schema.insert(
@@ -1040,19 +678,8 @@ pub(crate) fn research_tools() -> Vec<Tool> {
                 schema.insert("required".into(), json!(["id", "kind", "label"]));
                 schema.insert("additionalProperties".into(), json!(false));
                 schema
-            }),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "link-knowledge".into(),
-            title: Some("Connect nodes in the knowledge graph".into()),
-            description: Some(
-                "Create a directed edge between two nodes in the knowledge graph.".into(),
-            ),
-            input_schema: Arc::new({
+            })).with_title("Add a node to the knowledge graph").with_annotations(ToolAnnotations::default()),
+        Tool::new("link-knowledge", "Create a directed edge between two nodes in the knowledge graph.", Arc::new({
                 let mut schema = JsonMap::new();
                 schema.insert("type".into(), json!("object"));
                 schema.insert(
@@ -1085,19 +712,8 @@ pub(crate) fn research_tools() -> Vec<Tool> {
                 schema.insert("required".into(), json!(["source_id", "target_id", "kind"]));
                 schema.insert("additionalProperties".into(), json!(false));
                 schema
-            }),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "track-citations".into(),
-            title: Some("Track paper citations".into()),
-            description: Some(
-                "Track a paper for citation monitoring, or query forward/backward citations.".into(),
-            ),
-            input_schema: Arc::new({
+            })).with_title("Connect nodes in the knowledge graph").with_annotations(ToolAnnotations::default()),
+        Tool::new("track-citations", "Track a paper for citation monitoring, or query forward/backward citations.", Arc::new({
                 let mut schema = JsonMap::new();
                 schema.insert("type".into(), json!("object"));
                 schema.insert(
@@ -1126,19 +742,8 @@ pub(crate) fn research_tools() -> Vec<Tool> {
                 schema.insert("required".into(), json!(["paper_id"]));
                 schema.insert("additionalProperties".into(), json!(false));
                 schema
-            }),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "resolve-contradiction".into(),
-            title: Some("TRIZ contradiction resolution".into()),
-            description: Some(
-                "Apply TRIZ inventive principles to resolve a contradiction between two parameters. Returns applicable principles with software examples.".into(),
-            ),
-            input_schema: Arc::new({
+            })).with_title("Track paper citations").with_annotations(ToolAnnotations::default()),
+        Tool::new("resolve-contradiction", "Apply TRIZ inventive principles to resolve a contradiction between two parameters. Returns applicable principles with software examples.", Arc::new({
                 let mut schema = JsonMap::new();
                 schema.insert("type".into(), json!("object"));
                 schema.insert(
@@ -1169,19 +774,14 @@ pub(crate) fn research_tools() -> Vec<Tool> {
                 schema.insert("required".into(), json!(["improve", "degrades"]));
                 schema.insert("additionalProperties".into(), json!(false));
                 schema
-            }),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
+            })).with_title("TRIZ contradiction resolution").with_annotations(ToolAnnotations::default()),
     ]
 }
 
 /// Returns all MCP tools.
 ///
 /// This combines all tool groups and is used by the `list_tools()` handler.
-pub(crate) fn all_tools() -> Vec<Tool> {
+pub fn all_tools() -> Vec<Tool> {
     let mut tools = Vec::new();
     tools.extend(sync_tools());
     tools.extend(validation_tools());

@@ -232,7 +232,8 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
     /// prompts, Codex converts agents to skills).
     pub fn sync(&self, params: &SyncParams) -> Result<SyncReport> {
         let mut report = SyncReport::new();
-        let target_support = self.target.supported_fields();
+        let target_support = self.target.write_support();
+        let source_support = self.source.read_support();
 
         // Sync commands
         if params.sync_commands {
@@ -437,11 +438,39 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
 
         // Sync plugin assets (scripts, binaries, libraries)
         if params.sync_plugin_assets {
-            if !target_support.plugin_assets {
+            // Both ends are checked. Reading from a source with no reader
+            // yields an empty Vec and writing to a target with no writer
+            // reports a successful write of nothing, so an entirely
+            // unimplemented pair used to come back as success.
+            if !source_support.plugin_assets {
+                tracing::debug!(
+                    source = %self.source.name(),
+                    "Source cannot read plugin assets; skipping"
+                );
+                report
+                    .plugin_assets
+                    .skipped
+                    .push(SkipReason::UnsupportedField {
+                        field: "plugin_assets".to_string(),
+                        source_agent: self.source.name().to_string(),
+                        suggestion: format!(
+                            "{} is a plugin-mirror target, not a source",
+                            self.source.name()
+                        ),
+                    });
+            } else if !target_support.plugin_assets {
                 tracing::debug!(
                     target = %self.target.name(),
                     "Target does not natively support plugin assets; skipping"
                 );
+                report
+                    .plugin_assets
+                    .skipped
+                    .push(SkipReason::UnsupportedField {
+                        field: "plugin_assets".to_string(),
+                        source_agent: self.source.name().to_string(),
+                        suggestion: format!("{} cannot write plugin assets", self.target.name()),
+                    });
             } else {
                 let assets = self.source.read_plugin_assets(params.full_plugin_mirror)?;
                 // Apply plugin exclusion filter to assets
@@ -1041,6 +1070,74 @@ mod tests {
         let report = orchestrator.sync(&params).unwrap();
         assert_eq!(report.commands.written, 0);
         assert_eq!(report.commands.skipped.len(), 1);
+    }
+
+    /// FieldSupport had no direction, so one bool meant "reads it" for one
+    /// adapter and "writes it" for another. cursor->claude plugin assets
+    /// passed the target gate (Claude declares plugin_assets), read nothing
+    /// through Cursor's default reader, wrote nothing through Claude's default
+    /// writer, and reported success.
+    #[test]
+    fn plugin_asset_direction_is_declared_per_adapter() {
+        use crate::adapters::{ClaudeAdapter, CursorAdapter};
+
+        let claude = ClaudeAdapter::with_root(std::path::PathBuf::from("/tmp/claude-x"));
+        let cursor = CursorAdapter::with_root(std::path::PathBuf::from("/tmp/cursor-x"));
+
+        assert!(
+            claude.read_support().plugin_assets,
+            "Claude owns the plugin cache and reads it"
+        );
+        assert!(
+            !claude.write_support().plugin_assets,
+            "Claude implements no plugin-asset writer"
+        );
+        assert!(
+            cursor.write_support().plugin_assets,
+            "Cursor receives the plugin mirror"
+        );
+        assert!(
+            !cursor.read_support().plugin_assets,
+            "Cursor implements no plugin-asset reader"
+        );
+    }
+
+    /// The unimplemented direction must report why it did nothing rather than
+    /// coming back as a clean success.
+    #[test]
+    fn cursor_to_claude_plugin_assets_reports_unsupported() {
+        use crate::adapters::{ClaudeAdapter, CursorAdapter};
+
+        let src = tempdir().unwrap();
+        let dst = tempdir().unwrap();
+        let orchestrator = SyncOrchestrator::new(
+            CursorAdapter::with_root(src.path().to_path_buf()),
+            ClaudeAdapter::with_root(dst.path().to_path_buf()),
+        );
+
+        let params = SyncParams {
+            sync_plugin_assets: true,
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_skills: false,
+            ..Default::default()
+        };
+        let report = orchestrator.sync(&params).unwrap();
+
+        assert_eq!(
+            report.plugin_assets.written, 0,
+            "nothing is written on an unimplemented direction"
+        );
+        assert!(
+            report
+                .plugin_assets
+                .skipped
+                .iter()
+                .any(|r| matches!(r, SkipReason::UnsupportedField { field, .. } if field == "plugin_assets")),
+            "the skip must say the direction is unsupported, got {:?}",
+            report.plugin_assets.skipped
+        );
     }
 
     #[test]

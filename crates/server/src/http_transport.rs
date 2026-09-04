@@ -45,6 +45,10 @@ pub struct HttpSecurityConfig {
     pub tls_key: Option<std::path::PathBuf>,
     /// Allowed CORS origins (empty = no CORS).
     pub cors_origins: Vec<String>,
+    /// Extra `Host` authorities accepted by the MCP transport, on top of the
+    /// loopback names rmcp allows by default. Needed when binding a
+    /// non-loopback address, since Host validation rejects everything else.
+    pub allowed_hosts: Vec<String>,
 }
 
 // Custom Debug implementation that redacts auth_token to prevent credential leakage in logs.
@@ -58,6 +62,7 @@ impl std::fmt::Debug for HttpSecurityConfig {
             .field("tls_cert", &self.tls_cert)
             .field("tls_key", &self.tls_key)
             .field("cors_origins", &self.cors_origins)
+            .field("allowed_hosts", &self.allowed_hosts)
             .finish()
     }
 }
@@ -156,6 +161,20 @@ async fn auth_middleware(
         "Invalid or missing authorization token",
     )
         .into_response()
+}
+
+/// Builds the MCP transport config, extending rmcp's loopback `allowed_hosts`
+/// with any the operator supplied.
+///
+/// The loopback default is what blocks DNS rebinding (RUSTSEC-2026-0189): a
+/// page served from an attacker's domain that resolves to 127.0.0.1 still
+/// sends its own name in `Host`. Operator hosts are appended rather than
+/// substituted, so naming a LAN host to reach a non-loopback bind cannot
+/// silently drop the loopback protection.
+fn build_streamable_config(allowed_hosts: &[String]) -> StreamableHttpServerConfig {
+    let mut config = StreamableHttpServerConfig::default();
+    config.allowed_hosts.extend(allowed_hosts.iter().cloned());
+    config
 }
 
 /// Builds CORS layer from allowed origins.
@@ -262,7 +281,7 @@ where
     let session_manager = Arc::new(LocalSessionManager::default());
 
     // Configure the HTTP server
-    let config = StreamableHttpServerConfig::default();
+    let config = build_streamable_config(&security.allowed_hosts);
 
     // Create the streamable HTTP service
     let http_service = StreamableHttpService::new(service_factory, session_manager, config);
@@ -527,6 +546,54 @@ async fn serve_with_tls(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The loopback allowlist is what stops a rebound attacker domain from
+    /// driving a locally bound MCP server (RUSTSEC-2026-0189), so it must be
+    /// on with no configuration at all.
+    #[test]
+    fn streamable_config_allows_only_loopback_hosts_by_default() {
+        let config = build_streamable_config(&[]);
+
+        assert_eq!(
+            config.allowed_hosts,
+            vec![
+                "localhost".to_string(),
+                "127.0.0.1".to_string(),
+                "::1".to_string()
+            ],
+            "default Host allowlist should be loopback only"
+        );
+    }
+
+    /// Binding a non-loopback address (`--http 0.0.0.0:8080`) is documented,
+    /// and Host validation rejects it unless the operator names the host.
+    #[test]
+    fn streamable_config_accepts_operator_supplied_hosts() {
+        let config = build_streamable_config(&["skrills.internal:8080".to_string()]);
+
+        assert!(
+            config
+                .allowed_hosts
+                .contains(&"skrills.internal:8080".to_string()),
+            "operator host should be accepted, got {:?}",
+            config.allowed_hosts
+        );
+    }
+
+    /// Naming an extra host must not be a way to switch the loopback
+    /// protection off by accident.
+    #[test]
+    fn streamable_config_keeps_loopback_when_hosts_are_added() {
+        let config = build_streamable_config(&["example.com".to_string()]);
+
+        for loopback in ["localhost", "127.0.0.1", "::1"] {
+            assert!(
+                config.allowed_hosts.iter().any(|h| h == loopback),
+                "{loopback} should survive an operator-supplied host, got {:?}",
+                config.allowed_hosts
+            );
+        }
+    }
 
     #[test]
     fn parse_valid_bind_address() {

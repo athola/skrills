@@ -1,7 +1,7 @@
 [advisories]
 ignore = [
-  # paste crate is unmaintained (RUSTSEC-2024-0436) but only used transitively by rmcp.
-  # rmcp currently has no released version without this dependency; track upstream for removal
-  # or replace with pastey when available. See RUSTSEC for details.
+  # paste crate is unmaintained (RUSTSEC-2024-0436). It now reaches the tree
+  # through leptos (tachys, reactive_graph, either_of), not rmcp: rmcp moved to
+  # pastey and the 1.x upgrade confirmed it. Track leptos for removal.
   "RUSTSEC-2024-0436",
 ]

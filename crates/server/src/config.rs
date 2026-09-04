@@ -22,6 +22,11 @@
 //! # CORS allowed origins (comma-separated)
 //! cors_origins = "http://localhost:3000,https://app.example.com"
 //!
+//! # Extra Host values the MCP transport accepts, on top of localhost,
+//! # 127.0.0.1 and ::1 (comma-separated). Needed when binding a
+//! # non-loopback address.
+//! allowed_hosts = "skrills.internal:8080"
+//!
 //! # Bind address for HTTP transport
 //! http = "127.0.0.1:3000"
 //!
@@ -54,6 +59,9 @@ pub struct ServeConfig {
     pub tls_auto: Option<bool>,
     /// Comma-separated list of allowed CORS origins.
     pub cors_origins: Option<String>,
+    /// Comma-separated `Host` authorities the MCP transport accepts, added to
+    /// the loopback names rmcp allows by default.
+    pub allowed_hosts: Option<String>,
     /// Bind address for HTTP transport (e.g., "127.0.0.1:3000").
     pub http: Option<String>,
     /// Cache TTL in milliseconds for skill discovery.
@@ -171,6 +179,10 @@ fn apply_serve_config_to_env(serve: &ServeConfig) {
         set_if_absent("SKRILLS_CORS_ORIGINS", origins);
     }
 
+    if let Some(ref hosts) = serve.allowed_hosts {
+        set_if_absent("SKRILLS_ALLOWED_HOSTS", hosts);
+    }
+
     if let Some(ref bind) = serve.http {
         set_if_absent("SKRILLS_HTTP", bind);
     }
@@ -211,6 +223,7 @@ mod tests {
             tls_key = "/path/to/key.pem"
             tls_auto = true
             cors_origins = "http://localhost:3000,https://example.com"
+            allowed_hosts = "skrills.internal:8080,10.0.0.5:8080"
             http = "0.0.0.0:8080"
             cache_ttl_ms = 5000
         "#;
@@ -223,6 +236,10 @@ mod tests {
         assert_eq!(
             config.serve.cors_origins.as_deref(),
             Some("http://localhost:3000,https://example.com")
+        );
+        assert_eq!(
+            config.serve.allowed_hosts.as_deref(),
+            Some("skrills.internal:8080,10.0.0.5:8080")
         );
         assert_eq!(config.serve.http.as_deref(), Some("0.0.0.0:8080"));
         assert_eq!(config.serve.cache_ttl_ms, Some(5000));

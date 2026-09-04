@@ -12,7 +12,7 @@ pub(crate) fn handle_setup_command(
     universal: bool,
     mirror_source: Option<PathBuf>,
 ) -> Result<()> {
-    let config = crate::setup::interactive_setup(
+    let config = skrills_server::setup::interactive_setup(
         client,
         bin_dir,
         reinstall,
@@ -22,5 +22,5 @@ pub(crate) fn handle_setup_command(
         universal,
         mirror_source,
     )?;
-    crate::setup::run_setup(config)
+    skrills_server::setup::run_setup(config)
 }

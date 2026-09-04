@@ -19,6 +19,26 @@ use crate::settings::{backend_from_str, load_file_config, ExecutionMode, Subagen
 use crate::store::{default_store_path, BackendKind, RunId, RunRequest, RunStore, StateRunStore};
 use crate::tool_schemas;
 
+/// Builds a tool result with both text content and a structured payload.
+///
+/// rmcp 1.x marks `CallToolResult` `#[non_exhaustive]`, so it can only be
+/// built through its constructors, and none of them takes structured content
+/// alongside caller-chosen text content. The fields stay public, so setting
+/// `structured_content` after construction is the supported route.
+fn tool_result(
+    content: Vec<Content>,
+    structured_content: Option<Value>,
+    is_error: bool,
+) -> CallToolResult {
+    let mut result = if is_error {
+        CallToolResult::error(content)
+    } else {
+        CallToolResult::success(content)
+    };
+    result.structured_content = structured_content;
+    result
+}
+
 fn run_id_from_value(val: &Value) -> Result<RunId> {
     let s = val
         .as_str()
@@ -216,12 +236,11 @@ impl SubagentService {
         }
         let mut cli_templates = self.cli_adapter_for(None, None).list_templates().await?;
         templates.append(&mut cli_templates);
-        Ok(CallToolResult {
-            content: vec![Content::text("listed subagents")],
-            structured_content: Some(json!({"templates": templates})),
-            is_error: Some(false),
-            meta: None,
-        })
+        Ok(tool_result(
+            vec![Content::text("listed subagents")],
+            Some(json!({"templates": templates})),
+            false,
+        ))
     }
 
     async fn handle_list_agents(&self) -> Result<CallToolResult> {
@@ -244,12 +263,11 @@ impl SubagentService {
             })
             .collect();
 
-        Ok(CallToolResult {
-            content: vec![Content::text(format!("found {} agents", agents.len()))],
-            structured_content: Some(json!({"agents": agents})),
-            is_error: Some(false),
-            meta: None,
-        })
+        Ok(tool_result(
+            vec![Content::text(format!("found {} agents", agents.len()))],
+            Some(json!({"agents": agents})),
+            false,
+        ))
     }
 
     async fn handle_run(
@@ -320,16 +338,15 @@ impl SubagentService {
         };
         let run_id = adapter.run(request, self.store.clone()).await?;
         let status = adapter.status(run_id, self.store.clone()).await?;
-        Ok(CallToolResult {
-            content: vec![Content::text(format!("run_id={run_id}"))],
-            structured_content: Some(json!({
+        Ok(tool_result(
+            vec![Content::text(format!("run_id={run_id}"))],
+            Some(json!({
                 "run_id": run_id,
                 "status": status,
                 "events": self.store.run(run_id).await?.map(|r| r.events).unwrap_or_default()
             })),
-            is_error: Some(false),
-            meta: None,
-        })
+            false,
+        ))
     }
 
     /// Route to appropriate adapter based on agent configuration.
@@ -413,16 +430,15 @@ impl SubagentService {
             .ok_or_else(|| anyhow!("run_id is required"))?;
         let run_id = run_id_from_value(run_id_val)?;
         let status = self.store.status(run_id).await?;
-        Ok(CallToolResult {
-            content: vec![Content::text("status")],
-            structured_content: Some(json!({
+        Ok(tool_result(
+            vec![Content::text("status")],
+            Some(json!({
                 "run_id": run_id,
                 "status": status,
                 "events": self.store.run(run_id).await?.map(|r| r.events).unwrap_or_default()
             })),
-            is_error: Some(false),
-            meta: None,
-        })
+            false,
+        ))
     }
 
     async fn handle_stop(&self, args: Option<&JsonMap<String, Value>>) -> Result<CallToolResult> {
@@ -432,12 +448,11 @@ impl SubagentService {
                 .ok_or_else(|| anyhow!("run_id is required"))?,
         )?;
         let stopped = self.store.stop(run_id).await?;
-        Ok(CallToolResult {
-            content: vec![Content::text("stopped")],
-            structured_content: Some(json!({"run_id": run_id, "stopped": stopped})),
-            is_error: Some(false),
-            meta: None,
-        })
+        Ok(tool_result(
+            vec![Content::text("stopped")],
+            Some(json!({"run_id": run_id, "stopped": stopped})),
+            false,
+        ))
     }
 
     async fn handle_history(
@@ -450,12 +465,11 @@ impl SubagentService {
             .map(|v| usize::try_from(v).unwrap_or(usize::MAX))
             .unwrap_or(20);
         let runs = self.store.history(limit).await?;
-        Ok(CallToolResult {
-            content: vec![Content::text("history")],
-            structured_content: Some(json!({"runs": runs})),
-            is_error: Some(false),
-            meta: None,
-        })
+        Ok(tool_result(
+            vec![Content::text("history")],
+            Some(json!({"runs": runs})),
+            false,
+        ))
     }
 
     async fn handle_get_events(
@@ -478,15 +492,14 @@ impl SubagentService {
         let record = match self.store.run(run_id).await? {
             Some(r) => r,
             None => {
-                return Ok(CallToolResult {
-                    content: vec![Content::text(format!("run not found: {}", run_id))],
-                    structured_content: Some(json!({
+                return Ok(tool_result(
+                    vec![Content::text(format!("run not found: {}", run_id))],
+                    Some(json!({
                         "error": format!("run not found: {}", run_id),
                         "run_id": run_id.to_string()
                     })),
-                    is_error: Some(true),
-                    meta: None,
-                });
+                    true,
+                ));
             }
         };
 
@@ -523,30 +536,31 @@ impl SubagentService {
             })
             .collect();
 
-        Ok(CallToolResult {
-            content: vec![Content::text(format!(
+        Ok(tool_result(
+            vec![Content::text(format!(
                 "events: {} of {} total",
                 events_json.len(),
                 total_count
             ))],
-            structured_content: Some(json!({
+            Some(json!({
                 "run_id": run_id.to_string(),
                 "events": events_json,
                 "total_count": total_count,
                 "has_more": false
             })),
-            is_error: Some(false),
-            meta: None,
-        })
+            false,
+        ))
     }
 
+    /// Reported as a tool-level error, not a success: the tool is advertised in
+    /// the list, so a caller that branches on `is_error` would otherwise treat
+    /// "not implemented" as a transcript it can read.
     async fn handle_transcript(&self) -> Result<CallToolResult> {
-        Ok(CallToolResult {
-            content: vec![Content::text("secure transcripts are not yet implemented")],
-            structured_content: Some(json!({"status": "unimplemented"})),
-            is_error: Some(false),
-            meta: None,
-        })
+        Ok(tool_result(
+            vec![Content::text("secure transcripts are not yet implemented")],
+            Some(json!({"status": "unimplemented"})),
+            true,
+        ))
     }
 }
 

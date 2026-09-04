@@ -1,7 +1,8 @@
 //! Sync tests - sync error paths and parameter handling
 
-use super::super::*;
+use super::*;
 use crate::cli::SyncSource;
+use skrills_server::app::SkillService;
 use std::time::Duration;
 
 /// T1: run_sync_with_adapters rejects same source and target.

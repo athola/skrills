@@ -1,7 +1,7 @@
 use crate::cli::OutputFormat;
-use crate::discovery::merge_extra_dirs;
 use anyhow::Result;
 use skrills_discovery::{discover_skills, extra_skill_roots};
+use skrills_server::discovery::merge_extra_dirs;
 
 /// Handle the `analyze` command.
 pub(crate) fn handle_analyze_command(

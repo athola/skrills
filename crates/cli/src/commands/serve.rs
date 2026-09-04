@@ -4,12 +4,12 @@
 //! analytics are automatically saved when the server exits. This provides persistence
 //! until Claude Code exposes session-end hooks.
 
-use crate::app::{start_fs_watcher, SkillService};
-use crate::discovery::merge_extra_dirs;
-use crate::tool_schemas::all_tools;
-use crate::trace::stdio_with_optional_trace;
 use anyhow::{anyhow, Result};
 use rmcp::service::serve_server;
+use skrills_server::app::{start_fs_watcher, SkillService};
+use skrills_server::discovery::merge_extra_dirs;
+use skrills_server::tool_schemas::all_tools;
+use skrills_server::trace::stdio_with_optional_trace;
 use skrills_state::{cache_ttl, load_manifest_settings};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -75,6 +75,7 @@ pub(crate) fn handle_serve_command(
     tls_cert: Option<PathBuf>,
     tls_key: Option<PathBuf>,
     cors_origins: Vec<String>,
+    allowed_hosts: Vec<String>,
     tls_auto: bool,
     open_browser: bool,
 ) -> Result<()> {
@@ -111,8 +112,8 @@ pub(crate) fn handle_serve_command(
     if let Some(bind_addr) = http {
         #[cfg(feature = "http-transport")]
         {
-            use crate::http_transport::HttpSecurityConfig;
-            use crate::tls_auto::ensure_auto_tls_certs;
+            use skrills_server::http_transport::HttpSecurityConfig;
+            use skrills_server::tls_auto::ensure_auto_tls_certs;
 
             // Clone values needed for the factory closure
             let skill_dirs_clone = skill_dirs.clone();
@@ -137,6 +138,7 @@ pub(crate) fn handle_serve_command(
                 tls_cert: resolved_cert,
                 tls_key: resolved_key,
                 cors_origins,
+                allowed_hosts,
             };
 
             // Show certificate status on startup if available
@@ -146,7 +148,7 @@ pub(crate) fn handle_serve_command(
 
             let api_skill_dirs = skill_dirs.clone();
             return rt.block_on(async move {
-                crate::http_transport::serve_http_with_security(
+                skrills_server::http_transport::serve_http_with_security(
                     move || {
                         SkillService::new_with_ttl(merge_extra_dirs(&skill_dirs_clone), ttl)
                             .map_err(std::io::Error::other)
@@ -163,7 +165,14 @@ pub(crate) fn handle_serve_command(
         #[cfg(not(feature = "http-transport"))]
         {
             let _ = bind_addr; // suppress unused warning
-            let _ = (auth_token, tls_cert, tls_key, cors_origins, tls_auto); // suppress unused warnings
+            let _ = (
+                auth_token,
+                tls_cert,
+                tls_key,
+                cors_origins,
+                allowed_hosts,
+                tls_auto,
+            ); // suppress unused warnings
             return Err(anyhow!(
                 "HTTP transport requested but not available (built without 'http-transport' feature)"
             ));

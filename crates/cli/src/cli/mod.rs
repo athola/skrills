@@ -74,6 +74,16 @@ pub enum Commands {
             value_delimiter = ','
         )]
         cors_origins: Vec<String>,
+        /// Extra `Host` values the MCP transport accepts, on top of localhost,
+        /// 127.0.0.1 and ::1. Required when binding a non-loopback address:
+        /// Host validation blocks DNS-rebinding attacks and rejects the rest.
+        #[arg(
+            long,
+            value_name = "HOSTS",
+            env = "SKRILLS_ALLOWED_HOSTS",
+            value_delimiter = ','
+        )]
+        allowed_hosts: Vec<String>,
         /// Auto-generate self-signed TLS certificate for development.
         /// Stores certificate in ~/.skrills/tls/. Overrides --tls-cert and --tls-key.
         #[arg(long, env = "SKRILLS_TLS_AUTO")]
@@ -672,7 +682,7 @@ mod tests {
     use super::*;
     use clap::Parser;
 
-    use crate::test_support::{env_guard, set_env_var};
+    use skrills_test_utils::{env_guard, set_env_var};
 
     #[test]
     fn parse_defaults_to_serve_when_no_subcommand() {
@@ -710,6 +720,7 @@ mod tests {
                 tls_cert,
                 tls_key,
                 cors_origins,
+                allowed_hosts: _,
                 tls_auto,
                 open,
             }) => {
@@ -819,6 +830,44 @@ mod tests {
             }) => {
                 assert_eq!(tls_cert, Some(PathBuf::from("/env/cert.pem")));
                 assert_eq!(tls_key, Some(PathBuf::from("/env/key.pem")));
+            }
+            _ => unreachable!("expected Serve command"),
+        }
+    }
+
+    /// `--allowed-hosts` is the only way to reach a non-loopback bind once the
+    /// MCP transport validates `Host`, so it must arrive from the flag and from
+    /// the environment the config file writes.
+    #[test]
+    fn parse_serve_allowed_hosts_from_flag_and_env() {
+        let _guard = env_guard();
+
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "serve",
+            "--http",
+            "0.0.0.0:8080",
+            "--allowed-hosts",
+            "skrills.internal:8080,10.0.0.5:8080",
+        ])
+        .expect("serve with --allowed-hosts should parse");
+        match cli.command {
+            Some(Commands::Serve { allowed_hosts, .. }) => assert_eq!(
+                allowed_hosts,
+                vec![
+                    "skrills.internal:8080".to_string(),
+                    "10.0.0.5:8080".to_string()
+                ]
+            ),
+            _ => unreachable!("expected Serve command"),
+        }
+
+        let _hosts_env = set_env_var("SKRILLS_ALLOWED_HOSTS", Some("from.env:9000"));
+        let cli = Cli::try_parse_from(["skrills", "serve", "--http", "0.0.0.0:8080"])
+            .expect("serve with env allowed hosts should parse");
+        match cli.command {
+            Some(Commands::Serve { allowed_hosts, .. }) => {
+                assert_eq!(allowed_hosts, vec!["from.env:9000".to_string()])
             }
             _ => unreachable!("expected Serve command"),
         }

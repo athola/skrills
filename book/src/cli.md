@@ -148,9 +148,24 @@ skrills serve --skill-dir ~/.custom/skills  # Custom skill directory
 | `--port <N>` | HTTP server port (default: auto-select, fallback up to 10 ports) |
 | `--open` | Auto-launch the browser dashboard after starting |
 | `--tls-auto` | Generate self-signed TLS cert for HTTPS in development |
+| `--allowed-hosts <HOSTS>` | Extra `Host` values the MCP transport accepts, on top of `localhost`, `127.0.0.1` and `::1` |
 | `--skill-dir <DIR>` | Additional skill directory to include |
 | `--cache-ttl-ms <N>` | Discovery cache TTL in milliseconds |
 | `--watch` | Enable live filesystem invalidation |
+
+The MCP transport validates the inbound `Host` header and accepts only
+`localhost`, `127.0.0.1` and `::1` unless told otherwise. That is what stops a
+page on an attacker's domain from resolving to your loopback address and
+driving the server through your browser. Binding a non-loopback address needs
+the hostname clients actually use:
+
+```bash
+skrills serve --http 0.0.0.0:8080 --allowed-hosts skrills.internal:8080
+```
+
+Supplied hosts are added to the loopback set, never substituted for it.
+The same list is settable in the config file as `allowed_hosts` under
+`[serve]`, or through `SKRILLS_ALLOWED_HOSTS`.
 
 The MCP server exposes 36 tools for validation, analysis, sync, intelligence, and research directly to your AI assistant. The HTTP mode serves a browser dashboard with skills explorer, metrics, and activity feed.
 

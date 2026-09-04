@@ -1,14 +1,14 @@
 //! CLI handler for the `metrics` command.
 
-use crate::app::{
-    DependencyStats, HubSkill, MetricsValidationSummary, QualityDistribution, SkillMetrics,
-    SkillTokenInfo, TokenStats,
-};
 use crate::cli::OutputFormat;
-use crate::discovery::merge_extra_dirs;
 use anyhow::Result;
 use skrills_analyze::RelationshipGraph;
 use skrills_discovery::{discover_skills, extra_skill_roots};
+use skrills_server::app::{
+    DependencyStats, HubSkill, MetricsValidationSummary, QualityDistribution, SkillMetrics,
+    SkillTokenInfo, TokenStats,
+};
+use skrills_server::discovery::merge_extra_dirs;
 use std::cmp::Reverse;
 use std::collections::HashMap;
 

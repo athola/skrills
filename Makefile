@@ -60,8 +60,9 @@ define verify_setup
 endef
 
 # Phony targets: core developer flow
-.PHONY: all help version verify fmt fmt-check lint lint-md lint-prose lint-decoration lint-hygiene check test test-unit test-integration test-setup test-install \
-	release-consistency \
+.PHONY: all help version verify fmt fmt-check lint lint-md lint-prose lint-decoration lint-reachability lint-hygiene check test test-unit test-integration test-setup test-install \
+	release-consistency verify-publish test-scripts cold-window \
+	plugin-audit plugin-audit-fix plugin-validate plugin-modernize plugin-doctor \
 	build build-min serve-help install status coverage test-coverage dogfood dogfood-readme ci precommit \
 	clean clean-demo hooks require-cargo security deny deps-update check-deps \
 	quick watch bench release
@@ -198,8 +199,13 @@ lint-prose:
 lint-decoration:
 	$(SHELL) ./scripts/lint-rust-decoration.sh
 
+# Fail when a crate source file is not declared as a module: an undeclared
+# file is never compiled, so nothing else in the toolchain would notice.
+lint-reachability:
+	$(SHELL) ./scripts/lint-module-reachability.sh
+
 # Aggregate AI hygiene lints (banned words + decorative comments).
-lint-hygiene: lint-prose lint-decoration
+lint-hygiene: lint-prose lint-decoration lint-reachability
 
 check:
 	$(CARGO_CMD) check --workspace --all-targets
@@ -371,7 +377,7 @@ demo-analytics: demo-fixtures build
 demo-gateway: build
 	@echo "==> Demo: MCP Gateway Tools (unit tests)"
 	@for filter in mcp_gateway list_mcp_tools describe_mcp_tool get_context_stats; do \
-		$(CARGO_CMD) test --package skrills-server --lib -- $$filter --test-threads=1; \
+		$(CARGO_CMD) test --package skrills-server --lib -- $$filter --test-threads=1 || exit 1; \
 	done
 	@echo "==> Gateway demo complete"
 
@@ -571,8 +577,23 @@ clean-demo:
 
 ci: fmt lint lint-hygiene test
 
+# verify_publish_order.sh needs associative arrays, so it needs bash 4+.
+# Stock macOS /bin/bash is 3.2, so probe the usual Homebrew locations before
+# giving up: on a machine with a newer bash this gate runs locally instead of
+# only in the publish-dry-run and release CI jobs.
 verify-publish:
-	@if bash -c 'declare -A x 2>/dev/null'; then bash scripts/verify_publish_order.sh; else echo "[SKIP] verify-publish requires bash 4+ (found $$(bash --version | head -1))"; fi
+	@vp_bash=""; \
+	for b in bash /opt/homebrew/bin/bash /usr/local/bin/bash; do \
+	  command -v "$$b" >/dev/null 2>&1 || continue; \
+	  "$$b" -c 'declare -A probe' >/dev/null 2>&1 || continue; \
+	  vp_bash="$$b"; break; \
+	done; \
+	if [ -n "$$vp_bash" ]; then \
+	  "$$vp_bash" scripts/verify_publish_order.sh; \
+	else \
+	  echo "[SKIP] verify-publish needs bash 4+ for associative arrays; found $$(bash --version | head -1)"; \
+	  echo "       'brew install bash' runs it locally; publish-dry-run covers it in CI"; \
+	fi
 
 precommit: fmt-check lint lint-md lint-hygiene test test-install dogfood-precommit verify-publish
 
@@ -741,9 +762,9 @@ dogfood-tui-interactive: build
 # contract against an already-built binary. It does NOT force a release build,
 # so commits stay fast; CI and `make dogfood-all` run the full set. Install
 # asset selection is already covered by `test-install` in the precommit chain.
-dogfood-precommit:
+dogfood-precommit: build
 	@if [ -x "$(BIN_PATH)" ]; then \
-	  BIN_PATH=$(BIN_PATH) $(SHELL) ./scripts/dogfood-contracts.sh ; \
+	  BIN_PATH=$(BIN_PATH) $(SHELL) ./scripts/dogfood-contracts.sh && \
 	  BIN_PATH=$(BIN_PATH) $(SHELL) ./scripts/dogfood-tui.sh ; \
 	else \
 	  echo "==> [dogfood] skipping validate JSON + TUI contracts: $(BIN_PATH) not built" ; \

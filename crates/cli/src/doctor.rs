@@ -144,7 +144,7 @@ pub fn doctor_report() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support;
+    use skrills_test_utils;
     use tempfile::tempdir;
 
     #[test]
@@ -154,7 +154,7 @@ mod tests {
         WHEN generating a doctor report
         THEN it should note missing files
         */
-        let _guard = test_support::env_guard();
+        let _guard = skrills_test_utils::env_guard();
         let temp = tempdir().expect("tempdir");
         let mcp_path = temp.path().join(".codex/mcp_servers.json");
         let cfg_path = temp.path().join(".codex/config.toml");
@@ -181,7 +181,7 @@ mod tests {
         WHEN generating a doctor report
         THEN it should surface parsing and validation messages
         */
-        let _guard = test_support::env_guard();
+        let _guard = skrills_test_utils::env_guard();
         let temp = tempdir().expect("tempdir");
         let codex_dir = temp.path().join(".codex");
         fs::create_dir_all(&codex_dir).expect("create codex dir");

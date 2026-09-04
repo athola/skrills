@@ -9,7 +9,9 @@ use skrills_state::home_dir;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
-use crate::sync::{mirror_source_root, sync_agents_only_from_claude, sync_skills_only_from_claude};
+use skrills_server::sync::{
+    mirror_source_root, sync_agents_only_from_claude, sync_skills_only_from_claude,
+};
 use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
 
 /// Runs an interactive TUI for sync management.
@@ -49,7 +51,9 @@ pub(crate) fn tui_flow(_extra_dirs: &[PathBuf]) -> Result<()> {
         &home.join(".codex/skills"),
         include_marketplace,
     )?;
-    let _ = crate::setup::ensure_codex_skills_feature_enabled(&home.join(".codex/config.toml"));
+    let _ = skrills_server::setup::ensure_codex_skills_feature_enabled(
+        &home.join(".codex/config.toml"),
+    );
 
     // Mirror commands/prefs/MCP
     let source = ClaudeAdapter::new()?;

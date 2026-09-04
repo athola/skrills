@@ -1,7 +1,7 @@
-use crate::discovery::{
+use anyhow::{anyhow, Result};
+use skrills_server::discovery::{
     collect_agents, merge_extra_dirs, resolve_agent, DEFAULT_AGENT_RUN_TEMPLATE,
 };
-use anyhow::{anyhow, Result};
 use std::path::PathBuf;
 use std::process::Command;
 

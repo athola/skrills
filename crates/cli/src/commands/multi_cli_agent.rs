@@ -4,8 +4,8 @@
 //! with automatic fallback when the primary backend is unavailable.
 
 use crate::cli::AgentBackend;
-use crate::discovery::{collect_agents, merge_extra_dirs, resolve_agent};
 use anyhow::{anyhow, Result};
+use skrills_server::discovery::{collect_agents, merge_extra_dirs, resolve_agent};
 use std::path::PathBuf;
 use std::process::Command;
 

@@ -31,8 +31,32 @@ pub trait AgentAdapter: Send + Sync {
     /// Root configuration directory (e.g., ~/.claude, ~/.codex)
     fn config_root(&self) -> PathBuf;
 
-    /// What this adapter supports
+    /// What this adapter supports.
+    ///
+    /// Direction-agnostic, and kept as the default for both
+    /// [`read_support`](Self::read_support) and
+    /// [`write_support`](Self::write_support). Prefer those two: an adapter
+    /// can genuinely support an artifact in one direction only, and a single
+    /// flag cannot say which.
     fn supported_fields(&self) -> FieldSupport;
+
+    /// What this adapter can read, as a sync *source*.
+    ///
+    /// A `false` here means the reader is absent, so the trait's default
+    /// implementation would return an empty result. That is indistinguishable
+    /// from "the source genuinely had none", which is how an unimplemented
+    /// path came to report success.
+    fn read_support(&self) -> FieldSupport {
+        self.supported_fields()
+    }
+
+    /// What this adapter can write, as a sync *target*.
+    ///
+    /// A `false` here means the writer is absent, so the trait's default
+    /// implementation would report a successful write of nothing.
+    fn write_support(&self) -> FieldSupport {
+        self.supported_fields()
+    }
 
     // --- Read operations ---
 
@@ -124,6 +148,14 @@ impl AgentAdapter for Box<dyn AgentAdapter> {
     }
     fn supported_fields(&self) -> FieldSupport {
         (**self).supported_fields()
+    }
+
+    fn read_support(&self) -> FieldSupport {
+        (**self).read_support()
+    }
+
+    fn write_support(&self) -> FieldSupport {
+        (**self).write_support()
     }
     fn read_commands(&self, include_marketplace: bool) -> Result<Vec<Command>> {
         (**self).read_commands(include_marketplace)

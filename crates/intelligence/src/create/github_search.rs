@@ -78,6 +78,25 @@ struct Repository {
 
 /// Sanitize user input to prevent GitHub search operator injection.
 /// Strips known GitHub search operators that could manipulate search semantics.
+/// Byte offset of the first case-insensitive occurrence of `needle`.
+///
+/// Searching a `to_lowercase()` copy and slicing the original with the offset
+/// found there is unsound: the conversion is not byte-length preserving
+/// ('\u{130}' is 2 bytes and lowercases to 3), so the offset can land past the
+/// end of the original or inside a character. Every operator here is ASCII, so
+/// a same-length window compared with `eq_ignore_ascii_case` is exact, and
+/// `get` returns `None` rather than panicking on a non-boundary index.
+fn find_ignore_ascii_case(haystack: &str, needle: &str) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    haystack.char_indices().map(|(i, _)| i).find(|&i| {
+        haystack
+            .get(i..i + needle.len())
+            .is_some_and(|window| window.eq_ignore_ascii_case(needle))
+    })
+}
+
 fn sanitize_github_query(query: &str) -> String {
     // GitHub search operators that could be injected (colon-based operators)
     let colon_operators = [
@@ -110,27 +129,22 @@ fn sanitize_github_query(query: &str) -> String {
 
     // Remove colon-based operators
     for op in colon_operators {
-        loop {
-            let lower = sanitized.to_lowercase();
-            if let Some(pos) = lower.find(&op.to_lowercase()) {
-                // Find the end of the operator value (space or end of string)
-                let rest = &sanitized[pos + op.len()..];
-                let end = if rest.starts_with('"') {
-                    // Quoted value - find closing quote
-                    rest.strip_prefix('"')
-                        .and_then(|s| s.find('"'))
-                        .map(|p| pos + op.len() + p + 2)
-                        .unwrap_or(sanitized.len())
-                } else {
-                    // Unquoted value - find next space
-                    rest.find(' ')
-                        .map(|p| pos + op.len() + p)
-                        .unwrap_or(sanitized.len())
-                };
-                sanitized = format!("{}{}", &sanitized[..pos], &sanitized[end..]);
+        while let Some(pos) = find_ignore_ascii_case(&sanitized, op) {
+            // Find the end of the operator value (space or end of string)
+            let rest = &sanitized[pos + op.len()..];
+            let end = if rest.starts_with('"') {
+                // Quoted value - find closing quote
+                rest.strip_prefix('"')
+                    .and_then(|s| s.find('"'))
+                    .map(|p| pos + op.len() + p + 2)
+                    .unwrap_or(sanitized.len())
             } else {
-                break;
-            }
+                // Unquoted value - find next space
+                rest.find(' ')
+                    .map(|p| pos + op.len() + p)
+                    .unwrap_or(sanitized.len())
+            };
+            sanitized = format!("{}{}", &sanitized[..pos], &sanitized[end..]);
         }
     }
 
@@ -292,6 +306,26 @@ pub async fn search_skills_advanced(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `to_lowercase()` is not byte-length preserving: 'İ' (U+0130, 2 bytes)
+    /// lowercases to 3 bytes. The operator search ran over the lowercased copy
+    /// and sliced the original with the offset it found there, so a query
+    /// carrying such a character panicked on an out-of-bounds slice. Reachable
+    /// from the `search-skills-github` MCP tool directly, and from
+    /// `create-skill`, which builds the query out of an unvalidated description.
+    #[test]
+    fn sanitize_github_query_handles_multibyte_case_change() {
+        assert_eq!(sanitize_github_query("\u{130}repo:"), "\u{130}");
+        assert_eq!(
+            sanitize_github_query("\u{130}repo:owner/name tail"),
+            "\u{130} tail"
+        );
+        assert_eq!(
+            sanitize_github_query("\u{130}\u{130}\u{130} user:someone"),
+            "\u{130}\u{130}\u{130}"
+        );
+    }
+
     use crate::test_support::{env_guard, set_env_var};
     use reqwest::header::AUTHORIZATION;
     use serial_test::serial;

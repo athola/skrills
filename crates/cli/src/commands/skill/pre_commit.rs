@@ -3,7 +3,7 @@ use skrills_discovery::{discover_skills, extra_skill_roots};
 use std::path::PathBuf;
 
 use crate::cli::ValidationTarget;
-use crate::discovery::merge_extra_dirs;
+use skrills_server::discovery::merge_extra_dirs;
 
 /// Handle the pre-commit-validate command.
 pub(crate) fn handle_pre_commit_validate_command(

@@ -1,7 +1,7 @@
 use crate::cli::OutputFormat;
-use crate::discovery::merge_extra_dirs;
 use anyhow::Result;
 use skrills_discovery::{discover_skills, extra_skill_roots};
+use skrills_server::discovery::merge_extra_dirs;
 
 /// Handle the `validate` command.
 pub(crate) fn handle_validate_command(

@@ -211,7 +211,7 @@ pub fn handle_cert_status_command(format: OutputFormat) -> Result<()> {
 /// Handle `skrills cert renew` command.
 #[cfg(feature = "http-transport")]
 pub fn handle_cert_renew_command(force: bool) -> Result<()> {
-    use crate::tls_auto::ensure_auto_tls_certs;
+    use skrills_server::tls_auto::ensure_auto_tls_certs;
 
     let tls_path = tls_dir()?;
     let cert_path = tls_path.join("cert.pem");
@@ -472,7 +472,7 @@ mod tests {
     #[test]
     #[cfg(feature = "http-transport")]
     fn cert_info_parses_valid_pem() {
-        use crate::tls_auto::generate_self_signed_cert;
+        use skrills_server::tls_auto::generate_self_signed_cert;
 
         let tmp = tempfile::tempdir().unwrap();
         let cert_path = tmp.path().join("cert.pem");

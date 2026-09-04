@@ -14,6 +14,70 @@ fn make_skill_with_frontmatter(name: &str) -> Command {
     make_command(name, &content)
 }
 
+/// The manifest is written under the sanitized plugin name while the skill
+/// body used the raw one, so any plugin name the sanitizer rewrites put the
+/// two in different directories and Cursor found a plugin with no skills.
+#[test]
+fn write_skills_puts_manifest_and_skill_in_the_same_plugin_dir() {
+    let tmp = TempDir::new().unwrap();
+    let mut skill = make_skill_with_frontmatter("deep-work");
+    skill.plugin_origin = Some(crate::common::PluginOrigin {
+        plugin_name: "my.plugin".to_string(),
+        publisher: "market".to_string(),
+        version: "1.0.0".to_string(),
+    });
+
+    super::skills::write_skills(tmp.path(), &[skill]).unwrap();
+
+    let local = tmp.path().join("plugins/local");
+    let manifest_dirs: Vec<_> = std::fs::read_dir(&local)
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+        .collect();
+    assert_eq!(
+        manifest_dirs.len(),
+        1,
+        "manifest and skill body should share one plugin directory, got {manifest_dirs:?}"
+    );
+    let plugin_dir = local.join(&manifest_dirs[0]);
+    assert!(
+        plugin_dir.join(".cursor-plugin/plugin.json").exists(),
+        "manifest missing from {}",
+        plugin_dir.display()
+    );
+    assert!(
+        plugin_dir.join("skills/deep-work/SKILL.md").exists(),
+        "skill body missing from {}",
+        plugin_dir.display()
+    );
+}
+
+/// A plugin name is upstream metadata, so it must not be able to steer a write
+/// out of `plugins/local/`.
+#[test]
+fn write_skills_refuses_traversal_in_plugin_name() {
+    let tmp = TempDir::new().unwrap();
+    let mut skill = make_skill_with_frontmatter("deep-work");
+    skill.plugin_origin = Some(crate::common::PluginOrigin {
+        plugin_name: "../../escaped".to_string(),
+        publisher: "market".to_string(),
+        version: "1.0.0".to_string(),
+    });
+
+    super::skills::write_skills(tmp.path(), &[skill]).unwrap();
+
+    // `plugins/local/../../escaped` resolves to `<root>/escaped`: inside the
+    // temp dir, but outside the directory the adapter is allowed to write.
+    assert!(
+        !tmp.path().join("escaped").exists(),
+        "plugin name must not escape plugins/local"
+    );
+    assert!(
+        tmp.path().join("plugins/local").exists(),
+        "the write should still land under plugins/local"
+    );
+}
+
 fn make_skill_with_modules(name: &str) -> Command {
     let mut cmd = make_skill_with_frontmatter(name);
     cmd.modules = vec![ModuleFile {
@@ -1067,10 +1131,10 @@ fn plugin_assets_path_traversal_sanitized() {
     assert!(local_dir.exists(), "plugins/local should exist");
 }
 
-/// Non-manifest assets (scripts, binaries) are silently ignored, only
-/// `.claude-plugin/plugin.json` files are processed by the manifest writer.
+/// Runtime files (scripts, binaries) land under the plugin directory so
+/// skills that shell out to them resolve at their documented relative path.
 #[test]
-fn plugin_assets_ignores_non_manifest_files() {
+fn plugin_assets_writes_script_to_local_plugin_dir() {
     use crate::common::PluginAsset;
 
     let tmp = TempDir::new().unwrap();
@@ -1087,7 +1151,169 @@ fn plugin_assets_ignores_non_manifest_files() {
 
     let report = adapter.write_plugin_assets(&[script]).unwrap();
 
-    assert_eq!(report.written, 0, "Non-manifest assets should be ignored");
+    assert_eq!(report.written, 1, "Script asset should be written");
+    let expected = tmp.path().join("plugins/local/my-plugin/scripts/helper.py");
+    assert_eq!(
+        std::fs::read(&expected).unwrap(),
+        b"# helper\n".to_vec(),
+        "Script should exist with source content at {}",
+        expected.display()
+    );
+}
+
+/// Skill bodies reach Cursor through the plugin mirror; `sync_skills` is off
+/// for Cursor targets, so this is the only path that carries them.
+#[test]
+fn plugin_assets_writes_skill_body_to_local_plugin_dir() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let skill = PluginAsset::new(
+        "my-plugin".to_string(),
+        "market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from("skills/deep-work/SKILL.md"),
+        b"---\nname: deep-work\n---\nbody\n".to_vec(),
+        false,
+    );
+
+    let report = adapter.write_plugin_assets(&[skill]).unwrap();
+
+    assert_eq!(report.written, 1, "Skill asset should be written");
+    assert!(
+        tmp.path()
+            .join("plugins/local/my-plugin/skills/deep-work/SKILL.md")
+            .exists(),
+        "Skill body should exist under the plugin's skills directory"
+    );
+}
+
+/// A second run with identical content must not rewrite files, otherwise every
+/// sync churns thousands of mtimes.
+#[test]
+fn plugin_assets_skips_unchanged_asset() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let asset = || {
+        PluginAsset::new(
+            "my-plugin".to_string(),
+            "market".to_string(),
+            "1.0.0".to_string(),
+            std::path::PathBuf::from("scripts/helper.py"),
+            b"# helper\n".to_vec(),
+            false,
+        )
+    };
+
+    adapter.write_plugin_assets(&[asset()]).unwrap();
+    let report = adapter.write_plugin_assets(&[asset()]).unwrap();
+
+    assert_eq!(report.written, 0, "Unchanged asset should not be rewritten");
+    assert!(
+        report
+            .skipped
+            .iter()
+            .any(|reason| matches!(reason, crate::report::SkipReason::Unchanged { .. })),
+        "Unchanged asset should be reported as skipped, got: {:?}",
+        report.skipped
+    );
+}
+
+/// Cursor reads its manifest from `.cursor-plugin/`; the Claude-named
+/// directory must not survive the copy or Cursor sees two manifests.
+#[test]
+fn plugin_assets_rewrites_claude_plugin_dir_to_cursor_plugin() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let manifest = PluginAsset::new(
+        "my-plugin".to_string(),
+        "market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from(".claude-plugin/plugin.json"),
+        b"{\"name\": \"my-plugin\"}".to_vec(),
+        false,
+    );
+
+    let report = adapter.write_plugin_assets(&[manifest]).unwrap();
+
+    assert_eq!(report.written, 1, "Manifest should be written once");
+    let plugin_dir = tmp.path().join("plugins/local/my-plugin");
+    assert!(
+        plugin_dir.join(".cursor-plugin/plugin.json").exists(),
+        "Manifest should land in .cursor-plugin/"
+    );
+    assert!(
+        !plugin_dir.join(".claude-plugin").exists(),
+        "Claude-named manifest directory should not be copied verbatim"
+    );
+}
+
+/// A relative path escaping the plugin directory is refused, not written
+/// somewhere else under the user's home.
+#[test]
+fn plugin_assets_relative_path_traversal_refused() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let escaping = PluginAsset::new(
+        "my-plugin".to_string(),
+        "market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from("../../evil.sh"),
+        b"rm -rf /\n".to_vec(),
+        false,
+    );
+
+    let report = adapter.write_plugin_assets(&[escaping]).unwrap();
+
+    assert_eq!(report.written, 0, "Escaping asset must not be written");
+    assert!(
+        !tmp.path().join("evil.sh").exists() && !tmp.path().join("plugins/evil.sh").exists(),
+        "Escaping asset must not land outside the plugin directory"
+    );
+}
+
+/// Executable assets stay executable, otherwise skills that invoke them
+/// fail with a permission error on Cursor's side.
+#[cfg(unix)]
+#[test]
+fn plugin_assets_preserve_executable_bit() {
+    use crate::common::PluginAsset;
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let binary = PluginAsset::new(
+        "my-plugin".to_string(),
+        "market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from("bin/runner"),
+        b"#!/bin/sh\n".to_vec(),
+        true,
+    );
+
+    adapter.write_plugin_assets(&[binary]).unwrap();
+
+    let mode = std::fs::metadata(tmp.path().join("plugins/local/my-plugin/bin/runner"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert!(
+        mode & 0o111 != 0,
+        "Executable asset should keep its executable bit, mode was {:o}",
+        mode
+    );
 }
 
 /// A valid `.claude-plugin/plugin.json` asset is written to

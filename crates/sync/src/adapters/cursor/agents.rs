@@ -8,7 +8,7 @@
 //! - Model names translated via `transform_model`
 
 use super::paths::agents_dir;
-use super::utils::sanitize_name;
+use crate::adapters::utils::sanitize_name_kebab;
 use crate::adapters::utils::{hash_content, split_frontmatter};
 use crate::common::{Command, ContentFormat};
 use crate::report::{SkipReason, WriteReport};
@@ -90,7 +90,7 @@ pub fn write_agents(root: &Path, agents: &[Command]) -> Result<WriteReport> {
     fs::create_dir_all(&dir)?;
 
     for agent in agents {
-        let name = sanitize_name(&agent.name);
+        let name = sanitize_name_kebab(&agent.name);
         let path = dir.join(format!("{}.md", name));
 
         // Translate frontmatter fields
@@ -166,7 +166,7 @@ fn translate_agent_frontmatter(content: &str) -> String {
     result.push_str("\n---\n");
     if !body.is_empty() {
         result.push('\n');
-        result.push_str(body);
+        result.push_str(&body);
     }
     result
 }
