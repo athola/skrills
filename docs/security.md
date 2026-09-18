@@ -115,6 +115,8 @@ In local deployments using standard I/O (stdio) mode, security relies on process
 #### Network Security
 The system supports TLS 1.3, prioritizing modern cipher suites like AES-256-GCM and ChaCha20-Poly1305 to enforce forward secrecy. It validates CA certificates, hostnames, and expiration dates for all connections.
 
+The Streamable HTTP transport checks the inbound `Host` header and answers 403 unless it names `localhost`, `127.0.0.1`, `::1`, or a host the operator added. This closes DNS rebinding (RUSTSEC-2026-0189): a page on an attacker's domain that resolves to the loopback address still sends its own name in `Host`, and CORS does not stop it. Hosts added with `--allowed-hosts`, `SKRILLS_ALLOWED_HOSTS`, or `allowed_hosts` under `[serve]` extend the loopback set and never replace it. A server bound to a non-loopback address refuses every client until its public hostname is listed.
+
 #### Input Validation
 We prevent directory traversal attacks by validating skill file paths and restricting access to designated skill directories. All MCP messages undergo JSON schema validation, type checking, and size limit enforcement. Configurable file size limits further prevent memory exhaustion and handle large files gracefully.
 

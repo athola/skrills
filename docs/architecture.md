@@ -1,14 +1,14 @@
 # Architecture
 
-The CLI delegates command parsing to focused handlers that call subsystems for discovery, synchronization, and runtime management. The `app` module connects the CLI to the `SkillService`, which exposes resources and tools over MCP.
+The `skrills` crate (`crates/cli`) parses the command line and dispatches to focused handlers that call subsystems for discovery, synchronization, and runtime management. Those handlers drive the `SkillService` in `skrills-server`, which exposes resources and tools over MCP.
 
 ## Runtime Flow
 
 ```mermaid
 graph TD
-    CLI[CLI parser] --> Commands[commands/* handlers]
-    Commands --> App[app::run]
-    App --> SkillService
+    CLI[CLI parser] --> App[dispatcher::run]
+    App --> Commands[commands/* handlers]
+    Commands --> SkillService
     SkillService --> Discovery[discovery & validation]
     SkillService --> State[manifest & cache TTL]
     App --> Sync[sync and mirror]
@@ -21,7 +21,10 @@ graph TD
 
 ```mermaid
 graph TD
-    cli[cli] --> server[server<br/>MCP runtime, commands]
+    cli[cli<br/>clap, commands, dispatcher] --> server[server<br/>MCP runtime, engine]
+    cli --> sync & validate & analyze & intelligence
+    cli --> metrics & tome & discovery & state
+    cli -. optional .-> subagents & dashboard
     server --> sync[sync]
     server --> validate[validate]
     server --> analyze[analyze]
@@ -50,8 +53,8 @@ graph TD
 
 | Crate | Purpose |
 |-------|---------|
-| `cli` | Thin binary wrapper |
-| `server` | MCP server, CLI commands, HTTP transport, REST API (`/api/mcp-servers`) |
+| `cli` | The `skrills` binary and library: clap definitions, subcommand handlers, dispatcher, sync TUI, doctor, cold-window CLI |
+| `server` | MCP server and the engine subcommands call: `SkillService`, tool schemas, HTTP transport, REST API (`/api/mcp-servers`) |
 | `sync` | Bidirectional Claude/Codex/Copilot/Cursor sync |
 | `validate` | Skill validation (Claude/Codex/Copilot/Cursor) |
 | `analyze` | Token counting, dependencies |
@@ -74,15 +77,16 @@ The `app` module is split to stay under the 2500 LOC threshold (ADR-0001):
 
 | Module | Lines | Purpose |
 |--------|-------|---------|
-| `mod.rs` | ~1600 | Core SkillService, MCP handlers, resource serving |
-| `intelligence.rs` | ~740 | Intelligence tool implementations |
-| `research.rs` | ~610 | Research API tool handlers (tome crate integration) |
+| `mod.rs` | ~570 | Core SkillService, MCP handlers, resource serving |
+| `tools.rs` | ~1250 | Sync, validation, skill-diff, and skill-trace tool implementations |
+| `intelligence.rs` | ~990 | Intelligence tool implementations |
+| `research.rs` | ~590 | Research API tool handlers (tome crate integration) |
 
-**LOC Monitoring**: When `app/mod.rs` approaches 2000 lines, extract the next logical group (e.g., subagent tool handlers or resource-serving methods).
+**LOC Monitoring**: When any `app` module approaches 2000 lines, extract the next logical group (e.g., subagent tool handlers or resource-serving methods). `tools.rs` is the closest today.
 
 ## Roadmap
 
-Command handlers move to submodules as the CLI grows to align CLI commands with MCP tools. Future work includes consolidating `sync-from-claude` with `sync-all`. The `app` module size is monitored to trigger refactoring at the threshold.
+Command handlers are in `crates/cli/src/commands/`, one submodule per command group, so CLI commands line up with MCP tools. `crates/cli` still depends on `skrills-server` for `app`, `handler`, and `http_transport`, so the split is a cohesion boundary and does not yet lighten the CLI build. Future work includes consolidating `sync-from-claude` with `sync-all`. The `app` module size is monitored to trigger refactoring at the threshold.
 
 ## Related Documents
 
