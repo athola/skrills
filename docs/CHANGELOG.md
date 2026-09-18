@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.2 - 2026-09-18
 
 - **Security: Close RUSTSEC-2026-0285 in rustls** (severity 5.3, TLS 1.3 handshake messages accepted across encryption level boundaries). `cargo update` moves `rustls` 0.23.40 to 0.23.45 along with 221 other lockfile entries. The same pass clears three unsound-code warnings: `anyhow` 1.0.102 to 1.0.104 (RUSTSEC-2026-0190), `lru` 0.16.4 to 0.18.4 (RUSTSEC-2026-0253), `event-listener` 5.4.1 to 5.4.2 (RUSTSEC-2026-0221), and drops `scc` (RUSTSEC-2026-0205) from the tree. `cargo audit` reports no vulnerabilities. The two unmaintained-crate warnings (`paste` through leptos, `proc-macro-error2`) still fire and are unchanged.
 - **Migration: rmcp 1.8 to 3.4**, which follows the 2026-07-28 MCP specification. `rmcp::model::Content` is now `ContentBlock`. `ServerHandler::call_tool` and `read_resource` return `CallToolResponse` and `ReadResourceResponse`, whose other variants carry the new input-required and task flows. Every skrills tool completes in one step, so the dispatch body moved to `SkillService::call_tool_complete` and the trait method wraps its result. `ListToolsResult` and `ListResourcesResult` are built with `with_all_items`, `Resource` is a flat struct built with `Resource::new(..).with_description(..).with_mime_type(..)` in place of `RawResource`, and `Meta` is `MetaObject`. Older clients are unaffected: a stdio session that initializes with `2024-11-05` or `2025-06-18` negotiates that version, lists 49 tools, and gets tool results with no new-spec fields.
