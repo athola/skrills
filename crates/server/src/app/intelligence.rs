@@ -6,7 +6,7 @@
 
 use crate::setup;
 use anyhow::{anyhow, Result};
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::{json, Map as JsonMap, Value};
 use skrills_state::home_dir;
 use std::collections::{HashMap, HashSet};
@@ -302,7 +302,7 @@ impl SkillService {
         );
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(text)],
+            vec![ContentBlock::text(text)],
             Some(json!({
                 "total_found": total_found,
                 "recommendations": all_recommendations,
@@ -377,7 +377,7 @@ impl SkillService {
         );
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(text)],
+            vec![ContentBlock::text(text)],
             Some(serde_json::to_value(&profile)?),
             false,
         ))
@@ -503,7 +503,7 @@ impl SkillService {
         );
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(text)],
+            vec![ContentBlock::text(text)],
             Some(serde_json::to_value(&analysis)?),
             false,
         ))
@@ -629,7 +629,7 @@ impl SkillService {
                     );
                     errors.push(error_msg.clone());
                     return Ok(crate::mcp_result::tool_result(
-                        vec![Content::text(error_msg)],
+                        vec![ContentBlock::text(error_msg)],
                         Some(json!({
                             "success": false,
                             "method": method_str,
@@ -654,7 +654,7 @@ impl SkillService {
                             events.len()
                         );
                         return Ok(crate::mcp_result::tool_result(
-                            vec![Content::text(&preview_msg)],
+                            vec![ContentBlock::text(&preview_msg)],
                             Some(json!({
                                 "success": true,
                                 "method": method_str,
@@ -743,7 +743,7 @@ impl SkillService {
         };
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(text)],
+            vec![ContentBlock::text(text)],
             Some(json!({
                 "success": success,
                 "method": method_str,
@@ -789,7 +789,7 @@ impl SkillService {
         };
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(text)],
+            vec![ContentBlock::text(text)],
             Some(json!({
                 "query": query,
                 "total_found": results.len(),
@@ -925,7 +925,7 @@ impl SkillService {
         };
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(text)],
+            vec![ContentBlock::text(text)],
             Some(json!({
                 "query": query,
                 "threshold": threshold,

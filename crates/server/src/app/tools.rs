@@ -6,7 +6,7 @@
 use super::SkillService;
 use crate::skill_trace::{self, ClientTarget as TraceTarget, TraceInstallOptions};
 use anyhow::Result;
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::{json, Map as JsonMap, Value};
 use skrills_state::home_dir;
 use std::fs;
@@ -258,7 +258,7 @@ impl SkillService {
         }
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(text)],
+            vec![ContentBlock::text(text)],
             Some(structured),
             false,
         ))
@@ -324,7 +324,7 @@ impl SkillService {
         // Check if skill exists anywhere
         if claude_skill.is_none() && codex_skill.is_none() && copilot_skill.is_none() {
             return Ok(crate::mcp_result::tool_result(
-                vec![Content::text(format!(
+                vec![ContentBlock::text(format!(
                     "Skill '{}' not found in any location",
                     name
                 ))],
@@ -542,7 +542,7 @@ impl SkillService {
         }
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(summary)],
+            vec![ContentBlock::text(summary)],
             Some(json!({
                 "name": name,
                 "locations": locations,
@@ -632,7 +632,7 @@ impl SkillService {
         let report = sync_between(from, to, &params)?;
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(format!(
+            vec![ContentBlock::text(format!(
                 "{}\nSkills: {} copied, {} skipped",
                 report.summary, skill_report.copied, skill_report.skipped
             ))],
@@ -694,7 +694,7 @@ impl SkillService {
         let status = skill_trace::status(&home, target, &opts)?;
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(format!(
+            vec![ContentBlock::text(format!(
                 "Skill loading status: found {} skill files; markers in {} files",
                 status.skill_files_found, status.instrumented_markers_found
             ))],
@@ -756,7 +756,7 @@ impl SkillService {
         let report = skill_trace::enable_trace(&home, target, opts)?;
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(format!(
+            vec![ContentBlock::text(format!(
                 "Enabled skill trace{}: installed trace={}, probe={}, instrumented={} (skipped={})",
                 if report.warnings.iter().any(|w| w.contains("failed to read")) {
                     " (with warnings)"
@@ -797,7 +797,7 @@ impl SkillService {
         let removed = skill_trace::disable_trace(&home, target, dry_run)?;
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(format!(
+            vec![ContentBlock::text(format!(
                 "{} trace/probe skill directories",
                 if dry_run { "Would remove" } else { "Removed" }
             ))],
@@ -840,7 +840,7 @@ impl SkillService {
         };
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(
+            vec![ContentBlock::text(
                 "Skill selftest prepared. Send the probe line shown in structured_content.",
             )],
             Some(json!({
@@ -905,7 +905,7 @@ impl SkillService {
         };
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(report.summary.clone())],
+            vec![ContentBlock::text(report.summary.clone())],
             Some(json!({
                 "from": "copilot",
                 "to": to,
@@ -969,7 +969,7 @@ impl SkillService {
         };
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(report.summary.clone())],
+            vec![ContentBlock::text(report.summary.clone())],
             Some(json!({
                 "from": from,
                 "to": "copilot",
@@ -1025,7 +1025,7 @@ impl SkillService {
         };
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(report.summary.clone())],
+            vec![ContentBlock::text(report.summary.clone())],
             Some(json!({
                 "from": "cursor",
                 "to": to,
@@ -1088,7 +1088,7 @@ impl SkillService {
         };
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(report.summary.clone())],
+            vec![ContentBlock::text(report.summary.clone())],
             Some(json!({
                 "from": from,
                 "to": "cursor",
@@ -1228,7 +1228,7 @@ impl SkillService {
         };
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(report.summary.clone())],
+            vec![ContentBlock::text(report.summary.clone())],
             Some(json!({
                 "from": from,
                 "to": to,

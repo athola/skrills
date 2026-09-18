@@ -3,7 +3,7 @@
 use super::registry::McpToolEntry;
 use super::stats::ContextStatsSnapshot;
 use anyhow::Result;
-use rmcp::model::{CallToolResult, Content, Tool, ToolAnnotations};
+use rmcp::model::{CallToolResult, ContentBlock, Tool, ToolAnnotations};
 use serde_json::{json, Map as JsonMap, Value};
 use std::sync::Arc;
 
@@ -145,7 +145,7 @@ pub fn list_mcp_tools(
     });
 
     Ok(crate::mcp_result::tool_result(
-        vec![Content::text(serde_json::to_string_pretty(&result)?)],
+        vec![ContentBlock::text(serde_json::to_string_pretty(&result)?)],
         Some(result),
         false,
     ))
@@ -172,7 +172,7 @@ pub fn describe_mcp_tool(
             });
 
             Ok(crate::mcp_result::tool_result(
-                vec![Content::text(serde_json::to_string_pretty(&result)?)],
+                vec![ContentBlock::text(serde_json::to_string_pretty(&result)?)],
                 Some(result),
                 false,
             ))
@@ -184,7 +184,7 @@ pub fn describe_mcp_tool(
             });
 
             Ok(crate::mcp_result::tool_result(
-                vec![Content::text(serde_json::to_string_pretty(&result)?)],
+                vec![ContentBlock::text(serde_json::to_string_pretty(&result)?)],
                 Some(result),
                 true,
             ))
@@ -213,7 +213,7 @@ pub fn get_context_stats(stats: ContextStatsSnapshot) -> Result<CallToolResult> 
     });
 
     Ok(crate::mcp_result::tool_result(
-        vec![Content::text(serde_json::to_string_pretty(&result)?)],
+        vec![ContentBlock::text(serde_json::to_string_pretty(&result)?)],
         Some(result),
         false,
     ))

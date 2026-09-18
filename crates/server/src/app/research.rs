@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use anyhow::{anyhow, Result};
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::{json, Map as JsonMap, Value};
 
 use skrills_tome::cache::ResearchCache;
@@ -118,7 +118,7 @@ impl SkillService {
         }
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(text)],
+            vec![ContentBlock::text(text)],
             Some(json!({
                 "papers": paper_json,
                 "count": deduped.len(),
@@ -164,7 +164,7 @@ impl SkillService {
             .collect();
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(format!(
+            vec![ContentBlock::text(format!(
                 "Found {} discussions",
                 discussions.len()
             ))],
@@ -198,7 +198,7 @@ impl SkillService {
         };
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(format!(
+            vec![ContentBlock::text(format!(
                 "{} ({})",
                 metadata.title,
                 metadata.year.map(|y| y.to_string()).unwrap_or_default()
@@ -257,7 +257,7 @@ impl SkillService {
         let path_str = pdf_path.to_string_lossy().to_string();
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(format!("PDF cached at: {path_str}"))],
+            vec![ContentBlock::text(format!("PDF cached at: {path_str}"))],
             Some(json!({
                 "path": path_str,
                 "doi": doi,
@@ -295,7 +295,7 @@ impl SkillService {
             }
 
             Ok(crate::mcp_result::tool_result(
-                vec![Content::text(format!(
+                vec![ContentBlock::text(format!(
                     "Node {}: {} outgoing, {} incoming edges",
                     node_id,
                     edges_from.len(),
@@ -343,14 +343,14 @@ impl SkillService {
                 .collect();
 
             Ok(crate::mcp_result::tool_result(
-                vec![Content::text(format!("Found {} nodes", nodes.len()))],
+                vec![ContentBlock::text(format!("Found {} nodes", nodes.len()))],
                 Some(json!({ "nodes": node_json, "count": nodes.len() })),
                 false,
             ))
         } else {
             let (node_count, edge_count) = kg.stats()?;
             Ok(crate::mcp_result::tool_result(
-                vec![Content::text(format!(
+                vec![ContentBlock::text(format!(
                     "Knowledge graph: {} nodes, {} edges",
                     node_count, edge_count
                 ))],
@@ -389,7 +389,7 @@ impl SkillService {
         kg.add_node(id, kind, label, metadata.as_deref())?;
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(format!(
+            vec![ContentBlock::text(format!(
                 "Added node '{id}' ({kind_str}): {label}"
             ))],
             Some(json!({"id": id, "kind": kind_str, "label": label})),
@@ -424,7 +424,7 @@ impl SkillService {
         kg.add_edge(source_id, target_id, kind, weight, metadata.as_deref())?;
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(format!(
+            vec![ContentBlock::text(format!(
                 "Linked {source_id} --{kind_str}--> {target_id}"
             ))],
             Some(json!({
@@ -475,7 +475,7 @@ impl SkillService {
                 tracker.track_paper(&paper)?;
 
                 Ok(crate::mcp_result::tool_result(
-                    vec![Content::text(format!("Now tracking: {title}"))],
+                    vec![ContentBlock::text(format!("Now tracking: {title}"))],
                     Some(json!({"paper_id": paper_id, "title": title, "action": "tracked"})),
                     false,
                 ))
@@ -494,7 +494,7 @@ impl SkillService {
                     .collect();
 
                 Ok(crate::mcp_result::tool_result(
-                    vec![Content::text(format!(
+                    vec![ContentBlock::text(format!(
                         "{} forward citations",
                         citations.len()
                     ))],
@@ -520,7 +520,7 @@ impl SkillService {
                     .collect();
 
                 Ok(crate::mcp_result::tool_result(
-                    vec![Content::text(format!(
+                    vec![ContentBlock::text(format!(
                         "{} backward citations",
                         citations.len()
                     ))],
@@ -570,7 +570,7 @@ impl SkillService {
             .collect();
 
         Ok(crate::mcp_result::tool_result(
-            vec![Content::text(format!(
+            vec![ContentBlock::text(format!(
                 "Improving {} vs degrading {}: {} applicable principles",
                 improve_str,
                 degrades_str,

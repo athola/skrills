@@ -118,7 +118,11 @@ pub fn is_path_contained(target_path: &Path, base_dir: &Path) -> bool {
 pub fn hash_content(content: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content);
-    format!("{:x}", hasher.finalize())
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Sanitizes a name by filtering to safe characters: alphanumeric, hyphens, and underscores.
@@ -323,6 +327,17 @@ mod tests {
         let hash = hash_content(b"hello");
         assert_eq!(hash.len(), 64); // SHA-256 produces 64 hex chars
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    /// Sync compares these strings to decide a file is unchanged, so the
+    /// encoding has to survive a `sha2`/`digest` upgrade: lowercase, two
+    /// digits per byte, FIPS 180-2 vector for "abc".
+    #[test]
+    fn hash_content_matches_known_sha256_vector() {
+        assert_eq!(
+            hash_content(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 
     #[test]

@@ -26,8 +26,8 @@ use crate::sync::mirror_source_root;
 use crate::tool_schemas;
 use anyhow::{anyhow, Result};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Content, ListResourcesResult, ListToolsResult,
-    PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListResourcesResult,
+    ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse,
 };
 use rmcp::ServerHandler;
 use serde_json::json;
@@ -77,11 +77,7 @@ impl ServerHandler for SkillService {
     {
         let result = self
             .list_resources_payload()
-            .map(|resources| ListResourcesResult {
-                resources,
-                next_cursor: None,
-                meta: None,
-            })
+            .map(ListResourcesResult::with_all_items)
             .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None));
         std::future::ready(result)
     }
@@ -91,10 +87,11 @@ impl ServerHandler for SkillService {
         &self,
         request: ReadResourceRequestParams,
         __context: rmcp::service::RequestContext<rmcp::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<ReadResourceResult, rmcp::ErrorData>> + Send + '_
+    ) -> impl std::future::Future<Output = Result<ReadResourceResponse, rmcp::ErrorData>> + Send + '_
     {
         let result = self
             .read_resource_sync(&request.uri)
+            .map(ReadResourceResponse::from)
             .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None));
         std::future::ready(result)
     }
@@ -123,11 +120,7 @@ impl ServerHandler for SkillService {
         // Add MCP gateway tools for context optimization
         tools.extend(crate::mcp_gateway::mcp_gateway_tools());
 
-        std::future::ready(Ok(ListToolsResult {
-            tools,
-            next_cursor: None,
-            meta: None,
-        }))
+        std::future::ready(Ok(ListToolsResult::with_all_items(tools)))
     }
 
     /// Executes a specific tool identified by `request.name`.
@@ -139,6 +132,20 @@ impl ServerHandler for SkillService {
         &self,
         request: CallToolRequestParams,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<CallToolResponse, rmcp::ErrorData>> + Send + '_
+    {
+        let outcome = self.call_tool_complete(request);
+        async move { outcome.await.map(CallToolResponse::from) }
+    }
+}
+
+impl SkillService {
+    /// The tool dispatch itself. `ServerHandler::call_tool` wraps the result
+    /// in rmcp's `CallToolResponse`; every tool here completes in one step, so
+    /// tests and callers that want the `CallToolResult` use this directly.
+    pub(crate) fn call_tool_complete(
+        &self,
+        request: CallToolRequestParams,
     ) -> impl std::future::Future<Output = Result<CallToolResult, rmcp::ErrorData>> + Send + '_
     {
         Box::pin(async move {
@@ -224,7 +231,7 @@ impl ServerHandler for SkillService {
                             )
                         };
                         let (priority, rank_map) = priority_labels_and_rank_map();
-                        Ok(crate::mcp_result::tool_result(vec![Content::text(text)], Some(json!({
+                        Ok(crate::mcp_result::tool_result(vec![ContentBlock::text(text)], Some(json!({
                                 "report": {
                                     "copied": report.copied,
                                     "skipped": report.skipped,
@@ -286,7 +293,7 @@ impl ServerHandler for SkillService {
 
                         let report = sync_between(&args.from, to, &params)?;
 
-                        Ok(crate::mcp_result::tool_result(vec![Content::text(report.summary.clone())], Some(json!({
+                        Ok(crate::mcp_result::tool_result(vec![ContentBlock::text(report.summary.clone())], Some(json!({
                                 "from": args.from,
                                 "to": to,
                                 "report": report,
@@ -319,7 +326,7 @@ impl ServerHandler for SkillService {
 
                         let report = sync_between(&args.from, to, &params)?;
 
-                        Ok(crate::mcp_result::tool_result(vec![Content::text(report.summary.clone())], Some(json!({
+                        Ok(crate::mcp_result::tool_result(vec![ContentBlock::text(report.summary.clone())], Some(json!({
                                 "from": args.from,
                                 "to": to,
                                 "report": report,
@@ -351,7 +358,7 @@ impl ServerHandler for SkillService {
 
                         let report = sync_between(&args.from, to, &params)?;
 
-                        Ok(crate::mcp_result::tool_result(vec![Content::text(report.summary.clone())], Some(json!({
+                        Ok(crate::mcp_result::tool_result(vec![ContentBlock::text(report.summary.clone())], Some(json!({
                                 "from": args.from,
                                 "to": to,
                                 "report": report,
@@ -388,7 +395,7 @@ impl ServerHandler for SkillService {
 
                         let report = sync_between(&args.from, to, &params)?;
 
-                        Ok(crate::mcp_result::tool_result(vec![Content::text(format!(
+                        Ok(crate::mcp_result::tool_result(vec![ContentBlock::text(format!(
                                 "Sync Preview ({} → {})\n{}",
                                 args.from, to, report.summary
                             ))], Some(json!({
@@ -488,7 +495,7 @@ impl ServerHandler for SkillService {
                                 .sum::<u64>()
                         );
 
-                        Ok(crate::mcp_result::tool_result(vec![Content::text(text)], Some(json!({
+                        Ok(crate::mcp_result::tool_result(vec![ContentBlock::text(text)], Some(json!({
                                 "total": analyses.len(),
                                 "analyses": analyses
                             })), false))
@@ -551,7 +558,7 @@ impl ServerHandler for SkillService {
                             uri
                         );
 
-                        Ok(crate::mcp_result::tool_result(vec![Content::text(text)], Some(json!({
+                        Ok(crate::mcp_result::tool_result(vec![ContentBlock::text(text)], Some(json!({
                                 "uri": uri,
                                 "direction": direction,
                                 "transitive": transitive,
@@ -575,7 +582,7 @@ impl ServerHandler for SkillService {
                             metrics.by_quality.high
                         );
 
-                        Ok(crate::mcp_result::tool_result(vec![Content::text(summary)], Some(serde_json::to_value(&metrics)?), false))
+                        Ok(crate::mcp_result::tool_result(vec![ContentBlock::text(summary)], Some(serde_json::to_value(&metrics)?), false))
                     }
                     "recommend-skills" => {
                         let args = request.arguments.clone().unwrap_or_default();
@@ -614,7 +621,7 @@ impl ServerHandler for SkillService {
                                 .count(),
                         );
 
-                        Ok(crate::mcp_result::tool_result(vec![Content::text(summary)], Some(serde_json::to_value(&recommendations)?), false))
+                        Ok(crate::mcp_result::tool_result(vec![ContentBlock::text(summary)], Some(serde_json::to_value(&recommendations)?), false))
                     }
                     "skill-loading-status" => {
                         let args = request.arguments.clone().unwrap_or_default();
@@ -894,7 +901,11 @@ mod tests {
                 .await
         });
 
-        let res = result.expect("resolve_contradiction should not return unknown tool error");
+        let res = match result.expect("resolve_contradiction should not return unknown tool error")
+        {
+            CallToolResponse::Complete(res) => res,
+            other => panic!("expected a completed tool call, got {other:?}"),
+        };
         assert!(
             !res.is_error.unwrap_or(true),
             "resolve_contradiction should succeed"

@@ -309,8 +309,10 @@ impl KnowledgeGraph {
 /// Legacy SQLite `datetime('now')` format: `YYYY-MM-DD HH:MM:SS`
 static LEGACY_TIMESTAMP_FMT: LazyLock<Vec<time::format_description::FormatItem<'static>>> =
     LazyLock::new(|| {
-        time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]")
-            .expect("static format description")
+        time::format_description::parse_borrowed::<1>(
+            "[year]-[month]-[day] [hour]:[minute]:[second]",
+        )
+        .expect("static format description")
     });
 
 /// Parse a timestamp string from SQLite TEXT storage into `OffsetDateTime`.

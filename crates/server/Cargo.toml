@@ -41,7 +41,7 @@ axum = { version = "0.8", optional = true }
 axum-server = { version = "0.8", features = ["tls-rustls"], optional = true }
 leptos = { version = "0.8", features = ["ssr"], optional = true }
 tower = { version = "0.5", optional = true }
-tower-http = { version = "0.6", features = ["cors", "request-id", "propagate-header"], optional = true }
+tower-http = { version = "0.7", features = ["cors", "request-id", "propagate-header"], optional = true }
 rcgen = { version = "0.14", optional = true }
 x509-parser = { version = "0.18", optional = true }
 time.workspace = true
@@ -84,7 +84,7 @@ chromiumoxide = { version = "0.9", default-features = false }
 futures = "0.3"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
-serial_test = "3.0"
+serial_test = "4"
 # Cold-window parity test (TASK-023): drives the TUI render path
 # alongside the browser surface. Sourced from the workspace pin so
 # both `skrills-dashboard` and the parity test resolve to a single

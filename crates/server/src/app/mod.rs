@@ -34,7 +34,7 @@ use anyhow::{anyhow, Result};
 #[cfg(feature = "watch")]
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::Mutex;
-use rmcp::model::{Meta, RawResource, ReadResourceResult, Resource, ResourceContents};
+use rmcp::model::{MetaObject, ReadResourceResult, Resource, ResourceContents};
 use serde_json::json;
 #[cfg(test)]
 use skrills_discovery::SkillRoot;
@@ -359,22 +359,21 @@ impl SkillService {
             .into_iter()
             .map(|s| {
                 let uri = format!("skill://skrills/{}/{}", s.source.label(), s.name);
-                let mut raw = RawResource::new(uri, s.name.clone());
-                raw.description = Some(format!(
-                    "Skill from {} [location: {}]",
-                    s.source.label(),
-                    s.source.location()
-                ));
-                raw.mime_type = Some("text/markdown".to_string());
-                Resource::new(raw, None)
+                Resource::new(uri, s.name.clone())
+                    .with_description(format!(
+                        "Skill from {} [location: {}]",
+                        s.source.label(),
+                        s.source.location()
+                    ))
+                    .with_mime_type("text/markdown")
             })
             .collect();
         // Expose AGENTS.md guidelines as a first-class resource for clients, unless disabled.
         if self.expose_agents_doc()? {
-            let mut agents = RawResource::new(AGENTS_URI, AGENTS_NAME);
-            agents.description = Some(AGENTS_DESCRIPTION.to_string());
-            agents.mime_type = Some("text/markdown".to_string());
-            resources.insert(0, Resource::new(agents, None));
+            let agents = Resource::new(AGENTS_URI, AGENTS_NAME)
+                .with_description(AGENTS_DESCRIPTION)
+                .with_mime_type("text/markdown");
+            resources.insert(0, agents);
         }
         if !dup_log.is_empty() {
             for dup in dup_log {
@@ -515,7 +514,7 @@ fn text_with_location(
     source_label: Option<&str>,
     location: &str,
 ) -> ResourceContents {
-    let mut meta = Meta::new();
+    let mut meta = MetaObject::new();
     meta.insert("location".into(), json!(location));
     if let Some(label) = source_label {
         if let Some(rank) = priority_labels()
@@ -543,7 +542,7 @@ fn text_with_location_and_role(
     location: &str,
     role: &str,
 ) -> ResourceContents {
-    let mut meta = Meta::new();
+    let mut meta = MetaObject::new();
     meta.insert("location".into(), json!(location));
     meta.insert("role".into(), json!(role));
     if let Some(label) = source_label {

@@ -7,7 +7,7 @@
 //! returns. The fields stay public, so setting them after construction is the
 //! supported route.
 
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::Value;
 
 /// Builds a tool result with both text content and a structured payload.
@@ -15,7 +15,7 @@ use serde_json::Value;
 /// `is_error` picks between the tool-level success and error constructors,
 /// matching what the call sites previously passed as `is_error: Some(..)`.
 pub(crate) fn tool_result(
-    content: Vec<Content>,
+    content: Vec<ContentBlock>,
     structured_content: Option<Value>,
     is_error: bool,
 ) -> CallToolResult {

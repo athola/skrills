@@ -195,7 +195,7 @@ fn file_hash(path: &Path) -> Result<String> {
         }
     }
     let digest = hasher.finalize();
-    Ok(format!("{:x}", digest))
+    Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// Extracts identity fields (name and description) from a skill file's YAML frontmatter.

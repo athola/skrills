@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use rmcp::model::{CallToolResult, Content, Tool};
+use rmcp::model::{CallToolResult, ContentBlock, Tool};
 use serde_json::{json, Map as JsonMap, Value};
 
 use crate::backend::BackendAdapter;
@@ -26,7 +26,7 @@ use crate::tool_schemas;
 /// alongside caller-chosen text content. The fields stay public, so setting
 /// `structured_content` after construction is the supported route.
 fn tool_result(
-    content: Vec<Content>,
+    content: Vec<ContentBlock>,
     structured_content: Option<Value>,
     is_error: bool,
 ) -> CallToolResult {
@@ -237,7 +237,7 @@ impl SubagentService {
         let mut cli_templates = self.cli_adapter_for(None, None).list_templates().await?;
         templates.append(&mut cli_templates);
         Ok(tool_result(
-            vec![Content::text("listed subagents")],
+            vec![ContentBlock::text("listed subagents")],
             Some(json!({"templates": templates})),
             false,
         ))
@@ -264,7 +264,7 @@ impl SubagentService {
             .collect();
 
         Ok(tool_result(
-            vec![Content::text(format!("found {} agents", agents.len()))],
+            vec![ContentBlock::text(format!("found {} agents", agents.len()))],
             Some(json!({"agents": agents})),
             false,
         ))
@@ -339,7 +339,7 @@ impl SubagentService {
         let run_id = adapter.run(request, self.store.clone()).await?;
         let status = adapter.status(run_id, self.store.clone()).await?;
         Ok(tool_result(
-            vec![Content::text(format!("run_id={run_id}"))],
+            vec![ContentBlock::text(format!("run_id={run_id}"))],
             Some(json!({
                 "run_id": run_id,
                 "status": status,
@@ -431,7 +431,7 @@ impl SubagentService {
         let run_id = run_id_from_value(run_id_val)?;
         let status = self.store.status(run_id).await?;
         Ok(tool_result(
-            vec![Content::text("status")],
+            vec![ContentBlock::text("status")],
             Some(json!({
                 "run_id": run_id,
                 "status": status,
@@ -449,7 +449,7 @@ impl SubagentService {
         )?;
         let stopped = self.store.stop(run_id).await?;
         Ok(tool_result(
-            vec![Content::text("stopped")],
+            vec![ContentBlock::text("stopped")],
             Some(json!({"run_id": run_id, "stopped": stopped})),
             false,
         ))
@@ -466,7 +466,7 @@ impl SubagentService {
             .unwrap_or(20);
         let runs = self.store.history(limit).await?;
         Ok(tool_result(
-            vec![Content::text("history")],
+            vec![ContentBlock::text("history")],
             Some(json!({"runs": runs})),
             false,
         ))
@@ -493,7 +493,7 @@ impl SubagentService {
             Some(r) => r,
             None => {
                 return Ok(tool_result(
-                    vec![Content::text(format!("run not found: {}", run_id))],
+                    vec![ContentBlock::text(format!("run not found: {}", run_id))],
                     Some(json!({
                         "error": format!("run not found: {}", run_id),
                         "run_id": run_id.to_string()
@@ -537,7 +537,7 @@ impl SubagentService {
             .collect();
 
         Ok(tool_result(
-            vec![Content::text(format!(
+            vec![ContentBlock::text(format!(
                 "events: {} of {} total",
                 events_json.len(),
                 total_count
@@ -557,7 +557,9 @@ impl SubagentService {
     /// "not implemented" as a transcript it can read.
     async fn handle_transcript(&self) -> Result<CallToolResult> {
         Ok(tool_result(
-            vec![Content::text("secure transcripts are not yet implemented")],
+            vec![ContentBlock::text(
+                "secure transcripts are not yet implemented",
+            )],
             Some(json!({"status": "unimplemented"})),
             true,
         ))

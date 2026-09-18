@@ -81,7 +81,11 @@ impl SyncTestContext {
     fn create_sample_command(name: &str, content: &str) -> Command {
         let mut hasher = Sha256::new();
         hasher.update(content.as_bytes());
-        let hash = format!("{:x}", hasher.finalize());
+        let hash: String = hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
 
         Command {
             name: name.to_string(),
