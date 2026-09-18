@@ -1281,6 +1281,14 @@ fn plugin_assets_relative_path_traversal_refused() {
         !tmp.path().join("evil.sh").exists() && !tmp.path().join("plugins/evil.sh").exists(),
         "Escaping asset must not land outside the plugin directory"
     );
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("evil.sh") && w.contains("my-plugin")),
+        "The refusal must be reported, not silently skipped: {:?}",
+        report.warnings
+    );
 }
 
 /// Executable assets stay executable, otherwise skills that invoke them

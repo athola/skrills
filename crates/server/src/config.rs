@@ -293,4 +293,43 @@ mod tests {
         assert_eq!(std::env::var("SKRILLS_HTTP").unwrap(), "127.0.0.1:9000");
         assert_eq!(std::env::var("SKRILLS_CACHE_TTL_MS").unwrap(), "7500");
     }
+
+    /// The config file is the only way a non-CLI user reaches the Host
+    /// allow-list; it has to arrive in the env var clap reads.
+    #[test]
+    fn apply_config_exports_allowed_hosts_for_clap() {
+        let _g = crate::test_support::env_guard();
+        let _hosts = crate::test_support::set_env_var("SKRILLS_ALLOWED_HOSTS", None);
+
+        let serve = ServeConfig {
+            allowed_hosts: Some("mcp.internal:8080,10.0.0.5".to_string()),
+            ..Default::default()
+        };
+
+        apply_serve_config_to_env(&serve);
+
+        assert_eq!(
+            std::env::var("SKRILLS_ALLOWED_HOSTS").unwrap(),
+            "mcp.internal:8080,10.0.0.5"
+        );
+    }
+
+    #[test]
+    fn apply_config_keeps_allowed_hosts_already_in_env() {
+        let _g = crate::test_support::env_guard();
+        let _hosts = crate::test_support::set_env_var("SKRILLS_ALLOWED_HOSTS", Some("env.example"));
+
+        let serve = ServeConfig {
+            allowed_hosts: Some("config.example".to_string()),
+            ..Default::default()
+        };
+
+        apply_serve_config_to_env(&serve);
+
+        assert_eq!(
+            std::env::var("SKRILLS_ALLOWED_HOSTS").unwrap(),
+            "env.example",
+            "an operator's env var outranks the config file"
+        );
+    }
 }

@@ -1140,6 +1140,68 @@ mod tests {
         );
     }
 
+    /// The CLI reaches adapters through `Box<dyn AgentAdapter>`. If the
+    /// blanket impl stops forwarding `read_support`/`write_support`, the
+    /// trait defaults fall back to `supported_fields()` and Claude reports
+    /// a plugin-asset writer it does not have, reviving the silent no-op.
+    #[test]
+    fn boxed_adapter_forwards_directional_support() {
+        use crate::adapters::{ClaudeAdapter, CursorAdapter};
+
+        let claude: Box<dyn AgentAdapter> = Box::new(ClaudeAdapter::with_root(
+            std::path::PathBuf::from("/tmp/claude-x"),
+        ));
+        let cursor: Box<dyn AgentAdapter> = Box::new(CursorAdapter::with_root(
+            std::path::PathBuf::from("/tmp/cursor-x"),
+        ));
+
+        assert!(claude.read_support().plugin_assets);
+        assert!(
+            !claude.write_support().plugin_assets,
+            "Box<dyn> must not fall back to supported_fields() for writes"
+        );
+        assert!(cursor.write_support().plugin_assets);
+        assert!(
+            !cursor.read_support().plugin_assets,
+            "Box<dyn> must not fall back to supported_fields() for reads"
+        );
+    }
+
+    /// A source that can read plugin assets paired with a target that cannot
+    /// write them is the other half of the gate; it must name the target.
+    #[test]
+    fn plugin_assets_to_target_without_writer_reports_unsupported() {
+        use crate::adapters::{ClaudeAdapter, CopilotAdapter};
+
+        let src = tempdir().unwrap();
+        let dst = tempdir().unwrap();
+        let orchestrator = SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src.path().to_path_buf()),
+            CopilotAdapter::with_root(dst.path().to_path_buf()),
+        );
+
+        let params = SyncParams {
+            sync_plugin_assets: true,
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_skills: false,
+            ..Default::default()
+        };
+        let report = orchestrator.sync(&params).unwrap();
+
+        assert_eq!(report.plugin_assets.written, 0);
+        assert!(
+            report.plugin_assets.skipped.iter().any(|r| matches!(
+                r,
+                SkipReason::UnsupportedField { field, suggestion, .. }
+                    if field == "plugin_assets" && suggestion.contains("copilot")
+            )),
+            "the skip must name the target that cannot write, got {:?}",
+            report.plugin_assets.skipped
+        );
+    }
+
     #[test]
     fn create_adapter_all_platforms() {
         // These only verify the adapter constructs; the actual root may not exist

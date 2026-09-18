@@ -853,6 +853,35 @@ mod tests {
         assert!(schema.contains_key("additionalProperties"));
     }
 
+    /// The builder rewrite defaults every optional field to `None`, so a
+    /// dropped `.with_title(..)` or `.with_annotations(..)` would pass the
+    /// count tests above while silently degrading the client-facing listing.
+    #[test]
+    fn every_tool_carries_title_and_annotations() {
+        for tool in all_tools() {
+            assert!(tool.title.is_some(), "{} lost its title", tool.name);
+            assert!(
+                tool.annotations.is_some(),
+                "{} lost its annotations",
+                tool.name
+            );
+        }
+    }
+
+    /// Only two tools set an output schema, each through a hand-written
+    /// block rather than the builder. Pin the exact set so neither block can
+    /// be dropped, and no tool gains one by accident.
+    #[test]
+    fn output_schema_is_set_on_exactly_the_two_structured_tools() {
+        let mut with_schema: Vec<String> = all_tools()
+            .iter()
+            .filter(|t| t.output_schema.is_some())
+            .map(|t| t.name.to_string())
+            .collect();
+        with_schema.sort_unstable();
+        assert_eq!(with_schema, ["sync-from-claude", "validate-skills"]);
+    }
+
     #[test]
     fn test_tool_names_are_unique() {
         let tools = all_tools();

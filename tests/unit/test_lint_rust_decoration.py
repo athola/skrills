@@ -6,6 +6,7 @@ the AI hygiene gate cannot regress when ports are refactored.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -16,14 +17,27 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "lint-rust-decoration.sh"
 
 
-def _run(cwd: Path) -> subprocess.CompletedProcess[str]:
+def _run(
+    cwd: Path, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", str(SCRIPT)],
         cwd=cwd,
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
+
+
+def _failing_rg_env(tmp_path: Path) -> dict[str, str]:
+    """PATH whose first `rg` is a shim that exits 2, ripgrep's error code."""
+    shim_dir = tmp_path / "bin"
+    shim_dir.mkdir()
+    shim = shim_dir / "rg"
+    shim.write_text("#!/bin/sh\nexit 2\n")
+    shim.chmod(0o755)
+    return {**os.environ, "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
 
 
 pytestmark = pytest.mark.skipif(
@@ -86,3 +100,21 @@ class TestRustDecorationLint:
         )
         result = _run(tmp_path)
         assert result.returncode == 0, result.stderr
+
+    @pytest.mark.unit
+    def test_rg_error_exits_two_instead_of_reporting_clean(self, tmp_path):
+        """
+        Scenario: ripgrep itself fails
+        Given a .rs file with a 25-char separator
+        And an rg on PATH that exits 2 (ripgrep's error status)
+        When I run the lint
+        Then it exits 2 and says the lint did not run,
+        because an `if rg` test used to read exit 2 as "no match" and
+        report the tree clean.
+        """
+        decoration = "─" * 25
+        (tmp_path / "bad.rs").write_text(f"// {decoration}\nfn main() {{}}\n")
+        result = _run(tmp_path, env=_failing_rg_env(tmp_path))
+        assert result.returncode == 2, result.stderr
+        assert "decoration lint did not run" in result.stderr
+        assert "clean" not in result.stdout

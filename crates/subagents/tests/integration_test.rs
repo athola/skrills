@@ -1017,6 +1017,38 @@ mod error_handling_tests {
     }
 
     #[tokio::test]
+    async fn test_download_transcript_secure_reports_unimplemented_as_tool_error() {
+        /*
+        GIVEN download-transcript-secure is advertised in the tool list
+        WHEN a caller invokes it
+        THEN the result is a tool-level error carrying status "unimplemented",
+             so a caller branching on is_error never mistakes it for a transcript
+        */
+        let fixture = IntegrationTestFixture::new().unwrap();
+        let service = fixture.create_service().unwrap();
+
+        let result = service
+            .handle_call("download-transcript-secure", None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "an unimplemented tool must not report success"
+        );
+        assert_eq!(
+            result
+                .structured_content
+                .as_ref()
+                .and_then(|v| v.get("status"))
+                .and_then(|s| s.as_str()),
+            Some("unimplemented"),
+            "structured content should say why it errored"
+        );
+    }
+
+    #[tokio::test]
     async fn test_get_status_with_missing_run_id() {
         /*
         GIVEN a get-run-status call without run_id

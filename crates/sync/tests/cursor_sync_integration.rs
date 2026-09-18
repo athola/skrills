@@ -774,28 +774,48 @@ fn plugin_assets_synced_from_claude_to_cursor() {
     let report = orch.sync(&params).unwrap();
     assert!(report.success);
 
-    // The manifest-only writer only processes .claude-plugin/plugin.json
-    // files. Verify the manifest was written to plugins/local/.
-    let cursor_manifest = setup
-        .cursor_dir
-        .path()
-        .join("plugins/local/abstract/.cursor-plugin/plugin.json");
-
+    // The whole plugin tree is mirrored under plugins/local/<plugin>/, with
+    // the manifest directory renamed for Cursor.
+    let local_plugin = setup.cursor_dir.path().join("plugins/local/abstract");
+    for mirrored in [
+        ".cursor-plugin/plugin.json",
+        "scripts/makefile_dogfooder.py",
+        "hooks/session_start.py",
+        "bin/fallback.py",
+        "src/abstract/utils.py",
+        "skills/my-skill/SKILL.md",
+    ] {
+        assert!(
+            local_plugin.join(mirrored).exists(),
+            "{mirrored} should be mirrored into plugins/local/abstract/"
+        );
+    }
     assert!(
-        cursor_manifest.exists(),
-        "Plugin manifest should be synced to plugins/local/"
+        report.plugin_assets.written > 1,
+        "the reader/writer pair must carry more than the manifest, wrote {}",
+        report.plugin_assets.written
     );
 
-    // Non-manifest files (scripts, hooks, bin) are NOT written by
-    // the manifest-only writer, Cursor discovers them natively from
-    // ~/.claude/plugins/cache/.
+    // Development-only directories stay behind.
+    for skipped in [
+        "tests/test_something.py",
+        ".venv/lib/site.py",
+        "scripts/__pycache__/foo.pyc",
+    ] {
+        assert!(
+            !local_plugin.join(skipped).exists(),
+            "{skipped} should not be mirrored"
+        );
+    }
+
+    // Nothing lands in a cache-shaped path on the Cursor side.
     let cursor_cache = setup
         .cursor_dir
         .path()
         .join("plugins/cache/claude-night-market/abstract/1.8.3");
     assert!(
         !cursor_cache.exists(),
-        "Scripts should NOT be mirrored to plugins/cache/ in manifest-only mode"
+        "Assets belong under plugins/local/, not a mirrored plugins/cache/"
     );
 }
 
