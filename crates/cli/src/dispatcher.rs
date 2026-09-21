@@ -269,10 +269,19 @@ pub fn run() -> Result<()> {
             skip_existing_commands,
             include_marketplace,
             exclude_plugins,
-            validate: _validate,
-            autofix: _autofix,
+            validate,
+            autofix,
         } => {
             use skrills_sync::SyncParams;
+
+            // Neither flag is wired to the validator yet. Refuse instead of
+            // running an unvalidated sync that reports success.
+            if validate || autofix {
+                let flag = if validate { "--validate" } else { "--autofix" };
+                anyhow::bail!(
+                    "sync-all {flag} is not implemented; run `skrills validate --autofix` first, then `skrills sync-all`"
+                );
+            }
 
             // Determine targets: explicit --to or all other CLIs
             let targets: Vec<SyncSource> = match to {
@@ -476,8 +485,7 @@ pub fn run() -> Result<()> {
         }
         #[cfg(not(feature = "dashboard"))]
         Commands::Dashboard { .. } => {
-            tracing::error!("dashboard feature not enabled; rebuild with --features dashboard");
-            Ok(())
+            anyhow::bail!("dashboard feature not enabled; rebuild with --features dashboard")
         }
         Commands::Setup {
             client,
@@ -506,12 +514,16 @@ pub fn run() -> Result<()> {
             format,
             errors_only,
             #[cfg(feature = "watch")]
-                watch: _watch,
+            watch,
             #[cfg(feature = "watch")]
                 debounce_ms: _debounce_ms,
         } => {
-            // TODO(#208): when watch feature is enabled, dispatch to watch loop
-            // if _watch { return handle_validate_watch(...); }
+            // The watch loop is tracked in #208. Until it exists, a one-shot
+            // run that exits 0 would look like a watcher that saw no changes.
+            #[cfg(feature = "watch")]
+            if watch {
+                anyhow::bail!("validate --watch is not implemented (tracked in #208)");
+            }
             handle_validate_command(skill_dirs, target, autofix, backup, format, errors_only)
         }
         Commands::Analyze {
