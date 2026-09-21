@@ -185,8 +185,13 @@ fmt-check:
 
 # NOTE: CI (.github/workflows/ci.yml) duplicates these cargo commands directly
 # rather than calling make targets. Keep both in sync when changing flags.
+# Three passes, because a warning can exist under one feature set only: an
+# import used solely behind `#[cfg(feature = "watch")]` is clean with
+# --all-features and a hard error in the default build CI and releases use.
 lint:
 	$(CARGO_CMD) clippy --workspace --all-targets --all-features -- -D warnings
+	$(CARGO_CMD) clippy --workspace --all-targets -- -D warnings
+	$(CARGO_CMD) clippy --workspace --all-targets --no-default-features -- -D warnings
 
 lint-md:
 	$(SHELL) ./scripts/lint-markdown.sh

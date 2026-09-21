@@ -22,6 +22,7 @@ tempfile.workspace = true
 dirs.workspace = true
 rusqlite = { version = "0.40", features = ["bundled"] }
 sha2.workspace = true
+hex = "0.4.3"
 
 [dev-dependencies]
 skrills_test_utils = { path = "../test-utils" }

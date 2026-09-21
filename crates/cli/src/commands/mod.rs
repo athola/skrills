@@ -17,9 +17,10 @@ mod validate;
 
 pub(crate) use agent::handle_agent_command;
 pub(crate) use analyze::handle_analyze_command;
+#[cfg(feature = "http-transport")]
+pub(crate) use cert::get_cert_status_summary;
 pub(crate) use cert::{
-    get_cert_status_summary, handle_cert_install_command, handle_cert_renew_command,
-    handle_cert_status_command,
+    handle_cert_install_command, handle_cert_renew_command, handle_cert_status_command,
 };
 pub(crate) use diff::handle_skill_diff_command;
 pub(crate) use intelligence::{

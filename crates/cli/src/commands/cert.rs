@@ -7,9 +7,11 @@ use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
+#[cfg(feature = "http-transport")]
 use tracing::debug;
 
 /// Certificate expiry warning threshold (days).
+#[cfg(feature = "http-transport")]
 const CERT_EXPIRY_CRITICAL_DAYS: i64 = 7;
 /// Certificate expiry caution threshold (days).
 const CERT_EXPIRY_WARNING_DAYS: i64 = 30;
@@ -94,9 +96,9 @@ fn parse_cert_info(cert_path: &PathBuf) -> Result<CertInfo> {
 }
 
 #[cfg(not(feature = "http-transport"))]
-fn parse_cert_info(cert_path: &PathBuf) -> Result<CertInfo> {
+fn parse_cert_info(cert_path: &std::path::Path) -> Result<CertInfo> {
     Ok(CertInfo {
-        path: cert_path.clone(),
+        path: cert_path.to_path_buf(),
         exists: cert_path.exists(),
         issuer: None,
         subject: None,
@@ -261,7 +263,6 @@ pub fn handle_cert_renew_command(_force: bool) -> Result<()> {
 ///
 /// Checks that the file starts with the standard PEM certificate header.
 /// Returns `Ok(true)` if valid, `Ok(false)` if not valid PEM format.
-#[cfg(feature = "http-transport")]
 pub fn validate_pem_format(path: &PathBuf) -> Result<bool> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("Failed to read file for PEM validation: {}", path.display()))?;
@@ -438,11 +439,6 @@ pub fn get_cert_status_summary() -> Option<String> {
         "TLS: {} days until expiry [{}]{}",
         days, status, self_signed
     ))
-}
-
-#[cfg(not(feature = "http-transport"))]
-pub fn get_cert_status_summary() -> Option<String> {
-    None
 }
 
 #[cfg(test)]

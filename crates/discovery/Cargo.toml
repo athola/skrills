@@ -23,6 +23,7 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 blake2.workspace = true
+hex = "0.4.3"
 walkdir.workspace = true
 pathdiff.workspace = true
 tempfile.workspace = true

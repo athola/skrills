@@ -6,7 +6,9 @@
 
 use anyhow::{anyhow, Result};
 use rmcp::service::serve_server;
-use skrills_server::app::{start_fs_watcher, SkillService};
+#[cfg(feature = "watch")]
+use skrills_server::app::start_fs_watcher;
+use skrills_server::app::SkillService;
 use skrills_server::discovery::merge_extra_dirs;
 use skrills_server::tool_schemas::all_tools;
 use skrills_server::trace::stdio_with_optional_trace;
@@ -172,6 +174,7 @@ pub(crate) fn handle_serve_command(
                 cors_origins,
                 allowed_hosts,
                 tls_auto,
+                open_browser,
             ); // suppress unused warnings
             return Err(anyhow!(
                 "HTTP transport requested but not available (built without 'http-transport' feature)"
