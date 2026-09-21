@@ -36,6 +36,7 @@
 
 use anyhow::Result;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// Top-level configuration structure.
@@ -44,6 +45,27 @@ pub struct Config {
     /// Serve command configuration.
     #[serde(default)]
     pub serve: ServeConfig,
+    /// Top-level tables that are not part of the schema, e.g. `[server]`.
+    #[serde(flatten)]
+    unrecognized: BTreeMap<String, toml::Value>,
+}
+
+impl Config {
+    /// Dotted paths of keys the file sets that skrills does not read.
+    ///
+    /// serde ignores unknown keys, so `allowed_host` or `auth-token` would
+    /// otherwise vanish without a word. Rejecting them outright is worse:
+    /// a parse failure discards the whole file, including an `auth_token`
+    /// that was spelled correctly.
+    pub fn unknown_keys(&self) -> Vec<String> {
+        let top_level = self.unrecognized.keys().cloned();
+        let serve = self
+            .serve
+            .unrecognized
+            .keys()
+            .map(|key| format!("serve.{key}"));
+        top_level.chain(serve).collect()
+    }
 }
 
 /// Configuration for the serve command.
@@ -66,6 +88,9 @@ pub struct ServeConfig {
     pub http: Option<String>,
     /// Cache TTL in milliseconds for skill discovery.
     pub cache_ttl_ms: Option<u64>,
+    /// Keys under `[serve]` that are not part of the schema.
+    #[serde(flatten)]
+    unrecognized: BTreeMap<String, toml::Value>,
 }
 
 /// Returns the path to the config file (~/.skrills/config.toml).
@@ -115,6 +140,16 @@ pub fn load_config() -> Result<Option<Config>> {
 pub fn apply_config_to_env() {
     match load_config() {
         Ok(Some(config)) => {
+            for key in config.unknown_keys() {
+                tracing::warn!(
+                    target: "skrills::config",
+                    key = %key,
+                    "Unknown key in config file (~/.skrills/config.toml) was ignored"
+                );
+                eprintln!(
+                    "WARNING: Unknown key `{key}` in ~/.skrills/config.toml was ignored. Check the spelling."
+                );
+            }
             apply_serve_config_to_env(&config.serve);
         }
         Ok(None) => {
@@ -243,6 +278,65 @@ mod tests {
         );
         assert_eq!(config.serve.http.as_deref(), Some("0.0.0.0:8080"));
         assert_eq!(config.serve.cache_ttl_ms, Some(5000));
+    }
+
+    /// A mistyped key must be named, and must not cost the operator the keys
+    /// they spelled correctly: dropping a good `auth_token` because
+    /// `allowed_host` was misspelled would start the server unauthenticated.
+    #[test]
+    fn unknown_serve_key_is_reported_and_known_keys_still_apply() {
+        let toml = r#"
+            [serve]
+            auth_token = "secret"
+            allowed_host = "skrills.internal:8080"
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert_eq!(config.unknown_keys(), ["serve.allowed_host"]);
+        assert_eq!(config.serve.auth_token.as_deref(), Some("secret"));
+        assert_eq!(config.serve.allowed_hosts, None);
+    }
+
+    #[test]
+    fn hyphenated_auth_token_is_reported_as_unknown() {
+        let toml = r#"
+            [serve]
+            auth-token = "secret"
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert_eq!(config.unknown_keys(), ["serve.auth-token"]);
+        assert_eq!(config.serve.auth_token, None);
+    }
+
+    #[test]
+    fn unknown_top_level_table_is_reported() {
+        let toml = r#"
+            [server]
+            auth_token = "secret"
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert_eq!(config.unknown_keys(), ["server"]);
+    }
+
+    #[test]
+    fn fully_known_config_reports_no_unknown_keys() {
+        let toml = r#"
+            [serve]
+            auth_token = "secret"
+            tls_auto = true
+            allowed_hosts = "skrills.internal:8080"
+            cache_ttl_ms = 10000
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert!(config.unknown_keys().is_empty());
+        assert_eq!(config.serve.cache_ttl_ms, Some(10000));
     }
 
     #[test]
