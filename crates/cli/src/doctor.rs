@@ -144,7 +144,6 @@ pub fn doctor_report() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skrills_test_utils;
     use tempfile::tempdir;
 
     #[test]

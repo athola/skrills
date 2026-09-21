@@ -1,15 +1,15 @@
 //! Implements primary `skrills` application functionality.
 //!
-//! Includes the MCP server, skill discovery, caching, and CLI.
+//! Includes the MCP server, skill discovery and caching. The CLI is in the
+//! `skrills` crate.
 //!
-//! The `run` function initiates the server. `runtime` manages runtime options.
+//! `runtime` manages runtime options.
 //! Internal components are subject to change.
 //!
 //! See `docs/semver-policy.md` for versioning.
 //!
 //! The `watch` feature enables filesystem monitoring. Build with `--no-default-features` to disable.
 //!
-//! On Unix, a `SIGCHLD` handler prevents zombie processes.
 //! Keep this file under ~2500 LOC; split modules if needed.
 
 mod intelligence;

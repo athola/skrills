@@ -1,6 +1,6 @@
 //! CLI dispatch, the `skrills` binary entry point.
 //!
-//! Split out of `app/mod.rs` to keep dispatch routing separate from business logic.
+//! Dispatch routing is kept separate from business logic.
 //! This file owns nothing except the routing of parsed [`Cli`]
 //! commands to their respective handlers in [`crate::commands`]. The
 //! handlers themselves live in their own submodules; this is pure
@@ -36,8 +36,8 @@ use skrills_state::home_dir;
 
 /// Sync helper used by Sync* command branches.
 ///
-/// Re-exported under `#[cfg(test)]` from `app/mod.rs` so tests under
-/// `app/tests/sync.rs` can reach it via the `super::super::*` glob.
+/// `pub(crate)` so `dispatcher_sync_tests.rs`, included at the bottom of this
+/// file through `#[path]`, can reach it.
 pub(crate) fn run_sync_with_adapters(
     from: SyncSource,
     to: SyncSource,

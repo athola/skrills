@@ -3,9 +3,9 @@
 //! Core logic for the `skrills` server, organized into modules:
 //!
 //! - `app`: Core application entry point and MCP server.
-//! - `doctor`: Configuration diagnostics.
 //! - `sync`: Skill synchronization management.
-//! - `tui`: Interactive terminal UI.
+//!
+//! The command-line interface, `doctor` and the TUI live in the `skrills` crate.
 
 #![deny(unsafe_code)]
 
@@ -43,11 +43,9 @@ pub mod ui;
 #[cfg(feature = "http-transport")]
 pub mod tls_auto;
 
-/// Command-line interface for the server.
 /// Skill discovery mechanism.
 pub mod discovery;
 /// Server runtime.
 pub mod runtime;
-/// Signal handling for graceful shutdown.
 /// Tracing and logging configuration.
 pub mod trace;
