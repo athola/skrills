@@ -1,6 +1,6 @@
 [package]
 name = "skrills-discovery"
-version = "0.8.2"
+version = "0.9.0"
 edition = "2021"
 description = "Filesystem discovery and hashing utilities used by the skrills MCP server."
 license = "MIT"
@@ -15,7 +15,7 @@ categories = ["development-tools", "filesystem"]
 path = "src/lib.rs"
 
 [dependencies]
-skrills-validate = { path = "../validate", version = "0.8.2" }
+skrills-validate = { path = "../validate", version = "0.9.0" }
 anyhow.workspace = true
 thiserror.workspace = true
 dirs.workspace = true
