@@ -28,6 +28,13 @@ pub struct ProjectProfile {
     pub keywords: Vec<String>,
     /// Recent commit message keywords.
     pub git_keywords: Vec<String>,
+    /// Why `git_keywords` is empty, when reading the git history failed.
+    ///
+    /// An empty `git_keywords` otherwise cannot be told apart from a project
+    /// with no history: a missing git, a directory that is not a repository and
+    /// a spawn failure all produce the same empty list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_keywords_error: Option<String>,
     /// Detected frameworks and tools.
     pub frameworks: Vec<String>,
     /// Project type classification.

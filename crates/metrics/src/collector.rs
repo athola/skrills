@@ -539,30 +539,13 @@ impl MetricsCollector {
         let mut details = Vec::new();
         for row in rows {
             let (id, skill_name, passed_json, failed_json, created_at) = row?;
-            let checks_passed: Vec<String> = match serde_json::from_str(&passed_json) {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(
-                        id,
-                        skill_name = %skill_name,
-                        error = %e,
-                        "failed to deserialize checks_passed JSON, skipping row"
-                    );
-                    continue;
-                }
-            };
-            let checks_failed: Vec<String> = match serde_json::from_str(&failed_json) {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(
-                        id,
-                        skill_name = %skill_name,
-                        error = %e,
-                        "failed to deserialize checks_failed JSON, skipping row"
-                    );
-                    continue;
-                }
-            };
+            // Reported rather than skipped so that history agrees with the
+            // summary and the export on the same rows: skipping the newest run
+            // served an older one as the current result.
+            let checks_passed =
+                decode_validation_checks(&passed_json, &skill_name, "checks_passed")?;
+            let checks_failed =
+                decode_validation_checks(&failed_json, &skill_name, "checks_failed")?;
             details.push(ValidationDetail {
                 id,
                 skill_name,
@@ -603,13 +586,13 @@ impl MetricsCollector {
         let mut summary = ValidationSummary::default();
 
         for row in rows {
-            let (_skill_name, passed_json, failed_json) = row?;
+            let (skill_name, passed_json, failed_json) = row?;
             // Not `unwrap_or_default()`: an unreadable `checks_failed` would
             // decode as an empty list, and an empty failure list is how a skill
             // is counted valid. A corrupt row would inflate the pass count
             // rather than report that the run could not be read.
-            let passed: Vec<String> = serde_json::from_str(&passed_json)?;
-            let failed: Vec<String> = serde_json::from_str(&failed_json)?;
+            let passed = decode_validation_checks(&passed_json, &skill_name, "checks_passed")?;
+            let failed = decode_validation_checks(&failed_json, &skill_name, "checks_failed")?;
 
             summary.total_skills += 1;
             if failed.is_empty() {
@@ -657,10 +640,15 @@ impl MetricsCollector {
         let mut skills = Vec::new();
         for row in rows {
             let (id, skill_name, passed_json, failed_json, created_at) = row?;
-            // See `get_validation_summary`: decoding a corrupt row as empty
-            // would report the skill as valid instead of surfacing the problem.
-            let checks_passed: Vec<String> = serde_json::from_str(&passed_json)?;
-            let checks_failed: Vec<String> = serde_json::from_str(&failed_json)?;
+            // `get_validation_summary` above reads these same rows and already
+            // rejects a corrupt one, so this decode only fires on a row written
+            // between the two queries. It stays an error rather than
+            // `unwrap_or_default()` because an empty `checks_failed` is how a
+            // skill is reported valid.
+            let checks_passed =
+                decode_validation_checks(&passed_json, &skill_name, "checks_passed")?;
+            let checks_failed =
+                decode_validation_checks(&failed_json, &skill_name, "checks_failed")?;
 
             let status = if checks_failed.is_empty() {
                 "valid"
@@ -1068,6 +1056,22 @@ impl MetricsCollector {
     }
 }
 
+/// Decode one `checks_passed` / `checks_failed` column of a validation run.
+///
+/// The failure names the skill and the column: a repair means finding that one
+/// row, and `serde_json`'s own message carries neither.
+fn decode_validation_checks(
+    json: &str,
+    skill_name: &str,
+    column: &'static str,
+) -> Result<Vec<String>> {
+    serde_json::from_str(json).map_err(|source| MetricsError::CorruptValidationRow {
+        skill_name: skill_name.to_owned(),
+        column,
+        source,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1125,11 +1129,51 @@ mod tests {
 
         let result = collector.get_validation_summary();
 
-        assert!(
-            matches!(result, Err(MetricsError::Json(_))),
-            "corrupt checks_failed should surface as a JSON error, got {:?}",
-            result.map(|s| (s.total_skills, s.valid))
-        );
+        let Err(MetricsError::CorruptValidationRow {
+            skill_name, column, ..
+        }) = result
+        else {
+            panic!(
+                "corrupt checks_failed should name the row, got {:?}",
+                result.map(|s| (s.total_skills, s.valid))
+            );
+        };
+        assert_eq!(skill_name, "broken-skill");
+        assert_eq!(column, "checks_failed");
+    }
+
+    /// History used to `warn + continue` past a corrupt row: with `limit` 1 the
+    /// newest run returned nothing, and with a larger limit an older run was
+    /// served as the current one, so the three readers of these rows disagreed.
+    #[test]
+    fn validation_history_reports_corrupt_row_instead_of_serving_an_older_run() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        collector
+            .record_validation("broken-skill", &["old-check"], &[])
+            .unwrap();
+        collector
+            .record_validation("broken-skill", &["check1"], &["check2"])
+            .unwrap();
+        {
+            let conn = collector.conn.lock();
+            conn.execute(
+                "UPDATE validation_runs SET checks_passed = ?1
+                 WHERE id = (SELECT MAX(id) FROM validation_runs WHERE skill_name = ?2)",
+                rusqlite::params!["{not json", "broken-skill"],
+            )
+            .unwrap();
+        }
+
+        let history = collector.get_validation_history("broken-skill", 2);
+
+        let Err(MetricsError::CorruptValidationRow {
+            skill_name, column, ..
+        }) = history
+        else {
+            panic!("corrupt checks_passed should name the row, got {history:?}");
+        };
+        assert_eq!(skill_name, "broken-skill");
+        assert_eq!(column, "checks_passed");
     }
 
     #[test]

@@ -13,7 +13,7 @@ use crossterm::{
 };
 use ratatui::prelude::*;
 use ratatui::widgets::ListState;
-use skrills_metrics::{MetricEvent, MetricsCollector, ValidationDetail};
+use skrills_metrics::{MetricEvent, MetricsCollector, ValidationDetail, ValidationSummary};
 
 use crate::events::{Event, EventHandler};
 use crate::ui;
@@ -441,6 +441,48 @@ impl App {
         };
         self.add_activity(msg);
     }
+
+    /// Take the validation counts from a summary read, or clear them and name
+    /// the failure in the activity feed.
+    ///
+    /// Counts are cleared rather than left alone because holding the last good
+    /// numbers made an unreadable row look like a dashboard that had simply
+    /// stopped changing.
+    fn apply_validation_summary(&mut self, summary: skrills_metrics::Result<ValidationSummary>) {
+        match summary {
+            Ok(summary) => {
+                self.valid_skills = summary.valid as usize;
+                self.invalid_skills = (summary.error + summary.warning) as usize;
+            }
+            Err(e) => {
+                self.valid_skills = 0;
+                self.invalid_skills = 0;
+                self.add_activity_keyed(
+                    "validation-summary-error".into(),
+                    format!("Validation counts unavailable: {e}"),
+                );
+            }
+        }
+    }
+
+    /// Take the newest validation run for `skill`, or clear the detail panel and
+    /// name the failure in the activity feed.
+    fn apply_validation_detail(
+        &mut self,
+        skill: &str,
+        history: skrills_metrics::Result<Vec<ValidationDetail>>,
+    ) {
+        match history {
+            Ok(history) => self.selected_validation = history.into_iter().next(),
+            Err(e) => {
+                self.selected_validation = None;
+                self.add_activity_keyed(
+                    "validation-detail-error".into(),
+                    format!("Validation detail unavailable for {skill}: {e}"),
+                );
+            }
+        }
+    }
 }
 
 /// Dashboard runner.
@@ -717,17 +759,13 @@ impl Dashboard {
         }
 
         // Update validation summary counts
-        if let Ok(val_summary) = self.collector.get_validation_summary() {
-            app.valid_skills = val_summary.valid as usize;
-            app.invalid_skills = (val_summary.error + val_summary.warning) as usize;
-        }
+        app.apply_validation_summary(self.collector.get_validation_summary());
 
         // Load validation detail for the currently selected skill
         app.selected_validation = None;
-        if let Some(skill) = app.skills.get(app.skill_index) {
-            if let Ok(history) = self.collector.get_validation_history(&skill.name, 1) {
-                app.selected_validation = history.into_iter().next();
-            }
+        if let Some(name) = app.skills.get(app.skill_index).map(|s| s.name.clone()) {
+            let history = self.collector.get_validation_history(&name, 1);
+            app.apply_validation_detail(&name, history);
         }
 
         // Refresh MCP servers from all adapters
@@ -810,6 +848,93 @@ impl Dashboard {
 mod tests {
     use super::*;
     use crossterm::event::KeyCode;
+    use skrills_metrics::MetricsError;
+
+    fn corrupt_row_error() -> MetricsError {
+        MetricsError::CorruptValidationRow {
+            skill_name: "broken-skill".into(),
+            column: "checks_failed",
+            source: serde_json::from_str::<Vec<String>>("{not json").unwrap_err(),
+        }
+    }
+
+    #[test]
+    fn validation_counts_follow_the_summary_that_was_read() {
+        let mut app = App::new();
+
+        app.apply_validation_summary(Ok(ValidationSummary {
+            total_skills: 3,
+            valid: 1,
+            warning: 1,
+            error: 1,
+        }));
+
+        assert_eq!(app.valid_skills, 1);
+        assert_eq!(app.invalid_skills, 2);
+    }
+
+    #[test]
+    fn validation_counts_clear_and_report_when_the_summary_cannot_be_read() {
+        let mut app = App::new();
+        app.valid_skills = 7;
+        app.invalid_skills = 2;
+
+        app.apply_validation_summary(Err(corrupt_row_error()));
+
+        assert_eq!(
+            (app.valid_skills, app.invalid_skills),
+            (0, 0),
+            "counts from the last good read must not stand in for a failed one"
+        );
+        assert!(
+            app.activity
+                .iter()
+                .any(|entry| entry.message.contains("broken-skill")),
+            "the activity feed should name the unreadable row: {:?}",
+            app.activity
+        );
+    }
+
+    #[test]
+    fn validation_detail_takes_the_newest_run_that_was_read() {
+        let mut app = App::new();
+
+        app.apply_validation_detail(
+            "example",
+            Ok(vec![ValidationDetail {
+                id: 4,
+                skill_name: "example".into(),
+                checks_passed: vec!["frontmatter".into()],
+                checks_failed: Vec::new(),
+                created_at: "2026-09-21 00:00:00".into(),
+            }]),
+        );
+
+        assert_eq!(app.selected_validation.as_ref().map(|d| d.id), Some(4));
+    }
+
+    #[test]
+    fn validation_detail_clears_and_reports_when_the_run_cannot_be_read() {
+        let mut app = App::new();
+        app.selected_validation = Some(ValidationDetail {
+            id: 1,
+            skill_name: "example".into(),
+            checks_passed: Vec::new(),
+            checks_failed: Vec::new(),
+            created_at: "2026-09-20 00:00:00".into(),
+        });
+
+        app.apply_validation_detail("example", Err(corrupt_row_error()));
+
+        assert!(app.selected_validation.is_none());
+        assert!(
+            app.activity
+                .iter()
+                .any(|entry| entry.message.contains("example")),
+            "the activity feed should name the skill: {:?}",
+            app.activity
+        );
+    }
 
     #[test]
     fn test_focus_panel_next() {

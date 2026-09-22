@@ -76,27 +76,20 @@ struct Repository {
     description: Option<String>,
 }
 
-/// Sanitize user input to prevent GitHub search operator injection.
-/// Strips known GitHub search operators that could manipulate search semantics.
 /// Byte offset of the first case-insensitive occurrence of `needle`.
 ///
-/// Searching a `to_lowercase()` copy and slicing the original with the offset
-/// found there is unsound: the conversion is not byte-length preserving
-/// ('\u{130}' is 2 bytes and lowercases to 3), so the offset can land past the
-/// end of the original or inside a character. Every operator here is ASCII, so
-/// a same-length window compared with `eq_ignore_ascii_case` is exact, and
-/// `get` returns `None` rather than panicking on a non-boundary index.
+/// `to_ascii_lowercase` is used rather than `to_lowercase` because only the
+/// former preserves byte length ('\u{130}' is 2 bytes and lowercases to 3), and
+/// the offset is used to slice the original string. Every operator searched for
+/// here is ASCII, so folding only ASCII loses no match.
 fn find_ignore_ascii_case(haystack: &str, needle: &str) -> Option<usize> {
-    if needle.is_empty() {
-        return Some(0);
-    }
-    haystack.char_indices().map(|(i, _)| i).find(|&i| {
-        haystack
-            .get(i..i + needle.len())
-            .is_some_and(|window| window.eq_ignore_ascii_case(needle))
-    })
+    haystack
+        .to_ascii_lowercase()
+        .find(&needle.to_ascii_lowercase())
 }
 
+/// Sanitize user input to prevent GitHub search operator injection.
+/// Strips known GitHub search operators that could manipulate search semantics.
 fn sanitize_github_query(query: &str) -> String {
     // GitHub search operators that could be injected (colon-based operators)
     let colon_operators = [

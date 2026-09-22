@@ -2,6 +2,17 @@
 //!
 //! These tests verify the complete integration between the skrills server,
 //! subagent backends, and MCP protocol for subagent execution.
+//!
+//! Every test here is `#[ignore]`d and CI therefore only compile-checks this
+//! file. `TokioChildProcess` races the child's stdout close against the MCP
+//! initialize response on macOS, so the client sees EOF instead of a handshake
+//! and the test hangs until its timeout. Un-ignoring them needs that race
+//! fixed, not a longer timeout. Run them deliberately on a host where the race
+//! does not appear with:
+//!
+//! ```text
+//! cargo test -p skrills-server --test subagents_end_to_end -- --ignored
+//! ```
 
 use rmcp::transport::TokioChildProcess;
 use rmcp::{model::CallToolRequestParams, service::serve_client};

@@ -107,6 +107,29 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    /// Restores the working directory even if the test returns early or panics.
+    ///
+    /// The directory is process-global, so the change is only safe while
+    /// `env_guard` is held. Leaking it would move every later test in this
+    /// binary into a deleted tempdir.
+    struct CwdGuard {
+        original: std::path::PathBuf,
+    }
+
+    impl CwdGuard {
+        fn change_to(dir: &std::path::Path) -> Result<Self> {
+            let original = std::env::current_dir()?;
+            std::env::set_current_dir(dir)?;
+            Ok(Self { original })
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.original);
+        }
+    }
+
     #[test]
     fn mirror_command_does_not_create_skills_mirror_dir() -> Result<()> {
         let _guard = skrills_test_utils::env_guard();
@@ -116,8 +139,9 @@ mod tests {
 
         let _home_guard = skrills_test_utils::set_env_var("HOME", Some(home.to_str().unwrap()));
 
-        let original_cwd = std::env::current_dir()?;
-        std::env::set_current_dir(home)?;
+        // `handle_mirror_command` refreshes a relative AGENTS.md, so the test
+        // has to run from the fake home rather than the repository.
+        let _cwd_guard = CwdGuard::change_to(home)?;
 
         // Seed one skill and one agent in the Claude source tree.
         let claude_skill = home.join(".claude/skills/example-skill/SKILL.md");
@@ -128,13 +152,8 @@ mod tests {
         std::fs::create_dir_all(claude_agent.parent().unwrap())?;
         std::fs::write(&claude_agent, "agent content")?;
 
-        let result = handle_mirror_command(false, true, false);
-
-        // Restore cwd before assertions to avoid leaking state.
-        std::env::set_current_dir(original_cwd)?;
-        // HOME is restored by _home_guard on drop.
-
-        result?;
+        // HOME and the working directory are restored by their guards on drop.
+        handle_mirror_command(false, true, false)?;
 
         assert!(
             !home.join(".codex/skills-mirror").exists(),
