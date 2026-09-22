@@ -2,7 +2,7 @@
 //!
 //! Dispatch routing is kept separate from business logic.
 //! This file owns nothing except the routing of parsed [`Cli`]
-//! commands to their respective handlers in [`crate::commands`]. The
+//! commands to their respective handlers in `crate::commands`. The
 //! handlers themselves live in their own submodules; this is pure
 //! dispatch.
 //!

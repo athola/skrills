@@ -58,11 +58,25 @@ jobs:
             list_pkg "$crate"
           done
 
-          # Full package validation only for crates already on crates.io
-          # (their dependencies are resolvable)
-          echo "=== Full package validation for published crates ==="
-          full_pkg skrills-state
-          full_pkg skrills-discovery
+          # Full package validation resolves every dependency from crates.io,
+          # so it can only run on crates with no in-workspace dependency:
+          # before a release, the workspace version is not published yet.
+          # Pick those crates by inspection instead of by a list that goes
+          # stale when a crate gains a workspace dependency (discovery gained
+          # skrills-validate in 0.9.0).
+          echo "=== Full package validation for leaf crates ==="
+          leaf_crates="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[]
+                | select(.publish == null)
+                | select([.dependencies[] | select(.kind != "dev") | select(.path != null)] | length == 0)
+                | .name')"
+          if [[ -z "${leaf_crates}" ]]; then
+            echo "ERROR: no leaf crates found; the jq filter is broken" >&2
+            exit 1
+          fi
+          for crate in ${leaf_crates}; do
+            full_pkg "$crate"
+          done
 
           # Verify all crates compile
           echo "=== Verifying compilation ==="
