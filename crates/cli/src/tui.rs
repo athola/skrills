@@ -51,9 +51,11 @@ pub(crate) fn tui_flow(_extra_dirs: &[PathBuf]) -> Result<()> {
         &home.join(".codex/skills"),
         include_marketplace,
     )?;
-    let _ = skrills_server::setup::ensure_codex_skills_feature_enabled(
-        &home.join(".codex/config.toml"),
-    );
+    if let Some(warning) =
+        crate::commands::codex_skills_feature_warning(&home.join(".codex/config.toml"))
+    {
+        eprintln!("{warning}");
+    }
 
     // Mirror commands/prefs/MCP
     let source = ClaudeAdapter::new()?;

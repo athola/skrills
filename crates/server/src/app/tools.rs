@@ -4,6 +4,7 @@
 //! to the LLM. Each handler processes arguments and returns a `CallToolResult`.
 
 use super::SkillService;
+use crate::mcp_result::{tool_err, tool_ok};
 use crate::skill_trace::{self, ClientTarget as TraceTarget, TraceInstallOptions};
 use anyhow::Result;
 use rmcp::model::{CallToolResult, ContentBlock};
@@ -257,11 +258,7 @@ impl SkillService {
             }
         }
 
-        Ok(crate::mcp_result::tool_result(
-            vec![ContentBlock::text(text)],
-            Some(structured),
-            false,
-        ))
+        Ok(tool_ok(vec![ContentBlock::text(text)], Some(structured)))
     }
 
     /// Compares a skill across Claude, Codex, and Copilot to show differences.
@@ -323,7 +320,7 @@ impl SkillService {
 
         // Check if skill exists anywhere
         if claude_skill.is_none() && codex_skill.is_none() && copilot_skill.is_none() {
-            return Ok(crate::mcp_result::tool_result(
+            return Ok(tool_err(
                 vec![ContentBlock::text(format!(
                     "Skill '{}' not found in any location",
                     name
@@ -332,7 +329,6 @@ impl SkillService {
                     "error": "skill_not_found",
                     "name": name
                 })),
-                true,
             ));
         }
 
@@ -541,7 +537,7 @@ impl SkillService {
             }
         }
 
-        Ok(crate::mcp_result::tool_result(
+        Ok(tool_ok(
             vec![ContentBlock::text(summary)],
             Some(json!({
                 "name": name,
@@ -550,7 +546,6 @@ impl SkillService {
                 "token_counts": token_counts,
                 "context_lines": context_lines
             })),
-            false,
         ))
     }
 
@@ -592,6 +587,7 @@ impl SkillService {
         let is_claude_to_codex = from == "claude" && to == "codex";
 
         // Sync skills first (Codex discovery root) for Claude→Codex only.
+        let mut feature_flag_warning = String::new();
         let skill_report = if is_claude_to_codex && !dry_run {
             let home = home_dir()?;
             let claude_root = mirror_source_root(&home);
@@ -601,11 +597,21 @@ impl SkillService {
                 &codex_skills_root,
                 include_marketplace,
             )?;
-            let _ =
-                crate::setup::ensure_codex_skills_feature_enabled(&home.join(".codex/config.toml"));
+            if let Err(err) =
+                crate::setup::ensure_codex_skills_feature_enabled(&home.join(".codex/config.toml"))
+            {
+                // Surface filesystem errors (read-only home, disk full, malformed
+                // TOML) so the caller learns why Codex loads nothing despite the
+                // skills landing on disk.
+                tracing::warn!(error = %err, "could not ensure codex skills feature flag");
+                feature_flag_warning = format!(
+                    "\nwarning: could not enable the codex skills feature in \
+                     ~/.codex/config.toml: {err}"
+                );
+            }
             report
         } else {
-            crate::sync::SyncReport::default()
+            crate::sync::MirrorReport::default()
         };
 
         let skip_existing_commands = args
@@ -631,10 +637,10 @@ impl SkillService {
 
         let report = sync_between(from, to, &params)?;
 
-        Ok(crate::mcp_result::tool_result(
+        Ok(tool_ok(
             vec![ContentBlock::text(format!(
-                "{}\nSkills: {} copied, {} skipped",
-                report.summary, skill_report.copied, skill_report.skipped
+                "{}\nSkills: {} copied, {} skipped{}",
+                report.summary, skill_report.copied, skill_report.skipped, feature_flag_warning
             ))],
             Some(json!({
                 "report": report,
@@ -645,7 +651,6 @@ impl SkillService {
                 "dry_run": dry_run,
                 "skip_existing_commands": skip_existing_commands
             })),
-            false,
         ))
     }
 
@@ -693,13 +698,12 @@ impl SkillService {
         let home = home_dir()?;
         let status = skill_trace::status(&home, target, &opts)?;
 
-        Ok(crate::mcp_result::tool_result(
+        Ok(tool_ok(
             vec![ContentBlock::text(format!(
                 "Skill loading status: found {} skill files; markers in {} files",
                 status.skill_files_found, status.instrumented_markers_found
             ))],
             Some(serde_json::to_value(status)?),
-            false,
         ))
     }
 
@@ -755,7 +759,7 @@ impl SkillService {
         let home = home_dir()?;
         let report = skill_trace::enable_trace(&home, target, opts)?;
 
-        Ok(crate::mcp_result::tool_result(
+        Ok(tool_ok(
             vec![ContentBlock::text(format!(
                 "Enabled skill trace{}: installed trace={}, probe={}, instrumented={} (skipped={})",
                 if report.warnings.iter().any(|w| w.contains("failed to read")) {
@@ -769,7 +773,6 @@ impl SkillService {
                 report.skipped_files
             ))],
             Some(serde_json::to_value(report)?),
-            false,
         ))
     }
 
@@ -796,13 +799,12 @@ impl SkillService {
         let home = home_dir()?;
         let removed = skill_trace::disable_trace(&home, target, dry_run)?;
 
-        Ok(crate::mcp_result::tool_result(
+        Ok(tool_ok(
             vec![ContentBlock::text(format!(
                 "{} trace/probe skill directories",
                 if dry_run { "Would remove" } else { "Removed" }
             ))],
             Some(json!({ "dry_run": dry_run, "removed": removed })),
-            false,
         ))
     }
 
@@ -839,7 +841,7 @@ impl SkillService {
             format!("{:x}", now)
         };
 
-        Ok(crate::mcp_result::tool_result(
+        Ok(tool_ok(
             vec![ContentBlock::text(
                 "Skill selftest prepared. Send the probe line shown in structured_content.",
             )],
@@ -853,7 +855,6 @@ impl SkillService {
                     "If you also enabled skill tracing, every assistant response will end with a SKRILLS_SKILLS_LOADED footer."
                 ]
             })),
-            false,
         ))
     }
 
@@ -904,16 +905,19 @@ impl SkillService {
             SyncOrchestrator::new(source, target).sync(&params)?
         };
 
-        Ok(crate::mcp_result::tool_result(
-            vec![ContentBlock::text(report.summary.clone())],
-            Some(json!({
-                "from": "copilot",
-                "to": to,
-                "dry_run": dry_run,
-                "report": report
-            })),
-            !report.success,
-        ))
+        let succeeded = report.success;
+        let content = vec![ContentBlock::text(report.summary.clone())];
+        let structured = Some(json!({
+            "from": "copilot",
+            "to": to,
+            "dry_run": dry_run,
+            "report": report
+        }));
+        Ok(if succeeded {
+            tool_ok(content, structured)
+        } else {
+            tool_err(content, structured)
+        })
     }
 
     /// Sync to GitHub Copilot CLI from Claude, Codex, or Cursor.
@@ -968,16 +972,19 @@ impl SkillService {
             SyncOrchestrator::new(source, target).sync(&params)?
         };
 
-        Ok(crate::mcp_result::tool_result(
-            vec![ContentBlock::text(report.summary.clone())],
-            Some(json!({
-                "from": from,
-                "to": "copilot",
-                "dry_run": dry_run,
-                "report": report
-            })),
-            !report.success,
-        ))
+        let succeeded = report.success;
+        let content = vec![ContentBlock::text(report.summary.clone())];
+        let structured = Some(json!({
+            "from": from,
+            "to": "copilot",
+            "dry_run": dry_run,
+            "report": report
+        }));
+        Ok(if succeeded {
+            tool_ok(content, structured)
+        } else {
+            tool_err(content, structured)
+        })
     }
 
     /// Sync from Cursor IDE to Claude, Codex, or Copilot.
@@ -1024,16 +1031,19 @@ impl SkillService {
             }
         };
 
-        Ok(crate::mcp_result::tool_result(
-            vec![ContentBlock::text(report.summary.clone())],
-            Some(json!({
-                "from": "cursor",
-                "to": to,
-                "dry_run": dry_run,
-                "report": report
-            })),
-            !report.success,
-        ))
+        let succeeded = report.success;
+        let content = vec![ContentBlock::text(report.summary.clone())];
+        let structured = Some(json!({
+            "from": "cursor",
+            "to": to,
+            "dry_run": dry_run,
+            "report": report
+        }));
+        Ok(if succeeded {
+            tool_ok(content, structured)
+        } else {
+            tool_err(content, structured)
+        })
     }
 
     /// Sync to Cursor IDE from Claude, Codex, or Copilot.
@@ -1085,16 +1095,19 @@ impl SkillService {
             }
         };
 
-        Ok(crate::mcp_result::tool_result(
-            vec![ContentBlock::text(report.summary.clone())],
-            Some(json!({
-                "from": from,
-                "to": "cursor",
-                "dry_run": dry_run,
-                "report": report
-            })),
-            !report.success,
-        ))
+        let succeeded = report.success;
+        let content = vec![ContentBlock::text(report.summary.clone())];
+        let structured = Some(json!({
+            "from": from,
+            "to": "cursor",
+            "dry_run": dry_run,
+            "report": report
+        }));
+        Ok(if succeeded {
+            tool_ok(content, structured)
+        } else {
+            tool_err(content, structured)
+        })
     }
 
     /// Syncs skills between Claude, Codex, Copilot, and Cursor.
@@ -1225,20 +1238,23 @@ impl SkillService {
             }
         };
 
-        Ok(crate::mcp_result::tool_result(
-            vec![ContentBlock::text(report.summary.clone())],
-            Some(json!({
-                "from": from,
-                "to": to,
-                "dry_run": dry_run,
-                "include_marketplace": include_marketplace,
-                "summary": report.summary,
-                "skills": {
-                    "written": report.skills.written,
-                    "skipped": report.skills.skipped.len(),
-                }
-            })),
-            !report.success,
-        ))
+        let succeeded = report.success;
+        let content = vec![ContentBlock::text(report.summary.clone())];
+        let structured = Some(json!({
+            "from": from,
+            "to": to,
+            "dry_run": dry_run,
+            "include_marketplace": include_marketplace,
+            "summary": report.summary,
+            "skills": {
+                "written": report.skills.written,
+                "skipped": report.skills.skipped.len(),
+            }
+        }));
+        Ok(if succeeded {
+            tool_ok(content, structured)
+        } else {
+            tool_err(content, structured)
+        })
     }
 }

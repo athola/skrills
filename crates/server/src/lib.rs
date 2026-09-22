@@ -11,14 +11,14 @@
 
 #[cfg_attr(test, allow(dead_code))]
 pub mod app;
-pub mod cache;
+pub(crate) mod cache;
 pub mod config;
-pub mod handler;
+mod handler;
 pub mod mcp_gateway;
 mod mcp_result;
-pub mod metrics_types;
+pub(crate) mod metrics_types;
 pub mod setup;
-pub mod skill_trace;
+mod skill_trace;
 pub mod sync;
 #[cfg(test)]
 mod test_support;

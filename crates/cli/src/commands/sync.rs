@@ -4,7 +4,23 @@ use skrills_server::sync::{
     mirror_source_root, sync_agents, sync_agents_only_from_claude, sync_skills_only_from_claude,
 };
 use skrills_state::home_dir;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Reports what stops Codex from loading the skills that were just mirrored.
+///
+/// `ensure_codex_skills_feature_enabled` fails when `~/.codex/config.toml` is
+/// unreadable or unwritable, and Codex only loads skills when
+/// `[features] skills = true`. Without this the commands print "copied: N" and
+/// exit zero while Codex loads nothing.
+pub(crate) fn codex_skills_feature_warning(config_path: &Path) -> Option<String> {
+    let err = skrills_server::setup::ensure_codex_skills_feature_enabled(config_path).err()?;
+    tracing::warn!(error = %err, "could not ensure codex skills feature flag");
+    Some(format!(
+        "Warning: could not enable the codex skills feature in {}: {}",
+        config_path.display(),
+        err
+    ))
+}
 
 pub(crate) fn handle_sync_agents_command(
     path: Option<PathBuf>,
@@ -24,9 +40,9 @@ pub(crate) fn handle_sync_command(include_marketplace: bool) -> Result<()> {
         &home.join(".codex/skills"),
         include_marketplace,
     )?;
-    let _ = skrills_server::setup::ensure_codex_skills_feature_enabled(
-        &home.join(".codex/config.toml"),
-    );
+    if let Some(warning) = codex_skills_feature_warning(&home.join(".codex/config.toml")) {
+        eprintln!("{warning}");
+    }
     println!("copied: {}, skipped: {}", report.copied, report.skipped);
     Ok(())
 }
@@ -55,9 +71,9 @@ pub(crate) fn handle_mirror_command(
         &home.join(".codex/skills"),
         include_marketplace,
     )?;
-    let _ = skrills_server::setup::ensure_codex_skills_feature_enabled(
-        &home.join(".codex/config.toml"),
-    );
+    if let Some(warning) = codex_skills_feature_warning(&home.join(".codex/config.toml")) {
+        eprintln!("{warning}");
+    }
     // Mirror commands/mcp/prefs
     let source = skrills_sync::ClaudeAdapter::new()?;
     let target = skrills_sync::CodexAdapter::new()?;
@@ -106,6 +122,41 @@ pub(crate) fn handle_mirror_command(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn codex_skills_feature_warning_names_the_config_it_could_not_write() {
+        // A directory where the config file belongs makes every read of it
+        // fail, which is the shape of a read-only or corrupted home.
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.toml");
+        std::fs::create_dir_all(&config_path).expect("create config.toml as a directory");
+
+        let warning = codex_skills_feature_warning(&config_path)
+            .expect("an unreadable config should produce a warning");
+
+        assert!(
+            warning.contains("codex skills feature"),
+            "warning should name the feature, got: {warning}"
+        );
+        assert!(
+            warning.contains(&config_path.display().to_string()),
+            "warning should name the config path, got: {warning}"
+        );
+    }
+
+    #[test]
+    fn codex_skills_feature_warning_is_silent_when_the_flag_can_be_written() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.toml");
+
+        assert!(codex_skills_feature_warning(&config_path).is_none());
+        assert!(
+            std::fs::read_to_string(&config_path)
+                .expect("config should have been written")
+                .contains("skills = true"),
+            "the feature flag should have been enabled"
+        );
+    }
 
     /// Restores the working directory even if the test returns early or panics.
     ///

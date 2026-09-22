@@ -2,6 +2,7 @@
 
 use super::registry::McpToolEntry;
 use super::stats::ContextStatsSnapshot;
+use crate::mcp_result::{tool_err, tool_ok};
 use anyhow::Result;
 use rmcp::model::{CallToolResult, ContentBlock, Tool, ToolAnnotations};
 use serde_json::{json, Map as JsonMap, Value};
@@ -144,10 +145,9 @@ pub fn list_mcp_tools(
         "hint": "Use 'describe-mcp-tool' to load full schema for a specific tool"
     });
 
-    Ok(crate::mcp_result::tool_result(
+    Ok(tool_ok(
         vec![ContentBlock::text(serde_json::to_string_pretty(&result)?)],
         Some(result),
-        false,
     ))
 }
 
@@ -171,10 +171,9 @@ pub fn describe_mcp_tool(
                 "loaded": true
             });
 
-            Ok(crate::mcp_result::tool_result(
+            Ok(tool_ok(
                 vec![ContentBlock::text(serde_json::to_string_pretty(&result)?)],
                 Some(result),
-                false,
             ))
         }
         None => {
@@ -183,10 +182,9 @@ pub fn describe_mcp_tool(
                 "hint": "Use 'list-mcp-tools' to see available tools"
             });
 
-            Ok(crate::mcp_result::tool_result(
+            Ok(tool_err(
                 vec![ContentBlock::text(serde_json::to_string_pretty(&result)?)],
                 Some(result),
-                true,
             ))
         }
     }
@@ -212,10 +210,9 @@ pub fn get_context_stats(stats: ContextStatsSnapshot) -> Result<CallToolResult> 
         )
     });
 
-    Ok(crate::mcp_result::tool_result(
+    Ok(tool_ok(
         vec![ContentBlock::text(serde_json::to_string_pretty(&result)?)],
         Some(result),
-        false,
     ))
 }
 

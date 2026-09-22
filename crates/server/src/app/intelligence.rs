@@ -4,6 +4,7 @@
 //! per ADR-0001. These methods provide smart recommendations, project context analysis,
 //! skill gap detection, and skill creation capabilities.
 
+use crate::mcp_result::{tool_err, tool_ok};
 use crate::setup;
 use anyhow::{anyhow, Result};
 use rmcp::model::{CallToolResult, ContentBlock};
@@ -301,7 +302,7 @@ impl SkillService {
             all_recommendations.len()
         );
 
-        Ok(crate::mcp_result::tool_result(
+        Ok(tool_ok(
             vec![ContentBlock::text(text)],
             Some(json!({
                 "total_found": total_found,
@@ -309,7 +310,6 @@ impl SkillService {
                 "include_usage": include_usage,
                 "include_context": include_context,
             })),
-            false,
         ))
     }
 
@@ -376,10 +376,9 @@ impl SkillService {
                 .sum::<usize>()
         );
 
-        Ok(crate::mcp_result::tool_result(
+        Ok(tool_ok(
             vec![ContentBlock::text(text)],
             Some(serde_json::to_value(&profile)?),
-            false,
         ))
     }
 
@@ -502,10 +501,9 @@ impl SkillService {
             analysis.suggestions.len()
         );
 
-        Ok(crate::mcp_result::tool_result(
+        Ok(tool_ok(
             vec![ContentBlock::text(text)],
             Some(serde_json::to_value(&analysis)?),
-            false,
         ))
     }
 
@@ -628,7 +626,7 @@ impl SkillService {
                         e
                     );
                     errors.push(error_msg.clone());
-                    return Ok(crate::mcp_result::tool_result(
+                    return Ok(tool_err(
                         vec![ContentBlock::text(error_msg)],
                         Some(json!({
                             "success": false,
@@ -636,7 +634,6 @@ impl SkillService {
                             "name": name,
                             "errors": errors,
                         })),
-                        true,
                     ));
                 }
             };
@@ -653,7 +650,7 @@ impl SkillService {
                              --method both for production use.",
                             events.len()
                         );
-                        return Ok(crate::mcp_result::tool_result(
+                        return Ok(tool_ok(
                             vec![ContentBlock::text(&preview_msg)],
                             Some(json!({
                                 "success": true,
@@ -664,7 +661,6 @@ impl SkillService {
                                 "session_events": events.len(),
                                 "message": preview_msg,
                             })),
-                            false,
                         ));
                     }
                     Ok(events) => {
@@ -742,20 +738,22 @@ impl SkillService {
             format!("Failed to create skill: {}", errors.join("; "))
         };
 
-        Ok(crate::mcp_result::tool_result(
-            vec![ContentBlock::text(text)],
-            Some(json!({
-                "success": success,
-                "method": method_str,
-                "name": name,
-                "dry_run": dry_run,
-                "github_results": github_results,
-                "llm_content": llm_content,
-                "written_path": written_path,
-                "errors": errors,
-            })),
-            !success,
-        ))
+        let content = vec![ContentBlock::text(text)];
+        let structured = Some(json!({
+            "success": success,
+            "method": method_str,
+            "name": name,
+            "dry_run": dry_run,
+            "github_results": github_results,
+            "llm_content": llm_content,
+            "written_path": written_path,
+            "errors": errors,
+        }));
+        Ok(if success {
+            tool_ok(content, structured)
+        } else {
+            tool_err(content, structured)
+        })
     }
 
     /// Search GitHub for existing SKILL.md files.
@@ -788,14 +786,13 @@ impl SkillService {
             )
         };
 
-        Ok(crate::mcp_result::tool_result(
+        Ok(tool_ok(
             vec![ContentBlock::text(text)],
             Some(json!({
                 "query": query,
                 "total_found": results.len(),
                 "results": results,
             })),
-            false,
         ))
     }
 
@@ -924,7 +921,7 @@ impl SkillService {
             lines.join("\n")
         };
 
-        Ok(crate::mcp_result::tool_result(
+        Ok(tool_ok(
             vec![ContentBlock::text(text)],
             Some(json!({
                 "query": query,
@@ -938,7 +935,6 @@ impl SkillService {
                     "matched_field": format!("{:?}", m.matched_field),
                 })).collect::<Vec<_>>(),
             })),
-            false,
         ))
     }
 }

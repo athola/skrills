@@ -41,5 +41,8 @@ pub(crate) use skill::{
     handle_skill_rollback_command, handle_skill_score_command, handle_skill_usage_report_command,
     handle_sync_pull_command,
 };
-pub(crate) use sync::{handle_mirror_command, handle_sync_agents_command, handle_sync_command};
+pub(crate) use sync::{
+    codex_skills_feature_warning, handle_mirror_command, handle_sync_agents_command,
+    handle_sync_command,
+};
 pub(crate) use validate::handle_validate_command;

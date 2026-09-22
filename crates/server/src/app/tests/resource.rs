@@ -641,6 +641,54 @@ Also uses [skill-d](../skill-d/SKILL.md).
     );
 }
 
+/// GIVEN a home whose ~/.codex/config.toml cannot be read as a file
+/// WHEN sync_all_tool mirrors skills into the Codex root
+/// THEN the result text names the codex skills feature it could not enable
+#[tokio::test]
+async fn sync_all_tool_reports_an_unwritable_codex_config() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let claude_skill = temp.path().join(".claude/skills/example-skill/SKILL.md");
+    std::fs::create_dir_all(claude_skill.parent().unwrap()).unwrap();
+    std::fs::write(&claude_skill, "example skill").unwrap();
+    // A directory where the config file belongs makes every read of it fail,
+    // which is the shape of a read-only or corrupted home.
+    std::fs::create_dir_all(temp.path().join(".codex/config.toml")).unwrap();
+
+    let _home_guard = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+
+    let service = SkillService::new_with_ttl(vec![], Duration::from_secs(1)).unwrap();
+    let result = service
+        .sync_all_tool(
+            json!({
+                "from": "claude",
+                "to": "codex",
+                "dry_run": false,
+                "skip_existing_commands": true
+            })
+            .as_object()
+            .cloned()
+            .unwrap(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        result.is_error,
+        Some(false),
+        "the skills themselves synced, so the call still succeeds"
+    );
+    let text = result
+        .content
+        .iter()
+        .filter_map(|block| block.as_text().map(|t| t.text.clone()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("codex skills feature"),
+        "result text should surface the feature-flag failure, got: {text}"
+    );
+}
+
 #[tokio::test]
 async fn sync_all_tool_syncs_skills_into_codex_skills_root() {
     let _guard = crate::test_support::env_guard();

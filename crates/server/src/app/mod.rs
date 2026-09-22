@@ -62,7 +62,7 @@ pub use crate::metrics_types::{
 /// Uses in-memory caching for performance.
 pub struct SkillService {
     /// The cache for skill metadata.
-    pub cache: Arc<Mutex<SkillCache>>,
+    pub(crate) cache: Arc<Mutex<SkillCache>>,
     /// Optional subagent service (enabled via `subagents` feature).
     #[cfg(feature = "subagents")]
     pub(crate) subagents: Option<skrills_subagents::SubagentService>,
@@ -181,10 +181,26 @@ impl SkillService {
         cache.skills_with_dups()
     }
 
+    /// Reports whether a skill URI is present in the cache.
+    ///
+    /// The refresh is explicit so a discovery failure surfaces as an error
+    /// rather than as a missing skill.
+    pub fn has_skill(&self, uri: &str) -> Result<bool> {
+        let mut cache = self.cache.lock();
+        cache.ensure_fresh()?;
+        Ok(cache.skill_by_uri(uri).is_ok())
+    }
+
     /// Resolves transitive dependencies for a skill URI.
     pub fn resolve_dependencies(&self, uri: &str) -> Result<Vec<String>> {
         let mut cache = self.cache.lock();
         cache.resolve_dependencies(uri)
+    }
+
+    /// Gets direct, non-transitive dependencies for a skill URI.
+    pub fn get_direct_dependencies(&self, uri: &str) -> Result<Vec<String>> {
+        let mut cache = self.cache.lock();
+        cache.get_direct_dependencies(uri)
     }
 
     /// Gets direct dependents for a skill URI.

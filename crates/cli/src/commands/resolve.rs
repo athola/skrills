@@ -18,17 +18,15 @@ pub(crate) fn handle_resolve_dependencies_command(
     let ttl = cache_ttl(&load_manifest_settings);
     let service = SkillService::new_with_ttl(extra_dirs, ttl)?;
 
-    let mut cache = service.cache.lock();
-    cache.ensure_fresh()?;
-    if cache.skill_by_uri(&uri).is_err() {
+    if !service.has_skill(&uri)? {
         anyhow::bail!("Skill not found: {}", uri);
     }
 
     let results = match (direction, transitive) {
-        (DependencyDirection::Dependencies, true) => cache.resolve_dependencies(&uri)?,
-        (DependencyDirection::Dependencies, false) => cache.get_direct_dependencies(&uri)?,
-        (DependencyDirection::Dependents, true) => cache.get_transitive_dependents(&uri)?,
-        (DependencyDirection::Dependents, false) => cache.get_dependents(&uri)?,
+        (DependencyDirection::Dependencies, true) => service.resolve_dependencies(&uri)?,
+        (DependencyDirection::Dependencies, false) => service.get_direct_dependencies(&uri)?,
+        (DependencyDirection::Dependents, true) => service.get_transitive_dependents(&uri)?,
+        (DependencyDirection::Dependents, false) => service.get_dependents(&uri)?,
     };
 
     let direction_label = match (direction, transitive) {

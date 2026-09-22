@@ -19,22 +19,24 @@ use crate::settings::{backend_from_str, load_file_config, ExecutionMode, Subagen
 use crate::store::{default_store_path, BackendKind, RunId, RunRequest, RunStore, StateRunStore};
 use crate::tool_schemas;
 
-/// Builds a tool result with both text content and a structured payload.
+/// Builds a successful tool result with text content and a structured payload.
 ///
-/// rmcp 1.x marks `CallToolResult` `#[non_exhaustive]`, so it can only be
-/// built through its constructors, and none of them takes structured content
+/// rmcp marks `CallToolResult` `#[non_exhaustive]`, so it can only be built
+/// through its constructors, and none of them takes structured content
 /// alongside caller-chosen text content. The fields stay public, so setting
 /// `structured_content` after construction is the supported route.
-fn tool_result(
-    content: Vec<ContentBlock>,
-    structured_content: Option<Value>,
-    is_error: bool,
-) -> CallToolResult {
-    let mut result = if is_error {
-        CallToolResult::error(content)
-    } else {
-        CallToolResult::success(content)
-    };
+///
+/// This duplicates `skrills-server`'s `mcp_result` helpers because
+/// `skrills-subagents` sits below that crate in the dependency graph.
+fn tool_ok(content: Vec<ContentBlock>, structured_content: Option<Value>) -> CallToolResult {
+    let mut result = CallToolResult::success(content);
+    result.structured_content = structured_content;
+    result
+}
+
+/// Builds a tool-level error result with text content and a structured payload.
+fn tool_err(content: Vec<ContentBlock>, structured_content: Option<Value>) -> CallToolResult {
+    let mut result = CallToolResult::error(content);
     result.structured_content = structured_content;
     result
 }
@@ -236,10 +238,9 @@ impl SubagentService {
         }
         let mut cli_templates = self.cli_adapter_for(None, None).list_templates().await?;
         templates.append(&mut cli_templates);
-        Ok(tool_result(
+        Ok(tool_ok(
             vec![ContentBlock::text("listed subagents")],
             Some(json!({"templates": templates})),
-            false,
         ))
     }
 
@@ -263,10 +264,9 @@ impl SubagentService {
             })
             .collect();
 
-        Ok(tool_result(
+        Ok(tool_ok(
             vec![ContentBlock::text(format!("found {} agents", agents.len()))],
             Some(json!({"agents": agents})),
-            false,
         ))
     }
 
@@ -338,14 +338,13 @@ impl SubagentService {
         };
         let run_id = adapter.run(request, self.store.clone()).await?;
         let status = adapter.status(run_id, self.store.clone()).await?;
-        Ok(tool_result(
+        Ok(tool_ok(
             vec![ContentBlock::text(format!("run_id={run_id}"))],
             Some(json!({
                 "run_id": run_id,
                 "status": status,
                 "events": self.store.run(run_id).await?.map(|r| r.events).unwrap_or_default()
             })),
-            false,
         ))
     }
 
@@ -430,14 +429,13 @@ impl SubagentService {
             .ok_or_else(|| anyhow!("run_id is required"))?;
         let run_id = run_id_from_value(run_id_val)?;
         let status = self.store.status(run_id).await?;
-        Ok(tool_result(
+        Ok(tool_ok(
             vec![ContentBlock::text("status")],
             Some(json!({
                 "run_id": run_id,
                 "status": status,
                 "events": self.store.run(run_id).await?.map(|r| r.events).unwrap_or_default()
             })),
-            false,
         ))
     }
 
@@ -448,10 +446,9 @@ impl SubagentService {
                 .ok_or_else(|| anyhow!("run_id is required"))?,
         )?;
         let stopped = self.store.stop(run_id).await?;
-        Ok(tool_result(
+        Ok(tool_ok(
             vec![ContentBlock::text("stopped")],
             Some(json!({"run_id": run_id, "stopped": stopped})),
-            false,
         ))
     }
 
@@ -465,10 +462,9 @@ impl SubagentService {
             .map(|v| usize::try_from(v).unwrap_or(usize::MAX))
             .unwrap_or(20);
         let runs = self.store.history(limit).await?;
-        Ok(tool_result(
+        Ok(tool_ok(
             vec![ContentBlock::text("history")],
             Some(json!({"runs": runs})),
-            false,
         ))
     }
 
@@ -492,13 +488,12 @@ impl SubagentService {
         let record = match self.store.run(run_id).await? {
             Some(r) => r,
             None => {
-                return Ok(tool_result(
+                return Ok(tool_err(
                     vec![ContentBlock::text(format!("run not found: {}", run_id))],
                     Some(json!({
                         "error": format!("run not found: {}", run_id),
                         "run_id": run_id.to_string()
                     })),
-                    true,
                 ));
             }
         };
@@ -536,7 +531,7 @@ impl SubagentService {
             })
             .collect();
 
-        Ok(tool_result(
+        Ok(tool_ok(
             vec![ContentBlock::text(format!(
                 "events: {} of {} total",
                 events_json.len(),
@@ -548,7 +543,6 @@ impl SubagentService {
                 "total_count": total_count,
                 "has_more": false
             })),
-            false,
         ))
     }
 
@@ -556,12 +550,11 @@ impl SubagentService {
     /// the list, so a caller that branches on `is_error` would otherwise treat
     /// "not implemented" as a transcript it can read.
     async fn handle_transcript(&self) -> Result<CallToolResult> {
-        Ok(tool_result(
+        Ok(tool_err(
             vec![ContentBlock::text(
                 "secure transcripts are not yet implemented",
             )],
             Some(json!({"status": "unimplemented"})),
-            true,
         ))
     }
 }
@@ -579,6 +572,22 @@ mod tests {
         let agents_dir = dir.join("agents");
         fs::create_dir_all(&agents_dir).unwrap();
         fs::write(agents_dir.join(name), content).unwrap();
+    }
+
+    #[test]
+    fn tool_ok_marks_the_result_as_not_an_error() {
+        let result = tool_ok(vec![ContentBlock::text("done")], Some(json!({"runs": 0})));
+
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(result.structured_content, Some(json!({"runs": 0})));
+    }
+
+    #[test]
+    fn tool_err_marks_the_result_as_an_error() {
+        let result = tool_err(vec![ContentBlock::text("failed")], None);
+
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(result.structured_content, None);
     }
 
     use skrills_test_utils::{env_guard, set_env_var};

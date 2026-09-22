@@ -22,6 +22,7 @@
 
 use crate::app::SkillService;
 use crate::discovery::priority_labels_and_rank_map;
+use crate::mcp_result::tool_ok;
 use crate::sync::mirror_source_root;
 use crate::tool_schemas;
 use anyhow::{anyhow, Result};
@@ -217,10 +218,7 @@ impl ServerHandler for SkillService {
                             &codex_skills_root,
                             include_marketplace,
                         )?;
-                        let _ = crate::setup::ensure_codex_skills_feature_enabled(
-                            &home.join(".codex/config.toml"),
-                        );
-                        let text = if report.copied_names.is_empty() {
+                        let mut text = if report.copied_names.is_empty() {
                             format!("copied: {}, skipped: {}", report.copied, report.skipped)
                         } else {
                             format!(
@@ -230,8 +228,25 @@ impl ServerHandler for SkillService {
                                 report.copied_names.join(", ")
                             )
                         };
+                        if let Err(err) = crate::setup::ensure_codex_skills_feature_enabled(
+                            &home.join(".codex/config.toml"),
+                        ) {
+                            // Surface filesystem errors (read-only home, disk full,
+                            // malformed TOML) so the caller learns why Codex loads
+                            // nothing despite the skills landing on disk.
+                            tracing::warn!(
+                                error = %err,
+                                "could not ensure codex skills feature flag"
+                            );
+                            text.push_str(&format!(
+                                "\nwarning: could not enable the codex skills feature in \
+                                 ~/.codex/config.toml: {err}"
+                            ));
+                        }
                         let (priority, rank_map) = priority_labels_and_rank_map();
-                        Ok(crate::mcp_result::tool_result(vec![ContentBlock::text(text)], Some(json!({
+                        Ok(tool_ok(
+                            vec![ContentBlock::text(text)],
+                            Some(json!({
                                 "report": {
                                     "copied": report.copied,
                                     "skipped": report.skipped,
@@ -241,7 +256,8 @@ impl ServerHandler for SkillService {
                                     "priority": priority,
                                     "priority_rank_by_source": rank_map
                                 }
-                            })), false))
+                            })),
+                        ))
                     }
                     // Copilot-specific sync tools
                     "sync-from-copilot" => {
@@ -293,13 +309,16 @@ impl ServerHandler for SkillService {
 
                         let report = sync_between(&args.from, to, &params)?;
 
-                        Ok(crate::mcp_result::tool_result(vec![ContentBlock::text(report.summary.clone())], Some(json!({
+                        Ok(tool_ok(
+                            vec![ContentBlock::text(report.summary.clone())],
+                            Some(json!({
                                 "from": args.from,
                                 "to": to,
                                 "report": report,
                                 "dry_run": args.dry_run,
                                 "skip_existing_commands": args.skip_existing_commands
-                            })), false))
+                            })),
+                        ))
                     }
                     "sync-mcp-servers" => {
                         use skrills_sync::{default_target_for, sync_between, SyncParams};
@@ -326,12 +345,15 @@ impl ServerHandler for SkillService {
 
                         let report = sync_between(&args.from, to, &params)?;
 
-                        Ok(crate::mcp_result::tool_result(vec![ContentBlock::text(report.summary.clone())], Some(json!({
+                        Ok(tool_ok(
+                            vec![ContentBlock::text(report.summary.clone())],
+                            Some(json!({
                                 "from": args.from,
                                 "to": to,
                                 "report": report,
                                 "dry_run": args.dry_run
-                            })), false))
+                            })),
+                        ))
                     }
                     "sync-preferences" => {
                         use skrills_sync::{default_target_for, sync_between, SyncParams};
@@ -358,12 +380,15 @@ impl ServerHandler for SkillService {
 
                         let report = sync_between(&args.from, to, &params)?;
 
-                        Ok(crate::mcp_result::tool_result(vec![ContentBlock::text(report.summary.clone())], Some(json!({
+                        Ok(tool_ok(
+                            vec![ContentBlock::text(report.summary.clone())],
+                            Some(json!({
                                 "from": args.from,
                                 "to": to,
                                 "report": report,
                                 "dry_run": args.dry_run
-                            })), false))
+                            })),
+                        ))
                     }
                     "sync-all" => {
                         let args = request.arguments.clone().unwrap_or_default();
@@ -395,15 +420,18 @@ impl ServerHandler for SkillService {
 
                         let report = sync_between(&args.from, to, &params)?;
 
-                        Ok(crate::mcp_result::tool_result(vec![ContentBlock::text(format!(
+                        Ok(tool_ok(
+                            vec![ContentBlock::text(format!(
                                 "Sync Preview ({} → {})\n{}",
                                 args.from, to, report.summary
-                            ))], Some(json!({
+                            ))],
+                            Some(json!({
                                 "preview": true,
                                 "from": args.from,
                                 "to": to,
                                 "report": report
-                            })), false))
+                            })),
+                        ))
                     }
                     "validate-skills" => {
                         let args = request.arguments.clone().unwrap_or_default();
@@ -495,10 +523,13 @@ impl ServerHandler for SkillService {
                                 .sum::<u64>()
                         );
 
-                        Ok(crate::mcp_result::tool_result(vec![ContentBlock::text(text)], Some(json!({
+                        Ok(tool_ok(
+                            vec![ContentBlock::text(text)],
+                            Some(json!({
                                 "total": analyses.len(),
                                 "analyses": analyses
-                            })), false))
+                            })),
+                        ))
                     }
                     "resolve-dependencies" => {
                         let args = request.arguments.clone().unwrap_or_default();
@@ -558,13 +589,16 @@ impl ServerHandler for SkillService {
                             uri
                         );
 
-                        Ok(crate::mcp_result::tool_result(vec![ContentBlock::text(text)], Some(json!({
+                        Ok(tool_ok(
+                            vec![ContentBlock::text(text)],
+                            Some(json!({
                                 "uri": uri,
                                 "direction": direction,
                                 "transitive": transitive,
                                 "results": results,
                                 "count": results.len()
-                            })), false))
+                            })),
+                        ))
                     }
                     "skill-metrics" => {
                         let args = request.arguments.clone().unwrap_or_default();
@@ -582,7 +616,10 @@ impl ServerHandler for SkillService {
                             metrics.by_quality.high
                         );
 
-                        Ok(crate::mcp_result::tool_result(vec![ContentBlock::text(summary)], Some(serde_json::to_value(&metrics)?), false))
+                        Ok(tool_ok(
+                            vec![ContentBlock::text(summary)],
+                            Some(serde_json::to_value(&metrics)?),
+                        ))
                     }
                     "recommend-skills" => {
                         let args = request.arguments.clone().unwrap_or_default();
@@ -621,7 +658,10 @@ impl ServerHandler for SkillService {
                                 .count(),
                         );
 
-                        Ok(crate::mcp_result::tool_result(vec![ContentBlock::text(summary)], Some(serde_json::to_value(&recommendations)?), false))
+                        Ok(tool_ok(
+                            vec![ContentBlock::text(summary)],
+                            Some(serde_json::to_value(&recommendations)?),
+                        ))
                     }
                     "skill-loading-status" => {
                         let args = request.arguments.clone().unwrap_or_default();
@@ -916,6 +956,58 @@ mod tests {
         assert!(
             err.message.contains("unknown tool"),
             "error message should mention unknown tool"
+        );
+    }
+
+    #[test]
+    fn sync_from_claude_reports_an_unwritable_codex_config() {
+        /*
+        GIVEN a home whose ~/.codex/config.toml cannot be read as a file
+        WHEN calling sync-from-claude
+        THEN the tool result text names the codex skills feature flag
+        */
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var(
+            "HOME",
+            Some(
+                temp.path()
+                    .to_str()
+                    .expect("temp home should be valid utf-8"),
+            ),
+        );
+        // A directory where the config file belongs makes every read and write
+        // of it fail, which is the shape of a read-only or corrupted home.
+        std::fs::create_dir_all(temp.path().join(".codex/config.toml"))
+            .expect("create config.toml as a directory");
+
+        let service = build_service(&temp);
+        let result = run_async(async move {
+            let (running, context, _client) = service_with_context(service);
+            running
+                .service()
+                .call_tool(CallToolRequestParams::new("sync-from-claude"), context)
+                .await
+        });
+
+        let res = match result.expect("sync-from-claude should complete") {
+            CallToolResponse::Complete(res) => res,
+            other => panic!("expected a completed tool call, got {other:?}"),
+        };
+        assert_eq!(
+            res.is_error,
+            Some(false),
+            "the skills themselves synced, so the call still succeeds"
+        );
+        let text = res
+            .content
+            .iter()
+            .filter_map(|block| block.as_text().map(|t| t.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("codex skills feature"),
+            "result text should surface the feature-flag failure, got: {text}"
         );
     }
 

@@ -228,9 +228,12 @@ fn mirror_linked_files_transitively(
     Ok(())
 }
 
-/// Reports the outcome of a synchronization operation.
+/// Reports the outcome of mirroring skills or agents into a Codex root.
+///
+/// Named apart from [`skrills_sync::SyncReport`], which the same call sites
+/// also handle and which covers commands, MCP servers and preferences.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct SyncReport {
+pub struct MirrorReport {
     pub copied: usize,
     pub skipped: usize,
     /// Relative paths of skills that were copied (new or updated).
@@ -253,8 +256,8 @@ pub fn sync_skills_only_from_claude(
     claude_root: &Path,
     codex_skills_root: &Path,
     include_marketplace: bool,
-) -> Result<SyncReport> {
-    let mut report = SyncReport::default();
+) -> Result<MirrorReport> {
+    let mut report = MirrorReport::default();
     if !claude_root.exists() {
         return Ok(report);
     }
@@ -351,8 +354,8 @@ pub(crate) fn sync_from_claude(
     claude_root: &Path,
     mirror_root: &Path,
     include_marketplace: bool,
-) -> Result<SyncReport> {
-    let mut report = SyncReport::default();
+) -> Result<MirrorReport> {
+    let mut report = MirrorReport::default();
     if !claude_root.exists() {
         return Ok(report);
     }
@@ -592,8 +595,8 @@ pub fn sync_agents_only_from_claude(
     claude_root: &Path,
     codex_agents_root: &Path,
     include_marketplace: bool,
-) -> Result<SyncReport> {
-    let mut report = SyncReport::default();
+) -> Result<MirrorReport> {
+    let mut report = MirrorReport::default();
     if !claude_root.exists() {
         return Ok(report);
     }
