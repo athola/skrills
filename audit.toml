@@ -1,7 +1,7 @@
 [advisories]
 ignore = [
-  # paste crate is unmaintained (RUSTSEC-2024-0436). It now reaches the tree
-  # through leptos (tachys, reactive_graph, either_of), not rmcp: rmcp moved to
-  # pastey and the 1.x upgrade confirmed it. Track leptos for removal.
+  # paste crate is unmaintained (RUSTSEC-2024-0436). It reaches the tree only
+  # through the leptos family (search Cargo.lock for `paste`). rmcp uses pastey.
+  # Remove this entry when leptos drops it.
   "RUSTSEC-2024-0436",
 ]

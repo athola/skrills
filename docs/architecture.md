@@ -86,7 +86,7 @@ The `app` module is split to stay under the 2500 LOC threshold (ADR-0001):
 
 ## Roadmap
 
-Command handlers are in `crates/cli/src/commands/`, one submodule per command group, so CLI commands line up with MCP tools. `crates/cli` still depends on `skrills-server` for `app`, `handler`, and `http_transport`, so the split is a cohesion boundary and does not yet lighten the CLI build. Future work includes consolidating `sync-from-claude` with `sync-all`. The `app` module size is monitored to trigger refactoring at the threshold.
+Command handlers are in `crates/cli/src/commands/`, one submodule per command group, so CLI commands line up with MCP tools. `crates/cli` still depends on `skrills-server` for `app`, `sync`, `setup`, `tool_schemas` and `http_transport`, so the split is a cohesion boundary and does not yet lighten the CLI build. Future work includes consolidating `sync-from-claude` with `sync-all`. The `app` module size is monitored to trigger refactoring at the threshold.
 
 ## Related Documents
 

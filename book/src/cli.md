@@ -167,7 +167,7 @@ Supplied hosts are added to the loopback set, never substituted for it.
 The same list is settable in the config file as `allowed_hosts` under
 `[serve]`, or through `SKRILLS_ALLOWED_HOSTS`.
 
-The MCP server exposes 36 tools for validation, analysis, sync, intelligence, and research directly to your AI assistant. The HTTP mode serves a browser dashboard with skills explorer, metrics, and activity feed.
+The MCP server exposes 36 core tools (49 with the default subagent and gateway features) for validation, analysis, sync, intelligence, and research directly to your AI assistant. The HTTP mode serves a browser dashboard with skills explorer, metrics, and activity feed.
 
 Skrills can generate a self-contained HTML portal (`skrills-portal.html`) via the `html-portal-generator` skill. It works offline without a running server and includes a skills browser, validator with autofix, token analyzer, cross-CLI converter, and full CLI/MCP reference. Open it directly in any browser or upload it into AI application portals. The file is git-ignored, so regenerate it as part of release prep.
 
