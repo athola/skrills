@@ -6,7 +6,6 @@ contract so the AI hygiene gate cannot silently weaken.
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -28,16 +27,6 @@ def _run(
         check=False,
         env=env,
     )
-
-
-def _failing_rg_env(tmp_path: Path) -> dict[str, str]:
-    """PATH whose first `rg` is a shim that exits 2, ripgrep's error code."""
-    shim_dir = tmp_path / "bin"
-    shim_dir.mkdir()
-    shim = shim_dir / "rg"
-    shim.write_text("#!/bin/sh\nexit 2\n")
-    shim.chmod(0o755)
-    return {**os.environ, "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
 
 
 pytestmark = pytest.mark.skipif(
@@ -102,7 +91,9 @@ class TestProseSlopLint:
         assert result.returncode == 0, result.stderr
 
     @pytest.mark.unit
-    def test_rg_error_exits_two_instead_of_reporting_clean(self, tmp_path):
+    def test_rg_error_exits_two_instead_of_reporting_clean(
+        self, tmp_path, failing_rg_env
+    ):
         """
         Scenario: ripgrep itself fails
         Given a tree with a banned word
@@ -113,7 +104,7 @@ class TestProseSlopLint:
         report the tree clean.
         """
         (tmp_path / "guide.md").write_text("We will leverage this.\n")
-        result = _run(tmp_path, env=_failing_rg_env(tmp_path))
+        result = _run(tmp_path, env=failing_rg_env)
         assert result.returncode == 2, result.stderr
         assert "prose lint did not run" in result.stderr
         assert "clean" not in result.stdout

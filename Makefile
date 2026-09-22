@@ -254,9 +254,16 @@ plugin-doctor:
 
 # Run pytest over the script ports (validate_plugin / hook modernization
 # / registration auditor).
+# `pip install --user pytest` puts the launcher outside PATH on stock macOS, so
+# fall back to the module form before declaring pytest missing.
 test-scripts:
-	@command -v pytest >/dev/null 2>&1 || { echo "pytest not installed (pip install pytest)"; exit 1; }
-	pytest tests/unit -q
+	@if command -v pytest >/dev/null 2>&1; then \
+	  pytest tests/unit -q; \
+	elif python3 -m pytest --version >/dev/null 2>&1; then \
+	  python3 -m pytest tests/unit -q; \
+	else \
+	  echo "pytest not installed (pip install pytest)"; exit 1; \
+	fi
 
 test-coverage:
 	@if command -v cargo-llvm-cov >/dev/null 2>&1; then \
@@ -586,6 +593,10 @@ ci: fmt lint lint-hygiene test
 # Stock macOS /bin/bash is 3.2, so probe the usual Homebrew locations before
 # giving up: on a machine with a newer bash this gate runs locally instead of
 # only in the publish-dry-run and release CI jobs.
+#
+# No usable bash is a failure, not a skip: a silent skip let four commits pass
+# `make precommit` with the publish-order gate never running. SKIP_VERIFY_PUBLISH=1
+# is the explicit, recorded opt-out.
 verify-publish:
 	@vp_bash=""; \
 	for b in bash /opt/homebrew/bin/bash /usr/local/bin/bash; do \
@@ -595,12 +606,15 @@ verify-publish:
 	done; \
 	if [ -n "$$vp_bash" ]; then \
 	  "$$vp_bash" scripts/verify_publish_order.sh; \
+	elif [ "$${SKIP_VERIFY_PUBLISH:-0}" = 1 ]; then \
+	  echo "[SKIP] verify-publish: SKIP_VERIFY_PUBLISH=1 set; publish-dry-run covers it in CI"; \
 	else \
-	  echo "[SKIP] verify-publish needs bash 4+ for associative arrays; found $$(bash --version | head -1)"; \
-	  echo "       'brew install bash' runs it locally; publish-dry-run covers it in CI"; \
+	  echo "ERROR: verify-publish needs bash 4+ for associative arrays; found $$(bash --version | head -1)" >&2; \
+	  echo "       run 'brew install bash', or set SKIP_VERIFY_PUBLISH=1 to skip this gate" >&2; \
+	  exit 1; \
 	fi
 
-precommit: fmt-check lint lint-md lint-hygiene test test-install dogfood-precommit verify-publish
+precommit: fmt-check lint lint-md lint-hygiene test test-scripts test-install dogfood-precommit verify-publish
 
 hooks:
 	@git config core.hooksPath githooks
@@ -763,17 +777,22 @@ dogfood-validate-contract: build
 dogfood-tui-interactive: build
 	@BIN_PATH=$(BIN_PATH) $(SHELL) ./scripts/dogfood-tui.sh
 
-# Truncated dogfood for the pre-commit hook: run the validate JSON output
-# contract against an already-built binary. It does NOT force a release build,
-# so commits stay fast; CI and `make dogfood-all` run the full set. Install
-# asset selection is already covered by `test-install` in the precommit chain.
+# Truncated dogfood for the pre-commit hook: the validate JSON output contract
+# and the TUI contracts, run against the release binary the `build`
+# prerequisite produces. `make dogfood-all` runs the full set. Install asset
+# selection is already covered by `test-install` in the precommit chain.
+#
+# The else branch is a failure, not a skip: `build` guarantees the default
+# BIN_PATH, so a missing binary here means BIN_PATH or CARGO_TARGET_DIR points
+# somewhere `build` did not write, and the contracts must not be passed over.
 dogfood-precommit: build
 	@if [ -x "$(BIN_PATH)" ]; then \
 	  BIN_PATH=$(BIN_PATH) $(SHELL) ./scripts/dogfood-contracts.sh && \
 	  BIN_PATH=$(BIN_PATH) $(SHELL) ./scripts/dogfood-tui.sh ; \
 	else \
-	  echo "==> [dogfood] skipping validate JSON + TUI contracts: $(BIN_PATH) not built" ; \
-	  echo "    build with 'make build'; the full contracts run in CI" ; \
+	  echo "ERROR: [dogfood] $(BIN_PATH) is not executable after 'make build'" >&2 ; \
+	  echo "       check the BIN_PATH and CARGO_TARGET_DIR overrides in effect" >&2 ; \
+	  exit 1 ; \
 	fi
 
 # Direct-script targets: exercise the in-tree Python ports under scripts/
