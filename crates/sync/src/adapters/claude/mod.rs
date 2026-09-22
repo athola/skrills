@@ -124,7 +124,7 @@ impl AgentAdapter for ClaudeAdapter {
         self.root.clone()
     }
 
-    fn supported_fields(&self) -> FieldSupport {
+    fn read_support(&self) -> FieldSupport {
         FieldSupport {
             commands: true,
             mcp_servers: true,
@@ -134,6 +134,16 @@ impl AgentAdapter for ClaudeAdapter {
             agents: true,
             instructions: true,
             plugin_assets: true,
+        }
+    }
+
+    /// Claude is the plugin cache's owner: it reads plugin assets and never
+    /// writes them, so `write_plugin_assets` is not implemented and the trait
+    /// default would report a successful write of nothing.
+    fn write_support(&self) -> FieldSupport {
+        FieldSupport {
+            plugin_assets: false,
+            ..self.read_support()
         }
     }
 

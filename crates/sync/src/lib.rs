@@ -31,7 +31,7 @@
 //!         PathBuf::new()
 //!     }
 //!
-//!     fn supported_fields(&self) -> FieldSupport {
+//!     fn read_support(&self) -> FieldSupport {
 //!         FieldSupport {
 //!             commands: true,
 //!             mcp_servers: true,
@@ -42,6 +42,10 @@
 //!             instructions: false,
 //!             plugin_assets: false,
 //!         }
+//!     }
+//!
+//!     fn write_support(&self) -> FieldSupport {
+//!         self.read_support()
 //!     }
 //!
 //!     fn read_commands(&self, _include_marketplace: bool) -> Result<Vec<Command>> {
@@ -149,7 +153,7 @@ pub use models::transform_model;
 pub use orchestrator::{
     create_adapter, is_valid_platform, sync_between, SyncOrchestrator, SyncParams,
 };
-pub use platform_routing::default_target_for;
+pub use platform_routing::{default_target_for, skill_delivery, SkillDelivery};
 pub use report::{SkipReason, SyncReport, WriteReport};
 pub use validation::{
     apply_autofix_to_skill, skill_is_codex_compatible, skill_is_copilot_compatible,

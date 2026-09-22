@@ -60,8 +60,9 @@ define verify_setup
 endef
 
 # Phony targets: core developer flow
-.PHONY: all help version verify fmt fmt-check lint lint-md lint-prose lint-decoration lint-hygiene check test test-unit test-integration test-setup test-install \
-	release-consistency \
+.PHONY: all help version verify fmt fmt-check lint lint-md lint-prose lint-decoration lint-reachability lint-hygiene check test test-unit test-integration test-setup test-install \
+	release-consistency verify-publish test-scripts cold-window \
+	plugin-audit plugin-audit-fix plugin-validate plugin-modernize plugin-doctor \
 	build build-min serve-help install status coverage test-coverage dogfood dogfood-readme ci precommit \
 	clean clean-demo hooks require-cargo security deny deps-update check-deps \
 	quick watch bench release
@@ -184,8 +185,13 @@ fmt-check:
 
 # NOTE: CI (.github/workflows/ci.yml) duplicates these cargo commands directly
 # rather than calling make targets. Keep both in sync when changing flags.
+# Three passes, because a warning can exist under one feature set only: an
+# import used solely behind `#[cfg(feature = "watch")]` is clean with
+# --all-features and a hard error in the default build CI and releases use.
 lint:
 	$(CARGO_CMD) clippy --workspace --all-targets --all-features -- -D warnings
+	$(CARGO_CMD) clippy --workspace --all-targets -- -D warnings
+	$(CARGO_CMD) clippy --workspace --all-targets --no-default-features -- -D warnings
 
 lint-md:
 	$(SHELL) ./scripts/lint-markdown.sh
@@ -198,8 +204,13 @@ lint-prose:
 lint-decoration:
 	$(SHELL) ./scripts/lint-rust-decoration.sh
 
+# Fail when a crate source file is not declared as a module: an undeclared
+# file is never compiled, so nothing else in the toolchain would notice.
+lint-reachability:
+	$(SHELL) ./scripts/lint-module-reachability.sh
+
 # Aggregate AI hygiene lints (banned words + decorative comments).
-lint-hygiene: lint-prose lint-decoration
+lint-hygiene: lint-prose lint-decoration lint-reachability
 
 check:
 	$(CARGO_CMD) check --workspace --all-targets
@@ -243,9 +254,16 @@ plugin-doctor:
 
 # Run pytest over the script ports (validate_plugin / hook modernization
 # / registration auditor).
+# `pip install --user pytest` puts the launcher outside PATH on stock macOS, so
+# fall back to the module form before declaring pytest missing.
 test-scripts:
-	@command -v pytest >/dev/null 2>&1 || { echo "pytest not installed (pip install pytest)"; exit 1; }
-	pytest tests/unit -q
+	@if command -v pytest >/dev/null 2>&1; then \
+	  pytest tests/unit -q; \
+	elif python3 -m pytest --version >/dev/null 2>&1; then \
+	  python3 -m pytest tests/unit -q; \
+	else \
+	  echo "pytest not installed (pip install pytest)"; exit 1; \
+	fi
 
 test-coverage:
 	@if command -v cargo-llvm-cov >/dev/null 2>&1; then \
@@ -371,7 +389,7 @@ demo-analytics: demo-fixtures build
 demo-gateway: build
 	@echo "==> Demo: MCP Gateway Tools (unit tests)"
 	@for filter in mcp_gateway list_mcp_tools describe_mcp_tool get_context_stats; do \
-		$(CARGO_CMD) test --package skrills-server --lib -- $$filter --test-threads=1; \
+		$(CARGO_CMD) test --package skrills-server --lib -- $$filter --test-threads=1 || exit 1; \
 	done
 	@echo "==> Gateway demo complete"
 
@@ -571,10 +589,32 @@ clean-demo:
 
 ci: fmt lint lint-hygiene test
 
+# verify_publish_order.sh needs associative arrays, so it needs bash 4+.
+# Stock macOS /bin/bash is 3.2, so probe the usual Homebrew locations before
+# giving up: on a machine with a newer bash this gate runs locally instead of
+# only in the publish-dry-run and release CI jobs.
+#
+# No usable bash is a failure, not a skip: a silent skip let four commits pass
+# `make precommit` with the publish-order gate never running. SKIP_VERIFY_PUBLISH=1
+# is the explicit, recorded opt-out.
 verify-publish:
-	@if bash -c 'declare -A x 2>/dev/null'; then bash scripts/verify_publish_order.sh; else echo "[SKIP] verify-publish requires bash 4+ (found $$(bash --version | head -1))"; fi
+	@vp_bash=""; \
+	for b in bash /opt/homebrew/bin/bash /usr/local/bin/bash; do \
+	  command -v "$$b" >/dev/null 2>&1 || continue; \
+	  "$$b" -c 'declare -A probe' >/dev/null 2>&1 || continue; \
+	  vp_bash="$$b"; break; \
+	done; \
+	if [ -n "$$vp_bash" ]; then \
+	  "$$vp_bash" scripts/verify_publish_order.sh; \
+	elif [ "$${SKIP_VERIFY_PUBLISH:-0}" = 1 ]; then \
+	  echo "[SKIP] verify-publish: SKIP_VERIFY_PUBLISH=1 set; publish-dry-run covers it in CI"; \
+	else \
+	  echo "ERROR: verify-publish needs bash 4+ for associative arrays; found $$(bash --version | head -1)" >&2; \
+	  echo "       run 'brew install bash', or set SKIP_VERIFY_PUBLISH=1 to skip this gate" >&2; \
+	  exit 1; \
+	fi
 
-precommit: fmt-check lint lint-md lint-hygiene test test-install dogfood-precommit verify-publish
+precommit: fmt-check lint lint-md lint-hygiene test test-scripts test-install dogfood-precommit verify-publish
 
 hooks:
 	@git config core.hooksPath githooks
@@ -737,17 +777,22 @@ dogfood-validate-contract: build
 dogfood-tui-interactive: build
 	@BIN_PATH=$(BIN_PATH) $(SHELL) ./scripts/dogfood-tui.sh
 
-# Truncated dogfood for the pre-commit hook: run the validate JSON output
-# contract against an already-built binary. It does NOT force a release build,
-# so commits stay fast; CI and `make dogfood-all` run the full set. Install
-# asset selection is already covered by `test-install` in the precommit chain.
-dogfood-precommit:
+# Truncated dogfood for the pre-commit hook: the validate JSON output contract
+# and the TUI contracts, run against the release binary the `build`
+# prerequisite produces. `make dogfood-all` runs the full set. Install asset
+# selection is already covered by `test-install` in the precommit chain.
+#
+# The else branch is a failure, not a skip: `build` guarantees the default
+# BIN_PATH, so a missing binary here means BIN_PATH or CARGO_TARGET_DIR points
+# somewhere `build` did not write, and the contracts must not be passed over.
+dogfood-precommit: build
 	@if [ -x "$(BIN_PATH)" ]; then \
-	  BIN_PATH=$(BIN_PATH) $(SHELL) ./scripts/dogfood-contracts.sh ; \
+	  BIN_PATH=$(BIN_PATH) $(SHELL) ./scripts/dogfood-contracts.sh && \
 	  BIN_PATH=$(BIN_PATH) $(SHELL) ./scripts/dogfood-tui.sh ; \
 	else \
-	  echo "==> [dogfood] skipping validate JSON + TUI contracts: $(BIN_PATH) not built" ; \
-	  echo "    build with 'make build'; the full contracts run in CI" ; \
+	  echo "ERROR: [dogfood] $(BIN_PATH) is not executable after 'make build'" >&2 ; \
+	  echo "       check the BIN_PATH and CARGO_TARGET_DIR overrides in effect" >&2 ; \
+	  exit 1 ; \
 	fi
 
 # Direct-script targets: exercise the in-tree Python ports under scripts/

@@ -4,8 +4,9 @@
 //! near-identical to Claude Code commands.
 
 use super::paths::commands_dir;
-use super::utils::{sanitize_name, strip_frontmatter};
+use super::utils::strip_frontmatter;
 use crate::adapters::utils::hash_content;
+use crate::adapters::utils::sanitize_name_kebab;
 use crate::common::{Command, ContentFormat};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
@@ -82,7 +83,7 @@ pub fn write_commands(root: &Path, commands: &[Command]) -> Result<WriteReport> 
     fs::create_dir_all(&dir)?;
 
     for cmd in commands {
-        let name = sanitize_name(&cmd.name);
+        let name = sanitize_name_kebab(&cmd.name);
         let path = dir.join(format!("{}.md", name));
 
         // Strip all frontmatter, Cursor commands don't support YAML frontmatter.

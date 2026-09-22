@@ -77,6 +77,26 @@ focused pane right-aligned on it. `z` zooms the focused pane to the
 full body at any tier: the escape hatch when one pane needs all the
 room.
 
+### Always-on in Zellij
+
+Dedicate a [Zellij](https://zellij.dev) pane to the TUI that respawns
+if it exits. Save as `~/.config/zellij/layouts/skrills.kdl` and launch
+with `zellij --layout skrills`:
+
+```kdl
+layout {
+    tab name="cold-window" focus=true {
+        pane command="bash" {
+            // Loop respawns the TUI after a crash or reboot.
+            args "-c" "until skrills cold-window --tui; do echo restarting...; sleep 2; done"
+        }
+    }
+}
+```
+
+Already inside a Zellij session? Open it in a split without a layout
+file: `zellij run -d down -- bash -c 'until skrills cold-window --tui; do sleep 2; done'`.
+
 ## Keybindings
 
 The default surface is deliberately minimal: every data-rich or
@@ -339,8 +359,8 @@ contract: under a real terminal the process renders until the
 (CI, redirected stdio) the process exits 1 with a clear
 `requires a TTY` message rather than crashing on a termios
 syscall against `/dev/null`. Both surfaces use the same guard
-pattern (`crates/server/src/tui.rs:20-22` and
-`crates/server/src/app/dispatcher.rs:417-419`).
+pattern (`crates/cli/src/tui.rs:22-23` and
+`crates/cli/src/dispatcher.rs:471-472`).
 
 ## Hint patterns (ISA-18.2 inspired)
 

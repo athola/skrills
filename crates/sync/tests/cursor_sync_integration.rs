@@ -774,28 +774,48 @@ fn plugin_assets_synced_from_claude_to_cursor() {
     let report = orch.sync(&params).unwrap();
     assert!(report.success);
 
-    // The manifest-only writer only processes .claude-plugin/plugin.json
-    // files. Verify the manifest was written to plugins/local/.
-    let cursor_manifest = setup
-        .cursor_dir
-        .path()
-        .join("plugins/local/abstract/.cursor-plugin/plugin.json");
-
+    // The whole plugin tree is mirrored under plugins/local/<plugin>/, with
+    // the manifest directory renamed for Cursor.
+    let local_plugin = setup.cursor_dir.path().join("plugins/local/abstract");
+    for mirrored in [
+        ".cursor-plugin/plugin.json",
+        "scripts/makefile_dogfooder.py",
+        "hooks/session_start.py",
+        "bin/fallback.py",
+        "src/abstract/utils.py",
+        "skills/my-skill/SKILL.md",
+    ] {
+        assert!(
+            local_plugin.join(mirrored).exists(),
+            "{mirrored} should be mirrored into plugins/local/abstract/"
+        );
+    }
     assert!(
-        cursor_manifest.exists(),
-        "Plugin manifest should be synced to plugins/local/"
+        report.plugin_assets.written > 1,
+        "the reader/writer pair must carry more than the manifest, wrote {}",
+        report.plugin_assets.written
     );
 
-    // Non-manifest files (scripts, hooks, bin) are NOT written by
-    // the manifest-only writer, Cursor discovers them natively from
-    // ~/.claude/plugins/cache/.
+    // Development-only directories stay behind.
+    for skipped in [
+        "tests/test_something.py",
+        ".venv/lib/site.py",
+        "scripts/__pycache__/foo.pyc",
+    ] {
+        assert!(
+            !local_plugin.join(skipped).exists(),
+            "{skipped} should not be mirrored"
+        );
+    }
+
+    // Nothing lands in a cache-shaped path on the Cursor side.
     let cursor_cache = setup
         .cursor_dir
         .path()
         .join("plugins/cache/claude-night-market/abstract/1.8.3");
     assert!(
         !cursor_cache.exists(),
-        "Scripts should NOT be mirrored to plugins/cache/ in manifest-only mode"
+        "Assets belong under plugins/local/, not a mirrored plugins/cache/"
     );
 }
 
@@ -960,20 +980,70 @@ fn plugin_assets_dry_run_writes_nothing() {
         sync_hooks: false,
         sync_instructions: false,
         sync_plugin_assets: true,
+        // Cursor always takes the full mirror; the reader synthesizes the
+        // manifest this plugin does not ship, so the batch is `tool.py` plus
+        // `.claude-plugin/plugin.json`.
+        full_plugin_mirror: true,
         interactive: false,
         ..Default::default()
     };
 
     let report = orch.sync(&params).unwrap();
     assert_eq!(
-        report.plugin_assets.written, 1,
-        "Dry run should report count"
+        report.plugin_assets.written, 2,
+        "Dry run should report count, warnings were {:?}",
+        report.plugin_assets.warnings
     );
 
     // Nothing should be on disk
-    let cursor_plugin = setup
-        .cursor_dir
-        .path()
-        .join("plugins/cache/market/plugin/1.0.0");
+    let cursor_plugin = setup.cursor_dir.path().join("plugins/local/plugin");
     assert!(!cursor_plugin.exists(), "Dry run should not create files");
+}
+
+/// The writer refuses a plugin whose batch carries no manifest, so the dry run
+/// has to preview that refusal instead of counting the assets as written.
+#[test]
+fn plugin_assets_dry_run_previews_the_manifest_refusal() {
+    let setup = CursorSyncTestSetup::new().unwrap();
+
+    let plugin_dir = setup
+        .claude_dir
+        .path()
+        .join("plugins/cache/market/plugin/1.0.0/scripts");
+    fs::create_dir_all(&plugin_dir).unwrap();
+    fs::write(plugin_dir.join("tool.py"), b"# tool\n").unwrap();
+
+    let source = ClaudeAdapter::with_root(setup.claude_dir.path().to_path_buf());
+    let target = CursorAdapter::with_root(setup.cursor_dir.path().to_path_buf());
+    let orch = SyncOrchestrator::new(source, target);
+
+    let params = SyncParams {
+        dry_run: true,
+        sync_skills: false,
+        sync_commands: false,
+        sync_mcp_servers: false,
+        sync_preferences: false,
+        sync_agents: false,
+        sync_hooks: false,
+        sync_instructions: false,
+        sync_plugin_assets: true,
+        full_plugin_mirror: false,
+        ..Default::default()
+    };
+
+    let report = orch.sync(&params).unwrap();
+
+    assert_eq!(
+        report.plugin_assets.written, 0,
+        "a manifest-less batch mirrors nothing"
+    );
+    assert!(
+        report
+            .plugin_assets
+            .warnings
+            .iter()
+            .any(|w| w.contains("plugin.json")),
+        "the preview must explain the refusal: {:?}",
+        report.plugin_assets.warnings
+    );
 }

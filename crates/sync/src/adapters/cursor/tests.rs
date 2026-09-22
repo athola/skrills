@@ -6,12 +6,105 @@ use crate::adapters::utils::test_helpers::make_command;
 use crate::common::{McpServer, McpTransport, ModuleFile};
 use tempfile::TempDir;
 
+/// Cursor refuses to mirror a plugin directory with no manifest, so every
+/// asset-placement test ships the manifest its plugin would really carry.
+fn plugin_manifest(plugin: &str) -> crate::common::PluginAsset {
+    crate::common::PluginAsset::new(
+        plugin.to_string(),
+        "market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from(".claude-plugin/plugin.json"),
+        format!("{{\"name\": \"{plugin}\"}}").into_bytes(),
+        false,
+    )
+}
+
+/// Marks a `plugins/local` directory as one skrills mirrored, which is what
+/// makes it eligible for pruning.
+fn mark_as_mirrored(plugin_dir: &std::path::Path) {
+    std::fs::create_dir_all(plugin_dir).unwrap();
+    std::fs::write(plugin_dir.join(super::MIRROR_MARKER), b"marker").unwrap();
+}
+
 fn make_skill_with_frontmatter(name: &str) -> Command {
     let content = format!(
         "---\nname: {}\ndescription: A test skill\ncategory: testing\ntags:\n  - test\n---\n\n# {} Skill\n\nDo the thing.\n",
         name, name
     );
     make_command(name, &content)
+}
+
+/// The manifest is written under the sanitized plugin name while the skill
+/// body used the raw one, so any plugin name the sanitizer rewrites put the
+/// two in different directories and Cursor found a plugin with no skills.
+#[test]
+fn write_skills_puts_manifest_and_skill_in_the_same_plugin_dir() {
+    let tmp = TempDir::new().unwrap();
+    let mut skill = make_skill_with_frontmatter("deep-work");
+    skill.plugin_origin = Some(crate::common::PluginOrigin {
+        plugin_name: "my.plugin".to_string(),
+        publisher: "market".to_string(),
+        version: "1.0.0".to_string(),
+    });
+
+    super::skills::write_skills(tmp.path(), &[skill]).unwrap();
+
+    let local = tmp.path().join("plugins/local");
+    let manifest_dirs: Vec<_> = std::fs::read_dir(&local)
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+        .collect();
+    assert_eq!(
+        manifest_dirs.len(),
+        1,
+        "manifest and skill body should share one plugin directory, got {manifest_dirs:?}"
+    );
+    let plugin_dir = local.join(&manifest_dirs[0]);
+    assert!(
+        plugin_dir.join(".cursor-plugin/plugin.json").exists(),
+        "manifest missing from {}",
+        plugin_dir.display()
+    );
+    assert!(
+        plugin_dir.join("skills/deep-work/SKILL.md").exists(),
+        "skill body missing from {}",
+        plugin_dir.display()
+    );
+}
+
+/// A plugin name is upstream metadata, so it must not be able to steer a write
+/// out of `plugins/local/`.
+#[test]
+fn write_skills_refuses_traversal_in_plugin_name() {
+    let tmp = TempDir::new().unwrap();
+    let mut skill = make_skill_with_frontmatter("deep-work");
+    skill.plugin_origin = Some(crate::common::PluginOrigin {
+        plugin_name: "../../escaped".to_string(),
+        publisher: "market".to_string(),
+        version: "1.0.0".to_string(),
+    });
+
+    super::skills::write_skills(tmp.path(), &[skill]).unwrap();
+
+    // `plugins/local/../../escaped` resolves to `<root>/escaped`: inside the
+    // temp dir, but outside the directory the adapter is allowed to write.
+    assert!(
+        !tmp.path().join("escaped").exists(),
+        "plugin name must not escape plugins/local"
+    );
+    // A sanitizer that returned an empty string, or one that dropped the skill,
+    // would also leave `<root>/escaped` absent, so name the destination.
+    let plugin_dir = tmp.path().join("plugins/local/escaped");
+    assert!(
+        plugin_dir.join("skills/deep-work/SKILL.md").exists(),
+        "the skill body belongs in {}",
+        plugin_dir.display()
+    );
+    assert!(
+        plugin_dir.join(".cursor-plugin/plugin.json").exists(),
+        "the manifest belongs beside it in {}",
+        plugin_dir.display()
+    );
 }
 
 fn make_skill_with_modules(name: &str) -> Command {
@@ -1067,10 +1160,10 @@ fn plugin_assets_path_traversal_sanitized() {
     assert!(local_dir.exists(), "plugins/local should exist");
 }
 
-/// Non-manifest assets (scripts, binaries) are silently ignored, only
-/// `.claude-plugin/plugin.json` files are processed by the manifest writer.
+/// Runtime files (scripts, binaries) land under the plugin directory so
+/// skills that shell out to them resolve at their documented relative path.
 #[test]
-fn plugin_assets_ignores_non_manifest_files() {
+fn plugin_assets_writes_script_to_local_plugin_dir() {
     use crate::common::PluginAsset;
 
     let tmp = TempDir::new().unwrap();
@@ -1085,9 +1178,192 @@ fn plugin_assets_ignores_non_manifest_files() {
         false,
     );
 
-    let report = adapter.write_plugin_assets(&[script]).unwrap();
+    let report = adapter
+        .write_plugin_assets(&[plugin_manifest("my-plugin"), script])
+        .unwrap();
 
-    assert_eq!(report.written, 0, "Non-manifest assets should be ignored");
+    assert_eq!(report.written, 2, "Manifest and script should be written");
+    let expected = tmp.path().join("plugins/local/my-plugin/scripts/helper.py");
+    assert_eq!(
+        std::fs::read(&expected).unwrap(),
+        b"# helper\n".to_vec(),
+        "Script should exist with source content at {}",
+        expected.display()
+    );
+}
+
+/// Skill bodies reach Cursor through the plugin mirror. The orchestrator drops
+/// the plugin skills from the flat `~/.cursor/skills` copy when the batch is a
+/// full mirror, so this is the path that carries them then.
+#[test]
+fn plugin_assets_writes_skill_body_to_local_plugin_dir() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let skill = PluginAsset::new(
+        "my-plugin".to_string(),
+        "market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from("skills/deep-work/SKILL.md"),
+        b"---\nname: deep-work\n---\nbody\n".to_vec(),
+        false,
+    );
+
+    let report = adapter
+        .write_plugin_assets(&[plugin_manifest("my-plugin"), skill])
+        .unwrap();
+
+    assert_eq!(report.written, 2, "Manifest and skill should be written");
+    assert!(
+        tmp.path()
+            .join("plugins/local/my-plugin/skills/deep-work/SKILL.md")
+            .exists(),
+        "Skill body should exist under the plugin's skills directory"
+    );
+}
+
+/// A second run with identical content must not rewrite files, otherwise every
+/// sync churns thousands of mtimes.
+#[test]
+fn plugin_assets_skips_unchanged_asset() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let asset = || {
+        PluginAsset::new(
+            "my-plugin".to_string(),
+            "market".to_string(),
+            "1.0.0".to_string(),
+            std::path::PathBuf::from("scripts/helper.py"),
+            b"# helper\n".to_vec(),
+            false,
+        )
+    };
+
+    adapter
+        .write_plugin_assets(&[plugin_manifest("my-plugin"), asset()])
+        .unwrap();
+    let report = adapter
+        .write_plugin_assets(&[plugin_manifest("my-plugin"), asset()])
+        .unwrap();
+
+    assert_eq!(report.written, 0, "Unchanged asset should not be rewritten");
+    assert!(
+        report
+            .skipped
+            .iter()
+            .any(|reason| matches!(reason, crate::report::SkipReason::Unchanged { .. })),
+        "Unchanged asset should be reported as skipped, got: {:?}",
+        report.skipped
+    );
+}
+
+/// Cursor reads its manifest from `.cursor-plugin/`; the Claude-named
+/// directory must not survive the copy or Cursor sees two manifests.
+#[test]
+fn plugin_assets_rewrites_claude_plugin_dir_to_cursor_plugin() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let manifest = PluginAsset::new(
+        "my-plugin".to_string(),
+        "market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from(".claude-plugin/plugin.json"),
+        b"{\"name\": \"my-plugin\"}".to_vec(),
+        false,
+    );
+
+    let report = adapter.write_plugin_assets(&[manifest]).unwrap();
+
+    assert_eq!(report.written, 1, "Manifest should be written once");
+    let plugin_dir = tmp.path().join("plugins/local/my-plugin");
+    assert!(
+        plugin_dir.join(".cursor-plugin/plugin.json").exists(),
+        "Manifest should land in .cursor-plugin/"
+    );
+    assert!(
+        !plugin_dir.join(".claude-plugin").exists(),
+        "Claude-named manifest directory should not be copied verbatim"
+    );
+}
+
+/// A relative path escaping the plugin directory is refused, not written
+/// somewhere else under the user's home.
+#[test]
+fn plugin_assets_relative_path_traversal_refused() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let escaping = PluginAsset::new(
+        "my-plugin".to_string(),
+        "market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from("../../evil.sh"),
+        b"rm -rf /\n".to_vec(),
+        false,
+    );
+
+    let report = adapter
+        .write_plugin_assets(&[plugin_manifest("my-plugin"), escaping])
+        .unwrap();
+
+    assert_eq!(report.written, 1, "Only the manifest should be written");
+    assert!(
+        !tmp.path().join("evil.sh").exists() && !tmp.path().join("plugins/evil.sh").exists(),
+        "Escaping asset must not land outside the plugin directory"
+    );
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("evil.sh") && w.contains("my-plugin")),
+        "The refusal must be reported, not silently skipped: {:?}",
+        report.warnings
+    );
+}
+
+/// Executable assets stay executable, otherwise skills that invoke them
+/// fail with a permission error on Cursor's side.
+#[cfg(unix)]
+#[test]
+fn plugin_assets_preserve_executable_bit() {
+    use crate::common::PluginAsset;
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let binary = PluginAsset::new(
+        "my-plugin".to_string(),
+        "market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from("bin/runner"),
+        b"#!/bin/sh\n".to_vec(),
+        true,
+    );
+
+    adapter
+        .write_plugin_assets(&[plugin_manifest("my-plugin"), binary])
+        .unwrap();
+
+    let mode = std::fs::metadata(tmp.path().join("plugins/local/my-plugin/bin/runner"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert!(
+        mode & 0o111 != 0,
+        "Executable asset should keep its executable bit, mode was {:o}",
+        mode
+    );
 }
 
 /// A valid `.claude-plugin/plugin.json` asset is written to
@@ -1130,10 +1406,11 @@ fn plugin_assets_prunes_stale_plugin_directories() {
     let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
     let local_dir = tmp.path().join("plugins/local");
 
-    // Pre-create a stale plugin from a prior sync
+    // Pre-create a stale plugin from a prior sync, marked as skrills-managed
     let stale = local_dir.join("old-plugin/.cursor-plugin");
     std::fs::create_dir_all(&stale).unwrap();
     std::fs::write(stale.join("plugin.json"), b"{\"name\": \"old-plugin\"}").unwrap();
+    mark_as_mirrored(&local_dir.join("old-plugin"));
 
     // Sync only the new plugin
     let asset = PluginAsset::new(
@@ -1176,10 +1453,11 @@ fn plugin_assets_prune_preserves_current_when_unchanged() {
     let content = b"{\"name\": \"current-plugin\"}";
     std::fs::write(current.join("plugin.json"), content).unwrap();
 
-    // Also create a stale plugin
+    // Also create a stale plugin that a previous sync mirrored
     let stale = local_dir.join("removed-plugin/.cursor-plugin");
     std::fs::create_dir_all(&stale).unwrap();
     std::fs::write(stale.join("plugin.json"), b"{\"name\": \"removed\"}").unwrap();
+    mark_as_mirrored(&local_dir.join("removed-plugin"));
 
     // Sync same content, should be skipped (unchanged) but stale should be pruned
     let asset = PluginAsset::new(
@@ -1225,6 +1503,8 @@ fn plugin_assets_prune_multiple_plugins_independently() {
     std::fs::create_dir_all(&stale_b).unwrap();
     std::fs::write(stale_a.join("plugin.json"), b"{\"name\": \"stale-a\"}").unwrap();
     std::fs::write(stale_b.join("plugin.json"), b"{\"name\": \"stale-b\"}").unwrap();
+    mark_as_mirrored(&local_dir.join("stale-a"));
+    mark_as_mirrored(&local_dir.join("stale-b"));
 
     let assets = vec![
         PluginAsset::new(
@@ -1305,10 +1585,11 @@ fn plugin_assets_prune_reports_warnings() {
     let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
     let local_dir = tmp.path().join("plugins/local");
 
-    // Pre-create a stale plugin
+    // Pre-create a stale plugin that a previous sync mirrored
     let stale = local_dir.join("old-plugin/.cursor-plugin");
     std::fs::create_dir_all(&stale).unwrap();
     std::fs::write(stale.join("plugin.json"), b"{}").unwrap();
+    mark_as_mirrored(&local_dir.join("old-plugin"));
 
     let asset = PluginAsset::new(
         "new-plugin".to_string(),
@@ -1366,5 +1647,417 @@ fn plugin_assets_prune_ignores_non_directory_entries() {
             .join("myplugin/.cursor-plugin/plugin.json")
             .exists(),
         "Plugin manifest should be written"
+    );
+}
+
+// --- Plugin mirror hardening ---
+
+/// A plugin upgrade can turn `scripts/helper` from a file into a directory.
+/// `create_dir_all` then fails, and the abort used to discard the report for
+/// everything already written and to fail again on every later sync.
+#[test]
+fn plugin_assets_replaces_a_file_where_a_directory_is_now_needed() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let plugin_dir = tmp.path().join("plugins/local/my-plugin");
+    std::fs::create_dir_all(plugin_dir.join("scripts")).unwrap();
+    std::fs::write(plugin_dir.join("scripts/helper"), b"v1 was a file\n").unwrap();
+
+    let upgraded = PluginAsset::new(
+        "my-plugin".to_string(),
+        "market".to_string(),
+        "2.0.0".to_string(),
+        std::path::PathBuf::from("scripts/helper/main.py"),
+        b"print('v2')\n".to_vec(),
+        false,
+    );
+
+    let report = adapter
+        .write_plugin_assets(&[plugin_manifest("my-plugin"), upgraded])
+        .unwrap();
+
+    assert_eq!(report.written, 2, "warnings were {:?}", report.warnings);
+    assert_eq!(
+        std::fs::read(plugin_dir.join("scripts/helper/main.py")).unwrap(),
+        b"print('v2')\n".to_vec()
+    );
+}
+
+/// The mirror image: a directory sits where the new version ships a file.
+#[test]
+fn plugin_assets_replaces_a_directory_where_a_file_is_now_needed() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let plugin_dir = tmp.path().join("plugins/local/my-plugin");
+    std::fs::create_dir_all(plugin_dir.join("scripts/helper")).unwrap();
+    std::fs::write(plugin_dir.join("scripts/helper/main.py"), b"v1\n").unwrap();
+
+    let downgraded = PluginAsset::new(
+        "my-plugin".to_string(),
+        "market".to_string(),
+        "2.0.0".to_string(),
+        std::path::PathBuf::from("scripts/helper"),
+        b"v2 is a file\n".to_vec(),
+        false,
+    );
+
+    let report = adapter
+        .write_plugin_assets(&[plugin_manifest("my-plugin"), downgraded])
+        .unwrap();
+
+    assert_eq!(report.written, 2, "warnings were {:?}", report.warnings);
+    assert_eq!(
+        std::fs::read(plugin_dir.join("scripts/helper")).unwrap(),
+        b"v2 is a file\n".to_vec()
+    );
+}
+
+/// `plugins/local/<name>` existing as a plain file is the user's doing, so the
+/// writer says so and mirrors the rest of the batch instead of failing.
+#[test]
+fn plugin_assets_warns_instead_of_failing_when_the_plugin_dir_is_a_file() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let local_dir = tmp.path().join("plugins/local");
+    std::fs::create_dir_all(&local_dir).unwrap();
+    std::fs::write(local_dir.join("blocked"), b"not a directory\n").unwrap();
+
+    let report = adapter
+        .write_plugin_assets(&[plugin_manifest("blocked"), plugin_manifest("fine")])
+        .unwrap();
+
+    assert_eq!(report.written, 1, "the other plugin should still mirror");
+    assert!(local_dir.join("fine/.cursor-plugin/plugin.json").exists());
+    assert_eq!(
+        std::fs::read(local_dir.join("blocked")).unwrap(),
+        b"not a directory\n".to_vec(),
+        "the user's file must be left alone"
+    );
+    assert!(
+        report.warnings.iter().any(|w| w.contains("blocked")),
+        "the refusal must be reported: {:?}",
+        report.warnings
+    );
+}
+
+/// The writer only ever added and overwrote, so a plugin upgrade that dropped a
+/// skill left Cursor loading a skill that no longer exists upstream.
+#[test]
+fn plugin_assets_removes_files_the_plugin_no_longer_ships() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let plugin_dir = tmp.path().join("plugins/local/my-plugin");
+
+    let old_skill = PluginAsset::new(
+        "my-plugin".to_string(),
+        "market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from("skills/retired/SKILL.md"),
+        b"# Retired\n".to_vec(),
+        false,
+    );
+    adapter
+        .write_plugin_assets(&[plugin_manifest("my-plugin"), old_skill])
+        .unwrap();
+    assert!(plugin_dir.join("skills/retired/SKILL.md").exists());
+
+    let new_skill = PluginAsset::new(
+        "my-plugin".to_string(),
+        "market".to_string(),
+        "2.0.0".to_string(),
+        std::path::PathBuf::from("skills/current/SKILL.md"),
+        b"# Current\n".to_vec(),
+        false,
+    );
+    let report = adapter
+        .write_plugin_assets(&[plugin_manifest("my-plugin"), new_skill])
+        .unwrap();
+
+    assert!(plugin_dir.join("skills/current/SKILL.md").exists());
+    assert!(
+        !plugin_dir.join("skills/retired").exists(),
+        "the dropped skill should be gone, warnings were {:?}",
+        report.warnings
+    );
+    assert!(
+        plugin_dir.join(".cursor-plugin/plugin.json").exists(),
+        "the manifest this run skipped as unchanged must survive the sweep"
+    );
+}
+
+/// A partial batch (the `sync-skills` tool sends one) does not describe the
+/// whole plugin, so it must not read an absent file as "upstream dropped it".
+#[test]
+fn plugin_assets_does_not_sweep_when_the_batch_carries_no_manifest() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let plugin_dir = tmp.path().join("plugins/local/my-plugin");
+
+    // A manifest already on disk, as `write_skills` leaves one.
+    std::fs::create_dir_all(plugin_dir.join(".cursor-plugin")).unwrap();
+    std::fs::write(
+        plugin_dir.join(".cursor-plugin/plugin.json"),
+        b"{\"name\": \"my-plugin\"}",
+    )
+    .unwrap();
+    std::fs::create_dir_all(plugin_dir.join("skills/kept")).unwrap();
+    std::fs::write(plugin_dir.join("skills/kept/SKILL.md"), b"# Kept\n").unwrap();
+
+    let script = PluginAsset::new(
+        "my-plugin".to_string(),
+        "market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from("scripts/helper.py"),
+        b"# helper\n".to_vec(),
+        false,
+    );
+    let report = adapter.write_plugin_assets(&[script]).unwrap();
+
+    assert_eq!(report.written, 1, "warnings were {:?}", report.warnings);
+    assert!(
+        plugin_dir.join("skills/kept/SKILL.md").exists(),
+        "a supplementary batch must not sweep what it does not describe"
+    );
+}
+
+/// `sanitize_name` strips dots and slashes, so `my.plugin` and `myplugin` both
+/// resolve to `plugins/local/myplugin`. Merging their trees makes the on-disk
+/// winner flip every run, so the batch is refused instead.
+#[test]
+fn plugin_assets_refuses_two_plugins_that_map_to_one_directory() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let report = adapter
+        .write_plugin_assets(&[
+            plugin_manifest("my.plugin"),
+            plugin_manifest("myplugin"),
+            plugin_manifest("unaffected"),
+        ])
+        .unwrap();
+
+    assert_eq!(report.written, 1, "only the unambiguous plugin is mirrored");
+    assert!(!tmp.path().join("plugins/local/myplugin").exists());
+    assert!(tmp.path().join("plugins/local/unaffected").exists());
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("my.plugin") && w.contains("myplugin")),
+        "the refusal must name both plugins: {:?}",
+        report.warnings
+    );
+}
+
+/// The content hash covers bytes only, so a file that stopped being executable
+/// upstream used to keep `0o755` forever.
+#[cfg(unix)]
+#[test]
+fn plugin_assets_clears_the_exec_bit_when_upstream_dropped_it() {
+    use crate::common::PluginAsset;
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let dest = tmp.path().join("plugins/local/my-plugin/bin/runner");
+
+    let asset = |executable| {
+        PluginAsset::new(
+            "my-plugin".to_string(),
+            "market".to_string(),
+            "1.0.0".to_string(),
+            std::path::PathBuf::from("bin/runner"),
+            b"#!/bin/sh\n".to_vec(),
+            executable,
+        )
+    };
+
+    adapter
+        .write_plugin_assets(&[plugin_manifest("my-plugin"), asset(true)])
+        .unwrap();
+    assert!(
+        std::fs::metadata(&dest).unwrap().permissions().mode() & 0o111 != 0,
+        "the first write should set the bit"
+    );
+
+    let report = adapter
+        .write_plugin_assets(&[plugin_manifest("my-plugin"), asset(false)])
+        .unwrap();
+
+    let mode = std::fs::metadata(&dest).unwrap().permissions().mode();
+    assert_eq!(
+        mode & 0o111,
+        0,
+        "the bit should be cleared although the bytes did not change, mode was {mode:o}, \
+         report {report:?}"
+    );
+}
+
+/// The directory used to be created before the containment check, so a batch
+/// whose assets were all refused still left an empty directory behind, and the
+/// prune loop then treated it as an installed plugin.
+#[test]
+fn plugin_assets_creates_no_directory_for_a_fully_refused_plugin() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let escaping = PluginAsset::new(
+        "no-manifest".to_string(),
+        "market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from("scripts/helper.py"),
+        b"# helper\n".to_vec(),
+        false,
+    );
+
+    let report = adapter.write_plugin_assets(&[escaping]).unwrap();
+
+    assert_eq!(report.written, 0);
+    assert!(
+        !tmp.path().join("plugins/local/no-manifest").exists(),
+        "a refused plugin must not leave a directory behind"
+    );
+}
+
+/// Containment is resolved against the canonicalized plugin directory, so a
+/// symlink planted at `plugins/local/<p>` would redirect the mirror out of
+/// `~/.cursor`.
+#[cfg(unix)]
+#[test]
+fn plugin_assets_refuses_a_symlinked_plugin_directory() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let local_dir = tmp.path().join("plugins/local");
+    std::fs::create_dir_all(&local_dir).unwrap();
+    let outside = tmp.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, local_dir.join("hijacked")).unwrap();
+
+    let report = adapter
+        .write_plugin_assets(&[plugin_manifest("hijacked")])
+        .unwrap();
+
+    assert_eq!(report.written, 0);
+    assert!(
+        !outside.join(".cursor-plugin").exists(),
+        "the write must not follow the symlink"
+    );
+    assert!(
+        report.warnings.iter().any(|w| w.contains("symlink")),
+        "the refusal must be reported: {:?}",
+        report.warnings
+    );
+}
+
+/// A name made only of characters the sanitizer strips would write straight
+/// into `plugins/local/` itself.
+#[test]
+fn plugin_assets_skips_a_plugin_name_that_sanitizes_to_nothing() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let report = adapter
+        .write_plugin_assets(&[plugin_manifest("...")])
+        .unwrap();
+
+    assert_eq!(report.written, 0);
+    assert!(
+        !tmp.path().join("plugins/local/.cursor-plugin").exists(),
+        "nothing should be written into plugins/local itself"
+    );
+    assert!(
+        report.warnings.iter().any(|w| w.contains("empty")),
+        "the refusal must be reported: {:?}",
+        report.warnings
+    );
+}
+
+/// `plugins/local/` is also where a Cursor user puts hand-made plugins, and a
+/// mirror written before the marker existed must not be deleted either.
+#[test]
+fn plugin_assets_never_prunes_a_directory_without_the_mirror_marker() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let local_dir = tmp.path().join("plugins/local");
+
+    let handmade = local_dir.join("hand-made/.cursor-plugin");
+    std::fs::create_dir_all(&handmade).unwrap();
+    std::fs::write(handmade.join("plugin.json"), b"{\"name\": \"hand-made\"}").unwrap();
+
+    let report = adapter
+        .write_plugin_assets(&[plugin_manifest("mirrored")])
+        .unwrap();
+
+    assert!(
+        handmade.join("plugin.json").exists(),
+        "an unmarked directory must survive, warnings were {:?}",
+        report.warnings
+    );
+}
+
+/// The marker is what makes a mirror prunable later, so every plugin this run
+/// mirrored has to carry one.
+#[test]
+fn plugin_assets_marks_every_mirrored_plugin_so_a_later_run_can_prune_it() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let local_dir = tmp.path().join("plugins/local");
+
+    adapter
+        .write_plugin_assets(&[plugin_manifest("first"), plugin_manifest("second")])
+        .unwrap();
+    assert!(local_dir.join("first").join(super::MIRROR_MARKER).exists());
+    assert!(local_dir.join("second").join(super::MIRROR_MARKER).exists());
+
+    let report = adapter
+        .write_plugin_assets(&[plugin_manifest("first")])
+        .unwrap();
+
+    assert!(
+        !local_dir.join("second").exists(),
+        "a marked mirror that left the batch should be pruned, warnings were {:?}",
+        report.warnings
+    );
+    assert!(local_dir.join("first/.cursor-plugin/plugin.json").exists());
+}
+
+/// A dry run has to name what would be deleted before it happens, and delete
+/// nothing itself.
+#[test]
+fn preview_plugin_assets_lists_prune_targets_without_touching_disk() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let local_dir = tmp.path().join("plugins/local");
+
+    adapter
+        .write_plugin_assets(&[plugin_manifest("stays"), plugin_manifest("goes")])
+        .unwrap();
+
+    let report = adapter
+        .preview_plugin_assets(&[plugin_manifest("stays")])
+        .unwrap();
+
+    assert_eq!(report.written, 1, "the batch holds one asset");
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("Would prune") && w.contains("goes")),
+        "the preview must name the prune target: {:?}",
+        report.warnings
+    );
+    assert!(
+        local_dir.join("goes/.cursor-plugin/plugin.json").exists(),
+        "a preview must not delete anything"
     );
 }

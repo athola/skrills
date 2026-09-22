@@ -2,8 +2,9 @@
 
 use super::registry::McpToolEntry;
 use super::stats::ContextStatsSnapshot;
+use crate::mcp_result::{tool_err, tool_ok};
 use anyhow::Result;
-use rmcp::model::{CallToolResult, Content, Tool, ToolAnnotations};
+use rmcp::model::{CallToolResult, ContentBlock, Tool, ToolAnnotations};
 use serde_json::{json, Map as JsonMap, Value};
 use std::sync::Arc;
 
@@ -29,16 +30,12 @@ fn schema(props: Value) -> Arc<JsonMap<String, Value>> {
 /// Returns the MCP gateway tool definitions.
 pub fn mcp_gateway_tools() -> Vec<Tool> {
     vec![
-        Tool {
-            name: "list-mcp-tools".into(),
-            title: Some("List MCP tools with minimal context".into()),
-            description: Some(
-                "List available MCP tools with minimal context cost. Returns tool names, \
+        Tool::new(
+            "list-mcp-tools",
+            "List available MCP tools with minimal context cost. Returns tool names, \
                  descriptions, and estimated token costs without loading full schemas. \
-                 Use this to discover tools before loading their full definitions."
-                    .into(),
-            ),
-            input_schema: schema(json!({
+                 Use this to discover tools before loading their full definitions.",
+            schema(json!({
                 "source": {
                     "type": "string",
                     "description": "Filter by source server (e.g., 'playwright', 'notion')"
@@ -52,51 +49,37 @@ pub fn mcp_gateway_tools() -> Vec<Tool> {
                     "description": "Search term to filter tool names and descriptions"
                 }
             })),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "describe-mcp-tool".into(),
-            title: Some("Get full schema for an MCP tool".into()),
-            description: Some(
-                "Get the full JSON schema for a specific MCP tool. Use this when you need \
+        )
+        .with_title("List MCP tools with minimal context")
+        .with_annotations(ToolAnnotations::default()),
+        Tool::new(
+            "describe-mcp-tool",
+            "Get the full JSON schema for a specific MCP tool. Use this when you need \
                  to invoke a tool and want to see its complete parameter specification. \
-                 Only loads the schema for the requested tool, preserving context."
-                    .into(),
-            ),
-            input_schema: schema(json!({
+                 Only loads the schema for the requested tool, preserving context.",
+            schema(json!({
                 "tool_name": {
                     "type": "string",
                     "description": "Name of the tool to describe"
                 }
             })),
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
-        Tool {
-            name: "get-context-stats".into(),
-            title: Some("View context usage statistics".into()),
-            description: Some(
-                "Get context usage statistics for MCP tools. Shows tokens saved by lazy loading, \
-                 number of schemas loaded, and tool invocation patterns."
-                    .into(),
-            ),
-            input_schema: {
+        )
+        .with_title("Get full schema for an MCP tool")
+        .with_annotations(ToolAnnotations::default()),
+        Tool::new(
+            "get-context-stats",
+            "Get context usage statistics for MCP tools. Shows tokens saved by lazy loading, \
+                 number of schemas loaded, and tool invocation patterns.",
+            {
                 let mut map = JsonMap::new();
                 map.insert("type".into(), json!("object"));
                 map.insert("properties".into(), json!({}));
                 map.insert("additionalProperties".into(), json!(false));
                 Arc::new(map)
             },
-            output_schema: None,
-            annotations: Some(ToolAnnotations::default()),
-            icons: None,
-            meta: None,
-        },
+        )
+        .with_title("View context usage statistics")
+        .with_annotations(ToolAnnotations::default()),
     ]
 }
 
@@ -162,12 +145,10 @@ pub fn list_mcp_tools(
         "hint": "Use 'describe-mcp-tool' to load full schema for a specific tool"
     });
 
-    Ok(CallToolResult {
-        content: vec![Content::text(serde_json::to_string_pretty(&result)?)],
-        is_error: Some(false),
-        structured_content: Some(result),
-        meta: None,
-    })
+    Ok(tool_ok(
+        vec![ContentBlock::text(serde_json::to_string_pretty(&result)?)],
+        Some(result),
+    ))
 }
 
 /// Handle describe-mcp-tool request.
@@ -190,12 +171,10 @@ pub fn describe_mcp_tool(
                 "loaded": true
             });
 
-            Ok(CallToolResult {
-                content: vec![Content::text(serde_json::to_string_pretty(&result)?)],
-                is_error: Some(false),
-                structured_content: Some(result),
-                meta: None,
-            })
+            Ok(tool_ok(
+                vec![ContentBlock::text(serde_json::to_string_pretty(&result)?)],
+                Some(result),
+            ))
         }
         None => {
             let result = json!({
@@ -203,12 +182,10 @@ pub fn describe_mcp_tool(
                 "hint": "Use 'list-mcp-tools' to see available tools"
             });
 
-            Ok(CallToolResult {
-                content: vec![Content::text(serde_json::to_string_pretty(&result)?)],
-                is_error: Some(true),
-                structured_content: Some(result),
-                meta: None,
-            })
+            Ok(tool_err(
+                vec![ContentBlock::text(serde_json::to_string_pretty(&result)?)],
+                Some(result),
+            ))
         }
     }
 }
@@ -233,12 +210,10 @@ pub fn get_context_stats(stats: ContextStatsSnapshot) -> Result<CallToolResult> 
         )
     });
 
-    Ok(CallToolResult {
-        content: vec![Content::text(serde_json::to_string_pretty(&result)?)],
-        is_error: Some(false),
-        structured_content: Some(result),
-        meta: None,
-    })
+    Ok(tool_ok(
+        vec![ContentBlock::text(serde_json::to_string_pretty(&result)?)],
+        Some(result),
+    ))
 }
 
 #[cfg(test)]
@@ -292,20 +267,14 @@ mod tests {
     fn test_describe_mcp_tool() {
         let finder = |name: &str| {
             if name == "test_tool" {
-                Some(Tool {
-                    name: "test_tool".into(),
-                    title: Some("Test Tool".into()),
-                    description: Some("A test tool".into()),
-                    input_schema: {
+                Some(
+                    Tool::new("test_tool", "A test tool", {
                         let mut map = JsonMap::new();
                         map.insert("type".into(), json!("object"));
                         Arc::new(map)
-                    },
-                    output_schema: None,
-                    annotations: None,
-                    icons: None,
-                    meta: None,
-                })
+                    })
+                    .with_title("Test Tool"),
+                )
             } else {
                 None
             }

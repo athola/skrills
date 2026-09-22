@@ -61,7 +61,7 @@ impl Client {
     }
 
     /// Parses from string.
-    pub fn from_str(s: &str) -> Result<Self> {
+    pub(crate) fn from_str(s: &str) -> Result<Self> {
         match s.to_lowercase().as_str() {
             "claude" => Ok(Client::Claude),
             "codex" => Ok(Client::Codex),
@@ -718,7 +718,7 @@ fn register_copilot_mcp(base_dir: &Path, skrills_bin: &Path) -> Result<()> {
 /// Ensure the experimental Codex skills feature flag is enabled in `config.toml`.
 ///
 /// Codex loads skills only when `[features] skills = true` is set.
-pub(crate) fn ensure_codex_skills_feature_enabled(config_path: &Path) -> Result<()> {
+pub fn ensure_codex_skills_feature_enabled(config_path: &Path) -> Result<()> {
     let content = if config_path.exists() {
         fs::read_to_string(config_path)?
     } else {

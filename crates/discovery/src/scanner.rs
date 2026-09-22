@@ -2,6 +2,7 @@ use crate::types::{
     parse_source_key, DuplicateInfo, RuleCategory, RuleMeta, SkillMeta, SkillRoot, SkillSource,
 };
 use crate::Result;
+use anyhow::Context;
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest};
 use pathdiff::diff_paths;
@@ -165,7 +166,11 @@ type Blake2b256 = Blake2b<U32>;
 
 /// Computes the BLAKE2b-256 hash of a file.
 fn file_hash(path: &Path) -> Result<String> {
-    let meta = fs::metadata(path)?;
+    // The path is in the message because the caller decides what to do with the
+    // failure by its `io::ErrorKind`, and a bare "Permission denied" names
+    // nothing the user can go and fix.
+    let meta = fs::metadata(path)
+        .with_context(|| format!("could not stat {} to hash it", path.display()))?;
     let size = meta.len();
     let mtime = meta
         .modified()
@@ -194,8 +199,7 @@ fn file_hash(path: &Path) -> Result<String> {
             }
         }
     }
-    let digest = hasher.finalize();
-    Ok(format!("{:x}", digest))
+    Ok(hex::encode(hasher.finalize()))
 }
 
 /// Extracts identity fields (name and description) from a skill file's YAML frontmatter.
@@ -203,26 +207,12 @@ fn file_hash(path: &Path) -> Result<String> {
 /// Parses frontmatter between `---` delimiters to extract the `name` and `description` fields.
 /// Returns `(None, None)` if no frontmatter is present.
 fn extract_frontmatter_identity(content: &str) -> (Option<String>, Option<String>) {
-    let trimmed = content.trim_start();
-    if !trimmed.starts_with("---") {
+    // Splitting delegates to skrills-validate so discovery and validation agree
+    // on where the frontmatter block ends. Only the identity projection below
+    // is specific to discovery.
+    let Some(yaml) = skrills_validate::frontmatter::split_frontmatter(content).0 else {
         return (None, None);
-    }
-
-    // Find content after opening ---
-    let after_open = match trimmed.get(3..) {
-        Some(s) => s.trim_start_matches(['\r', '\n']),
-        None => return (None, None),
     };
-
-    // Find closing ---
-    let end_pos = match after_open
-        .find("\n---")
-        .or_else(|| after_open.find("\r\n---"))
-    {
-        Some(pos) => pos,
-        None => return (None, None),
-    };
-    let yaml = &after_open[..end_pos];
 
     // Parse YAML to extract name and description fields
     // Use a minimal struct to avoid pulling in complex types
@@ -232,7 +222,7 @@ fn extract_frontmatter_identity(content: &str) -> (Option<String>, Option<String
         description: Option<String>,
     }
 
-    match serde_yaml::from_str::<MinimalFrontmatter>(yaml) {
+    match serde_yaml::from_str::<MinimalFrontmatter>(&yaml) {
         Ok(fm) => {
             let name = fm.name.filter(|n| !n.trim().is_empty());
             let description = fm.description.filter(|d| !d.trim().is_empty());
@@ -344,7 +334,29 @@ fn collect_skills_from(
                 } else {
                     raw_name
                 };
-                let hash = file_hash(&path)?;
+                // Only a vanished file is skipped: that is routine while
+                // ~/.claude/plugins/cache is rewritten, and failing the whole
+                // scan for it made discovery return nothing. Every other stat
+                // failure (EACCES, EIO, ELOOP) would instead drop a skill from
+                // discovery, AGENTS.md and the MCP resource list behind one
+                // warning that stdio `serve` sends to the host's log, so it
+                // fails the scan where a caller can report it.
+                let hash = match file_hash(&path) {
+                    Ok(hash) => hash,
+                    Err(e) => {
+                        let vanished = e
+                            .downcast_ref::<std::io::Error>()
+                            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
+                        if !vanished {
+                            return Err(e);
+                        }
+                        tracing::debug!(
+                            path = %path.display(),
+                            "skill file vanished before it could be hashed (entry skipped)"
+                        );
+                        return Ok(None);
+                    }
+                };
                 // Extract frontmatter identity (best-effort, log errors)
                 let (frontmatter_name, description) = match fs::read_to_string(&path) {
                     Ok(content) => extract_frontmatter_identity(&content),
@@ -353,11 +365,11 @@ fn collect_skills_from(
                         (None, None)
                     }
                 };
-                Ok((name, path, hash, frontmatter_name, description))
+                Ok(Some((name, path, hash, frontmatter_name, description)))
             })
             .collect::<Result<Vec<_>>>()?;
 
-        for (name, path, hash, frontmatter_name, description) in metas {
+        for (name, path, hash, frontmatter_name, description) in metas.into_iter().flatten() {
             if let Some((seen_src, seen_root)) = seen.get(&name) {
                 if let Some(dup_log) = dup_log.as_mut() {
                     dup_log.push(DuplicateInfo {
@@ -825,7 +837,7 @@ mod tests {
     }
 
     #[test]
-    fn discover_skills_errors_on_unreadable_file() {
+    fn discover_skills_lists_a_file_whose_contents_cannot_be_read() {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempdir().unwrap();
@@ -841,8 +853,51 @@ mod tests {
             root: root.clone(),
             source: SkillSource::Codex,
         }];
+        // The hash is computed from the stat alone, and the frontmatter read is
+        // best-effort, so the skill is still discovered without its identity.
         let skills = discover_skills(&roots, None).unwrap();
         assert_eq!(skills.len(), 1);
+        assert!(skills[0].description.is_none());
+    }
+
+    #[test]
+    fn discover_skills_propagates_a_hash_error_that_is_not_a_vanished_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("codex");
+        fs::create_dir_all(&root).unwrap();
+        let skill = root.join("SKILL.md");
+        fs::write(&skill, "content").unwrap();
+
+        // Readable but not searchable: the walk still lists the entry from the
+        // directory record, while `fs::metadata` on the child fails with EACCES.
+        let mut perms = fs::metadata(&root).unwrap().permissions();
+        perms.set_mode(0o444);
+        fs::set_permissions(&root, perms).unwrap();
+
+        let roots = vec![SkillRoot {
+            root: root.clone(),
+            source: SkillSource::Codex,
+        }];
+        let stat_denied = fs::metadata(&skill).is_err();
+        let outcome = if stat_denied {
+            Some(discover_skills(&roots, None))
+        } else {
+            None
+        };
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+
+        // As root, or on a filesystem that ignores the mode, EACCES cannot be
+        // provoked and there is nothing to assert.
+        let Some(outcome) = outcome else {
+            return;
+        };
+        let err = outcome.expect_err("a stat failure other than NotFound must fail the scan");
+        assert!(
+            err.to_string().contains("SKILL.md"),
+            "the error should name the file it could not hash: {err}"
+        );
     }
 
     #[test]
@@ -1070,17 +1125,24 @@ mod tests {
     }
 
     #[test]
-    fn hash_file_uses_blake2b_256_length() {
+    fn hash_file_is_64_lowercase_hex_digits() {
         let tmp = tempdir().unwrap();
         let file = tmp.path().join("len.md");
         fs::write(&file, "len").unwrap();
 
         let hash = hash_file(&file).unwrap();
         assert_eq!(hash.len(), 64, "BLAKE2b-256 hex is 64 chars");
+        // `SkillMeta.hash` decides cache staleness, so uppercase digits or a
+        // shortened byte would make every skill look changed.
+        assert!(
+            hash.chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+            "hash should be lowercase hex: {hash}"
+        );
     }
 
     #[test]
-    fn test_hash_file_different_content() {
+    fn hash_file_differs_for_different_content() {
         let tmp = tempdir().unwrap();
 
         let file1 = tmp.path().join("test1.md");
@@ -1093,7 +1155,7 @@ mod tests {
         let hash2 = hash_file(&file2).unwrap();
 
         assert!(!hash1.is_empty());
-        assert!(!hash2.is_empty());
+        assert_ne!(hash1, hash2, "different content should hash differently");
     }
 
     #[test]

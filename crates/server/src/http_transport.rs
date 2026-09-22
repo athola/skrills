@@ -8,6 +8,8 @@
 //! - **Bearer Token Auth**: Validates `Authorization: Bearer <token>` header with constant-time comparison
 //! - **TLS/HTTPS**: Supports TLS with custom certificates
 //! - **CORS**: Configurable Cross-Origin Resource Sharing for browser clients
+//! - **Host validation**: Every route answers 403 to a `Host` outside the
+//!   loopback names and the operator's allow-list, closing DNS rebinding
 
 use crate::api::{
     dashboard_routes, mcp_servers_routes,
@@ -16,9 +18,10 @@ use crate::api::{
     skills::{skills_routes, ApiState},
 };
 use crate::app::SkillService;
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
+use axum::http::uri::Authority;
 use axum::http::{header, HeaderValue, Method, StatusCode};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
 };
@@ -31,6 +34,10 @@ use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetReques
 
 /// Header name for request ID.
 const REQUEST_ID_HEADER: &str = "x-request-id";
+
+/// Content-Security-Policy served with every response. `unsafe-inline` is
+/// needed because the dashboard ships its scripts and styles inline.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'";
 
 /// Configuration for HTTP transport security.
 ///
@@ -45,6 +52,12 @@ pub struct HttpSecurityConfig {
     pub tls_key: Option<std::path::PathBuf>,
     /// Allowed CORS origins (empty = no CORS).
     pub cors_origins: Vec<String>,
+    /// Extra `Host` authorities the server accepts, on top of the loopback
+    /// names rmcp allows by default. Needed when clients address the server by
+    /// any name other than localhost, 127.0.0.1 or ::1, since Host validation
+    /// refuses the rest. Each entry is a bare authority (`host` or
+    /// `host:port`), never a URL.
+    pub allowed_hosts: Vec<String>,
 }
 
 // Custom Debug implementation that redacts auth_token to prevent credential leakage in logs.
@@ -58,6 +71,7 @@ impl std::fmt::Debug for HttpSecurityConfig {
             .field("tls_cert", &self.tls_cert)
             .field("tls_key", &self.tls_key)
             .field("cors_origins", &self.cors_origins)
+            .field("allowed_hosts", &self.allowed_hosts)
             .finish()
     }
 }
@@ -158,6 +172,160 @@ async fn auth_middleware(
         .into_response()
 }
 
+/// An authority to compare `Host` headers against: a host name with an
+/// optional port.
+#[derive(Debug, PartialEq, Eq)]
+struct HostAuthority {
+    host: String,
+    port: Option<u16>,
+}
+
+impl HostAuthority {
+    /// Whether this allow-list entry accepts the authority a client addressed.
+    /// An entry without a port accepts any port, which is how rmcp reads its
+    /// own list.
+    fn accepts(&self, requested: &HostAuthority) -> bool {
+        self.host == requested.host && (self.port.is_none() || self.port == requested.port)
+    }
+}
+
+/// Lower-cases a host name and strips the brackets an IPv6 literal carries in
+/// an authority, so `[::1]` and `::1` compare equal.
+fn normalize_host(host: &str) -> String {
+    host.trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase()
+}
+
+/// Parses a `Host` header value or an allow-list entry.
+///
+/// Returns `None` for anything that is not an authority, which is what makes a
+/// scheme in an allow-list entry a startup error rather than a silent 403: an
+/// unparseable entry would otherwise be compared as a literal host name and
+/// match nothing. A bare IPv6 literal is accepted because it is not a valid
+/// authority yet appears in rmcp's own default list as `::1`.
+fn parse_host_authority(raw: &str) -> Option<HostAuthority> {
+    let raw = raw.trim();
+    if let Ok(authority) = Authority::try_from(raw) {
+        if !authority.host().is_empty() {
+            return Some(HostAuthority {
+                host: normalize_host(authority.host()),
+                port: authority.port_u16(),
+            });
+        }
+    }
+    raw.parse::<std::net::IpAddr>().ok().map(|_| HostAuthority {
+        host: normalize_host(raw),
+        port: None,
+    })
+}
+
+/// Parses the effective `Host` allow-list, naming the first entry that is not
+/// an authority.
+///
+/// Blank entries are skipped rather than rejected: a trailing comma in
+/// `--allowed-hosts foo.example,` was harmless before the check existed, and
+/// refusing to start over one would be a worse trade than ignoring it.
+fn parse_host_allow_list(entries: &[String]) -> Result<Vec<HostAuthority>> {
+    entries
+        .iter()
+        .filter(|entry| !entry.trim().is_empty())
+        .map(|entry| {
+            parse_host_authority(entry).ok_or_else(|| {
+                anyhow!(
+                    "invalid allowed host {entry:?}: expected a bare authority such as \
+                     `skrills.internal` or `skrills.internal:8080`, with no scheme or path"
+                )
+            })
+        })
+        .collect()
+}
+
+/// Builds the MCP transport config, extending rmcp's loopback `allowed_hosts`
+/// with any the operator supplied and switching on `Origin` validation when
+/// CORS origins were named.
+///
+/// The loopback default is what blocks DNS rebinding (RUSTSEC-2026-0189): a
+/// page served from an attacker's domain that resolves to 127.0.0.1 still
+/// sends its own name in `Host`. Operator hosts are appended rather than
+/// substituted, so naming a LAN host to reach a non-loopback bind cannot
+/// silently drop the loopback protection.
+///
+/// A wildcard in `cors_origins` leaves `allowed_origins` empty on purpose:
+/// rmcp reads a non-empty list as "refuse every origin outside it", and `*`
+/// matches nothing, so copying it over would refuse the browsers the operator
+/// just allowed.
+fn build_streamable_config(security: &HttpSecurityConfig) -> StreamableHttpServerConfig {
+    let mut config = StreamableHttpServerConfig::default();
+    config
+        .allowed_hosts
+        .extend(security.allowed_hosts.iter().cloned());
+    if !security.cors_origins.iter().any(|origin| origin == "*") {
+        config
+            .allowed_origins
+            .extend(security.cors_origins.iter().cloned());
+    }
+    config
+}
+
+/// The authority a client addressed, from `Host` or, over HTTP/2, from the
+/// `:authority` pseudo-header hyper folds into the URI.
+fn requested_authority(req: &axum::extract::Request) -> Option<HostAuthority> {
+    match req.headers().get(header::HOST) {
+        Some(host) => parse_host_authority(host.to_str().ok()?),
+        None => req.uri().authority().map(|authority| HostAuthority {
+            host: normalize_host(authority.host()),
+            port: authority.port_u16(),
+        }),
+    }
+}
+
+/// `Host` validation for every route.
+///
+/// rmcp checks `Host` inside the MCP service, which left the dashboard and the
+/// REST API answering a rebound name. This applies the same allow-list to the
+/// whole router, so a page on an attacker's domain that resolves to the bind
+/// address cannot read `/api/skills` either.
+async fn host_middleware(
+    allowed: Arc<Vec<HostAuthority>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let Some(requested) = requested_authority(&req) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "Bad Request: missing or malformed Host header",
+        )
+            .into_response();
+    };
+
+    if allowed.iter().any(|entry| entry.accepts(&requested)) {
+        return next.run(req).await;
+    }
+
+    tracing::warn!(
+        target: "skrills::http::host",
+        host = %requested.host,
+        uri = req.uri().path(),
+        "Refused a Host outside the allow-list (possible DNS rebinding attempt)"
+    );
+    (
+        StatusCode::FORBIDDEN,
+        "Forbidden: Host header is not allowed",
+    )
+        .into_response()
+}
+
+/// Adds the dashboard's Content-Security-Policy to every response.
+async fn csp_middleware(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let mut response = next.run(req).await;
+    response.headers_mut().insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(CONTENT_SECURITY_POLICY),
+    );
+    response
+}
+
 /// Builds CORS layer from allowed origins.
 ///
 /// Invalid origins are logged as warnings and skipped. An empty result after
@@ -167,12 +335,21 @@ fn build_cors_layer(origins: &[String], has_auth: bool) -> CorsLayer {
         // No CORS - server-to-server only
         CorsLayer::new()
     } else if origins.iter().any(|o| o == "*") {
-        // Security: Warn about wildcard CORS with auth enabled
+        // Wildcard CORS is worth a warning whether or not auth is on: without
+        // a token any site a browser visits can drive the API, and with one it
+        // can also reach the token.
         if has_auth {
             tracing::warn!(
                 target: "skrills::http::cors",
                 "Using wildcard CORS ('*') with authentication enabled. \
                  This may expose auth tokens to malicious sites. \
+                 Consider specifying explicit origins instead."
+            );
+        } else {
+            tracing::warn!(
+                target: "skrills::http::cors",
+                "Using wildcard CORS ('*') with authentication disabled. \
+                 Any site a browser visits can drive this server's API. \
                  Consider specifying explicit origins instead."
             );
         }
@@ -249,20 +426,35 @@ where
         format!("{} origins", security.cors_origins.len())
     };
 
+    // Configure the HTTP server. The effective Host allow-list is parsed once
+    // here so an entry rmcp could not match becomes a startup error instead of
+    // a 403 on every request.
+    let config = build_streamable_config(&security);
+    let allowed_hosts = Arc::new(parse_host_allow_list(&config.allowed_hosts)?);
+
     tracing::info!(
         target: "skrills::http",
         bind = %addr,
         protocol,
         auth = auth_status,
         cors = cors_status,
+        allowed_hosts = ?config.allowed_hosts,
         "Starting MCP server"
     );
 
+    // A non-loopback bind is reached under some other name, and every request
+    // carrying that name is refused until it is listed.
+    if !addr.ip().is_loopback() && security.allowed_hosts.is_empty() {
+        tracing::warn!(
+            target: "skrills::http",
+            bind = %addr,
+            "Bound a non-loopback address with no --allowed-hosts. Requests naming \
+             anything other than localhost, 127.0.0.1 or ::1 will be refused with 403."
+        );
+    }
+
     // Create session manager for stateful connections
     let session_manager = Arc::new(LocalSessionManager::default());
-
-    // Configure the HTTP server
-    let config = StreamableHttpServerConfig::default();
 
     // Create the streamable HTTP service
     let http_service = StreamableHttpService::new(service_factory, session_manager, config);
@@ -312,55 +504,38 @@ where
         }),
     );
 
-    // Create router with request ID and optional auth middleware
     // Request ID layers: SetRequestIdLayer generates UUID, PropagateRequestIdLayer copies to response
     let request_id_header = axum::http::HeaderName::from_static(REQUEST_ID_HEADER);
-    let app = if let Some(token) = security.auth_token {
+    let mut app = axum::Router::new()
+        .merge(dashboard_routes())
+        .merge(skills_routes(api_state))
+        .merge(metrics_routes(metrics_state))
+        .merge(rules_routes(rules_state))
+        .merge(mcp_servers_routes())
+        .merge(static_router)
+        .fallback_service(http_service)
+        .layer(axum::middleware::from_fn(csp_middleware));
+
+    if let Some(token) = security.auth_token {
         let token = Arc::new(token);
-        axum::Router::new()
-            .merge(dashboard_routes())
-            .merge(skills_routes(api_state))
-            .merge(metrics_routes(metrics_state))
-            .merge(rules_routes(rules_state))
-            .merge(mcp_servers_routes())
-            .merge(static_router)
-            .fallback_service(http_service)
-            .layer(cors_layer)
-            .layer(axum::middleware::from_fn(|req: axum::extract::Request, next: axum::middleware::Next| async move {
-                let mut response = next.run(req).await;
-                response.headers_mut().insert(
-                    axum::http::header::CONTENT_SECURITY_POLICY,
-                    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'".parse().unwrap(),
-                );
-                response
-            }))
-            .layer(axum::middleware::from_fn(move |req, next| {
-                let token = token.clone();
-                auth_middleware(token, req, next)
-            }))
-            .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
-            .layer(SetRequestIdLayer::new(request_id_header, MakeRequestUuid))
-    } else {
-        axum::Router::new()
-            .merge(dashboard_routes())
-            .merge(skills_routes(api_state))
-            .merge(metrics_routes(metrics_state))
-            .merge(rules_routes(rules_state))
-            .merge(mcp_servers_routes())
-            .merge(static_router)
-            .fallback_service(http_service)
-            .layer(cors_layer)
-            .layer(axum::middleware::from_fn(|req: axum::extract::Request, next: axum::middleware::Next| async move {
-                let mut response = next.run(req).await;
-                response.headers_mut().insert(
-                    axum::http::header::CONTENT_SECURITY_POLICY,
-                    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'".parse().unwrap(),
-                );
-                response
-            }))
-            .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
-            .layer(SetRequestIdLayer::new(request_id_header, MakeRequestUuid))
-    };
+        app = app.layer(axum::middleware::from_fn(move |req, next| {
+            let token = token.clone();
+            auth_middleware(token, req, next)
+        }));
+    }
+
+    // Layer order, outermost first: request id, Host, CORS, auth, CSP, routes.
+    // CORS sits outside auth because a browser preflight carries no
+    // Authorization header and would otherwise be answered with 401. Host
+    // validation sits outside CORS so a rebound name is refused even on a
+    // preflight.
+    let app = app
+        .layer(cors_layer)
+        .layer(axum::middleware::from_fn(move |req, next| {
+            host_middleware(allowed_hosts.clone(), req, next)
+        }))
+        .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
+        .layer(SetRequestIdLayer::new(request_id_header, MakeRequestUuid));
 
     // Serve with or without TLS
     if let Some((cert_path, key_path)) = tls_config {
@@ -527,6 +702,197 @@ async fn serve_with_tls(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The loopback allowlist is what stops a rebound attacker domain from
+    /// driving a locally bound MCP server (RUSTSEC-2026-0189), so it must be
+    /// on with no configuration at all.
+    #[test]
+    fn streamable_config_allows_only_loopback_hosts_by_default() {
+        let config = build_streamable_config(&HttpSecurityConfig::default());
+
+        assert_eq!(
+            config.allowed_hosts,
+            vec![
+                "localhost".to_string(),
+                "127.0.0.1".to_string(),
+                "::1".to_string()
+            ],
+            "default Host allowlist should be loopback only"
+        );
+    }
+
+    /// Binding a non-loopback address (`--http 0.0.0.0:8080`) is documented,
+    /// and Host validation rejects it unless the operator names the host.
+    #[test]
+    fn streamable_config_accepts_operator_supplied_hosts() {
+        let config = build_streamable_config(&HttpSecurityConfig {
+            allowed_hosts: vec!["skrills.internal:8080".to_string()],
+            ..Default::default()
+        });
+
+        assert!(
+            config
+                .allowed_hosts
+                .contains(&"skrills.internal:8080".to_string()),
+            "operator host should be accepted, got {:?}",
+            config.allowed_hosts
+        );
+    }
+
+    /// Naming an extra host must not be a way to switch the loopback
+    /// protection off by accident.
+    #[test]
+    fn streamable_config_keeps_loopback_when_hosts_are_added() {
+        let config = build_streamable_config(&HttpSecurityConfig {
+            allowed_hosts: vec!["example.com".to_string()],
+            ..Default::default()
+        });
+
+        for loopback in ["localhost", "127.0.0.1", "::1"] {
+            assert!(
+                config.allowed_hosts.iter().any(|h| h == loopback),
+                "{loopback} should survive an operator-supplied host, got {:?}",
+                config.allowed_hosts
+            );
+        }
+    }
+
+    /// rmcp skips `Origin` validation while the list is empty, so naming CORS
+    /// origins has to reach the transport for the check to run at all.
+    #[test]
+    fn streamable_config_carries_cors_origins_as_allowed_origins() {
+        let config = build_streamable_config(&HttpSecurityConfig {
+            cors_origins: vec!["https://app.example".to_string()],
+            ..Default::default()
+        });
+
+        assert_eq!(config.allowed_origins, vec!["https://app.example"]);
+    }
+
+    /// `*` matches no origin in rmcp, so copying it into the list would turn
+    /// "allow every browser" into "refuse every browser".
+    #[test]
+    fn streamable_config_leaves_origins_unset_for_wildcard_cors() {
+        let config = build_streamable_config(&HttpSecurityConfig {
+            cors_origins: vec!["*".to_string()],
+            ..Default::default()
+        });
+
+        assert!(
+            config.allowed_origins.is_empty(),
+            "wildcard CORS should leave Origin validation off, got {:?}",
+            config.allowed_origins
+        );
+    }
+
+    /// The loopback names rmcp defaults to have to survive the parser, or a
+    /// plain `skrills serve --http` would refuse to start.
+    #[test]
+    fn host_allow_list_parses_the_rmcp_defaults() {
+        let defaults = build_streamable_config(&HttpSecurityConfig::default()).allowed_hosts;
+
+        let parsed = parse_host_allow_list(&defaults).expect("rmcp defaults should parse");
+
+        assert_eq!(
+            parsed,
+            vec![
+                HostAuthority {
+                    host: "localhost".to_string(),
+                    port: None
+                },
+                HostAuthority {
+                    host: "127.0.0.1".to_string(),
+                    port: None
+                },
+                HostAuthority {
+                    host: "::1".to_string(),
+                    port: None
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn host_allow_list_parses_authorities_with_and_without_ports() {
+        let parsed = parse_host_allow_list(&[
+            "skrills.internal".to_string(),
+            "skrills.internal:8080".to_string(),
+            "[::1]:3000".to_string(),
+        ])
+        .expect("bare authorities should parse");
+
+        assert_eq!(
+            parsed,
+            vec![
+                HostAuthority {
+                    host: "skrills.internal".to_string(),
+                    port: None
+                },
+                HostAuthority {
+                    host: "skrills.internal".to_string(),
+                    port: Some(8080)
+                },
+                HostAuthority {
+                    host: "::1".to_string(),
+                    port: Some(3000)
+                },
+            ]
+        );
+    }
+
+    /// An entry written by analogy with `cors_origins` matched nothing and left
+    /// every client with a 403, so it has to be named at startup instead.
+    #[test]
+    fn host_allow_list_rejects_entries_that_are_not_authorities() {
+        for bad in ["https://skrills.internal:8080", "skrills.internal/mcp"] {
+            let Err(error) = parse_host_allow_list(&[bad.to_string()]) else {
+                panic!("{bad} should be rejected");
+            };
+
+            let error = error.to_string();
+            assert!(
+                error.contains(bad),
+                "the error should name the entry, got: {error}"
+            );
+        }
+    }
+
+    /// A trailing comma in `--allowed-hosts foo.example,` cost nothing before
+    /// the entries were parsed, and should not start costing a failed startup.
+    #[test]
+    fn host_allow_list_skips_blank_entries() {
+        let parsed =
+            parse_host_allow_list(&["foo.example".to_string(), String::new(), "  ".to_string()])
+                .expect("a blank entry should be ignored, not rejected");
+
+        assert_eq!(
+            parsed,
+            vec![HostAuthority {
+                host: "foo.example".to_string(),
+                port: None
+            }]
+        );
+    }
+
+    /// An entry without a port is a host name, not a demand that the client
+    /// omit the port it connected on.
+    #[test]
+    fn host_entry_without_port_accepts_any_port() {
+        let entry = parse_host_authority("skrills.internal").unwrap();
+
+        assert!(entry.accepts(&parse_host_authority("skrills.internal:8080").unwrap()));
+        assert!(entry.accepts(&parse_host_authority("SKRILLS.INTERNAL").unwrap()));
+        assert!(!entry.accepts(&parse_host_authority("other.internal:8080").unwrap()));
+    }
+
+    #[test]
+    fn host_entry_with_port_rejects_another_port() {
+        let entry = parse_host_authority("skrills.internal:8080").unwrap();
+
+        assert!(entry.accepts(&parse_host_authority("skrills.internal:8080").unwrap()));
+        assert!(!entry.accepts(&parse_host_authority("skrills.internal:9090").unwrap()));
+        assert!(!entry.accepts(&parse_host_authority("skrills.internal").unwrap()));
+    }
 
     #[test]
     fn parse_valid_bind_address() {

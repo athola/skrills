@@ -16,13 +16,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "lint-rust-decoration.sh"
 
 
-def _run(cwd: Path) -> subprocess.CompletedProcess[str]:
+def _run(
+    cwd: Path, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", str(SCRIPT)],
         cwd=cwd,
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
 
 
@@ -86,3 +89,23 @@ class TestRustDecorationLint:
         )
         result = _run(tmp_path)
         assert result.returncode == 0, result.stderr
+
+    @pytest.mark.unit
+    def test_rg_error_exits_two_instead_of_reporting_clean(
+        self, tmp_path, failing_rg_env
+    ):
+        """
+        Scenario: ripgrep itself fails
+        Given a .rs file with a 25-char separator
+        And an rg on PATH that exits 2 (ripgrep's error status)
+        When I run the lint
+        Then it exits 2 and says the lint did not run,
+        because an `if rg` test used to read exit 2 as "no match" and
+        report the tree clean.
+        """
+        decoration = "─" * 25
+        (tmp_path / "bad.rs").write_text(f"// {decoration}\nfn main() {{}}\n")
+        result = _run(tmp_path, env=failing_rg_env)
+        assert result.returncode == 2, result.stderr
+        assert "decoration lint did not run" in result.stderr
+        assert "clean" not in result.stdout

@@ -20,6 +20,7 @@ jobs:
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
       book: ${{ steps.filter.outputs.book }}
+      scripts: ${{ steps.filter.outputs.scripts }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,6 +41,15 @@ jobs:
             book:
               - 'book/**'
               - '.github/workflows/ci.yml'
+            # The hygiene lints read crate sources and markdown, and the pytest
+            # suite covers the scripts under scripts/, so all three trigger it.
+            scripts:
+              - 'scripts/**'
+              - 'tests/unit/**'
+              - 'Makefile'
+              - 'crates/**'
+              - '**/*.md'
+              - '.github/workflows/ci.yml'
 
   lint-and-test:
     needs: changes
@@ -57,10 +67,35 @@ jobs:
 
       # NOTE: Keep flags in sync with Makefile `lint` target
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: |
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo clippy --workspace --all-targets --no-default-features -- -D warnings
 
       - name: Tests (all features)
         run: cargo test --workspace --all-features
+
+  hygiene-and-scripts:
+    name: Hygiene lints + script tests
+    needs: changes
+    if: needs.changes.outputs.scripts == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # lint-prose-slop.sh and lint-rust-decoration.sh exit 2 without ripgrep,
+      # `make test-scripts` refuses to run without pytest on PATH, and the
+      # dogfood slice tests skip themselves without jq.
+      - name: Install ripgrep, jq and pytest
+        run: |
+          sudo apt-get update && sudo apt-get install -y ripgrep jq
+          python -m pip install --upgrade pytest
+      - name: Hygiene lints
+        run: make lint-hygiene
+      - name: Script test suite
+        run: make test-scripts
 
   dogfood:
     name: Dogfood output contracts
@@ -79,7 +114,7 @@ jobs:
         run: ./scripts/test-install.sh
       # The validate JSON output contract drives the real binary through the
       # real validate-skills action entrypoint, so build the release binary.
-      # Default features pull in skrills-server's `dashboard` feature, so the
+      # The cli crate's default features include `dashboard`, so the
       # cold-window TUI is compiled in for the PTY scenarios below.
       - name: Build release binary
         run: cargo build --release --bin skrills

@@ -232,7 +232,17 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
     /// prompts, Codex converts agents to skills).
     pub fn sync(&self, params: &SyncParams) -> Result<SyncReport> {
         let mut report = SyncReport::new();
-        let target_support = self.target.supported_fields();
+        let target_support = self.target.write_support();
+        let source_support = self.source.read_support();
+
+        // A full plugin mirror already carries every plugin skill body into the
+        // target's plugin tree, so the flat skill copy would be a second copy of
+        // the same file. This is the single place that can decide it: callers
+        // see neither the support flags nor which skills came from a plugin.
+        let mirror_carries_plugin_skills = params.sync_plugin_assets
+            && params.full_plugin_mirror
+            && source_support.plugin_assets
+            && target_support.plugin_assets;
 
         // Sync commands
         if params.sync_commands {
@@ -283,7 +293,18 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                     "Target does not natively support skills; delegating to adapter"
                 );
             }
-            let skills = self.source.read_skills()?;
+            let mut skills = self.source.read_skills()?;
+            if mirror_carries_plugin_skills {
+                let before = skills.len();
+                skills.retain(|s| s.plugin_origin.is_none());
+                let in_mirror = before - skills.len();
+                if in_mirror > 0 {
+                    tracing::debug!(
+                        in_mirror,
+                        "Plugin skills ride the plugin mirror; not copying them flat as well"
+                    );
+                }
+            }
             // Apply plugin exclusion filter
             let (skills, excluded_count) = if params.exclude_plugins.is_empty() {
                 (skills, 0usize)
@@ -437,11 +458,40 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
 
         // Sync plugin assets (scripts, binaries, libraries)
         if params.sync_plugin_assets {
-            if !target_support.plugin_assets {
-                tracing::debug!(
-                    target = %self.target.name(),
-                    "Target does not natively support plugin assets; skipping"
-                );
+            // Both ends are checked. Reading from a source with no reader
+            // yields an empty Vec and writing to a target with no writer
+            // reports a successful write of nothing, so an entirely
+            // unimplemented pair used to come back as success.
+            // Which end is missing decides which reason is the true one, so it is
+            // computed once instead of building the same value twice and letting
+            // the free-text suggestion carry the difference.
+            let missing_end = match (source_support.plugin_assets, target_support.plugin_assets) {
+                (false, _) => {
+                    tracing::debug!(
+                        source = %self.source.name(),
+                        "Source cannot read plugin assets; skipping"
+                    );
+                    Some(SkipReason::SourceCannotRead {
+                        field: "plugin_assets".to_string(),
+                        source_agent: self.source.name().to_string(),
+                    })
+                }
+                (true, false) => {
+                    tracing::debug!(
+                        target = %self.target.name(),
+                        "Target does not natively support plugin assets; skipping"
+                    );
+                    Some(SkipReason::UnsupportedField {
+                        field: "plugin_assets".to_string(),
+                        source_agent: self.source.name().to_string(),
+                        suggestion: format!("{} cannot write plugin assets", self.target.name()),
+                    })
+                }
+                (true, true) => None,
+            };
+
+            if let Some(reason) = missing_end {
+                report.plugin_assets.skipped.push(reason);
             } else {
                 let assets = self.source.read_plugin_assets(params.full_plugin_mirror)?;
                 // Apply plugin exclusion filter to assets
@@ -459,7 +509,9 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 if !params.dry_run {
                     report.plugin_assets = self.target.write_plugin_assets(&assets)?;
                 } else {
-                    report.plugin_assets.written = assets.len();
+                    // The writer also deletes, so the preview has to come from
+                    // the adapter rather than from the batch length alone.
+                    report.plugin_assets = self.target.preview_plugin_assets(&assets)?;
                 }
                 for _ in 0..excluded_asset_count {
                     report
@@ -1041,6 +1093,304 @@ mod tests {
         let report = orchestrator.sync(&params).unwrap();
         assert_eq!(report.commands.written, 0);
         assert_eq!(report.commands.skipped.len(), 1);
+    }
+
+    /// FieldSupport had no direction, so one bool meant "reads it" for one
+    /// adapter and "writes it" for another. cursor->claude plugin assets
+    /// passed the target gate (Claude declares plugin_assets), read nothing
+    /// through Cursor's default reader, wrote nothing through Claude's default
+    /// writer, and reported success.
+    #[test]
+    fn plugin_asset_direction_is_declared_per_adapter() {
+        use crate::adapters::{ClaudeAdapter, CursorAdapter};
+
+        let claude = ClaudeAdapter::with_root(std::path::PathBuf::from("/tmp/claude-x"));
+        let cursor = CursorAdapter::with_root(std::path::PathBuf::from("/tmp/cursor-x"));
+
+        assert!(
+            claude.read_support().plugin_assets,
+            "Claude owns the plugin cache and reads it"
+        );
+        assert!(
+            !claude.write_support().plugin_assets,
+            "Claude implements no plugin-asset writer"
+        );
+        assert!(
+            cursor.write_support().plugin_assets,
+            "Cursor receives the plugin mirror"
+        );
+        assert!(
+            !cursor.read_support().plugin_assets,
+            "Cursor implements no plugin-asset reader"
+        );
+    }
+
+    /// The unimplemented direction must report why it did nothing rather than
+    /// coming back as a clean success, and it must blame the end that is
+    /// actually missing: here Cursor has no reader, while the Claude target is
+    /// fine.
+    #[test]
+    fn cursor_to_claude_plugin_assets_reports_the_source_cannot_read() {
+        use crate::adapters::{ClaudeAdapter, CursorAdapter};
+
+        let src = tempdir().unwrap();
+        let dst = tempdir().unwrap();
+        let orchestrator = SyncOrchestrator::new(
+            CursorAdapter::with_root(src.path().to_path_buf()),
+            ClaudeAdapter::with_root(dst.path().to_path_buf()),
+        );
+
+        let params = SyncParams {
+            sync_plugin_assets: true,
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_skills: false,
+            ..Default::default()
+        };
+        let report = orchestrator.sync(&params).unwrap();
+
+        assert_eq!(
+            report.plugin_assets.written, 0,
+            "nothing is written on an unimplemented direction"
+        );
+        let skipped = &report.plugin_assets.skipped;
+        assert!(
+            skipped.iter().any(|r| matches!(
+                r,
+                SkipReason::SourceCannotRead { field, source_agent }
+                    if field == "plugin_assets" && source_agent == "cursor"
+            )),
+            "the skip must name the source as the end with no reader, got {skipped:?}"
+        );
+        let description = skipped[0].description();
+        assert!(
+            description.contains("cursor") && !description.contains("target"),
+            "the description must not blame the target, got {description:?}"
+        );
+        assert!(
+            report.summary.contains(&description),
+            "the summary must explain the skip, got {:?}",
+            report.summary
+        );
+    }
+
+    /// The CLI reaches adapters through `Box<dyn AgentAdapter>`. If the
+    /// blanket impl stops forwarding `read_support`/`write_support`, the
+    /// wrapper reports a direction the inner adapter does not implement and
+    /// the silent no-op comes back.
+    #[test]
+    fn boxed_adapter_forwards_directional_support() {
+        use crate::adapters::{ClaudeAdapter, CursorAdapter};
+
+        let claude: Box<dyn AgentAdapter> = Box::new(ClaudeAdapter::with_root(
+            std::path::PathBuf::from("/tmp/claude-x"),
+        ));
+        let cursor: Box<dyn AgentAdapter> = Box::new(CursorAdapter::with_root(
+            std::path::PathBuf::from("/tmp/cursor-x"),
+        ));
+
+        assert!(claude.read_support().plugin_assets);
+        assert!(
+            !claude.write_support().plugin_assets,
+            "Box<dyn> must forward write_support to the inner adapter"
+        );
+        assert!(cursor.write_support().plugin_assets);
+        assert!(
+            !cursor.read_support().plugin_assets,
+            "Box<dyn> must forward read_support to the inner adapter"
+        );
+    }
+
+    /// Seeds a Claude root with one plugin-cache skill and one skill that has
+    /// no plugin origin, plus the plugin manifest the full mirror needs.
+    fn seed_claude_root_with_plugin_and_local_skill(root: &std::path::Path) {
+        let local = root.join("skills/local-only");
+        fs::create_dir_all(&local).unwrap();
+        fs::write(
+            local.join("SKILL.md"),
+            "---\nname: local-only\ndescription: Not from a plugin\n---\n# Local\n",
+        )
+        .unwrap();
+
+        let version_dir = root.join("plugins/cache/market/my-plugin/1.0.0");
+        let plugin_skill = version_dir.join("skills/deep-work");
+        fs::create_dir_all(&plugin_skill).unwrap();
+        fs::write(
+            plugin_skill.join("SKILL.md"),
+            "---\nname: deep-work\ndescription: From a plugin\n---\n# Deep work\n",
+        )
+        .unwrap();
+        let manifest_dir = version_dir.join(".claude-plugin");
+        fs::create_dir_all(&manifest_dir).unwrap();
+        fs::write(
+            manifest_dir.join("plugin.json"),
+            "{\"name\": \"my-plugin\", \"version\": \"1.0.0\"}\n",
+        )
+        .unwrap();
+    }
+
+    /// The full plugin mirror already carries plugin skill bodies into
+    /// `plugins/local/<p>/skills/`, so syncing them flat as well writes every
+    /// plugin skill twice. Skills with no plugin origin are not in the mirror
+    /// and must still go to the flat directory.
+    #[test]
+    fn full_mirror_sync_skips_flat_copy_of_plugin_skills_but_keeps_the_rest() {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        seed_claude_root_with_plugin_and_local_skill(src_dir.path());
+
+        let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
+        let target = crate::adapters::CursorAdapter::with_root(tgt_dir.path().to_path_buf());
+
+        let params = SyncParams {
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_agents: false,
+            sync_hooks: false,
+            sync_instructions: false,
+            sync_skills: true,
+            sync_plugin_assets: true,
+            full_plugin_mirror: true,
+            ..Default::default()
+        };
+
+        let report = SyncOrchestrator::new(source, target).sync(&params).unwrap();
+
+        assert_eq!(
+            report.skills.written, 1,
+            "only the origin-less skill should be written flat, got {:?}",
+            report.skills
+        );
+        assert!(
+            tgt_dir.path().join("skills/local-only/SKILL.md").exists(),
+            "a skill with no plugin origin still needs the flat copy"
+        );
+        assert!(
+            !tgt_dir.path().join("skills/deep-work").exists(),
+            "the plugin skill must not be duplicated into the flat directory"
+        );
+        assert!(
+            tgt_dir
+                .path()
+                .join("plugins/local/my-plugin/skills/deep-work/SKILL.md")
+                .exists(),
+            "the plugin mirror must carry the plugin skill body"
+        );
+    }
+
+    /// Without the full mirror there is no second copy to collide with, so
+    /// every skill goes through `write_skills` as before.
+    #[test]
+    fn sync_without_full_mirror_still_writes_plugin_skills() {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        seed_claude_root_with_plugin_and_local_skill(src_dir.path());
+
+        let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
+        let target = crate::adapters::CursorAdapter::with_root(tgt_dir.path().to_path_buf());
+
+        let params = SyncParams {
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_agents: false,
+            sync_hooks: false,
+            sync_instructions: false,
+            sync_skills: true,
+            sync_plugin_assets: false,
+            full_plugin_mirror: false,
+            ..Default::default()
+        };
+
+        let report = SyncOrchestrator::new(source, target).sync(&params).unwrap();
+
+        assert_eq!(report.skills.written, 2, "both skills should be written");
+        assert!(tgt_dir.path().join("skills/local-only/SKILL.md").exists());
+        assert!(tgt_dir
+            .path()
+            .join("plugins/local/my-plugin/skills/deep-work/SKILL.md")
+            .exists());
+    }
+
+    /// Codex declares `read_support().agents = false`, and the review asked
+    /// whether that left `CodexAdapter::write_agents` unreachable from `sync`.
+    /// It does not: only `plugin_assets` gates a sync, so the converted skill
+    /// really does land on disk.
+    #[test]
+    fn claude_to_codex_sync_agents_writes_converted_skill() {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+
+        let agents_dir = src_dir.path().join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+        fs::write(
+            agents_dir.join("reviewer.md"),
+            "---\nname: reviewer\ndescription: Reviews code\n---\n# Reviewer\n",
+        )
+        .unwrap();
+
+        let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
+        let target = CodexAdapter::with_root(tgt_dir.path().to_path_buf());
+
+        let params = SyncParams {
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_skills: false,
+            sync_hooks: false,
+            sync_instructions: false,
+            sync_plugin_assets: false,
+            sync_agents: true,
+            ..Default::default()
+        };
+
+        let report = SyncOrchestrator::new(source, target).sync(&params).unwrap();
+
+        assert_eq!(report.agents.written, 1, "the agent should be written");
+        assert!(
+            tgt_dir
+                .path()
+                .join("skills/agent-reviewer/SKILL.md")
+                .exists(),
+            "write_agents should convert the agent into an agent-prefixed skill"
+        );
+    }
+
+    /// A source that can read plugin assets paired with a target that cannot
+    /// write them is the other half of the gate; it must name the target.
+    #[test]
+    fn plugin_assets_to_target_without_writer_reports_unsupported() {
+        use crate::adapters::{ClaudeAdapter, CopilotAdapter};
+
+        let src = tempdir().unwrap();
+        let dst = tempdir().unwrap();
+        let orchestrator = SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src.path().to_path_buf()),
+            CopilotAdapter::with_root(dst.path().to_path_buf()),
+        );
+
+        let params = SyncParams {
+            sync_plugin_assets: true,
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_skills: false,
+            ..Default::default()
+        };
+        let report = orchestrator.sync(&params).unwrap();
+
+        assert_eq!(report.plugin_assets.written, 0);
+        assert!(
+            report.plugin_assets.skipped.iter().any(|r| matches!(
+                r,
+                SkipReason::UnsupportedField { field, suggestion, .. }
+                    if field == "plugin_assets" && suggestion.contains("copilot")
+            )),
+            "the skip must name the target that cannot write, got {:?}",
+            report.plugin_assets.skipped
+        );
     }
 
     #[test]

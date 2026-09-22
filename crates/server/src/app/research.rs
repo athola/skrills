@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use anyhow::{anyhow, Result};
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::{json, Map as JsonMap, Value};
 
 use skrills_tome::cache::ResearchCache;
@@ -20,6 +20,7 @@ use skrills_tome::models::{Paper, PaperSource};
 use skrills_tome::triz::{Parameter, TrizMatrix};
 
 use crate::app::SkillService;
+use crate::mcp_result::{tool_err, tool_ok};
 
 /// Resolve the skrills-tome cache directory.
 fn tome_cache_dir() -> Result<std::path::PathBuf> {
@@ -117,15 +118,16 @@ impl SkillService {
             text.push_str(": all sources failed");
         }
 
-        Ok(CallToolResult {
-            content: vec![Content::text(text)],
-            structured_content: Some(json!({
-                "papers": paper_json,
-                "count": deduped.len(),
-                "errors": errors,
-            })),
-            is_error: Some(all_failed),
-            meta: None,
+        let content = vec![ContentBlock::text(text)];
+        let structured = Some(json!({
+            "papers": paper_json,
+            "count": deduped.len(),
+            "errors": errors,
+        }));
+        Ok(if all_failed {
+            tool_err(content, structured)
+        } else {
+            tool_ok(content, structured)
         })
     }
 
@@ -164,18 +166,16 @@ impl SkillService {
             })
             .collect();
 
-        Ok(CallToolResult {
-            content: vec![Content::text(format!(
+        Ok(tool_ok(
+            vec![ContentBlock::text(format!(
                 "Found {} discussions",
                 discussions.len()
             ))],
-            structured_content: Some(json!({
+            Some(json!({
                 "discussions": discussion_json,
                 "count": discussions.len(),
             })),
-            is_error: Some(false),
-            meta: None,
-        })
+        ))
     }
 
     pub(crate) async fn resolve_doi_tool(
@@ -199,13 +199,13 @@ impl SkillService {
             }
         };
 
-        Ok(CallToolResult {
-            content: vec![Content::text(format!(
+        Ok(tool_ok(
+            vec![ContentBlock::text(format!(
                 "{} ({})",
                 metadata.title,
                 metadata.year.map(|y| y.to_string()).unwrap_or_default()
             ))],
-            structured_content: Some(json!({
+            Some(json!({
                 "doi": metadata.doi,
                 "title": metadata.title,
                 "authors": metadata.authors,
@@ -215,9 +215,7 @@ impl SkillService {
                 "journal": metadata.journal,
                 "pdf_url": pdf_url,
             })),
-            is_error: Some(false),
-            meta: None,
-        })
+        ))
     }
 
     pub(crate) async fn fetch_pdf_tool(
@@ -259,17 +257,15 @@ impl SkillService {
 
         let path_str = pdf_path.to_string_lossy().to_string();
 
-        Ok(CallToolResult {
-            content: vec![Content::text(format!("PDF cached at: {path_str}"))],
-            structured_content: Some(json!({
+        Ok(tool_ok(
+            vec![ContentBlock::text(format!("PDF cached at: {path_str}"))],
+            Some(json!({
                 "path": path_str,
                 "doi": doi,
                 "url": pdf_url,
                 "cached": true,
             })),
-            is_error: Some(false),
-            meta: None,
-        })
+        ))
     }
 
     // --- #169: Advanced Research Tools ---
@@ -298,14 +294,14 @@ impl SkillService {
                 edges_to = kg.edges_to(node_id)?;
             }
 
-            Ok(CallToolResult {
-                content: vec![Content::text(format!(
+            Ok(tool_ok(
+                vec![ContentBlock::text(format!(
                     "Node {}: {} outgoing, {} incoming edges",
                     node_id,
                     edges_from.len(),
                     edges_to.len()
                 ))],
-                structured_content: Some(json!({
+                Some(json!({
                     "node": node.map(|n| json!({
                         "id": n.id,
                         "kind": n.kind.as_str(),
@@ -322,9 +318,7 @@ impl SkillService {
                         "weight": e.weight,
                     })).collect::<Vec<_>>(),
                 })),
-                is_error: Some(false),
-                meta: None,
-            })
+            ))
         } else if let Some(query) = args.get("query").and_then(|v| v.as_str()) {
             let kind = match args.get("kind").and_then(|v| v.as_str()) {
                 Some(s) => {
@@ -347,26 +341,22 @@ impl SkillService {
                 })
                 .collect();
 
-            Ok(CallToolResult {
-                content: vec![Content::text(format!("Found {} nodes", nodes.len()))],
-                structured_content: Some(json!({ "nodes": node_json, "count": nodes.len() })),
-                is_error: Some(false),
-                meta: None,
-            })
+            Ok(tool_ok(
+                vec![ContentBlock::text(format!("Found {} nodes", nodes.len()))],
+                Some(json!({ "nodes": node_json, "count": nodes.len() })),
+            ))
         } else {
             let (node_count, edge_count) = kg.stats()?;
-            Ok(CallToolResult {
-                content: vec![Content::text(format!(
+            Ok(tool_ok(
+                vec![ContentBlock::text(format!(
                     "Knowledge graph: {} nodes, {} edges",
                     node_count, edge_count
                 ))],
-                structured_content: Some(json!({
+                Some(json!({
                     "node_count": node_count,
                     "edge_count": edge_count,
                 })),
-                is_error: Some(false),
-                meta: None,
-            })
+            ))
         }
     }
 
@@ -395,14 +385,12 @@ impl SkillService {
         let kg = KnowledgeGraph::open(&db_path)?;
         kg.add_node(id, kind, label, metadata.as_deref())?;
 
-        Ok(CallToolResult {
-            content: vec![Content::text(format!(
+        Ok(tool_ok(
+            vec![ContentBlock::text(format!(
                 "Added node '{id}' ({kind_str}): {label}"
             ))],
-            structured_content: Some(json!({"id": id, "kind": kind_str, "label": label})),
-            is_error: Some(false),
-            meta: None,
-        })
+            Some(json!({"id": id, "kind": kind_str, "label": label})),
+        ))
     }
 
     pub(crate) fn link_knowledge_tool(
@@ -431,19 +419,17 @@ impl SkillService {
         let kg = KnowledgeGraph::open(&db_path)?;
         kg.add_edge(source_id, target_id, kind, weight, metadata.as_deref())?;
 
-        Ok(CallToolResult {
-            content: vec![Content::text(format!(
+        Ok(tool_ok(
+            vec![ContentBlock::text(format!(
                 "Linked {source_id} --{kind_str}--> {target_id}"
             ))],
-            structured_content: Some(json!({
+            Some(json!({
                 "source_id": source_id,
                 "target_id": target_id,
                 "kind": kind_str,
                 "weight": weight,
             })),
-            is_error: Some(false),
-            meta: None,
-        })
+        ))
     }
 
     pub(crate) fn track_citations_tool(
@@ -483,14 +469,10 @@ impl SkillService {
                 };
                 tracker.track_paper(&paper)?;
 
-                Ok(CallToolResult {
-                    content: vec![Content::text(format!("Now tracking: {title}"))],
-                    structured_content: Some(
-                        json!({"paper_id": paper_id, "title": title, "action": "tracked"}),
-                    ),
-                    is_error: Some(false),
-                    meta: None,
-                })
+                Ok(tool_ok(
+                    vec![ContentBlock::text(format!("Now tracking: {title}"))],
+                    Some(json!({"paper_id": paper_id, "title": title, "action": "tracked"})),
+                ))
             }
             "forward" => {
                 let citations = tracker.forward_citations(paper_id)?;
@@ -505,19 +487,17 @@ impl SkillService {
                     })
                     .collect();
 
-                Ok(CallToolResult {
-                    content: vec![Content::text(format!(
+                Ok(tool_ok(
+                    vec![ContentBlock::text(format!(
                         "{} forward citations",
                         citations.len()
                     ))],
-                    structured_content: Some(json!({
+                    Some(json!({
                         "citations": citation_json,
                         "count": citations.len(),
                         "direction": "forward",
                     })),
-                    is_error: Some(false),
-                    meta: None,
-                })
+                ))
             }
             "backward" => {
                 let citations = tracker.backward_citations(paper_id)?;
@@ -532,19 +512,17 @@ impl SkillService {
                     })
                     .collect();
 
-                Ok(CallToolResult {
-                    content: vec![Content::text(format!(
+                Ok(tool_ok(
+                    vec![ContentBlock::text(format!(
                         "{} backward citations",
                         citations.len()
                     ))],
-                    structured_content: Some(json!({
+                    Some(json!({
                         "citations": citation_json,
                         "count": citations.len(),
                         "direction": "backward",
                     })),
-                    is_error: Some(false),
-                    meta: None,
-                })
+                ))
             }
             other => Err(anyhow!(
                 "Unknown action: {other}. Use 'track', 'forward', or 'backward'"
@@ -583,22 +561,20 @@ impl SkillService {
             })
             .collect();
 
-        Ok(CallToolResult {
-            content: vec![Content::text(format!(
+        Ok(tool_ok(
+            vec![ContentBlock::text(format!(
                 "Improving {} vs degrading {}: {} applicable principles",
                 improve_str,
                 degrades_str,
                 principles.len()
             ))],
-            structured_content: Some(json!({
+            Some(json!({
                 "improve": improve_str,
                 "degrades": degrades_str,
                 "principles": principle_json,
                 "count": principles.len(),
             })),
-            is_error: Some(false),
-            meta: None,
-        })
+        ))
     }
 }
 

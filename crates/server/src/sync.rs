@@ -228,17 +228,20 @@ fn mirror_linked_files_transitively(
     Ok(())
 }
 
-/// Reports the outcome of a synchronization operation.
+/// Reports the outcome of mirroring skills or agents into a Codex root.
+///
+/// Named apart from [`skrills_sync::SyncReport`], which the same call sites
+/// also handle and which covers commands, MCP servers and preferences.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(crate) struct SyncReport {
-    pub(crate) copied: usize,
-    pub(crate) skipped: usize,
+pub struct MirrorReport {
+    pub copied: usize,
+    pub skipped: usize,
     /// Relative paths of skills that were copied (new or updated).
-    pub(crate) copied_names: Vec<String>,
+    pub copied_names: Vec<String>,
 }
 
 /// Resolves the mirror source root, honoring `SKRILLS_MIRROR_SOURCE` when set.
-pub(crate) fn mirror_source_root(home: &Path) -> PathBuf {
+pub fn mirror_source_root(home: &Path) -> PathBuf {
     std::env::var("SKRILLS_MIRROR_SOURCE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| home.join(".claude"))
@@ -249,12 +252,12 @@ pub(crate) fn mirror_source_root(home: &Path) -> PathBuf {
 /// This is intentionally stricter than `sync_from_claude`:
 /// - copies only `SKILL.md` files (plus their adjacent supporting files)
 /// - skips hidden entries and symlinks to match Codex discovery behavior
-pub(crate) fn sync_skills_only_from_claude(
+pub fn sync_skills_only_from_claude(
     claude_root: &Path,
     codex_skills_root: &Path,
     include_marketplace: bool,
-) -> Result<SyncReport> {
-    let mut report = SyncReport::default();
+) -> Result<MirrorReport> {
+    let mut report = MirrorReport::default();
     if !claude_root.exists() {
         return Ok(report);
     }
@@ -351,8 +354,8 @@ pub(crate) fn sync_from_claude(
     claude_root: &Path,
     mirror_root: &Path,
     include_marketplace: bool,
-) -> Result<SyncReport> {
-    let mut report = SyncReport::default();
+) -> Result<MirrorReport> {
+    let mut report = MirrorReport::default();
     if !claude_root.exists() {
         return Ok(report);
     }
@@ -512,7 +515,7 @@ pub(crate) fn render_agents_reference(agents: &[AgentMeta]) -> String {
 ///
 /// Discovers skills from the specified directories and updates the AGENTS.md file
 /// with an XML manifest of available skills.
-pub(crate) fn sync_agents(path: &Path, extra_dirs: &[PathBuf]) -> Result<()> {
+pub fn sync_agents(path: &Path, extra_dirs: &[PathBuf]) -> Result<()> {
     let skills = collect_skills(extra_dirs)?;
     let agents = collect_agents(extra_dirs)?;
     sync_agents_with_assets(path, &skills, &agents)
@@ -588,12 +591,12 @@ pub(crate) fn sync_agents_with_assets(
 ///
 /// This intentionally does **not** write to `~/.codex/skills-mirror`: skills are materialized
 /// into `~/.codex/skills` via `sync_skills_only_from_claude`.
-pub(crate) fn sync_agents_only_from_claude(
+pub fn sync_agents_only_from_claude(
     claude_root: &Path,
     codex_agents_root: &Path,
     include_marketplace: bool,
-) -> Result<SyncReport> {
-    let mut report = SyncReport::default();
+) -> Result<MirrorReport> {
+    let mut report = MirrorReport::default();
     if !claude_root.exists() {
         return Ok(report);
     }

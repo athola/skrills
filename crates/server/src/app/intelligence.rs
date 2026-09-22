@@ -4,9 +4,10 @@
 //! per ADR-0001. These methods provide smart recommendations, project context analysis,
 //! skill gap detection, and skill creation capabilities.
 
+use crate::mcp_result::{tool_err, tool_ok};
 use crate::setup;
 use anyhow::{anyhow, Result};
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::{json, Map as JsonMap, Value};
 use skrills_state::home_dir;
 use std::collections::{HashMap, HashSet};
@@ -21,7 +22,7 @@ impl SkillService {
     // -------------------------------------------------------------------------
 
     /// Smart skill recommendations combining dependency graph, usage patterns, and project context.
-    pub(crate) fn recommend_skills_smart_tool(
+    pub fn recommend_skills_smart_tool(
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
@@ -301,21 +302,19 @@ impl SkillService {
             all_recommendations.len()
         );
 
-        Ok(CallToolResult {
-            content: vec![Content::text(text)],
-            structured_content: Some(json!({
+        Ok(tool_ok(
+            vec![ContentBlock::text(text)],
+            Some(json!({
                 "total_found": total_found,
                 "recommendations": all_recommendations,
                 "include_usage": include_usage,
                 "include_context": include_context,
             })),
-            is_error: Some(false),
-            meta: None,
-        })
+        ))
     }
 
     /// Analyze project context for skill recommendations.
-    pub(crate) fn analyze_project_context_tool(
+    pub fn analyze_project_context_tool(
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
@@ -377,19 +376,14 @@ impl SkillService {
                 .sum::<usize>()
         );
 
-        Ok(CallToolResult {
-            content: vec![Content::text(text)],
-            structured_content: Some(serde_json::to_value(&profile)?),
-            is_error: Some(false),
-            meta: None,
-        })
+        Ok(tool_ok(
+            vec![ContentBlock::text(text)],
+            Some(serde_json::to_value(&profile)?),
+        ))
     }
 
     /// Suggest new skills to create based on project needs.
-    pub(crate) fn suggest_new_skills_tool(
-        &self,
-        args: JsonMap<String, Value>,
-    ) -> Result<CallToolResult> {
+    pub fn suggest_new_skills_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
         use skrills_intelligence::{analyze_project, SkillGap, SkillGapAnalysis};
 
         let project_dir = resolve_project_dir(
@@ -507,12 +501,10 @@ impl SkillService {
             analysis.suggestions.len()
         );
 
-        Ok(CallToolResult {
-            content: vec![Content::text(text)],
-            structured_content: Some(serde_json::to_value(&analysis)?),
-            is_error: Some(false),
-            meta: None,
-        })
+        Ok(tool_ok(
+            vec![ContentBlock::text(text)],
+            Some(serde_json::to_value(&analysis)?),
+        ))
     }
 
     /// Create a new skill via GitHub search, LLM generation, or both.
@@ -634,17 +626,15 @@ impl SkillService {
                         e
                     );
                     errors.push(error_msg.clone());
-                    return Ok(CallToolResult {
-                        content: vec![Content::text(error_msg)],
-                        structured_content: Some(json!({
+                    return Ok(tool_err(
+                        vec![ContentBlock::text(error_msg)],
+                        Some(json!({
                             "success": false,
                             "method": method_str,
                             "name": name,
                             "errors": errors,
                         })),
-                        is_error: Some(true),
-                        meta: None,
-                    });
+                    ));
                 }
             };
 
@@ -660,9 +650,9 @@ impl SkillService {
                              --method both for production use.",
                             events.len()
                         );
-                        return Ok(CallToolResult {
-                            content: vec![Content::text(&preview_msg)],
-                            structured_content: Some(json!({
+                        return Ok(tool_ok(
+                            vec![ContentBlock::text(&preview_msg)],
+                            Some(json!({
                                 "success": true,
                                 "method": method_str,
                                 "name": name,
@@ -671,9 +661,7 @@ impl SkillService {
                                 "session_events": events.len(),
                                 "message": preview_msg,
                             })),
-                            is_error: Some(false),
-                            meta: None,
-                        });
+                        ));
                     }
                     Ok(events) => {
                         errors.push(format!(
@@ -750,20 +738,21 @@ impl SkillService {
             format!("Failed to create skill: {}", errors.join("; "))
         };
 
-        Ok(CallToolResult {
-            content: vec![Content::text(text)],
-            structured_content: Some(json!({
-                "success": success,
-                "method": method_str,
-                "name": name,
-                "dry_run": dry_run,
-                "github_results": github_results,
-                "llm_content": llm_content,
-                "written_path": written_path,
-                "errors": errors,
-            })),
-            is_error: Some(!success),
-            meta: None,
+        let content = vec![ContentBlock::text(text)];
+        let structured = Some(json!({
+            "success": success,
+            "method": method_str,
+            "name": name,
+            "dry_run": dry_run,
+            "github_results": github_results,
+            "llm_content": llm_content,
+            "written_path": written_path,
+            "errors": errors,
+        }));
+        Ok(if success {
+            tool_ok(content, structured)
+        } else {
+            tool_err(content, structured)
         })
     }
 
@@ -797,23 +786,18 @@ impl SkillService {
             )
         };
 
-        Ok(CallToolResult {
-            content: vec![Content::text(text)],
-            structured_content: Some(json!({
+        Ok(tool_ok(
+            vec![ContentBlock::text(text)],
+            Some(json!({
                 "query": query,
                 "total_found": results.len(),
                 "results": results,
             })),
-            is_error: Some(false),
-            meta: None,
-        })
+        ))
     }
 
     /// Sync wrapper for create-skill in CLI contexts.
-    pub(crate) fn create_skill_tool_sync(
-        &self,
-        args: JsonMap<String, Value>,
-    ) -> Result<CallToolResult> {
+    pub fn create_skill_tool_sync(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -821,7 +805,7 @@ impl SkillService {
     }
 
     /// Sync wrapper for search-skills-github in CLI contexts.
-    pub(crate) fn search_skills_github_tool_sync(
+    pub fn search_skills_github_tool_sync(
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
@@ -834,10 +818,7 @@ impl SkillService {
     /// Fuzzy search for installed skills using trigram matching.
     ///
     /// Tolerates typos and finds similar skill names.
-    pub(crate) fn search_skills_fuzzy_tool(
-        &self,
-        args: JsonMap<String, Value>,
-    ) -> Result<CallToolResult> {
+    pub fn search_skills_fuzzy_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
         use anyhow::Context;
         use skrills_intelligence::{find_similar_skills, SkillInfo, DEFAULT_THRESHOLD};
 
@@ -940,9 +921,9 @@ impl SkillService {
             lines.join("\n")
         };
 
-        Ok(CallToolResult {
-            content: vec![Content::text(text)],
-            structured_content: Some(json!({
+        Ok(tool_ok(
+            vec![ContentBlock::text(text)],
+            Some(json!({
                 "query": query,
                 "threshold": threshold,
                 "total_found": results.len(),
@@ -954,9 +935,7 @@ impl SkillService {
                     "matched_field": format!("{:?}", m.matched_field),
                 })).collect::<Vec<_>>(),
             })),
-            is_error: Some(false),
-            meta: None,
-        })
+        ))
     }
 }
 

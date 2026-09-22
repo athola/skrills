@@ -11,6 +11,9 @@
 #   SKRILLS_SKIP_PATH_MESSAGE  set to 1 to silence PATH reminder
 #   SKRILLS_NO_HOOK   set to 1 to skip hook/MCP registration
 #   SKRILLS_UNIVERSAL set to 1 to also sync ~/.agent/skills
+#   SKRILLS_SKIP_CHECKSUM  set to 1 to install without verifying the release
+#                     checksum. Only for a host with no sha256 tool or a
+#                     release whose .sha256 sidecar is missing.
 set -eu
 # dash (sh) on some systems doesn't support pipefail; guard it.
 if (set -o | grep -q pipefail 2>/dev/null); then
@@ -78,25 +81,44 @@ API_URL()
 # jq implementation of asset selection. $1=release JSON, $2=target triple.
 _SELECT_ASSET_JQ()
 {
-  echo "$1" | jq -r --arg target "$2" \
-    '.assets[] | select(.name | contains($target)) | select(.name | endswith(".tar.gz")) | .browser_download_url' \
-    | head -n1
+  # `printf '%s\n'`, not `echo`: under dash and macOS /bin/sh, `echo` expands
+  # backslash escapes, so a release note containing \n turns the JSON body into
+  # a literal newline and jq rejects the whole document.
+  #
+  # `first(...)` rather than `| head -n1`: under pipefail, head closing the pipe
+  # early makes jq exit 141 and takes the installer down with it.
+  #
+  # `.assets // []`: a draft tag or an API error document has no .assets, and
+  # `.assets[]` then errors "Cannot iterate over null" and exits 5, so the
+  # installer died before reaching its own "no release asset found" message.
+  printf '%s\n' "$1" | jq -r --arg target "$2" \
+    'first((.assets // [])[] | select(.name | contains($target)) | select(.name | endswith(".tar.gz")) | .browser_download_url) // empty'
 }
 
 # Pure-POSIX awk fallback for asset selection. $1=release JSON, $2=target.
-# The name must END in .tar.gz: the checksum sidecar is named
-# "<target>.tar.gz.sha256", so a substring match on ".tar.gz" matches it
-# too. Anchor on the closing quote (.tar.gz") so only the tarball matches.
+# The name must END in .tar.gz: a release carries the target triple in the
+# tarball, in the "skrills-<target>.sha256" checksum sidecar and in the
+# Windows .zip, so matching on the triple alone picks whichever GitHub lists
+# first. Anchor on the closing quote (.tar.gz") so only the tarball matches.
 _SELECT_ASSET_AWK()
 {
-  echo "$1" | awk -v target="$2" '
-    /"name":/ && index($0, target) && /\.tar\.gz"/ { found=1 }
-    found && /"browser_download_url":/ {
-      gsub(/.*"browser_download_url": *"/, "")
-      gsub(/".*/, "")
-      print
-      exit
+  # `tr '{' '\n'` first: api.github.com pretty-prints today, but a minifying
+  # proxy or a GitHub Enterprise host can return one line, and then a single
+  # awk record holds every asset. One record per asset keeps each name with
+  # its own url.
+  #
+  # The url is captured and printed at END rather than printed with `exit`:
+  # exiting closes the pipe while printf is still writing, and under pipefail
+  # that EPIPE fails the whole selection on a release with many assets.
+  printf '%s\n' "$1" | tr '{' '\n' | awk -v target="$2" '
+    /"name":/ { found = (index($0, target) && $0 ~ /\.tar\.gz"/) }
+    found && url == "" && /"browser_download_url":/ {
+      line = $0
+      sub(/.*"browser_download_url": *"/, "", line)
+      sub(/".*/, "", line)
+      url = line
     }
+    END { if (url != "") print url }
   '
 }
 
@@ -120,11 +142,55 @@ SELECT_ASSET_URL()
   url_json="$(API_URL)"
   need_cmd curl
   release_json=$(curl -fsSL "$url_json") || fail "failed to fetch release metadata from $url_json"
-  # Match the .tar.gz tarball, not the .sha256 checksum sidecar: both carry
-  # the target triple in their name, so a bare substring match would grab
-  # whichever GitHub lists first (the checksum), and tar would choke on the
-  # plain-text file ("not in gzip format").
+  # Match the .tar.gz tarball, not the "skrills-<target>.sha256" checksum
+  # sidecar: both carry the target triple, and GitHub lists the .sha256 first
+  # because asset names sort alphabetically, so a match on the triple alone
+  # hands tar a 102-byte text file ("not in gzip format").
   SELECT_ASSET_FROM_JSON "$release_json" "$(TARGET)"
+}
+
+# Print the sha256 digest of file $1. GNU coreutils ships sha256sum, macOS
+# ships shasum. SKRILLS_FORCE_SHASUM=1 forces the shasum path so the test
+# suite can cover it on a host that has both.
+SHA256_OF()
+{
+  if [ "${SKRILLS_FORCE_SHASUM:-0}" != 1 ] && command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    shasum -a 256 "$1" | cut -d' ' -f1
+  fi
+}
+
+# Verify archive $1 against the release checksum sidecar at URL $2.
+# A release ships "skrills-<target>.sha256" beside the tarball, holding one
+# sha256sum line: "<64 hex>  skrills-<target>.tar.gz". Only the digest is
+# needed, because the archive is saved under a temporary name here.
+VERIFY_CHECKSUM()
+{
+  archive="$1"
+  checksum_url="$2"
+  if [ "${SKRILLS_SKIP_CHECKSUM:-0}" = 1 ]; then
+    echo "Skipping checksum verification (SKRILLS_SKIP_CHECKSUM=1)" >&2
+    return
+  fi
+  need_cmd curl
+  sidecar="${archive}.sha256"
+  curl -fsSL "$checksum_url" -o "$sidecar" \
+    || fail "no checksum sidecar at $checksum_url; set SKRILLS_SKIP_CHECKSUM=1 to install without verification"
+  expected="$(cut -d' ' -f1 <"$sidecar")"
+  case "${#expected}" in
+    64) ;;
+    *) fail "$checksum_url is not a sha256 digest line; set SKRILLS_SKIP_CHECKSUM=1 to install without verification" ;;
+  esac
+  actual="$(SHA256_OF "$archive")" || actual=""
+  case "${#actual}" in
+    64) ;;
+    *) fail "unable to compute a sha256 digest of $archive; install sha256sum or shasum, or set SKRILLS_SKIP_CHECKSUM=1" ;;
+  esac
+  if [ "$expected" != "$actual" ]; then
+    fail "checksum mismatch for $archive: sidecar says $expected, download hashes to $actual"
+  fi
+  echo "Checksum verified ($expected)"
 }
 
 DOWNLOAD_AND_EXTRACT()
@@ -137,6 +203,10 @@ DOWNLOAD_AND_EXTRACT()
   archive="$tmpdir/pkg.tar.gz"
   need_cmd curl
   curl -fL "$download_url" -o "$archive" || fail "download failed: $download_url"
+  # Verify before extracting: tar and the binary that follows must never see
+  # bytes the release did not sign off on. The sidecar sits beside the tarball
+  # under the same name with .tar.gz replaced by .sha256.
+  VERIFY_CHECKSUM "$archive" "${download_url%.tar.gz}.sha256"
   mkdir -p "$tmpdir/out"
   tar -xzf "$archive" -C "$tmpdir/out" || fail "unable to unpack archive"
   mkdir -p "$bin_dir"

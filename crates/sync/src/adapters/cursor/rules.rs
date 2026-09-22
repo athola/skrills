@@ -17,8 +17,9 @@
 //! - Other instructions → agent-requested rules with description
 
 use super::paths::rules_dir;
-use super::utils::{parse_frontmatter, render_frontmatter, sanitize_name};
+use super::utils::{parse_frontmatter, render_frontmatter};
 use crate::adapters::utils::hash_content;
+use crate::adapters::utils::sanitize_name_kebab;
 use crate::common::{Command, ContentFormat};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
@@ -118,7 +119,7 @@ pub fn write_rules(root: &Path, instructions: &[Command]) -> Result<WriteReport>
 
     for instruction in instructions {
         let content_str = String::from_utf8_lossy(&instruction.content);
-        let name = sanitize_name(&instruction.name);
+        let name = sanitize_name_kebab(&instruction.name);
 
         // Determine rule mode based on source
         let (frontmatter, body) = derive_rule_mode(&instruction.name, &content_str);

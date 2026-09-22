@@ -116,6 +116,7 @@ impl SkillCache {
     }
 
     /// Returns the paths of the root directories being watched.
+    #[cfg(feature = "watch")]
     pub(crate) fn watched_roots(&self) -> Vec<PathBuf> {
         self.roots.iter().map(|r| r.root.clone()).collect()
     }
@@ -316,6 +317,7 @@ impl SkillCache {
     }
 
     /// Invalidate the cache, forcing a rescan on the next access.
+    #[cfg(any(feature = "watch", test))]
     pub(crate) fn invalidate(&mut self) {
         self.last_scan = None;
         self.skills.clear();

@@ -22,6 +22,11 @@
 //! # CORS allowed origins (comma-separated)
 //! cors_origins = "http://localhost:3000,https://app.example.com"
 //!
+//! # Extra Host values the server accepts, on top of localhost, 127.0.0.1
+//! # and ::1 (comma-separated). Needed when clients address the server by
+//! # any other name. Each entry is a bare authority, never a URL.
+//! allowed_hosts = "skrills.internal:8080"
+//!
 //! # Bind address for HTTP transport
 //! http = "127.0.0.1:3000"
 //!
@@ -31,18 +36,58 @@
 
 use anyhow::Result;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// Top-level configuration structure.
-#[derive(Debug, Default, Deserialize)]
+///
+/// Note: `Debug` is manually implemented so unrecognized tables print by name
+/// only, since `[server] auth_token = "secret"` lands there verbatim.
+#[derive(Default, Deserialize)]
 pub struct Config {
     /// Serve command configuration.
     #[serde(default)]
     pub serve: ServeConfig,
+    /// Top-level tables that are not part of the schema, e.g. `[server]`.
+    #[serde(flatten)]
+    unrecognized: BTreeMap<String, toml::Value>,
+}
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("serve", &self.serve)
+            .field(
+                "unrecognized",
+                &self.unrecognized.keys().collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
+impl Config {
+    /// Dotted paths of keys the file sets that skrills does not read.
+    ///
+    /// serde ignores unknown keys, so `allowed_host` or `auth-token` would
+    /// otherwise vanish without a word. Rejecting them outright is worse:
+    /// a parse failure discards the whole file, including an `auth_token`
+    /// that was spelled correctly.
+    pub fn unknown_keys(&self) -> Vec<String> {
+        let top_level = self.unrecognized.keys().cloned();
+        let serve = self
+            .serve
+            .unrecognized
+            .keys()
+            .map(|key| format!("serve.{key}"));
+        top_level.chain(serve).collect()
+    }
 }
 
 /// Configuration for the serve command.
-#[derive(Debug, Default, Deserialize)]
+///
+/// Note: `Debug` is manually implemented to prevent auth_token from being
+/// logged, mirroring `HttpSecurityConfig`.
+#[derive(Default, Deserialize)]
 pub struct ServeConfig {
     /// Bearer token for HTTP authentication.
     pub auth_token: Option<String>,
@@ -54,10 +99,41 @@ pub struct ServeConfig {
     pub tls_auto: Option<bool>,
     /// Comma-separated list of allowed CORS origins.
     pub cors_origins: Option<String>,
+    /// Comma-separated `Host` authorities the server accepts, added to the
+    /// loopback names rmcp allows by default.
+    pub allowed_hosts: Option<String>,
     /// Bind address for HTTP transport (e.g., "127.0.0.1:3000").
     pub http: Option<String>,
     /// Cache TTL in milliseconds for skill discovery.
     pub cache_ttl_ms: Option<u64>,
+    /// Keys under `[serve]` that are not part of the schema.
+    #[serde(flatten)]
+    unrecognized: BTreeMap<String, toml::Value>,
+}
+
+// Custom Debug implementation that redacts auth_token to prevent credential
+// leakage in logs. Unrecognized keys are printed by name only: a hyphenated
+// `auth-token` lands there with its value intact.
+impl std::fmt::Debug for ServeConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServeConfig")
+            .field(
+                "auth_token",
+                &self.auth_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("tls_cert", &self.tls_cert)
+            .field("tls_key", &self.tls_key)
+            .field("tls_auto", &self.tls_auto)
+            .field("cors_origins", &self.cors_origins)
+            .field("allowed_hosts", &self.allowed_hosts)
+            .field("http", &self.http)
+            .field("cache_ttl_ms", &self.cache_ttl_ms)
+            .field(
+                "unrecognized",
+                &self.unrecognized.keys().collect::<Vec<_>>(),
+            )
+            .finish()
+    }
 }
 
 /// Returns the path to the config file (~/.skrills/config.toml).
@@ -107,6 +183,16 @@ pub fn load_config() -> Result<Option<Config>> {
 pub fn apply_config_to_env() {
     match load_config() {
         Ok(Some(config)) => {
+            for key in config.unknown_keys() {
+                tracing::warn!(
+                    target: "skrills::config",
+                    key = %key,
+                    "Unknown key in config file (~/.skrills/config.toml) was ignored"
+                );
+                eprintln!(
+                    "WARNING: Unknown key `{key}` in ~/.skrills/config.toml was ignored. Check the spelling."
+                );
+            }
             apply_serve_config_to_env(&config.serve);
         }
         Ok(None) => {
@@ -171,6 +257,10 @@ fn apply_serve_config_to_env(serve: &ServeConfig) {
         set_if_absent("SKRILLS_CORS_ORIGINS", origins);
     }
 
+    if let Some(ref hosts) = serve.allowed_hosts {
+        set_if_absent("SKRILLS_ALLOWED_HOSTS", hosts);
+    }
+
     if let Some(ref bind) = serve.http {
         set_if_absent("SKRILLS_HTTP", bind);
     }
@@ -211,6 +301,7 @@ mod tests {
             tls_key = "/path/to/key.pem"
             tls_auto = true
             cors_origins = "http://localhost:3000,https://example.com"
+            allowed_hosts = "skrills.internal:8080,10.0.0.5:8080"
             http = "0.0.0.0:8080"
             cache_ttl_ms = 5000
         "#;
@@ -224,8 +315,139 @@ mod tests {
             config.serve.cors_origins.as_deref(),
             Some("http://localhost:3000,https://example.com")
         );
+        assert_eq!(
+            config.serve.allowed_hosts.as_deref(),
+            Some("skrills.internal:8080,10.0.0.5:8080")
+        );
         assert_eq!(config.serve.http.as_deref(), Some("0.0.0.0:8080"));
         assert_eq!(config.serve.cache_ttl_ms, Some(5000));
+    }
+
+    /// `config` is a public module, so anything that formats a `ServeConfig`
+    /// would otherwise print the bearer token in plain text.
+    #[test]
+    fn serve_config_debug_redacts_auth_token() {
+        let config = ServeConfig {
+            auth_token: Some("super-secret-token".to_string()),
+            ..Default::default()
+        };
+
+        let rendered = format!("{config:?}");
+
+        assert!(
+            !rendered.contains("super-secret-token"),
+            "Debug output leaked the token: {rendered}"
+        );
+        assert!(
+            rendered.contains("[REDACTED]"),
+            "Debug output should mark the token as redacted: {rendered}"
+        );
+    }
+
+    /// An unrecognized table is kept verbatim so `unknown_keys` can name it,
+    /// which would put a misplaced secret in any Debug output that printed
+    /// values.
+    #[test]
+    fn config_debug_omits_unrecognized_table_values() {
+        let toml = r#"
+            [server]
+            auth_token = "misplaced-secret"
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+
+        let rendered = format!("{config:?}");
+
+        assert!(
+            !rendered.contains("misplaced-secret"),
+            "Debug output leaked an unrecognized table's value: {rendered}"
+        );
+        assert!(
+            rendered.contains("server"),
+            "Debug output should still name the unrecognized table: {rendered}"
+        );
+    }
+
+    /// A hyphenated `auth-token` is kept verbatim so `unknown_keys` can name
+    /// it, which would put the secret in any Debug output that printed values.
+    #[test]
+    fn serve_config_debug_omits_unrecognized_values() {
+        let toml = r#"
+            [serve]
+            auth-token = "hyphenated-secret"
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+
+        let rendered = format!("{:?}", config.serve);
+
+        assert!(
+            !rendered.contains("hyphenated-secret"),
+            "Debug output leaked an unrecognized key's value: {rendered}"
+        );
+        assert!(
+            rendered.contains("auth-token"),
+            "Debug output should still name the unrecognized key: {rendered}"
+        );
+    }
+
+    /// A mistyped key must be named, and must not cost the operator the keys
+    /// they spelled correctly: dropping a good `auth_token` because
+    /// `allowed_host` was misspelled would start the server unauthenticated.
+    #[test]
+    fn unknown_serve_key_is_reported_and_known_keys_still_apply() {
+        let toml = r#"
+            [serve]
+            auth_token = "secret"
+            allowed_host = "skrills.internal:8080"
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert_eq!(config.unknown_keys(), ["serve.allowed_host"]);
+        assert_eq!(config.serve.auth_token.as_deref(), Some("secret"));
+        assert_eq!(config.serve.allowed_hosts, None);
+    }
+
+    #[test]
+    fn hyphenated_auth_token_is_reported_as_unknown() {
+        let toml = r#"
+            [serve]
+            auth-token = "secret"
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert_eq!(config.unknown_keys(), ["serve.auth-token"]);
+        assert_eq!(config.serve.auth_token, None);
+    }
+
+    #[test]
+    fn unknown_top_level_table_is_reported() {
+        let toml = r#"
+            [server]
+            auth_token = "secret"
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert_eq!(config.unknown_keys(), ["server"]);
+    }
+
+    #[test]
+    fn fully_known_config_reports_no_unknown_keys() {
+        let toml = r#"
+            [serve]
+            auth_token = "secret"
+            tls_auto = true
+            allowed_hosts = "skrills.internal:8080"
+            cache_ttl_ms = 10000
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert!(config.unknown_keys().is_empty());
+        assert_eq!(config.serve.cache_ttl_ms, Some(10000));
     }
 
     #[test]
@@ -275,5 +497,44 @@ mod tests {
 
         assert_eq!(std::env::var("SKRILLS_HTTP").unwrap(), "127.0.0.1:9000");
         assert_eq!(std::env::var("SKRILLS_CACHE_TTL_MS").unwrap(), "7500");
+    }
+
+    /// The config file is the only way a non-CLI user reaches the Host
+    /// allow-list; it has to arrive in the env var clap reads.
+    #[test]
+    fn apply_config_exports_allowed_hosts_for_clap() {
+        let _g = crate::test_support::env_guard();
+        let _hosts = crate::test_support::set_env_var("SKRILLS_ALLOWED_HOSTS", None);
+
+        let serve = ServeConfig {
+            allowed_hosts: Some("mcp.internal:8080,10.0.0.5".to_string()),
+            ..Default::default()
+        };
+
+        apply_serve_config_to_env(&serve);
+
+        assert_eq!(
+            std::env::var("SKRILLS_ALLOWED_HOSTS").unwrap(),
+            "mcp.internal:8080,10.0.0.5"
+        );
+    }
+
+    #[test]
+    fn apply_config_keeps_allowed_hosts_already_in_env() {
+        let _g = crate::test_support::env_guard();
+        let _hosts = crate::test_support::set_env_var("SKRILLS_ALLOWED_HOSTS", Some("env.example"));
+
+        let serve = ServeConfig {
+            allowed_hosts: Some("config.example".to_string()),
+            ..Default::default()
+        };
+
+        apply_serve_config_to_env(&serve);
+
+        assert_eq!(
+            std::env::var("SKRILLS_ALLOWED_HOSTS").unwrap(),
+            "env.example",
+            "an operator's env var outranks the config file"
+        );
     }
 }

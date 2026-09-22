@@ -23,14 +23,16 @@ pub struct PluginAsset {
     pub relative_path: PathBuf,
     /// File content as bytes
     pub content: Vec<u8>,
-    /// SHA256 hash of `content` for change detection (auto-computed by `new()`)
-    pub hash: String,
     /// Whether the file should be executable
     pub executable: bool,
 }
 
 impl PluginAsset {
-    /// Creates a new `PluginAsset`, auto-computing the SHA256 hash from `content`.
+    /// Creates a new `PluginAsset`.
+    ///
+    /// There is deliberately no stored hash: a `pub` field beside `content`
+    /// could disagree with it, and the one reader (the Cursor mirror's
+    /// unchanged check) hashes `content` itself.
     pub fn new(
         plugin_name: String,
         publisher: String,
@@ -39,14 +41,12 @@ impl PluginAsset {
         content: Vec<u8>,
         executable: bool,
     ) -> Self {
-        let hash = crate::adapters::utils::hash_content(&content);
         Self {
             plugin_name,
             publisher,
             version,
             relative_path,
             content,
-            hash,
             executable,
         }
     }
@@ -271,8 +271,6 @@ mod tests {
             PathBuf::from("scripts/makefile_dogfooder.py")
         );
         assert_eq!(restored.content, asset.content);
-        assert_eq!(restored.hash, asset.hash, "hash should roundtrip");
-        assert!(!restored.hash.is_empty(), "hash should be auto-computed");
         assert!(restored.executable);
     }
 }

@@ -20,6 +20,5 @@ mod mcp;
 mod research;
 mod resource;
 mod search;
-mod sync;
 mod trace;
 mod validation;

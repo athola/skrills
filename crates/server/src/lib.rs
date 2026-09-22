@@ -3,28 +3,26 @@
 //! Core logic for the `skrills` server, organized into modules:
 //!
 //! - `app`: Core application entry point and MCP server.
-//! - `doctor`: Configuration diagnostics.
 //! - `sync`: Skill synchronization management.
-//! - `tui`: Interactive terminal UI.
+//!
+//! The command-line interface, `doctor` and the TUI live in the `skrills` crate.
 
 #![deny(unsafe_code)]
 
 #[cfg_attr(test, allow(dead_code))]
 pub mod app;
 pub(crate) mod cache;
-mod commands;
-pub(crate) mod config;
-mod doctor;
+pub mod config;
 mod handler;
 pub mod mcp_gateway;
+mod mcp_result;
 pub(crate) mod metrics_types;
-mod setup;
+pub mod setup;
 mod skill_trace;
-mod sync;
+pub mod sync;
 #[cfg(test)]
 mod test_support;
-mod tool_schemas;
-mod tui;
+pub mod tool_schemas;
 
 /// Skills manifest for caching and quick loading.
 pub mod manifest;
@@ -37,28 +35,17 @@ pub mod http_transport;
 #[cfg(feature = "http-transport")]
 pub mod api;
 
-/// Cold-window subcommand wiring (CLI entry, tick producer, browser
-/// surface, graceful shutdown).
-#[cfg(feature = "http-transport")]
-pub mod cold_window_cli;
-
 /// Leptos-based browser UI for the dashboard.
 #[cfg(feature = "http-transport")]
 pub mod ui;
 
 /// Auto-generated TLS certificate support.
 #[cfg(feature = "http-transport")]
-pub(crate) mod tls_auto;
+pub mod tls_auto;
 
-/// Command-line interface for the server.
-pub mod cli;
 /// Skill discovery mechanism.
 pub mod discovery;
 /// Server runtime.
 pub mod runtime;
-/// Signal handling for graceful shutdown.
-pub mod signals;
 /// Tracing and logging configuration.
 pub mod trace;
-
-pub use app::run;

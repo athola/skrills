@@ -46,7 +46,7 @@ Skrills handles the loop of writing skills and keeping every CLI
 current. The common jobs:
 
 **Make your Claude skills work everywhere.** Codex and Copilot are
-strict about frontmatter; Cursor uses its own rule format. Detect and
+strict about frontmatter, and Cursor uses its own rule format. Detect and
 fix the incompatibilities, then push to the other CLIs:
 
 ```bash
@@ -58,7 +58,7 @@ skrills sync-all                            # mirror everything to all four CLIs
 File hashing preserves manual edits on both sides:
 
 ```bash
-skrills sync --from cursor --to claude
+skrills sync-all --from cursor --to claude
 ```
 
 **Trim context-window cost.** Surface your token-heaviest skills with
@@ -78,29 +78,13 @@ skrills cold-window --tui                    # live TUI in this terminal (q / Ct
 skrills cold-window --browser --port 8888    # same engine, browser dashboard at /dashboard
 ```
 
-**Keep it always-on in [Zellij](https://zellij.dev).** Dedicate a pane
-to the TUI that respawns if it exits. Save as
-`~/.config/zellij/layouts/skrills.kdl` and launch with
-`zellij --layout skrills`:
-
-```kdl
-layout {
-    tab name="cold-window" focus=true {
-        pane command="bash" {
-            // Loop respawns the TUI after a crash or reboot.
-            args "-c" "until skrills cold-window --tui; do echo restarting...; sleep 2; done"
-        }
-    }
-}
-```
-
-Already inside a Zellij session? Open it in a split without a layout
-file: `zellij run -d down -- bash -c 'until skrills cold-window --tui; do sleep 2; done'`.
+To keep the TUI always-on in a [Zellij](https://zellij.dev) pane, see
+[Cold-Window: always-on in Zellij](book/src/cold-window.md#always-on-in-zellij).
 
 ![Skrills cold-window TUI](assets/gifs/cold-window.gif)
 
-**Let other tools call Skrills.** The MCP server exposes 36 tools
-(validation, sync, intelligence, research) over stdio or HTTP:
+**Let other tools call Skrills.** The MCP server exposes its tools
+(validation, sync, intelligence, research, subagents) over stdio or HTTP:
 
 ```bash
 skrills serve --http 127.0.0.1:3000 --open
@@ -116,7 +100,7 @@ including skill lifecycle tools (`skill-deprecate`, `skill-rollback`,
 ## Supported environments
 
 Skrills syncs eight asset types across four CLIs. Each cell reflects
-what the adapter reads and writes today:
+what the adapter reads or writes today:
 
 | Asset | Claude Code | Codex CLI | Copilot CLI | Cursor |
 |-------|:-----------:|:---------:|:-----------:|:------:|
@@ -131,9 +115,11 @@ what the adapter reads and writes today:
 
 A dash means that asset doesn't sync to that CLI, either because the CLI
 has no equivalent (Copilot CLI has no slash commands) or because the
-mapping isn't built yet (Cursor preferences). Plugin assets sync to
-Cursor's `plugins/local/` so synced plugins appear installed, and
-stale entries are pruned automatically. See the
+mapping isn't built yet (Cursor preferences). Plugin assets flow one way,
+from Claude Code to Cursor: the whole plugin tree is mirrored into
+Cursor's `plugins/local/`, carrying skill bodies and runtime scripts, and
+stale entries are pruned automatically. A sync in the other direction
+reports plugin assets as skipped. See the
 [sync guide](book/src/sync-guide.md) for details.
 
 ## CI integration
@@ -150,7 +136,7 @@ Validate skills on every pull request with the reusable GitHub Action:
 
 ## Configuration
 
-Persistent settings live in `~/.skrills/config.toml` (precedence: CLI
+Persistent settings are in `~/.skrills/config.toml` (precedence: CLI
 flags > environment variables > config file):
 
 ```toml
@@ -158,6 +144,7 @@ flags > environment variables > config file):
 auth_token = "your-secret-token"
 tls_auto = true
 cors_origins = "https://app.example.com"
+allowed_hosts = "skrills.internal:8080"  # needed when binding a non-loopback address
 ```
 
 See [security docs](docs/security.md) for TLS setup and the
@@ -177,7 +164,7 @@ See [security docs](docs/security.md) for TLS setup and the
 
 ## Limitations
 
-- Skrills validates and syncs files; it does **not** inject skills into
+- Skrills validates and syncs files. It does **not** inject skills into
   prompts at runtime.
 - Session-history mining works best with recent Claude Code / Codex CLI
   versions.

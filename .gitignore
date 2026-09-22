@@ -39,3 +39,6 @@ reviews/
 # Python script ports (scripts/*.py + tests/unit/) byproducts
 __pycache__/
 .pytest_cache/
+
+# macOS Finder metadata
+.DS_Store

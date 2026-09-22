@@ -178,16 +178,26 @@ impl AgentAdapter for CodexAdapter {
         self.root.clone()
     }
 
-    fn supported_fields(&self) -> FieldSupport {
+    fn read_support(&self) -> FieldSupport {
         FieldSupport {
             commands: true,
             mcp_servers: true,
             preferences: true,
             skills: true,
             hooks: false,         // Codex doesn't support hooks
-            agents: false,        // Codex doesn't read agents, but write_agents converts to skills
+            agents: false,        // Codex has no agents directory to read
             instructions: false,  // Codex doesn't support instructions
             plugin_assets: false, // Codex doesn't support plugin assets
+        }
+    }
+
+    /// Asymmetric: `write_agents` converts each agent into an `agent-`-prefixed
+    /// skill, so Codex accepts agents as a target even though it has none to
+    /// read.
+    fn write_support(&self) -> FieldSupport {
+        FieldSupport {
+            agents: true,
+            ..self.read_support()
         }
     }
 
@@ -1025,6 +1035,23 @@ mod tests {
         let nested = tmp.path().join("skills/test-skill/nested/data.json");
         assert!(nested.exists());
         assert_eq!(fs::read_to_string(&nested).unwrap(), "{}");
+    }
+
+    /// `write_agents` is a real implementation, so the target-side declaration
+    /// has to say so even though Codex has no agents directory to read.
+    #[test]
+    fn write_support_declares_agents_although_read_support_does_not() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        assert!(
+            !adapter.read_support().agents,
+            "Codex has no agents directory to read"
+        );
+        assert!(
+            adapter.write_support().agents,
+            "write_agents converts agents into agent-prefixed skills"
+        );
     }
 
     #[test]

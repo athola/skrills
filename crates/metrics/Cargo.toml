@@ -1,6 +1,6 @@
 [package]
 name = "skrills-metrics"
-version = "0.8.2"
+version = "0.9.0"
 edition = "2021"
 description = "SQLite-based metrics collection for skrills skill invocations, validations, and sync events."
 license = "MIT"
@@ -19,7 +19,7 @@ serde.workspace = true
 serde_json.workspace = true
 dirs.workspace = true
 tokio = { workspace = true, features = ["sync"] }
-rusqlite = { version = "0.39", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 thiserror.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true

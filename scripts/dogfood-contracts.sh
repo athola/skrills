@@ -12,7 +12,7 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$REPO_ROOT"
+cd "$REPO_ROOT" || exit 2
 
 BIN_PATH="${BIN_PATH:-target/release/skrills}"
 ENTRYPOINT=".github/actions/validate-skills/entrypoint.sh"
@@ -36,6 +36,7 @@ then_() {
 [ -x "$BIN_PATH" ] || { echo "ERROR: binary not found at $BIN_PATH (run: make build)"; exit 2; }
 [ -f "$ENTRYPOINT" ] || { echo "ERROR: entrypoint not found at $ENTRYPOINT"; exit 2; }
 command -v jq >/dev/null 2>&1 || { echo "ERROR: jq required for these contracts"; exit 2; }
+command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 required for these contracts"; exit 2; }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -46,13 +47,16 @@ ln -sf "$REPO_ROOT/$BIN_PATH" "$BIND/skrills"
 run_entrypoint() {
   local home="$1" input_path="$2"
   RT="$WORK/rt.$RANDOM"; mkdir -p "$RT"
-  set +e
+  # No `set +e`/`set -e` pair here. This script runs with `set -uo pipefail`
+  # and no errexit by design, because every scenario reports through ok/bad.
+  # The old `set -e` at the end of this function turned errexit ON for
+  # everything after the first call, so the next command substitution that
+  # failed ended the run mid-feature with no summary and no diagnosis.
   HOME="$home" PATH="$BIND:$PATH" RUST_LOG=debug RUNNER_TEMP="$RT" \
     GITHUB_OUTPUT="$RT/gh.out" INPUT_PATH="$input_path" \
     INPUT_TARGETS="all" INPUT_STRICT="false" \
     bash "$ENTRYPOINT" </dev/null >"$RT/stdout.log" 2>"$RT/stderr.log"
   EXIT=$?
-  set -e 2>/dev/null || true
 }
 
 # ===========================================================================
@@ -105,15 +109,69 @@ then_ "reports total=0 for a missing dir" grep -q '^total=0' "$RT/gh.out"
 
 # ===========================================================================
 feature "install.sh selects the tarball, never the .sha256 checksum sidecar"
-# Releases ship <target>.tar.gz alongside <target>.tar.gz.sha256. Picking the
-# sidecar feeds a 106-byte text file to tar ("not in gzip format"). We source
-# the REAL selection function and assert across jq and the awk fallback.
+# Releases ship skrills-<target>.tar.gz alongside skrills-<target>.sha256, and
+# GitHub lists the .sha256 first because asset names sort alphabetically. Both
+# carry the target triple, so matching on the triple alone feeds a 102-byte
+# text file to tar ("not in gzip format"). We source the REAL selection
+# function and assert across jq and the awk fallback.
+# Sourced from a real file, not `source <(...)`: bash 3.2 (stock macOS
+# /bin/bash) silently stops reading a sourced process substitution partway,
+# so SELECT_ASSET_FROM_JSON went undefined and these scenarios never ran.
+#
+# The slice is delimited by two cosmetic markers in install.sh. Assert both
+# exist BEFORE slicing: `sed` prints to EOF when its end pattern is missing,
+# and the resulting slice ends in the installer's main body, so sourcing it
+# would hit api.github.com, write a binary into $HOME/.skrills/bin and replace
+# this script's EXIT trap.
+for marker in '^fail()' '^# --- main'; do
+  grep -qE "$marker" scripts/install.sh || {
+    printf 'install.sh slice marker %s not found; refusing to slice\n' "$marker" >&2
+    exit 2
+  }
+done
+sed -n '/^fail()/,/^# --- main/p' scripts/install.sh | sed '$d' > "$WORK/install-slice.sh"
+# A slice that still carries the top-level asset_url assignment or the
+# DOWNLOAD_AND_EXTRACT call is a slice that reached main, whatever the markers
+# say. Refuse it rather than source it.
+if grep -qE '^[[:space:]]*(asset_url=|DOWNLOAD_AND_EXTRACT[[:space:]])' "$WORK/install-slice.sh"; then
+  printf 'install.sh slice reaches the main body; the slice markers drifted\n' >&2
+  exit 2
+fi
 # shellcheck source=/dev/null
-source <(sed -n '/^fail()/,/^# --- main/p' scripts/install.sh | sed '$d')
+. "$WORK/install-slice.sh"
+# An empty slice sources cleanly and would silently skip these scenarios --
+# the same silent skip this block already had once. Fail loudly instead.
+command -v SELECT_ASSET_FROM_JSON >/dev/null 2>&1 || {
+  printf 'install.sh slice extraction failed: SELECT_ASSET_FROM_JSON undefined\n' >&2
+  exit 2
+}
 
 SIDECAR_FIRST='{ "assets": [
-  { "name": "skrills-x86_64-unknown-linux-gnu.tar.gz.sha256", "browser_download_url": "https://example.com/x.tar.gz.sha256" },
-  { "name": "skrills-x86_64-unknown-linux-gnu.tar.gz",        "browser_download_url": "https://example.com/x.tar.gz" } ] }'
+  { "name": "skrills-x86_64-unknown-linux-gnu.sha256",  "browser_download_url": "https://example.com/skrills-x86_64-unknown-linux-gnu.sha256" },
+  { "name": "skrills-x86_64-unknown-linux-gnu.tar.gz",  "browser_download_url": "https://example.com/x.tar.gz" } ] }'
+
+# Run through /bin/sh, not this bash: install.sh's shebang is `env sh`, and
+# under dash and macOS /bin/sh `echo` expands backslash escapes. Sourcing the
+# slice into bash (as the scenarios below do) cannot see that class of bug --
+# a release note containing \n broke asset selection for every `curl | sh`
+# user while the whole test suite stayed green. A literal backslash in the
+# body (JSON `\\`) is the sharper case: echo collapses it to `\c`, which is
+# not a JSON escape at all, so jq rejects the document outright.
+# Both selection paths run under /bin/sh, because the awk fallback reads the
+# same `printf` output and a revert would only show up on one of them.
+NEWLINE_JSON='{ "body": "notes\nwith newline and a\\certain backslash", "assets": [
+  { "name": "skrills-x86_64-unknown-linux-gnu.tar.gz", "browser_download_url": "https://example.com/x.tar.gz" } ] }'
+for impl in jq awk; do
+  scenario "asset selection via $impl survives escape sequences in the release body (/bin/sh)"
+  [ "$impl" = awk ] && force_no_jq=1 || force_no_jq=0
+  sh_got="$(SKRILLS_FORCE_NO_JQ="$force_no_jq" /bin/sh -c '
+    . "$1"
+    SELECT_ASSET_FROM_JSON "$2" "$3"
+  ' _ "$WORK/install-slice.sh" "$NEWLINE_JSON" "x86_64-unknown-linux-gnu" 2>&1 | tail -1)"
+  [ "$sh_got" = "https://example.com/x.tar.gz" ] \
+    && ok "[/bin/sh:$impl] chose the tarball despite escapes in the body" \
+    || bad "[/bin/sh:$impl] got '$sh_got' (expected the .tar.gz tarball)"
+done
 
 for impl in jq awk; do
   scenario "asset selection via $impl skips a sidecar listed first"
@@ -124,6 +182,38 @@ for impl in jq awk; do
     || bad "[$impl] chose '$got' (expected the .tar.gz tarball)"
 done
 unset SKRILLS_FORCE_NO_JQ
+
+# ===========================================================================
+feature "subcommands can still run subprocesses"
+# run() used to install SIG_IGN|SA_NOCLDWAIT for SIGCHLD, which makes waitpid
+# return ECHILD, so every Command::status()/output() in the process failed with
+# "No child processes". Unit tests never saw it: they call the command
+# functions directly and never go through run(). The visible symptom was
+# analyze-project-context returning an empty git_keywords list in a repo with
+# history, because the `git log` it shells out to could not be waited on.
+scenario "analyze-project-context extracts keywords from git history"
+# Keep the binary's exit status, the JSON parse and the count separate. Folding
+# them together (two `2>/dev/null` and an `|| echo 0`) reported a missing
+# python3, a changed JSON shape and a crashed binary all as "cannot wait on
+# child processes", and under pipefail a binary that printed valid JSON and
+# then exited non-zero produced a second `0` line that passed the scenario.
+CTX_OUT="$WORK/analyze-context.json"
+CTX_ERR="$WORK/analyze-context.err"
+"$BIN_PATH" analyze-project-context --include-git true --format json \
+  >"$CTX_OUT" 2>"$CTX_ERR"
+ctx_exit=$?
+if [ "$ctx_exit" -ne 0 ]; then
+  bad "analyze-project-context exited $ctx_exit (stderr: $(tail -3 "$CTX_ERR" | tr '\n' ' '))"
+else
+  kw_count="$(sed -n '/^{/,$p' "$CTX_OUT" \
+    | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("git_keywords", [])))' \
+    2>>"$CTX_ERR")" || kw_count=""
+  case "${kw_count}" in
+    "") bad "could not count git_keywords in the JSON output (stderr: $(tail -3 "$CTX_ERR" | tr '\n' ' '))" ;;
+    0) bad "git_keywords empty; the process cannot wait on child processes" ;;
+    *) ok "git_keywords populated (${kw_count} keywords from git log)" ;;
+  esac
+fi
 
 # ---- summary ---------------------------------------------------------------
 printf "\n========================================\n"

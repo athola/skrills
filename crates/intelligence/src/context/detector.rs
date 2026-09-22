@@ -160,7 +160,11 @@ pub fn analyze_project_with_options(
         match extract_git_keywords(root, options.commit_limit) {
             Ok(git_keywords) => profile.git_keywords = git_keywords,
             Err(e) => {
-                tracing::debug!(error = %e, "Could not extract git keywords");
+                // `warn!` and a recorded reason: at `debug!` under the default
+                // `info` filter this failure produced an empty keyword list, a
+                // success exit and no output at all.
+                tracing::warn!(error = %e, "Could not extract git keywords");
+                profile.git_keywords_error = Some(e.to_string());
             }
         }
     }
@@ -567,6 +571,42 @@ mod tests {
                 message,
             ],
         );
+    }
+
+    /// A `debug!` under a default `info` filter was the only trace of a failed
+    /// `git log`, so an empty keyword list read as a project without history.
+    #[test]
+    fn analyze_project_records_the_reason_git_keywords_are_missing() {
+        let temp = tempdir().unwrap();
+
+        let options = AnalyzeProjectOptions {
+            include_git: true,
+            commit_limit: 1,
+            max_languages: 10,
+        };
+        let profile = analyze_project_with_options(temp.path(), options).unwrap();
+
+        assert!(profile.git_keywords.is_empty());
+        assert!(
+            profile.git_keywords_error.is_some(),
+            "a directory that is not a repository should say so, not report no history"
+        );
+    }
+
+    #[test]
+    fn analyze_project_leaves_the_git_keyword_error_unset_when_git_reads() {
+        let temp = tempdir().unwrap();
+        run_git(temp.path(), &["init"]);
+        commit_file(temp.path(), "alphaunique", "alpha");
+
+        let options = AnalyzeProjectOptions {
+            include_git: true,
+            commit_limit: 1,
+            max_languages: 10,
+        };
+        let profile = analyze_project_with_options(temp.path(), options).unwrap();
+
+        assert_eq!(profile.git_keywords_error, None);
     }
 
     #[test]

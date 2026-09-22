@@ -408,6 +408,41 @@ fn test_create_skill_tool_invalid_method() {
     );
 }
 
+/// GIVEN a home with no Claude session history
+/// WHEN create_skill_tool is called with the empirical method
+/// THEN the tool result is flagged as a tool-level error
+#[test]
+fn create_skill_reports_a_tool_error_when_empirical_generation_finds_no_sessions() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let _home_guard = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
+    let args = json!({
+        "name": "no-sessions",
+        "description": "a skill built from behaviour that was never recorded",
+        "method": "empirical",
+        "dry_run": true
+    })
+    .as_object()
+    .cloned()
+    .unwrap();
+
+    let result = service
+        .create_skill_tool_sync(args)
+        .expect("empirical generation reports failure in the result, not as an Err");
+
+    assert_eq!(
+        result.is_error,
+        Some(true),
+        "the failed-creation branch must set is_error"
+    );
+    let structured = result
+        .structured_content
+        .expect("structured content should be present");
+    assert_eq!(structured["success"], json!(false));
+}
+
 // -------------------------------------------------------------------------
 // search_skills_github_tool Tests
 // -------------------------------------------------------------------------

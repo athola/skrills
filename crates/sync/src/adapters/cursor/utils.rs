@@ -8,12 +8,6 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-/// Re-exports `split_frontmatter` from the shared adapter utilities.
-///
-/// This is a cross-adapter primitive for splitting YAML frontmatter delimiters.
-/// Kept here for backwards compatibility with callers in the cursor adapter.
-pub use crate::adapters::utils::split_frontmatter;
-
 /// Strips matching leading/trailing quotes (`'` or `"`) from a YAML value.
 pub fn strip_yaml_quotes(value: &str) -> String {
     if value.len() >= 2
@@ -38,8 +32,10 @@ fn is_open_quoted(value: &str) -> bool {
 ///
 /// Frontmatter is delimited by `---` on its own line at the start of the file.
 /// Returns `(empty_map, full_content)` if no frontmatter is found.
-pub fn parse_frontmatter(content: &str) -> (HashMap<String, String>, &str) {
-    let (raw, body) = split_frontmatter(content);
+///
+/// The body is owned because the canonical splitter returns owned strings.
+pub fn parse_frontmatter(content: &str) -> (HashMap<String, String>, String) {
+    let (raw, body, _line) = skrills_validate::frontmatter::split_frontmatter(content);
 
     let Some(frontmatter_str) = raw else {
         return (HashMap::new(), body);
@@ -113,7 +109,7 @@ pub fn parse_frontmatter(content: &str) -> (HashMap<String, String>, &str) {
 /// Strips YAML frontmatter from content, returning only the body.
 ///
 /// Used when writing Claude skills to Cursor (Cursor skills have no frontmatter).
-pub fn strip_frontmatter(content: &str) -> &str {
+pub fn strip_frontmatter(content: &str) -> String {
     let (_fields, body) = parse_frontmatter(content);
     body
 }
@@ -151,7 +147,7 @@ pub fn render_frontmatter(fields: &HashMap<String, String>, body: &str) -> Strin
 /// Returns the hint (e.g., "fast", "standard", "deep") or None if absent.
 #[cfg(test)]
 pub fn extract_model_hint(content: &str) -> Option<String> {
-    let (raw, _) = split_frontmatter(content);
+    let (raw, _, _) = skrills_validate::frontmatter::split_frontmatter(content);
     raw.and_then(|fm| {
         fm.lines()
             .find(|line| line.trim().starts_with("model_hint:"))
@@ -215,13 +211,6 @@ pub fn trim_skill_body(body: &str) -> String {
     let trimmed = trimmed.trim_end_matches('\n');
     // Preserve a single trailing newline for POSIX compliance
     format!("{trimmed}\n")
-}
-
-/// Sanitizes a name to kebab-case suitable for Cursor file/directory names.
-///
-/// Re-exports the shared `sanitize_name_kebab` from `adapters::utils`.
-pub fn sanitize_name(name: &str) -> String {
-    crate::adapters::utils::sanitize_name_kebab(name)
 }
 
 #[cfg(test)]
@@ -295,15 +284,19 @@ mod tests {
         );
     }
 
+    /// Cursor names every artifact in kebab-case, so this pins the shared
+    /// helper's behavior from the adapter that depends on it.
     #[test]
     fn sanitize_name_converts_to_kebab() {
-        assert_eq!(sanitize_name("My Skill Name"), "my-skill-name");
+        use crate::adapters::utils::sanitize_name_kebab;
+
+        assert_eq!(sanitize_name_kebab("My Skill Name"), "my-skill-name");
         assert_eq!(
-            sanitize_name("skill_with_underscores"),
+            sanitize_name_kebab("skill_with_underscores"),
             "skill-with-underscores"
         );
-        assert_eq!(sanitize_name("Already-Kebab"), "already-kebab");
-        assert_eq!(sanitize_name("file.name.ext"), "file-name-ext");
+        assert_eq!(sanitize_name_kebab("Already-Kebab"), "already-kebab");
+        assert_eq!(sanitize_name_kebab("file.name.ext"), "file-name-ext");
     }
 
     #[test]
@@ -481,19 +474,18 @@ mod tests {
         assert!(!result.contains("\n\n\n"));
     }
 
-    /// T4: split_frontmatter with unclosed `---` returns (None, full_content).
+    /// T4: an unclosed `---` leaves the whole file as the body.
     ///
     /// Given: Input starts with `---` but has no closing `---`
-    /// When: split_frontmatter is called
+    /// When: parse_frontmatter is called
     /// Then: Returns (None, full_content) treating it as body
     #[test]
-    fn split_frontmatter_unclosed_delimiter_returns_none() {
+    fn parse_frontmatter_unclosed_delimiter_returns_no_fields() {
         let content = "---\nkey: val\n";
-        let (raw, body) = split_frontmatter(content);
+        let (fields, body) = parse_frontmatter(content);
         assert!(
-            raw.is_none(),
-            "Unclosed frontmatter should return None, got: {:?}",
-            raw
+            fields.is_empty(),
+            "Unclosed frontmatter should yield no fields, got: {fields:?}"
         );
         assert_eq!(
             body, content,
@@ -503,10 +495,13 @@ mod tests {
 
     /// T4 additional: unclosed frontmatter with more content after.
     #[test]
-    fn split_frontmatter_unclosed_with_body_content() {
+    fn parse_frontmatter_unclosed_with_body_content() {
         let content = "---\nname: test\ndescription: something\n\n# Body\nHere.\n";
-        let (raw, body) = split_frontmatter(content);
-        assert!(raw.is_none(), "Unclosed frontmatter should return None");
+        let (fields, body) = parse_frontmatter(content);
+        assert!(
+            fields.is_empty(),
+            "Unclosed frontmatter should yield no fields"
+        );
         assert_eq!(body, content);
     }
 }

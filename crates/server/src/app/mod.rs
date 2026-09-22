@@ -1,29 +1,25 @@
 //! Implements primary `skrills` application functionality.
 //!
-//! Includes the MCP server, skill discovery, caching, and CLI.
+//! Includes the MCP server, skill discovery and caching. The CLI is in the
+//! `skrills` crate.
 //!
-//! The `run` function initiates the server. `runtime` manages runtime options.
+//! `runtime` manages runtime options.
 //! Internal components are subject to change.
 //!
 //! See `docs/semver-policy.md` for versioning.
 //!
 //! The `watch` feature enables filesystem monitoring. Build with `--no-default-features` to disable.
 //!
-//! On Unix, a `SIGCHLD` handler prevents zombie processes.
 //! Keep this file under ~2500 LOC; split modules if needed.
 
-mod dispatcher;
 mod intelligence;
 mod mcp_registry;
 mod research;
 mod skill_recommendations;
 mod tools;
 
-pub use dispatcher::run;
 use mcp_registry::build_mcp_registry;
 
-#[cfg(test)]
-pub(crate) use dispatcher::run_sync_with_adapters;
 #[cfg(test)]
 pub(crate) use intelligence::{resolve_project_dir, select_default_skill_root};
 
@@ -38,7 +34,7 @@ use anyhow::{anyhow, Result};
 #[cfg(feature = "watch")]
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::Mutex;
-use rmcp::model::{Meta, RawResource, ReadResourceResult, Resource, ResourceContents};
+use rmcp::model::{MetaObject, ReadResourceResult, Resource, ResourceContents};
 use serde_json::json;
 #[cfg(test)]
 use skrills_discovery::SkillRoot;
@@ -78,7 +74,7 @@ pub struct SkillService {
 
 /// Starts a filesystem watcher to invalidate caches on changes.
 #[cfg(feature = "watch")]
-pub(crate) fn start_fs_watcher(service: &SkillService) -> Result<RecommendedWatcher> {
+pub fn start_fs_watcher(service: &SkillService) -> Result<RecommendedWatcher> {
     let cache = service.cache.clone();
     let roots = {
         let guard = cache.lock();
@@ -107,7 +103,7 @@ pub(crate) fn start_fs_watcher(service: &SkillService) -> Result<RecommendedWatc
 ///
 /// Returns an error if called.
 #[cfg(not(feature = "watch"))]
-pub(crate) fn start_fs_watcher(_service: &SkillService) -> Result<()> {
+pub fn start_fs_watcher(_service: &SkillService) -> Result<()> {
     Err(anyhow!(
         "watch feature is disabled; rebuild with --features watch"
     ))
@@ -185,20 +181,36 @@ impl SkillService {
         cache.skills_with_dups()
     }
 
+    /// Reports whether a skill URI is present in the cache.
+    ///
+    /// The refresh is explicit so a discovery failure surfaces as an error
+    /// rather than as a missing skill.
+    pub fn has_skill(&self, uri: &str) -> Result<bool> {
+        let mut cache = self.cache.lock();
+        cache.ensure_fresh()?;
+        Ok(cache.skill_by_uri(uri).is_ok())
+    }
+
     /// Resolves transitive dependencies for a skill URI.
-    pub(crate) fn resolve_dependencies(&self, uri: &str) -> Result<Vec<String>> {
+    pub fn resolve_dependencies(&self, uri: &str) -> Result<Vec<String>> {
         let mut cache = self.cache.lock();
         cache.resolve_dependencies(uri)
     }
 
+    /// Gets direct, non-transitive dependencies for a skill URI.
+    pub fn get_direct_dependencies(&self, uri: &str) -> Result<Vec<String>> {
+        let mut cache = self.cache.lock();
+        cache.get_direct_dependencies(uri)
+    }
+
     /// Gets direct dependents for a skill URI.
-    pub(crate) fn get_dependents(&self, uri: &str) -> Result<Vec<String>> {
+    pub fn get_dependents(&self, uri: &str) -> Result<Vec<String>> {
         let mut cache = self.cache.lock();
         cache.get_dependents(uri)
     }
 
     /// Gets transitive dependents for a skill URI.
-    pub(crate) fn get_transitive_dependents(&self, uri: &str) -> Result<Vec<String>> {
+    pub fn get_transitive_dependents(&self, uri: &str) -> Result<Vec<String>> {
         let mut cache = self.cache.lock();
         cache.get_transitive_dependents(uri)
     }
@@ -363,22 +375,21 @@ impl SkillService {
             .into_iter()
             .map(|s| {
                 let uri = format!("skill://skrills/{}/{}", s.source.label(), s.name);
-                let mut raw = RawResource::new(uri, s.name.clone());
-                raw.description = Some(format!(
-                    "Skill from {} [location: {}]",
-                    s.source.label(),
-                    s.source.location()
-                ));
-                raw.mime_type = Some("text/markdown".to_string());
-                Resource::new(raw, None)
+                Resource::new(uri, s.name.clone())
+                    .with_description(format!(
+                        "Skill from {} [location: {}]",
+                        s.source.label(),
+                        s.source.location()
+                    ))
+                    .with_mime_type("text/markdown")
             })
             .collect();
         // Expose AGENTS.md guidelines as a first-class resource for clients, unless disabled.
         if self.expose_agents_doc()? {
-            let mut agents = RawResource::new(AGENTS_URI, AGENTS_NAME);
-            agents.description = Some(AGENTS_DESCRIPTION.to_string());
-            agents.mime_type = Some("text/markdown".to_string());
-            resources.insert(0, Resource::new(agents, None));
+            let agents = Resource::new(AGENTS_URI, AGENTS_NAME)
+                .with_description(AGENTS_DESCRIPTION)
+                .with_mime_type("text/markdown");
+            resources.insert(0, agents);
         }
         if !dup_log.is_empty() {
             for dup in dup_log {
@@ -399,9 +410,12 @@ impl SkillService {
             if !self.expose_agents_doc()? {
                 return Err(anyhow!("resource not found"));
             }
-            return Ok(ReadResourceResult {
-                contents: vec![text_with_location(AGENTS_TEXT, uri, None, "global")],
-            });
+            return Ok(ReadResourceResult::new(vec![text_with_location(
+                AGENTS_TEXT,
+                uri,
+                None,
+                "global",
+            )]));
         }
         if !uri.starts_with("skill://") {
             return Err(anyhow!("unsupported uri"));
@@ -462,7 +476,7 @@ impl SkillService {
             }
         }
 
-        Ok(ReadResourceResult { contents })
+        Ok(ReadResourceResult::new(contents))
     }
 
     /// Reads skill content from disk.
@@ -516,7 +530,7 @@ fn text_with_location(
     source_label: Option<&str>,
     location: &str,
 ) -> ResourceContents {
-    let mut meta = Meta::new();
+    let mut meta = MetaObject::new();
     meta.insert("location".into(), json!(location));
     if let Some(label) = source_label {
         if let Some(rank) = priority_labels()
@@ -544,7 +558,7 @@ fn text_with_location_and_role(
     location: &str,
     role: &str,
 ) -> ResourceContents {
-    let mut meta = Meta::new();
+    let mut meta = MetaObject::new();
     meta.insert("location".into(), json!(location));
     meta.insert("role".into(), json!(role));
     if let Some(label) = source_label {

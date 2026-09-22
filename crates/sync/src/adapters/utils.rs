@@ -33,44 +33,6 @@ pub(crate) fn ensure_not_engaged(switch: Option<&KillSwitch>) -> Result<()> {
     Ok(())
 }
 
-/// Splits content into raw frontmatter string and body.
-///
-/// Frontmatter is delimited by `---` on its own line at the start of the file.
-/// Returns `(Some(raw_frontmatter), body)` if frontmatter is found,
-/// or `(None, full_content)` if not.
-///
-/// This is the single source of truth for frontmatter delimiter scanning.
-pub fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
-    let trimmed = content.trim_start();
-    if !trimmed.starts_with("---") {
-        return (None, content);
-    }
-
-    // Find the closing `---`
-    // Strip the line ending after the opening `---` (handles both \n and \r\n)
-    let after_open = &trimmed[3..];
-    let after_open = after_open
-        .strip_prefix("\r\n")
-        .or_else(|| after_open.strip_prefix('\n'))
-        .unwrap_or(after_open);
-
-    if let Some(close_pos) = after_open.find("\n---") {
-        let frontmatter_str = &after_open[..close_pos];
-        // Trim trailing \r from frontmatter (last line before \n---)
-        let frontmatter_str = frontmatter_str
-            .strip_suffix('\r')
-            .unwrap_or(frontmatter_str);
-        let body_start = close_pos + 4; // skip "\n---"
-        let body = &after_open[body_start..];
-        let body = body.trim_start_matches(['\n', '\r']);
-
-        (Some(frontmatter_str), body)
-    } else {
-        // No closing delimiter, treat entire content as body
-        (None, content)
-    }
-}
-
 /// Returns true if the name starts with a dot (hidden file/directory).
 pub fn is_hidden_component(name: &str) -> bool {
     name.starts_with('.')
@@ -140,7 +102,7 @@ pub fn is_path_contained(target_path: &Path, base_dir: &Path) -> bool {
 pub fn hash_content(content: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content);
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 /// Sanitizes a name by filtering to safe characters: alphanumeric, hyphens, and underscores.
@@ -288,43 +250,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn split_frontmatter_with_content() {
-        let content = "---\nname: test\ndescription: A test\n---\n\n# Body\n\nContent here.\n";
-        let (raw, body) = split_frontmatter(content);
-        assert!(raw.is_some());
-        let fm = raw.unwrap();
-        assert!(fm.contains("name: test"));
-        assert!(fm.contains("description: A test"));
-        assert!(body.starts_with("# Body"));
-    }
-
-    #[test]
-    fn split_frontmatter_no_frontmatter() {
-        let content = "# Just a markdown file\n\nNo frontmatter.\n";
-        let (raw, body) = split_frontmatter(content);
-        assert!(raw.is_none());
-        assert_eq!(body, content);
-    }
-
-    #[test]
-    fn split_frontmatter_crlf_line_endings() {
-        let content = "---\r\nname: test\r\n---\r\n\r\n# Body\r\n";
-        let (raw, body) = split_frontmatter(content);
-        assert!(raw.is_some(), "Should find frontmatter with CRLF endings");
-        let fm = raw.unwrap();
-        assert!(fm.contains("name: test"));
-        assert!(body.starts_with("# Body"));
-    }
-
-    #[test]
-    fn split_frontmatter_no_closing_delimiter() {
-        let content = "---\nname: test\nno closing delimiter";
-        let (raw, body) = split_frontmatter(content);
-        assert!(raw.is_none());
-        assert_eq!(body, content);
-    }
-
-    #[test]
     fn test_is_hidden_component() {
         assert!(is_hidden_component(".git"));
         assert!(is_hidden_component(".hidden"));
@@ -345,6 +270,17 @@ mod tests {
         let hash = hash_content(b"hello");
         assert_eq!(hash.len(), 64); // SHA-256 produces 64 hex chars
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    /// Sync compares these strings to decide a file is unchanged, so the
+    /// encoding has to survive a `sha2`/`digest` upgrade: lowercase, two
+    /// digits per byte, FIPS 180-2 vector for "abc".
+    #[test]
+    fn hash_content_matches_known_sha256_vector() {
+        assert_eq!(
+            hash_content(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 
     #[test]
