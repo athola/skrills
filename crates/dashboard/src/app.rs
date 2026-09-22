@@ -682,7 +682,19 @@ impl Dashboard {
 
         let roots = skill_roots_or_default(&self.skill_dirs);
 
-        let discovered = discover_skills(&roots, None).unwrap_or_default();
+        // A scan that fails (a permission or I/O error on one file, now that
+        // discovery only skips a vanished file) must not blank the list: the
+        // previous list stands and the activity feed names the failure.
+        let discovered = match discover_skills(&roots, None) {
+            Ok(discovered) => discovered,
+            Err(e) => {
+                app.add_activity_keyed(
+                    "skill-discovery-error".into(),
+                    format!("Skill discovery failed: {e:#}"),
+                );
+                return;
+            }
+        };
         app.total_skills = discovered.len();
         app.skills.clear();
 
@@ -1080,6 +1092,61 @@ mod tests {
         assert_eq!(app.activity[0].message, "Refreshed: 160 skills discovered");
         assert_eq!(app.activity[0].count, 3);
         assert!(app.activity[0].key.as_deref() == Some("refresh"));
+    }
+
+    /// Discovery now fails the scan on a permission error instead of skipping
+    /// the file. The dashboard used to `unwrap_or_default()` that result, so
+    /// one unreadable entry blanked every skill on screen.
+    #[test]
+    #[cfg(unix)]
+    fn refresh_keeps_the_last_skill_list_when_discovery_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("codex");
+        std::fs::create_dir_all(&root).unwrap();
+        let skill = root.join("SKILL.md");
+        std::fs::write(&skill, "content").unwrap();
+
+        let dashboard = Dashboard::with_collector(
+            vec![root.clone()],
+            Arc::new(MetricsCollector::in_memory().unwrap()),
+        );
+        let mut app = App::new();
+        app.skills.push(SkillInfo {
+            discovery_index: 0,
+            name: "kept".into(),
+            source: "test".into(),
+            uri: "skill://kept".into(),
+            locations: Vec::new(),
+            valid: None,
+            invocations: 0,
+        });
+        app.total_skills = 1;
+
+        // Readable but not searchable: the walk lists the entry while the
+        // stat on the child fails with EACCES.
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let stat_denied = std::fs::metadata(&skill).is_err();
+        if stat_denied {
+            dashboard.refresh_skills(&mut app);
+        }
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if !stat_denied {
+            // As root, or on a filesystem that ignores the mode, EACCES cannot
+            // be provoked and there is nothing to assert.
+            return;
+        }
+
+        assert_eq!(app.skills.len(), 1, "the last good list must stand");
+        assert_eq!(app.total_skills, 1);
+        assert!(
+            app.activity
+                .iter()
+                .any(|entry| entry.message.contains("Skill discovery failed")),
+            "the activity feed should report the failure: {:?}",
+            app.activity
+        );
     }
 
     #[test]
