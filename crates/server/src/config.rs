@@ -22,9 +22,9 @@
 //! # CORS allowed origins (comma-separated)
 //! cors_origins = "http://localhost:3000,https://app.example.com"
 //!
-//! # Extra Host values the MCP transport accepts, on top of localhost,
-//! # 127.0.0.1 and ::1 (comma-separated). Needed when binding a
-//! # non-loopback address.
+//! # Extra Host values the server accepts, on top of localhost, 127.0.0.1
+//! # and ::1 (comma-separated). Needed when clients address the server by
+//! # any other name. Each entry is a bare authority, never a URL.
 //! allowed_hosts = "skrills.internal:8080"
 //!
 //! # Bind address for HTTP transport
@@ -40,7 +40,10 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// Top-level configuration structure.
-#[derive(Debug, Default, Deserialize)]
+///
+/// Note: `Debug` is manually implemented so unrecognized tables print by name
+/// only, since `[server] auth_token = "secret"` lands there verbatim.
+#[derive(Default, Deserialize)]
 pub struct Config {
     /// Serve command configuration.
     #[serde(default)]
@@ -48,6 +51,18 @@ pub struct Config {
     /// Top-level tables that are not part of the schema, e.g. `[server]`.
     #[serde(flatten)]
     unrecognized: BTreeMap<String, toml::Value>,
+}
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("serve", &self.serve)
+            .field(
+                "unrecognized",
+                &self.unrecognized.keys().collect::<Vec<_>>(),
+            )
+            .finish()
+    }
 }
 
 impl Config {
@@ -69,7 +84,10 @@ impl Config {
 }
 
 /// Configuration for the serve command.
-#[derive(Debug, Default, Deserialize)]
+///
+/// Note: `Debug` is manually implemented to prevent auth_token from being
+/// logged, mirroring `HttpSecurityConfig`.
+#[derive(Default, Deserialize)]
 pub struct ServeConfig {
     /// Bearer token for HTTP authentication.
     pub auth_token: Option<String>,
@@ -81,8 +99,8 @@ pub struct ServeConfig {
     pub tls_auto: Option<bool>,
     /// Comma-separated list of allowed CORS origins.
     pub cors_origins: Option<String>,
-    /// Comma-separated `Host` authorities the MCP transport accepts, added to
-    /// the loopback names rmcp allows by default.
+    /// Comma-separated `Host` authorities the server accepts, added to the
+    /// loopback names rmcp allows by default.
     pub allowed_hosts: Option<String>,
     /// Bind address for HTTP transport (e.g., "127.0.0.1:3000").
     pub http: Option<String>,
@@ -91,6 +109,31 @@ pub struct ServeConfig {
     /// Keys under `[serve]` that are not part of the schema.
     #[serde(flatten)]
     unrecognized: BTreeMap<String, toml::Value>,
+}
+
+// Custom Debug implementation that redacts auth_token to prevent credential
+// leakage in logs. Unrecognized keys are printed by name only: a hyphenated
+// `auth-token` lands there with its value intact.
+impl std::fmt::Debug for ServeConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServeConfig")
+            .field(
+                "auth_token",
+                &self.auth_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("tls_cert", &self.tls_cert)
+            .field("tls_key", &self.tls_key)
+            .field("tls_auto", &self.tls_auto)
+            .field("cors_origins", &self.cors_origins)
+            .field("allowed_hosts", &self.allowed_hosts)
+            .field("http", &self.http)
+            .field("cache_ttl_ms", &self.cache_ttl_ms)
+            .field(
+                "unrecognized",
+                &self.unrecognized.keys().collect::<Vec<_>>(),
+            )
+            .finish()
+    }
 }
 
 /// Returns the path to the config file (~/.skrills/config.toml).
@@ -278,6 +321,74 @@ mod tests {
         );
         assert_eq!(config.serve.http.as_deref(), Some("0.0.0.0:8080"));
         assert_eq!(config.serve.cache_ttl_ms, Some(5000));
+    }
+
+    /// `config` is a public module, so anything that formats a `ServeConfig`
+    /// would otherwise print the bearer token in plain text.
+    #[test]
+    fn serve_config_debug_redacts_auth_token() {
+        let config = ServeConfig {
+            auth_token: Some("super-secret-token".to_string()),
+            ..Default::default()
+        };
+
+        let rendered = format!("{config:?}");
+
+        assert!(
+            !rendered.contains("super-secret-token"),
+            "Debug output leaked the token: {rendered}"
+        );
+        assert!(
+            rendered.contains("[REDACTED]"),
+            "Debug output should mark the token as redacted: {rendered}"
+        );
+    }
+
+    /// An unrecognized table is kept verbatim so `unknown_keys` can name it,
+    /// which would put a misplaced secret in any Debug output that printed
+    /// values.
+    #[test]
+    fn config_debug_omits_unrecognized_table_values() {
+        let toml = r#"
+            [server]
+            auth_token = "misplaced-secret"
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+
+        let rendered = format!("{config:?}");
+
+        assert!(
+            !rendered.contains("misplaced-secret"),
+            "Debug output leaked an unrecognized table's value: {rendered}"
+        );
+        assert!(
+            rendered.contains("server"),
+            "Debug output should still name the unrecognized table: {rendered}"
+        );
+    }
+
+    /// A hyphenated `auth-token` is kept verbatim so `unknown_keys` can name
+    /// it, which would put the secret in any Debug output that printed values.
+    #[test]
+    fn serve_config_debug_omits_unrecognized_values() {
+        let toml = r#"
+            [serve]
+            auth-token = "hyphenated-secret"
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+
+        let rendered = format!("{:?}", config.serve);
+
+        assert!(
+            !rendered.contains("hyphenated-secret"),
+            "Debug output leaked an unrecognized key's value: {rendered}"
+        );
+        assert!(
+            rendered.contains("auth-token"),
+            "Debug output should still name the unrecognized key: {rendered}"
+        );
     }
 
     /// A mistyped key must be named, and must not cost the operator the keys

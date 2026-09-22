@@ -74,9 +74,10 @@ pub enum Commands {
             value_delimiter = ','
         )]
         cors_origins: Vec<String>,
-        /// Extra `Host` values the MCP transport accepts, on top of localhost,
-        /// 127.0.0.1 and ::1. Required when binding a non-loopback address:
-        /// Host validation blocks DNS-rebinding attacks and rejects the rest.
+        /// Extra `Host` values the server accepts, on top of localhost,
+        /// 127.0.0.1 and ::1. Needed when clients address the server by any
+        /// other name: Host validation blocks DNS-rebinding attacks and rejects
+        /// the rest. Each entry is a bare authority (`host` or `host:port`).
         #[arg(
             long,
             value_name = "HOSTS",
@@ -835,9 +836,9 @@ mod tests {
         }
     }
 
-    /// `--allowed-hosts` is the only way to reach a non-loopback bind once the
-    /// MCP transport validates `Host`, so it must arrive from the flag and from
-    /// the environment the config file writes.
+    /// `--allowed-hosts` is how a client reaches the server under a name other
+    /// than localhost, 127.0.0.1 or ::1 once `Host` is validated, so it must
+    /// arrive from the flag and from the environment the config file writes.
     #[test]
     fn parse_serve_allowed_hosts_from_flag_and_env() {
         let _guard = env_guard();
