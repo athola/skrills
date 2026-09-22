@@ -92,7 +92,7 @@ impl AgentAdapter for CopilotAdapter {
         self.root.clone()
     }
 
-    fn supported_fields(&self) -> FieldSupport {
+    fn read_support(&self) -> FieldSupport {
         FieldSupport {
             commands: false, // Copilot prompts are NOT equivalent to Claude commands/Codex prompts
             mcp_servers: true,
@@ -103,6 +103,11 @@ impl AgentAdapter for CopilotAdapter {
             instructions: true,   // Copilot supports *.instructions.md files
             plugin_assets: false, // Copilot doesn't support plugin assets
         }
+    }
+
+    /// Copilot is symmetric: every artifact it reads it also writes.
+    fn write_support(&self) -> FieldSupport {
+        self.read_support()
     }
 
     fn read_commands(&self, include_marketplace: bool) -> Result<Vec<Command>> {

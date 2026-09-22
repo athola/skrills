@@ -608,15 +608,14 @@ impl SkillService {
             crate::sync::SyncReport::default()
         };
 
-        // For Claude→Codex, skills are handled above via sync_skills_only_from_claude.
-        // For all other directions, let the orchestrator handle skills.
-        let sync_skills_via_orchestrator = !is_claude_to_codex;
-
         let skip_existing_commands = args
             .get("skip_existing_commands")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        // One rule for every caller, so `sync-all`, `sync-to-cursor` and the CLI
+        // cannot drift apart again.
+        let delivery = skrills_sync::skill_delivery(from, to);
         let params = SyncParams {
             from: Some(from.to_string()),
             dry_run,
@@ -624,8 +623,9 @@ impl SkillService {
             skip_existing_commands,
             sync_mcp_servers: true,
             sync_preferences: true,
-            sync_skills: sync_skills_via_orchestrator,
+            sync_skills: delivery.sync_skills,
             include_marketplace,
+            full_plugin_mirror: delivery.full_plugin_mirror,
             ..Default::default()
         };
 
@@ -1055,19 +1055,17 @@ impl SkillService {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        // Skip the flat ~/.cursor/skills copy: skill bodies ride the plugin
-        // mirror into plugins/local/<plugin>/skills/, and copying them
-        // separately creates duplicates that inflate context.
+        let delivery = skrills_sync::skill_delivery(from, "cursor");
         let params = SyncParams {
             from: Some(from.to_string()),
             dry_run,
             sync_commands: true,
             sync_mcp_servers: true,
             sync_preferences: false, // Cursor preferences are not yet mapped
-            sync_skills: false,
+            sync_skills: delivery.sync_skills,
             sync_agents: true,
             sync_instructions: true,
-            full_plugin_mirror: true, // Cursor needs complete plugin cache
+            full_plugin_mirror: delivery.full_plugin_mirror,
             ..Default::default()
         };
 

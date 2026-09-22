@@ -331,13 +331,7 @@ pub fn run() -> Result<()> {
                     );
                 }
 
-                // Skip skills sync for Claude→Codex (handled above with special logic).
-                // For →Cursor: skip the flat ~/.cursor/skills copy, skill bodies
-                // ride the plugin mirror into plugins/local/<plugin>/skills/.
-                let sync_skills = !(target.is_cursor() || from.is_claude() && target.is_codex());
-                // Cursor needs a full plugin mirror (including skills and manifests)
-                // since it has its own plugin cache at ~/.cursor/plugins/cache/
-                let full_plugin_mirror = target.is_cursor();
+                let delivery = skrills_sync::skill_delivery(from.as_str(), target.as_str());
                 let params = SyncParams {
                     from: Some(from.as_str().to_string()),
                     dry_run,
@@ -345,10 +339,10 @@ pub fn run() -> Result<()> {
                     skip_existing_commands,
                     sync_mcp_servers: true,
                     sync_preferences: true,
-                    sync_skills,
+                    sync_skills: delivery.sync_skills,
                     include_marketplace,
                     exclude_plugins: exclude_plugins.clone(),
-                    full_plugin_mirror,
+                    full_plugin_mirror: delivery.full_plugin_mirror,
                     ..Default::default()
                 };
 
@@ -383,8 +377,8 @@ pub fn run() -> Result<()> {
             use skrills_sync::SyncParams;
 
             let target = to.unwrap_or_else(|| from.default_target());
-            // Only skip skills sync for Claude→Codex (it has special handling elsewhere)
-            let sync_skills = !(from.is_claude() && target.is_codex());
+            // Same rule as the `sync-all` arm, so the preview matches the run.
+            let delivery = skrills_sync::skill_delivery(from.as_str(), target.as_str());
 
             let params = SyncParams {
                 from: Some(from.as_str().to_string()),
@@ -392,7 +386,8 @@ pub fn run() -> Result<()> {
                 sync_commands: true,
                 sync_mcp_servers: true,
                 sync_preferences: true,
-                sync_skills,
+                sync_skills: delivery.sync_skills,
+                full_plugin_mirror: delivery.full_plugin_mirror,
                 ..Default::default()
             };
 

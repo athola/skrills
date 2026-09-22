@@ -375,17 +375,6 @@ struct RawAgentFrontmatter {
     skills: Option<String>,
 }
 
-/// Split content into frontmatter YAML and body content.
-///
-/// Returns (frontmatter_yaml, body_content).
-fn split_agent_frontmatter(content: &str) -> (Option<String>, String) {
-    // Delegates to the canonical splitter in skrills-validate. This used to be
-    // a byte-for-byte copy of it; keeping the copy meant a skill could be split
-    // one way here and another during validation.
-    let (frontmatter, body, _line) = skrills_validate::frontmatter::split_frontmatter(content);
-    (frontmatter, body)
-}
-
 /// Parse comma-separated string into a vector of trimmed strings.
 fn parse_comma_list(s: &str) -> Vec<String> {
     s.split(',')
@@ -398,7 +387,7 @@ fn parse_comma_list(s: &str) -> Vec<String> {
 ///
 /// Extracts YAML frontmatter and converts it to `AgentConfig`.
 pub fn parse_agent_config(content: &str, fallback_name: &str) -> Result<AgentConfig> {
-    let (yaml_opt, body) = split_agent_frontmatter(content);
+    let (yaml_opt, body, _line) = skrills_validate::frontmatter::split_frontmatter(content);
 
     let raw = if let Some(yaml) = yaml_opt {
         serde_yaml::from_str::<RawAgentFrontmatter>(&yaml).map_err(crate::DiscoveryError::from)?
@@ -679,34 +668,6 @@ Content."#
             let config = parse_agent_config(&content, "fallback").unwrap();
             assert_eq!(config.permission_mode, Some(mode.to_string()));
         }
-    }
-
-    #[test]
-    fn test_split_agent_frontmatter_basic() {
-        let content = "---\nname: test\n---\nBody content";
-        let (yaml, body) = split_agent_frontmatter(content);
-
-        assert!(yaml.is_some());
-        assert_eq!(yaml.unwrap(), "name: test");
-        assert_eq!(body, "Body content");
-    }
-
-    #[test]
-    fn test_split_agent_frontmatter_no_frontmatter() {
-        let content = "# Just markdown";
-        let (yaml, body) = split_agent_frontmatter(content);
-
-        assert!(yaml.is_none());
-        assert_eq!(body, content);
-    }
-
-    #[test]
-    fn test_split_agent_frontmatter_leading_whitespace() {
-        let content = "  \n  ---\nname: test\n---\nBody";
-        let (yaml, _body) = split_agent_frontmatter(content);
-
-        assert!(yaml.is_some());
-        assert_eq!(yaml.unwrap(), "name: test");
     }
 
     #[test]

@@ -33,22 +33,6 @@ pub(crate) fn ensure_not_engaged(switch: Option<&KillSwitch>) -> Result<()> {
     Ok(())
 }
 
-/// Splits YAML frontmatter from the body.
-///
-/// Delegates to [`skrills_validate::frontmatter::split_frontmatter`], the
-/// canonical splitter. There used to be three implementations of this and they
-/// disagreed: this one stripped exactly one line ending after the opening
-/// `---` and a trailing `\r` from the block, while validate's stripped every
-/// leading newline and kept the `\r`. A skill could therefore be split one way
-/// for validation and another for writing.
-///
-/// Returns owned strings because the canonical splitter normalizes rather than
-/// slicing.
-pub fn split_frontmatter(content: &str) -> (Option<String>, String) {
-    let (frontmatter, body, _line) = skrills_validate::frontmatter::split_frontmatter(content);
-    (frontmatter, body)
-}
-
 /// Returns true if the name starts with a dot (hidden file/directory).
 pub fn is_hidden_component(name: &str) -> bool {
     name.starts_with('.')
@@ -118,11 +102,7 @@ pub fn is_path_contained(target_path: &Path, base_dir: &Path) -> bool {
 pub fn hash_content(content: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content);
-    hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    hex::encode(hasher.finalize())
 }
 
 /// Sanitizes a name by filtering to safe characters: alphanumeric, hyphens, and underscores.
@@ -268,43 +248,6 @@ pub(crate) mod test_helpers {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn split_frontmatter_with_content() {
-        let content = "---\nname: test\ndescription: A test\n---\n\n# Body\n\nContent here.\n";
-        let (raw, body) = split_frontmatter(content);
-        assert!(raw.is_some());
-        let fm = raw.unwrap();
-        assert!(fm.contains("name: test"));
-        assert!(fm.contains("description: A test"));
-        assert!(body.starts_with("# Body"));
-    }
-
-    #[test]
-    fn split_frontmatter_no_frontmatter() {
-        let content = "# Just a markdown file\n\nNo frontmatter.\n";
-        let (raw, body) = split_frontmatter(content);
-        assert!(raw.is_none());
-        assert_eq!(body, content);
-    }
-
-    #[test]
-    fn split_frontmatter_crlf_line_endings() {
-        let content = "---\r\nname: test\r\n---\r\n\r\n# Body\r\n";
-        let (raw, body) = split_frontmatter(content);
-        assert!(raw.is_some(), "Should find frontmatter with CRLF endings");
-        let fm = raw.unwrap();
-        assert!(fm.contains("name: test"));
-        assert!(body.starts_with("# Body"));
-    }
-
-    #[test]
-    fn split_frontmatter_no_closing_delimiter() {
-        let content = "---\nname: test\nno closing delimiter";
-        let (raw, body) = split_frontmatter(content);
-        assert!(raw.is_none());
-        assert_eq!(body, content);
-    }
 
     #[test]
     fn test_is_hidden_component() {

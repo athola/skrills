@@ -643,7 +643,7 @@ fn mcp_servers_roundtrip() {
 fn copilot_supports_agents() {
     let tmp = tempdir().unwrap();
     let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
-    let fields = adapter.supported_fields();
+    let fields = adapter.read_support();
     assert!(fields.agents, "Copilot should support agents");
 }
 

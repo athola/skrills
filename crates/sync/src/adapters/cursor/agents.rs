@@ -8,8 +8,8 @@
 //! - Model names translated via `transform_model`
 
 use super::paths::agents_dir;
+use crate::adapters::utils::hash_content;
 use crate::adapters::utils::sanitize_name_kebab;
-use crate::adapters::utils::{hash_content, split_frontmatter};
 use crate::common::{Command, ContentFormat};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
@@ -121,7 +121,7 @@ pub fn write_agents(root: &Path, agents: &[Command]) -> Result<WriteReport> {
 /// - Strips `tools` and `isolation` fields (not supported by Cursor)
 /// - Passes through all other fields unchanged
 fn translate_agent_frontmatter(content: &str) -> String {
-    let (raw_frontmatter, body) = split_frontmatter(content);
+    let (raw_frontmatter, body, _line) = skrills_validate::frontmatter::split_frontmatter(content);
 
     let Some(frontmatter_str) = raw_frontmatter else {
         return content.to_string();

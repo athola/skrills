@@ -30,7 +30,7 @@ pub(crate) fn assert_adapter_basics<A: AgentAdapter>(
 ) {
     assert_eq!(adapter.name(), expected_name);
     assert_eq!(&adapter.config_root(), expected_root);
-    field_assertions(&adapter.supported_fields());
+    field_assertions(&adapter.read_support());
 }
 
 /// Asserts that `read_commands(false)` returns an empty list when

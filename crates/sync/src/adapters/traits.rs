@@ -31,32 +31,28 @@ pub trait AgentAdapter: Send + Sync {
     /// Root configuration directory (e.g., ~/.claude, ~/.codex)
     fn config_root(&self) -> PathBuf;
 
-    /// What this adapter supports.
-    ///
-    /// Direction-agnostic, and kept as the default for both
-    /// [`read_support`](Self::read_support) and
-    /// [`write_support`](Self::write_support). Prefer those two: an adapter
-    /// can genuinely support an artifact in one direction only, and a single
-    /// flag cannot say which.
-    fn supported_fields(&self) -> FieldSupport;
-
     /// What this adapter can read, as a sync *source*.
     ///
-    /// A `false` here means the reader is absent, so the trait's default
-    /// implementation would return an empty result. That is indistinguishable
-    /// from "the source genuinely had none", which is how an unimplemented
-    /// path came to report success.
-    fn read_support(&self) -> FieldSupport {
-        self.supported_fields()
-    }
+    /// Required, with no direction-agnostic fallback: an adapter that
+    /// implements one direction of an artifact and not the other would
+    /// otherwise inherit a `true` for the direction it cannot do.
+    ///
+    /// `plugin_assets: false` is the flag the orchestrator acts on. There the
+    /// reader is absent and the trait default returns an empty result, which is
+    /// indistinguishable from "the source genuinely had none". For the other
+    /// seven fields the orchestrator only logs and syncs anyway, because every
+    /// adapter implements those readers.
+    fn read_support(&self) -> FieldSupport;
 
     /// What this adapter can write, as a sync *target*.
     ///
-    /// A `false` here means the writer is absent, so the trait's default
-    /// implementation would report a successful write of nothing.
-    fn write_support(&self) -> FieldSupport {
-        self.supported_fields()
-    }
+    /// A symmetric adapter delegates: `fn write_support(&self) -> FieldSupport
+    /// { self.read_support() }`.
+    ///
+    /// As with [`read_support`](Self::read_support), only `plugin_assets` gates
+    /// the sync. A `false` there means the writer is absent and the trait
+    /// default would report a successful write of nothing.
+    fn write_support(&self) -> FieldSupport;
 
     // --- Read operations ---
 
@@ -136,6 +132,19 @@ pub trait AgentAdapter: Send + Sync {
     fn write_plugin_assets(&self, _assets: &[PluginAsset]) -> Result<WriteReport> {
         Ok(WriteReport::default())
     }
+
+    /// Previews [`write_plugin_assets`](Self::write_plugin_assets) for a dry run.
+    ///
+    /// The default only counts the batch, which is all a purely additive writer
+    /// can do. An adapter whose writer also deletes overrides this so a dry run
+    /// names what would go: Cursor prunes the mirrors of plugins that left the
+    /// batch, and `--dry-run` has to show that before it happens.
+    fn preview_plugin_assets(&self, assets: &[PluginAsset]) -> Result<WriteReport> {
+        Ok(WriteReport {
+            written: assets.len(),
+            ..WriteReport::default()
+        })
+    }
 }
 
 /// Blanket impl so `Box<dyn AgentAdapter>` can be used with `SyncOrchestrator`.
@@ -146,10 +155,6 @@ impl AgentAdapter for Box<dyn AgentAdapter> {
     fn config_root(&self) -> PathBuf {
         (**self).config_root()
     }
-    fn supported_fields(&self) -> FieldSupport {
-        (**self).supported_fields()
-    }
-
     fn read_support(&self) -> FieldSupport {
         (**self).read_support()
     }
@@ -204,5 +209,8 @@ impl AgentAdapter for Box<dyn AgentAdapter> {
     }
     fn write_plugin_assets(&self, assets: &[PluginAsset]) -> Result<WriteReport> {
         (**self).write_plugin_assets(assets)
+    }
+    fn preview_plugin_assets(&self, assets: &[PluginAsset]) -> Result<WriteReport> {
+        (**self).preview_plugin_assets(assets)
     }
 }

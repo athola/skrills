@@ -124,7 +124,7 @@ impl AgentAdapter for ClaudeAdapter {
         self.root.clone()
     }
 
-    fn supported_fields(&self) -> FieldSupport {
+    fn read_support(&self) -> FieldSupport {
         FieldSupport {
             commands: true,
             mcp_servers: true,
@@ -143,7 +143,7 @@ impl AgentAdapter for ClaudeAdapter {
     fn write_support(&self) -> FieldSupport {
         FieldSupport {
             plugin_assets: false,
-            ..self.supported_fields()
+            ..self.read_support()
         }
     }
 

@@ -667,7 +667,7 @@ mod copilot_adapter_field_support_tests {
         let tmp = TempDir::new().unwrap();
         let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
 
-        let support = adapter.supported_fields();
+        let support = adapter.read_support();
 
         // Copilot prompts are detailed instruction files, NOT equivalent to
         // Claude commands/Codex prompts (which are quick atomic shortcuts)
