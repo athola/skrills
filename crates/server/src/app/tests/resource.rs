@@ -69,9 +69,70 @@ Base skill.
         // Check metadata indicates this is the requested resource
         let meta = meta.as_ref().expect("metadata should exist");
         assert_eq!(meta.get("role").and_then(|v| v.as_str()), Some("requested"));
+        assert_eq!(
+            meta.get("location").and_then(|v| v.as_str()),
+            Some("project"),
+            "an extra root is a project-scoped location"
+        );
+        // `extra0` is not one of the default priority sources, so it has no
+        // rank to report. Pins the branch that leaves the key out.
+        assert!(
+            meta.get("priority_rank").is_none(),
+            "a source outside the default priority order has no rank"
+        );
     } else {
         panic!("Expected TextResourceContents");
     }
+}
+
+/// `list_resources_payload` and `read_resource_sync` both describe where a
+/// skill came from. Dropping `.with_mime_type(..)`, `.with_description(..)` or
+/// the rank lookup still compiles, so pin all three against a source that is
+/// in the default priority order.
+#[test]
+fn listed_and_read_skill_carry_source_metadata() {
+    let temp = tempdir().expect("create temp directory");
+    let skills_dir = temp.path().join("skills");
+    let skill_dir = skills_dir.join("ranked-skill");
+    fs::create_dir_all(&skill_dir).expect("create skill directory");
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: ranked-skill\ndescription: Ranked skill\n---\n# Ranked skill\n",
+    )
+    .expect("write skill");
+
+    let roots = vec![SkillRoot {
+        root: skills_dir,
+        source: skrills_discovery::SkillSource::Codex,
+    }];
+    let service = SkillService::new_with_roots_for_test(roots, Duration::from_secs(60))
+        .expect("create skill service");
+
+    let listed = service
+        .list_resources_payload()
+        .expect("list resources")
+        .into_iter()
+        .find(|resource| resource.uri.contains("ranked-skill"))
+        .expect("the codex skill should be listed");
+    assert_eq!(listed.mime_type.as_deref(), Some("text/markdown"));
+    assert_eq!(
+        listed.description.as_deref(),
+        Some("Skill from codex [location: global]")
+    );
+
+    let read = service
+        .read_resource_sync(&listed.uri)
+        .expect("read resource");
+    let ResourceContents::TextResourceContents { meta, .. } = &read.contents[0] else {
+        panic!("Expected TextResourceContents");
+    };
+    let meta = meta.as_ref().expect("metadata should exist");
+    assert_eq!(
+        meta.get("location").and_then(|v| v.as_str()),
+        Some("global")
+    );
+    // Codex leads `default_priority()`, so it ranks first.
+    assert_eq!(meta.get("priority_rank"), Some(&json!(1)));
 }
 
 #[test]

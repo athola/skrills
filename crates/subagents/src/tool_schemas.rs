@@ -569,6 +569,33 @@ mod tests {
             // download-transcript-secure has no output schema
             assert!(transcript_tool.output_schema.is_none());
         }
+
+        /// Every tool but the transcript download pins an output schema.
+        /// Dropping one `.with_raw_output_schema(..)` still compiles and still
+        /// passes the per-tool tests above, so pin the exact set.
+        #[test]
+        fn output_schema_is_set_on_every_tool_except_the_transcript_download() {
+            let mut with_schema: Vec<String> = all_tools()
+                .iter()
+                .filter(|tool| tool.output_schema.is_some())
+                .map(|tool| tool.name.to_string())
+                .collect();
+            with_schema.sort_unstable();
+            assert_eq!(
+                with_schema,
+                [
+                    "get-async-status",
+                    "get-run-events",
+                    "get-run-history",
+                    "get-run-status",
+                    "list-agents",
+                    "list-subagents",
+                    "run-subagent",
+                    "run-subagent-async",
+                    "stop-run",
+                ]
+            );
+        }
     }
 
     // ==========================================

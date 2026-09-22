@@ -27,11 +27,13 @@ use crate::tool_schemas;
 use anyhow::{anyhow, Result};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListResourcesResult,
-    ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse,
+    ListToolsResult, PaginatedRequestParams, ProtocolVersion, ReadResourceRequestParams,
+    ReadResourceResponse,
 };
 use rmcp::ServerHandler;
 use serde_json::json;
 use skrills_state::home_dir;
+use std::borrow::Cow;
 use std::fs;
 
 /// Common arguments for sync tool requests.
@@ -67,7 +69,19 @@ impl SyncToolArgs {
     }
 }
 
+/// The newest MCP revision this server advertises.
+///
+/// rmcp 3.4 knows 2026-07-28, whose sessions bypass the session manager and
+/// are served statelessly. That behaviour has not been exercised here, so the
+/// advertised ceiling stays one revision below it.
+const MAX_SUPPORTED_PROTOCOL: ProtocolVersion = ProtocolVersion::V_2025_11_25;
+
 impl ServerHandler for SkillService {
+    /// Narrows rmcp's default, which advertises every revision the SDK knows.
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(ProtocolVersion::known_up_to(&MAX_SUPPORTED_PROTOCOL))
+    }
+
     /// List all available resources, including skills and the AGENTS.md document.
     fn list_resources(
         &self,
@@ -134,20 +148,6 @@ impl ServerHandler for SkillService {
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<CallToolResponse, rmcp::ErrorData>> + Send + '_
     {
-        let outcome = self.call_tool_complete(request);
-        async move { outcome.await.map(CallToolResponse::from) }
-    }
-}
-
-impl SkillService {
-    /// The tool dispatch itself. `ServerHandler::call_tool` wraps the result
-    /// in rmcp's `CallToolResponse`; every tool here completes in one step, so
-    /// tests and callers that want the `CallToolResult` use this directly.
-    pub(crate) fn call_tool_complete(
-        &self,
-        request: CallToolRequestParams,
-    ) -> impl std::future::Future<Output = Result<CallToolResult, rmcp::ErrorData>> + Send + '_
-    {
         Box::pin(async move {
             #[cfg(feature = "subagents")]
             {
@@ -184,7 +184,7 @@ impl SkillService {
                                 None,
                             )
                         })?;
-                        return Ok(res);
+                        return Ok(CallToolResponse::from(res));
                     }
                 }
             }
@@ -192,7 +192,7 @@ impl SkillService {
             // use either convention (e.g. "search_papers" -> "search-papers").
             let canonical_name = request.name.replace('_', "-");
             let args = request.arguments.clone().unwrap_or_default();
-            let result = match canonical_name.as_str() {
+            match canonical_name.as_str() {
                 "create-skill" => self.create_skill_tool(args).await,
                 "search-skills-github" => self.search_skills_github_tool(args).await,
                 // Research tools (async, require HTTP calls to external APIs)
@@ -707,8 +707,8 @@ impl SkillService {
                 }
                 })(),
             }
-            .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None));
-            result
+            .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))
+            .map(CallToolResponse::from)
         })
     }
 }
@@ -716,9 +716,12 @@ impl SkillService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::discovery::AGENTS_URI;
+    use crate::discovery::{AGENTS_DESCRIPTION, AGENTS_URI};
     use crate::test_support;
-    use rmcp::model::RequestId;
+    use rmcp::model::{
+        ClientCapabilities, Implementation, InitializeRequestParams, ProtocolVersion, RequestId,
+        ResourceContents,
+    };
     use rmcp::service::{serve_directly, RequestContext, RunningService};
     use std::future::Future;
     use std::time::Duration;
@@ -785,10 +788,67 @@ mod tests {
                 .expect("list_resources should succeed")
         });
 
-        assert!(
-            result.resources.iter().any(|r| r.uri == AGENTS_URI),
-            "AGENTS resource should be listed"
+        let agents = result
+            .resources
+            .iter()
+            .find(|r| r.uri == AGENTS_URI)
+            .expect("AGENTS resource should be listed");
+        // A dropped `.with_mime_type(..)` or `.with_description(..)` still
+        // compiles, and clients lose the rendering hint and the label.
+        assert_eq!(agents.mime_type.as_deref(), Some("text/markdown"));
+        assert_eq!(agents.description.as_deref(), Some(AGENTS_DESCRIPTION));
+    }
+
+    #[test]
+    fn read_resource_returns_completed_agents_doc() {
+        /*
+        GIVEN a service with a temp home
+        WHEN reading the AGENTS.md resource through the MCP handler
+        THEN it completes with the document text and its location metadata
+        */
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var(
+            "HOME",
+            Some(
+                temp.path()
+                    .to_str()
+                    .expect("temp home should be valid utf-8"),
+            ),
         );
+
+        let service = build_service(&temp);
+        let response = run_async(async move {
+            let (running, context, _client) = service_with_context(service);
+            running
+                .service()
+                .read_resource(
+                    ReadResourceRequestParams::new(AGENTS_URI.to_string()),
+                    context,
+                )
+                .await
+                .expect("read_resource should succeed")
+        });
+
+        let result = match response {
+            ReadResourceResponse::Complete(result) => result,
+            other => panic!("expected a completed resource read, got {other:?}"),
+        };
+        let content = result
+            .contents
+            .first()
+            .expect("AGENTS.md read should return content");
+        match content {
+            ResourceContents::TextResourceContents { uri, meta, .. } => {
+                assert_eq!(uri, AGENTS_URI);
+                let meta = meta.as_ref().expect("location metadata should be present");
+                assert_eq!(
+                    meta.get("location").and_then(|v| v.as_str()),
+                    Some("global")
+                );
+            }
+            other => panic!("expected text contents, got {other:?}"),
+        }
     }
 
     #[test]
@@ -857,6 +917,73 @@ mod tests {
             err.message.contains("unknown tool"),
             "error message should mention unknown tool"
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // Protocol version negotiation tests
+    // -------------------------------------------------------------------------
+
+    fn initialize_request(version: ProtocolVersion) -> InitializeRequestParams {
+        InitializeRequestParams::new(
+            ClientCapabilities::default(),
+            Implementation::new("skrills-test-client", "0"),
+        )
+        .with_protocol_version(version)
+    }
+
+    /// 2026-07-28 serves its sessions statelessly, bypassing the session
+    /// manager, and rmcp's default advertises every version it knows. Nothing
+    /// here has been exercised against those semantics, so the advertised set
+    /// stops one revision earlier.
+    #[test]
+    fn supported_versions_exclude_the_unvalidated_2026_revision() {
+        let temp = tempdir().expect("tempdir");
+        let service = build_service(&temp);
+        let supported = ServerHandler::supported_protocol_versions(&service);
+
+        assert!(
+            !supported.contains(&ProtocolVersion::V_2026_07_28),
+            "2026-07-28 should not be advertised, got {supported:?}"
+        );
+        assert_eq!(
+            supported.as_ref(),
+            ProtocolVersion::known_up_to(&ProtocolVersion::V_2025_11_25),
+            "the cap should keep every revision up to 2025-11-25"
+        );
+    }
+
+    /// Guards the cap against over-narrowing: the versions real clients pin
+    /// must still be agreed to by `initialize`.
+    #[test]
+    fn initialize_still_negotiates_the_legacy_client_versions() {
+        let temp = tempdir().expect("tempdir");
+        let service = build_service(&temp);
+
+        for version in [
+            ProtocolVersion::V_2024_11_05,
+            ProtocolVersion::V_2025_06_18,
+            ProtocolVersion::V_2025_11_25,
+        ] {
+            let negotiated = service
+                .negotiate_initialize(&initialize_request(version.clone()))
+                .expect("initialize should negotiate")
+                .protocol_version;
+            assert_eq!(negotiated, version, "{version} should be negotiated as-is");
+        }
+    }
+
+    /// A client asking for the capped-out revision is not rejected: rmcp falls
+    /// back to the newest version that still has an `initialize` handshake.
+    #[test]
+    fn initialize_falls_back_when_client_requests_the_2026_revision() {
+        let temp = tempdir().expect("tempdir");
+        let service = build_service(&temp);
+
+        let negotiated = service
+            .negotiate_initialize(&initialize_request(ProtocolVersion::V_2026_07_28))
+            .expect("initialize should fall back rather than fail")
+            .protocol_version;
+        assert_eq!(negotiated, ProtocolVersion::V_2025_11_25);
     }
 
     // -------------------------------------------------------------------------
