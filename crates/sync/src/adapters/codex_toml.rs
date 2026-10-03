@@ -84,7 +84,8 @@ pub(crate) fn read_servers(doc: &DocumentMut) -> Result<HashMap<String, McpServe
 /// Merges `servers` into `mcp_servers` by name.
 ///
 /// Servers only the file has are kept, and so are unmanaged keys inside an
-/// updated server. An HTTP server is skipped: Codex sync is stdio only.
+/// updated server. An HTTP server whose headers Codex cannot express (see
+/// [`split_headers`]) is skipped.
 pub(crate) fn merge_servers(
     doc: &mut DocumentMut,
     servers: &HashMap<String, McpServer>,
@@ -95,16 +96,22 @@ pub(crate) fn merge_servers(
     let names: Vec<_> = names
         .into_iter()
         .filter(|name| {
-            if servers[*name].transport == McpTransport::Http {
-                report.skipped.push(SkipReason::AgentSpecificFeature {
-                    item: (*name).clone(),
-                    feature: "HTTP MCP transport".to_string(),
-                    suggestion: "codex only runs stdio MCP servers; add this server there by hand"
-                        .to_string(),
-                });
-                return false;
+            let server = &servers[*name];
+            if server.transport != McpTransport::Http {
+                return true;
             }
-            true
+            let Err(header) = split_headers(server.headers.as_ref()) else {
+                return true;
+            };
+            report.skipped.push(SkipReason::AgentSpecificFeature {
+                item: (*name).clone(),
+                feature: format!("header `{header}` with an environment variable inside its value"),
+                suggestion:
+                    "codex expands no ${VAR} inside a header; make the whole value ${VAR}, \
+                             or `Bearer ${VAR}` for Authorization, or add this server by hand"
+                        .to_string(),
+            });
+            false
         })
         .collect();
     if names.is_empty() {
@@ -135,7 +142,8 @@ pub(crate) fn merge_servers(
                 let entry = item.as_table_like_mut().ok_or_else(|| {
                     anyhow!("`mcp_servers.{name}` in config.toml is not a table; refusing to replace it")
                 })?;
-                if decode(name, entry) == normalized(server) && stdio_or_untyped(entry) {
+                if decode(name, entry) == normalized(server) && spelled_as(entry, &server.transport)
+                {
                     report
                         .skipped
                         .push(SkipReason::Unchanged { item: name.clone() });
@@ -160,28 +168,121 @@ pub(crate) fn merge_servers(
     Ok(report)
 }
 
-/// Codex treats a server with no `type` as stdio, so an entry without one is
-/// not rewritten just to add it.
-fn stdio_or_untyped(entry: &dyn TableLike) -> bool {
-    entry
-        .get("type")
-        .is_none_or(|t| t.as_str() == Some("stdio"))
+/// Whether `entry` is already spelled for `transport`, so an otherwise equal
+/// entry needs no rewrite. Codex ignores `type` and picks the transport from
+/// `url` or `command`, so an entry without `type` is not rewritten just to
+/// add it.
+fn spelled_as(entry: &dyn TableLike, transport: &McpTransport) -> bool {
+    let ty = entry.get("type").map(Item::as_str);
+    match transport {
+        McpTransport::Stdio => ty.is_none_or(|t| t == Some("stdio")),
+        McpTransport::Http => {
+            ty.is_none_or(|t| matches!(t, Some("http" | "streamable_http")))
+                && !entry.contains_key("command")
+        }
+    }
 }
 
 /// `server` as [`decode`] would read it back after a write.
 fn normalized(server: &McpServer) -> McpServer {
+    let http = server.transport == McpTransport::Http;
     McpServer {
         name: server.name.clone(),
-        transport: McpTransport::Stdio,
-        command: server.command.clone(),
-        args: server.args.clone(),
-        env: server.env.clone(),
-        url: None,
-        headers: None,
+        transport: server.transport.clone(),
+        command: if http {
+            String::new()
+        } else {
+            server.command.clone()
+        },
+        args: if http {
+            Vec::new()
+        } else {
+            server.args.clone()
+        },
+        env: if http {
+            HashMap::new()
+        } else {
+            server.env.clone()
+        },
+        url: if http { server.url.clone() } else { None },
+        headers: if http {
+            split_headers(server.headers.as_ref())
+                .ok()
+                .and_then(join_headers)
+        } else {
+            None
+        },
         enabled: server.enabled,
         allowed_tools: server.allowed_tools.clone(),
         disabled_tools: server.disabled_tools.clone(),
     }
+}
+
+/// One HTTP server's headers, in the three keys Codex reads them from.
+#[derive(Debug, Default)]
+struct CodexHeaders {
+    /// `bearer_token_env_var`: from `Authorization: Bearer ${VAR}`.
+    bearer_env: Option<String>,
+    /// `env_http_headers`: headers whose whole value is `${VAR}`.
+    from_env: HashMap<String, String>,
+    /// `http_headers`: literal values.
+    literal: HashMap<String, String>,
+}
+
+/// Sorts source headers into Codex's keys. Codex sends `http_headers`
+/// verbatim, so a value that only partly references a variable has no
+/// spelling; the first such header (by name) is the error.
+fn split_headers(
+    headers: Option<&HashMap<String, String>>,
+) -> std::result::Result<CodexHeaders, String> {
+    let mut out = CodexHeaders::default();
+    let Some(headers) = headers else {
+        return Ok(out);
+    };
+    let mut sorted: Vec<_> = headers.iter().collect();
+    sorted.sort();
+    for (name, value) in sorted {
+        if !value.contains("${") {
+            out.literal.insert(name.clone(), value.clone());
+        } else if let Some(var) = env_reference(value) {
+            out.from_env.insert(name.clone(), var.to_string());
+        } else if let Some(var) = name
+            .eq_ignore_ascii_case("authorization")
+            .then(|| value.strip_prefix("Bearer "))
+            .flatten()
+            .and_then(env_reference)
+        {
+            out.bearer_env = Some(var.to_string());
+        } else {
+            return Err(name.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// `VAR` when `value` is exactly `${VAR}`.
+fn env_reference(value: &str) -> Option<&str> {
+    let var = value.strip_prefix("${")?.strip_suffix('}')?;
+    let mut chars = var.chars();
+    let first = chars.next()?;
+    ((first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_'))
+    .then_some(var)
+}
+
+/// The inverse of [`split_headers`], or `None` when there are no headers.
+fn join_headers(split: CodexHeaders) -> Option<HashMap<String, String>> {
+    let mut headers = split.literal;
+    headers.extend(
+        split
+            .from_env
+            .into_iter()
+            .map(|(name, var)| (name, format!("${{{var}}}"))),
+    );
+    if let Some(var) = split.bearer_env {
+        headers.insert("Authorization".to_string(), format!("Bearer ${{{var}}}"));
+    }
+    (!headers.is_empty()).then_some(headers)
 }
 
 /// Reads one server entry.
@@ -210,7 +311,11 @@ fn decode(name: &str, entry: &dyn TableLike) -> McpServer {
             .unwrap_or_default()
     };
     let url = string("url");
-    let headers = map("http_headers");
+    let headers = join_headers(CodexHeaders {
+        bearer_env: string("bearer_token_env_var"),
+        from_env: map("env_http_headers"),
+        literal: map("http_headers"),
+    });
     McpServer {
         name: name.to_string(),
         transport: if url.is_some() {
@@ -222,22 +327,48 @@ fn decode(name: &str, entry: &dyn TableLike) -> McpServer {
         args: strings("args"),
         env: map("env"),
         url,
-        headers: (!headers.is_empty()).then_some(headers),
+        headers,
         enabled: entry.get("enabled").and_then(Item::as_bool).unwrap_or(true),
         allowed_tools: strings("enabled_tools"),
         disabled_tools: strings("disabled_tools"),
     }
 }
 
-/// Writes the keys sync owns (`type`, `command`, `args`, `env`, `enabled`,
-/// `enabled_tools`, `disabled_tools`) into `entry`, in place, and drops the
-/// HTTP-only keys. Any other key (`cwd`, `startup_timeout_sec`, ...) is left
-/// as the user wrote it.
+/// Writes the keys sync owns for the server's transport into `entry`, in
+/// place, and drops the other transport's keys: stdio owns `command`, `args`
+/// and `env`, HTTP owns `url` and the header keys, and both own `type`,
+/// `enabled`, `enabled_tools` and `disabled_tools`. Any other key
+/// (`startup_timeout_sec`, ...) is left as the user wrote it.
+///
+/// An HTTP server's headers must already have passed [`split_headers`].
 fn apply(entry: &mut dyn TableLike, server: &McpServer) {
-    set(entry, "type", Some(Value::from("stdio")));
-    set(entry, "command", Some(Value::from(server.command.as_str())));
-    set(entry, "args", string_array(&server.args));
-    set_map(entry, "env", &server.env);
+    match server.transport {
+        McpTransport::Stdio => {
+            set(entry, "type", Some(Value::from("stdio")));
+            set(entry, "command", Some(Value::from(server.command.as_str())));
+            set(entry, "args", string_array(&server.args));
+            set_map(entry, "env", &server.env);
+            // HTTP keys left over from an earlier HTTP entry would make it both.
+            for key in HTTP_KEYS {
+                entry.remove(key);
+            }
+        }
+        McpTransport::Http => {
+            let headers = split_headers(server.headers.as_ref()).unwrap_or_default();
+            set(entry, "type", Some(Value::from("http")));
+            set(entry, "url", server.url.as_deref().map(Value::from));
+            set(
+                entry,
+                "bearer_token_env_var",
+                headers.bearer_env.as_deref().map(Value::from),
+            );
+            set_map(entry, "env_http_headers", &headers.from_env);
+            set_map(entry, "http_headers", &headers.literal);
+            for key in STDIO_KEYS {
+                entry.remove(key);
+            }
+        }
+    }
     set(
         entry,
         "enabled",
@@ -249,12 +380,10 @@ fn apply(entry: &mut dyn TableLike, server: &McpServer) {
         "disabled_tools",
         string_array(&server.disabled_tools),
     );
-    // The entry is now a stdio server; HTTP transport keys left over from an
-    // earlier HTTP entry would make it both.
-    for key in HTTP_KEYS {
-        entry.remove(key);
-    }
 }
+
+/// Keys that only make sense for a stdio server.
+const STDIO_KEYS: &[&str] = &["command", "args", "env", "env_vars", "cwd"];
 
 /// Keys that only make sense for an HTTP server.
 const HTTP_KEYS: &[&str] = &[

@@ -309,7 +309,7 @@ impl AgentAdapter for CodexAdapter {
             for (name, config) in mcp {
                 let server = McpServer {
                     name: name.clone(),
-                    transport: McpTransport::Stdio, // Codex only supports stdio
+                    transport: McpTransport::Stdio, // the legacy config.json held stdio servers only
                     command: config
                         .get("command")
                         .and_then(|v| v.as_str())
@@ -333,8 +333,8 @@ impl AgentAdapter for CodexAdapter {
                                 .collect()
                         })
                         .unwrap_or_default(),
-                    url: None,     // Codex doesn't support HTTP
-                    headers: None, // Codex doesn't support HTTP
+                    url: None,
+                    headers: None,
                     enabled: config
                         .get("disabled")
                         .and_then(|v| v.as_bool())
@@ -1223,17 +1223,98 @@ startup_timeout_sec = 180
         assert_eq!(entry["startup_timeout_sec"].as_integer(), Some(30));
     }
 
-    #[test]
-    fn an_http_server_is_skipped_for_codex() {
-        let tmp = tempdir().unwrap();
-        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
-        let mut server = stdio_server("web", "");
+    fn http_server(name: &str, headers: &[(&str, &str)]) -> McpServer {
+        let mut server = stdio_server(name, "");
         server.transport = McpTransport::Http;
         server.url = Some("https://example.invalid/mcp".to_string());
+        server.headers = (!headers.is_empty()).then(|| {
+            headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        });
+        server
+    }
+
+    /// Codex runs streamable-HTTP servers, but it expands no `${VAR}` in a
+    /// header value, so env references go to the keys Codex reads them from.
+    #[test]
+    fn an_http_server_is_written_with_its_headers_in_codex_form() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let server = http_server(
+            "web",
+            &[
+                ("Authorization", "Bearer ${TOK}"),
+                ("X-Key", "${KEY_VAR}"),
+                ("X-Region", "us"),
+            ],
+        );
+
+        let report = adapter
+            .write_mcp_servers(&one_server(server.clone()))
+            .unwrap();
+        assert_eq!(report.written, 1);
+
+        let doc = parsed_toml(tmp.path());
+        let entry = &doc["mcp_servers"]["web"];
+        assert_eq!(entry["type"].as_str(), Some("http"));
+        assert_eq!(entry["url"].as_str(), Some("https://example.invalid/mcp"));
+        assert_eq!(entry["bearer_token_env_var"].as_str(), Some("TOK"));
+        assert_eq!(entry["env_http_headers"]["X-Key"].as_str(), Some("KEY_VAR"));
+        assert_eq!(entry["http_headers"]["X-Region"].as_str(), Some("us"));
+        assert!(entry.get("command").is_none());
+        assert!(entry
+            .get("http_headers")
+            .unwrap()
+            .get("Authorization")
+            .is_none());
+
+        assert_eq!(adapter.read_mcp_servers().unwrap()["web"], server);
+        let again = adapter.write_mcp_servers(&one_server(server)).unwrap();
+        assert_eq!(again.written, 0, "an unchanged HTTP server is rewritten");
+    }
+
+    #[test]
+    fn an_http_server_replaces_a_stdio_entry_cleanly() {
+        let tmp = tempdir().unwrap();
+        fs::write(
+            tmp.path().join("config.toml"),
+            "[mcp_servers.web]\ncommand = \"/bin/web\"\nargs = [\"-v\"]\ncwd = \"/srv\"\nstartup_timeout_sec = 30\n\n[mcp_servers.web.env]\nA = \"1\"\n",
+        )
+        .unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        let report = adapter
+            .write_mcp_servers(&one_server(http_server("web", &[])))
+            .unwrap();
+        assert_eq!(report.written, 1);
+
+        let doc = parsed_toml(tmp.path());
+        let entry = &doc["mcp_servers"]["web"];
+        assert_eq!(entry["url"].as_str(), Some("https://example.invalid/mcp"));
+        for key in ["command", "args", "env", "cwd"] {
+            assert!(entry.get(key).is_none(), "stdio key {key} left beside url");
+        }
+        assert_eq!(entry["startup_timeout_sec"].as_integer(), Some(30));
+    }
+
+    /// `Token ${X}` cannot be spelled in config.toml: writing it literally
+    /// would send the text `${X}` to the server.
+    #[test]
+    fn an_http_header_codex_cannot_express_skips_the_server() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let server = http_server("web", &[("X-Api", "Token ${API}")]);
 
         let report = adapter.write_mcp_servers(&one_server(server)).unwrap();
         assert_eq!(report.written, 0);
         assert_eq!(report.skipped.len(), 1);
+        assert!(
+            format!("{:?}", report.skipped[0]).contains("X-Api"),
+            "{:?}",
+            report.skipped
+        );
         assert!(!tmp.path().join("config.toml").exists());
     }
 
