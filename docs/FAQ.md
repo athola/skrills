@@ -10,13 +10,12 @@ Download the archive matching your system architecture (e.g., `skrills-x86_64-un
 
 ### How do I fix the `MCP startup failed: missing field "type"` error in Codex?
 
-The MCP server registration is missing `type = "stdio"`. Reinstall with the latest installer, or fix manually:
+The MCP server registration in `~/.codex/config.toml` is missing `type = "stdio"`. `skrills setup` writes it when it adds the `[mcp_servers.skrills]` table but leaves an existing table unchanged, so fix an old entry by hand:
 
-1. Add `type: "stdio"` to `skrills` in `~/.codex/mcp_servers.json`
-2. Add `type = "stdio"` to `[mcp_servers."skrills"]` in `~/.codex/config.toml`
-3. Restart Codex.
+1. Add `type = "stdio"` under `[mcp_servers.skrills]` in `~/.codex/config.toml`.
+2. Restart Codex.
 
-Run `skrills doctor` to verify.
+Run `skrills doctor` to verify. It checks `config.toml`, plus a legacy `~/.codex/mcp_servers.json` only when one exists.
 
 ### Will this overwrite my existing skills?
 

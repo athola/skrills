@@ -26,6 +26,10 @@ skrills validate --format json --errors-only  # Machine-readable output
 | `--format <FORMAT>` | `text` or `json` (default: `text`) |
 | `--errors-only` | Hide passing skills |
 
+`validate` exits non-zero when any skill has an error, cannot be read, or
+could not be auto-fixed, so a script or CI step can gate on the exit code.
+`--watch` is not implemented yet and is refused.
+
 ### analyze
 
 Find skills that consume too many tokens or need optimization:
@@ -80,6 +84,8 @@ Sync everything between Claude Code and Codex CLI:
 skrills sync-all --from claude                        # Copy everything from Claude
 skrills sync-all --from claude --skip-existing-commands  # Keep local commands
 skrills sync-all --dry-run                            # Preview without changing
+skrills sync-all --from claude --validate             # Refuse to sync skills that do not validate
+skrills sync-all --from claude --autofix --dry-run    # Check what autofix would leave, write nothing
 ```
 
 **Options:**
@@ -89,6 +95,15 @@ skrills sync-all --dry-run                            # Preview without changing
 | `--from` | Source side: `claude` or `codex` (default: `claude`) |
 | `--dry-run` | Preview changes without writing |
 | `--skip-existing-commands` | Keep existing commands on target side |
+| `--validate` | Validate the source skills before any target is written |
+| `--autofix` | Add missing frontmatter to the source skills, then validate as `--validate` does |
+
+With `--validate` or `--autofix`, the `--from` skill tree is validated for
+the strictest of the targets being synced (Codex and Copilot are stricter
+than Claude and Cursor) before the first target is touched. Any remaining
+error aborts every target, with nothing written. `--autofix` rewrites the
+source skills in place, without a backup, before validating; under
+`--dry-run` it only checks what the fix would leave and rewrites nothing.
 
 ### sync-status
 
@@ -151,7 +166,7 @@ skrills serve --skill-dir ~/.custom/skills  # Custom skill directory
 | `--allowed-hosts <HOSTS>` | Extra `Host` values the MCP transport accepts, on top of `localhost`, `127.0.0.1` and `::1` |
 | `--skill-dir <DIR>` | Additional skill directory to include |
 | `--cache-ttl-ms <N>` | Discovery cache TTL in milliseconds |
-| `--watch` | Enable live filesystem invalidation |
+| `--watch` | Enable live filesystem invalidation (stdio only; refused with `--http`, so restart an HTTP server to pick up skill changes) |
 
 The MCP transport validates the inbound `Host` header and accepts only
 `localhost`, `127.0.0.1` and `::1` unless told otherwise. That is what stops a
@@ -360,7 +375,7 @@ Check your configuration:
 skrills doctor
 ```
 
-Verifies Codex MCP configuration and identifies problems.
+Verifies the Codex MCP registration in `~/.codex/config.toml`, where `skrills setup` writes it, and identifies problems. A legacy `~/.codex/mcp_servers.json` is inspected only when present.
 
 ### setup
 
@@ -412,7 +427,7 @@ skrills cert install --cert my.pem --key my-key.pem  # Install custom certificat
 | Subcommand | Purpose |
 |------------|---------|
 | `status` | Display certificate path, validity, issuer, and days until expiry |
-| `renew` | Generate a new self-signed certificate (365-day validity) |
+| `renew` | Generate a new self-signed certificate (365-day validity). Without `--force` it does nothing while the current certificate is valid for more than 30 days, and refuses to replace one that is not self-signed (a CA-issued certificate) |
 | `install` | Import certificate and key from external files |
 
 > **Note:** Certificate management is currently CLI-only. There is no MCP tool or plugin skill for cert operations yet. Use the `skrills cert` subcommands directly from a terminal.

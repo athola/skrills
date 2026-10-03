@@ -291,7 +291,6 @@ fn docs_changelog_top_entry_is_the_workspace_version() {
 /// Invariant #7: the published book's changelog leads with the same release as
 /// `docs/CHANGELOG.md`, so a reader of the book is not a release behind.
 #[test]
-#[ignore = "ST-6: enable once book/src/changelog.md gains the 0.9.0 section"]
 fn book_changelog_top_entry_matches_docs_changelog() {
     let root = workspace_root();
     let docs = top_changelog_version(&root.join("docs").join("CHANGELOG.md"));

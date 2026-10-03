@@ -14,9 +14,9 @@ To find the correct release asset, determine your system's Rust/Cargo target tri
 
 ### How can I resolve the `MCP startup failed: missing field "type"` error in Codex?
 
-Re-execute the installer (`install.sh` or `install.ps1`). The updated installer will automatically register `skrills` with `type = "stdio"` in both `~/.codex/mcp_servers.json` and `~/.codex/config.toml`.
+Codex reads the registration from `~/.codex/config.toml`. `skrills setup` (which the installer runs) writes `type = "stdio"` when it adds the `[mcp_servers.skrills]` table, but leaves an existing table unchanged, so re-running the installer does not repair an old entry.
 
-**Manual fix**: Add `type: "stdio"` to the `skrills` entry in `mcp_servers.json` and `type = "stdio"` under `[mcp_servers."skrills"]` in `config.toml`. Then, restart Codex. Run `skrills doctor` to confirm that both files are correctly configured.
+**Manual fix**: Add `type = "stdio"` under `[mcp_servers.skrills]` in `~/.codex/config.toml`, then restart Codex. Run `skrills doctor` to confirm. It checks `config.toml`, and also checks a legacy `~/.codex/mcp_servers.json` only if one exists; setup no longer writes that file.
 
 If the error persists with a third-party MCP server, consider proxying problematic servers through a schema normalizer like `codex-mcp-wrapper`.
 

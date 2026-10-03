@@ -16,9 +16,9 @@ powershell -ExecutionPolicy Bypass -NoLogo -NoProfile -Command "iwr https://raw.
 
 The installer:
 1. Downloads the correct binary for your system
-2. Installs it to `~/.codex/bin` (or detects your setup)
-3. Registers skrills as an MCP server
-4. Syncs your skills across detected CLIs (Claude, Codex, Copilot, Cursor)
+2. Installs it to `~/.skrills/bin` (override with `SKRILLS_BIN_DIR`)
+3. Runs `skrills setup` to register skrills as an MCP server
+4. With `SKRILLS_UNIVERSAL=1`, also syncs your Claude skills into `~/.agent/skills`
 
 ## Verify Installation
 
@@ -79,13 +79,20 @@ SKRILLS_NO_MIRROR=1 \
 ## What the Installer Configures
 
 ### MCP Server Registration
-The installer registers Skrills as an MCP server so your AI assistant can use it directly. This configuration is stored in `~/.codex/mcp_servers.json` for the Codex MCP registry and `~/.codex/config.toml` for Codex configuration.
+The installer runs `skrills setup`, which registers Skrills as an MCP server so your AI assistant can use it directly:
 
-### Hooks (Claude Code only)
-For Claude Code, the installer creates a hook at `~/.claude/hooks/prompt.on_user_prompt_submit`. This hook integrates Skrills features into the Claude Code workflow.
+- **Codex**: a `[mcp_servers.skrills]` table in `~/.codex/config.toml`. Setup does not write `~/.codex/mcp_servers.json`; `skrills doctor` checks `config.toml` and inspects a legacy `mcp_servers.json` only if one exists.
+- **Claude Code**: `claude mcp add --scope user`, which records the server in `~/.claude.json`. If the `claude` command is missing or fails, setup writes `~/.claude/.mcp.json` instead.
+- **Copilot**: `mcp_servers.json` in `~/.copilot`, or in the platform config directory (`~/.config/copilot` on Linux) when `~/.copilot` does not exist.
+- **Cursor**: `~/.cursor/mcp.json`.
+
+Set `SKRILLS_NO_HOOK=1` to skip this step.
+
+### Hooks
+Setup installs no hooks. `skrills setup --uninstall --client claude` removes the `~/.claude/hooks/prompt.on_user_prompt_submit` hook that older releases created.
 
 ### Skill Mirroring
-By default, the installer copies your Claude skills to `~/.codex/skills/` so Codex can discover them. You can skip this step by setting `SKRILLS_NO_MIRROR=1`.
+The installer does not copy skills between clients. Set `SKRILLS_UNIVERSAL=1` to have setup also sync your Claude skill directories into `~/.agent/skills`. Use `skrills sync-all` to sync skills, commands and settings between clients.
 
 ## Troubleshooting
 

@@ -76,6 +76,7 @@ dashboard (or both):
 ```bash
 skrills cold-window --tui                    # live TUI in this terminal (q / Ctrl-C to quit)
 skrills cold-window --browser --port 8888    # same engine, browser dashboard at /dashboard
+skrills cold-window --tui --demo             # invented data that walks every alert tier, as in the GIF
 ```
 
 To keep the TUI always-on in a [Zellij](https://zellij.dev) pane, see
