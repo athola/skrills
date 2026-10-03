@@ -86,9 +86,8 @@ pub(crate) struct ServeOptions {
 /// The bearer token for HTTP serve: `--auth-token` or `SKRILLS_AUTH_TOKEN`
 /// when given, else `[serve] auth_token` from `~/.skrills/config.toml`.
 ///
-/// Read from the config file here rather than through the environment
-/// variable the config loader exports, so auth does not depend on that
-/// export. A config file that exists but cannot be read is an error: the
+/// Read from the config file here: the config loader does not export the
+/// token, so child processes never inherit it. A config file that exists but cannot be read is an error: the
 /// server must not start without the auth the file asks for.
 #[cfg_attr(not(feature = "http-transport"), allow(dead_code))]
 fn resolve_auth_token(
@@ -243,7 +242,10 @@ pub(crate) fn handle_serve_command(options: ServeOptions) -> Result<()> {
     }
 
     // Default: stdio transport
-    let service = SkillService::new_with_ttl(merge_extra_dirs(&skill_dirs), ttl)?;
+    // Skill reads, validations and syncs go to ~/.skrills/metrics.db, which
+    // the dashboard of an HTTP server reads.
+    let service =
+        SkillService::new_with_ttl(merge_extra_dirs(&skill_dirs), ttl)?.with_persistent_metrics();
 
     #[cfg(feature = "watch")]
     let _watcher = if watch {
@@ -295,8 +297,8 @@ mod tests {
         toml::from_str(&format!("[serve]\nauth_token = \"{token}\"\n")).unwrap()
     }
 
-    /// SB-8: a config-file token has to reach the server without going
-    /// through the SKRILLS_AUTH_TOKEN export.
+    /// SB-8: a config-file token reaches the server although the config
+    /// loader no longer exports it as SKRILLS_AUTH_TOKEN.
     #[test]
     fn a_config_file_token_is_used_when_no_flag_or_env_is_given() {
         let token = resolve_auth_token(None, || Ok(Some(config_with_token("from-file")))).unwrap();

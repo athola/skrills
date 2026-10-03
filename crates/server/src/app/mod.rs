@@ -71,6 +71,9 @@ pub struct SkillService {
     pub(crate) mcp_registry: Arc<Mutex<McpToolRegistry>>,
     /// Context usage statistics for tracking token savings.
     pub(crate) context_stats: Arc<ContextStats>,
+    /// Where skill reads, validations and syncs are recorded for the
+    /// dashboard. `None` records nothing.
+    pub(crate) metrics: Option<Arc<skrills_metrics::MetricsCollector>>,
 }
 
 /// Starts a filesystem watcher to invalidate caches on changes.
@@ -155,7 +158,46 @@ impl SkillService {
             subagents: Some(SubagentService::new()?),
             mcp_registry,
             context_stats,
+            metrics: None,
         })
+    }
+
+    /// Records skill reads, validations and syncs to `collector`, which the
+    /// dashboard's metrics API reads.
+    pub fn with_metrics(mut self, collector: Arc<skrills_metrics::MetricsCollector>) -> Self {
+        self.metrics = Some(collector);
+        self
+    }
+
+    /// Records to the shared on-disk store (`~/.skrills/metrics.db`), where a
+    /// dashboard in another process can read it. When the store cannot be
+    /// opened this logs a warning and records nothing.
+    pub fn with_persistent_metrics(self) -> Self {
+        match skrills_metrics::MetricsCollector::persistent_default() {
+            Ok(collector) => self.with_metrics(Arc::new(collector)),
+            Err(e) => {
+                tracing::warn!(
+                    target: "skrills::metrics",
+                    error = %e,
+                    "could not open ~/.skrills/metrics.db; skill usage will not be recorded"
+                );
+                self
+            }
+        }
+    }
+
+    /// Runs `record` against the collector, if any. A failed write is logged
+    /// and never fails the request it describes.
+    pub(crate) fn record_metric(
+        &self,
+        what: &str,
+        record: impl FnOnce(&skrills_metrics::MetricsCollector) -> skrills_metrics::Result<()>,
+    ) {
+        if let Some(collector) = &self.metrics {
+            if let Err(e) = record(collector) {
+                tracing::warn!(target: "skrills::metrics", error = %e, what, "failed to record metric");
+            }
+        }
     }
 
     /// Test-only helper to build a service from explicit roots without
@@ -182,6 +224,7 @@ impl SkillService {
             subagents: Some(SubagentService::new()?),
             mcp_registry,
             context_stats,
+            metrics: None,
         })
     }
 
@@ -467,7 +510,13 @@ impl SkillService {
             let mut cache = self.cache.lock();
             cache.skill_by_uri(&canonical_uri)?
         };
-        let text = self.read_skill_cached(&meta)?;
+        let read_started = Instant::now();
+        let read = self.read_skill_cached(&meta);
+        let elapsed_ms = u64::try_from(read_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.record_metric("skill invocation", |m| {
+            m.record_skill_invocation(&meta.name, elapsed_ms, read.is_ok(), None)
+        });
+        let text = read?;
 
         let mut contents = vec![text_with_location_and_role(
             text,

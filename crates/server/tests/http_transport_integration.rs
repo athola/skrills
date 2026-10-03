@@ -10,6 +10,18 @@
 use std::time::Duration;
 use tokio::time::timeout;
 
+/// Points HOME at one temp dir for this whole test binary before any server
+/// starts, so the metrics store the server opens (`~/.skrills/metrics.db`)
+/// is not the developer's. Set once and never changed afterwards.
+fn isolate_home() {
+    static HOME: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        let dir = tempfile::tempdir().expect("temp HOME");
+        std::env::set_var("HOME", dir.path());
+        dir
+    });
+}
+
 fn service_factory() -> Result<skrills_server::app::SkillService, std::io::Error> {
     skrills_server::app::SkillService::new_with_ttl(vec![], Duration::from_secs(60))
         .map_err(std::io::Error::other)
@@ -24,6 +36,7 @@ fn service_factory() -> Result<skrills_server::app::SkillService, std::io::Error
 async fn spawn_server(
     security: skrills_server::http_transport::HttpSecurityConfig,
 ) -> (String, tokio::task::JoinHandle<()>) {
+    isolate_home();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("should bind to ephemeral port");
@@ -133,7 +146,7 @@ async fn rest_route_rejects_foreign_host() {
     let (bind, server) =
         spawn_server(skrills_server::http_transport::HttpSecurityConfig::default()).await;
 
-    let status = get_status(&bind, "/api/mcp-servers", "evil.example").await;
+    let status = get_status(&bind, "/api/skills", "evil.example").await;
 
     server.abort();
     assert!(
@@ -149,7 +162,7 @@ async fn rest_route_accepts_loopback_host() {
         spawn_server(skrills_server::http_transport::HttpSecurityConfig::default()).await;
     let port = bind.rsplit(':').next().unwrap().to_string();
 
-    let status = get_status(&bind, "/api/mcp-servers", &format!("localhost:{port}")).await;
+    let status = get_status(&bind, "/api/skills", &format!("localhost:{port}")).await;
 
     server.abort();
     assert_eq!(
@@ -291,6 +304,7 @@ async fn startup_fails_when_an_allowed_host_carries_a_scheme() {
 /// new one; the old probe-and-rebind setup raced other processes for the port.
 #[tokio::test]
 async fn server_answers_on_exactly_the_listeners_port() {
+    isolate_home();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("should bind to ephemeral port");
@@ -305,7 +319,7 @@ async fn server_answers_on_exactly_the_listeners_port() {
     ));
 
     let bind = format!("127.0.0.1:{port}");
-    let status = get_status(&bind, "/api/mcp-servers", &format!("localhost:{port}")).await;
+    let status = get_status(&bind, "/api/skills", &format!("localhost:{port}")).await;
 
     assert!(
         !server.is_finished(),
@@ -346,6 +360,7 @@ async fn listener_startup_fails_when_an_allowed_host_carries_a_scheme() {
 /// on the same bound listener as plain HTTP.
 #[tokio::test]
 async fn https_serves_on_the_given_listener() {
+    isolate_home();
     let dir = tempfile::tempdir().unwrap();
     let (cert, key) = skrills_server::tls_auto::generate_self_signed_cert().unwrap();
     let cert_path = dir.path().join("cert.pem");
@@ -372,7 +387,7 @@ async fn https_serves_on_the_given_listener() {
         .danger_accept_invalid_certs(true)
         .build()
         .unwrap();
-    let url = format!("https://localhost:{port}/api/mcp-servers");
+    let url = format!("https://localhost:{port}/api/skills");
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let response = loop {
         match client.get(&url).send().await {

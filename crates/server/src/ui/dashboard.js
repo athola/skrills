@@ -74,8 +74,8 @@
             const res = await fetch('/api/mcp-servers');
             const data = await res.json();
             mcpServers = data.servers || [];
-            document.getElementById('mcp-count').textContent = data.total || 0;
-            renderMcpServers();
+            document.getElementById('mcp-count').textContent = res.ok ? (data.total || 0) : '-';
+            renderMcpServers(res.ok ? null : data.error);
         } catch (e) {
             console.error('Failed to fetch MCP servers:', e);
         }
@@ -370,15 +370,15 @@
         renderSkills();
     }
 
-    function renderMcpServers() {
+    function renderMcpServers(unavailable) {
         const list = document.getElementById('mcp-list');
         if (!list) return;
         list.replaceChildren();
 
-        if (mcpServers.length === 0) {
+        if (unavailable || mcpServers.length === 0) {
             const empty = document.createElement('div');
             empty.className = 'empty';
-            empty.textContent = 'No MCP servers found';
+            empty.textContent = unavailable || 'No MCP servers found';
             list.appendChild(empty);
             return;
         }

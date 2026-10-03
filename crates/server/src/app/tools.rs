@@ -188,6 +188,36 @@ impl SkillService {
                 total_dep_issues += dependency_issues.len();
             }
 
+            let mut passed = Vec::new();
+            let mut failed = Vec::new();
+            if validation_target != VT::Codex {
+                if result.claude_valid {
+                    &mut passed
+                } else {
+                    &mut failed
+                }
+                .push("claude");
+            }
+            if validation_target != VT::Claude {
+                if result.codex_valid {
+                    &mut passed
+                } else {
+                    &mut failed
+                }
+                .push("codex");
+            }
+            if check_dependencies {
+                if dependency_issues.is_empty() {
+                    &mut passed
+                } else {
+                    &mut failed
+                }
+                .push("dependencies");
+            }
+            self.record_metric("validation", |m| {
+                m.record_validation(&meta.name, &passed, &failed)
+            });
+
             validated += 1;
             claude_valid += usize::from(result.claude_valid);
             codex_valid += usize::from(result.codex_valid);

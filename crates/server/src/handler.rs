@@ -111,6 +111,89 @@ fn run_blocking<T>(work: impl FnOnce() -> T) -> T {
     }
 }
 
+/// Files a sync tool wrote, from its structured result: the sum of every
+/// `written` (adapter reports) and `copied` (skill mirror report) count.
+fn synced_file_count(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Object(map) => map
+            .iter()
+            .map(|(key, v)| match (key.as_str(), v.as_u64()) {
+                ("written" | "copied", Some(n)) => usize::try_from(n).unwrap_or(usize::MAX),
+                _ => synced_file_count(v),
+            })
+            .fold(0usize, usize::saturating_add),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(synced_file_count)
+            .fold(0usize, usize::saturating_add),
+        _ => 0,
+    }
+}
+
+impl SkillService {
+    /// Feeds `get-context-stats` from a `list-mcp-tools` answer: the listed
+    /// schemas the client did not have to load, less the listing itself, and
+    /// the schema size of each category.
+    fn record_listing_savings(
+        &self,
+        registry: &crate::mcp_gateway::McpToolRegistry,
+        listing: &CallToolResult,
+    ) {
+        let listed_tokens = listing
+            .structured_content
+            .as_ref()
+            .and_then(|v| v.get("total_estimated_tokens"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let listing_tokens = listing
+            .content
+            .iter()
+            .filter_map(|block| block.as_text())
+            .map(|t| crate::mcp_gateway::estimate_tokens(&t.text) as u64)
+            .sum::<u64>();
+        self.context_stats
+            .record_tokens_saved(listed_tokens.saturating_sub(listing_tokens));
+        for category in registry.categories() {
+            let tokens = registry
+                .list_by_category(category)
+                .iter()
+                .map(|e| e.estimated_tokens as u64)
+                .sum();
+            self.context_stats.set_category_tokens(category, tokens);
+        }
+    }
+
+    /// Records a `sync-*` tool call for the dashboard. Previews
+    /// (`sync-status`, `dry_run: true`) wrote nothing and are not recorded.
+    fn record_sync_tool(
+        &self,
+        tool: &str,
+        args: Option<&serde_json::Map<String, serde_json::Value>>,
+        result: &Result<CallToolResult>,
+    ) {
+        use skrills_metrics::{SyncOperation, SyncStatus};
+
+        let dry_run = args
+            .and_then(|a| a.get("dry_run"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !tool.starts_with("sync-") || tool == "sync-status" || dry_run {
+            return;
+        }
+        let (files, status) = match result {
+            Ok(res) if res.is_error != Some(true) => (
+                res.structured_content.as_ref().map_or(0, synced_file_count),
+                SyncStatus::Success,
+            ),
+            _ => (0, SyncStatus::Failed),
+        };
+        // Every sync tool writes into another tool's configuration.
+        self.record_metric("sync", |m| {
+            m.record_sync_event(SyncOperation::Push, files, status)
+        });
+    }
+}
+
 /// The newest MCP revision this server advertises.
 ///
 /// rmcp 3.4 knows 2026-07-28, whose sessions bypass the session manager and
@@ -189,6 +272,7 @@ impl ServerHandler for SkillService {
     ) -> impl std::future::Future<Output = Result<CallToolResponse, rmcp::ErrorData>> + Send + '_
     {
         Box::pin(async move {
+            self.context_stats.record_invocation();
             #[cfg(feature = "subagents")]
             {
                 let name = request.name.to_string();
@@ -240,7 +324,8 @@ impl ServerHandler for SkillService {
                 "search-discussions" => self.search_discussions_tool(args).await,
                 "resolve-doi" => self.resolve_doi_tool(args).await,
                 "fetch-pdf" => self.fetch_pdf_tool(args).await,
-                _ => run_blocking(|| -> Result<CallToolResult> {
+                _ => {
+                let result = run_blocking(|| -> Result<CallToolResult> {
                     match canonical_name.as_str() {
                     "sync-from-claude" => {
                         let include_marketplace = request
@@ -740,7 +825,10 @@ impl ServerHandler for SkillService {
                         // Get tool entries from the real registry
                         let registry = self.mcp_registry.lock();
                         let entries: Vec<_> = registry.list_all();
-                        crate::mcp_gateway::list_mcp_tools(request.arguments.as_ref(), entries)
+                        let listing =
+                            crate::mcp_gateway::list_mcp_tools(request.arguments.as_ref(), entries)?;
+                        self.record_listing_savings(&registry, &listing);
+                        Ok(listing)
                     }
                     "describe-mcp-tool" => {
                         // Lookup tool in all_tools by name; only a schema that
@@ -787,7 +875,10 @@ impl ServerHandler for SkillService {
                     }
                     other => Err(invalid_params(format!("unknown tool {other}"))),
                 }
-                }),
+                });
+                self.record_sync_tool(&canonical_name, request.arguments.as_ref(), &result);
+                result
+                }
             }
             .map_err(tool_error)
             .map(CallToolResponse::from)
@@ -1520,5 +1611,193 @@ mod tests {
             tool.input_schema["properties"]["include_marketplace"]["type"],
             "boolean"
         );
+    }
+
+    /// SB-16: `get-context-stats` reported zero invocations and zero tokens
+    /// saved because nothing called the counters.
+    #[test]
+    fn context_stats_count_invocations_and_listing_savings() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var("HOME", temp.path().to_str());
+        let service = build_service(&temp);
+        let stats = service.context_stats.clone();
+        let registry_tokens = service.mcp_registry.lock().total_estimated_tokens() as u64;
+        let categorized_tokens: u64 = service
+            .mcp_registry
+            .lock()
+            .list_all()
+            .iter()
+            .filter(|e| e.category.is_some())
+            .map(|e| e.estimated_tokens as u64)
+            .sum();
+
+        let listing = run_async(async move {
+            let (running, context, _client) = service_with_context(service);
+            let svc = running.service();
+            let listing = svc
+                .call_tool(
+                    CallToolRequestParams::new("list-mcp-tools"),
+                    context.clone(),
+                )
+                .await;
+            let _ = svc
+                .call_tool(CallToolRequestParams::new("get-context-stats"), context)
+                .await;
+            listing
+        });
+
+        let listing_text = match listing.expect("list-mcp-tools") {
+            CallToolResponse::Complete(res) => res.content[0].as_text().expect("text").text.clone(),
+            other => panic!("expected a completed tool call, got {other:?}"),
+        };
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.total_invocations, 2);
+        assert_eq!(
+            snapshot.tokens_saved,
+            registry_tokens
+                .saturating_sub(crate::mcp_gateway::estimate_tokens(&listing_text) as u64)
+        );
+        assert!(snapshot.tokens_saved > 0);
+        assert!(
+            !snapshot.category_tokens.is_empty(),
+            "per-category totals should be filled in"
+        );
+        assert_eq!(
+            snapshot.category_tokens.values().sum::<u64>(),
+            categorized_tokens,
+            "each category holds the schema size of its tools"
+        );
+    }
+
+    /// RT-21: the dashboard reads skill, validation and sync rows that
+    /// nothing wrote. These pin the writers, using an in-memory collector.
+    mod metrics_writers {
+        use super::*;
+        use skrills_metrics::{MetricEvent, MetricsCollector, SyncStatus};
+        use std::sync::Arc;
+
+        /// The skill `build_service` writes, by the name `/api/skills`
+        /// reports, so the dashboard can join the two.
+        const DEMO: &str = "demo/SKILL.md";
+
+        fn events(collector: &MetricsCollector) -> Vec<MetricEvent> {
+            collector.get_recent_events(100).expect("read events")
+        }
+
+        #[test]
+        fn serving_a_skill_records_an_invocation() {
+            let _guard = test_support::env_guard();
+            let temp = tempdir().expect("tempdir");
+            let _home = set_env_var("HOME", temp.path().to_str());
+            let collector = Arc::new(MetricsCollector::in_memory().unwrap());
+            let service = build_service(&temp).with_metrics(collector.clone());
+            let uri = service
+                .list_resources_payload()
+                .unwrap()
+                .into_iter()
+                .map(|r| r.uri.clone())
+                .find(|u| u.starts_with("skill://"))
+                .expect("a skill resource");
+
+            service.read_resource_sync(&uri).expect("read skill");
+
+            assert!(
+                events(&collector).iter().any(|e| matches!(
+                    e,
+                    MetricEvent::SkillInvocation { skill_name, success: true, .. }
+                        if skill_name == DEMO
+                )),
+                "{:?}",
+                events(&collector)
+            );
+        }
+
+        #[test]
+        fn validate_skills_records_a_validation_per_skill() {
+            let _guard = test_support::env_guard();
+            let temp = tempdir().expect("tempdir");
+            let _home = set_env_var("HOME", temp.path().to_str());
+            let collector = Arc::new(MetricsCollector::in_memory().unwrap());
+            let service = build_service(&temp).with_metrics(collector.clone());
+
+            call(service, "validate-skills", json!({"target": "claude"})).expect("validate");
+
+            let recorded = events(&collector);
+            assert!(
+                recorded.iter().any(|e| matches!(
+                    e,
+                    MetricEvent::Validation { skill_name, checks_passed, checks_failed, .. }
+                        if skill_name == DEMO
+                            && checks_passed.len() + checks_failed.len() == 1
+                )),
+                "{recorded:?}"
+            );
+        }
+
+        #[test]
+        fn a_sync_tool_records_a_sync_event_with_its_file_count() {
+            let _guard = test_support::env_guard();
+            let temp = tempdir().expect("tempdir");
+            let _home = set_env_var("HOME", temp.path().to_str());
+            let claude_skill = temp.path().join(".claude/skills/alpha");
+            std::fs::create_dir_all(&claude_skill).unwrap();
+            std::fs::write(
+                claude_skill.join("SKILL.md"),
+                "---\nname: alpha\ndescription: a\n---\nbody",
+            )
+            .unwrap();
+            let collector = Arc::new(MetricsCollector::in_memory().unwrap());
+            let service = build_service(&temp).with_metrics(collector.clone());
+
+            call(service, "sync-from-claude", json!({})).expect("sync");
+
+            let recorded = events(&collector);
+            assert!(
+                recorded.iter().any(|e| matches!(
+                    e,
+                    MetricEvent::Sync {
+                        files_count: 1,
+                        status: SyncStatus::Success,
+                        ..
+                    }
+                )),
+                "{recorded:?}"
+            );
+        }
+
+        /// A preview writes nothing, so it is not a sync.
+        #[test]
+        fn sync_status_records_nothing() {
+            let _guard = test_support::env_guard();
+            let temp = tempdir().expect("tempdir");
+            let _home = set_env_var("HOME", temp.path().to_str());
+            let collector = Arc::new(MetricsCollector::in_memory().unwrap());
+            let service = build_service(&temp).with_metrics(collector.clone());
+
+            let _ = call(service, "sync-status", json!({}));
+
+            assert!(
+                !events(&collector)
+                    .iter()
+                    .any(|e| matches!(e, MetricEvent::Sync { .. })),
+                "{:?}",
+                events(&collector)
+            );
+        }
+
+        #[test]
+        fn synced_file_count_sums_written_and_copied_counts() {
+            let report = json!({
+                "report": {
+                    "skills": {"written": 2, "skipped": [], "duplicates": 0},
+                    "commands": {"written": 3, "skipped": []},
+                    "copied": 1,
+                    "summary": "x"
+                },
+                "_meta": {"priority": []}
+            });
+            assert_eq!(synced_file_count(&report), 6);
+        }
     }
 }

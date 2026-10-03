@@ -35,9 +35,10 @@ use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetReques
 /// Header name for request ID.
 const REQUEST_ID_HEADER: &str = "x-request-id";
 
-/// Content-Security-Policy served with every response. `unsafe-inline` is
-/// needed because the dashboard ships its scripts and styles inline.
-const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'";
+/// Content-Security-Policy served with every response. The dashboard loads
+/// its script and stylesheet from `/static/`, so inline script and style are
+/// refused.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'";
 
 /// Configuration for HTTP transport security.
 ///
@@ -397,6 +398,48 @@ struct PreparedServer {
     tls: Option<(PathBuf, PathBuf)>,
 }
 
+/// Opens the shared on-disk metrics store (`~/.skrills/metrics.db`), which
+/// stdio `serve` processes also write. Falls back to an in-memory store, with
+/// a warning, so a broken store never stops the server.
+fn open_metrics_collector() -> Result<Arc<skrills_metrics::MetricsCollector>> {
+    use skrills_metrics::MetricsCollector;
+    let collector = MetricsCollector::persistent_default()
+        .or_else(|e| {
+            tracing::warn!(
+                target: "skrills::http",
+                error = %e,
+                "could not open ~/.skrills/metrics.db; dashboard metrics will cover this run only"
+            );
+            MetricsCollector::in_memory()
+        })
+        .context("failed to create an in-memory SQLite metrics collector")?;
+    Ok(Arc::new(collector))
+}
+
+/// `/api/mcp-servers` lists every configured MCP server's command, args and
+/// env names. Without a token anyone who can reach the port could read that
+/// inventory, so the route answers 403 unless auth is on.
+fn mcp_servers_router(has_auth: bool) -> axum::Router {
+    if has_auth {
+        return mcp_servers_routes();
+    }
+    tracing::info!(
+        target: "skrills::http",
+        "/api/mcp-servers is disabled because no auth token is set"
+    );
+    axum::Router::new().route(
+        "/api/mcp-servers",
+        axum::routing::get(|| async {
+            (
+                StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({
+                    "error": "the MCP server list needs an auth token (--auth-token or [serve] auth_token)"
+                })),
+            )
+        }),
+    )
+}
+
 /// Builds the routes and layers shared by every serve entry point.
 fn prepare_server<F>(
     service_factory: F,
@@ -414,6 +457,13 @@ where
     // Create session manager for stateful connections
     let session_manager = Arc::new(LocalSessionManager::default());
 
+    // One collector for the dashboard's metrics API and every MCP session,
+    // so the skills served, validated and synced here show up there.
+    let metrics_collector = open_metrics_collector()?;
+    let session_metrics = metrics_collector.clone();
+    let service_factory =
+        move || service_factory().map(|service| service.with_metrics(session_metrics.clone()));
+
     // Create the streamable HTTP service
     let http_service = StreamableHttpService::new(service_factory, session_manager, config);
 
@@ -429,10 +479,6 @@ where
 
     // Build dashboard and API routes
     let api_state = Arc::new(ApiState::new(skill_dirs));
-    let metrics_collector = Arc::new(
-        skrills_metrics::MetricsCollector::new()
-            .context("failed to create in-memory SQLite metrics collector")?,
-    );
     let metrics_state = Arc::new(MetricsState {
         collector: metrics_collector,
     });
@@ -451,7 +497,9 @@ where
         rules: Arc::new(rules),
     });
 
-    // Serve static files (CSS) embedded at compile time
+    // Serve the dashboard stylesheet, embedded at compile time. It is a file
+    // rather than an inline block so the CSP needs no 'unsafe-inline'; the
+    // script is served the same way by `dashboard_routes`.
     let static_router = axum::Router::new().route(
         "/static/style.css",
         axum::routing::get(|| async {
@@ -469,7 +517,7 @@ where
         .merge(skills_routes(api_state))
         .merge(metrics_routes(metrics_state))
         .merge(rules_routes(rules_state))
-        .merge(mcp_servers_routes())
+        .merge(mcp_servers_router(security.has_auth()))
         .merge(static_router)
         .fallback_service(http_service)
         .layer(axum::middleware::from_fn(csp_middleware));
@@ -562,9 +610,9 @@ where
         .parse()
         .with_context(|| format!("invalid bind address: {bind_addr}"))?;
 
-    log_startup(addr, &security);
-    let prepared = prepare_server(service_factory, security, skill_dirs)?;
-    let (listener, _) = bind_with_fallback(addr).await?;
+    let prepared = prepare_server(service_factory, security.clone(), skill_dirs)?;
+    let (listener, bound) = bind_with_fallback(addr).await?;
+    log_startup(bound, &security);
     run_prepared(prepared, listener, open_browser).await
 }
 
@@ -606,13 +654,27 @@ async fn run_prepared(
     }
 }
 
+/// Pairs a listener with the address it is actually bound to, which differs
+/// from the requested one for port 0.
+fn with_bound_addr(
+    listener: tokio::net::TcpListener,
+) -> Result<(tokio::net::TcpListener, SocketAddr)> {
+    let addr = listener
+        .local_addr()
+        .context("failed to read the bound address")?;
+    Ok((listener, addr))
+}
+
 /// Try to bind to the given address, falling back to up to 9 subsequent ports on conflict.
+///
+/// Returns the listener and the address it is bound to (for port 0, the port
+/// the OS picked).
 async fn bind_with_fallback(addr: SocketAddr) -> Result<(tokio::net::TcpListener, SocketAddr)> {
     const MAX_PORT_ATTEMPTS: u16 = 10;
 
     // Try the requested port first
     match tokio::net::TcpListener::bind(addr).await {
-        Ok(listener) => return Ok((listener, addr)),
+        Ok(listener) => return with_bound_addr(listener),
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
             tracing::warn!(
                 target: "skrills::http",
@@ -639,7 +701,7 @@ async fn bind_with_fallback(addr: SocketAddr) -> Result<(tokio::net::TcpListener
                     actual = %try_port,
                     "Bound to fallback port"
                 );
-                return Ok((listener, try_addr));
+                return with_bound_addr(listener);
             }
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => continue,
             Err(e) => return Err(e).with_context(|| format!("failed to bind to {try_addr}")),
@@ -1273,6 +1335,22 @@ mod tests {
             drop(listener);
         }
 
+        /// `serve --http 127.0.0.1:0` asks the OS for a port; the address
+        /// returned (and logged) must be the one actually bound, not `:0`.
+        #[tokio::test]
+        async fn bind_with_fallback_reports_the_bound_port_for_port_zero() {
+            let requested: SocketAddr = "127.0.0.1:0".parse().unwrap();
+
+            let (listener, actual) = bind_with_fallback(requested).await.unwrap();
+
+            assert_ne!(
+                actual.port(),
+                0,
+                "port 0 is not an address a client can reach"
+            );
+            assert_eq!(actual, listener.local_addr().unwrap());
+        }
+
         #[tokio::test]
         async fn bind_with_fallback_falls_back_when_port_occupied() {
             // Occupy a port
@@ -1326,6 +1404,177 @@ mod tests {
             );
 
             drop(blockers);
+        }
+    }
+
+    /// Tests over the full router `prepare_server` builds, with HOME pointed
+    /// at a temp dir so nothing touches the developer's ~/.skrills.
+    mod prepared_router_tests {
+        use super::*;
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        /// Builds the served router and answers `requests` on a current-thread
+        /// runtime, holding the env lock for the whole run.
+        fn respond(
+            auth_token: Option<&str>,
+            requests: Vec<Request<Body>>,
+        ) -> Vec<axum::response::Response> {
+            let _g = crate::test_support::env_guard();
+            let home = tempfile::tempdir().unwrap();
+            let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
+            let security = HttpSecurityConfig {
+                auth_token: auth_token.map(str::to_string),
+                ..Default::default()
+            };
+            let prepared = prepare_server(
+                || Err(std::io::Error::other("no MCP session in this test")),
+                security,
+                Vec::new(),
+            )
+            .unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async move {
+                let mut responses = Vec::new();
+                for req in requests {
+                    responses.push(prepared.app.clone().oneshot(req).await.unwrap());
+                }
+                responses
+            })
+        }
+
+        fn get(path: &str, bearer: Option<&str>) -> Request<Body> {
+            let mut builder = Request::builder().uri(path).header("Host", "127.0.0.1");
+            if let Some(token) = bearer {
+                builder = builder.header("Authorization", format!("Bearer {token}"));
+            }
+            builder.body(Body::empty()).unwrap()
+        }
+
+        /// SA-2: MCP server inventories (commands, args, env names) are not
+        /// served by a server anyone on the network can reach without a token.
+        #[test]
+        fn mcp_servers_route_is_refused_without_auth() {
+            let mut responses = respond(None, vec![get("/api/mcp-servers", None)]);
+            let response = responses.remove(0);
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            let body = body_text(response);
+            assert!(!body.contains("servers"), "no inventory in: {body}");
+        }
+
+        fn body_text(response: axum::response::Response) -> String {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            let bytes = rt
+                .block_on(http_body_util::BodyExt::collect(response.into_body()))
+                .unwrap()
+                .to_bytes();
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+
+        /// RT-21: the dashboard reads the shared on-disk store, which other
+        /// skrills processes (stdio serve) also write.
+        #[test]
+        fn metrics_use_the_on_disk_store_under_home() {
+            let _g = crate::test_support::env_guard();
+            let home = tempfile::tempdir().unwrap();
+            let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
+
+            let collector = open_metrics_collector().unwrap();
+
+            assert!(matches!(
+                collector.storage_mode(),
+                skrills_metrics::StorageMode::Persistent(p)
+                    if p == &home.path().join(".skrills/metrics.db")
+            ));
+        }
+
+        #[test]
+        fn metrics_fall_back_to_memory_when_the_store_cannot_be_opened() {
+            let _g = crate::test_support::env_guard();
+            let home = tempfile::tempdir().unwrap();
+            // A file where the .skrills directory should be.
+            std::fs::write(home.path().join(".skrills"), "not a directory").unwrap();
+            let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
+
+            let collector = open_metrics_collector().unwrap();
+
+            assert!(matches!(
+                collector.storage_mode(),
+                skrills_metrics::StorageMode::InMemory
+            ));
+        }
+
+        /// SB-27: the dashboard's script and stylesheet are files, so the CSP
+        /// needs no `'unsafe-inline'`, which would let an injected inline
+        /// script run.
+        #[test]
+        fn csp_forbids_inline_script_and_style() {
+            let responses = respond(None, vec![get("/", None)]);
+            let csp = responses[0]
+                .headers()
+                .get(header::CONTENT_SECURITY_POLICY)
+                .expect("CSP header")
+                .to_str()
+                .unwrap()
+                .to_string();
+            assert!(!csp.contains("unsafe-inline"), "{csp}");
+            assert!(csp.contains("script-src 'self'"), "{csp}");
+            assert!(csp.contains("style-src 'self'"), "{csp}");
+        }
+
+        #[test]
+        fn dashboard_loads_its_script_from_a_static_file() {
+            let mut responses = respond(
+                None,
+                vec![get("/", None), get("/static/dashboard.js", None)],
+            );
+            let script = responses.pop().unwrap();
+            let page = responses.pop().unwrap();
+
+            assert_eq!(page.status(), StatusCode::OK);
+            let html = body_text(page);
+            assert!(
+                html.contains(r#"<script src="/static/dashboard.js""#),
+                "the page should load the script by URL: {html}"
+            );
+            assert!(
+                !html.contains("fetch("),
+                "no script body should be inlined in the page"
+            );
+            assert!(!html.contains("<style"), "no inline stylesheet");
+
+            assert_eq!(script.status(), StatusCode::OK);
+            let content_type = script
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
+            assert!(
+                content_type.starts_with("text/javascript"),
+                "{content_type}"
+            );
+            assert!(body_text(script).contains("fetch('/api/mcp-servers')"));
+        }
+
+        #[test]
+        fn mcp_servers_route_requires_the_token_when_auth_is_on() {
+            let responses = respond(
+                Some("tok"),
+                vec![
+                    get("/api/mcp-servers", None),
+                    get("/api/mcp-servers", Some("tok")),
+                ],
+            );
+            assert_eq!(responses[0].status(), StatusCode::UNAUTHORIZED);
+            assert_eq!(responses[1].status(), StatusCode::OK);
         }
     }
 }

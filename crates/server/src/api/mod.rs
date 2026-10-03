@@ -75,8 +75,24 @@ async fn dashboard_handler() -> impl IntoResponse {
     Html(crate::ui::render_dashboard())
 }
 
-/// Create dashboard UI routes.
+/// Serve the dashboard script. It is a file rather than an inline block so
+/// the Content-Security-Policy can refuse inline script.
+#[cfg(feature = "http-transport")]
+async fn dashboard_script_handler() -> impl IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/javascript; charset=utf-8",
+        )],
+        crate::ui::DASHBOARD_JS,
+    )
+}
+
+/// Create dashboard UI routes: the page at `/` and its script at
+/// `/static/dashboard.js`.
 #[cfg(feature = "http-transport")]
 pub fn dashboard_routes() -> Router {
-    Router::new().route("/", get(dashboard_handler))
+    Router::new()
+        .route("/", get(dashboard_handler))
+        .route("/static/dashboard.js", get(dashboard_script_handler))
 }
