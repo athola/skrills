@@ -84,8 +84,8 @@ pub(crate) fn read_servers(doc: &DocumentMut) -> Result<HashMap<String, McpServe
 /// Merges `servers` into `mcp_servers` by name.
 ///
 /// Servers only the file has are kept, and so are unmanaged keys inside an
-/// updated server. An HTTP server whose headers Codex cannot express (see
-/// [`split_headers`]) is skipped.
+/// updated server. An HTTP server with no `url`, or with headers Codex cannot
+/// express (see [`split_headers`]), is skipped.
 pub(crate) fn merge_servers(
     doc: &mut DocumentMut,
     servers: &HashMap<String, McpServer>,
@@ -99,6 +99,15 @@ pub(crate) fn merge_servers(
             let server = &servers[*name];
             if server.transport != McpTransport::Http {
                 return true;
+            }
+            if server.url.is_none() {
+                // Neither `url` nor `command`: Codex cannot parse the entry.
+                report.skipped.push(SkipReason::AgentSpecificFeature {
+                    item: (*name).clone(),
+                    feature: "HTTP server without a url".to_string(),
+                    suggestion: "add a `url` to the server in the source config".to_string(),
+                });
+                return false;
             }
             let Err(header) = split_headers(server.headers.as_ref()) else {
                 return true;

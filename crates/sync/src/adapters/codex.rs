@@ -1318,6 +1318,21 @@ startup_timeout_sec = 180
         assert!(!tmp.path().join("config.toml").exists());
     }
 
+    /// Without `url` the entry would have neither `url` nor `command`, which
+    /// Codex cannot parse, and it then refuses to start.
+    #[test]
+    fn an_http_server_without_a_url_is_skipped() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let mut server = http_server("web", &[]);
+        server.url = None;
+
+        let report = adapter.write_mcp_servers(&one_server(server)).unwrap();
+        assert_eq!(report.written, 0);
+        assert_eq!(report.skipped.len(), 1);
+        assert!(!tmp.path().join("config.toml").exists());
+    }
+
     #[test]
     fn read_preferences_falls_back_to_config_json() {
         let tmp = tempdir().unwrap();
