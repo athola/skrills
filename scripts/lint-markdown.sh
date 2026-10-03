@@ -16,7 +16,7 @@ export npm_config_cache="$CACHE_DIR"
 CMD=(npx --yes markdownlint-cli2@0.15.0)
 PATTERNS=(
   "**/*.md"
-  "!target/**"
+  "!target*/**"
   "!book/book/**"
   "!node_modules/**"
   "!.npm-cache/**"

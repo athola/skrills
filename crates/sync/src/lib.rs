@@ -148,7 +148,9 @@ pub use skrills_snapshot::KillSwitch;
 pub use adapters::{
     AgentAdapter, ClaudeAdapter, CodexAdapter, CopilotAdapter, CursorAdapter, FieldSupport,
 };
-pub use common::{Command, CommonConfig, ContentFormat, McpServer, PluginAsset, Preferences};
+pub use common::{
+    Artifact, Command, CommonConfig, ContentFormat, McpServer, PluginAsset, Preferences,
+};
 pub use models::transform_model;
 pub use orchestrator::{
     create_adapter, is_valid_platform, sync_between, SyncOrchestrator, SyncParams,
