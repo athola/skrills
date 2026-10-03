@@ -7,7 +7,8 @@
 //! - Querying historical metrics and statistics
 //!
 //! Data is stored in `~/.skrills/metrics.db` using WAL mode for concurrent access.
-//! A 30-day retention policy can be enforced via `cleanup_old_data`.
+//! Opening the persistent store deletes rows older than 30 days;
+//! `cleanup_old_data` applies a different window on demand.
 //!
 //! # Examples
 //!

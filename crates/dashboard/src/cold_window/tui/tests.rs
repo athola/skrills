@@ -1187,3 +1187,25 @@ fn master_ack_key_clears_non_warning_alerts() {
         "master-ack 'A' did not reach the alert pane"
     );
 }
+
+/// RT-51: a dropped shutdown sender made `changed()` return `Err` at once;
+/// the biased select matched it with `_` and spun. A closed channel now ends
+/// the loop.
+#[test]
+fn closed_shutdown_channel_stops_the_loop() {
+    let (tx, mut rx) = tokio::sync::watch::channel(false);
+    drop(tx);
+    let changed = futures::executor::block_on(rx.changed());
+    assert!(super::runner::shutdown_signalled(changed, &rx));
+}
+
+#[test]
+fn shutdown_flag_change_stops_the_loop_only_when_true() {
+    let (tx, mut rx) = tokio::sync::watch::channel(false);
+    tx.send(false).unwrap();
+    let changed = futures::executor::block_on(rx.changed());
+    assert!(!super::runner::shutdown_signalled(changed, &rx));
+    tx.send(true).unwrap();
+    let changed = futures::executor::block_on(rx.changed());
+    assert!(super::runner::shutdown_signalled(changed, &rx));
+}

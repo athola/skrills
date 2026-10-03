@@ -94,6 +94,31 @@ pub fn run_output_schema() -> Arc<JsonObject> {
     })))
 }
 
+/// Generate the `stop-run` output schema: the handler returns whether the run
+/// was stopped, not a run record.
+pub fn stop_output_schema() -> Arc<JsonObject> {
+    Arc::new(object(json!({
+        "type": "object",
+        "required": ["run_id", "stopped"],
+        "properties": {
+            "run_id": {"type": "string"},
+            "stopped": {"type": "boolean"}
+        }
+    })))
+}
+
+/// Generate the `get-run-history` output schema: a list of run records, with
+/// no top-level `run_id`.
+pub fn history_output_schema() -> Arc<JsonObject> {
+    Arc::new(object(json!({
+        "type": "object",
+        "required": ["runs"],
+        "properties": {
+            "runs": {"type": "array", "items": {"type": "object"}}
+        }
+    })))
+}
+
 /// Generate the list output schema.
 pub fn list_output_schema() -> Arc<JsonObject> {
     Arc::new(object(json!({
@@ -172,14 +197,14 @@ pub fn all_tools() -> Vec<Tool> {
             run_id_schema.clone(),
         )
         .with_title("Stop a running subagent")
-        .with_raw_output_schema(run_output_schema.clone()),
+        .with_raw_output_schema(stop_output_schema()),
         Tool::new(
             "get-run-history",
             "Return recent subagent runs",
             history_schema,
         )
         .with_title("Recent runs")
-        .with_raw_output_schema(run_output_schema.clone()),
+        .with_raw_output_schema(history_output_schema()),
         Tool::new(
             "get-run-events",
             "Poll for events from a run. Use since_index for incremental fetching.",

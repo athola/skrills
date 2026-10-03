@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,9 +17,9 @@ use thiserror::Error;
 use time::OffsetDateTime;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, Mutex};
 
-use crate::backend::{AdapterCapabilities, BackendAdapter};
+use crate::backend::{spawn_run, AdapterCapabilities, BackendAdapter};
 use crate::cli_detection::{default_cli_binary, normalize_cli_binary};
 use crate::store::{
     BackendKind, RunEvent, RunId, RunRecord, RunRequest, RunState, RunStatus, RunStore,
@@ -153,19 +154,179 @@ impl CliConfig {
     }
 }
 
+/// Most bytes of stdout kept for the `completion` event; the rest is drained
+/// and dropped so a chatty child cannot grow server memory without bound.
+const MAX_CAPTURED_STDOUT: usize = 1024 * 1024;
+
+/// Most bytes of stderr kept for the failure message.
+const MAX_CAPTURED_STDERR: usize = 64 * 1024;
+
+/// Environment variables a CLI child inherits from the server.
+///
+/// The child gets a cleared environment plus these names, so server secrets
+/// such as `SKRILLS_*_API_KEY` never reach it. The provider keys the `claude`
+/// and `codex` CLIs read themselves are kept, as are the locale, proxy and
+/// certificate settings they need to reach their APIs.
+const INHERITED_ENV: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TERM",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "TZ",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+    "XDG_RUNTIME_DIR",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "all_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS",
+    "CLAUDE_CONFIG_DIR",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_BASE_URL",
+    "CODEX_HOME",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    // Windows needs these to start most programs at all.
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMDATA",
+    "PROGRAMFILES",
+];
+
+/// Which known CLI a binary path names, judged by its file stem so that
+/// `/opt/bin/claude` and `claude.exe` count while `my-claude-wrapper` does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KnownCli {
+    Claude,
+    Codex,
+}
+
+impl KnownCli {
+    pub(crate) fn from_binary(binary: &str) -> Option<Self> {
+        let stem = std::path::Path::new(binary)
+            .file_stem()?
+            .to_str()?
+            .to_ascii_lowercase();
+        match stem.as_str() {
+            "claude" => Some(Self::Claude),
+            "codex" => Some(Self::Codex),
+            _ => None,
+        }
+    }
+}
+
 /// Tracks a running CLI subprocess.
-struct CliProcess {
-    child: Child,
+///
+/// The child itself stays owned by the task that runs it; the map only holds
+/// the cancel signal, so no lock is held while the child is awaited.
+pub(crate) struct CliProcess {
+    cancel: oneshot::Sender<()>,
+}
+
+/// Cancel signals for live CLI children, keyed by run.
+///
+/// Shared by every adapter the service builds, so `stop-run` can reach a child
+/// that was spawned by an adapter built for an earlier call.
+pub(crate) type CliProcessMap = Arc<Mutex<HashMap<RunId, CliProcess>>>;
+
+/// Signals the child of `run_id` to be killed. Returns whether one was live.
+pub(crate) async fn cancel_cli_process(processes: &CliProcessMap, run_id: RunId) -> bool {
+    let process = processes.lock().await.remove(&run_id);
+    match process {
+        Some(process) => {
+            // The receiver is gone only when the run already finished.
+            let _ = process.cancel.send(());
+            true
+        }
+        None => false,
+    }
+}
+
+/// How a CLI child's run ended.
+enum Outcome {
+    Exited(io::Result<std::process::ExitStatus>),
+    StreamFailed(anyhow::Error),
+    Canceled,
+    TimedOut,
+}
+
+/// Appends `chunk` to `buf` while `buf` stays under `cap` bytes.
+fn push_capped(buf: &mut String, chunk: &str, cap: usize, truncated: &mut bool) {
+    if buf.len() + chunk.len() <= cap {
+        buf.push_str(chunk);
+        return;
+    }
+    let mut end = cap.saturating_sub(buf.len()).min(chunk.len());
+    while end > 0 && !chunk.is_char_boundary(end) {
+        end -= 1;
+    }
+    buf.push_str(&chunk[..end]);
+    *truncated = true;
+}
+
+/// Reads a pipe to EOF, decoding each line lossily so one invalid UTF-8
+/// sequence cannot end the read early, and keeps at most `cap` bytes.
+async fn drain_capped<R>(pipe: R, cap: usize) -> String
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut reader = BufReader::new(pipe);
+    let mut buf = Vec::new();
+    let mut out = String::new();
+    let mut truncated = false;
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf).await {
+            Ok(0) => break,
+            Ok(_) => push_capped(
+                &mut out,
+                &String::from_utf8_lossy(&buf),
+                cap,
+                &mut truncated,
+            ),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to read CLI stderr");
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// CLI-based adapter that spawns subprocesses for agent execution.
 ///
 /// This adapter is designed for agents that require tool capabilities,
-/// spawning CLI tools like `codex` or `claude` as subprocesses.
+/// spawning CLI tools like `codex` or `claude` as subprocesses. Despite the
+/// name it serves any CLI; [`BackendAdapter::backend`] reports the backend the
+/// configured binary belongs to.
 pub struct CodexCliAdapter {
     config: CliConfig,
-    /// Active processes indexed by run_id.
-    processes: Arc<Mutex<HashMap<RunId, CliProcess>>>,
+    /// Cancel signals for active processes, indexed by run_id.
+    processes: CliProcessMap,
 }
 
 impl CodexCliAdapter {
@@ -176,10 +337,12 @@ impl CodexCliAdapter {
 
     /// Create a CLI adapter with the specified configuration.
     pub fn with_config(config: CliConfig) -> Self {
-        Self {
-            config,
-            processes: Arc::new(Mutex::new(HashMap::new())),
-        }
+        Self::with_shared_processes(config, Arc::new(Mutex::new(HashMap::new())))
+    }
+
+    /// Create a CLI adapter that registers its children in `processes`.
+    pub(crate) fn with_shared_processes(config: CliConfig, processes: CliProcessMap) -> Self {
+        Self { config, processes }
     }
 
     /// Create a CLI adapter from environment variables.
@@ -196,24 +359,48 @@ impl CodexCliAdapter {
     }
 
     /// Build the command arguments for the CLI.
+    ///
+    /// Each known CLI gets its real headless form: `claude --print -- <prompt>`
+    /// and `codex exec -- <prompt>`. Any other binary gets `-- <prompt>`. The
+    /// `--` ends option parsing, so a prompt that starts with `-` cannot be
+    /// read as a flag such as one that disables permission checks.
     fn build_command_args(&self, prompt: &str) -> Vec<String> {
-        let mut args = Vec::new();
+        if !self.config.non_interactive {
+            return Vec::new();
+        }
+        let mut args = match KnownCli::from_binary(&self.config.binary) {
+            Some(KnownCli::Claude) => vec!["--print".to_string()],
+            Some(KnownCli::Codex) => vec!["exec".to_string()],
+            None => Vec::new(),
+        };
+        args.push("--".to_string());
+        args.push(prompt.to_string());
+        args
+    }
 
-        // Only add prompt arguments if non_interactive is enabled
-        // (real CLI tools like codex/claude need these flags)
-        if self.config.non_interactive {
-            args.push("--prompt".to_string());
-            args.push(prompt.to_string());
-
-            // Different CLIs have different flags
-            if self.config.binary.contains("codex") {
-                args.push("--non-interactive".to_string());
-            } else if self.config.binary.contains("claude") {
-                args.push("--print".to_string());
+    /// Build the child command: cleared environment plus [`INHERITED_ENV`] and
+    /// the configured variables, stdin closed, both outputs piped, and the
+    /// child killed if its handle is dropped.
+    fn build_command(&self, args: &[String]) -> Command {
+        let mut cmd = Command::new(&self.config.binary);
+        cmd.args(args);
+        if let Some(ref dir) = self.config.working_dir {
+            cmd.current_dir(dir);
+        }
+        cmd.env_clear();
+        for name in INHERITED_ENV {
+            if let Some(value) = std::env::var_os(name) {
+                cmd.env(name, value);
             }
         }
-
-        args
+        for (key, value) in &self.config.env_vars {
+            cmd.env(key, value);
+        }
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        cmd.kill_on_drop(true);
+        cmd
     }
 
     /// Execute the CLI subprocess and capture output.
@@ -229,41 +416,8 @@ impl CodexCliAdapter {
             "Starting CLI subprocess execution"
         );
 
-        // Record start event
-        store
-            .append_event(
-                run_id,
-                RunEvent {
-                    ts: OffsetDateTime::now_utc(),
-                    kind: "start".into(),
-                    data: Some(json!({
-                        "binary": self.config.binary,
-                        "working_dir": self.config.working_dir,
-                    })),
-                },
-            )
-            .await?;
-
-        // Build the command
-        let mut cmd = Command::new(&self.config.binary);
         let args = self.build_command_args(&request.prompt);
-        cmd.args(&args);
-
-        // Set working directory if configured
-        if let Some(ref dir) = self.config.working_dir {
-            cmd.current_dir(dir);
-        }
-
-        // Set environment variables
-        for (key, value) in &self.config.env_vars {
-            cmd.env(key, value);
-        }
-
-        // Capture stdout and stderr
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
-
-        // Spawn the process
+        let mut cmd = self.build_command(&args);
         tracing::debug!(
             run_id = %run_id,
             args = ?args,
@@ -275,60 +429,54 @@ impl CodexCliAdapter {
             source: e,
         })?;
 
-        // Get stdout handle before storing the child
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        self.processes
+            .lock()
+            .await
+            .insert(run_id, CliProcess { cancel: cancel_tx });
 
-        // Store the process handle for potential cancellation
-        {
-            let mut processes = self.processes.lock().await;
-            processes.insert(run_id, CliProcess { child });
-        }
+        let outcome = self
+            .supervise(run_id, &mut child, cancel_rx, store.clone())
+            .await;
 
-        // Create output accumulator
-        let mut output = String::new();
-        let mut error_output = String::new();
-
-        // Read stdout line by line, emitting stream events
-        if let Some(stdout) = stdout {
-            let mut reader = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                output.push_str(&line);
-                output.push('\n');
-
+        // Whatever happened, the child must not outlive this function.
+        self.processes.lock().await.remove(&run_id);
+        let (output, error_output, status) = match outcome {
+            (Outcome::Exited(Ok(status)), output, error_output) => (output, error_output, status),
+            (Outcome::Exited(Err(e)), ..) => return Err(CliError::WaitFailed(e).into()),
+            (Outcome::StreamFailed(e), ..) => {
+                Self::kill(run_id, &mut child).await;
+                return Err(e);
+            }
+            (Outcome::Canceled, ..) => {
+                Self::kill(run_id, &mut child).await;
+                tracing::debug!(run_id = %run_id, "CLI process stopped by user");
+                return Ok(());
+            }
+            (Outcome::TimedOut, ..) => {
+                Self::kill(run_id, &mut child).await;
+                let millis = self.config.timeout.as_millis();
+                tracing::warn!(run_id = %run_id, timeout_ms = %millis, "CLI subprocess timed out");
                 store
                     .append_event(
                         run_id,
                         RunEvent {
                             ts: OffsetDateTime::now_utc(),
-                            kind: "stream".into(),
-                            data: Some(json!({ "line": line })),
+                            kind: "error".into(),
+                            data: Some(json!({ "timeout_ms": millis })),
                         },
                     )
                     .await?;
-            }
-        }
-
-        // Capture stderr
-        if let Some(stderr) = stderr {
-            let mut reader = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                error_output.push_str(&line);
-                error_output.push('\n');
-            }
-        }
-
-        // Wait for process to complete - get child back from map
-        let status = {
-            let mut processes = self.processes.lock().await;
-            if let Some(mut process) = processes.remove(&run_id) {
-                process.child.wait().await.map_err(CliError::WaitFailed)?
-            } else {
-                // Process was already removed (e.g., by stop())
-                tracing::debug!(
-                    run_id = %run_id,
-                    "Process already removed from tracking - likely stopped by user"
-                );
+                store
+                    .update_status(
+                        run_id,
+                        RunStatus {
+                            state: RunState::Failed,
+                            message: Some(format!("CLI timed out after {millis} ms")),
+                            updated_at: OffsetDateTime::now_utc(),
+                        },
+                    )
+                    .await?;
                 return Ok(());
             }
         };
@@ -405,6 +553,118 @@ impl CodexCliAdapter {
 
         Ok(())
     }
+
+    /// Streams stdout as events while stderr drains on its own task, then waits
+    /// for the child, racing all of it against the cancel signal and the
+    /// configured timeout.
+    async fn supervise(
+        &self,
+        run_id: RunId,
+        child: &mut Child,
+        cancel_rx: oneshot::Receiver<()>,
+        store: Arc<dyn RunStore>,
+    ) -> (Outcome, String, String) {
+        store
+            .append_event(
+                run_id,
+                RunEvent {
+                    ts: OffsetDateTime::now_utc(),
+                    kind: "start".into(),
+                    data: Some(json!({
+                        "binary": self.config.binary,
+                        "working_dir": self.config.working_dir,
+                        "pid": child.id(),
+                    })),
+                },
+            )
+            .await
+            .unwrap_or_else(
+                |e| tracing::warn!(error = %e, %run_id, "failed to record start event"),
+            );
+
+        // Both pipes drain at once: reading stdout to EOF before touching
+        // stderr deadlocks once the child fills the stderr pipe buffer.
+        let stdout = child.stdout.take();
+        let stderr_task = child
+            .stderr
+            .take()
+            .map(|stderr| tokio::spawn(drain_capped(stderr, MAX_CAPTURED_STDERR)));
+
+        let mut output = String::new();
+        let run = async {
+            if let Some(stdout) = stdout {
+                let mut reader = BufReader::new(stdout);
+                let mut buf = Vec::new();
+                let mut truncated = false;
+                loop {
+                    buf.clear();
+                    match reader.read_until(b'\n', &mut buf).await {
+                        Ok(0) => break,
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::warn!(error = %e, %run_id, "failed to read CLI stdout");
+                            break;
+                        }
+                    }
+                    let line = String::from_utf8_lossy(&buf);
+                    let line = line.trim_end_matches(['\n', '\r']);
+                    push_capped(&mut output, line, MAX_CAPTURED_STDOUT, &mut truncated);
+                    push_capped(&mut output, "\n", MAX_CAPTURED_STDOUT, &mut truncated);
+                    if let Err(e) = store
+                        .append_event(
+                            run_id,
+                            RunEvent {
+                                ts: OffsetDateTime::now_utc(),
+                                kind: "stream".into(),
+                                data: Some(json!({ "line": line })),
+                            },
+                        )
+                        .await
+                    {
+                        return Outcome::StreamFailed(e);
+                    }
+                }
+            }
+            Outcome::Exited(child.wait().await)
+        };
+
+        let outcome = tokio::select! {
+            outcome = run => outcome,
+            _ = cancel_rx => Outcome::Canceled,
+            _ = tokio::time::sleep(self.config.timeout) => Outcome::TimedOut,
+        };
+
+        // A killed or exited child closes stderr, so this join ends promptly;
+        // after a cancel or timeout the caller kills the child first, so the
+        // drain is aborted here instead of awaited.
+        let error_output = match stderr_task {
+            // Bounded: a grandchild that inherited stderr can hold it open
+            // after the child itself has exited.
+            Some(task) if matches!(outcome, Outcome::Exited(_)) => {
+                tokio::time::timeout(Duration::from_secs(5), task)
+                    .await
+                    .ok()
+                    .and_then(|joined| joined.ok())
+                    .unwrap_or_default()
+            }
+            Some(task) => {
+                task.abort();
+                String::new()
+            }
+            None => String::new(),
+        };
+        (outcome, output, error_output)
+    }
+
+    async fn kill(run_id: RunId, child: &mut Child) {
+        if let Err(e) = child.kill().await {
+            tracing::warn!(
+                run_id = %run_id,
+                error = %e,
+                "Failed to kill subprocess - process may still be running"
+            );
+        }
+    }
 }
 
 impl Default for CodexCliAdapter {
@@ -416,9 +676,11 @@ impl Default for CodexCliAdapter {
 #[async_trait]
 impl BackendAdapter for CodexCliAdapter {
     fn backend(&self) -> BackendKind {
-        // Use Codex kind since this is primarily for codex CLI
-        // Could also use BackendKind::Other("cli".into()) for more generic use
-        BackendKind::Codex
+        match KnownCli::from_binary(&self.config.binary) {
+            Some(KnownCli::Claude) => BackendKind::Claude,
+            Some(KnownCli::Codex) => BackendKind::Codex,
+            None => BackendKind::Other("cli".into()),
+        }
     }
 
     fn capabilities(&self) -> AdapterCapabilities {
@@ -439,95 +701,25 @@ impl BackendAdapter for CodexCliAdapter {
                 "CLI-based agent using {} subprocess",
                 self.config.binary
             )),
-            backend: BackendKind::Codex,
+            backend: self.backend(),
             capabilities: vec!["tools".into(), "subprocess".into()],
         }])
     }
 
-    async fn run(&self, request: RunRequest, store: Arc<dyn RunStore>) -> Result<RunId> {
-        // Create the run record
-        let run_id = store.create_run(request.clone()).await?;
-
-        // Update status to Running
-        store
-            .update_status(
-                run_id,
-                RunStatus {
-                    state: RunState::Running,
-                    message: Some("spawning CLI process".into()),
-                    updated_at: OffsetDateTime::now_utc(),
-                },
-            )
-            .await?;
-
-        // Clone self for the spawned task
-        let config = self.config.clone();
-        let processes = self.processes.clone();
-        let adapter = CodexCliAdapter { config, processes };
-
-        // Spawn the execution in a background task
-        let store_clone = store.clone();
-        let store_monitor = store.clone();
-        let handle = tokio::spawn(async move {
-            if let Err(err) = adapter
-                .execute_run(run_id, request, store_clone.clone())
-                .await
-            {
-                tracing::error!("CLI execution failed: {}", err);
-                if let Err(store_err) = store_clone
-                    .append_event(
-                        run_id,
-                        RunEvent {
-                            ts: OffsetDateTime::now_utc(),
-                            kind: "error".into(),
-                            data: Some(json!({"message": err.to_string()})),
-                        },
-                    )
-                    .await
-                {
-                    tracing::error!(
-                        run_id = %run_id,
-                        original_error = %err,
-                        store_error = %store_err,
-                        "Failed to record error event in store - error details may be lost"
-                    );
-                }
-                if let Err(store_err) = store_clone
-                    .update_status(
-                        run_id,
-                        RunStatus {
-                            state: RunState::Failed,
-                            message: Some(err.to_string()),
-                            updated_at: OffsetDateTime::now_utc(),
-                        },
-                    )
-                    .await
-                {
-                    tracing::error!(
-                        run_id = %run_id,
-                        store_error = %store_err,
-                        "Failed to update run status to Failed - run may appear stuck"
-                    );
-                }
-            }
-        });
-        tokio::spawn(async move {
-            if let Err(join_err) = handle.await {
-                tracing::error!(%run_id, error = %join_err, "CLI backend task panicked");
-                let _ = store_monitor
-                    .update_status(
-                        run_id,
-                        RunStatus {
-                            state: RunState::Failed,
-                            message: Some("internal error: task panicked".into()),
-                            updated_at: OffsetDateTime::now_utc(),
-                        },
-                    )
-                    .await;
-            }
-        });
-
-        Ok(run_id)
+    async fn run(&self, mut request: RunRequest, store: Arc<dyn RunStore>) -> Result<RunId> {
+        request.backend = self.backend();
+        let adapter =
+            CodexCliAdapter::with_shared_processes(self.config.clone(), self.processes.clone());
+        spawn_run(
+            request,
+            store,
+            "spawning CLI process",
+            "CLI",
+            move |run_id, request, store| async move {
+                adapter.execute_run(run_id, request, store).await
+            },
+        )
+        .await
     }
 
     async fn status(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<Option<RunStatus>> {
@@ -535,23 +727,9 @@ impl BackendAdapter for CodexCliAdapter {
     }
 
     async fn stop(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<bool> {
-        // Try to kill the subprocess if it's still running
-        {
-            let mut processes = self.processes.lock().await;
-            if let Some(mut process) = processes.remove(&run_id) {
-                // Attempt to kill the process
-                if let Err(kill_err) = process.child.kill().await {
-                    tracing::warn!(
-                        run_id = %run_id,
-                        error = %kill_err,
-                        "Failed to kill subprocess - process may still be running"
-                    );
-                }
-            }
-        }
-
-        // Update the store
-        store.stop(run_id).await
+        let stopped = store.stop(run_id).await?;
+        cancel_cli_process(&self.processes, run_id).await;
+        Ok(stopped)
     }
 
     async fn history(&self, limit: usize, store: Arc<dyn RunStore>) -> Result<Vec<RunStatus>> {
@@ -722,9 +900,9 @@ mod tests {
         let adapter = CodexCliAdapter::new();
         let args = adapter.build_command_args("test prompt");
 
-        assert!(args.contains(&"--prompt".to_string()));
-        assert!(args.contains(&"test prompt".to_string()));
-        assert!(args.contains(&"--non-interactive".to_string()));
+        // `codex exec` is the headless entry point; `--prompt` and
+        // `--non-interactive` are not flags the codex CLI accepts.
+        assert_eq!(args, vec!["exec", "--", "test prompt"]);
     }
 
     #[test]
@@ -733,9 +911,37 @@ mod tests {
         let adapter = CodexCliAdapter::with_config(config);
         let args = adapter.build_command_args("test prompt");
 
-        assert!(args.contains(&"--prompt".to_string()));
-        assert!(args.contains(&"test prompt".to_string()));
-        assert!(args.contains(&"--print".to_string()));
+        // `claude --print <prompt>`: the prompt is positional, there is no
+        // `--prompt` flag.
+        assert_eq!(args, vec!["--print", "--", "test prompt"]);
+    }
+
+    #[test]
+    fn test_build_command_args_matches_on_file_stem_not_substring() {
+        let by_path = CodexCliAdapter::with_config(CliConfig::new("/opt/tools/claude"));
+        assert_eq!(by_path.build_command_args("p")[0], "--print");
+
+        // A binary whose name merely contains "codex" is not the codex CLI.
+        let wrapper = CodexCliAdapter::with_config(CliConfig::new("/usr/bin/not-codex-wrapper"));
+        assert_eq!(wrapper.build_command_args("p"), vec!["--", "p"]);
+    }
+
+    #[test]
+    fn test_prompt_starting_with_dash_is_not_parsed_as_a_flag() {
+        let adapter = CodexCliAdapter::with_config(CliConfig::new("claude"));
+        let args = adapter.build_command_args("--dangerously-skip-permissions");
+        let sep = args.iter().position(|a| a == "--").expect("separator");
+        assert_eq!(args[sep + 1], "--dangerously-skip-permissions");
+    }
+
+    #[test]
+    fn test_backend_follows_the_configured_binary() {
+        let claude = CodexCliAdapter::with_config(CliConfig::new("claude"));
+        assert_eq!(claude.backend(), BackendKind::Claude);
+        let codex = CodexCliAdapter::with_config(CliConfig::new("/usr/local/bin/codex"));
+        assert_eq!(codex.backend(), BackendKind::Codex);
+        let other = CodexCliAdapter::with_config(CliConfig::new("sh"));
+        assert_eq!(other.backend(), BackendKind::Other("cli".into()));
     }
 
     #[test]
@@ -862,7 +1068,7 @@ mod tests {
         let store: Arc<dyn RunStore> = Arc::new(MemRunStore::new());
         let adapter = CodexCliAdapter::new();
 
-        // Create a run in the store
+        // A run with no live process: only the store changes.
         let request = RunRequest {
             backend: BackendKind::Codex,
             prompt: "test".to_string(),
@@ -873,7 +1079,6 @@ mod tests {
         };
         let run_id = store.create_run(request).await.unwrap();
 
-        // Stop the run
         let stopped = adapter.stop(run_id, store.clone()).await.unwrap();
         assert!(stopped);
 
@@ -1016,6 +1221,334 @@ mod tests {
         let run = store.run(run_id).await.unwrap().unwrap();
         assert!(run.events.iter().any(|e| e.kind == "start"));
         assert!(run.events.iter().any(|e| e.kind == "completion"));
+    }
+
+    /// Child-process tests. Each one runs a throwaway `/bin/sh` script, never a
+    /// real `claude` or `codex` binary.
+    #[cfg(unix)]
+    mod process_tests {
+        use super::*;
+
+        /// A run of `body` as a shell script. The adapter passes the prompt as
+        /// `/bin/sh -- <prompt>`, so the prompt is the script path and the
+        /// file is read by `sh` rather than exec'd, which avoids the ETXTBSY
+        /// race of exec'ing a file another test thread may still hold open.
+        /// The temp dir must outlive the run.
+        struct Script {
+            _dir: tempfile::TempDir,
+            path: String,
+        }
+
+        fn script_config(body: &str) -> (Script, CliConfig) {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("fake-cli.sh");
+            std::fs::write(&path, format!("{body}\n")).unwrap();
+            let path = path.to_str().unwrap().to_string();
+            (Script { _dir: dir, path }, CliConfig::new("/bin/sh"))
+        }
+
+        fn request_for(script: &Script) -> RunRequest {
+            RunRequest {
+                backend: BackendKind::Codex,
+                prompt: script.path.clone(),
+                template_id: None,
+                output_schema: None,
+                async_mode: true,
+                tracing: false,
+            }
+        }
+
+        fn process_alive(pid: u32) -> bool {
+            std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+
+        async fn wait_until_gone(pid: u32) -> bool {
+            for _ in 0..100 {
+                if !process_alive(pid) {
+                    return true;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            false
+        }
+
+        /// Polls the run's `start` event for the child pid.
+        async fn child_pid(store: &Arc<dyn RunStore>, run_id: RunId) -> u32 {
+            for _ in 0..100 {
+                if let Some(run) = store.run(run_id).await.unwrap() {
+                    if let Some(pid) = run
+                        .events
+                        .iter()
+                        .find(|e| e.kind == "start")
+                        .and_then(|e| e.data.as_ref())
+                        .and_then(|d| d.get("pid"))
+                        .and_then(|p| p.as_u64())
+                    {
+                        return pid as u32;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            panic!("run never recorded a start event with a pid");
+        }
+
+        fn completion_text(run: &RunRecord) -> String {
+            run.events
+                .iter()
+                .find(|e| e.kind == "completion")
+                .and_then(|e| e.data.as_ref())
+                .and_then(|d| d.get("text"))
+                .and_then(|t| t.as_str())
+                .unwrap_or_default()
+                .to_string()
+        }
+
+        /// RT-2 / RT-28: stop must kill the child, not only flip the status.
+        #[tokio::test]
+        async fn stop_kills_the_child_process() {
+            let store: Arc<dyn RunStore> = Arc::new(MemRunStore::new());
+            let (script, config) = script_config("exec sleep 30");
+            let adapter = CodexCliAdapter::with_config(config);
+
+            let run_id = adapter
+                .run(request_for(&script), store.clone())
+                .await
+                .unwrap();
+            let pid = child_pid(&store, run_id).await;
+            assert!(process_alive(pid));
+
+            assert!(adapter.stop(run_id, store.clone()).await.unwrap());
+
+            assert!(wait_until_gone(pid).await, "child {pid} survived stop");
+            let status = store.status(run_id).await.unwrap().unwrap();
+            assert_eq!(status.state, RunState::Canceled);
+        }
+
+        /// RT-2: an adapter built later, sharing the process map, reaches a
+        /// child spawned by an earlier adapter.
+        #[tokio::test]
+        async fn stop_through_a_second_adapter_sharing_the_map_kills_the_child() {
+            let store: Arc<dyn RunStore> = Arc::new(MemRunStore::new());
+            let processes: CliProcessMap = Arc::new(Mutex::new(HashMap::new()));
+            let (script, config) = script_config("exec sleep 30");
+            let first = CodexCliAdapter::with_shared_processes(config.clone(), processes.clone());
+            let run_id = first
+                .run(request_for(&script), store.clone())
+                .await
+                .unwrap();
+            let pid = child_pid(&store, run_id).await;
+
+            let second = CodexCliAdapter::with_shared_processes(config, processes);
+            assert!(second.stop(run_id, store.clone()).await.unwrap());
+            assert!(wait_until_gone(pid).await, "child {pid} survived stop");
+        }
+
+        /// RT-3: the configured timeout kills a hung child and fails the run.
+        #[tokio::test]
+        async fn timeout_kills_a_hung_child_and_fails_the_run() {
+            let store: Arc<dyn RunStore> = Arc::new(MemRunStore::new());
+            let (script, config) = script_config("exec sleep 30");
+            let adapter =
+                CodexCliAdapter::with_config(config.with_timeout(Duration::from_millis(300)));
+
+            let run_id = adapter
+                .run(request_for(&script), store.clone())
+                .await
+                .unwrap();
+            let pid = child_pid(&store, run_id).await;
+            let status = wait_for_completion(&store, run_id, Duration::from_secs(10))
+                .await
+                .unwrap();
+
+            assert_eq!(status.state, RunState::Failed);
+            assert!(
+                status
+                    .message
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("timed out"),
+                "{status:?}"
+            );
+            assert!(
+                wait_until_gone(pid).await,
+                "child {pid} survived the timeout"
+            );
+        }
+
+        /// RT-4: a child that fills the stderr pipe before closing stdout must
+        /// not deadlock the reader.
+        #[tokio::test]
+        async fn large_stderr_before_stdout_does_not_deadlock() {
+            let store: Arc<dyn RunStore> = Arc::new(MemRunStore::new());
+            // 256 KiB of stderr, well past a 64 KiB pipe buffer, then stdout.
+            let (script, config) = script_config(
+                "i=0; while [ $i -lt 4096 ]; do \
+                 echo 0123456789012345678901234567890123456789012345678901234567890123 >&2; \
+                 i=$((i+1)); done; echo finished",
+            );
+            let adapter =
+                CodexCliAdapter::with_config(config.with_timeout(Duration::from_secs(20)));
+
+            let run_id = adapter
+                .run(request_for(&script), store.clone())
+                .await
+                .unwrap();
+            let status = wait_for_completion(&store, run_id, Duration::from_secs(25))
+                .await
+                .unwrap();
+
+            assert_eq!(status.state, RunState::Succeeded, "{status:?}");
+            let run = store.run(run_id).await.unwrap().unwrap();
+            assert_eq!(completion_text(&run), "finished");
+        }
+
+        /// RT-5: the child must not share the server's stdin, which carries the
+        /// JSON-RPC stream on stdio transport.
+        #[cfg(target_os = "linux")]
+        #[tokio::test]
+        async fn child_stdin_is_null() {
+            let store: Arc<dyn RunStore> = Arc::new(MemRunStore::new());
+            let (script, config) = script_config("readlink /proc/self/fd/0");
+            let adapter = CodexCliAdapter::with_config(config);
+
+            let run_id = adapter
+                .run(request_for(&script), store.clone())
+                .await
+                .unwrap();
+            wait_for_completion(&store, run_id, Duration::from_secs(10)).await;
+            let run = store.run(run_id).await.unwrap().unwrap();
+            assert_eq!(completion_text(&run), "/dev/null");
+        }
+
+        /// RT-11: one invalid UTF-8 sequence must not end the read early.
+        #[tokio::test]
+        async fn invalid_utf8_does_not_truncate_output() {
+            let store: Arc<dyn RunStore> = Arc::new(MemRunStore::new());
+            let (script, config) = script_config("printf 'a\\377b\\nsecond line\\n'");
+            let adapter = CodexCliAdapter::with_config(config);
+
+            let run_id = adapter
+                .run(request_for(&script), store.clone())
+                .await
+                .unwrap();
+            let status = wait_for_completion(&store, run_id, Duration::from_secs(10))
+                .await
+                .unwrap();
+            assert_eq!(status.state, RunState::Succeeded);
+            let run = store.run(run_id).await.unwrap().unwrap();
+            let text = completion_text(&run);
+            assert!(text.contains("second line"), "output was cut: {text:?}");
+            assert!(text.starts_with('a'), "{text:?}");
+        }
+
+        /// RT-12: server secrets must not reach the child's environment.
+        #[tokio::test]
+        async fn server_secrets_are_not_inherited() {
+            let _guard = env_guard().await;
+            let _secret = skrills_test_utils::set_env_var("SKRILLS_CODEX_API_KEY", Some("leak"));
+            let store: Arc<dyn RunStore> = Arc::new(MemRunStore::new());
+            let (script, config) =
+                script_config("echo \"key=${SKRILLS_CODEX_API_KEY:-unset} path=${PATH:+set}\"");
+            let adapter = CodexCliAdapter::with_config(config.with_env("EXPLICIT", "yes"));
+
+            let run_id = adapter
+                .run(request_for(&script), store.clone())
+                .await
+                .unwrap();
+            wait_for_completion(&store, run_id, Duration::from_secs(10)).await;
+            let run = store.run(run_id).await.unwrap().unwrap();
+            assert_eq!(completion_text(&run), "key=unset path=set");
+        }
+
+        /// A store whose `stream` writes fail, to drive the error path.
+        struct FailingStreamStore(MemRunStore);
+
+        #[async_trait]
+        impl RunStore for FailingStreamStore {
+            async fn create_run(&self, request: RunRequest) -> Result<RunId> {
+                self.0.create_run(request).await
+            }
+            async fn update_status(&self, run_id: RunId, status: RunStatus) -> Result<()> {
+                self.0.update_status(run_id, status).await
+            }
+            async fn append_event(&self, run_id: RunId, event: RunEvent) -> Result<()> {
+                if event.kind == "stream" {
+                    anyhow::bail!("disk full");
+                }
+                self.0.append_event(run_id, event).await
+            }
+            async fn run(&self, run_id: RunId) -> Result<Option<RunRecord>> {
+                self.0.run(run_id).await
+            }
+            async fn status(&self, run_id: RunId) -> Result<Option<RunStatus>> {
+                self.0.status(run_id).await
+            }
+            async fn history(&self, limit: usize) -> Result<Vec<RunRecord>> {
+                self.0.history(limit).await
+            }
+            async fn stop(&self, run_id: RunId) -> Result<bool> {
+                self.0.stop(run_id).await
+            }
+        }
+
+        /// RT-10: a store error while streaming must not orphan the child.
+        #[tokio::test]
+        async fn store_error_while_streaming_kills_the_child() {
+            let store: Arc<dyn RunStore> = Arc::new(FailingStreamStore(MemRunStore::new()));
+            let (script, config) = script_config("echo first; exec sleep 30");
+            let adapter = CodexCliAdapter::with_config(config);
+
+            let run_id = adapter
+                .run(request_for(&script), store.clone())
+                .await
+                .unwrap();
+            let pid = child_pid(&store, run_id).await;
+            let status = wait_for_completion(&store, run_id, Duration::from_secs(10))
+                .await
+                .unwrap();
+
+            assert_eq!(status.state, RunState::Failed);
+            assert!(wait_until_gone(pid).await, "child {pid} was orphaned");
+        }
+
+        /// RT-9: stop must not wait behind a child that closed its pipes but
+        /// keeps running.
+        #[tokio::test]
+        async fn stop_does_not_block_behind_a_child_with_closed_pipes() {
+            let store: Arc<dyn RunStore> = Arc::new(MemRunStore::new());
+            let (script, config) = script_config("exec sleep 30 >/dev/null 2>&1");
+            let adapter = CodexCliAdapter::with_config(config);
+
+            let run_id = adapter
+                .run(request_for(&script), store.clone())
+                .await
+                .unwrap();
+            let pid = child_pid(&store, run_id).await;
+            // Let the reader reach EOF and start waiting on the child.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+
+            tokio::time::timeout(Duration::from_secs(2), adapter.stop(run_id, store.clone()))
+                .await
+                .expect("stop blocked on the process map")
+                .unwrap();
+            assert!(wait_until_gone(pid).await, "child {pid} survived stop");
+        }
+
+        /// RT-33: captured stdout is capped.
+        #[test]
+        fn push_capped_stops_at_the_cap_on_a_char_boundary() {
+            let mut buf = String::new();
+            let mut truncated = false;
+            push_capped(&mut buf, "ab", 3, &mut truncated);
+            push_capped(&mut buf, "é", 3, &mut truncated);
+            assert_eq!(buf, "ab");
+            assert!(truncated);
+        }
     }
 
     // CliError tests

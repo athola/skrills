@@ -23,14 +23,46 @@ use skrills_subagents::store::{
     BackendKind, MemRunStore, RunEvent, RunId, RunRequest, RunState, RunStatus,
 };
 use skrills_subagents::{RunStore, SubagentService};
+use skrills_test_utils::{env_guard, set_env_var, EnvVarGuard};
 use tokio::time::{sleep, Instant};
+
+/// Process environment for a test that may start runs.
+///
+/// Every CLI run goes to `true`, so a real `claude` or `codex` is never
+/// spawned; API keys are cleared so an API-mode run fails fast rather than
+/// calling a real endpoint; HOME points at the fixture's temp dir so the
+/// developer's subagent config is not read. The env lock is held for the
+/// fixture's lifetime and released after the variables are restored.
+struct HarmlessEnv {
+    _vars: Vec<EnvVarGuard>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl HarmlessEnv {
+    fn new(home: &std::path::Path) -> Self {
+        let lock = env_guard();
+        let vars = vec![
+            set_env_var("HOME", Some(home.to_str().unwrap())),
+            set_env_var("SKRILLS_CLI_BINARY", Some("true")),
+            set_env_var("SKRILLS_CODEX_API_KEY", None),
+            set_env_var("SKRILLS_CLAUDE_API_KEY", None),
+            set_env_var("SKRILLS_SUBAGENTS_EXECUTION_MODE", None),
+            set_env_var("SKRILLS_SUBAGENTS_DEFAULT_BACKEND", None),
+        ];
+        Self {
+            _vars: vars,
+            _lock: lock,
+        }
+    }
+}
 
 /// Test fixture for creating isolated test environments with agent files.
 struct IntegrationTestFixture {
-    #[allow(dead_code)]
-    temp_dir: TempDir,
     store: Arc<MemRunStore>,
     registry: Arc<AgentRegistry>,
+    // Dropped before the temp dir it points HOME at.
+    _env: HarmlessEnv,
+    _temp_dir: TempDir,
 }
 
 impl IntegrationTestFixture {
@@ -48,9 +80,10 @@ impl IntegrationTestFixture {
         let registry = Arc::new(AgentRegistry::discover_from_roots(&roots)?);
 
         Ok(Self {
-            temp_dir,
             store,
             registry,
+            _env: HarmlessEnv::new(temp_dir.path()),
+            _temp_dir: temp_dir,
         })
     }
 
@@ -77,9 +110,10 @@ impl IntegrationTestFixture {
         let registry = Arc::new(AgentRegistry::discover_from_roots(&roots)?);
 
         Ok(Self {
-            temp_dir,
             store,
             registry,
+            _env: HarmlessEnv::new(temp_dir.path()),
+            _temp_dir: temp_dir,
         })
     }
 

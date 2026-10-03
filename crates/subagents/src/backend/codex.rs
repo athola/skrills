@@ -2,20 +2,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::backend::{
-    config::AdapterConfig, run_http_adapter, AdapterCapabilities, BackendAdapter,
+    config::{endpoint, AdapterConfig},
+    run_http_adapter, spawn_run, AdapterCapabilities, BackendAdapter, HttpProvider,
 };
 use crate::store::{
-    BackendKind, RunEvent, RunId, RunRecord, RunRequest, RunState, RunStatus, RunStore,
-    SubagentTemplate,
+    BackendKind, RunId, RunRecord, RunRequest, RunStatus, RunStore, SubagentTemplate,
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reqwest::Url;
 use serde::Serialize;
 use serde_json::{json, Value};
-use time::OffsetDateTime;
 
-const DEFAULT_BASE: &str = "https://api.openai.com/v1";
+const DEFAULT_BASE: &str = "https://api.openai.com/v1/";
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const API_KEY_ERROR: &str = "Codex API key not set. Set SKRILLS_CODEX_API_KEY environment variable with your OpenAI API key. Get one at https://platform.openai.com/api-keys";
 
@@ -59,22 +58,12 @@ impl CodexAdapter {
         store: Arc<dyn RunStore>,
     ) -> Result<()> {
         let body = build_openai_body(&self.config.model, &request);
-        let url = self
-            .config
-            .base_url
-            .join("chat/completions")
-            .unwrap_or_else(|_| self.config.base_url.clone());
+        let url = endpoint(&self.config.base_url, "chat/completions")?;
         let api_key = self.config.api_key.clone();
 
-        run_http_adapter(
-            run_id,
-            &store,
-            &self.config.api_key,
-            API_KEY_ERROR,
-            "Codex",
-            || self.client.post(url).bearer_auth(&api_key).json(&body),
-            extract_openai_text,
-        )
+        run_http_adapter(run_id, &store, &self.config.api_key, &PROVIDER, || {
+            self.client.post(url).bearer_auth(&api_key).json(&body)
+        })
         .await
     }
 }
@@ -162,6 +151,22 @@ fn extract_openai_text(val: &Value) -> Option<String> {
         })
 }
 
+const PROVIDER: HttpProvider = HttpProvider {
+    label: "Codex",
+    api_key_error: API_KEY_ERROR,
+    truncated_reason: "length",
+    extract_text: extract_openai_text,
+    extract_stop_reason: openai_stop_reason,
+};
+
+fn openai_stop_reason(val: &Value) -> Option<String> {
+    val.get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("finish_reason"))
+        .and_then(|r| r.as_str())
+        .map(str::to_string)
+}
+
 #[async_trait]
 impl BackendAdapter for CodexAdapter {
     fn backend(&self) -> BackendKind {
@@ -173,7 +178,8 @@ impl BackendAdapter for CodexAdapter {
             supports_schema: true,
             supports_async: true,
             supports_tracing: true,
-            supports_secure_transcript: true,
+            // `download-transcript-secure` is a stub that returns an error.
+            supports_secure_transcript: false,
         }
     }
 
@@ -189,67 +195,17 @@ impl BackendAdapter for CodexAdapter {
 
     async fn run(&self, mut request: RunRequest, store: Arc<dyn RunStore>) -> Result<RunId> {
         request.backend = BackendKind::Codex;
-        let run_id = store.create_run(request.clone()).await?;
-        store
-            .update_status(
-                run_id,
-                RunStatus {
-                    state: RunState::Running,
-                    message: Some("dispatched".into()),
-                    updated_at: OffsetDateTime::now_utc(),
-                },
-            )
-            .await?;
-
-        let cloned = self.clone();
-        let store_monitor = store.clone();
-        let handle = tokio::spawn(async move {
-            if let Err(err) = cloned.execute_run(run_id, request, store.clone()).await {
-                if let Err(e) = store
-                    .append_event(
-                        run_id,
-                        RunEvent {
-                            ts: OffsetDateTime::now_utc(),
-                            kind: "error".into(),
-                            data: Some(json!({"message": err.to_string()})),
-                        },
-                    )
-                    .await
-                {
-                    tracing::warn!(error = %e, %run_id, "Failed to record error event");
-                }
-                if let Err(e) = store
-                    .update_status(
-                        run_id,
-                        RunStatus {
-                            state: RunState::Failed,
-                            message: Some(err.to_string()),
-                            updated_at: OffsetDateTime::now_utc(),
-                        },
-                    )
-                    .await
-                {
-                    tracing::warn!(error = %e, %run_id, "Failed to update run status to failed");
-                }
-            }
-        });
-        tokio::spawn(async move {
-            if let Err(join_err) = handle.await {
-                tracing::error!(%run_id, error = %join_err, "Codex backend task panicked");
-                let _ = store_monitor
-                    .update_status(
-                        run_id,
-                        RunStatus {
-                            state: RunState::Failed,
-                            message: Some("internal error: task panicked".into()),
-                            updated_at: OffsetDateTime::now_utc(),
-                        },
-                    )
-                    .await;
-            }
-        });
-
-        Ok(run_id)
+        let adapter = self.clone();
+        spawn_run(
+            request,
+            store,
+            "dispatched",
+            "Codex",
+            move |run_id, request, store| async move {
+                adapter.execute_run(run_id, request, store).await
+            },
+        )
+        .await
     }
 
     async fn status(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<Option<RunStatus>> {
@@ -314,7 +270,7 @@ mod tests {
         assert!(capabilities.supports_schema);
         assert!(capabilities.supports_async);
         assert!(capabilities.supports_tracing);
-        assert!(capabilities.supports_secure_transcript);
+        assert!(!capabilities.supports_secure_transcript);
     }
 
     #[tokio::test]
@@ -582,6 +538,8 @@ mod tests {
         // Isolate from host env to prevent leaking real API keys into the assertion
         let _key_guard = skrills_test_utils::set_env_var("OPENAI_API_KEY", None);
         let _codex_guard = skrills_test_utils::set_env_var("CODEX_API_KEY", None);
+        // The variable the adapter actually reads.
+        let _skrills_guard = skrills_test_utils::set_env_var("SKRILLS_CODEX_API_KEY", None);
 
         let adapter = CodexAdapter::new("gpt-4".to_string()).unwrap();
 

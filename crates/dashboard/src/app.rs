@@ -1,5 +1,6 @@
 //! Application state and main dashboard runner.
 
+use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -156,9 +157,16 @@ impl ActivityEntry {
             return format!("{}{}", self.timestamp, count_suffix);
         }
 
+        // Counted in chars, not bytes: slicing at a byte offset panics when
+        // the cut lands inside a multi-byte character.
         let msg_budget = max_width - overhead;
-        let msg = if self.message.len() > msg_budget {
-            format!("{}(...)", &self.message[..msg_budget.saturating_sub(5)])
+        let msg = if self.message.chars().count() > msg_budget {
+            let kept: String = self
+                .message
+                .chars()
+                .take(msg_budget.saturating_sub(5))
+                .collect();
+            format!("{kept}(...)")
         } else {
             self.message.clone()
         };
@@ -243,6 +251,24 @@ impl App {
     /// Number of skills currently visible (capped to total).
     pub fn visible_skill_count(&self) -> usize {
         self.visible_count.min(self.skills.len())
+    }
+
+    /// Handle a full key event from the terminal.
+    ///
+    /// Only presses and repeats count: Windows also reports releases, which
+    /// would act on every key twice. Ctrl+C quits, since raw mode turns it
+    /// into a key event instead of SIGINT.
+    pub fn on_key_event(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
+
+        if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            return;
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            self.should_quit = true;
+            return;
+        }
+        self.on_key(key.code);
     }
 
     /// Handle keyboard input.
@@ -491,16 +517,52 @@ pub struct Dashboard {
     collector: Arc<MetricsCollector>,
     /// Refresh interval in ticks (each tick is 250ms).
     refresh_ticks: u32,
+    /// Shown in the activity feed on start, e.g. why metrics are not persisted.
+    startup_notice: Option<String>,
+}
+
+/// What a refresh needs, cloned onto a blocking thread.
+#[derive(Clone)]
+struct RefreshSource {
+    skill_dirs: Vec<PathBuf>,
+    collector: Arc<MetricsCollector>,
+}
+
+/// Everything one refresh reads from disk, gathered off the UI loop.
+struct RefreshSnapshot {
+    /// Grouped skills, or the discovery error.
+    skills: std::result::Result<(usize, Vec<SkillInfo>), String>,
+    analytics: Option<(u64, f64)>,
+    validation_summary: skrills_metrics::Result<ValidationSummary>,
+    mcp_servers: Vec<McpServerInfo>,
 }
 
 impl Dashboard {
-    /// Create new dashboard.
+    /// Create new dashboard reading the shared metrics database.
+    ///
+    /// Uses the persistent collector at `~/.skrills/metrics.db`, the store
+    /// other skrills processes write to, so the panels show recorded usage
+    /// rather than a private empty collector. If that database cannot be
+    /// opened the dashboard falls back to an in-memory collector and says so in
+    /// the activity feed.
     pub fn new(skill_dirs: Vec<PathBuf>) -> Result<Self> {
-        let collector = Arc::new(MetricsCollector::new()?);
+        let (collector, startup_notice) = match MetricsCollector::persistent_default() {
+            Ok(collector) => (collector, None),
+            Err(e) => {
+                tracing::warn!(error = %e, "metrics database unavailable; using in-memory metrics");
+                (
+                    MetricsCollector::in_memory()?,
+                    Some(format!(
+                        "Metrics database unavailable ({e}); showing this session only"
+                    )),
+                )
+            }
+        };
         Ok(Self {
             skill_dirs,
-            collector,
+            collector: Arc::new(collector),
             refresh_ticks: Self::REFRESH_INTERVAL_TICKS,
+            startup_notice,
         })
     }
 
@@ -510,60 +572,52 @@ impl Dashboard {
             skill_dirs,
             collector,
             refresh_ticks: Self::REFRESH_INTERVAL_TICKS,
+            startup_notice: None,
         }
     }
 
     /// Set the refresh interval in seconds.
     pub fn with_refresh_secs(mut self, secs: u32) -> Self {
-        // Each tick is 250ms, so multiply seconds by 4
-        self.refresh_ticks = secs.max(1) * 4;
+        // Each tick is 250ms, so multiply seconds by 4; saturate rather than
+        // overflow on an absurd value.
+        self.refresh_ticks = secs.max(1).saturating_mul(4);
         self
     }
 
-    /// Restore terminal to normal state.
-    fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) {
-        if let Err(e) = disable_raw_mode() {
-            eprintln!("Warning: failed to disable raw mode: {e}");
-        }
-        if let Err(e) = execute!(
-            terminal.backend_mut(),
-            LeaveAlternateScreen,
-            DisableMouseCapture
-        ) {
-            eprintln!("Warning: failed to leave alternate screen: {e}");
-        }
-        if let Err(e) = terminal.show_cursor() {
-            eprintln!("Warning: failed to show cursor: {e}");
+    fn source(&self) -> RefreshSource {
+        RefreshSource {
+            skill_dirs: self.skill_dirs.clone(),
+            collector: self.collector.clone(),
         }
     }
 
     /// Run the dashboard.
     pub async fn run(self) -> Result<()> {
-        // Install panic hook to restore terminal on panic
-        let original_hook = std::panic::take_hook();
+        // Restore the terminal on panic, then hand the panic to the previous
+        // hook. The previous hook is put back when the dashboard returns.
+        let previous_hook: Arc<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync> =
+            Arc::from(std::panic::take_hook());
+        let chained = previous_hook.clone();
         std::panic::set_hook(Box::new(move |info| {
-            let _ = disable_raw_mode();
-            let _ = execute!(
-                io::stdout(),
-                LeaveAlternateScreen,
-                DisableMouseCapture,
-                crossterm::cursor::Show
-            );
-            original_hook(info);
+            restore_terminal();
+            chained(info);
         }));
 
-        // Setup terminal
-        enable_raw_mode()?;
-        let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-        let backend = CrosstermBackend::new(stdout);
-        let mut terminal = Terminal::new(backend)?;
+        let result = async {
+            // From here on the guard restores the terminal on every exit,
+            // including a setup step that fails after raw mode is on.
+            enable_raw_mode()?;
+            let _restore = TerminalGuard;
+            let mut stdout = io::stdout();
+            execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+            let backend = CrosstermBackend::new(stdout);
+            let mut terminal = Terminal::new(backend)?;
+            self.run_inner(&mut terminal).await
+        }
+        .await;
 
-        let result = self.run_inner(&mut terminal).await;
-
-        // Always restore terminal, even on error
-        Self::restore_terminal(&mut terminal);
-
+        let _ours = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| previous_hook(info)));
         result
     }
 
@@ -574,12 +628,16 @@ impl Dashboard {
     async fn run_inner(self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
         // Create app state
         let mut app = App::new();
+        if let Some(notice) = &self.startup_notice {
+            app.add_activity(notice.clone());
+        }
 
         // Load initial skills
         self.refresh_skills(&mut app);
 
         // Subscribe to metrics
         let mut rx = self.collector.subscribe();
+        let mut metrics_open = true;
 
         // Event handler
         let mut events = EventHandler::new(Duration::from_millis(250));
@@ -589,6 +647,9 @@ impl Dashboard {
         tokio::pin!(sigint);
 
         let mut tick_count: u32 = 0;
+        // Discovery, config reads and SQLite queries run on a blocking thread;
+        // at most one refresh is in flight.
+        let mut pending: Option<tokio::task::JoinHandle<RefreshSnapshot>> = None;
 
         // Main loop
         loop {
@@ -600,16 +661,22 @@ impl Dashboard {
                 event = events.next() => {
                     match event {
                         Some(Event::Key(key)) => {
-                            app.on_key(key.code);
+                            let selected = app.skills.get(app.skill_index).map(|s| s.name.clone());
+                            app.on_key_event(key);
                             if app.should_quit {
                                 break;
+                            }
+                            let now_selected = app.skills.get(app.skill_index).map(|s| s.name.clone());
+                            if now_selected != selected {
+                                self.load_selected_validation(&mut app);
                             }
                         }
                         Some(Event::Tick) => {
                             tick_count += 1;
-                            if tick_count >= self.refresh_ticks {
+                            if tick_count >= self.refresh_ticks && pending.is_none() {
                                 tick_count = 0;
-                                self.refresh_skills(&mut app);
+                                let source = self.source();
+                                pending = Some(tokio::task::spawn_blocking(move || source.collect()));
                             }
                         }
                         Some(Event::Resize(w, h)) => {
@@ -618,8 +685,29 @@ impl Dashboard {
                         None => break, // Event channel closed
                     }
                 }
-                Ok(metric) = rx.recv() => {
-                    app.on_metric_event(metric);
+                joined = async { pending.as_mut().expect("guarded by is_some").await }, if pending.is_some() => {
+                    pending = None;
+                    match joined {
+                        Ok(snapshot) => self.apply_snapshot(&mut app, snapshot),
+                        Err(e) => app.add_activity_keyed(
+                            "refresh-error".into(),
+                            format!("Refresh failed: {e}"),
+                        ),
+                    }
+                }
+                metric = rx.recv(), if metrics_open => {
+                    match metric {
+                        Ok(metric) => app.on_metric_event(metric),
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                            app.add_activity_keyed(
+                                "metrics-lagged".into(),
+                                format!("Missed {missed} metric events (feed fell behind)"),
+                            );
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            metrics_open = false;
+                        }
+                    }
                 }
                 _ = &mut sigint => {
                     // Graceful shutdown on Ctrl+C
@@ -676,27 +764,133 @@ impl Dashboard {
         skill_dir.to_string()
     }
 
+    /// Refresh on the calling thread: gather, then apply.
     fn refresh_skills(&self, app: &mut App) {
-        use skrills_discovery::{discover_skills, skill_roots_or_default};
-        use std::collections::HashMap;
+        let snapshot = self.source().collect();
+        self.apply_snapshot(app, snapshot);
+    }
 
-        let roots = skill_roots_or_default(&self.skill_dirs);
-
+    /// Apply a gathered refresh to the app state.
+    fn apply_snapshot(&self, app: &mut App, snapshot: RefreshSnapshot) {
         // A scan that fails (a permission or I/O error on one file, now that
         // discovery only skips a vanished file) must not blank the list: the
         // previous list stands and the activity feed names the failure.
-        let discovered = match discover_skills(&roots, None) {
-            Ok(discovered) => discovered,
+        let (total, skills) = match snapshot.skills {
+            Ok(found) => found,
             Err(e) => {
                 app.add_activity_keyed(
                     "skill-discovery-error".into(),
-                    format!("Skill discovery failed: {e:#}"),
+                    format!("Skill discovery failed: {e}"),
                 );
                 return;
             }
         };
-        app.total_skills = discovered.len();
-        app.skills.clear();
+        app.total_skills = total;
+        app.skills = skills;
+
+        // Re-apply current sort order after rebuilding the list
+        match app.sort_order {
+            SortOrder::Alphabetical => app.skills.sort_by(|a, b| a.name.cmp(&b.name)),
+            SortOrder::Discovery => {} // already in discovery order
+        }
+
+        // Reset visible window on refresh (keep existing visible_count if user has scrolled)
+        // but cap it to the new skills length
+        if app.visible_count > app.skills.len() {
+            app.visible_count = app.skills.len().max(PAGE_SIZE);
+        }
+
+        // Sync list state selection
+        if !app.skills.is_empty() {
+            let visible = app.visible_skill_count();
+            app.skill_index = app.skill_index.min(visible.saturating_sub(1));
+            app.skill_list_state.select(Some(app.skill_index));
+        }
+
+        if let Some((total_invocations, success_rate)) = snapshot.analytics {
+            app.total_invocations = total_invocations;
+            app.overall_success_rate = success_rate;
+        }
+
+        app.apply_validation_summary(snapshot.validation_summary);
+        self.load_selected_validation(app);
+        app.mcp_servers = snapshot.mcp_servers;
+
+        // Update timestamp
+        let now =
+            time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+        app.last_refresh = now
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|_| "now".to_string());
+
+        app.add_activity_keyed(
+            "refresh".into(),
+            format!("Refreshed: {} skills discovered", app.total_skills),
+        );
+    }
+
+    /// Load the validation detail for the selected skill.
+    ///
+    /// Called after a refresh and whenever the selection moves, so the info
+    /// panel never shows the previous skill's result. One indexed query.
+    fn load_selected_validation(&self, app: &mut App) {
+        app.selected_validation = None;
+        if let Some(name) = app.skills.get(app.skill_index).map(|s| s.name.clone()) {
+            let history = self.collector.get_validation_history(&name, 1);
+            app.apply_validation_detail(&name, history);
+        }
+    }
+}
+
+impl RefreshSource {
+    /// Gather one refresh. Blocking: walks the skill roots, reads the agent
+    /// configs and queries SQLite, so the loop runs it on `spawn_blocking`.
+    fn collect(&self) -> RefreshSnapshot {
+        let validity = self.latest_validity();
+        RefreshSnapshot {
+            skills: self.collect_skills(&validity),
+            analytics: self
+                .collector
+                .get_analytics_summary()
+                .ok()
+                .map(|summary| (summary.total_invocations, summary.success_rate)),
+            validation_summary: self.collector.get_validation_summary(),
+            mcp_servers: self.collect_mcp_servers(),
+        }
+    }
+
+    /// Latest validation verdict per skill name: `true` when no check failed.
+    /// An unreadable report leaves every skill unvalidated; the summary read
+    /// reports the error in the activity feed.
+    fn latest_validity(&self) -> HashMap<String, bool> {
+        let Ok(report) = self.collector.export_validation_report() else {
+            return HashMap::new();
+        };
+        report
+            .get("skills")
+            .and_then(|skills| skills.as_array())
+            .map(|skills| {
+                skills
+                    .iter()
+                    .filter_map(|skill| {
+                        let name = skill.get("skill_name")?.as_str()?;
+                        let status = skill.get("status")?.as_str()?;
+                        Some((name.to_string(), status == "valid"))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn collect_skills(
+        &self,
+        validity: &HashMap<String, bool>,
+    ) -> std::result::Result<(usize, Vec<SkillInfo>), String> {
+        use skrills_discovery::{discover_skills, skill_roots_or_default};
+
+        let roots = skill_roots_or_default(&self.skill_dirs);
+        let discovered = discover_skills(&roots, None).map_err(|e| format!("{e:#}"))?;
+        let total = discovered.len();
 
         // Group all occurrences by base skill name, preserving insertion order.
         // This consolidates the same skill found across cache versions
@@ -704,13 +898,14 @@ impl Dashboard {
         let mut seen_order: Vec<String> = Vec::new();
         let mut grouped: HashMap<String, Vec<_>> = HashMap::new();
         for skill in discovered {
-            let name = Self::base_skill_name(&skill.name);
+            let name = Dashboard::base_skill_name(&skill.name);
             if !grouped.contains_key(&name) {
                 seen_order.push(name.clone());
             }
             grouped.entry(name).or_default().push(skill);
         }
 
+        let mut skills = Vec::with_capacity(seen_order.len());
         for (idx, base_name) in seen_order.into_iter().enumerate() {
             let entries = grouped
                 .remove(&base_name)
@@ -732,75 +927,26 @@ impl Dashboard {
             // Get stats if available
             let stats = self.collector.get_skill_stats(&base_name).ok();
             let invocations = stats.as_ref().map(|s| s.total_invocations()).unwrap_or(0);
+            let valid = validity.get(&base_name).copied();
 
-            app.skills.push(SkillInfo {
+            skills.push(SkillInfo {
                 discovery_index: idx,
                 name: base_name,
                 source,
                 uri,
                 locations,
-                valid: None,
-
+                valid,
                 invocations,
             });
         }
-
-        // Re-apply current sort order after rebuilding the list
-        match app.sort_order {
-            SortOrder::Alphabetical => app.skills.sort_by(|a, b| a.name.cmp(&b.name)),
-            SortOrder::Discovery => {} // already in discovery order
-        }
-
-        // Reset visible window on refresh (keep existing visible_count if user has scrolled)
-        // but cap it to the new skills length
-        if app.visible_count > app.skills.len() {
-            app.visible_count = app.skills.len().max(PAGE_SIZE);
-        }
-
-        // Sync list state selection
-        if !app.skills.is_empty() {
-            let visible = app.visible_skill_count();
-            app.skill_index = app.skill_index.min(visible.saturating_sub(1));
-            app.skill_list_state.select(Some(app.skill_index));
-        }
-
-        // Update analytics summary
-        if let Ok(summary) = self.collector.get_analytics_summary() {
-            app.total_invocations = summary.total_invocations;
-            app.overall_success_rate = summary.success_rate;
-        }
-
-        // Update validation summary counts
-        app.apply_validation_summary(self.collector.get_validation_summary());
-
-        // Load validation detail for the currently selected skill
-        app.selected_validation = None;
-        if let Some(name) = app.skills.get(app.skill_index).map(|s| s.name.clone()) {
-            let history = self.collector.get_validation_history(&name, 1);
-            app.apply_validation_detail(&name, history);
-        }
-
-        // Refresh MCP servers from all adapters
-        self.refresh_mcp_servers(app);
-
-        // Update timestamp
-        let now =
-            time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
-        app.last_refresh = now
-            .format(&time::format_description::well_known::Rfc3339)
-            .unwrap_or_else(|_| "now".to_string());
-
-        app.add_activity_keyed(
-            "refresh".into(),
-            format!("Refreshed: {} skills discovered", app.total_skills),
-        );
+        Ok((total, skills))
     }
 
-    fn refresh_mcp_servers(&self, app: &mut App) {
+    fn collect_mcp_servers(&self) -> Vec<McpServerInfo> {
         use skrills_sync::adapters::traits::AgentAdapter;
         use skrills_sync::common::McpTransport;
 
-        app.mcp_servers.clear();
+        let mut mcp_servers = Vec::new();
 
         let adapters: Vec<(&str, Box<dyn AgentAdapter>)> = [
             (
@@ -835,7 +981,7 @@ impl Dashboard {
         for (source, adapter) in &adapters {
             if let Ok(servers) = adapter.read_mcp_servers() {
                 for (name, server) in servers {
-                    app.mcp_servers.push(McpServerInfo {
+                    mcp_servers.push(McpServerInfo {
                         name,
                         source: source.to_string(),
                         transport: match server.transport {
@@ -851,8 +997,34 @@ impl Dashboard {
             }
         }
 
-        app.mcp_servers
-            .sort_by(|a, b| a.source.cmp(&b.source).then(a.name.cmp(&b.name)));
+        mcp_servers.sort_by(|a, b| a.source.cmp(&b.source).then(a.name.cmp(&b.name)));
+        mcp_servers
+    }
+}
+
+/// Puts the terminal back: raw mode off, main screen, mouse capture off,
+/// cursor shown. Each step is attempted even if an earlier one failed.
+fn restore_terminal() {
+    if let Err(e) = disable_raw_mode() {
+        eprintln!("Warning: failed to disable raw mode: {e}");
+    }
+    if let Err(e) = execute!(
+        io::stdout(),
+        LeaveAlternateScreen,
+        DisableMouseCapture,
+        crossterm::cursor::Show
+    ) {
+        eprintln!("Warning: failed to restore the terminal: {e}");
+    }
+}
+
+/// Restores the terminal when dropped, so every exit path after raw mode is
+/// enabled, including a failed setup step, leaves the shell usable.
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        restore_terminal();
     }
 }
 
@@ -1403,5 +1575,157 @@ mod tests {
         assert!(app.skills.is_empty());
         app.on_key(KeyCode::Home);
         assert_eq!(app.skill_index, 0);
+    }
+
+    fn skill_named(name: &str) -> SkillInfo {
+        SkillInfo {
+            discovery_index: 0,
+            name: name.into(),
+            source: "test".into(),
+            uri: format!("skill://{name}"),
+            locations: Vec::new(),
+            valid: None,
+            invocations: 0,
+        }
+    }
+
+    /// RT-22: truncation used a byte offset, so a cut inside a multi-byte
+    /// character panicked inside `terminal.draw`.
+    #[test]
+    fn format_truncates_multibyte_messages_on_a_char_boundary() {
+        let mut entry = ActivityEntry::new("é".repeat(40));
+        entry.timestamp = "12:00:00".into();
+        // Budget of 16 chars leaves 11 kept; byte 11 is inside an "é".
+        let line = entry.format(9 + 16);
+        assert_eq!(line, format!("12:00:00 {}(...)", "é".repeat(11)));
+    }
+
+    /// RT-23: Windows reports releases too; only presses may act.
+    #[test]
+    fn key_release_is_ignored() {
+        use crossterm::event::{KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+        let mut app = App::new();
+        app.on_key_event(KeyEvent {
+            code: KeyCode::Char('q'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Release,
+            state: KeyEventState::NONE,
+        });
+        assert!(!app.should_quit);
+    }
+
+    /// A held key keeps acting, as in the cold-window TUI.
+    #[test]
+    fn key_repeat_acts() {
+        use crossterm::event::{KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+        let mut app = App::new();
+        app.on_key_event(KeyEvent {
+            code: KeyCode::Char('q'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Repeat,
+            state: KeyEventState::NONE,
+        });
+        assert!(app.should_quit);
+    }
+
+    /// RT-23: raw mode turns Ctrl+C into a key event, so it must quit.
+    #[test]
+    fn ctrl_c_quits() {
+        use crossterm::event::{KeyEvent, KeyModifiers};
+
+        let mut app = App::new();
+        app.on_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(app.should_quit);
+
+        let mut app = App::new();
+        app.on_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        assert!(!app.should_quit, "a plain 'c' is not a quit key");
+    }
+
+    /// RT-50: `secs * 4` overflowed `u32` on a huge refresh interval.
+    #[test]
+    fn huge_refresh_interval_saturates() {
+        let dashboard =
+            Dashboard::with_collector(Vec::new(), Arc::new(MetricsCollector::in_memory().unwrap()))
+                .with_refresh_secs(u32::MAX);
+        assert_eq!(dashboard.refresh_ticks, u32::MAX);
+    }
+
+    /// RT-48: the info panel kept the previous skill's validation until the
+    /// next refresh. It is loaded for whichever skill is selected now.
+    #[test]
+    fn selected_validation_follows_the_selection() {
+        let collector = Arc::new(MetricsCollector::in_memory().unwrap());
+        collector
+            .record_validation("alpha", &["lint"], &[])
+            .unwrap();
+        collector
+            .record_validation("beta", &[], &["format"])
+            .unwrap();
+        let dashboard = Dashboard::with_collector(Vec::new(), collector);
+
+        let mut app = App::new();
+        app.skills = vec![skill_named("alpha"), skill_named("beta")];
+        app.visible_count = 2;
+        dashboard.load_selected_validation(&mut app);
+        assert_eq!(
+            app.selected_validation.as_ref().unwrap().skill_name,
+            "alpha"
+        );
+
+        app.skill_index = 1;
+        dashboard.load_selected_validation(&mut app);
+        let detail = app.selected_validation.as_ref().unwrap();
+        assert_eq!(detail.skill_name, "beta");
+        assert_eq!(detail.checks_failed, vec!["format".to_string()]);
+    }
+
+    /// RT-48: `SkillInfo::valid` was always `None`, so every row showed `[--]`.
+    #[test]
+    fn refresh_fills_in_the_latest_validation_verdict() {
+        // A refresh also reads the agents' MCP configs under HOME.
+        let _env = skrills_test_utils::env_guard();
+        let fixture = skrills_test_utils::TestFixture::new().unwrap();
+        let _home = fixture.home_guard();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("skills");
+        for name in ["passing", "failing", "unchecked"] {
+            let dir = root.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: test\n---\nbody\n"),
+            )
+            .unwrap();
+        }
+
+        let collector = Arc::new(MetricsCollector::in_memory().unwrap());
+        let dashboard = Dashboard::with_collector(vec![root], collector.clone());
+        let mut app = App::new();
+        dashboard.refresh_skills(&mut app);
+        let names: Vec<_> = app.skills.iter().map(|s| s.name.clone()).collect();
+        assert_eq!(app.skills.len(), 3, "discovered: {names:?}");
+
+        let name_of = |needle: &str| names.iter().find(|n| n.contains(needle)).unwrap().clone();
+        collector
+            .record_validation(&name_of("passing"), &["lint"], &[])
+            .unwrap();
+        collector
+            .record_validation(&name_of("failing"), &[], &["lint"])
+            .unwrap();
+        dashboard.refresh_skills(&mut app);
+
+        let valid_of = |needle: &str| {
+            app.skills
+                .iter()
+                .find(|s| s.name.contains(needle))
+                .unwrap()
+                .valid
+        };
+        assert_eq!(valid_of("passing"), Some(true));
+        assert_eq!(valid_of("failing"), Some(false));
+        assert_eq!(valid_of("unchecked"), None);
     }
 }
