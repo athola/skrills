@@ -2,6 +2,7 @@
 
 ## 0.9.0 - Unreleased
 
+- **Security: the cold-window browser page runs under the dashboard's CSP**: `skrills cold-window --browser` served its page with an inline script and stylesheet and no Content-Security-Policy. The script and stylesheet are now `/static/cold_window.js` and `/static/cold_window.css`, every response from that router carries the same policy as `serve --http`, and the budget bar and lag notice use stylesheet classes instead of `style=` attributes, which the policy refuses.
 - **Security: `[serve] project_roots` limits which projects MCP clients can have analyzed**: when set, the `project_dir` a client passes to recommend-skills-smart, analyze-project-context, suggest-new-skills and create-skill must resolve, after canonicalising, inside one of the listed roots, so `..` and symlinks cannot escape; anything else is refused with invalid params. Unset keeps today's behaviour, with a startup warning on a non-loopback HTTP bind (SA-23).
 - **Fix: the installer finishes**: `install.sh` names a client for `skrills setup` (`SKRILLS_CLIENT`, else each of `~/.claude`, `~/.codex`, `~/.copilot`, `~/.cursor` that exists, else claude) instead of failing at its last step, and setup no longer truncates its own binary when `--bin-dir` reaches it through a symlink.
 - **Change: run event indices stay stable past 10,000 events**: dropped events are summarized by a leading `events_dropped` event and `get-run-events` reports absolute indices (RT-31).

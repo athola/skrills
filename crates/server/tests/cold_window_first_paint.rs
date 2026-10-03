@@ -86,11 +86,12 @@ async fn cold_window_dashboard_first_paint_under_one_second() {
 
     server.abort();
 
-    // Sanity: the HTML shell wires up the SSE EventSource so the
-    // browser knows where to subscribe for tick updates.
+    // Sanity: the HTML shell loads the script that opens the SSE
+    // EventSource, so the browser knows where to subscribe for tick
+    // updates.
     assert!(
-        body.contains("EventSource") && body.contains("/dashboard.sse"),
-        "dashboard body did not include EventSource bootstrap"
+        body.contains(r#"<script src="/static/cold_window.js"></script>"#),
+        "dashboard body did not load the EventSource bootstrap script"
     );
 
     // SC2: 1 s spec budget. On a quiet localhost this is typically

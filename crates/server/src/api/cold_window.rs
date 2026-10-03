@@ -1,8 +1,10 @@
 //! Cold-window browser surface.
 //!
-//! Two endpoints:
+//! Two endpoints, plus the page's script and stylesheet, all sent with the
+//! transport's Content-Security-Policy:
 //!
-//! - `GET /dashboard`: initial HTML page with an `EventSource`
+//! - `GET /dashboard`: initial HTML page whose script (served from
+//!   `/static/cold_window.js`, beside its stylesheet) opens an `EventSource`
 //!   pointing at `/dashboard.sse`. No JavaScript framework: the
 //!   browser is a paint surface.
 //! - `GET /dashboard.sse`: Server-Sent Events stream. Each tick
@@ -31,8 +33,9 @@ use std::time::Duration;
 
 use async_stream::stream;
 use axum::extract::State;
+use axum::http::header;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::Html;
+use axum::response::{Html, IntoResponse};
 use axum::routing::get;
 use axum::Router;
 use futures::Stream;
@@ -114,7 +117,30 @@ pub fn cold_window_routes(state: ColdWindowDashboardState) -> Router {
     Router::new()
         .route("/dashboard", get(serve_dashboard))
         .route("/dashboard.sse", get(serve_dashboard_sse))
+        .route("/static/cold_window.js", get(serve_script))
+        .route("/static/cold_window.css", get(serve_stylesheet))
+        // This router is served on its own by `skrills cold-window`, so it
+        // carries the same policy as the main transport.
+        .layer(axum::middleware::from_fn(
+            crate::http_transport::csp_middleware,
+        ))
         .with_state(state)
+}
+
+/// The page's script, a file so the CSP can refuse inline script.
+async fn serve_script() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        include_str!("cold_window.js"),
+    )
+}
+
+/// The page's stylesheet, a file so the CSP can refuse inline style.
+async fn serve_stylesheet() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        include_str!("cold_window.css"),
+    )
 }
 
 async fn serve_dashboard(State(state): State<ColdWindowDashboardState>) -> Html<String> {
@@ -146,9 +172,7 @@ async fn serve_dashboard_sse(
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     let event = Event::default()
                         .event("status")
-                        .data(format!(
-                            "<span style=\"color:#ff5555\">subscriber lagged by {n} ticks</span>"
-                        ));
+                        .data(render_lagged_fragment(n));
                     yield Ok::<Event, Infallible>(event);
                 }
                 Err(broadcast::error::RecvError::Closed) => {
@@ -187,6 +211,11 @@ fn render_snapshot_events(
     ]
 }
 
+/// Status line shown when this subscriber fell `n` ticks behind the bus.
+fn render_lagged_fragment(n: u64) -> String {
+    format!("<span class=\"severity-warning\">subscriber lagged by {n} ticks</span>")
+}
+
 fn render_dashboard_page(budget_ceiling: u64) -> String {
     let budget_label = format_token_count(budget_ceiling);
     format!(
@@ -195,37 +224,7 @@ fn render_dashboard_page(budget_ceiling: u64) -> String {
 <head>
 <meta charset="utf-8"/>
 <title>skrills cold-window dashboard</title>
-<style>
-  body {{ font-family: ui-monospace, monospace; background: #0a0a0a; color: #e0e0e0; margin: 0; padding: 16px; }}
-  h1 {{ margin: 0 0 12px 0; font-size: 18px; }}
-  .pane {{ border: 1px solid #444; padding: 12px; margin-bottom: 12px; border-radius: 4px; background: #121212; }}
-  .pane h2 {{ margin: 0 0 8px 0; font-size: 12px; text-transform: uppercase; color: #888; }}
-  .severity-warning  {{ color: #ff5555; font-weight: bold; }}
-  .severity-caution  {{ color: #ffaa00; }}
-  .severity-advisory {{ color: #44ddff; }}
-  .severity-status   {{ color: #888; }}
-  .tier-tag {{ display: inline-block; padding: 0 6px; margin-right: 8px; background: #444; color: #fff; font-size: 11px; }}
-  .tier-tag.warning  {{ background: #ff5555; color: #000; }}
-  .tier-tag.caution  {{ background: #ffaa00; color: #000; }}
-  .tier-tag.advisory {{ background: #44ddff; color: #000; }}
-  .tier-tag.status   {{ background: #888; color: #000; }}
-  .pinned {{ color: #ffff00; }}
-  .channel-tag {{ display: inline-block; padding: 0 6px; margin-right: 6px; font-size: 11px; }}
-  .channel-tag.github   {{ background: #c000c0; color: #000; }}
-  .channel-tag.hn       {{ background: #ff8800; color: #000; }}
-  .channel-tag.lobsters {{ background: #cc3333; color: #000; }}
-  .channel-tag.paper    {{ background: #4488ff; color: #000; }}
-  .channel-tag.triz     {{ background: #00cc00; color: #000; }}
-  ul {{ list-style: none; padding: 0; margin: 0; }}
-  li {{ padding: 3px 0; border-bottom: 1px dashed #2a2a2a; }}
-  li:last-child {{ border-bottom: 0; }}
-  .empty {{ color: #555; font-style: italic; }}
-  #status-bar {{ font-size: 12px; }}
-  .budget-bar {{ display: inline-block; width: 200px; height: 8px; background: #222; vertical-align: middle; margin: 0 8px; border-radius: 2px; overflow: hidden; }}
-  .budget-fill {{ display: block; height: 100%; background: #00cc00; }}
-  .budget-fill.warn {{ background: #ffaa00; }}
-  .budget-fill.crit {{ background: #ff5555; }}
-</style>
+<link rel="stylesheet" href="/static/cold_window.css"/>
 </head>
 <body>
 <h1>skrills cold-window  ·  budget {budget_label}</h1>
@@ -233,26 +232,7 @@ fn render_dashboard_page(budget_ceiling: u64) -> String {
 <section class="pane"><h2>Alerts</h2><div id="alert-body"><span class="empty">awaiting first tick…</span></div></section>
 <section class="pane"><h2>Hints</h2><div id="hint-body"><span class="empty">awaiting first tick…</span></div></section>
 <section class="pane"><h2>Research</h2><div id="research-body"><span class="empty">awaiting first tick…</span></div></section>
-<script>
-  // Defense in depth: server already html-escapes every user-derived
-  // string, and the browser swaps fragments via DOMParser +
-  // replaceChildren. DOMParser parses <script> tags into nodes that do
-  // NOT execute when later attached to the document, so even if the
-  // server-side escape ever regresses, an injected payload can't run.
-  const evt = new EventSource('/dashboard.sse');
-  const swap = (id, html) => {{
-    const el = document.getElementById(id);
-    if (!el) return;
-    const parsed = new DOMParser().parseFromString(html, 'text/html');
-    el.replaceChildren(...parsed.body.childNodes);
-  }};
-  evt.addEventListener('alert',    e => swap('alert-body',    e.data));
-  evt.addEventListener('hint',     e => swap('hint-body',     e.data));
-  evt.addEventListener('research', e => swap('research-body', e.data));
-  evt.addEventListener('status',   e => swap('status-bar',    e.data));
-  evt.onerror = () => swap('status-bar',
-    '<span class="severity-warning">reconnecting…</span>');
-</script>
+<script src="/static/cold_window.js"></script>
 </body>
 </html>"#
     )
@@ -379,7 +359,9 @@ fn render_status_fragment(
     } else {
         ""
     };
-    let bar_width = (ratio.clamp(0.0, 1.0) * 100.0).round() as u32;
+    // The CSP refuses inline style, so the fill width is one of the
+    // stylesheet's `fill-N` classes, rounded to the nearest 5%.
+    let bar_step = (ratio.clamp(0.0, 1.0) * 20.0).round() as u32 * 5;
     let mut counts = [0u32; 4];
     for a in &snap.alerts {
         match a.severity {
@@ -399,7 +381,7 @@ fn render_status_fragment(
         .map(|q| format!("  ·  quota: {}/{}", q.available(), q.total()))
         .unwrap_or_default();
     format!(
-        r#"<strong>{cadence}</strong>  ·  <span>{token_label}</span><span class="budget-bar"><span class="budget-fill {bar_class}" style="width:{bar_width}%"></span></span>  ·  <span>{alerts_label}</span>{quota_label}"#
+        r#"<strong>{cadence}</strong>  ·  <span>{token_label}</span><span class="budget-bar"><span class="budget-fill {bar_class} fill-{bar_step}"></span></span>  ·  <span>{alerts_label}</span>{quota_label}"#
     )
 }
 
@@ -481,21 +463,89 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_page_includes_event_source_script() {
+    fn dashboard_script_targets_elements_on_the_page() {
         let html = render_dashboard_page(100_000);
-        assert!(html.contains("EventSource"));
-        assert!(html.contains("/dashboard.sse"));
-        assert!(html.contains("alert-body"));
-        assert!(html.contains("hint-body"));
-        assert!(html.contains("research-body"));
-        assert!(html.contains("status-bar"));
+        let script = include_str!("cold_window.js");
+        assert!(script.contains("new EventSource('/dashboard.sse')"));
+        for id in ["alert-body", "hint-body", "research-body", "status-bar"] {
+            assert!(
+                script.contains(&format!("'{id}'")),
+                "script never swaps {id}"
+            );
+            assert!(html.contains(&format!("id=\"{id}\"")), "page lacks {id}");
+        }
     }
 
     #[test]
-    fn dashboard_page_uses_dom_parser_replace_children() {
+    fn dashboard_script_uses_dom_parser_replace_children() {
+        let script = include_str!("cold_window.js");
+        assert!(script.contains("DOMParser"));
+        assert!(script.contains("replaceChildren"));
+    }
+
+    #[test]
+    fn dashboard_page_has_no_inline_script_or_style() {
         let html = render_dashboard_page(100_000);
-        assert!(html.contains("DOMParser"));
-        assert!(html.contains("replaceChildren"));
+        assert!(!html.contains("<style"), "inline <style> block: {html}");
+        assert!(!html.contains("style=\""), "inline style attribute: {html}");
+        assert!(
+            html.contains(r#"<script src="/static/cold_window.js"></script>"#),
+            "script should load by URL: {html}"
+        );
+        assert_eq!(html.matches("<script").count(), 1, "extra script tag");
+        assert!(html.contains(r#"<link rel="stylesheet" href="/static/cold_window.css"/>"#));
+    }
+
+    #[test]
+    fn lagged_fragment_uses_a_class_not_an_inline_style() {
+        let frag = render_lagged_fragment(3);
+        assert!(
+            !frag.contains("style="),
+            "inline style blocked by CSP: {frag}"
+        );
+        assert!(frag.contains("severity-warning"));
+        assert!(frag.contains("lagged by 3 ticks"));
+    }
+
+    #[tokio::test]
+    async fn routes_send_csp_and_serve_page_assets() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let (tx, _rx) = broadcast::channel(16);
+        let app = cold_window_routes(ColdWindowDashboardState::new(tx, 100_000));
+        for (uri, content_type) in [
+            ("/dashboard", "text/html"),
+            ("/static/cold_window.js", "text/javascript"),
+            ("/static/cold_window.css", "text/css"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::OK, "{uri}");
+            let headers = response.headers();
+            let csp = headers
+                .get(axum::http::header::CONTENT_SECURITY_POLICY)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_else(|| panic!("{uri} has no CSP header"));
+            assert!(csp.contains("script-src 'self'"), "{uri}: {csp}");
+            assert!(!csp.contains("unsafe-inline"), "{uri}: {csp}");
+            let actual_type = headers
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            assert!(
+                actual_type.starts_with(content_type),
+                "{uri}: {actual_type}"
+            );
+        }
     }
 
     #[test]
@@ -646,6 +696,24 @@ mod tests {
         snap.load_sample.last_edit_age_ms = Some(3_000);
         let frag = render_status_fragment(&snap, 100_000, None);
         assert!(frag.contains("[active edit]"));
+    }
+
+    #[test]
+    fn status_fragment_budget_bar_width_is_a_stylesheet_class() {
+        let mut snap = empty_snap();
+        for (total, step) in [(0, 0), (42_000, 40), (43_000, 45), (250_000, 100)] {
+            snap.token_ledger.total = total;
+            let frag = render_status_fragment(&snap, 100_000, None);
+            assert!(
+                !frag.contains("style="),
+                "inline style blocked by CSP: {frag}"
+            );
+            assert!(frag.contains(&format!(" fill-{step}\"")), "{total}: {frag}");
+            assert!(
+                include_str!("cold_window.css").contains(&format!(".fill-{step} ")),
+                "stylesheet lacks .fill-{step}"
+            );
+        }
     }
 
     #[test]
@@ -971,7 +1039,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dashboard_html_route_returns_200_with_event_source_script() {
+    async fn dashboard_html_route_returns_200_with_script_link() {
         use axum::body::Body;
         use http_body_util::BodyExt;
         use tower::ServiceExt;
@@ -992,8 +1060,7 @@ mod tests {
         assert_eq!(response.status(), axum::http::StatusCode::OK);
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let body = String::from_utf8(bytes.to_vec()).unwrap();
-        assert!(body.contains("EventSource"));
-        assert!(body.contains("/dashboard.sse"));
-        assert!(body.contains("DOMParser"));
+        assert!(body.contains(r#"<script src="/static/cold_window.js"></script>"#));
+        assert!(body.contains("alert-body"));
     }
 }

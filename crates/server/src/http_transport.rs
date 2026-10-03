@@ -318,7 +318,10 @@ async fn host_middleware(
 }
 
 /// Adds the dashboard's Content-Security-Policy to every response.
-async fn csp_middleware(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+pub(crate) async fn csp_middleware(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
     let mut response = next.run(req).await;
     response.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,

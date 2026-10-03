@@ -700,12 +700,17 @@ dogfood-cold-window-browser: build
 	done ; \
 	test -s $$TMP/page.html || { echo "FAIL: /dashboard never responded"; cat $$TMP/server.log; exit 1; } ; \
 	echo "==> [browser] /dashboard HTML served ($$(wc -c <$$TMP/page.html) bytes)" ; \
-	grep -q "/dashboard.sse" $$TMP/page.html || { echo "FAIL: HTML missing /dashboard.sse reference"; exit 1; } ; \
+	grep -q '<script src="/static/cold_window.js">' $$TMP/page.html || { echo "FAIL: HTML does not load /static/cold_window.js"; exit 1; } ; \
+	curl -fsS --max-time 1 -D $$TMP/script.headers "http://127.0.0.1:$$PORT/static/cold_window.js" >$$TMP/page.js \
+	  || { echo "FAIL: /static/cold_window.js not served"; exit 1; } ; \
+	grep -qi "^content-security-policy:.*script-src 'self'" $$TMP/script.headers \
+	  || { echo "FAIL: cold-window responses carry no CSP"; exit 1; } ; \
+	grep -q "/dashboard.sse" $$TMP/page.js || { echo "FAIL: script missing /dashboard.sse reference"; exit 1; } ; \
 	for ev in alert hint research status ; do \
-	  grep -q "addEventListener('$$ev'" $$TMP/page.html \
-	    || { echo "FAIL: HTML page does not subscribe to '$$ev'"; exit 1; } ; \
+	  grep -q "addEventListener('$$ev'" $$TMP/page.js \
+	    || { echo "FAIL: page script does not subscribe to '$$ev'"; exit 1; } ; \
 	done ; \
-	echo "==> [browser] HTML contract: declares listeners for {alert,hint,research,status}" ; \
+	echo "==> [browser] HTML contract: CSP set, script declares listeners for {alert,hint,research,status}" ; \
 	curl -fsS --max-time 3 -N "http://127.0.0.1:$$PORT/dashboard.sse" >$$TMP/stream.sse 2>/dev/null || true ; \
 	test -s $$TMP/stream.sse || { echo "FAIL: SSE stream produced no bytes"; cat $$TMP/server.log; exit 1; } ; \
 	for ev in alert hint research status ; do \

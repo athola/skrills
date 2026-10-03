@@ -17,7 +17,7 @@
 //!   subcommand is registered with clap.
 //! - `cold_window_browser_surface_serves_dashboard`: full lifecycle
 //!   (~2 s). Spawns the real binary, verifies `/dashboard` returns
-//!   `HTTP/1.1 200` with the expected `EventSource` script.
+//!   `HTTP/1.1 200` under the CSP, and serves the `EventSource` script it loads.
 
 #![cfg(feature = "http-transport")]
 
@@ -198,8 +198,8 @@ fn cold_window_skill_dir_help_matches_what_is_walked() {
 }
 
 /// End-to-end smoke: spawn the real `skrills` binary in browser mode,
-/// poll `/dashboard` until it returns, assert HTTP/1.1 200 plus the
-/// expected SSE-bootstrap script. Validates that ColdWindowEngine,
+/// poll `/dashboard` until it returns, assert HTTP/1.1 200, the CSP, and
+/// the SSE-bootstrap script the page loads. Validates that ColdWindowEngine,
 /// ColdWindowDashboardState, axum router, tokio runtime, and the
 /// signal handler all wire up correctly via the CLI dispatch path.
 #[test]
@@ -216,6 +216,7 @@ fn cold_window_browser_surface_serves_dashboard() {
     assert_ne!(addr.port(), 0, "the log must carry the bound port");
 
     let response = poll_http_get(addr, "/dashboard", "127.0.0.1");
+    let script = http_get(addr, "/static/cold_window.js", "127.0.0.1");
 
     // Always tear down the child before asserting so a failure
     // doesn't leak a process that holds the test port hostage.
@@ -231,12 +232,21 @@ fn cold_window_browser_surface_serves_dashboard() {
         "dashboard did not return 200:\n{body}"
     );
     assert!(
-        body.contains("EventSource"),
-        "dashboard body missing EventSource script:\n{body}"
+        body.contains("content-security-policy: default-src 'self'; script-src 'self'"),
+        "dashboard served without the CSP:\n{body}"
     );
     assert!(
-        body.contains("/dashboard.sse"),
-        "dashboard body missing SSE endpoint reference:\n{body}"
+        body.contains(r#"<script src="/static/cold_window.js"></script>"#),
+        "dashboard body does not load its script:\n{body}"
+    );
+    let script = script.expect("/static/cold_window.js did not respond");
+    assert!(
+        script.contains("HTTP/1.1 200") && script.contains("EventSource"),
+        "page script missing EventSource bootstrap:\n{script}"
+    );
+    assert!(
+        script.contains("/dashboard.sse"),
+        "page script missing SSE endpoint reference:\n{script}"
     );
 }
 
