@@ -6,46 +6,57 @@ use std::fs;
 use std::path::Path;
 
 /// Parse Cargo.toml for Rust dependencies.
+///
+/// Reads `[dependencies]`, `[dev-dependencies]` and `[build-dependencies]`,
+/// the same three under each `[target.<cfg>]`, and
+/// `[workspace.dependencies]`, so a workspace root is not reported as having
+/// no dependencies. A name listed in several tables is reported once, as a
+/// normal dependency if any table lists it as one.
 pub fn parse_cargo_toml(path: &Path) -> Result<Vec<DependencyInfo>> {
     let content = fs::read_to_string(path)?;
     let doc: toml::Value = toml::from_str(&content)?;
-    let mut deps = Vec::new();
+    let mut deps: Vec<DependencyInfo> = Vec::new();
 
-    // Parse [dependencies]
-    if let Some(dependencies) = doc.get("dependencies").and_then(|d| d.as_table()) {
-        for (name, value) in dependencies {
-            let version = extract_cargo_version(value);
+    let mut add_table = |table: Option<&toml::Value>, dev: bool| {
+        let Some(table) = table.and_then(|t| t.as_table()) else {
+            return;
+        };
+        for (name, value) in table {
+            if let Some(existing) = deps.iter_mut().find(|d| &d.name == name) {
+                existing.dev &= dev;
+                if existing.version.is_none() {
+                    existing.version = extract_cargo_version(value);
+                }
+                continue;
+            }
             deps.push(DependencyInfo {
                 name: name.clone(),
-                version,
-                dev: false,
+                version: extract_cargo_version(value),
+                dev,
             });
         }
-    }
+    };
 
-    // Parse [dev-dependencies]
-    if let Some(dev_deps) = doc.get("dev-dependencies").and_then(|d| d.as_table()) {
-        for (name, value) in dev_deps {
-            let version = extract_cargo_version(value);
-            deps.push(DependencyInfo {
-                name: name.clone(),
-                version,
-                dev: true,
-            });
+    // Build deps count as dev deps for our purposes.
+    let sections = [
+        ("dependencies", false),
+        ("dev-dependencies", true),
+        ("build-dependencies", true),
+    ];
+    for (section, dev) in sections {
+        add_table(doc.get(section), dev);
+    }
+    if let Some(targets) = doc.get("target").and_then(|t| t.as_table()) {
+        for target in targets.values() {
+            for (section, dev) in sections {
+                add_table(target.get(section), dev);
+            }
         }
     }
-
-    // Parse [build-dependencies]
-    if let Some(build_deps) = doc.get("build-dependencies").and_then(|d| d.as_table()) {
-        for (name, value) in build_deps {
-            let version = extract_cargo_version(value);
-            deps.push(DependencyInfo {
-                name: name.clone(),
-                version,
-                dev: true, // Treat build deps as dev deps for our purposes
-            });
-        }
-    }
+    add_table(
+        doc.get("workspace").and_then(|w| w.get("dependencies")),
+        false,
+    );
 
     Ok(deps)
 }
@@ -227,8 +238,14 @@ fn extract_poetry_version(value: &toml::Value) -> Option<String> {
     }
 }
 
-fn parse_python_dep_string(dep: &str) -> (String, Option<String>) {
+pub(super) fn parse_python_dep_string(dep: &str) -> (String, Option<String>) {
     // Handle various formats: name, name>=1.0, name[extra]>=1.0, etc.
+    // Drop a trailing comment, an environment marker (`; python_version <
+    // "3.11"`) and a direct reference (`name @ https://...`) first, so their
+    // operators are not mistaken for the version specifier.
+    let dep = dep.split('#').next().unwrap_or_default();
+    let dep = dep.split(';').next().unwrap_or_default();
+    let dep = dep.split(" @ ").next().unwrap_or_default();
     let dep = dep.trim();
 
     // Find version specifier start
@@ -789,5 +806,64 @@ requires = ["setuptools"]
 
         let result = parse_cargo_toml(&path);
         assert!(result.is_err());
+    }
+
+    /// IN-44: markers and direct references are not part of the name.
+    #[test]
+    fn parse_python_dep_string_strips_markers_and_direct_references() {
+        assert_eq!(
+            parse_python_dep_string(r#"tomli; python_version < "3.11""#),
+            ("tomli".to_string(), None)
+        );
+        assert_eq!(
+            parse_python_dep_string(r#"tomli>=2; python_version < "3.11""#),
+            ("tomli".to_string(), Some(">=2".to_string()))
+        );
+        assert_eq!(
+            parse_python_dep_string("pkg @ https://example.com/pkg-1.0.tar.gz"),
+            ("pkg".to_string(), None)
+        );
+        assert_eq!(
+            parse_python_dep_string("requests[socks]~=2.0"),
+            ("requests".to_string(), Some("~=2.0".to_string()))
+        );
+    }
+
+    /// IN-45: a workspace root's `[workspace.dependencies]` and
+    /// target-specific tables are read.
+    #[test]
+    fn parse_cargo_toml_reads_workspace_and_target_tables() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("Cargo.toml");
+        fs::write(
+            &path,
+            r#"
+[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dev-dependencies]
+winapi = "0.3"
+
+[dev-dependencies]
+serde = "1"
+"#,
+        )
+        .unwrap();
+
+        let deps = parse_cargo_toml(&path).unwrap();
+        let find = |n: &str| deps.iter().find(|d| d.name == n).cloned();
+        assert_eq!(find("tokio").unwrap().version.as_deref(), Some("1"));
+        assert!(!find("libc").unwrap().dev);
+        assert!(find("winapi").unwrap().dev);
+        // Listed as dev and as a workspace dependency: reported once, normal.
+        assert_eq!(deps.iter().filter(|d| d.name == "serde").count(), 1);
+        assert!(!find("serde").unwrap().dev);
     }
 }

@@ -2,8 +2,10 @@
 
 use anyhow::Result;
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// Extract keywords from recent git commit messages.
 ///
@@ -36,27 +38,93 @@ use std::process::Command;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub fn extract_git_keywords(root: &Path, commit_limit: usize) -> Result<Vec<String>> {
-    // Run git log to get recent commit messages
-    let output = Command::new("git")
+    let stdout = run_git_log("git".as_ref(), root, commit_limit, GIT_LOG_TIMEOUT)?;
+    Ok(extract_keywords_from_commits(&stdout))
+}
+
+/// How long `git log` may run before it is killed.
+const GIT_LOG_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Run `git log` for commit subjects in `root`, killing it after `timeout`.
+///
+/// `root` may be any repository a caller names, so the invocation does not
+/// trust its config: no pager, no fsmonitor hook, and no signature
+/// verification (which would run the repository's `gpg.program`).
+fn run_git_log(
+    git: &std::ffi::OsStr,
+    root: &Path,
+    commit_limit: usize,
+    timeout: Duration,
+) -> Result<String> {
+    let mut child = Command::new(git)
         .args([
+            "--no-pager",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "log.showSignature=false",
             "log",
-            "--oneline",
+            "--no-show-signature",
             "-n",
             &commit_limit.to_string(),
             "--format=%s",
         ])
         .current_dir(root)
-        .output()?;
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        return Err(crate::IntelligenceError::GitLogFailed(stderr).into());
+    // Drain both pipes on their own threads so a large log cannot fill a
+    // pipe buffer and stall the child while we wait on it.
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+    let stdout = drain(
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+    let stderr = drain(
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(crate::IntelligenceError::GitLogFailed(format!(
+                "git log timed out after {}s",
+                timeout.as_secs_f64()
+            ))
+            .into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    let stdout = stdout.join().unwrap_or_default();
+    let stderr = stderr.join().unwrap_or_default();
+    if !status.success() {
+        return Err(crate::IntelligenceError::GitLogFailed(
+            String::from_utf8_lossy(&stderr).into_owned(),
+        )
+        .into());
     }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let keywords = extract_keywords_from_commits(&stdout);
-
-    Ok(keywords)
+    Ok(String::from_utf8_lossy(&stdout).into_owned())
 }
 
 /// Extract meaningful keywords from commit messages.
@@ -250,6 +318,64 @@ fn is_commit_stop_word(word: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Write a fake `git` that records its arguments to `<dir>/args`, then
+    /// either prints one subject or hangs.
+    #[cfg(unix)]
+    fn fake_git(dir: &Path, hang: bool) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let tail = if hang {
+            "exec sleep 30"
+        } else {
+            "echo 'refactor authentication layer'"
+        };
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n{tail}\n",
+            dir.join("args").display()
+        );
+        let git = dir.join(if hang { "git-hang" } else { "git" });
+        std::fs::write(&git, script).unwrap();
+        std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git
+    }
+
+    /// IN-26: a hung `git log` is killed after the timeout, and the
+    /// invocation disables the repository-config hooks it does not need.
+    /// The fake binary is passed by path, so PATH is never touched.
+    #[cfg(unix)]
+    #[test]
+    fn git_log_times_out_and_runs_hardened() {
+        let bin = tempfile::tempdir().unwrap();
+
+        let git = fake_git(bin.path(), false);
+        let out = run_git_log(git.as_os_str(), bin.path(), 5, Duration::from_secs(10)).unwrap();
+        assert_eq!(out.trim(), "refactor authentication layer");
+        let args = std::fs::read_to_string(bin.path().join("args")).unwrap();
+        for expected in [
+            "--no-pager",
+            "core.fsmonitor=false",
+            "log.showSignature=false",
+            "--no-show-signature",
+        ] {
+            assert!(
+                args.lines().any(|a| a == expected),
+                "missing {expected}: {args}"
+            );
+        }
+
+        let hanging = fake_git(bin.path(), true);
+        let started = Instant::now();
+        let err = run_git_log(
+            hanging.as_os_str(),
+            bin.path(),
+            5,
+            Duration::from_millis(300),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("timed out"), "unexpected error: {err}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
 
     #[test]
     fn test_strip_conventional_prefix() {

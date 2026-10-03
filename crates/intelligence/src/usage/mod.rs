@@ -105,8 +105,52 @@ pub fn save_analytics(analytics: &UsageAnalytics, path: &std::path::Path) -> any
         std::fs::create_dir_all(parent)?;
     }
     let json = serde_json::to_string_pretty(analytics)?;
-    std::fs::write(path, json)?;
+    // Write a sibling temp file and rename it over the cache, so a crash
+    // mid-write leaves the old cache (or none), never a truncated one.
+    let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
+    tmp_name.push(format!(".tmp.{}", std::process::id()));
+    let tmp_path = path.with_file_name(tmp_name);
+    if let Err(e) = std::fs::write(&tmp_path, json).and_then(|()| std::fs::rename(&tmp_path, path))
+    {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e.into());
+    }
     Ok(())
+}
+
+/// A cache older than this is rebuilt even if no session file changed.
+const ANALYTICS_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Whether the cache at `cache_path` can be reused: younger than `ttl` and
+/// newer than every `*.jsonl` session file under `session_dirs`.
+///
+/// Only file metadata is read, which is far cheaper than re-parsing.
+fn analytics_cache_is_fresh(
+    cache_path: &std::path::Path,
+    session_dirs: &[std::path::PathBuf],
+    ttl: std::time::Duration,
+) -> bool {
+    let Ok(cache_mtime) = std::fs::metadata(cache_path).and_then(|m| m.modified()) else {
+        return false;
+    };
+    match cache_mtime.elapsed() {
+        Ok(age) if age > ttl => return false,
+        _ => {}
+    }
+    let newer_session_exists = session_dirs.iter().any(|dir| {
+        walkdir::WalkDir::new(dir)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_file())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
+            .any(|e| {
+                e.metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .is_some_and(|mtime| mtime > cache_mtime)
+            })
+    });
+    !newer_session_exists
 }
 
 /// Load usage analytics from a JSON file.
@@ -136,21 +180,29 @@ pub fn load_or_build_analytics(
     auto_save: bool,
 ) -> anyhow::Result<UsageAnalytics> {
     let cache_path = default_analytics_cache_path();
-
-    // Try loading from cache first (unless force_rebuild)
-    if !force_rebuild {
-        if let Some(ref path) = cache_path {
-            if let Ok(Some(cached)) = load_analytics(path) {
-                return Ok(cached);
-            }
-        }
-    }
-
-    // Build fresh analytics from session data
     let home = dirs::home_dir().ok_or(crate::IntelligenceError::HomeDirectoryNotFound)?;
 
     let claude_projects = home.join(".claude").join("projects");
     let codex_sessions = home.join(".codex").join("sessions");
+
+    // Reuse the cache (unless force_rebuild) only while it is fresh: younger
+    // than the TTL and newer than every session file it was built from.
+    if !force_rebuild {
+        if let Some(ref path) = cache_path {
+            let sources = [claude_projects.clone(), codex_sessions.clone()];
+            if analytics_cache_is_fresh(path, &sources, ANALYTICS_CACHE_TTL) {
+                match load_analytics(path) {
+                    Ok(Some(cached)) => return Ok(cached),
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "Analytics cache unreadable; rebuilding"
+                    ),
+                }
+            }
+        }
+    }
 
     let claude_events = parse_claude_sessions(&claude_projects)?;
     let codex_events = parse_codex_sessions(&codex_sessions)?;
@@ -245,5 +297,109 @@ mod tests {
         // Should return error for invalid JSON
         let result = load_analytics(&bad_path);
         assert!(result.is_err());
+    }
+
+    fn set_mtime(path: &std::path::Path, ago: std::time::Duration) {
+        let file = std::fs::File::options().write(true).open(path).unwrap();
+        file.set_modified(std::time::SystemTime::now() - ago)
+            .unwrap();
+    }
+
+    /// IN-11: a cache is reused only while it is newer than every session
+    /// file and younger than the TTL.
+    #[test]
+    fn analytics_cache_freshness_tracks_sessions_and_ttl() {
+        let temp = tempdir().unwrap();
+        let sessions = temp.path().join("projects").join("p");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let session = sessions.join("s.jsonl");
+        std::fs::write(&session, "").unwrap();
+        let cache = temp.path().join("analytics_cache.json");
+        std::fs::write(&cache, "{}").unwrap();
+        let dirs = [temp.path().join("projects")];
+        let ttl = std::time::Duration::from_secs(3600);
+        let minute = std::time::Duration::from_secs(60);
+
+        set_mtime(&session, minute * 10);
+        set_mtime(&cache, minute);
+        assert!(analytics_cache_is_fresh(&cache, &dirs, ttl));
+
+        // A session written after the cache makes it stale.
+        set_mtime(&session, std::time::Duration::ZERO);
+        assert!(!analytics_cache_is_fresh(&cache, &dirs, ttl));
+
+        // So does age alone.
+        set_mtime(&session, minute * 600);
+        set_mtime(&cache, minute * 120);
+        assert!(!analytics_cache_is_fresh(&cache, &dirs, ttl));
+
+        // No cache, nothing to reuse.
+        assert!(!analytics_cache_is_fresh(
+            &temp.path().join("missing.json"),
+            &dirs,
+            ttl
+        ));
+    }
+
+    /// IN-11 end to end: with a session newer than the cache,
+    /// `load_or_build_analytics(false, ..)` rebuilds instead of returning
+    /// the stale snapshot.
+    #[test]
+    fn load_or_build_analytics_rebuilds_stale_cache() {
+        let _g = crate::test_support::env_guard();
+        let home = tempdir().unwrap();
+        let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
+
+        let stale = UsageAnalytics {
+            sessions_analyzed: 999,
+            ..Default::default()
+        };
+        let cache = home.path().join(".skrills").join("analytics_cache.json");
+        save_analytics(&stale, &cache).unwrap();
+        set_mtime(&cache, std::time::Duration::from_secs(600));
+
+        let project = home.path().join(".claude").join("projects").join("p");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("s.jsonl"),
+            r#"{"timestamp":"2024-01-01T12:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"fresh"}}]}}"#,
+        )
+        .unwrap();
+
+        let analytics = load_or_build_analytics(false, false).unwrap();
+        assert_ne!(analytics.sessions_analyzed, 999, "stale cache was reused");
+        assert!(analytics.frequency.contains_key("fresh"));
+
+        // With the cache newer than every session, it is reused.
+        let cached = UsageAnalytics {
+            sessions_analyzed: 7,
+            ..Default::default()
+        };
+        save_analytics(&cached, &cache).unwrap();
+        assert_eq!(
+            load_or_build_analytics(false, false)
+                .unwrap()
+                .sessions_analyzed,
+            7
+        );
+    }
+
+    /// IN-31: the cache is replaced via a temp file and rename; nothing is
+    /// left beside it.
+    #[test]
+    fn save_analytics_leaves_no_temp_file() {
+        let temp = tempdir().unwrap();
+        let cache = temp.path().join("analytics_cache.json");
+        std::fs::write(&cache, "old").unwrap();
+        save_analytics(&UsageAnalytics::default(), &cache).unwrap();
+        let names: Vec<_> = std::fs::read_dir(temp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            names,
+            vec![std::ffi::OsString::from("analytics_cache.json")]
+        );
+        assert!(load_analytics(&cache).unwrap().is_some());
     }
 }

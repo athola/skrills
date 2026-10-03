@@ -4,10 +4,19 @@ use super::{CommandEntry, SkillUsageEvent};
 use anyhow::Result;
 use serde_json::Value;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
-use tracing::debug;
+use tracing::{debug, warn};
+
+/// Session files larger than this are skipped rather than scanned.
+const MAX_SESSION_FILE_BYTES: u64 = 256 * 1024 * 1024;
+/// At most this many session files are scanned per build.
+const MAX_SESSION_FILES: usize = 20_000;
 
 /// Parse Claude Code session files from ~/.claude/projects/
+///
+/// One unreadable project directory or session file is logged and skipped;
+/// it does not fail the whole parse.
 pub fn parse_claude_sessions(projects_dir: &Path) -> Result<Vec<SkillUsageEvent>> {
     let mut events = Vec::new();
 
@@ -19,20 +28,46 @@ pub fn parse_claude_sessions(projects_dir: &Path) -> Result<Vec<SkillUsageEvent>
         return Ok(events);
     }
 
+    let mut files_scanned = 0usize;
     for project_entry in fs::read_dir(projects_dir)? {
-        let project = project_entry?;
-        if !project.file_type()?.is_dir() {
+        let project = match project_entry {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(dir = %projects_dir.display(), error = %e, "Skipping unreadable project entry");
+                continue;
+            }
+        };
+        let project_path = project.path();
+        if !project.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             continue;
         }
 
-        for session_entry in fs::read_dir(project.path())? {
-            let session = session_entry?;
+        let sessions = match fs::read_dir(&project_path) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(dir = %project_path.display(), error = %e, "Skipping unreadable project directory");
+                continue;
+            }
+        };
+        for session_entry in sessions {
+            let Ok(session) = session_entry else {
+                continue;
+            };
             let path = session.path();
-            if path.extension().map(|e| e == "jsonl").unwrap_or(false) {
-                match parse_claude_session_file(&path) {
-                    Ok(session_events) => events.extend(session_events),
-                    Err(e) => debug!("Failed to parse session file {:?}: {}", path, e),
-                }
+            if !path.extension().map(|e| e == "jsonl").unwrap_or(false) {
+                continue;
+            }
+            if files_scanned >= MAX_SESSION_FILES {
+                warn!(
+                    limit = MAX_SESSION_FILES,
+                    "Session file limit reached; remaining Claude sessions not analyzed"
+                );
+                return Ok(events);
+            }
+            files_scanned += 1;
+            match parse_claude_session_file(&path) {
+                Ok(session_events) => events.extend(session_events),
+                Err(e) => debug!("Failed to parse session file {:?}: {}", path, e),
             }
         }
     }
@@ -91,7 +126,18 @@ pub fn parse_claude_command_history(history_path: &Path) -> Result<Vec<CommandEn
 
 fn parse_claude_session_file(path: &Path) -> Result<Vec<SkillUsageEvent>> {
     let mut events = Vec::new();
-    let content = fs::read_to_string(path)?;
+
+    let size = fs::metadata(path)?.len();
+    if size > MAX_SESSION_FILE_BYTES {
+        warn!(
+            path = %path.display(),
+            size,
+            limit = MAX_SESSION_FILE_BYTES,
+            "Skipping oversized session file"
+        );
+        return Ok(events);
+    }
+
     let session_id = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -100,82 +146,91 @@ fn parse_claude_session_file(path: &Path) -> Result<Vec<SkillUsageEvent>> {
 
     let mut last_user_prompt: Option<String> = None;
 
-    for line in content.lines() {
+    // Stream line by line: session logs can run to hundreds of megabytes, and
+    // one invalid UTF-8 byte should cost one line, not the whole file.
+    let mut reader = BufReader::new(fs::File::open(path)?);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        if reader.read_until(b'\n', &mut buf)? == 0 {
+            break;
+        }
+        let line = String::from_utf8_lossy(&buf);
         if line.trim().is_empty() {
             continue;
         }
-        if let Ok(entry) = serde_json::from_str::<Value>(line) {
-            // Track user prompts for context
-            if let Some(message) = entry.get("message") {
-                if message.get("role").and_then(|r| r.as_str()) == Some("user") {
-                    if let Some(contents) = message.get("content").and_then(|c| c.as_array()) {
-                        for content_block in contents {
-                            if content_block.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                if let Some(text) =
-                                    content_block.get("text").and_then(|t| t.as_str())
-                                {
-                                    last_user_prompt =
-                                        Some(text.chars().take(200).collect::<String>());
-                                }
-                            }
-                        }
-                    }
-                }
+        let Ok(entry) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let Some(message) = entry.get("message") else {
+            continue;
+        };
 
-                // Look for tool_use content blocks
-                if let Some(contents) = message.get("content").and_then(|c| c.as_array()) {
+        // Track user prompts for context. Typed prompts are written as a
+        // plain string; tool results and pasted blocks as an array.
+        if message.get("role").and_then(|r| r.as_str()) == Some("user") {
+            match message.get("content") {
+                Some(Value::String(text)) => {
+                    last_user_prompt = Some(text.chars().take(200).collect::<String>());
+                }
+                Some(Value::Array(contents)) => {
                     for content_block in contents {
-                        if content_block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                            if let Some(name) = content_block.get("name").and_then(|n| n.as_str()) {
-                                // Track skill-loading related tools
-                                if name.contains("skill") || name == "Skill" {
-                                    if let Some(input) = content_block.get("input") {
-                                        if let Some(skill_path) = extract_skill_path(input) {
-                                            let timestamp = parse_timestamp(
-                                                entry.get("timestamp").and_then(|t| t.as_str()),
-                                            );
-
-                                            events.push(SkillUsageEvent {
-                                                timestamp,
-                                                skill_path,
-                                                session_id: session_id.clone(),
-                                                prompt_context: last_user_prompt.clone(),
-                                            });
-                                        }
-                                    }
-                                }
-                                // Also track Read tool for SKILL.md files
-                                if name == "Read" {
-                                    if let Some(input) = content_block.get("input") {
-                                        if let Some(file_path) =
-                                            input.get("file_path").and_then(|p| p.as_str())
-                                        {
-                                            if file_path.contains("SKILL.md")
-                                                || file_path.contains("/skills/")
-                                            {
-                                                let timestamp = parse_timestamp(
-                                                    entry.get("timestamp").and_then(|t| t.as_str()),
-                                                );
-
-                                                events.push(SkillUsageEvent {
-                                                    timestamp,
-                                                    skill_path: file_path.to_string(),
-                                                    session_id: session_id.clone(),
-                                                    prompt_context: last_user_prompt.clone(),
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
+                        if content_block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                            if let Some(text) = content_block.get("text").and_then(|t| t.as_str()) {
+                                last_user_prompt = Some(text.chars().take(200).collect::<String>());
                             }
                         }
                     }
                 }
+                _ => {}
+            }
+        }
+
+        // Look for tool_use content blocks
+        let Some(contents) = message.get("content").and_then(|c| c.as_array()) else {
+            continue;
+        };
+        for content_block in contents {
+            if content_block.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
+                continue;
+            }
+            let Some(name) = content_block.get("name").and_then(|n| n.as_str()) else {
+                continue;
+            };
+            let Some(input) = content_block.get("input") else {
+                continue;
+            };
+            let skill_path = if name.contains("skill") || name == "Skill" {
+                // Skill-loading tools
+                extract_skill_path(input)
+            } else if name == "Read" {
+                // Only a read of a SKILL.md loads a skill. Reading
+                // `src/skills/mod.rs` or a skill's `references/x.md` does not.
+                input
+                    .get("file_path")
+                    .and_then(|p| p.as_str())
+                    .filter(|p| is_skill_md(p))
+                    .map(str::to_string)
+            } else {
+                None
+            };
+            if let Some(skill_path) = skill_path {
+                events.push(SkillUsageEvent {
+                    timestamp: parse_timestamp(entry.get("timestamp").and_then(|t| t.as_str())),
+                    skill_path,
+                    session_id: session_id.clone(),
+                    prompt_context: last_user_prompt.clone(),
+                });
             }
         }
     }
 
     Ok(events)
+}
+
+/// True when `path` names a file called `SKILL.md`.
+fn is_skill_md(path: &str) -> bool {
+    path.rsplit(['/', '\\']).next() == Some("SKILL.md")
 }
 
 fn extract_skill_path(input: &Value) -> Option<String> {
@@ -198,7 +253,7 @@ fn extract_skill_path(input: &Value) -> Option<String> {
     None
 }
 
-fn parse_timestamp(s: Option<&str>) -> u64 {
+pub(super) fn parse_timestamp(s: Option<&str>) -> u64 {
     s.and_then(|ts| {
         chrono::DateTime::parse_from_rfc3339(ts)
             .ok()
@@ -394,6 +449,8 @@ mod tests {
         assert_eq!(events[0].skill_path, "/home/user/skills/test/SKILL.md");
     }
 
+    /// IN-34: reading other files under a `skills/` directory is not a skill
+    /// load; only a read of a `SKILL.md` is.
     #[test]
     fn test_parse_session_file_read_skills_directory() {
         let tmp = tempdir().unwrap();
@@ -401,13 +458,92 @@ mod tests {
         fs::create_dir_all(&project_dir).unwrap();
         let session_path = project_dir.join("sess.jsonl");
 
-        let content = r#"{"timestamp":"2024-01-01T12:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/path/to/skills/something.md"}}]}}"#;
-
+        let read = |p: &str| {
+            format!(
+                r#"{{"timestamp":"2024-01-01T12:00:00Z","message":{{"role":"assistant","content":[{{"type":"tool_use","name":"Read","input":{{"file_path":"{p}"}}}}]}}}}"#
+            )
+        };
+        let content = [
+            read("/path/to/skills/something.md"),
+            read("/repo/src/skills/mod.rs"),
+            read("/home/u/.claude/skills/foo/references/x.md"),
+            read("/home/u/.claude/skills/foo/NOT-SKILL.md"),
+            read("/home/u/.claude/skills/foo/SKILL.md"),
+        ]
+        .join("\n");
         fs::write(&session_path, content).unwrap();
 
         let events = parse_claude_sessions(tmp.path()).unwrap();
+        let paths: Vec<_> = events.iter().map(|e| e.skill_path.as_str()).collect();
+        assert_eq!(paths, vec!["/home/u/.claude/skills/foo/SKILL.md"]);
+    }
+
+    /// IN-12: typed prompts are written with `content` as a plain string
+    /// (checked against a real ~/.claude/projects session).
+    #[test]
+    fn prompt_context_is_captured_from_string_content() {
+        let tmp = tempdir().unwrap();
+        let project_dir = tmp.path().join("project");
+        fs::create_dir_all(&project_dir).unwrap();
+        let content = r#"{"timestamp":"2024-01-01T11:58:00Z","type":"user","message":{"role":"user","content":[{"type":"text","text":"an older prompt"}]}}
+{"timestamp":"2024-01-01T11:59:00Z","type":"user","message":{"role":"user","content":"please review the code"}}
+{"timestamp":"2024-01-01T12:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"review"}}]}}"#;
+        fs::write(project_dir.join("sess.jsonl"), content).unwrap();
+
+        let events = parse_claude_sessions(tmp.path()).unwrap();
         assert_eq!(events.len(), 1);
-        assert!(events[0].skill_path.contains("/skills/"));
+        assert_eq!(
+            events[0].prompt_context.as_deref(),
+            Some("please review the code")
+        );
+    }
+
+    /// IN-33: one invalid UTF-8 byte costs its line, not the whole file.
+    #[test]
+    fn invalid_utf8_line_does_not_drop_the_session() {
+        let tmp = tempdir().unwrap();
+        let project_dir = tmp.path().join("project");
+        fs::create_dir_all(&project_dir).unwrap();
+        let mut bytes =
+            b"{\"message\":{\"role\":\"user\",\"content\":\"bad \xff byte\"}}\n".to_vec();
+        bytes.extend_from_slice(
+            br#"{"timestamp":"2024-01-01T12:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"kept"}}]}}"#,
+        );
+        fs::write(project_dir.join("sess.jsonl"), bytes).unwrap();
+
+        let events = parse_claude_sessions(tmp.path()).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].skill_path, "kept");
+    }
+
+    /// IN-32: an unreadable project directory is skipped, not fatal.
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_project_directory_is_skipped() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempdir().unwrap();
+        let good = tmp.path().join("good");
+        let locked = tmp.path().join("locked");
+        fs::create_dir_all(&good).unwrap();
+        fs::create_dir_all(&locked).unwrap();
+        fs::write(
+            good.join("s.jsonl"),
+            r#"{"timestamp":"2024-01-01T12:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"ok"}}]}}"#,
+        )
+        .unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Root ignores directory permissions; nothing to prove then.
+        let locked_is_unreadable = fs::read_dir(&locked).is_err();
+        let result = parse_claude_sessions(tmp.path());
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let events = result.expect("an unreadable project must not fail the parse");
+        assert_eq!(events.len(), 1);
+        if !locked_is_unreadable {
+            eprintln!("running as root; unreadable-directory path not exercised");
+        }
     }
 
     #[test]

@@ -57,6 +57,10 @@ pub struct ToolCall {
     pub input_summary: String,
     /// Execution status.
     pub status: ToolStatus,
+    /// `file_path` from the full input, when the tool took one. Kept apart
+    /// from `input_summary`, whose truncation usually cuts it off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
 }
 
 /// Type of file operation.
@@ -177,70 +181,103 @@ pub struct BehavioralPatterns {
 ///
 /// Parses tool_use and tool_result blocks from Claude Code session format.
 pub fn extract_tool_calls(session_content: &str) -> Vec<ToolCall> {
-    let mut tool_calls = Vec::new();
+    let mut tool_calls: Vec<ToolCall> = Vec::new();
+    // tool_use id -> index into `tool_calls`, so results match their call
+    // even when several calls are issued in parallel.
+    let mut index_by_id: HashMap<String, usize> = HashMap::new();
 
     for line in session_content.lines() {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
-            // Look for tool_use in content blocks
-            if let Some(content) = json.get("content").and_then(|c| c.as_array()) {
-                for block in content {
-                    if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                        if let Some(name) = block.get("name").and_then(|n| n.as_str()) {
-                            let input_summary = block
-                                .get("input")
-                                .map(|i| safe_truncate(&i.to_string(), 200))
-                                .unwrap_or_default();
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        // Claude Code nests blocks under `message.content` and writes an
+        // RFC 3339 `timestamp`; older fixtures put `content` at the top level
+        // with a numeric timestamp. Accept both.
+        let Some(content) = json
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .or_else(|| json.get("content"))
+            .and_then(|c| c.as_array())
+        else {
+            continue;
+        };
+        let timestamp = line_timestamp(&json);
 
-                            let timestamp =
-                                json.get("timestamp").and_then(|t| t.as_u64()).unwrap_or_else(|| {
-                                    trace!("timestamp missing or invalid in tool_use block, defaulting to 0");
-                                    0
-                                });
+        for block in content {
+            match block.get("type").and_then(|t| t.as_str()) {
+                Some("tool_use") => {
+                    let Some(name) = block.get("name").and_then(|n| n.as_str()) else {
+                        continue;
+                    };
+                    let input = block.get("input");
+                    let input_summary = input
+                        .map(|i| safe_truncate(&i.to_string(), 200))
+                        .unwrap_or_default();
+                    // Taken from the full input: the summary is truncated
+                    // and usually loses it (Write/Edit carry file content).
+                    let file_path = input
+                        .and_then(|i| i.get("file_path"))
+                        .and_then(|p| p.as_str())
+                        .map(|p| safe_truncate(p, 200));
 
-                            tool_calls.push(ToolCall {
-                                name: name.to_string(),
-                                timestamp,
-                                input_summary,
-                                status: ToolStatus::Unknown,
-                            });
-                        }
+                    if let Some(id) = block.get("id").and_then(|i| i.as_str()) {
+                        index_by_id.insert(id.to_string(), tool_calls.len());
                     }
+                    tool_calls.push(ToolCall {
+                        name: name.to_string(),
+                        timestamp,
+                        input_summary,
+                        status: ToolStatus::Unknown,
+                        file_path,
+                    });
                 }
-            }
-
-            // Look for tool_result to update status
-            if let Some(content) = json.get("content").and_then(|c| c.as_array()) {
-                for block in content {
-                    if block.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
-                        let is_error = block
-                            .get("is_error")
-                            .and_then(|e| e.as_bool())
-                            .unwrap_or(false);
-
-                        // Update most recent tool call's status
-                        if let Some(last_call) = tool_calls.last_mut() {
-                            if last_call.status == ToolStatus::Unknown {
-                                last_call.status = if is_error {
-                                    let error_msg = block
-                                        .get("content")
-                                        .and_then(|c| c.as_str())
-                                        .unwrap_or("Unknown error")
-                                        .chars()
-                                        .take(200)
-                                        .collect();
-                                    ToolStatus::Error { message: error_msg }
-                                } else {
-                                    ToolStatus::Success
-                                };
-                            }
-                        }
+                Some("tool_result") => {
+                    let target = match block.get("tool_use_id").and_then(|i| i.as_str()) {
+                        Some(id) => index_by_id.get(id).copied(),
+                        // No id to match on: fall back to the latest call.
+                        None => tool_calls.len().checked_sub(1),
+                    };
+                    let Some(call) = target.and_then(|i| tool_calls.get_mut(i)) else {
+                        continue;
+                    };
+                    if call.status != ToolStatus::Unknown {
+                        continue;
                     }
+                    let is_error = block
+                        .get("is_error")
+                        .and_then(|e| e.as_bool())
+                        .unwrap_or(false);
+                    call.status = if is_error {
+                        let error_msg = block
+                            .get("content")
+                            .and_then(|c| c.as_str())
+                            .unwrap_or("Unknown error")
+                            .chars()
+                            .take(200)
+                            .collect();
+                        ToolStatus::Error { message: error_msg }
+                    } else {
+                        ToolStatus::Success
+                    };
                 }
+                _ => {}
             }
         }
     }
 
     tool_calls
+}
+
+/// Unix seconds for a session line: RFC 3339 string (Claude Code) or number.
+fn line_timestamp(json: &serde_json::Value) -> u64 {
+    match json.get("timestamp") {
+        Some(serde_json::Value::String(s)) => super::claude_parser::parse_timestamp(Some(s)),
+        Some(v) => v.as_u64().unwrap_or(0),
+        None => {
+            trace!("timestamp missing in session line, defaulting to 0");
+            0
+        }
+    }
 }
 
 /// Extract file access events from tool calls.
@@ -256,8 +293,11 @@ pub fn extract_file_accesses(tool_calls: &[ToolCall]) -> Vec<FileAccess> {
         };
 
         if let Some(op) = operation {
-            // Extract file path from input summary
-            if let Some(path) = extract_file_path(&call.input_summary) {
+            let path = call
+                .file_path
+                .clone()
+                .or_else(|| extract_file_path(&call.input_summary));
+            if let Some(path) = path {
                 accesses.push(FileAccess {
                     path,
                     operation: op,
@@ -444,20 +484,28 @@ pub fn detect_session_outcome(
     }
 }
 
-/// Detect retry patterns (consecutive calls to the same tool with similar inputs).
+/// Detect retry patterns: the longest run of calls repeating the same tool
+/// with the same input, each repeat following a failed attempt.
+///
+/// Ten `Read`s of different files are ordinary work, not retries.
 fn detect_retry_pattern(tool_calls: &[ToolCall]) -> usize {
     let mut max_consecutive = 0;
     let mut current_consecutive = 1;
-    let mut prev_name: Option<&str> = None;
+    let mut prev: Option<&ToolCall> = None;
 
     for call in tool_calls {
-        if Some(call.name.as_str()) == prev_name {
+        let is_retry = prev.is_some_and(|p| {
+            p.name == call.name
+                && p.input_summary == call.input_summary
+                && matches!(p.status, ToolStatus::Error { .. })
+        });
+        if is_retry {
             current_consecutive += 1;
             max_consecutive = max_consecutive.max(current_consecutive);
         } else {
             current_consecutive = 1;
         }
-        prev_name = Some(&call.name);
+        prev = Some(call);
     }
 
     max_consecutive
@@ -617,6 +665,7 @@ mod tests {
                 timestamp: 1000,
                 input_summary: "{}".to_string(),
                 status: ToolStatus::Success,
+                file_path: None,
             },
             ToolCall {
                 name: "Read".to_string(),
@@ -625,16 +674,113 @@ mod tests {
                 status: ToolStatus::Error {
                     message: "not found".to_string(),
                 },
+                file_path: None,
             },
             ToolCall {
                 name: "Read".to_string(),
                 timestamp: 3000,
                 input_summary: "{}".to_string(),
                 status: ToolStatus::Success,
+                file_path: None,
             },
         ];
 
-        assert_eq!(detect_retry_pattern(&calls), 3);
+        // Only the call after the failure is a retry: a run of 2.
+        assert_eq!(detect_retry_pattern(&calls), 2);
+    }
+
+    fn call(name: &str, input: &str, status: ToolStatus) -> ToolCall {
+        ToolCall {
+            name: name.to_string(),
+            timestamp: 0,
+            input_summary: input.to_string(),
+            status,
+            file_path: None,
+        }
+    }
+
+    /// IN-37: the same tool on different inputs is not a retry, nor is a
+    /// repeat that follows a success.
+    #[test]
+    fn retry_pattern_requires_same_input_after_an_error() {
+        let reads: Vec<_> = (0..10)
+            .map(|i| {
+                call(
+                    "Read",
+                    &format!(r#"{{"file_path":"/f{i}"}}"#),
+                    ToolStatus::Success,
+                )
+            })
+            .collect();
+        assert_eq!(detect_retry_pattern(&reads), 0);
+
+        let err = || ToolStatus::Error {
+            message: "boom".to_string(),
+        };
+        let retries = vec![
+            call("Bash", "cargo test", err()),
+            call("Bash", "cargo test", err()),
+            call("Bash", "cargo test", err()),
+            call("Bash", "cargo test", ToolStatus::Success),
+        ];
+        assert_eq!(detect_retry_pattern(&retries), 4);
+    }
+
+    /// IN-13: real Claude Code lines nest blocks under `message.content` and
+    /// carry an RFC 3339 timestamp.
+    #[test]
+    fn extract_tool_calls_reads_claude_code_message_format() {
+        let session = concat!(
+            r#"{"timestamp":"2024-01-01T12:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}"#,
+            "\n",
+            r#"{"timestamp":"2024-01-01T12:01:00Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}"#,
+        );
+        let calls = extract_tool_calls(session);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "Bash");
+        assert_eq!(calls[0].timestamp, 1_704_110_400);
+        assert_eq!(calls[0].status, ToolStatus::Success);
+    }
+
+    /// IN-36: results are matched to calls by `tool_use_id`.
+    #[test]
+    fn extract_tool_calls_matches_results_by_tool_use_id() {
+        let session = concat!(
+            r#"{"timestamp":"2024-01-01T12:00:00Z","message":{"role":"assistant","content":["#,
+            r#"{"type":"tool_use","id":"a","name":"Read","input":{"file_path":"/a"}},"#,
+            r#"{"type":"tool_use","id":"b","name":"Read","input":{"file_path":"/b"}},"#,
+            r#"{"type":"tool_use","id":"c","name":"Read","input":{"file_path":"/c"}}]}}"#,
+            "\n",
+            r#"{"timestamp":"2024-01-01T12:00:01Z","message":{"role":"user","content":["#,
+            r#"{"type":"tool_result","tool_use_id":"a","content":"ok"},"#,
+            r#"{"type":"tool_result","tool_use_id":"b","is_error":true,"content":"missing"},"#,
+            r#"{"type":"tool_result","tool_use_id":"c","content":"ok"}]}}"#,
+        );
+        let calls = extract_tool_calls(session);
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0].status, ToolStatus::Success);
+        assert_eq!(
+            calls[1].status,
+            ToolStatus::Error {
+                message: "missing".to_string()
+            }
+        );
+        assert_eq!(calls[2].status, ToolStatus::Success);
+    }
+
+    /// IN-14: a Write whose input exceeds the 200-byte summary keeps its path.
+    #[test]
+    fn file_access_survives_long_tool_input() {
+        let body = "x".repeat(5_000);
+        let session = format!(
+            r#"{{"timestamp":"2024-01-01T12:00:00Z","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"w","name":"Write","input":{{"content":"{body}","file_path":"/src/big.rs"}}}}]}}}}"#
+        );
+        let calls = extract_tool_calls(&session);
+        assert!(calls[0].input_summary.len() <= 203);
+        let accesses = extract_file_accesses(&calls);
+        assert_eq!(accesses.len(), 1);
+        assert_eq!(accesses[0].path, "/src/big.rs");
+        assert_eq!(accesses[0].operation, FileOperation::Write);
     }
 
     #[test]
@@ -652,18 +798,21 @@ mod tests {
                 timestamp: 1000,
                 input_summary: "{}".to_string(),
                 status: ToolStatus::Success,
+                file_path: None,
             },
             ToolCall {
                 name: "Write".to_string(),
                 timestamp: 2000,
                 input_summary: "{}".to_string(),
                 status: ToolStatus::Success,
+                file_path: None,
             },
             ToolCall {
                 name: "Bash".to_string(),
                 timestamp: 3000 + 60, // 60+ seconds later
                 input_summary: "{}".to_string(),
                 status: ToolStatus::Success,
+                file_path: None,
             },
         ];
 
@@ -684,6 +833,7 @@ mod tests {
                 status: ToolStatus::Error {
                     message: "command failed".to_string(),
                 },
+                file_path: None,
             },
             ToolCall {
                 name: "Bash".to_string(),
@@ -692,6 +842,7 @@ mod tests {
                 status: ToolStatus::Error {
                     message: "command failed again".to_string(),
                 },
+                file_path: None,
             },
         ];
 
@@ -725,18 +876,21 @@ mod tests {
                 timestamp: 1000,
                 input_summary: r#"{"file_path":"/src/main.rs"}"#.to_string(),
                 status: ToolStatus::Success,
+                file_path: None,
             },
             ToolCall {
                 name: "Bash".to_string(),
                 timestamp: 2000,
                 input_summary: r#"{"command":"ls"}"#.to_string(),
                 status: ToolStatus::Success,
+                file_path: None,
             },
             ToolCall {
                 name: "Write".to_string(),
                 timestamp: 3000,
                 input_summary: r#"{"file_path":"/src/lib.rs"}"#.to_string(),
                 status: ToolStatus::Success,
+                file_path: None,
             },
         ];
 
@@ -837,6 +991,7 @@ mod tests {
                     timestamp: 1000 + i as u64 * 100,
                     input_summary: "{}".to_string(),
                     status: ToolStatus::Success,
+                    file_path: None,
                 })
                 .collect(),
             files_accessed: files

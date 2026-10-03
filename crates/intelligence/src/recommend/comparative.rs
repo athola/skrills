@@ -158,42 +158,35 @@ const SECURITY_KEYWORDS: &[&str] = &[
 ];
 
 /// Infer the skill category from the skill name/path.
+///
+/// Only the skill's own name is considered (the last path segment, or the
+/// directory holding a `SKILL.md`), split into whole tokens at `-`, `_`, `.`
+/// and whitespace. Substring matching misfiled `docker-compose` as
+/// documentation (`doc`) and `author-tools` as security (`auth`).
 pub fn infer_skill_category(skill_name: &str) -> SkillCategory {
-    let lower = skill_name.to_lowercase();
+    let name = skill_name
+        .rsplit(['/', '\\'])
+        .find(|seg| !seg.is_empty() && !seg.eq_ignore_ascii_case("SKILL.md"))
+        .unwrap_or("");
+    let name = name.strip_suffix(".md").unwrap_or(name).to_lowercase();
+    let tokens: Vec<&str> = name
+        .split(|c: char| matches!(c, '-' | '_' | '.' | ':') || c.is_whitespace())
+        .filter(|t| !t.is_empty())
+        .collect();
+    let has_any = |keywords: &[&str]| tokens.iter().any(|t| keywords.contains(t));
 
-    // Check each category's keywords
-    for kw in TESTING_KEYWORDS {
-        if lower.contains(kw) {
-            return SkillCategory::Testing;
-        }
-    }
-    for kw in DEBUGGING_KEYWORDS {
-        if lower.contains(kw) {
-            return SkillCategory::Debugging;
-        }
-    }
-    for kw in DOCUMENTATION_KEYWORDS {
-        if lower.contains(kw) {
-            return SkillCategory::Documentation;
-        }
-    }
-    for kw in REFACTORING_KEYWORDS {
-        if lower.contains(kw) {
-            return SkillCategory::Refactoring;
-        }
-    }
-    for kw in PERFORMANCE_KEYWORDS {
-        if lower.contains(kw) {
-            return SkillCategory::Performance;
-        }
-    }
-    for kw in SECURITY_KEYWORDS {
-        if lower.contains(kw) {
-            return SkillCategory::Security;
-        }
-    }
-
-    SkillCategory::General
+    let categories: [(&[&str], SkillCategory); 6] = [
+        (TESTING_KEYWORDS, SkillCategory::Testing),
+        (DEBUGGING_KEYWORDS, SkillCategory::Debugging),
+        (DOCUMENTATION_KEYWORDS, SkillCategory::Documentation),
+        (REFACTORING_KEYWORDS, SkillCategory::Refactoring),
+        (PERFORMANCE_KEYWORDS, SkillCategory::Performance),
+        (SECURITY_KEYWORDS, SkillCategory::Security),
+    ];
+    categories
+        .into_iter()
+        .find(|(keywords, _)| has_any(keywords))
+        .map_or(SkillCategory::General, |(_, category)| category)
 }
 
 /// Get baseline expected outcomes for a skill category.
@@ -354,7 +347,8 @@ pub fn compute_deviation_score(
         actual_metrics.session_duration_ms,
     ) {
         let duration_ratio = actual_duration / expected_duration;
-        // Longer than expected is slightly negative, much shorter is concerning
+        // Much longer than expected is the stronger penalty (likely stuck);
+        // much shorter is a milder one (possibly abandoned).
         let duration_deviation = if duration_ratio > 2.0 {
             -0.3 // Taking too long
         } else if duration_ratio < 0.3 {
@@ -441,29 +435,40 @@ fn compute_actual_metrics(
         return OutcomeMetrics::default();
     }
 
-    // Group by session and calculate duration
-    let mut session_durations: HashMap<&str, (u64, u64)> = HashMap::new();
+    // Group by session and calculate duration. Unknown timestamps (0) are
+    // skipped: folded into the minimum they turn one event into a decades-long
+    // session.
+    let mut session_spans: HashMap<&str, Option<(u64, u64, usize)>> = HashMap::new();
     for event in events {
-        let entry = session_durations
-            .entry(&event.session_id)
-            .or_insert((u64::MAX, 0));
-        entry.0 = entry.0.min(event.timestamp);
-        entry.1 = entry.1.max(event.timestamp);
+        let entry = session_spans.entry(&event.session_id).or_insert(None);
+        if event.timestamp == 0 {
+            continue;
+        }
+        let (start, end, n) = entry.get_or_insert((u64::MAX, 0, 0));
+        *start = (*start).min(event.timestamp);
+        *end = (*end).max(event.timestamp);
+        *n += 1;
     }
 
-    let avg_duration_ms: f64 = if !session_durations.is_empty() {
-        session_durations
-            .values()
-            .map(|(start, end)| (end.saturating_sub(*start) * 1000) as f64)
-            .sum::<f64>()
-            / session_durations.len() as f64
+    // A span needs two timestamped events; a single invocation says nothing
+    // about how long the session took, so it is left out rather than
+    // counted as a zero-length session.
+    let durations: Vec<f64> = session_spans
+        .values()
+        .filter_map(|span| match span {
+            Some((start, end, n)) if *n >= 2 => Some((end.saturating_sub(*start) * 1000) as f64),
+            _ => None,
+        })
+        .collect();
+    let avg_duration_ms = if durations.is_empty() {
+        None
     } else {
-        0.0
+        Some(durations.iter().sum::<f64>() / durations.len() as f64)
     };
 
     // Estimate retry rate from frequency (higher frequency in same session = retries)
     let total_events = events.len();
-    let unique_sessions = session_durations.len();
+    let unique_sessions = session_spans.len();
     let events_per_session = total_events as f64 / unique_sessions.max(1) as f64;
     let retry_rate = ((events_per_session - 1.0) / 5.0).clamp(0.0, 1.0);
 
@@ -493,7 +498,7 @@ fn compute_actual_metrics(
     }
 
     OutcomeMetrics {
-        session_duration_ms: Some(avg_duration_ms),
+        session_duration_ms: avg_duration_ms,
         retry_rate: Some(retry_rate),
         success_indicators,
         failure_indicators,
@@ -587,6 +592,9 @@ pub fn compute_effectiveness(
         } else if with_retry > 0.0 {
             // Baseline has no retries but skill introduces some - slight negative
             0.5
+        } else if without_retry <= 0.001 {
+            // Neither group retries: no evidence of improvement either way.
+            1.0
         } else {
             // No retries with skill = good improvement
             1.5
@@ -614,6 +622,82 @@ pub fn compute_effectiveness(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ev(ts: u64, skill: &str, session: &str) -> SkillUsageEvent {
+        SkillUsageEvent {
+            timestamp: ts,
+            skill_path: skill.to_string(),
+            session_id: session.to_string(),
+            prompt_context: None,
+        }
+    }
+
+    /// IN-38: whole tokens of the skill's own name, not substrings of the URI.
+    #[test]
+    fn infer_skill_category_matches_whole_name_tokens() {
+        for (name, expected) in [
+            ("docker-compose", SkillCategory::General),
+            ("fastapi-patterns", SkillCategory::General),
+            ("latest-news", SkillCategory::General),
+            ("author-tools", SkillCategory::General),
+            (
+                "/home/u/.claude/skills/debug-helper/SKILL.md",
+                SkillCategory::Debugging,
+            ),
+            (
+                "/home/u/tests/skills/my-skill/SKILL.md",
+                SkillCategory::General,
+            ),
+            ("api-docs", SkillCategory::Documentation),
+            ("auth-audit", SkillCategory::Security),
+        ] {
+            assert_eq!(infer_skill_category(name), expected, "{name}");
+        }
+    }
+
+    /// IN-15: one event per session carries no duration, and a 0 timestamp
+    /// does not stretch a session back to 1970.
+    #[test]
+    fn session_duration_ignores_single_events_and_unknown_timestamps() {
+        let analytics = UsageAnalytics::default();
+        let single = [ev(1_700_000_000, "s", "a"), ev(1_700_000_100, "s", "b")];
+        let refs: Vec<_> = single.iter().collect();
+        assert_eq!(
+            compute_actual_metrics(&refs, &analytics).session_duration_ms,
+            None
+        );
+
+        let with_zero = [ev(0, "s", "a"), ev(1_700_000_000, "s", "a")];
+        let refs: Vec<_> = with_zero.iter().collect();
+        assert_eq!(
+            compute_actual_metrics(&refs, &analytics).session_duration_ms,
+            None
+        );
+
+        let spanned = [
+            ev(1_700_000_000, "s", "a"),
+            ev(0, "s", "a"),
+            ev(1_700_000_060, "s", "a"),
+        ];
+        let refs: Vec<_> = spanned.iter().collect();
+        assert_eq!(
+            compute_actual_metrics(&refs, &analytics).session_duration_ms,
+            Some(60_000.0)
+        );
+    }
+
+    /// IN-39: identical zero retry rates are no improvement.
+    #[test]
+    fn effectiveness_is_neutral_when_neither_group_retries() {
+        let analytics = UsageAnalytics::default();
+        let mut events = Vec::new();
+        for i in 0..6 {
+            events.push(ev(1_700_000_000 + i, "my-skill", &format!("with-{i}")));
+            events.push(ev(1_700_000_000 + i, "other", &format!("without-{i}")));
+        }
+        let metric = compute_effectiveness("my-skill", &analytics, &events).expect("enough data");
+        assert_eq!(metric.improvement_factor, 1.0);
+    }
 
     #[test]
     fn test_infer_skill_category_testing() {

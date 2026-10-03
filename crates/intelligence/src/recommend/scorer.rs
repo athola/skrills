@@ -76,32 +76,32 @@ impl RecommendationScorer {
     }
 
     /// Check if skill matches project technologies.
+    ///
+    /// Matching is by whole name tokens (split at `-`, `_`, `/`, `:`, `.` and
+    /// whitespace), so language `C` does not match `code-review` and crate
+    /// `log` does not match `changelog`. Each technology is reported once.
     pub fn get_project_matches(&self, skill_name: &str) -> Vec<String> {
-        let mut matches = Vec::new();
+        let mut matches: Vec<String> = Vec::new();
 
         if let Some(ref ctx) = self.context {
-            let skill_lower = skill_name.to_lowercase();
+            let skill_tokens = name_tokens(skill_name);
+            let mut push = |candidate: &String| {
+                if contains_token_run(&skill_tokens, &name_tokens(candidate))
+                    && !matches.iter().any(|m| m.eq_ignore_ascii_case(candidate))
+                {
+                    matches.push(candidate.clone());
+                }
+            };
 
-            // Check language matches
             for lang in ctx.languages.keys() {
-                if skill_lower.contains(&lang.to_lowercase()) {
-                    matches.push(lang.clone());
-                }
+                push(lang);
             }
-
-            // Check framework matches
             for framework in &ctx.frameworks {
-                if skill_lower.contains(&framework.to_lowercase()) {
-                    matches.push(framework.clone());
-                }
+                push(framework);
             }
-
-            // Check dependency name matches
             for deps in ctx.dependencies.values() {
                 for dep in deps {
-                    if skill_lower.contains(&dep.name.to_lowercase()) {
-                        matches.push(dep.name.clone());
-                    }
+                    push(&dep.name);
                 }
             }
         }
@@ -146,6 +146,7 @@ impl RecommendationScorer {
 impl Scorer for RecommendationScorer {
     fn score(&self, uri: &str, signals: Vec<RecommendationSignal>) -> SmartRecommendation {
         let mut breakdown = ScoreBreakdown::default();
+        let now = unix_now();
 
         for signal in &signals {
             match signal {
@@ -166,10 +167,15 @@ impl Scorer for RecommendationScorer {
                     }
                 }
                 RecommendationSignal::ProjectMatch { matched } => {
-                    breakdown.context_score += CONTEXT_MATCH_WEIGHT * matched.len() as f64;
+                    let mut unique: Vec<String> =
+                        matched.iter().map(|m| m.to_lowercase()).collect();
+                    unique.sort();
+                    unique.dedup();
+                    breakdown.context_score +=
+                        CONTEXT_MATCH_WEIGHT * (unique.len() as f64).min(MAX_PROJECT_MATCHES);
                 }
-                RecommendationSignal::RecentlyUsed { .. } => {
-                    breakdown.usage_score += RECENCY_WEIGHT;
+                RecommendationSignal::RecentlyUsed { last_used } => {
+                    breakdown.usage_score += RECENCY_WEIGHT * recency_factor(*last_used, now);
                 }
                 RecommendationSignal::PromptMatch { keywords } => {
                     breakdown.context_score +=
@@ -210,6 +216,42 @@ impl Scorer for RecommendationScorer {
     }
 }
 
+/// Most project matches counted towards the score, as for prompt matches.
+const MAX_PROJECT_MATCHES: f64 = 3.0;
+
+/// e-folding time, in days, of the recently-used bonus (as in
+/// `usage::analytics::recency_score`).
+const RECENCY_DECAY_DAYS: f64 = 30.0;
+
+/// Fraction of the recently-used bonus left `now - last_used` seconds later.
+fn recency_factor(last_used: u64, now: u64) -> f64 {
+    if last_used == 0 || now == 0 {
+        return 0.0;
+    }
+    let age_days = now.saturating_sub(last_used) as f64 / 86_400.0;
+    (-age_days / RECENCY_DECAY_DAYS).exp()
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Lowercased name tokens, split at common separators.
+fn name_tokens(name: &str) -> Vec<String> {
+    name.split(|c: char| matches!(c, '-' | '_' | '/' | ':' | '.') || c.is_whitespace())
+        .filter(|t| !t.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// True when `needle` occurs as a contiguous run of whole tokens in `haystack`.
+fn contains_token_run(haystack: &[String], needle: &[String]) -> bool {
+    !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
+}
+
 /// Extract skill name from URI.
 fn extract_skill_name(uri: &str) -> String {
     uri.rsplit('/').next().unwrap_or(uri).to_string()
@@ -218,7 +260,7 @@ fn extract_skill_name(uri: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::LanguageInfo;
+    use crate::context::{DependencyInfo, LanguageInfo};
 
     #[test]
     fn test_empty_signals() {
@@ -421,12 +463,112 @@ mod tests {
     fn test_recently_used_scoring() {
         let scorer = RecommendationScorer::new();
         let signals = vec![RecommendationSignal::RecentlyUsed {
-            last_used: 1700000000,
+            last_used: unix_now(),
         }];
         let rec = scorer.score("skill://test/skill", signals);
 
-        assert_eq!(rec.score_breakdown.usage_score, RECENCY_WEIGHT);
-        assert_eq!(rec.score, RECENCY_WEIGHT);
+        // Used just now: the full weight, give or take a second of decay.
+        assert!((rec.score_breakdown.usage_score - RECENCY_WEIGHT).abs() < 1e-3);
+        assert_eq!(rec.score, rec.score_breakdown.usage_score);
+    }
+
+    /// IN-30: the recently-used bonus decays; two years ago is not "recent".
+    #[test]
+    fn recently_used_bonus_decays_with_age() {
+        let scorer = RecommendationScorer::new();
+        let now = unix_now();
+        let score_at = |age_days: u64| {
+            scorer
+                .score(
+                    "skill://test/skill",
+                    vec![RecommendationSignal::RecentlyUsed {
+                        last_used: now - age_days * 86_400,
+                    }],
+                )
+                .score_breakdown
+                .usage_score
+        };
+        let hour_old = score_at(0);
+        let month_old = score_at(30);
+        let two_years_old = score_at(730);
+        assert!(hour_old > month_old && month_old > two_years_old);
+        assert!((month_old / hour_old - (-1.0_f64).exp()).abs() < 1e-3);
+        assert!(two_years_old < 1e-6);
+    }
+
+    /// IN-10: single-letter languages and short crate names match whole
+    /// tokens only.
+    #[test]
+    fn project_matches_require_whole_tokens() {
+        let mut profile = ProjectProfile::default();
+        for lang in ["C", "R", "V", "Rust"] {
+            profile.languages.insert(
+                lang.to_string(),
+                LanguageInfo {
+                    file_count: 1,
+                    extensions: vec![],
+                    primary: false,
+                },
+            );
+        }
+        let dep = |name: &str| DependencyInfo {
+            name: name.to_string(),
+            version: None,
+            dev: false,
+        };
+        profile.dependencies.insert(
+            "rust".to_string(),
+            vec![dep("log"), dep("syn"), dep("url"), dep("serde")],
+        );
+        let scorer = RecommendationScorer::new().with_context(profile);
+
+        assert!(scorer.get_project_matches("code-review").is_empty());
+        assert!(scorer.get_project_matches("changelog").is_empty());
+        assert!(scorer.get_project_matches("sync").is_empty());
+        assert!(scorer.get_project_matches("curl-helper").is_empty());
+        assert_eq!(scorer.get_project_matches("c-debugging"), vec!["C"]);
+        let mut both = scorer.get_project_matches("rust-serde-guide");
+        both.sort();
+        assert_eq!(both, vec!["Rust", "serde"]);
+    }
+
+    /// IN-29: duplicates count once and the multiplier is capped.
+    #[test]
+    fn project_match_score_is_deduplicated_and_capped() {
+        let scorer = RecommendationScorer::new();
+        let score_for = |matched: Vec<&str>| {
+            scorer
+                .score(
+                    "skill://test/skill",
+                    vec![RecommendationSignal::ProjectMatch {
+                        matched: matched.into_iter().map(String::from).collect(),
+                    }],
+                )
+                .score_breakdown
+                .context_score
+        };
+        assert_eq!(score_for(vec!["serde", "serde"]), CONTEXT_MATCH_WEIGHT);
+        let forty: Vec<String> = (0..40).map(|i| format!("dep{i}")).collect();
+        assert_eq!(
+            score_for(forty.iter().map(String::as_str).collect()),
+            CONTEXT_MATCH_WEIGHT * MAX_PROJECT_MATCHES
+        );
+    }
+
+    /// The same dependency listed in normal and dev sections is reported once.
+    #[test]
+    fn project_matches_report_each_technology_once() {
+        let mut profile = ProjectProfile::default();
+        let dep = |dev: bool| DependencyInfo {
+            name: "serde".to_string(),
+            version: None,
+            dev,
+        };
+        profile
+            .dependencies
+            .insert("rust".to_string(), vec![dep(false), dep(true)]);
+        let scorer = RecommendationScorer::new().with_context(profile);
+        assert_eq!(scorer.get_project_matches("serde-helper"), vec!["serde"]);
     }
 
     #[test]
@@ -854,8 +996,6 @@ mod tests {
 
     #[test]
     fn test_project_matches_dependencies() {
-        use crate::context::DependencyInfo;
-
         let mut profile = ProjectProfile::default();
         let deps = vec![
             DependencyInfo {
