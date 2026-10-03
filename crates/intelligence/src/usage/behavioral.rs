@@ -180,6 +180,10 @@ pub struct BehavioralPatterns {
 /// Extract tool calls from raw session JSONL content.
 ///
 /// Parses tool_use and tool_result blocks from Claude Code session format.
+#[deprecated(
+    since = "0.9.0",
+    note = "the behavioural pipeline has no caller in skrills; unused, will be removed in a future release"
+)]
 pub fn extract_tool_calls(session_content: &str) -> Vec<ToolCall> {
     let mut tool_calls: Vec<ToolCall> = Vec::new();
     // tool_use id -> index into `tool_calls`, so results match their call
@@ -281,6 +285,10 @@ fn line_timestamp(json: &serde_json::Value) -> u64 {
 }
 
 /// Extract file access events from tool calls.
+#[deprecated(
+    since = "0.9.0",
+    note = "the behavioural pipeline has no caller in skrills; unused, will be removed in a future release"
+)]
 pub fn extract_file_accesses(tool_calls: &[ToolCall]) -> Vec<FileAccess> {
     let mut accesses = Vec::new();
 
@@ -356,6 +364,10 @@ const FAILURE_KEYWORDS: &[&str] = &[
 ];
 
 /// Detect session outcome from tool calls and context.
+#[deprecated(
+    since = "0.9.0",
+    note = "the behavioural pipeline has no caller in skrills; unused, will be removed in a future release"
+)]
 pub fn detect_session_outcome(
     session_id: &str,
     tool_calls: &[ToolCall],
@@ -516,6 +528,10 @@ fn detect_retry_pattern(tool_calls: &[ToolCall]) -> usize {
 // ============================================================================
 
 /// Build aggregated behavioral patterns from multiple sessions.
+#[deprecated(
+    since = "0.9.0",
+    note = "the behavioural pipeline has no caller in skrills; unused, will be removed in a future release"
+)]
 pub fn build_behavioral_patterns(
     events: &[BehavioralEvent],
     analytics: &UsageAnalytics,
@@ -599,6 +615,10 @@ pub fn build_behavioral_patterns(
 }
 
 /// Extract common n-grams from tool sequences.
+#[deprecated(
+    since = "0.9.0",
+    note = "the behavioural pipeline has no caller in skrills; unused, will be removed in a future release"
+)]
 pub fn extract_common_ngrams(
     sequences: &[Vec<String>],
     n: usize,

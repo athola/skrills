@@ -221,6 +221,10 @@ fn extract_session_features(events: &[BehavioralEvent]) -> Vec<SessionFeatures> 
 // ============================================================================
 
 /// Cluster sessions by behavioral similarity.
+#[deprecated(
+    since = "0.9.0",
+    note = "the behavioural pipeline has no caller in skrills; unused, will be removed in a future release"
+)]
 pub fn cluster_sessions(
     events: &[BehavioralEvent],
     num_clusters: usize,
@@ -584,6 +588,10 @@ fn generate_recovery_suggestions(errors: &[String]) -> Vec<String> {
 // ============================================================================
 
 /// Generate a skill from a behavioral cluster.
+#[deprecated(
+    since = "0.9.0",
+    note = "the behavioural pipeline has no caller in skrills; unused, will be removed in a future release"
+)]
 pub fn generate_skill_from_cluster(
     cluster: &ClusteredBehavior,
     base_name: Option<&str>,
@@ -721,6 +729,10 @@ cluster_id: {}
 }
 
 /// Format empirical skill as SKILL.md content.
+#[deprecated(
+    since = "0.9.0",
+    note = "the behavioural pipeline has no caller in skrills; unused, will be removed in a future release"
+)]
 pub fn format_as_skill_md(skill: &EmpiricalSkillContent) -> String {
     let mut content = String::new();
     content.push_str(&skill.frontmatter);

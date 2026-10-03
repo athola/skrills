@@ -621,22 +621,28 @@ impl SubagentService {
             }
         };
 
-        let total_count = record.events.len();
+        // Indices are absolute over the run's whole life. Past the per-run cap
+        // the held events start with an `events_dropped` marker for the
+        // dropped ones; it takes the index of the last dropped event, so held
+        // event `p` has index `base + p` (RT-31).
+        let base = crate::store::dropped_event_count(&record.events).saturating_sub(1);
+        let total_count = base + record.events.len();
 
         // Determine the slice of events to return
         let (events_to_return, start_index) = match since_index {
             Some(idx) => {
                 // Return events after the given index
                 let start = idx.saturating_add(1);
+                let position = start.saturating_sub(base);
                 if start >= total_count {
                     (Vec::new(), start)
                 } else {
-                    (record.events[start..].to_vec(), start)
+                    (record.events[position..].to_vec(), base + position)
                 }
             }
             None => {
                 // Return all events
-                (record.events.clone(), 0)
+                (record.events.clone(), base)
             }
         };
 
@@ -1591,6 +1597,72 @@ Content."#,
             names.contains(&"get-run-events"),
             "should have get-run-events tool"
         );
+    }
+
+    /// RT-31: once the oldest events are dropped at the per-run cap, an
+    /// index a client already holds must still name the same event.
+    #[tokio::test]
+    async fn get_run_events_indices_stay_stable_after_old_events_are_dropped() {
+        let store = Arc::new(MemRunStore::new());
+        let run_id = store
+            .create_run(RunRequest {
+                backend: BackendKind::Codex,
+                prompt: "test".into(),
+                template_id: None,
+                output_schema: None,
+                async_mode: false,
+                tracing: false,
+            })
+            .await
+            .unwrap();
+        let total = 10_000 + 5;
+        for i in 0..total {
+            store
+                .append_event(
+                    run_id,
+                    RunEvent {
+                        ts: OffsetDateTime::now_utc(),
+                        kind: "tick".into(),
+                        data: Some(json!({"n": i})),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        let service = SubagentService::with_store(store, BackendKind::Codex).unwrap();
+        let fetch = |since: Option<u64>| {
+            let mut args = json!({"run_id": run_id.0.to_string()});
+            if let Some(since) = since {
+                args["since_index"] = json!(since);
+            }
+            let service = &service;
+            async move {
+                service
+                    .handle_call("get-run-events", args.as_object())
+                    .await
+                    .unwrap()
+                    .structured_content
+                    .expect("structured content")
+            }
+        };
+
+        // Index N is event N for every event still held.
+        let after = fetch(Some(10_001)).await;
+        let events = after["events"].as_array().unwrap();
+        assert_eq!(events.len(), 3, "{after}");
+        for event in events {
+            assert_eq!(event["index"], event["data"]["n"], "{event}");
+        }
+        assert_eq!(after["total_count"], json!(total));
+
+        // A client that fell behind the cap is told how many it missed.
+        let behind = fetch(Some(2)).await;
+        let first = &behind["events"][0];
+        assert_eq!(first["kind"], "events_dropped", "{first}");
+        assert_eq!(first["data"]["count"], json!(6));
+        assert_eq!(behind["events"][1]["data"]["n"], json!(6));
+        assert_eq!(behind["events"][1]["index"], json!(6));
     }
 
     #[tokio::test]

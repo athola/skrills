@@ -33,6 +33,10 @@ pub use tools::{
 };
 
 /// Configuration for the MCP Gateway.
+#[deprecated(
+    since = "0.9.0",
+    note = "nothing in skrills reads a GatewayConfig; unused, will be removed in a future release"
+)]
 #[derive(Debug, Clone, Default)]
 pub struct GatewayConfig {
     /// Whether lazy loading is enabled (always true for now).

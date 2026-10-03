@@ -9,6 +9,10 @@ use serde_json::{json, Map as JsonMap, Value};
 use std::sync::Arc;
 
 /// Tool names handled by the MCP gateway.
+#[deprecated(
+    since = "0.9.0",
+    note = "the gateway tools are dispatched by name in the handler, which does not read this list; unused, will be removed in a future release"
+)]
 pub const MCP_GATEWAY_TOOL_NAMES: &[&str] = &[
     "list-mcp-tools",
     "list_mcp_tools",

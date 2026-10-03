@@ -16,6 +16,10 @@ pub enum TomeError {
     #[error("API error ({api}): {message}")]
     Api { api: String, message: String },
 
+    #[deprecated(
+        since = "0.9.0",
+        note = "never constructed: a missing open-access PDF is reported as Ok(None); unused, will be removed in a future release"
+    )]
     #[error("PDF not found for DOI: {doi}")]
     PdfNotFound { doi: String },
 

@@ -163,6 +163,10 @@ const SECURITY_KEYWORDS: &[&str] = &[
 /// directory holding a `SKILL.md`), split into whole tokens at `-`, `_`, `.`
 /// and whitespace. Substring matching misfiled `docker-compose` as
 /// documentation (`doc`) and `author-tools` as security (`auth`).
+#[deprecated(
+    since = "0.9.0",
+    note = "the behavioural pipeline has no caller in skrills; unused, will be removed in a future release"
+)]
 pub fn infer_skill_category(skill_name: &str) -> SkillCategory {
     let name = skill_name
         .rsplit(['/', '\\'])
@@ -190,6 +194,10 @@ pub fn infer_skill_category(skill_name: &str) -> SkillCategory {
 }
 
 /// Get baseline expected outcomes for a skill category.
+#[deprecated(
+    since = "0.9.0",
+    note = "the behavioural pipeline has no caller in skrills; unused, will be removed in a future release"
+)]
 pub fn get_baseline_expectations(category: SkillCategory) -> ExpectedOutcome {
     let baseline_metrics = match category {
         SkillCategory::Testing => OutcomeMetrics {
@@ -308,6 +316,10 @@ pub fn get_baseline_expectations(category: SkillCategory) -> ExpectedOutcome {
 const MIN_SESSIONS_FOR_DEVIATION: usize = 3;
 
 /// Compute deviation score for a skill based on usage analytics.
+#[deprecated(
+    since = "0.9.0",
+    note = "the behavioural pipeline has no caller in skrills; unused, will be removed in a future release"
+)]
 pub fn compute_deviation_score(
     skill_uri: &str,
     analytics: &UsageAnalytics,
@@ -529,6 +541,10 @@ fn count_keyword_matches(actual: &[String], expected: &[String]) -> usize {
 const MIN_SESSIONS_FOR_EFFECTIVENESS: usize = 5;
 
 /// Compute effectiveness by comparing sessions with and without this skill.
+#[deprecated(
+    since = "0.9.0",
+    note = "the behavioural pipeline has no caller in skrills; unused, will be removed in a future release"
+)]
 pub fn compute_effectiveness(
     skill_uri: &str,
     analytics: &UsageAnalytics,

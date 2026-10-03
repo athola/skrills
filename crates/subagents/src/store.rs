@@ -132,14 +132,46 @@ fn apply_status(record: &mut RunRecord, status: RunStatus) -> bool {
     true
 }
 
+/// `kind` of the event that stands in for events dropped at the per-run cap.
+/// Its `data` is `{"count": n}`: the run's first `n` events are gone.
+pub(crate) const EVENTS_DROPPED_KIND: &str = "events_dropped";
+
+/// How many of the run's events were dropped at the cap: the count carried
+/// by a leading `events_dropped` marker, or 0 when there is none.
+pub(crate) fn dropped_event_count(events: &[RunEvent]) -> usize {
+    events
+        .first()
+        .filter(|e| e.kind == EVENTS_DROPPED_KIND)
+        .and_then(|e| e.data.as_ref()?.get("count")?.as_u64())
+        .and_then(|n| usize::try_from(n).ok())
+        .unwrap_or(0)
+}
+
+/// Appends `event`, keeping at most [`MAX_EVENTS_PER_RUN`] events. Past the
+/// cap the oldest events are replaced by one `events_dropped` marker counting
+/// every event dropped so far, so an event's position in the run never
+/// changes: event `n` stays event `n` (RT-31).
 fn push_event(record: &mut RunRecord, event: RunEvent) {
     record.updated_at = event.ts;
     record.events.push(event);
-    if record.events.len() > MAX_EVENTS_PER_RUN {
-        record
-            .events
-            .drain(..record.events.len() - MAX_EVENTS_PER_RUN);
+    if record.events.len() <= MAX_EVENTS_PER_RUN {
+        return;
     }
+    let already_dropped = dropped_event_count(&record.events);
+    let marker_slots = usize::from(already_dropped > 0);
+    // Keep room for the marker itself.
+    let excess = record.events.len() - (MAX_EVENTS_PER_RUN - 1);
+    let dropping = excess - marker_slots;
+    let last_dropped_ts = record.events[excess - 1].ts;
+    record.events.drain(..excess);
+    record.events.insert(
+        0,
+        RunEvent {
+            ts: last_dropped_ts,
+            kind: EVENTS_DROPPED_KIND.to_string(),
+            data: Some(serde_json::json!({ "count": already_dropped + dropping })),
+        },
+    );
 }
 
 /// Drops the oldest finished runs once more than [`MAX_RUNS`] are held.

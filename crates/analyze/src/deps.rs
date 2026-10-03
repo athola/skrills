@@ -44,6 +44,10 @@ pub enum WarningKind {
     /// Failed to access directory entry during traversal.
     DirectoryEntryAccessFailed,
     /// Failed to read file contents.
+    #[deprecated(
+        since = "0.9.0",
+        note = "dependency analysis never produces this kind; unused, will be removed in a future release"
+    )]
     FileReadFailed,
 }
 

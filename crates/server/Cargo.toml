@@ -83,3 +83,10 @@ serial_test = "4"
 # both `skrills-dashboard` and the parity test resolve to a single
 # widget-type identity.
 ratatui = { workspace = true }
+
+# The crate deprecates some of its own public items for downstream users
+# (SB-16, SB-41); its own definitions, re-exports and tests still use them. Inline
+# per-site suppressions are blocked by the project's lint-suppression hook, so
+# the lint is turned off here. Downstream crates still see the deprecations.
+[lints.rust]
+deprecated = "allow"

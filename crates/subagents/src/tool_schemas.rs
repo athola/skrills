@@ -52,7 +52,7 @@ pub fn events_schema() -> Arc<JsonObject> {
         "required": ["run_id"],
         "properties": {
             "run_id": {"type": "string", "description": "The run ID to get events for"},
-            "since_index": {"type": "integer", "minimum": 0, "description": "Return events after this index (0-based)"}
+            "since_index": {"type": "integer", "minimum": 0, "description": "Return events after this index (0-based, stable for the life of the run; past 10,000 events the oldest are replaced by one events_dropped event whose data.count says how many)"}
         }
     })))
 }
