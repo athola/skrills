@@ -15,19 +15,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 impl SkillService {
     /// Parse the trace target from tool arguments.
-    pub(crate) fn parse_trace_target(args: &JsonMap<String, Value>) -> TraceTarget {
+    ///
+    /// A missing target means both; an unrecognized one is an error, so a
+    /// typo cannot silently instrument both skill trees.
+    pub(crate) fn parse_trace_target(args: &JsonMap<String, Value>) -> Result<TraceTarget> {
         match args
             .get("target")
             .and_then(|v| v.as_str())
             .unwrap_or("both")
         {
-            "claude" => TraceTarget::Claude,
-            "codex" => TraceTarget::Codex,
-            "both" => TraceTarget::Both,
-            other => {
-                tracing::warn!(target = %other, "Unknown trace target, defaulting to Both");
-                TraceTarget::Both
-            }
+            "claude" => Ok(TraceTarget::Claude),
+            "codex" => Ok(TraceTarget::Codex),
+            "both" => Ok(TraceTarget::Both),
+            other => Err(anyhow::anyhow!(
+                "Unknown target '{other}': expected claude, codex or both"
+            )),
         }
     }
 
@@ -74,7 +76,12 @@ impl SkillService {
         let validation_target = match target_str {
             "claude" => VT::Claude,
             "codex" => VT::Codex,
-            _ => VT::Both,
+            "both" => VT::Both,
+            other => {
+                return Err(anyhow::anyhow!(
+                    "Unknown target '{other}': expected claude, codex or both"
+                ))
+            }
         };
 
         let (skills, _) = self.current_skills_with_dups()?;
@@ -88,6 +95,11 @@ impl SkillService {
         let mut results = Vec::new();
         let mut autofixed = 0usize;
         let mut total_dep_issues = 0usize;
+        // Counted over every validated skill, independent of `errors_only`,
+        // which only filters the rows returned.
+        let mut validated = 0usize;
+        let mut claude_valid = 0usize;
+        let mut codex_valid = 0usize;
 
         for meta in &skills {
             let mut content = match fs::read_to_string(&meta.path) {
@@ -100,9 +112,14 @@ impl SkillService {
             let mut result = validate_skill(&meta.path, &content, validation_target);
             let mut autofixed_skill = false;
 
-            if autofix && !result.codex_valid && validation_target != VT::Claude {
+            if autofix
+                && !result.codex_valid
+                && validation_target != VT::Claude
+                && autofix_may_write(&meta.source)
+            {
+                // Keep a backup: this rewrites files in place on a tool call.
                 let opts = AutofixOptions {
-                    create_backup: false,
+                    create_backup: true,
                     write_changes: true,
                     suggested_name: Some(meta.name.clone()),
                     suggested_description: None,
@@ -171,6 +188,10 @@ impl SkillService {
                 total_dep_issues += dependency_issues.len();
             }
 
+            validated += 1;
+            claude_valid += usize::from(result.claude_valid);
+            codex_valid += usize::from(result.codex_valid);
+
             if !errors_only || result.has_errors() || !dependency_issues.is_empty() {
                 let mut skill_json = json!({
                     "name": meta.name,
@@ -214,23 +235,11 @@ impl SkillService {
 
         let text = {
             let mut base = format!(
-                "Validated {} skills: {} Claude-valid, {} Codex-valid",
-                results.len(),
-                results
-                    .iter()
-                    .filter(|r| r
-                        .get("claude_valid")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false))
-                    .count(),
-                results
-                    .iter()
-                    .filter(|r| r
-                        .get("codex_valid")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false))
-                    .count()
+                "Validated {validated} skills: {claude_valid} Claude-valid, {codex_valid} Codex-valid"
             );
+            if errors_only {
+                base = format!("{base}\nShowing {} with issues", results.len());
+            }
             if autofixed > 0 {
                 base = format!("{base}\nAuto-fixed {autofixed} skills");
             }
@@ -242,6 +251,9 @@ impl SkillService {
 
         let mut structured = json!({
             "total": results.len(),
+            "validated": validated,
+            "claude_valid": claude_valid,
+            "codex_valid": codex_valid,
             "target": target_str,
             "autofix": autofix,
             "autofixed": autofixed,
@@ -287,8 +299,22 @@ impl SkillService {
             .and_then(|v| v.as_u64())
             .unwrap_or(3) as usize;
 
-        // Get all discovered skills
-        let (skills, _) = self.current_skills_with_dups()?;
+        // The cached list is de-duplicated by name, which keeps exactly one
+        // copy of the skill this tool exists to compare. Scan each root on its
+        // own so every copy is seen.
+        let roots = self.cache.lock().roots().to_vec();
+        let mut skills = Vec::new();
+        for root in &roots {
+            match skrills_discovery::discover_skills(std::slice::from_ref(root), None) {
+                Ok(found) => skills.extend(found),
+                Err(e) => tracing::warn!(
+                    root = %root.root.display(),
+                    error = %e,
+                    "skill-diff could not scan root"
+                ),
+            }
+        }
+        let wanted = skill_dir_name(name);
 
         // Find matching skills across each source
         let mut claude_skill: Option<(String, String)> = None;
@@ -296,7 +322,7 @@ impl SkillService {
         let mut copilot_skill: Option<(String, String)> = None;
 
         for meta in &skills {
-            if meta.name == name {
+            if meta.name == name || skill_dir_name(&meta.name) == wanted {
                 let content = fs::read_to_string(&meta.path).ok();
                 if let Some(c) = content {
                     let path_str = meta.path.display().to_string();
@@ -344,69 +370,6 @@ impl SkillService {
         }
         if let Some((path, _)) = &copilot_skill {
             locations.push(json!({"source": "copilot", "path": path}));
-        }
-
-        // Helper to generate unified diff
-        fn unified_diff(a: &str, b: &str, label_a: &str, label_b: &str, context: usize) -> String {
-            let a_lines: Vec<&str> = a.lines().collect();
-            let b_lines: Vec<&str> = b.lines().collect();
-
-            if a_lines == b_lines {
-                return String::new();
-            }
-
-            let mut output = String::new();
-            output.push_str(&format!("--- {}\n", label_a));
-            output.push_str(&format!("+++ {}\n", label_b));
-
-            // Simple line-by-line diff with context
-            let max_len = a_lines.len().max(b_lines.len());
-            let mut in_hunk = false;
-            let mut hunk_start = 0;
-
-            for i in 0..max_len {
-                let a_line = a_lines.get(i).copied();
-                let b_line = b_lines.get(i).copied();
-
-                if a_line != b_line {
-                    if !in_hunk {
-                        // Start new hunk with context
-                        hunk_start = i.saturating_sub(context);
-                        output.push_str(&format!(
-                            "@@ -{},{} +{},{} @@\n",
-                            hunk_start + 1,
-                            context * 2 + 1,
-                            hunk_start + 1,
-                            context * 2 + 1
-                        ));
-
-                        // Add leading context
-                        for j in hunk_start..i {
-                            if let Some(line) = a_lines.get(j) {
-                                output.push_str(&format!(" {}\n", line));
-                            }
-                        }
-                        in_hunk = true;
-                    }
-
-                    if let Some(line) = a_line {
-                        output.push_str(&format!("-{}\n", line));
-                    }
-                    if let Some(line) = b_line {
-                        output.push_str(&format!("+{}\n", line));
-                    }
-                } else if in_hunk {
-                    // Trailing context
-                    if let Some(line) = a_line {
-                        output.push_str(&format!(" {}\n", line));
-                    }
-                    if i >= hunk_start + context * 2 {
-                        in_hunk = false;
-                    }
-                }
-            }
-
-            output
         }
 
         // Count tokens (simple word count approximation)
@@ -637,21 +600,25 @@ impl SkillService {
 
         let report = sync_between(from, to, &params)?;
 
-        Ok(tool_ok(
-            vec![ContentBlock::text(format!(
-                "{}\nSkills: {} copied, {} skipped{}",
-                report.summary, skill_report.copied, skill_report.skipped, feature_flag_warning
-            ))],
-            Some(json!({
-                "report": report,
-                "skill_report": {
-                    "copied": skill_report.copied,
-                    "skipped": skill_report.skipped
-                },
-                "dry_run": dry_run,
-                "skip_existing_commands": skip_existing_commands
-            })),
-        ))
+        let succeeded = report.success;
+        let content = vec![ContentBlock::text(format!(
+            "{}\nSkills: {} copied, {} skipped{}",
+            report.summary, skill_report.copied, skill_report.skipped, feature_flag_warning
+        ))];
+        let structured = Some(json!({
+            "report": report,
+            "skill_report": {
+                "copied": skill_report.copied,
+                "skipped": skill_report.skipped
+            },
+            "dry_run": dry_run,
+            "skip_existing_commands": skip_existing_commands
+        }));
+        Ok(if succeeded {
+            tool_ok(content, structured)
+        } else {
+            tool_err(content, structured)
+        })
     }
 
     /// Gets skill loading status for observability and debugging.
@@ -674,7 +641,7 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
-        let target = Self::parse_trace_target(&args);
+        let target = Self::parse_trace_target(&args)?;
         let opts = TraceInstallOptions {
             include_cache: args
                 .get("include_cache")
@@ -727,7 +694,7 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
-        let target = Self::parse_trace_target(&args);
+        let target = Self::parse_trace_target(&args)?;
         let opts = TraceInstallOptions {
             instrument: args
                 .get("instrument")
@@ -791,7 +758,7 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
-        let target = Self::parse_trace_target(&args);
+        let target = Self::parse_trace_target(&args)?;
         let dry_run = args
             .get("dry_run")
             .and_then(|v| v.as_bool())
@@ -826,7 +793,7 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
-        let target = Self::parse_trace_target(&args);
+        let target = Self::parse_trace_target(&args)?;
         let dry_run = args
             .get("dry_run")
             .and_then(|v| v.as_bool())
@@ -895,6 +862,7 @@ impl SkillService {
             ..Default::default()
         };
 
+        check_sync_peer("to", to, &["claude", "codex"])?;
         let source = CopilotAdapter::new()?;
         let report = if to == "codex" {
             use skrills_sync::CodexAdapter;
@@ -958,6 +926,7 @@ impl SkillService {
             ..Default::default()
         };
 
+        check_sync_peer("from", from, &["claude", "codex", "cursor"])?;
         let target = CopilotAdapter::new()?;
         let report = if from == "codex" {
             use skrills_sync::CodexAdapter;
@@ -1015,6 +984,7 @@ impl SkillService {
             ..Default::default()
         };
 
+        check_sync_peer("to", to, &["claude", "codex", "copilot"])?;
         let source = CursorAdapter::new()?;
         let report = match to {
             "codex" => {
@@ -1079,6 +1049,7 @@ impl SkillService {
             ..Default::default()
         };
 
+        check_sync_peer("from", from, &["claude", "codex", "copilot"])?;
         let target = CursorAdapter::new()?;
         let report = match from {
             "codex" => {
@@ -1257,4 +1228,178 @@ impl SkillService {
             tool_err(content, structured)
         })
     }
+}
+
+/// Refuse a sync peer this tool does not handle instead of quietly treating it
+/// as Claude, which would write to `~/.claude` while echoing the requested name.
+fn check_sync_peer(field: &str, value: &str, allowed: &[&str]) -> Result<()> {
+    if allowed.contains(&value) {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "Invalid '{field}' value '{value}': expected one of {}",
+            allowed.join(", ")
+        ))
+    }
+}
+
+/// Whether autofix may rewrite skills from this source. Marketplace
+/// checkouts, the plugin cache and the Codex mirror belong to other tools and
+/// are overwritten on their next update, so they are reported, not edited.
+fn autofix_may_write(source: &skrills_discovery::SkillSource) -> bool {
+    use skrills_discovery::SkillSource;
+    !matches!(
+        source,
+        SkillSource::Marketplace | SkillSource::Cache | SkillSource::Mirror
+    )
+}
+
+/// The skill's directory name: `review/SKILL.md` and `plugins/x/review` both
+/// give `review`.
+fn skill_dir_name(name: &str) -> &str {
+    let trimmed = name
+        .trim_end_matches("/SKILL.md")
+        .trim_end_matches("SKILL.md")
+        .trim_end_matches('/');
+    trimmed.rsplit('/').next().unwrap_or(trimmed)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DiffOp {
+    Same,
+    Del,
+    Add,
+}
+
+/// Above this many LCS table cells the middle section is reported as a
+/// wholesale replacement instead of being aligned line by line.
+const MAX_LCS_CELLS: usize = 4_000_000;
+
+/// Line-level edit script from `a` to `b` (longest common subsequence).
+fn diff_lines<'a>(a: &[&'a str], b: &[&'a str]) -> Vec<(DiffOp, &'a str)> {
+    let prefix = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    let suffix = a[prefix..]
+        .iter()
+        .rev()
+        .zip(b[prefix..].iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    let (am, bm) = (&a[prefix..a.len() - suffix], &b[prefix..b.len() - suffix]);
+
+    let mut ops: Vec<(DiffOp, &str)> = a[..prefix].iter().map(|l| (DiffOp::Same, *l)).collect();
+    let (n, m) = (am.len(), bm.len());
+    if (n + 1).saturating_mul(m + 1) > MAX_LCS_CELLS {
+        ops.extend(am.iter().map(|l| (DiffOp::Del, *l)));
+        ops.extend(bm.iter().map(|l| (DiffOp::Add, *l)));
+    } else {
+        let width = m + 1;
+        let mut lcs = vec![0u32; (n + 1) * width];
+        for i in (0..n).rev() {
+            for j in (0..m).rev() {
+                lcs[i * width + j] = if am[i] == bm[j] {
+                    lcs[(i + 1) * width + j + 1] + 1
+                } else {
+                    lcs[(i + 1) * width + j].max(lcs[i * width + j + 1])
+                };
+            }
+        }
+        let (mut i, mut j) = (0, 0);
+        while i < n && j < m {
+            if am[i] == bm[j] {
+                ops.push((DiffOp::Same, am[i]));
+                i += 1;
+                j += 1;
+            } else if lcs[(i + 1) * width + j] >= lcs[i * width + j + 1] {
+                ops.push((DiffOp::Del, am[i]));
+                i += 1;
+            } else {
+                ops.push((DiffOp::Add, bm[j]));
+                j += 1;
+            }
+        }
+        ops.extend(am[i..].iter().map(|l| (DiffOp::Del, *l)));
+        ops.extend(bm[j..].iter().map(|l| (DiffOp::Add, *l)));
+    }
+    ops.extend(a[a.len() - suffix..].iter().map(|l| (DiffOp::Same, *l)));
+    ops
+}
+
+/// Unified diff of two texts with `context` lines around each change.
+/// Returns an empty string when the texts have the same lines.
+pub(crate) fn unified_diff(
+    a: &str,
+    b: &str,
+    label_a: &str,
+    label_b: &str,
+    context: usize,
+) -> String {
+    let a_lines: Vec<&str> = a.lines().collect();
+    let b_lines: Vec<&str> = b.lines().collect();
+    if a_lines == b_lines {
+        return String::new();
+    }
+    let ops = diff_lines(&a_lines, &b_lines);
+
+    // Lines of `a` and `b` consumed before each op index.
+    let mut a_before = Vec::with_capacity(ops.len() + 1);
+    let mut b_before = Vec::with_capacity(ops.len() + 1);
+    let (mut ai, mut bi) = (0usize, 0usize);
+    for (op, _) in &ops {
+        a_before.push(ai);
+        b_before.push(bi);
+        match op {
+            DiffOp::Same => {
+                ai += 1;
+                bi += 1;
+            }
+            DiffOp::Del => ai += 1,
+            DiffOp::Add => bi += 1,
+        }
+    }
+    a_before.push(ai);
+    b_before.push(bi);
+
+    let changes: Vec<usize> = ops
+        .iter()
+        .enumerate()
+        .filter(|(_, (op, _))| *op != DiffOp::Same)
+        .map(|(i, _)| i)
+        .collect();
+
+    let mut out = format!("--- {label_a}\n+++ {label_b}\n");
+    let mut k = 0;
+    while k < changes.len() {
+        let start = changes[k].saturating_sub(context);
+        let mut end = (changes[k] + context + 1).min(ops.len());
+        k += 1;
+        while k < changes.len() && changes[k].saturating_sub(context) <= end {
+            end = (changes[k] + context + 1).min(ops.len());
+            k += 1;
+        }
+        let a_len = a_before[end] - a_before[start];
+        let b_len = b_before[end] - b_before[start];
+        // Unified format names the line before an empty range.
+        let a_start = if a_len == 0 {
+            a_before[start]
+        } else {
+            a_before[start] + 1
+        };
+        let b_start = if b_len == 0 {
+            b_before[start]
+        } else {
+            b_before[start] + 1
+        };
+        out.push_str(&format!("@@ -{a_start},{a_len} +{b_start},{b_len} @@\n"));
+        for (op, line) in &ops[start..end] {
+            let mark = match op {
+                DiffOp::Same => ' ',
+                DiffOp::Del => '-',
+                DiffOp::Add => '+',
+            };
+            out.push(mark);
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
 }

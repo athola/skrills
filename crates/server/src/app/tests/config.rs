@@ -59,3 +59,64 @@ fn resolve_project_dir_returns_none_when_cwd_missing() {
     std::env::set_current_dir(original).expect("restore original directory");
     assert!(resolved.is_none());
 }
+
+/// SA-13: reads (including the server's own discovery walk) must not
+/// invalidate the cache; creates, writes and removals must.
+#[cfg(feature = "watch")]
+#[test]
+fn watcher_ignores_access_events() {
+    use notify::event::{
+        AccessKind, AccessMode, CreateKind, DataChange, MetadataKind, ModifyKind, RemoveKind,
+    };
+    use notify::EventKind;
+
+    assert!(!invalidates_cache(&EventKind::Access(AccessKind::Open(
+        AccessMode::Any
+    ))));
+    assert!(!invalidates_cache(&EventKind::Access(AccessKind::Close(
+        AccessMode::Read
+    ))));
+    assert!(!invalidates_cache(&EventKind::Modify(
+        ModifyKind::Metadata(MetadataKind::AccessTime)
+    )));
+    assert!(invalidates_cache(&EventKind::Create(CreateKind::File)));
+    assert!(invalidates_cache(&EventKind::Modify(ModifyKind::Data(
+        DataChange::Content
+    ))));
+    assert!(invalidates_cache(&EventKind::Remove(RemoveKind::File)));
+}
+
+/// SA-35: total_skills counts the skills that were analysed, so it agrees
+/// with by_source when a file disappears after discovery.
+#[test]
+fn metrics_total_matches_by_source_when_a_file_is_unreadable() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let _cache = crate::test_support::set_env_var(
+        "SKRILLS_CACHE_PATH",
+        Some(temp.path().join("cache.json").to_str().unwrap()),
+    );
+    let root = temp.path().join("skills");
+    for name in ["keep", "gone"] {
+        std::fs::create_dir_all(root.join(name)).unwrap();
+        std::fs::write(
+            root.join(name).join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {name}\n---\n"),
+        )
+        .unwrap();
+    }
+    let service = SkillService::new_with_roots_for_test(
+        vec![SkillRoot {
+            root: root.clone(),
+            source: skrills_discovery::SkillSource::Claude,
+        }],
+        std::time::Duration::from_secs(60),
+    )
+    .unwrap();
+    service.current_skills_with_dups().unwrap();
+    std::fs::remove_file(root.join("gone").join("SKILL.md")).unwrap();
+
+    let metrics = service.compute_metrics(false).unwrap();
+    assert_eq!(metrics.total_skills, 1);
+    assert_eq!(metrics.by_source.values().sum::<usize>(), 1);
+}

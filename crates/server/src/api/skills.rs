@@ -196,18 +196,8 @@ impl From<SkillMeta> for SkillResponse {
 async fn list_skills(
     State(state): State<Arc<ApiState>>,
     Query(params): Query<PaginationParams>,
-) -> Json<PaginatedResponse<SkillResponse>> {
-    let roots = skill_roots_or_default(&state.skill_dirs);
-
-    let skills = {
-        let read_guard = state.cache.read();
-        if let Some(cached) = read_guard.get_cached() {
-            cached
-        } else {
-            drop(read_guard);
-            state.cache.write().get_or_refresh(&roots)
-        }
-    };
+) -> Result<Json<PaginatedResponse<SkillResponse>>, StatusCode> {
+    let skills = load_skills(&state).await?;
 
     let total = skills.len();
     let limit = params.limit.min(MAX_LIMIT);
@@ -218,11 +208,32 @@ async fn list_skills(
         .map(Into::into)
         .collect();
 
-    Json(PaginatedResponse {
+    Ok(Json(PaginatedResponse {
         items,
         total,
         limit,
         offset: params.offset,
+    }))
+}
+
+/// Return the cached skill list, rescanning on a miss.
+///
+/// A rescan walks the skill directories, so it runs on the blocking pool
+/// rather than stalling an async worker; the write lock is taken there too,
+/// which keeps concurrent misses from scanning twice.
+async fn load_skills(state: &Arc<ApiState>) -> Result<Vec<SkillMeta>, StatusCode> {
+    if let Some(cached) = state.cache.read().get_cached() {
+        return Ok(cached);
+    }
+    let state = Arc::clone(state);
+    tokio::task::spawn_blocking(move || {
+        let roots = skill_roots_or_default(&state.skill_dirs);
+        state.cache.write().get_or_refresh(&roots)
+    })
+    .await
+    .map_err(|e| {
+        tracing::warn!(error = %e, "skill discovery task panicked");
+        StatusCode::INTERNAL_SERVER_ERROR
     })
 }
 
@@ -241,17 +252,7 @@ async fn get_skill(
     State(state): State<Arc<ApiState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Result<Json<SkillResponse>, StatusCode> {
-    let roots = skill_roots_or_default(&state.skill_dirs);
-
-    let skills = {
-        let read_guard = state.cache.read();
-        if let Some(cached) = read_guard.get_cached() {
-            cached
-        } else {
-            drop(read_guard);
-            state.cache.write().get_or_refresh(&roots)
-        }
-    };
+    let skills = load_skills(&state).await?;
 
     skills
         .into_iter()
@@ -305,8 +306,78 @@ mod tests {
         let mut cache = SkillCache::new(30);
         let roots: Vec<SkillRoot> = vec![];
         let result = cache.get_or_refresh(&roots);
-        // With no roots, discovery returns empty or error; either way cache is populated
-        assert!(cache.last_refresh.is_some() || !cache.skills.is_empty() || result.is_empty());
+        assert!(result.is_empty());
+        assert!(
+            cache.last_refresh.is_some(),
+            "a successful empty scan still counts as a refresh"
+        );
+    }
+
+    fn write_skill(root: &std::path::Path, name: &str) {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {name} skill\n---\nbody\n"),
+        )
+        .unwrap();
+    }
+
+    async fn get_json(app: Router, uri: &str) -> (StatusCode, serde_json::Value) {
+        use tower::ServiceExt;
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(uri)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, body)
+    }
+
+    #[tokio::test]
+    async fn list_skills_clamps_limit_and_reports_total() {
+        let temp = tempfile::tempdir().unwrap();
+        for i in 0..3 {
+            write_skill(temp.path(), &format!("skill-{i}"));
+        }
+        let app = skills_routes(Arc::new(ApiState::new(vec![temp.path().to_path_buf()])));
+
+        let (status, body) = get_json(app.clone(), "/api/skills?limit=999").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["limit"], MAX_LIMIT);
+        assert_eq!(body["total"], 3);
+        assert_eq!(body["items"].as_array().unwrap().len(), 3);
+
+        let (_, page) = get_json(app, "/api/skills?limit=1&offset=2").await;
+        assert_eq!(page["items"].as_array().unwrap().len(), 1);
+        assert_eq!(page["offset"], 2);
+    }
+
+    #[tokio::test]
+    async fn get_skill_finds_by_name_and_404s_otherwise() {
+        let temp = tempfile::tempdir().unwrap();
+        write_skill(temp.path(), "alpha");
+        let app = skills_routes(Arc::new(ApiState::new(vec![temp.path().to_path_buf()])));
+
+        let (_, list) = get_json(app.clone(), "/api/skills").await;
+        let name = list["items"][0]["name"].as_str().unwrap().to_string();
+        assert!(name.starts_with("alpha"), "{name}");
+
+        let (status, body) = get_json(app.clone(), &format!("/api/skills/{name}")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["name"], name.as_str());
+        assert_eq!(body["description"], "alpha skill");
+
+        let (status, _) = get_json(app, "/api/skills/missing").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[test]
@@ -343,12 +414,6 @@ mod tests {
         let params: PaginationParams = serde_json::from_str("{}").unwrap();
         assert_eq!(params.limit, 50);
         assert_eq!(params.offset, 0);
-    }
-
-    #[test]
-    fn pagination_limit_clamped_to_max() {
-        let clamped = 999_usize.min(MAX_LIMIT);
-        assert_eq!(clamped, 200);
     }
 
     #[test]

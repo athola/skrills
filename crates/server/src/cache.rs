@@ -81,6 +81,9 @@ pub(crate) struct SkillCache {
     snapshot_path: Option<PathBuf>,
     /// Relationship graph for skill dependencies (simple graph, not full resolver)
     dep_graph: RelationshipGraph,
+    /// Set by `invalidate()`: the on-disk snapshot predates the change that
+    /// caused the invalidation, so the next refresh must rescan.
+    invalidated: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -104,6 +107,7 @@ impl SkillCache {
             uri_index: HashMap::new(),
             snapshot_path,
             dep_graph: RelationshipGraph::new(),
+            invalidated: false,
         };
         if let Err(e) = cache.try_load_snapshot() {
             tracing::debug!(
@@ -113,6 +117,11 @@ impl SkillCache {
             );
         }
         cache
+    }
+
+    /// The skill roots this cache scans.
+    pub(crate) fn roots(&self) -> &[SkillRoot] {
+        &self.roots
     }
 
     /// Returns the paths of the root directories being watched.
@@ -148,6 +157,16 @@ impl SkillCache {
 
     /// Build the dependency graph for a set of skills.
     fn build_dependency_graph(&self, skills: &[SkillMeta]) -> RelationshipGraph {
+        // Canonicalize each skill path once per build, not once per
+        // dependency per skill.
+        let by_canonical_path: HashMap<PathBuf, String> = skills
+            .iter()
+            .filter_map(|skill| {
+                let canonical = skill.path.canonicalize().ok()?;
+                let uri = format!("skill://skrills/{}/{}", skill.source.label(), skill.name);
+                Some((canonical, uri))
+            })
+            .collect();
         let mut dep_graph = RelationshipGraph::new();
         for skill in skills {
             let skill_uri = format!("skill://skrills/{}/{}", skill.source.label(), skill.name);
@@ -176,9 +195,11 @@ impl SkillCache {
 
                     if dep.dep_type == skrills_analyze::DependencyType::Skill {
                         // Try to resolve the dependency path to a skill URI
-                        if let Some(dep_uri) =
-                            self.resolve_dependency_to_uri(&skill.path, &dep.target, skills)
-                        {
+                        if let Some(dep_uri) = Self::resolve_dependency_to_uri(
+                            &skill.path,
+                            &dep.target,
+                            &by_canonical_path,
+                        ) {
                             tracing::debug!(
                                 target: "skrills::deps",
                                 skill = %skill.name,
@@ -203,34 +224,16 @@ impl SkillCache {
 
     /// Resolve a dependency path to a skill URI.
     ///
-    /// Takes a relative path from a skill file and tries to find the corresponding skill.
+    /// Takes a relative path from a skill file and looks it up among the
+    /// skills' canonical paths.
     fn resolve_dependency_to_uri(
-        &self,
         skill_path: &Path,
         dep_path: &str,
-        skills: &[SkillMeta],
+        by_canonical_path: &HashMap<PathBuf, String>,
     ) -> Option<String> {
-        // Get the directory containing the skill
         let skill_dir = skill_path.parent()?;
-
-        // Resolve the dependency path relative to the skill directory
-        let resolved_path = skill_dir.join(dep_path);
-        let canonical_path = resolved_path.canonicalize().ok()?;
-
-        // Find the skill that matches this path
-        for skill in skills {
-            if let Ok(skill_canonical) = skill.path.canonicalize() {
-                if skill_canonical == canonical_path {
-                    return Some(format!(
-                        "skill://skrills/{}/{}",
-                        skill.source.label(),
-                        skill.name
-                    ));
-                }
-            }
-        }
-
-        None
+        let canonical_path = skill_dir.join(dep_path).canonicalize().ok()?;
+        by_canonical_path.get(&canonical_path).cloned()
     }
 
     /// Attempt to load a persisted snapshot if it is still within TTL and roots match.
@@ -288,7 +291,10 @@ impl SkillCache {
         // Build dependency graph for loaded skills
         self.dep_graph = self.build_dependency_graph(&snap.skills);
 
-        self.last_scan = Some(Instant::now());
+        // The snapshot is `age` seconds old; keep that age so loading it does
+        // not grant a fresh TTL.
+        let now = Instant::now();
+        self.last_scan = Some(now.checked_sub(Duration::from_secs(age)).unwrap_or(now));
         tracing::info!(
             target: "skrills::startup",
             skills = self.skills.len(),
@@ -319,6 +325,7 @@ impl SkillCache {
     /// Invalidate the cache, forcing a rescan on the next access.
     #[cfg(any(feature = "watch", test))]
     pub(crate) fn invalidate(&mut self) {
+        self.invalidated = true;
         self.last_scan = None;
         self.skills.clear();
         self.duplicates.clear();
@@ -337,10 +344,12 @@ impl SkillCache {
             return Ok(());
         }
 
-        // If we've been invalidated (or never loaded) attempt a cheap snapshot reload.
-        // When a snapshot exists, serve it immediately to avoid dropping cached skills
-        // if the filesystem scan comes back empty (e.g. transiently missing paths).
-        if self.last_scan.is_none() && self.skills.is_empty() {
+        // On first use, attempt a cheap snapshot reload. When a snapshot
+        // exists, serve it immediately to avoid dropping cached skills if the
+        // filesystem scan comes back empty (e.g. transiently missing paths).
+        // After an explicit invalidation the snapshot is known to be stale,
+        // so go straight to a rescan.
+        if !self.invalidated && self.last_scan.is_none() && self.skills.is_empty() {
             if let Err(e) = self.try_load_snapshot() {
                 tracing::debug!(
                     target: "skrills::startup",
@@ -381,6 +390,7 @@ impl SkillCache {
         self.uri_index = uri_index;
         self.dep_graph = dep_graph;
         self.last_scan = Some(now);
+        self.invalidated = false;
         self.persist_snapshot();
         let elapsed_ms = scan_started.elapsed().as_millis();
         if elapsed_ms > 250 {
@@ -569,11 +579,78 @@ mod tests {
         fs::remove_file(&skill_path).expect("remove skill");
         cache.invalidate();
 
-        let _ = cache
-            .skills_with_dups()
-            .expect("snapshot reload should succeed");
+        // The first read after invalidation must already reflect the change,
+        // not the snapshot written before it (SA-14).
         let (skills, _dups) = cache.skills_with_dups().expect("rescan should succeed");
         assert!(skills.is_empty(), "expected cache to drop removed skill");
+    }
+
+    #[test]
+    fn loading_a_snapshot_keeps_its_age() {
+        /*
+        GIVEN a snapshot written 50 s ago and a 60 s TTL
+        WHEN a new cache loads it
+        THEN the cache treats it as 50 s old, not as a fresh scan (SA-47)
+        */
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let cache_path = temp.path().join("skills-cache.json");
+        let _cache_env = set_env_var(
+            "SKRILLS_CACHE_PATH",
+            Some(cache_path.to_str().expect("cache path")),
+        );
+        let root_dir = temp.path().join("skills");
+        write_skill(&root_dir, "alpha");
+        let root = SkillRoot {
+            root: root_dir.clone(),
+            source: SkillSource::Codex,
+        };
+        let mut first = SkillCache::new_with_ttl(vec![root.clone()], Duration::from_secs(60));
+        first.skills_with_dups().expect("scan");
+
+        let mut snap: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&cache_path).unwrap()).unwrap();
+        let written = snap["last_scan"].as_u64().unwrap();
+        snap["last_scan"] = serde_json::json!(written - 50);
+        fs::write(&cache_path, snap.to_string()).unwrap();
+
+        let loaded = SkillCache::new_with_ttl(vec![root], Duration::from_secs(60));
+        assert_eq!(loaded.skills.len(), 1, "snapshot should load");
+        let age = loaded.last_scan.expect("loaded").elapsed();
+        assert!(age >= Duration::from_secs(49), "age was {age:?}");
+    }
+
+    #[test]
+    fn dependency_links_resolve_through_the_canonical_path_map() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _cache_env = set_env_var(
+            "SKRILLS_CACHE_PATH",
+            Some(temp.path().join("c.json").to_str().expect("cache path")),
+        );
+        let root_dir = temp.path().join("skills");
+        write_skill(&root_dir, "beta");
+        let alpha = root_dir.join("alpha");
+        fs::create_dir_all(&alpha).unwrap();
+        fs::write(
+            alpha.join("SKILL.md"),
+            "---\nname: alpha\ndescription: a\n---\nSee [beta](../beta/SKILL.md).\n",
+        )
+        .unwrap();
+        let mut cache = SkillCache::new_with_ttl(
+            vec![SkillRoot {
+                root: root_dir,
+                source: SkillSource::Codex,
+            }],
+            Duration::from_secs(60),
+        );
+        let deps = cache
+            .get_direct_dependencies("skill://skrills/codex/alpha/SKILL.md")
+            .expect("deps");
+        assert_eq!(
+            deps,
+            vec!["skill://skrills/codex/beta/SKILL.md".to_string()]
+        );
     }
 
     #[test]

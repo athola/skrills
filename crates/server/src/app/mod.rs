@@ -83,8 +83,10 @@ pub fn start_fs_watcher(service: &SkillService) -> Result<RecommendedWatcher> {
 
     let mut watcher = RecommendedWatcher::new(
         move |event: notify::Result<notify::Event>| {
-            if event.is_ok() {
-                cache.lock().invalidate();
+            if let Ok(event) = event {
+                if invalidates_cache(&event.kind) {
+                    cache.lock().invalidate();
+                }
             }
         },
         NotifyConfig::default(),
@@ -97,6 +99,24 @@ pub fn start_fs_watcher(service: &SkillService) -> Result<RecommendedWatcher> {
     }
 
     Ok(watcher)
+}
+
+/// Whether a filesystem event can change what discovery finds.
+///
+/// Reads are excluded: inotify reports every open and access, including the
+/// server's own discovery walk, so reacting to them would invalidate the
+/// cache the walk just built.
+#[cfg(feature = "watch")]
+pub(crate) fn invalidates_cache(kind: &notify::EventKind) -> bool {
+    use notify::event::{MetadataKind, ModifyKind};
+    use notify::EventKind;
+    match kind {
+        EventKind::Access(_) => false,
+        EventKind::Modify(ModifyKind::Metadata(MetadataKind::AccessTime)) => false,
+        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => true,
+        // Unknown kinds may hide a real change; rescanning is the safe side.
+        EventKind::Any | EventKind::Other => true,
+    }
 }
 
 /// Placeholder for the disabled 'watch' feature.
@@ -234,6 +254,7 @@ impl SkillService {
         let mut with_errors = 0usize;
         let mut with_warnings = 0usize;
 
+        let mut skill_count = 0usize;
         for meta in &skills {
             // Read skill content (before counting to ensure consistent totals)
             let content = match fs::read_to_string(&meta.path) {
@@ -245,6 +266,7 @@ impl SkillService {
             };
 
             // Count by source (after successful read for consistent totals)
+            skill_count += 1;
             *by_source
                 .entry(meta.source.label().to_string())
                 .or_default() += 1;
@@ -322,7 +344,6 @@ impl SkillService {
             })
             .collect();
 
-        let skill_count = skills.len();
         let avg_deps = if skill_count > 0 {
             total_dependencies as f64 / skill_count as f64
         } else {

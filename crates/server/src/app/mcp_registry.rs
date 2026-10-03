@@ -28,6 +28,12 @@ impl ToolCategory {
     /// Infer category from a tool name using prefix/substring matching.
     pub(crate) fn from_tool_name(name: &str) -> Option<Self> {
         match name {
+            // Intelligence tools whose names would otherwise hit the
+            // validation prefix rule below.
+            "analyze-project-context"
+            | "create-skill"
+            | "search-skills-github"
+            | "search-skills-fuzzy" => Some(Self::Intelligence),
             n if n.starts_with("sync") => Some(Self::Sync),
             n if n.starts_with("validate") || n.starts_with("analyze") => Some(Self::Validation),
             n if n.contains("trace") || n.contains("instrument") => Some(Self::Trace),
@@ -75,7 +81,7 @@ pub(crate) fn build_mcp_registry() -> McpToolRegistry {
         });
     }
 
-    // Register gateway tools themselves
+    // Register gateway tools themselves (they are categorized explicitly).
     for tool in crate::mcp_gateway::mcp_gateway_tools() {
         let schema_json = serde_json::to_string(&tool.input_schema).unwrap_or_default();
         let estimated_tokens = estimate_tokens(&schema_json);
@@ -89,4 +95,29 @@ pub(crate) fn build_mcp_registry() -> McpToolRegistry {
     }
 
     registry
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ToolCategory;
+
+    #[test]
+    fn intelligence_tools_are_not_filed_under_validation() {
+        assert_eq!(
+            ToolCategory::from_tool_name("analyze-project-context"),
+            Some(ToolCategory::Intelligence)
+        );
+        assert_eq!(
+            ToolCategory::from_tool_name("create-skill"),
+            Some(ToolCategory::Intelligence)
+        );
+        assert_eq!(
+            ToolCategory::from_tool_name("analyze-skills"),
+            Some(ToolCategory::Validation)
+        );
+        assert_eq!(
+            ToolCategory::from_tool_name("validate-skills"),
+            Some(ToolCategory::Validation)
+        );
+    }
 }

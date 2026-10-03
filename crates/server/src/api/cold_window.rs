@@ -21,8 +21,9 @@
 //! execution from any string that survived escaping. Two layers; if
 //! either fails we degrade to "broken render", not "remote code
 //! execution".
-
-#![cfg(feature = "http-transport")]
+//!
+//! Compiled only with `http-transport`; the gate is on the `mod` item in
+//! `api/mod.rs`.
 
 use std::convert::Infallible;
 use std::sync::Arc;

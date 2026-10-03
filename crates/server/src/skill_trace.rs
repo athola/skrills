@@ -33,6 +33,8 @@ const IGNORE_DIRS: &[&str] = &[
 
 const TRACE_SKILL_DIR: &str = "skrills-skill-trace";
 const PROBE_SKILL_DIR: &str = "skrills-skill-probe";
+/// Start of the marker line `enable_trace` appends to each skill.
+const MARKER_PREFIX: &str = "<!-- skrills-skill-id:";
 
 /// Returns an actionable hint based on the I/O error kind.
 #[must_use]
@@ -548,7 +550,87 @@ pub fn disable_trace(home: &Path, target: ClientTarget, dry_run: bool) -> Result
         }
     }
 
+    // Undo instrumentation in every root `enable_trace` may have touched,
+    // whichever include flags it was given.
+    let every_root = TraceInstallOptions {
+        include_cache: true,
+        include_marketplace: true,
+        include_mirror: true,
+        include_agent: true,
+        ..Default::default()
+    };
+    for (_, root) in roots_for_target(home, target, &every_root) {
+        strip_markers_in_root(&root, dry_run, &mut removed)?;
+    }
+
     Ok(removed)
+}
+
+fn is_marker_line(line: &str) -> bool {
+    let line = line.trim();
+    line.starts_with(MARKER_PREFIX) && line.ends_with("-->")
+}
+
+/// `content` without the lines `enable_trace` appended, or `None` when it has
+/// none.
+fn strip_markers(content: &str) -> Option<String> {
+    if !content.lines().any(is_marker_line) {
+        return None;
+    }
+    let mut out = String::with_capacity(content.len());
+    for line in content.split_inclusive('\n') {
+        if !is_marker_line(line) {
+            out.push_str(line);
+        }
+    }
+    Some(out)
+}
+
+/// Remove trace markers from every skill under `root`, and delete a
+/// `.md.bak` only when it is identical to the restored file (so it holds
+/// nothing the user could lose).
+fn strip_markers_in_root(root: &Path, dry_run: bool, report: &mut Vec<String>) -> Result<()> {
+    if !root.exists() {
+        return Ok(());
+    }
+    const MAX_DEPTH: usize = 20;
+    let walker = WalkDir::new(root)
+        .min_depth(1)
+        .max_depth(MAX_DEPTH)
+        .into_iter()
+        .filter_entry(|e| {
+            !(e.file_type().is_dir() && IGNORE_DIRS.iter().any(|d| e.file_name() == *d))
+        });
+    for entry in walker.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if !entry.file_type().is_file() || !is_skill_file(path) {
+            continue;
+        }
+        let Ok(content) = fs::read_to_string(path) else {
+            continue;
+        };
+        let Some(restored) = strip_markers(&content) else {
+            continue;
+        };
+        let backup = path.with_extension("md.bak");
+        let backup_redundant = fs::read_to_string(&backup).is_ok_and(|b| b == restored);
+        if dry_run {
+            report.push(format!("(dry-run) unmark {}", path.display()));
+            if backup_redundant {
+                report.push(format!("(dry-run) {}", backup.display()));
+            }
+            continue;
+        }
+        fs::write(path, &restored)
+            .with_context(|| format!("failed to write {}", path.display()))?;
+        report.push(format!("unmarked {}", path.display()));
+        if backup_redundant {
+            fs::remove_file(&backup)
+                .with_context(|| format!("failed to remove {}", backup.display()))?;
+            report.push(backup.display().to_string());
+        }
+    }
+    Ok(())
 }
 
 pub fn status(
@@ -741,5 +823,56 @@ mod tests {
         let st = status(home, ClientTarget::Claude, &TraceInstallOptions::default()).unwrap();
         assert_eq!(st.skill_files_found, 2);
         assert_eq!(st.instrumented_markers_found, 1);
+    }
+
+    #[test]
+    fn disable_trace_removes_markers_and_redundant_backups() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path();
+        let original = "---\nname: alpha\ndescription: a\n---\nbody\n";
+        write_skill(&home.join(".codex/skills"), "alpha", original);
+        write_skill(&home.join(".codex/skills"), "beta", original);
+        write_skill(&home.join(".codex/skills-mirror"), "gamma", original);
+
+        let opts = TraceInstallOptions {
+            instrument: true,
+            backup: true,
+            dry_run: false,
+            include_mirror: true,
+            include_agent: false,
+            include_cache: false,
+            include_marketplace: false,
+        };
+        enable_trace(home, ClientTarget::Codex, opts).unwrap();
+
+        // The user edits beta after enabling; its backup is no longer a
+        // copy of the restored file and must be kept.
+        let beta = home.join(".codex/skills/beta/SKILL.md");
+        let edited = fs::read_to_string(&beta).unwrap() + "user note\n";
+        fs::write(&beta, &edited).unwrap();
+
+        let dry = disable_trace(home, ClientTarget::Codex, true).unwrap();
+        assert!(dry.iter().any(|r| r.contains("unmark")), "{dry:?}");
+        assert!(
+            fs::read_to_string(home.join(".codex/skills/alpha/SKILL.md"))
+                .unwrap()
+                .contains(MARKER_PREFIX)
+        );
+
+        disable_trace(home, ClientTarget::Codex, false).unwrap();
+
+        let alpha = home.join(".codex/skills/alpha/SKILL.md");
+        assert_eq!(fs::read_to_string(&alpha).unwrap(), original);
+        assert!(!alpha.with_extension("md.bak").exists());
+        let gamma = home.join(".codex/skills-mirror/gamma/SKILL.md");
+        assert_eq!(fs::read_to_string(&gamma).unwrap(), original);
+
+        let beta_now = fs::read_to_string(&beta).unwrap();
+        assert!(!beta_now.contains(MARKER_PREFIX), "{beta_now}");
+        assert!(beta_now.ends_with("user note\n"));
+        assert!(beta.with_extension("md.bak").exists());
+
+        assert!(!home.join(".codex/skills").join(TRACE_SKILL_DIR).exists());
+        assert!(!home.join(".codex/skills").join(PROBE_SKILL_DIR).exists());
     }
 }

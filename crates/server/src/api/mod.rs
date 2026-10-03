@@ -25,14 +25,41 @@ pub use skills::skills_routes;
 /// Replace the user's home directory prefix with `~` to avoid leaking absolute paths.
 #[cfg(feature = "http-transport")]
 pub(crate) fn strip_home_prefix(path: &std::path::Path) -> String {
-    let display = path.display().to_string();
-    dirs::home_dir()
-        .and_then(|home| {
-            display
-                .strip_prefix(&home.display().to_string())
-                .map(|rest| format!("~{rest}"))
-        })
-        .unwrap_or(display)
+    match dirs::home_dir() {
+        Some(home) => replace_home(path, &home),
+        None => path.display().to_string(),
+    }
+}
+
+/// Render `path` with a leading `home` replaced by `~`, matching whole path
+/// components so `/home/al` does not swallow part of `/home/alice`.
+#[cfg(feature = "http-transport")]
+fn replace_home(path: &std::path::Path, home: &std::path::Path) -> String {
+    match path.strip_prefix(home) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Ok(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
+        Err(_) => path.display().to_string(),
+    }
+}
+
+#[cfg(all(test, feature = "http-transport"))]
+mod tests {
+    use super::replace_home;
+    use std::path::Path;
+
+    #[test]
+    fn home_prefix_matches_whole_components() {
+        let home = Path::new("/home/al");
+        assert_eq!(
+            replace_home(Path::new("/home/alice/skills/x"), home),
+            "/home/alice/skills/x"
+        );
+        assert_eq!(
+            replace_home(Path::new("/home/al/skills/x"), home),
+            format!("~{}skills/x", std::path::MAIN_SEPARATOR)
+        );
+        assert_eq!(replace_home(home, home), "~");
+    }
 }
 
 #[cfg(feature = "http-transport")]

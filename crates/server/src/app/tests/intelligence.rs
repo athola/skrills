@@ -809,3 +809,219 @@ fn test_create_skill_empirical_without_sessions() {
         "Expected errors or preview mode for empirical without sessions"
     );
 }
+
+// -------------------------------------------------------------------------
+// Gap detection and limits (SA-38, SA-39)
+// -------------------------------------------------------------------------
+
+/// SA-38: short language names match whole tokens only.
+#[test]
+fn name_covers_matches_whole_tokens() {
+    use super::super::intelligence::name_covers;
+    assert!(name_covers("go-testing/SKILL.md", "go"));
+    assert!(!name_covers("django-patterns/SKILL.md", "go"));
+    assert!(!name_covers("rust-best-practices/SKILL.md", "r"));
+    assert!(!name_covers("commit-helper/SKILL.md", "c"));
+    assert!(name_covers("c-best-practices/SKILL.md", "c++"));
+    assert!(name_covers("next-js-patterns/SKILL.md", "next.js"));
+    assert!(!name_covers("anything", ""));
+}
+
+/// SA-39: caller-supplied limits are bounded.
+#[test]
+fn clamp_limit_bounds_requests() {
+    use super::super::intelligence::clamp_limit;
+    assert_eq!(clamp_limit(None, 10), 10);
+    assert_eq!(clamp_limit(Some(0), 10), 1);
+    assert_eq!(clamp_limit(Some(5), 10), 5);
+    assert_eq!(clamp_limit(Some(u64::MAX), 10), 100);
+}
+
+/// SA-38: a project whose primary language is Go reports a gap even when
+/// an unrelated skill name contains the letters "go".
+#[test]
+fn suggest_new_skills_does_not_count_substring_matches() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let _cache = crate::test_support::set_env_var(
+        "SKRILLS_CACHE_PATH",
+        Some(temp.path().join("cache.json").to_str().unwrap()),
+    );
+    let project = temp.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    for i in 0..5 {
+        fs::write(project.join(format!("m{i}.go")), "package main\n").unwrap();
+    }
+    let skills_dir = temp.path().join("skills");
+    let skill = skills_dir.join("django-patterns");
+    fs::create_dir_all(&skill).unwrap();
+    fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: django-patterns\ndescription: d\n---\n",
+    )
+    .unwrap();
+    let service = service_with_claude_root(&skills_dir);
+
+    let result = service
+        .suggest_new_skills_tool(
+            json!({"project_dir": project.display().to_string()})
+                .as_object()
+                .cloned()
+                .unwrap(),
+        )
+        .unwrap();
+    let structured = result.structured_content.unwrap();
+    let suggestions = structured["suggestions"].as_array().unwrap();
+    assert!(
+        suggestions.iter().any(|s| s == "go-best-practices"),
+        "{structured}"
+    );
+}
+
+// -------------------------------------------------------------------------
+// create_skill target_dir containment (SA-1)
+// -------------------------------------------------------------------------
+
+fn run_mcp_create_skill(
+    service: &SkillService,
+    args: serde_json::Map<String, serde_json::Value>,
+) -> Result<rmcp::model::CallToolResult> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(service.create_skill_tool(args))
+}
+
+fn service_with_claude_root(skills_dir: &std::path::Path) -> SkillService {
+    let roots = vec![SkillRoot {
+        root: skills_dir.to_path_buf(),
+        source: skrills_discovery::SkillSource::Claude,
+    }];
+    SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap()
+}
+
+/// GIVEN an MCP caller
+/// WHEN create-skill names a target_dir outside every writable skill root
+/// THEN the request is refused before any generation runs
+#[test]
+fn mcp_create_skill_rejects_target_dir_outside_skill_roots() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let _cache = crate::test_support::set_env_var(
+        "SKRILLS_CACHE_PATH",
+        Some(temp.path().join("cache.json").to_str().unwrap()),
+    );
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).unwrap();
+    let service = service_with_claude_root(&skills_dir);
+
+    let outside = temp.path().join("autostart");
+    for target in [
+        outside.display().to_string(),
+        skills_dir.join("../autostart").display().to_string(),
+    ] {
+        let args = json!({
+            "name": "evil",
+            "description": "x",
+            "method": "github",
+            "target_dir": target,
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+        let err = run_mcp_create_skill(&service, args)
+            .expect_err("target_dir outside the skill roots must be refused");
+        assert!(
+            err.to_string().contains("target_dir"),
+            "unexpected error for {target}: {err}"
+        );
+    }
+    assert!(
+        !outside.exists(),
+        "nothing may be created outside the roots"
+    );
+}
+
+/// GIVEN an MCP caller
+/// WHEN target_dir sits inside a writable skill root
+/// THEN containment does not refuse it
+#[test]
+fn mcp_create_skill_accepts_target_dir_inside_skill_root() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let _home = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+    let _cache = crate::test_support::set_env_var(
+        "SKRILLS_CACHE_PATH",
+        Some(temp.path().join("cache.json").to_str().unwrap()),
+    );
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).unwrap();
+    let service = service_with_claude_root(&skills_dir);
+
+    let args = json!({
+        "name": "ok-skill",
+        "description": "x",
+        "method": "empirical",
+        "dry_run": true,
+        "target_dir": skills_dir.join("nested").display().to_string(),
+    })
+    .as_object()
+    .cloned()
+    .unwrap();
+    run_mcp_create_skill(&service, args).expect("target_dir inside a root is allowed");
+}
+
+/// GIVEN the CLI wrapper
+/// WHEN the user passes an explicit --target-dir anywhere
+/// THEN containment does not apply (the user chose the path)
+#[test]
+fn cli_create_skill_keeps_arbitrary_target_dir() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let _home = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+    let _cache = crate::test_support::set_env_var(
+        "SKRILLS_CACHE_PATH",
+        Some(temp.path().join("cache.json").to_str().unwrap()),
+    );
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).unwrap();
+    let service = service_with_claude_root(&skills_dir);
+
+    let args = json!({
+        "name": "cli-skill",
+        "description": "x",
+        "method": "empirical",
+        "dry_run": true,
+        "target_dir": temp.path().join("elsewhere").display().to_string(),
+    })
+    .as_object()
+    .cloned()
+    .unwrap();
+    service
+        .create_skill_tool_sync(args)
+        .expect("CLI target_dir is trusted");
+}
+
+/// GIVEN an existing SKILL.md
+/// WHEN a generated skill is written to the same place
+/// THEN the write is refused and the file is untouched
+#[test]
+fn write_generated_skill_refuses_to_overwrite() {
+    let temp = tempdir().unwrap();
+    let skill_dir = temp.path().join("demo");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(skill_dir.join("SKILL.md"), "mine").unwrap();
+
+    let err = super::super::intelligence::write_generated_skill(temp.path(), "demo", "theirs")
+        .expect_err("existing SKILL.md must not be overwritten");
+    assert!(err.to_string().contains("already exists"), "{err}");
+    assert_eq!(
+        fs::read_to_string(skill_dir.join("SKILL.md")).unwrap(),
+        "mine"
+    );
+
+    let written =
+        super::super::intelligence::write_generated_skill(temp.path(), "fresh", "body").unwrap();
+    assert_eq!(fs::read_to_string(written).unwrap(), "body");
+}

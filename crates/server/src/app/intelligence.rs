@@ -37,7 +37,7 @@ impl SkillService {
         let uri = args.get("uri").and_then(|v| v.as_str());
         let prompt = args.get("prompt").and_then(|v| v.as_str());
         let project_dir = args.get("project_dir").and_then(|v| v.as_str());
-        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+        let limit = clamp_limit(args.get("limit").and_then(|v| v.as_u64()), 10);
         let include_usage = args
             .get("include_usage")
             .and_then(|v| v.as_bool())
@@ -415,7 +415,7 @@ impl SkillService {
         for (lang, info) in &profile.languages {
             if info.primary {
                 let lang_lower = lang.to_lowercase();
-                let has_lang_skill = skill_names.iter().any(|n| n.contains(&lang_lower));
+                let has_lang_skill = skill_names.iter().any(|n| name_covers(n, &lang_lower));
                 if !has_lang_skill {
                     gaps.push(SkillGap {
                         area: format!("{} development", lang),
@@ -433,7 +433,7 @@ impl SkillService {
         // Check for framework-specific skill gaps
         for framework in &profile.frameworks {
             let fw_lower = framework.to_lowercase();
-            let has_fw_skill = skill_names.iter().any(|n| n.contains(&fw_lower));
+            let has_fw_skill = skill_names.iter().any(|n| name_covers(n, &fw_lower));
             if !has_fw_skill {
                 gaps.push(SkillGap {
                     area: format!("{} framework", framework),
@@ -447,7 +447,7 @@ impl SkillService {
         // Check for focus area gaps
         for area in &focus_areas {
             let area_lower = area.to_lowercase();
-            let has_area_skill = skill_names.iter().any(|n| n.contains(&area_lower));
+            let has_area_skill = skill_names.iter().any(|n| name_covers(n, &area_lower));
             if !has_area_skill {
                 gaps.push(SkillGap {
                     area: area.clone(),
@@ -472,7 +472,7 @@ impl SkillService {
             }
             let has_area_skill = skill_names
                 .iter()
-                .any(|n| patterns.iter().any(|p| n.contains(p)));
+                .any(|n| name_tokens(n).any(|token| patterns.iter().any(|p| token.starts_with(p))));
             if !has_area_skill {
                 // Check if this area is relevant to the project
                 let relevant = profile
@@ -508,9 +508,42 @@ impl SkillService {
     }
 
     /// Create a new skill via GitHub search, LLM generation, or both.
+    ///
+    /// This is the MCP entry point: the arguments come from a client, so an
+    /// explicit `target_dir` must resolve inside one of the writable skill roots.
     pub(crate) async fn create_skill_tool(
         &self,
         args: JsonMap<String, Value>,
+    ) -> Result<CallToolResult> {
+        self.create_skill(args, TargetDirPolicy::WithinSkillRoots)
+            .await
+    }
+
+    /// Writable skill roots: user-owned skill directories, not plugin caches,
+    /// marketplace checkouts or the Codex mirror.
+    fn writable_skill_roots(&self) -> Vec<PathBuf> {
+        use skrills_discovery::SkillSource;
+        self.cache
+            .lock()
+            .roots()
+            .iter()
+            .filter(|r| {
+                !matches!(
+                    r.source,
+                    SkillSource::Marketplace
+                        | SkillSource::Cache
+                        | SkillSource::Mirror
+                        | SkillSource::Cursor
+                )
+            })
+            .map(|r| r.root.clone())
+            .collect()
+    }
+
+    async fn create_skill(
+        &self,
+        args: JsonMap<String, Value>,
+        policy: TargetDirPolicy,
     ) -> Result<CallToolResult> {
         use skrills_intelligence::{
             analyze_project, generate_skill_with_llm, search_github_skills, CreateSkillRequest,
@@ -562,6 +595,13 @@ impl SkillService {
         let method: CreationMethod = method_str
             .parse()
             .map_err(|err| anyhow!("Invalid creation method: {}", err))?;
+
+        // Check containment before any search or generation runs, so a refused
+        // request costs nothing and creates nothing.
+        if let (Some(dir), TargetDirPolicy::WithinSkillRoots) = (target_dir, policy) {
+            let expanded = PathBuf::from(shellexpand::tilde(dir).as_ref());
+            ensure_within_roots(&expanded, &self.writable_skill_roots())?;
+        }
 
         // Build request with optional project context
         let mut request = CreateSkillRequest::new(name, description);
@@ -644,16 +684,18 @@ impl SkillService {
                         // Empirical generation requires BehavioralEvent data with tool
                         // sequences and file accesses. Currently we only have basic
                         // SkillUsageEvent data. This feature is in preview.
+                        // Nothing is generated on this path, so report it as
+                        // not done rather than as a success.
                         let preview_msg = format!(
-                            "Found {} session events. Empirical skill generation from \
-                             behavioral patterns is in preview. Use --method llm or \
-                             --method both for production use.",
+                            "Found {} session events, but empirical skill generation \
+                             is not implemented yet; no skill was created. Use \
+                             --method llm or --method both.",
                             events.len()
                         );
-                        return Ok(tool_ok(
+                        return Ok(tool_err(
                             vec![ContentBlock::text(&preview_msg)],
                             Some(json!({
-                                "success": true,
+                                "success": false,
                                 "method": method_str,
                                 "name": name,
                                 "dry_run": dry_run,
@@ -699,19 +741,9 @@ impl SkillService {
                 let target = target_dir
                     .map(|s| shellexpand::tilde(s).to_string())
                     .unwrap_or_else(|| default_skill_target_dir().display().to_string());
-                let skill_dir = PathBuf::from(&target).join(name);
-                if let Err(e) = fs::create_dir_all(&skill_dir) {
-                    errors.push(format!("Failed to create directory: {}", e));
-                } else {
-                    let skill_path = skill_dir.join("SKILL.md");
-                    match fs::write(&skill_path, content) {
-                        Ok(()) => {
-                            written_path = Some(skill_path.display().to_string());
-                        }
-                        Err(e) => {
-                            errors.push(format!("Failed to write skill file: {}", e));
-                        }
-                    }
+                match write_generated_skill(Path::new(&target), name, content) {
+                    Ok(path) => written_path = Some(path.display().to_string()),
+                    Err(e) => errors.push(format!("{e:#}")),
                 }
             }
         }
@@ -767,7 +799,7 @@ impl SkillService {
             .get("query")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("Missing required parameter: query"))?;
-        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+        let limit = clamp_limit(args.get("limit").and_then(|v| v.as_u64()), 10);
 
         let results = search_github_skills(query, limit).await?;
 
@@ -797,11 +829,14 @@ impl SkillService {
     }
 
     /// Sync wrapper for create-skill in CLI contexts.
+    ///
+    /// The CLI user chose `target_dir` on the command line, so it is not
+    /// confined to the skill roots the way the MCP tool's argument is.
     pub fn create_skill_tool_sync(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        rt.block_on(self.create_skill_tool(args))
+        rt.block_on(self.create_skill(args, TargetDirPolicy::Trusted))
     }
 
     /// Sync wrapper for search-skills-github in CLI contexts.
@@ -942,6 +977,132 @@ impl SkillService {
 // -------------------------------------------------------------------------
 // Helper Functions
 // -------------------------------------------------------------------------
+
+/// Upper bound for caller-supplied result limits.
+const MAX_RESULT_LIMIT: u64 = 100;
+
+/// Clamp a caller-supplied `limit` to `1..=MAX_RESULT_LIMIT`.
+pub(crate) fn clamp_limit(requested: Option<u64>, default: usize) -> usize {
+    requested.map_or(default, |l| l.clamp(1, MAX_RESULT_LIMIT) as usize)
+}
+
+/// Lower-case alphanumeric tokens of a skill name (`rust-best-practices/SKILL.md`
+/// gives `rust`, `best`, `practices`, `skill`, `md`).
+fn name_tokens(name: &str) -> impl Iterator<Item = String> + '_ {
+    name.split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_ascii_lowercase())
+}
+
+/// Whether a skill name covers `term` as whole tokens, so "go" matches
+/// `go-testing` but not `django`, and "c" does not match every name with a c.
+pub(crate) fn name_covers(name: &str, term: &str) -> bool {
+    let wanted: Vec<String> = name_tokens(term).collect();
+    if wanted.is_empty() {
+        return false;
+    }
+    let have: HashSet<String> = name_tokens(name).collect();
+    wanted.iter().all(|t| have.contains(t))
+}
+
+/// Who supplied `target_dir`, and therefore how far it is trusted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TargetDirPolicy {
+    /// An MCP client: the directory must sit inside a writable skill root.
+    WithinSkillRoots,
+    /// The local CLI user: the directory is used as given.
+    Trusted,
+}
+
+/// Resolve `path` to an absolute, symlink-free form even when its tail does
+/// not exist yet: canonicalize the longest existing ancestor and append the
+/// rest. Any `..` component is refused rather than interpreted.
+fn resolve_for_containment(path: &Path) -> Result<PathBuf> {
+    use std::path::Component;
+
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(anyhow!("'..' is not allowed"));
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut existing = absolute.as_path();
+    let mut tail = Vec::new();
+    while !existing.exists() {
+        let Some(name) = existing.file_name() else {
+            break;
+        };
+        tail.push(name.to_os_string());
+        existing = existing
+            .parent()
+            .ok_or_else(|| anyhow!("target_dir has no existing ancestor"))?;
+    }
+    let mut resolved = existing.canonicalize()?;
+    for part in tail.into_iter().rev() {
+        resolved.push(part);
+    }
+    Ok(resolved)
+}
+
+/// Refuse a `target_dir` that does not resolve inside one of `roots`.
+fn ensure_within_roots(target: &Path, roots: &[PathBuf]) -> Result<()> {
+    let resolved = resolve_for_containment(target)
+        .map_err(|e| anyhow!("Invalid target_dir {}: {e}", target.display()))?;
+    let inside = roots.iter().any(|root| {
+        resolve_for_containment(root)
+            .map(|r| resolved.starts_with(r))
+            .unwrap_or(false)
+    });
+    if inside {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "Invalid target_dir {}: it must be inside a skill directory ({})",
+            target.display(),
+            roots
+                .iter()
+                .map(|r| r.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    }
+}
+
+/// Write `content` to `<target>/<name>/SKILL.md`, refusing to replace an
+/// existing file.
+pub(crate) fn write_generated_skill(target: &Path, name: &str, content: &str) -> Result<PathBuf> {
+    use anyhow::Context;
+    use std::io::Write;
+
+    let skill_dir = target.join(name);
+    fs::create_dir_all(&skill_dir)
+        .with_context(|| format!("Failed to create directory {}", skill_dir.display()))?;
+    let skill_path = skill_dir.join("SKILL.md");
+    let mut file = match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&skill_path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(anyhow!(
+                "{} already exists; remove it first to regenerate the skill",
+                skill_path.display()
+            ));
+        }
+        Err(e) => {
+            return Err(anyhow::Error::new(e).context(format!(
+                "Failed to write skill file {}",
+                skill_path.display()
+            )));
+        }
+    };
+    file.write_all(content.as_bytes())
+        .with_context(|| format!("Failed to write skill file {}", skill_path.display()))?;
+    Ok(skill_path)
+}
 
 pub(crate) fn select_default_skill_root(
     home: &Path,
