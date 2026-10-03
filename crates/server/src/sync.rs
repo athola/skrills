@@ -174,18 +174,40 @@ fn should_copy_by_content(src: &Path, dest: &Path) -> Result<bool> {
     }
 }
 
+/// Most files a single SKILL.md may pull in through its links, counting both
+/// the markdown it follows and every file it copies.
+const MAX_LINKED_FILES: usize = 200;
+
+/// Largest linked file that is mirrored; bigger targets are skipped.
+const MAX_LINKED_FILE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Mirrors the files a SKILL.md links to, following links in linked markdown.
+///
+/// A target is mirrored only when it is a regular file whose canonical path
+/// stays under `source_root`, so a link through a symlinked directory cannot
+/// reach outside it. `max_files` bounds every file processed and
+/// `max_file_bytes` skips oversized targets.
 fn mirror_linked_files_transitively(
     source_root: &Path,
     dest_root: &Path,
     skill_md_src: &Path,
     max_files: usize,
+    max_file_bytes: u64,
 ) -> Result<()> {
+    let Ok(root_canon) = source_root.canonicalize() else {
+        return Ok(());
+    };
     let mut visited: HashSet<PathBuf> = HashSet::new();
+    let mut copied: HashSet<PathBuf> = HashSet::new();
     let mut queue: VecDeque<PathBuf> = VecDeque::new();
     queue.push_back(skill_md_src.to_path_buf());
 
+    let budget_left = |visited: &HashSet<PathBuf>, copied: &HashSet<PathBuf>| {
+        visited.len() + copied.len() < max_files
+    };
+
     while let Some(path) = queue.pop_front() {
-        if visited.len() >= max_files {
+        if !budget_left(&visited, &copied) {
             break;
         }
         if !visited.insert(path.clone()) {
@@ -208,6 +230,9 @@ fn mirror_linked_files_transitively(
             None => continue,
         };
         for t in targets {
+            if !budget_left(&visited, &copied) {
+                break;
+            }
             let (abs, rel) = match resolve_under_root(source_root, base_dir, &t) {
                 Some(v) => v,
                 None => continue,
@@ -219,7 +244,31 @@ fn mirror_linked_files_transitively(
             if meta.file_type().is_symlink() || !meta.is_file() {
                 continue;
             }
-            let _ = mirror_path_if_changed(&abs, dest_root, &rel)?;
+            // A symlinked directory earlier in the path passes the checks
+            // above; the canonical path shows where the file really lives.
+            match abs.canonicalize() {
+                Ok(canon) if canon.starts_with(&root_canon) => {}
+                _ => {
+                    tracing::warn!(
+                        target: "skrills::sync",
+                        link = %abs.display(),
+                        "Skipped a linked file that resolves outside the mirror source"
+                    );
+                    continue;
+                }
+            }
+            if meta.len() > max_file_bytes {
+                tracing::warn!(
+                    target: "skrills::sync",
+                    link = %abs.display(),
+                    bytes = meta.len(),
+                    "Skipped a linked file over the size limit"
+                );
+                continue;
+            }
+            if copied.insert(abs.clone()) {
+                let _ = mirror_path_if_changed(&abs, dest_root, &rel)?;
+            }
             if abs.extension().is_some_and(|e| e == "md") {
                 queue.push_back(abs);
             }
@@ -249,8 +298,8 @@ pub fn mirror_source_root(home: &Path) -> PathBuf {
 
 /// Synchronizes only SKILL.md-based skills into a Codex skills root (e.g., `~/.codex/skills`).
 ///
-/// This is intentionally stricter than `sync_from_claude`:
-/// - copies only `SKILL.md` files (plus their adjacent supporting files)
+/// - copies only `SKILL.md` files, their adjacent supporting files and the
+///   files they link to under `claude_root`
 /// - skips hidden entries and symlinks to match Codex discovery behavior
 pub fn sync_skills_only_from_claude(
     claude_root: &Path,
@@ -340,131 +389,13 @@ pub fn sync_skills_only_from_claude(
         }
 
         // Mirror linked files referenced from this SKILL.md (transitively).
-        mirror_linked_files_transitively(claude_root, codex_skills_root, &src, 200)?;
-    }
-    Ok(report)
-}
-
-/// Synchronizes skills from Claude's directory to a mirror directory.
-///
-/// Walks through the source directory and copies `SKILL.md` files to the destination,
-/// only copying if the file is new or has changed (based on hash comparison).
-#[cfg(test)]
-pub(crate) fn sync_from_claude(
-    claude_root: &Path,
-    mirror_root: &Path,
-    include_marketplace: bool,
-) -> Result<MirrorReport> {
-    let mut report = MirrorReport::default();
-    if !claude_root.exists() {
-        return Ok(report);
-    }
-    // Dedicated agents mirror alongside skills mirror (e.g., ~/.codex/agents).
-    let agents_root = mirror_root
-        .parent()
-        .map(|p| p.join("agents"))
-        .unwrap_or_else(|| mirror_root.join("../agents"));
-    // Track directories we've already mirrored to avoid repeated work when multiple SKILLs exist.
-    let mut mirrored_dirs: HashSet<PathBuf> = HashSet::new();
-    for entry in WalkDir::new(claude_root)
-        .min_depth(1)
-        .max_depth(20)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| {
-            if e.file_type().is_symlink() {
-                return false;
-            }
-            let rel = e.path().strip_prefix(claude_root).unwrap_or(e.path());
-            if is_hidden_rel_path(rel) {
-                return false;
-            }
-            true
-        })
-        .filter_map(|e| e.ok())
-    {
-        // Skip marketplace if requested
-        if !include_marketplace {
-            let path = entry.path();
-            if let Ok(rel) = path.strip_prefix(claude_root) {
-                if rel.starts_with("plugins/marketplaces") {
-                    continue;
-                }
-            }
-        }
-
-        if entry.file_type().is_symlink() {
-            continue;
-        }
-        let is_skill = is_skill_file(&entry);
-        let is_agent = entry.file_type().is_file()
-            && entry.path().extension().is_some_and(|ext| ext == "md")
-            && entry
-                .path()
-                .ancestors()
-                .any(|p| p.file_name().is_some_and(|n| n == "agents"));
-
-        if !is_skill && !is_agent {
-            continue;
-        }
-        let src = entry.into_path();
-        let rel = relative_path(claude_root, &src).unwrap_or_else(|| src.clone());
-        // Target in dedicated agents mirror if this is an agent.
-        let copied_to_mirror = mirror_path_if_changed(&src, mirror_root, &rel)?;
-        if is_agent {
-            let _ = mirror_path_if_changed(&src, &agents_root, &rel)?;
-        }
-        if is_skill {
-            if copied_to_mirror {
-                report.copied += 1;
-                // Store the relative path (directory name) for display
-                if let Some(rel_path) = relative_path(claude_root, &src) {
-                    let skill_name = rel_path
-                        .parent()
-                        .and_then(|p| p.to_str())
-                        .unwrap_or_else(|| rel_path.to_str().unwrap_or("unknown"));
-                    report.copied_names.push(skill_name.to_string());
-                }
-            } else {
-                report.skipped += 1;
-            }
-        }
-
-        // Mirror additional supporting files that live alongside the SKILL.md (even if SKILL.md is unchanged).
-        if is_skill {
-            if let Some(skill_dir) = src.parent() {
-                let rel_dir = relative_path(claude_root, skill_dir)
-                    .unwrap_or_else(|| skill_dir.to_path_buf());
-                if mirrored_dirs.insert(rel_dir.clone()) {
-                    for file in WalkDir::new(skill_dir)
-                        .min_depth(1)
-                        .max_depth(20)
-                        .follow_links(false)
-                        .into_iter()
-                        .filter_map(|e| e.ok())
-                    {
-                        if file.file_type().is_symlink() {
-                            continue;
-                        }
-                        if file.file_type().is_dir() {
-                            continue;
-                        }
-                        let file_src = file.path();
-                        // Skip SKILL.md itself; already handled above
-                        if file_src.file_name().is_some_and(|n| n == "SKILL.md") {
-                            continue;
-                        }
-                        let file_rel = relative_path(claude_root, file_src)
-                            .unwrap_or_else(|| file_src.to_path_buf());
-                        if is_hidden_rel_path(&file_rel) {
-                            continue;
-                        }
-                        let _ = mirror_path_if_changed(file_src, mirror_root, &file_rel)?;
-                    }
-                }
-            }
-            mirror_linked_files_transitively(claude_root, mirror_root, &src, 200)?;
-        }
+        mirror_linked_files_transitively(
+            claude_root,
+            codex_skills_root,
+            &src,
+            MAX_LINKED_FILES,
+            MAX_LINKED_FILE_BYTES,
+        )?;
     }
     Ok(report)
 }
@@ -555,36 +486,74 @@ pub(crate) fn sync_agents_with_assets(
     };
 
     let content = if path.exists() {
-        let mut existing = fs::read_to_string(path)?;
-        if let (Some(start), Some(end)) = (
-            existing.find(AGENTS_SECTION_START),
-            existing.find(AGENTS_SECTION_END),
-        ) {
-            let end_idx = end + AGENTS_SECTION_END.len();
-            existing.replace_range(start..end_idx, &section);
-            existing
-        } else {
-            format!("{existing}\n\n{section}")
+        let existing = fs::read_to_string(path)?;
+        match replace_marked_section(
+            &existing,
+            AGENTS_SECTION_START,
+            AGENTS_SECTION_END,
+            &section,
+            path,
+        )? {
+            Some(updated) => updated,
+            None => format!("{existing}\n\n{section}"),
         }
     } else {
         format!("{AGENTS_TEXT}\n\n{section}")
     };
 
-    let mut final_content = content;
-    if let Some(start) = final_content.find(AGENTS_AGENT_SECTION_START) {
-        if let Some(end) = final_content.find(AGENTS_AGENT_SECTION_END) {
-            let end_idx = end + AGENTS_AGENT_SECTION_END.len();
-            final_content.replace_range(start..end_idx, &agents_section);
-        } else {
-            final_content.push_str(&format!("\n{}", agents_section));
-        }
-    } else if !agents_section.is_empty() {
-        final_content.push('\n');
-        final_content.push_str(&agents_section);
-    }
+    let final_content = match replace_marked_section(
+        &content,
+        AGENTS_AGENT_SECTION_START,
+        AGENTS_AGENT_SECTION_END,
+        &agents_section,
+        path,
+    )? {
+        Some(updated) => updated,
+        None if agents_section.is_empty() => content,
+        None => format!("{content}\n{agents_section}"),
+    };
 
     fs::write(path, final_content)?;
     Ok(())
+}
+
+/// Replaces the text from `start` through the first `end` after it.
+///
+/// Returns `Ok(None)` when `start` is absent, and an error naming `path` when
+/// `start` has no `end` after it, so a hand-edited file is never rewritten
+/// around misordered markers.
+fn replace_marked_section(
+    text: &str,
+    start: &str,
+    end: &str,
+    replacement: &str,
+    path: &Path,
+) -> Result<Option<String>> {
+    let Some(start_idx) = text.find(start) else {
+        if text.contains(end) {
+            return Err(anyhow::anyhow!(
+                "{} has `{end}` without `{start}`; fix the markers and rerun",
+                path.display()
+            ));
+        }
+        return Ok(None);
+    };
+    let Some(end_offset) = text[start_idx..].find(end) else {
+        return Err(anyhow::anyhow!(
+            "{} has `{start}` with no `{end}` after it; fix the markers and rerun",
+            path.display()
+        ));
+    };
+    let end_idx = start_idx + end_offset + end.len();
+    // Swallow the newline after the end marker; `replacement` brings its own.
+    let end_idx = if text[end_idx..].starts_with('\n') && replacement.ends_with('\n') {
+        end_idx + 1
+    } else {
+        end_idx
+    };
+    let mut updated = text.to_string();
+    updated.replace_range(start_idx..end_idx, replacement);
+    Ok(Some(updated))
 }
 
 /// Synchronizes agent markdown files from Claude into the Codex agents root (e.g. `~/.codex/agents`).
@@ -758,29 +727,27 @@ mod tests {
     }
 
     #[test]
-    fn sync_from_claude_copies_agents_into_codex_agents_dir() -> Result<()> {
+    fn sync_agents_copies_agents_into_codex_agents_dir() -> Result<()> {
         let tmp = tempdir()?;
         let claude_root = tmp.path().join("claude");
-        let mirror_root = tmp.path().join("mirror");
 
         let agent_dir = claude_root.join("plugins/cache/tool/agents");
         fs::create_dir_all(&agent_dir)?;
         let agent_src = agent_dir.join("helper.md");
         fs::write(&agent_src, "agent content")?;
 
-        let _report = sync_from_claude(&claude_root, &mirror_root, false)?;
+        let agents_root = tmp.path().join("agents");
+        let report = sync_agents_only_from_claude(&claude_root, &agents_root, false)?;
+        assert_eq!(report.copied, 1);
 
-        let agent_dest = mirror_root
-            .parent()
-            .unwrap()
-            .join("agents/plugins/cache/tool/agents/helper.md");
+        let agent_dest = agents_root.join("plugins/cache/tool/agents/helper.md");
         assert!(agent_dest.exists());
         assert_eq!(fs::read_to_string(agent_dest)?, "agent content");
         Ok(())
     }
 
     #[test]
-    fn sync_from_claude_copies_and_updates() -> Result<()> {
+    fn sync_skills_copies_and_updates() -> Result<()> {
         let tmp = tempdir()?;
         let claude_root = tmp.path().join("claude");
         let mirror_root = tmp.path().join("mirror");
@@ -788,21 +755,21 @@ mod tests {
         let skill_src = claude_root.join("nested/SKILL.md");
         fs::write(&skill_src, "v1")?;
 
-        let report1 = sync_from_claude(&claude_root, &mirror_root, false)?;
+        let report1 = sync_skills_only_from_claude(&claude_root, &mirror_root, false)?;
         assert_eq!(report1.copied, 1);
         let dest = mirror_root.join("nested/SKILL.md");
         assert_eq!(fs::read_to_string(&dest)?, "v1");
 
         std::thread::sleep(Duration::from_millis(5));
         fs::write(&skill_src, "v2")?;
-        let report2 = sync_from_claude(&claude_root, &mirror_root, false)?;
+        let report2 = sync_skills_only_from_claude(&claude_root, &mirror_root, false)?;
         assert_eq!(report2.copied, 1);
         assert_eq!(fs::read_to_string(&dest)?, "v2");
         Ok(())
     }
 
     #[test]
-    fn sync_from_claude_reaches_marketplace_depth() -> Result<()> {
+    fn sync_skills_reaches_marketplace_depth() -> Result<()> {
         let tmp = tempdir()?;
         let claude_root = tmp.path().join("claude");
         let mirror_root = tmp.path().join("mirror");
@@ -813,7 +780,7 @@ mod tests {
         let skill_src = deep_dir.join("SKILL.md");
         fs::write(&skill_src, "deep")?;
 
-        let report = sync_from_claude(&claude_root, &mirror_root, true)?;
+        let report = sync_skills_only_from_claude(&claude_root, &mirror_root, true)?;
         assert_eq!(report.copied, 1);
         let dest = mirror_root.join("plugins/marketplaces/a/plugins/b/skills/c/SKILL.md");
         assert_eq!(fs::read_to_string(&dest)?, "deep");
@@ -821,7 +788,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_from_claude_ignores_marketplace_when_disabled() -> Result<()> {
+    fn sync_skills_ignores_marketplace_when_disabled() -> Result<()> {
         let tmp = tempdir()?;
         let claude_root = tmp.path().join("claude");
         let mirror_root = tmp.path().join("mirror");
@@ -831,13 +798,13 @@ mod tests {
         let skill_src = deep_dir.join("SKILL.md");
         fs::write(&skill_src, "deep")?;
 
-        let report = sync_from_claude(&claude_root, &mirror_root, false)?;
+        let report = sync_skills_only_from_claude(&claude_root, &mirror_root, false)?;
         assert_eq!(report.copied, 0);
         Ok(())
     }
 
     #[test]
-    fn sync_from_claude_reaches_cache_depth() -> Result<()> {
+    fn sync_skills_reaches_cache_depth() -> Result<()> {
         let tmp = tempdir()?;
         let claude_root = tmp.path().join("claude");
         let mirror_root = tmp.path().join("mirror");
@@ -848,7 +815,7 @@ mod tests {
         let skill_src = deep_dir.join("SKILL.md");
         fs::write(&skill_src, "cache-skill")?;
 
-        let report = sync_from_claude(&claude_root, &mirror_root, false)?;
+        let report = sync_skills_only_from_claude(&claude_root, &mirror_root, false)?;
         assert_eq!(report.copied, 1);
         let dest = mirror_root.join("plugins/cache/x/y/z/skills/foo/SKILL.md");
         assert_eq!(fs::read_to_string(&dest)?, "cache-skill");
@@ -856,7 +823,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_from_claude_copies_supporting_files() -> Result<()> {
+    fn sync_skills_copies_supporting_files() -> Result<()> {
         let tmp = tempdir()?;
         let claude_root = tmp.path().join("claude");
         let mirror_root = tmp.path().join("mirror");
@@ -867,7 +834,7 @@ mod tests {
         fs::write(skill_dir.join("helper.py"), "print('hi')")?;
         fs::write(skill_dir.join("config.json"), "{\"ok\":true}")?;
 
-        let report = sync_from_claude(&claude_root, &mirror_root, false)?;
+        let report = sync_skills_only_from_claude(&claude_root, &mirror_root, false)?;
         assert_eq!(report.copied, 1);
 
         let helper_dest = mirror_root.join("plugins/cache/tool/skills/demo/helper.py");
@@ -880,7 +847,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_from_claude_updates_supporting_files_even_if_skill_unchanged() -> Result<()> {
+    fn sync_skills_updates_supporting_files_even_if_skill_unchanged() -> Result<()> {
         let tmp = tempdir()?;
         let claude_root = tmp.path().join("claude");
         let mirror_root = tmp.path().join("mirror");
@@ -890,7 +857,7 @@ mod tests {
         fs::write(skill_dir.join("SKILL.md"), "skill")?;
         fs::write(skill_dir.join("helper.py"), "print('v1')")?;
 
-        let _ = sync_from_claude(&claude_root, &mirror_root, false)?;
+        let _ = sync_skills_only_from_claude(&claude_root, &mirror_root, false)?;
         let helper_dest = mirror_root.join("plugins/cache/tool/skills/demo/helper.py");
         assert_eq!(fs::read_to_string(&helper_dest)?, "print('v1')");
 
@@ -898,7 +865,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(5));
         fs::write(skill_dir.join("helper.py"), "print('v2')")?;
 
-        let report = sync_from_claude(&claude_root, &mirror_root, false)?;
+        let report = sync_skills_only_from_claude(&claude_root, &mirror_root, false)?;
         assert_eq!(report.copied, 0, "SKILL.md unchanged");
         assert_eq!(fs::read_to_string(&helper_dest)?, "print('v2')");
         Ok(())
@@ -940,6 +907,129 @@ mod tests {
             codex_root.join("skills/shared/common.md").exists(),
             "Expected linked cross-directory file copied"
         );
+        Ok(())
+    }
+
+    /// Only the last path component was checked for a symlink, so a link
+    /// through a symlinked directory reached files outside the source root.
+    #[cfg(unix)]
+    #[test]
+    fn linked_files_through_a_symlinked_directory_are_not_mirrored() -> Result<()> {
+        let tmp = tempdir()?;
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(&outside)?;
+        fs::write(outside.join("id_rsa"), "PRIVATE KEY")?;
+
+        let claude_root = tmp.path().join("claude");
+        let skill_dir = claude_root.join("skills/demo");
+        fs::create_dir_all(&skill_dir)?;
+        std::os::unix::fs::symlink(&outside, claude_root.join("skills/docs"))?;
+        fs::write(skill_dir.join("SKILL.md"), "See [key](../docs/id_rsa)\n")?;
+
+        let codex_root = tmp.path().join("codex-skills");
+        sync_skills_only_from_claude(&claude_root, &codex_root, false)?;
+
+        assert!(codex_root.join("skills/demo/SKILL.md").exists());
+        assert!(
+            !codex_root.join("skills/docs/id_rsa").exists(),
+            "a file reached through a symlinked directory was mirrored"
+        );
+        Ok(())
+    }
+
+    /// The cap bounded only parsed markdown, so any number of non-markdown
+    /// targets were copied.
+    #[test]
+    fn linked_file_cap_counts_every_copied_target() -> Result<()> {
+        let tmp = tempdir()?;
+        let claude_root = tmp.path().join("claude");
+        let skill_dir = claude_root.join("skills/demo");
+        fs::create_dir_all(&skill_dir)?;
+        let mut links = String::new();
+        for i in 0..10 {
+            fs::write(skill_dir.join(format!("f{i}.txt")), "x")?;
+            links.push_str(&format!("[f{i}](f{i}.txt)\n"));
+        }
+        let skill = skill_dir.join("SKILL.md");
+        fs::write(&skill, links)?;
+
+        let codex_root = tmp.path().join("codex-skills");
+        mirror_linked_files_transitively(&claude_root, &codex_root, &skill, 4, u64::MAX)?;
+
+        let copied = fs::read_dir(codex_root.join("skills/demo"))?.count();
+        assert!(copied <= 4, "copied {copied} files past a cap of 4");
+        Ok(())
+    }
+
+    #[test]
+    fn linked_files_over_the_size_limit_are_skipped() -> Result<()> {
+        let tmp = tempdir()?;
+        let claude_root = tmp.path().join("claude");
+        let skill_dir = claude_root.join("skills/demo");
+        fs::create_dir_all(&skill_dir)?;
+        fs::write(skill_dir.join("big.bin"), vec![0u8; 64])?;
+        fs::write(skill_dir.join("small.txt"), "ok")?;
+        let skill = skill_dir.join("SKILL.md");
+        fs::write(&skill, "[big](big.bin) [small](small.txt)\n")?;
+
+        let codex_root = tmp.path().join("codex-skills");
+        mirror_linked_files_transitively(&claude_root, &codex_root, &skill, 200, 16)?;
+
+        assert!(codex_root.join("skills/demo/small.txt").exists());
+        assert!(!codex_root.join("skills/demo/big.bin").exists());
+        Ok(())
+    }
+
+    /// Markers found independently were passed to `replace_range` in the
+    /// wrong order and panicked.
+    #[test]
+    fn sync_agents_rejects_an_end_marker_above_the_start_marker() -> Result<()> {
+        let tmp = tempdir()?;
+        let path = tmp.path().join("AGENTS.md");
+        let original = format!("# T\n{AGENTS_SECTION_END}\nnotes\n{AGENTS_SECTION_START}\nold\n");
+        fs::write(&path, &original)?;
+
+        let err = sync_agents_with_assets(&path, &[], &[]).expect_err("misordered markers");
+        assert!(err.to_string().contains("AGENTS.md"), "{err}");
+        assert_eq!(fs::read_to_string(&path)?, original);
+        Ok(())
+    }
+
+    #[test]
+    fn sync_agents_rejects_a_misordered_agents_section() -> Result<()> {
+        let tmp = tempdir()?;
+        let path = tmp.path().join("AGENTS.md");
+        let original =
+            format!("# T\n{AGENTS_AGENT_SECTION_END}\n{AGENTS_AGENT_SECTION_START}\nold\n");
+        fs::write(&path, &original)?;
+        let agents = vec![AgentMeta {
+            name: "a.md".into(),
+            path: tmp.path().join("a.md"),
+            source: SkillSource::Cache,
+            root: tmp.path().to_path_buf(),
+            hash: "1".into(),
+        }];
+
+        assert!(sync_agents_with_assets(&path, &[], &agents).is_err());
+        assert_eq!(fs::read_to_string(&path)?, original);
+        Ok(())
+    }
+
+    #[test]
+    fn sync_agents_replaces_an_existing_section_in_place() -> Result<()> {
+        let tmp = tempdir()?;
+        let path = tmp.path().join("AGENTS.md");
+        fs::write(
+            &path,
+            format!("# T\n{AGENTS_SECTION_START}\nold\n{AGENTS_SECTION_END}\n# Tail\n"),
+        )?;
+
+        sync_agents_with_assets(&path, &[], &[])?;
+
+        let text = fs::read_to_string(&path)?;
+        assert!(!text.contains("\nold\n"), "{text}");
+        assert_eq!(text.matches(AGENTS_SECTION_START).count(), 1);
+        assert!(text.ends_with("# Tail\n"), "{text}");
         Ok(())
     }
 }

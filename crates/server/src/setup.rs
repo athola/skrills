@@ -6,6 +6,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use inquire::{Confirm, Select, Text};
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -91,7 +92,8 @@ pub struct SetupConfig {
 /// Checks if skrills is already set up for a given client.
 ///
 /// Setup is detected by checking for MCP server registration:
-/// - Claude: .mcp.json containing "skrills" entry
+/// - Claude: `mcpServers.skrills` in ~/.claude.json (user scope), or the
+///   fallback ~/.claude/.mcp.json containing a "skrills" entry
 /// - Codex: config.toml containing [mcp_servers.skrills]
 /// - Copilot: mcp_servers.json containing "skrills" entry
 pub fn is_setup(client: Client) -> Result<bool> {
@@ -99,7 +101,13 @@ pub fn is_setup(client: Client) -> Result<bool> {
 
     match client {
         Client::Claude => {
-            // Check for MCP registration in .mcp.json
+            // `claude mcp add --scope user` records the server in ~/.claude.json.
+            if let Some(home) = dirs::home_dir() {
+                if claude_json_has_skrills(&home) {
+                    return Ok(true);
+                }
+            }
+            // Fallback registration written when the CLI is unavailable.
             let mcp_path = base_dir.join(".mcp.json");
             if mcp_path.exists() {
                 if let Ok(content) = fs::read_to_string(&mcp_path) {
@@ -375,17 +383,37 @@ pub fn run_setup(config: SetupConfig) -> Result<()> {
     Ok(())
 }
 
-/// Sets up Claude Code integration.
-fn setup_claude(bin_dir: &Path, current_exe: &Path) -> Result<()> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow!("Cannot determine home directory"))?;
-    let base_dir = home.join(".claude");
+/// What a `claude` CLI invocation reported.
+pub(crate) struct ClaudeCliOutcome {
+    success: bool,
+    stderr: String,
+}
 
-    // Create directories
+/// Runs the `claude` CLI. Injected so tests never touch the developer's real
+/// Claude configuration.
+type ClaudeCli<'a> = &'a dyn Fn(&[&OsStr]) -> std::io::Result<ClaudeCliOutcome>;
+
+fn run_claude_cli(args: &[&OsStr]) -> std::io::Result<ClaudeCliOutcome> {
+    let output = Command::new("claude").args(args).output()?;
+    Ok(ClaudeCliOutcome {
+        success: output.status.success(),
+        stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+    })
+}
+
+/// Path of the installed `skrills` binary inside `bin_dir`, with the
+/// platform's executable suffix (`.exe` on Windows).
+pub(crate) fn installed_binary_path(bin_dir: &Path) -> PathBuf {
+    bin_dir.join(format!("skrills{}", std::env::consts::EXE_SUFFIX))
+}
+
+/// Copies the running binary into `bin_dir` (and `~/.cargo/bin`) and returns
+/// the installed path.
+fn install_binary(bin_dir: &Path, current_exe: &Path) -> Result<PathBuf> {
     fs::create_dir_all(bin_dir)
         .context(format!("Failed to create directory: {}", bin_dir.display()))?;
 
-    // Copy/link binary to bin_dir
-    let target_bin = bin_dir.join("skrills");
+    let target_bin = installed_binary_path(bin_dir);
     if target_bin != current_exe {
         fs::copy(current_exe, &target_bin)
             .context(format!("Failed to copy binary to {}", target_bin.display()))?;
@@ -401,66 +429,168 @@ fn setup_claude(bin_dir: &Path, current_exe: &Path) -> Result<()> {
         println!("  Installed binary to {}", target_bin.display());
     }
 
-    // Also copy to ~/.cargo/bin for consistency
     copy_to_cargo_bin(&target_bin)?;
+    Ok(target_bin)
+}
 
-    // Register MCP server
-    register_claude_mcp(&base_dir, &target_bin)?;
-
-    Ok(())
+/// Sets up Claude Code integration.
+fn setup_claude(bin_dir: &Path, current_exe: &Path) -> Result<()> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow!("Cannot determine home directory"))?;
+    let target_bin = install_binary(bin_dir, current_exe)?;
+    register_claude_mcp(&home.join(".claude"), &target_bin)
 }
 
 /// Registers `skrills` MCP server with Claude Code.
 fn register_claude_mcp(base_dir: &Path, bin_path: &Path) -> Result<()> {
-    // Try using `claude mcp add` command first
-    if let Ok(output) = Command::new("claude")
-        .args(["mcp", "add", "--transport", "stdio", "skrills", "--"])
-        .arg(bin_path)
-        .arg("serve")
-        .output()
-    {
-        if output.status.success() {
-            println!("  Registered MCP server with 'claude mcp add'");
+    register_claude_mcp_with(base_dir, bin_path, &run_claude_cli)
+}
+
+fn register_claude_mcp_with(base_dir: &Path, bin_path: &Path, claude: ClaudeCli) -> Result<()> {
+    // User scope, so the registration lands in ~/.claude.json where
+    // `is_setup` looks for it. The CLI default (local scope) registers the
+    // server for the current directory only.
+    let args: [&OsStr; 9] = [
+        "mcp".as_ref(),
+        "add".as_ref(),
+        "--scope".as_ref(),
+        "user".as_ref(),
+        "--transport".as_ref(),
+        "stdio".as_ref(),
+        "skrills".as_ref(),
+        "--".as_ref(),
+        bin_path.as_os_str(),
+    ];
+    let mut with_serve: Vec<&OsStr> = args.to_vec();
+    with_serve.push("serve".as_ref());
+    match claude(&with_serve) {
+        Ok(outcome) if outcome.success => {
+            println!("  Registered MCP server with 'claude mcp add --scope user'");
             return Ok(());
         }
-    }
-
-    // Fallback: manually edit .mcp.json
-    println!("  'claude' command not available, manually updating .mcp.json");
-
-    let mcp_path = base_dir.join(".mcp.json");
-    let mut mcp_config: serde_json::Value = if mcp_path.exists() {
-        let content = fs::read_to_string(&mcp_path)?;
-        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-
-    // Add skrills server
-    if let Some(servers) = mcp_config.get_mut("mcpServers") {
-        if let Some(obj) = servers.as_object_mut() {
-            obj.insert(
-                "skrills".to_string(),
-                serde_json::json!({
-                    "type": "stdio",
-                    "command": bin_path.display().to_string(),
-                    "args": ["serve"]
-                }),
+        Ok(outcome) => {
+            println!(
+                "  'claude mcp add' failed ({}), manually updating .mcp.json",
+                if outcome.stderr.is_empty() {
+                    "no error output"
+                } else {
+                    outcome.stderr.as_str()
+                }
             );
         }
-    } else {
-        mcp_config["mcpServers"] = serde_json::json!({
-            "skrills": {
-                "type": "stdio",
-                "command": bin_path.display().to_string(),
-                "args": ["serve"]
-            }
-        });
+        Err(e) => {
+            println!("  'claude' command not available ({e}), manually updating .mcp.json");
+        }
     }
 
-    fs::write(&mcp_path, serde_json::to_string_pretty(&mcp_config)?)?;
+    let mcp_path = base_dir.join(".mcp.json");
+    let mut mcp_config = read_mcp_json(&mcp_path)?;
+    add_mcp_server_entry(&mut mcp_config, bin_path)?;
+    write_mcp_json(&mcp_path, &mcp_config)?;
     println!("  Updated {}", mcp_path.display());
 
+    Ok(())
+}
+
+/// Reads a client's MCP JSON config as an object.
+///
+/// A missing file is an empty object. A file that does not parse, or whose
+/// root is not an object, is an error: rewriting it would delete every other
+/// server the user registered.
+pub(crate) fn read_mcp_json(path: &Path) -> Result<serde_json::Map<String, serde_json::Value>> {
+    if !path.exists() {
+        return Ok(serde_json::Map::new());
+    }
+    let content =
+        fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&content).with_context(|| {
+        format!(
+            "{} is not valid JSON; fix or move it, then rerun setup (it was left unchanged)",
+            path.display()
+        )
+    })?;
+    match value {
+        serde_json::Value::Object(map) => Ok(map),
+        _ => Err(anyhow!(
+            "{} does not hold a JSON object; fix or move it, then rerun setup (it was left unchanged)",
+            path.display()
+        )),
+    }
+}
+
+fn write_mcp_json(path: &Path, config: &serde_json::Map<String, serde_json::Value>) -> Result<()> {
+    fs::write(path, serde_json::to_string_pretty(config)?)
+        .with_context(|| format!("Failed to write {}", path.display()))
+}
+
+/// Inserts (or replaces) the `skrills` entry under `mcpServers`.
+pub(crate) fn add_mcp_server_entry(
+    config: &mut serde_json::Map<String, serde_json::Value>,
+    bin_path: &Path,
+) -> Result<()> {
+    let servers = config
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::json!({}));
+    let servers = servers
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("`mcpServers` is not a JSON object"))?;
+    servers.insert(
+        "skrills".to_string(),
+        serde_json::json!({
+            "type": "stdio",
+            "command": bin_path.display().to_string(),
+            "args": ["serve"]
+        }),
+    );
+    Ok(())
+}
+
+/// Whether `mcpServers.skrills` exists in a parsed MCP config.
+fn has_skrills_entry(config: &serde_json::Map<String, serde_json::Value>) -> bool {
+    config
+        .get("mcpServers")
+        .and_then(|servers| servers.get("skrills"))
+        .is_some()
+}
+
+/// Registers in a JSON MCP config unless already registered.
+fn register_json_mcp(mcp_path: &Path, skrills_bin: &Path) -> Result<()> {
+    let mut mcp_config = read_mcp_json(mcp_path)?;
+    if has_skrills_entry(&mcp_config) {
+        println!("  MCP server already registered in {}", mcp_path.display());
+        return Ok(());
+    }
+    add_mcp_server_entry(&mut mcp_config, skrills_bin)?;
+    write_mcp_json(mcp_path, &mcp_config)?;
+    println!("  Registered MCP server in {}", mcp_path.display());
+    Ok(())
+}
+
+/// Removes `mcpServers.skrills` from a JSON MCP config, dropping an emptied
+/// `mcpServers` key and deleting the file when nothing else is left.
+fn unregister_json_mcp(mcp_path: &Path) -> Result<()> {
+    if !mcp_path.exists() {
+        return Ok(());
+    }
+    let mut mcp_config = read_mcp_json(mcp_path)?;
+    let Some(servers) = mcp_config
+        .get_mut("mcpServers")
+        .and_then(|s| s.as_object_mut())
+    else {
+        return Ok(());
+    };
+    if servers.remove("skrills").is_none() {
+        return Ok(());
+    }
+    if servers.is_empty() {
+        mcp_config.remove("mcpServers");
+    }
+    if mcp_config.is_empty() {
+        fs::remove_file(mcp_path)?;
+        println!("  Removed {}", mcp_path.display());
+    } else {
+        write_mcp_json(mcp_path, &mcp_config)?;
+        println!("  Removed MCP registration from {}", mcp_path.display());
+    }
     Ok(())
 }
 
@@ -468,36 +598,34 @@ fn register_claude_mcp(base_dir: &Path, bin_path: &Path) -> Result<()> {
 fn setup_codex(bin_dir: &Path, current_exe: &Path) -> Result<()> {
     let home = dirs::home_dir().ok_or_else(|| anyhow!("Cannot determine home directory"))?;
     let base_dir = home.join(".codex");
-
-    // Create directories
-    fs::create_dir_all(bin_dir)
-        .context(format!("Failed to create directory: {}", bin_dir.display()))?;
     fs::create_dir_all(&base_dir).context("Failed to create .codex directory")?;
+    let target_bin = install_binary(bin_dir, current_exe)?;
+    register_codex_mcp(&base_dir, &target_bin)
+}
 
-    // Copy/link binary
-    let target_bin = bin_dir.join("skrills");
-    if target_bin != current_exe {
-        fs::copy(current_exe, &target_bin)
-            .context(format!("Failed to copy binary to {}", target_bin.display()))?;
+/// Header of the table setup writes into Codex's config.toml.
+const CODEX_MCP_HEADER: &str = "[mcp_servers.skrills]";
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&target_bin)?.permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&target_bin, perms)?;
-        }
+/// Comment setup writes directly above [`CODEX_MCP_HEADER`].
+const CODEX_MCP_COMMENT: &str = "# Skrills MCP server for skill management";
 
-        println!("  Installed binary to {}", target_bin.display());
-    }
+/// Whether a config.toml line is a table or array-of-tables header.
+fn is_toml_header(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with('[')
+        && trimmed
+            .split('#')
+            .next()
+            .is_some_and(|code| code.trim_end().ends_with(']'))
+}
 
-    // Also copy to ~/.cargo/bin for consistency
-    copy_to_cargo_bin(&target_bin)?;
-
-    // Register MCP server in config.toml
-    register_codex_mcp(&base_dir, &target_bin)?;
-
-    Ok(())
+/// Renders the `[mcp_servers.skrills]` table. The path goes through the TOML
+/// serializer so backslashes and quotes in it are escaped.
+fn codex_mcp_entry(skrills_bin: &Path) -> String {
+    let command = toml::Value::String(skrills_bin.display().to_string());
+    format!(
+        "\n{CODEX_MCP_COMMENT}\n{CODEX_MCP_HEADER}\ncommand = {command}\ntype = \"stdio\"\nargs = [\"serve\"]\n"
+    )
 }
 
 /// Registers `skrills` MCP server in Codex's config.toml.
@@ -512,32 +640,18 @@ fn register_codex_mcp(base_dir: &Path, skrills_bin: &Path) -> Result<()> {
     };
 
     // Check if skrills MCP is already registered
-    if content.contains("[mcp_servers.skrills]") {
+    if content.contains(CODEX_MCP_HEADER) {
         println!("  MCP server already registered in config.toml");
         // Still ensure Codex skills feature flag is enabled.
         ensure_codex_skills_feature_enabled(&config_path)?;
         return Ok(());
     }
 
-    // Build the MCP server entry
-    let bin_path = skrills_bin.display();
-    let mcp_entry = format!(
-        r#"
-# Skrills MCP server for skill management
-[mcp_servers.skrills]
-command = "{bin_path}"
-type = "stdio"
-args = ["serve"]
-"#
-    );
-
-    // Append to config
     if !content.is_empty() && !content.ends_with('\n') {
         content.push('\n');
     }
-    content.push_str(&mcp_entry);
+    content.push_str(&codex_mcp_entry(skrills_bin));
 
-    // Write config
     fs::write(&config_path, content)?;
     println!("  Registered MCP server in {}", config_path.display());
 
@@ -546,34 +660,54 @@ args = ["serve"]
     Ok(())
 }
 
+/// Removes the `[mcp_servers.skrills]` table (with its sub-tables and the
+/// comment setup writes above it) from a config.toml body.
+///
+/// Returns `None` when the table is absent.
+fn remove_codex_mcp_table(content: &str) -> Option<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    let start = lines.iter().position(|l| l.trim() == CODEX_MCP_HEADER)?;
+
+    let in_skrills_table = |line: &str| {
+        let t = line.trim();
+        t == CODEX_MCP_HEADER || t.starts_with("[mcp_servers.skrills.")
+    };
+    let mut end = start + 1;
+    while end < lines.len() && (!is_toml_header(lines[end]) || in_skrills_table(lines[end])) {
+        end += 1;
+    }
+
+    let mut cut_from = start;
+    if cut_from > 0 && lines[cut_from - 1].trim() == CODEX_MCP_COMMENT {
+        cut_from -= 1;
+    }
+    while cut_from > 0 && lines[cut_from - 1].trim().is_empty() {
+        cut_from -= 1;
+    }
+
+    let mut kept: Vec<&str> = lines[..cut_from].to_vec();
+    let rest = &lines[end..];
+    let rest_start = rest.iter().position(|l| !l.trim().is_empty());
+    if let Some(offset) = rest_start {
+        if !kept.is_empty() {
+            kept.push("");
+        }
+        kept.extend_from_slice(&rest[offset..]);
+    }
+    let body = kept.join("\n");
+    let body = body.trim_end();
+    Some(if body.is_empty() {
+        String::new()
+    } else {
+        format!("{body}\n")
+    })
+}
+
 /// Sets up GitHub Copilot integration.
 fn setup_copilot(bin_dir: &Path, current_exe: &Path) -> Result<()> {
     let base_dir = Client::Copilot.base_dir()?;
-
-    // Create directories
-    fs::create_dir_all(bin_dir)
-        .context(format!("Failed to create directory: {}", bin_dir.display()))?;
     fs::create_dir_all(&base_dir).context("Failed to create copilot directory")?;
-
-    // Copy/link binary
-    let target_bin = bin_dir.join("skrills");
-    if target_bin != current_exe {
-        fs::copy(current_exe, &target_bin)
-            .context(format!("Failed to copy binary to {}", target_bin.display()))?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&target_bin)?.permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&target_bin, perms)?;
-        }
-
-        println!("  Installed binary to {}", target_bin.display());
-    }
-
-    // Also copy to ~/.cargo/bin for consistency
-    copy_to_cargo_bin(&target_bin)?;
+    let target_bin = install_binary(bin_dir, current_exe)?;
 
     // Register MCP server in mcp_servers.json
     register_copilot_mcp(&base_dir, &target_bin)?;
@@ -591,133 +725,46 @@ fn setup_copilot(bin_dir: &Path, current_exe: &Path) -> Result<()> {
 /// Sets up Cursor IDE integration.
 fn setup_cursor(bin_dir: &Path, current_exe: &Path) -> Result<()> {
     let base_dir = Client::Cursor.base_dir()?;
-
-    // Create directories
-    fs::create_dir_all(bin_dir)
-        .context(format!("Failed to create directory: {}", bin_dir.display()))?;
     fs::create_dir_all(&base_dir).context("Failed to create .cursor directory")?;
-
-    // Copy/link binary
-    let target_bin = bin_dir.join("skrills");
-    if target_bin != current_exe {
-        fs::copy(current_exe, &target_bin)
-            .context(format!("Failed to copy binary to {}", target_bin.display()))?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&target_bin)?.permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&target_bin, perms)?;
-        }
-
-        println!("  Installed binary to {}", target_bin.display());
-    }
-
-    copy_to_cargo_bin(&target_bin)?;
-
-    // Register MCP server in mcp.json
-    register_cursor_mcp(&base_dir, &target_bin)?;
-
-    Ok(())
+    let target_bin = install_binary(bin_dir, current_exe)?;
+    register_cursor_mcp(&base_dir, &target_bin)
 }
 
 /// Registers `skrills` MCP server in Cursor's mcp.json.
 fn register_cursor_mcp(base_dir: &Path, skrills_bin: &Path) -> Result<()> {
-    let mcp_path = base_dir.join("mcp.json");
-
-    let mut mcp_config: serde_json::Value = if mcp_path.exists() {
-        let content = fs::read_to_string(&mcp_path)?;
-        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-
-    if let Some(servers) = mcp_config.get("mcpServers") {
-        if servers.get("skrills").is_some() {
-            println!("  MCP server already registered in mcp.json");
-            return Ok(());
-        }
-    }
-
-    if let Some(servers) = mcp_config.get_mut("mcpServers") {
-        if let Some(obj) = servers.as_object_mut() {
-            obj.insert(
-                "skrills".to_string(),
-                serde_json::json!({
-                    "type": "stdio",
-                    "command": skrills_bin.display().to_string(),
-                    "args": ["serve"]
-                }),
-            );
-        }
-    } else {
-        mcp_config["mcpServers"] = serde_json::json!({
-            "skrills": {
-                "type": "stdio",
-                "command": skrills_bin.display().to_string(),
-                "args": ["serve"]
-            }
-        });
-    }
-
-    fs::write(&mcp_path, serde_json::to_string_pretty(&mcp_config)?)?;
-    println!("  Registered MCP server in {}", mcp_path.display());
-
-    Ok(())
+    register_json_mcp(&base_dir.join("mcp.json"), skrills_bin)
 }
 
 /// Registers `skrills` MCP server in Copilot's mcp_servers.json.
 fn register_copilot_mcp(base_dir: &Path, skrills_bin: &Path) -> Result<()> {
-    let mcp_path = base_dir.join("mcp_servers.json");
+    register_json_mcp(&base_dir.join("mcp_servers.json"), skrills_bin)
+}
 
-    // Read existing config or create new
-    let mut mcp_config: serde_json::Value = if mcp_path.exists() {
-        let content = fs::read_to_string(&mcp_path)?;
-        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
+/// Whether the `[features]` table already sets `skills = true`, in any of the
+/// forms TOML allows (table, dotted key or inline table).
+fn codex_skills_feature_on(table: &toml::Table) -> bool {
+    table
+        .get("features")
+        .and_then(|f| f.get("skills"))
+        .and_then(|v| v.as_bool())
+        == Some(true)
+}
+
+/// Whether a `[features]`-table line assigns the `skills` key itself, not a
+/// key that merely starts with `skills` such as `skills_dir`.
+fn is_skills_key_line(line: &str) -> bool {
+    let Some((key, _)) = line.split_once('=') else {
+        return false;
     };
-
-    // Check if already registered
-    if let Some(servers) = mcp_config.get("mcpServers") {
-        if servers.get("skrills").is_some() {
-            println!("  MCP server already registered in mcp_servers.json");
-            return Ok(());
-        }
-    }
-
-    // Add skrills server
-    if let Some(servers) = mcp_config.get_mut("mcpServers") {
-        if let Some(obj) = servers.as_object_mut() {
-            obj.insert(
-                "skrills".to_string(),
-                serde_json::json!({
-                    "type": "stdio",
-                    "command": skrills_bin.display().to_string(),
-                    "args": ["serve"]
-                }),
-            );
-        }
-    } else {
-        mcp_config["mcpServers"] = serde_json::json!({
-            "skrills": {
-                "type": "stdio",
-                "command": skrills_bin.display().to_string(),
-                "args": ["serve"]
-            }
-        });
-    }
-
-    fs::write(&mcp_path, serde_json::to_string_pretty(&mcp_config)?)?;
-    println!("  Registered MCP server in {}", mcp_path.display());
-
-    Ok(())
+    let key = key.trim().trim_matches('"').trim_matches('\'');
+    key == "skills"
 }
 
 /// Ensure the experimental Codex skills feature flag is enabled in `config.toml`.
 ///
-/// Codex loads skills only when `[features] skills = true` is set.
+/// Codex loads skills only when `[features] skills = true` is set. The file is
+/// left untouched when the flag is already on, and an edit that would leave a
+/// file Codex cannot parse is refused with an error instead of written.
 pub fn ensure_codex_skills_feature_enabled(config_path: &Path) -> Result<()> {
     let content = if config_path.exists() {
         fs::read_to_string(config_path)?
@@ -725,78 +772,82 @@ pub fn ensure_codex_skills_feature_enabled(config_path: &Path) -> Result<()> {
         String::new()
     };
 
-    fn is_header(line: &str) -> bool {
-        let trimmed = line.trim();
-        trimmed.starts_with('[') && trimmed.ends_with(']') && !trimmed.starts_with("[[")
+    let original: Option<toml::Table> = toml::from_str(&content).ok();
+    if original.as_ref().is_some_and(codex_skills_feature_on) {
+        return Ok(());
     }
 
-    let input_lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+    let input_lines: Vec<&str> = content.lines().collect();
     let mut out: Vec<String> = Vec::with_capacity(input_lines.len() + 4);
-
     let mut found_features = false;
-    let mut ensured = false;
 
     let mut i = 0usize;
     while i < input_lines.len() {
-        let line = &input_lines[i];
+        let line = input_lines[i];
         if line.trim() == "[features]" {
             found_features = true;
-            out.push(line.clone());
+            out.push(line.to_string());
             i += 1;
 
             let mut saw_skills = false;
-            while i < input_lines.len() && !is_header(&input_lines[i]) {
-                let cur = &input_lines[i];
-                let trimmed = cur.trim_start();
-                if trimmed.starts_with("skills") && trimmed.contains('=') {
+            while i < input_lines.len() && !is_toml_header(input_lines[i]) {
+                let cur = input_lines[i];
+                if is_skills_key_line(cur) {
                     saw_skills = true;
-                    let existing = trimmed
-                        .split_once('=')
-                        .map(|(_, v)| v)
-                        .unwrap_or("")
-                        .split('#')
-                        .next()
-                        .unwrap_or("")
-                        .trim();
-                    if existing == "true" {
-                        out.push(cur.clone());
-                    } else {
-                        out.push("skills = true".to_string());
-                        ensured = true;
-                    }
+                    out.push("skills = true".to_string());
                 } else {
-                    out.push(cur.clone());
+                    out.push(cur.to_string());
                 }
                 i += 1;
             }
 
             if !saw_skills {
-                out.push("skills = true".to_string());
-                ensured = true;
+                // Keep the flag next to the header rather than after any
+                // trailing blank lines that separate the next table.
+                let insert_at = out
+                    .iter()
+                    .rposition(|l| !l.trim().is_empty())
+                    .map_or(out.len(), |idx| idx + 1);
+                out.insert(insert_at, "skills = true".to_string());
             }
             continue;
         }
 
-        out.push(line.clone());
+        out.push(line.to_string());
         i += 1;
     }
 
     if !found_features {
-        if !out.is_empty() && !out.last().unwrap().trim().is_empty() {
+        if out.last().is_some_and(|l| !l.trim().is_empty()) {
             out.push(String::new());
         }
         out.push("[features]".to_string());
         out.push("skills = true".to_string());
-        ensured = true;
     }
 
-    if ensured {
-        fs::write(config_path, out.join("\n") + "\n")?;
-        println!(
-            "  Enabled Codex experimental skills feature in {}",
+    let updated = out.join("\n") + "\n";
+    let parsed: toml::Table = toml::from_str(&updated).map_err(|e| {
+        anyhow!(
+            "could not enable `[features] skills = true` in {} without breaking it ({e}); \
+             add it by hand",
             config_path.display()
-        );
+        )
+    })?;
+    if !codex_skills_feature_on(&parsed) {
+        return Err(anyhow!(
+            "could not enable `[features] skills = true` in {}; add it by hand",
+            config_path.display()
+        ));
     }
+
+    fs::write(config_path, updated)?;
+    // Logged rather than printed: this also runs under the MCP stdio
+    // transport, where anything on stdout corrupts the JSON-RPC stream.
+    tracing::debug!(
+        target: "skrills::setup",
+        path = %config_path.display(),
+        "Enabled Codex experimental skills feature"
+    );
     Ok(())
 }
 
@@ -808,7 +859,7 @@ fn copy_to_cargo_bin(source_bin: &Path) -> Result<()> {
     };
 
     let cargo_bin_dir = home.join(".cargo").join("bin");
-    let cargo_bin = cargo_bin_dir.join("skrills");
+    let cargo_bin = installed_binary_path(&cargo_bin_dir);
 
     // Skip if already the same path or cargo bin dir doesn't exist
     if source_bin == cargo_bin || !cargo_bin_dir.exists() {
@@ -828,14 +879,22 @@ fn copy_to_cargo_bin(source_bin: &Path) -> Result<()> {
             }
             println!("  Also installed binary to {}", cargo_bin.display());
         }
-        Err(_) => {
-            // Silently skip if copy fails (e.g., file in use)
+        Err(e) => {
+            // Not fatal (e.g. the file is in use), but say so.
+            println!(
+                "  Note: could not update {} ({e}); it may be out of date",
+                cargo_bin.display()
+            );
         }
     }
     Ok(())
 }
 
 /// Syncs skills to universal ~/.agent/skills directory.
+///
+/// Runs the same in-process skill mirror as `skrills sync`, so only
+/// `SKILL.md` trees (minus hidden files and symlinks) are copied, never the
+/// rest of the mirror source such as credentials or session transcripts.
 fn sync_universal(config: &SetupConfig) -> Result<()> {
     let home = dirs::home_dir().ok_or_else(|| anyhow!("Cannot determine home directory"))?;
     let agent_skills = home.join(".agent/skills");
@@ -862,65 +921,12 @@ fn sync_universal(config: &SetupConfig) -> Result<()> {
     println!("Source: {}", mirror_source.display());
 
     fs::create_dir_all(&agent_skills)?;
+    let report = crate::sync::sync_skills_only_from_claude(&mirror_source, &agent_skills, false)?;
+    println!(
+        "  Sync complete: {} copied, {} unchanged",
+        report.copied, report.skipped
+    );
 
-    // Use the existing sync command if available
-    let skrills_bin = config.bin_dir.join("skrills");
-    if skrills_bin.exists() {
-        println!("  Running skrills sync...");
-        match Command::new(&skrills_bin)
-            .arg("sync")
-            .env("SKRILLS_MIRROR_SOURCE", &mirror_source)
-            .output()
-        {
-            Ok(output) if output.status.success() => {
-                println!("  Sync complete");
-            }
-            Ok(output) => {
-                println!(
-                    "  Warning: skrills sync failed (exit code {:?}), using fallback copy",
-                    output.status.code()
-                );
-                fallback_copy_tree(&mirror_source, &agent_skills)?;
-            }
-            Err(e) => {
-                println!("  Warning: skrills sync error ({}), using fallback copy", e);
-                fallback_copy_tree(&mirror_source, &agent_skills)?;
-            }
-        }
-    } else {
-        // Fallback: manual copy
-        fallback_copy_tree(&mirror_source, &agent_skills)?;
-    }
-
-    Ok(())
-}
-
-/// Fallback: copies skills tree using Rust fs operations.
-fn fallback_copy_tree(src: &Path, dest: &Path) -> Result<()> {
-    use std::fs;
-
-    fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
-        if !dest.exists() {
-            fs::create_dir_all(dest)?;
-        }
-
-        for entry in fs::read_dir(src)? {
-            let entry = entry?;
-            let src_path = entry.path();
-            let dest_path = dest.join(entry.file_name());
-
-            if src_path.is_dir() {
-                copy_dir_recursive(&src_path, &dest_path)?;
-            } else {
-                fs::copy(&src_path, &dest_path)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    copy_dir_recursive(src, dest)?;
-    println!("  Copied skills using fallback copy");
     Ok(())
 }
 
@@ -987,120 +993,141 @@ fn run_uninstall(config: &SetupConfig) -> Result<()> {
 
 /// Uninstalls Claude Code configuration.
 fn uninstall_claude() -> Result<()> {
+    uninstall_claude_with(&run_claude_cli)
+}
+
+fn uninstall_claude_with(claude: ClaudeCli) -> Result<()> {
     let home = dirs::home_dir().ok_or_else(|| anyhow!("Cannot determine home directory"))?;
     let base_dir = home.join(".claude");
 
-    // Remove hook
+    // Remove the hook older releases installed.
     let hook_path = base_dir.join("hooks/prompt.on_user_prompt_submit");
     if hook_path.exists() {
         fs::remove_file(&hook_path)?;
         println!("  Removed hook: {}", hook_path.display());
     }
 
-    // Remove MCP registration
-    let mcp_path = base_dir.join(".mcp.json");
-    if mcp_path.exists() {
-        let content = fs::read_to_string(&mcp_path)?;
-        if let Ok(mut mcp_config) = serde_json::from_str::<serde_json::Value>(&content) {
-            if let Some(servers) = mcp_config.get_mut("mcpServers") {
-                if let Some(obj) = servers.as_object_mut() {
-                    obj.remove("skrills");
-                    fs::write(&mcp_path, serde_json::to_string_pretty(&mcp_config)?)?;
-                    println!("  Removed MCP registration from {}", mcp_path.display());
-                }
+    // Remove the user-scope registration `claude mcp add --scope user` made.
+    if claude_json_has_skrills(&home) {
+        let args: [&OsStr; 5] = [
+            "mcp".as_ref(),
+            "remove".as_ref(),
+            "--scope".as_ref(),
+            "user".as_ref(),
+            "skrills".as_ref(),
+        ];
+        match claude(&args) {
+            Ok(outcome) if outcome.success => {
+                println!("  Removed MCP registration with 'claude mcp remove --scope user'");
             }
+            Ok(outcome) => println!(
+                "  Warning: 'claude mcp remove' failed ({}); run `claude mcp remove --scope user skrills`",
+                outcome.stderr
+            ),
+            Err(e) => println!(
+                "  Warning: 'claude' command not available ({e}); run `claude mcp remove --scope user skrills`"
+            ),
         }
     }
 
-    Ok(())
+    // Remove the fallback registration in ~/.claude/.mcp.json.
+    unregister_json_mcp(&base_dir.join(".mcp.json"))
+}
+
+/// Whether `~/.claude.json` holds a user-scope `skrills` MCP registration.
+fn claude_json_has_skrills(home: &Path) -> bool {
+    fs::read_to_string(home.join(".claude.json"))
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .is_some_and(|value| {
+            value
+                .get("mcpServers")
+                .and_then(|servers| servers.get("skrills"))
+                .is_some()
+        })
+}
+
+/// Removes the text between `start_marker` and the first `end_marker` after
+/// it, markers included. Returns `None` when the pair is absent or the end
+/// marker does not follow the start.
+pub(crate) fn remove_marked_section(
+    content: &str,
+    start_marker: &str,
+    end_marker: &str,
+) -> Option<String> {
+    let start = content.find(start_marker)?;
+    let end = content[start..].find(end_marker)? + start + end_marker.len();
+    let before = content[..start].trim_end();
+    let after = content[end..].trim_start();
+    Some(match (before.is_empty(), after.is_empty()) {
+        (true, _) => after.to_string(),
+        (false, true) => before.to_string(),
+        (false, false) => format!("{before}\n\n{after}"),
+    })
 }
 
 /// Uninstalls Codex configuration.
 fn uninstall_codex() -> Result<()> {
+    use crate::discovery::{
+        AGENTS_AGENT_SECTION_END, AGENTS_AGENT_SECTION_START, AGENTS_SECTION_END,
+        AGENTS_SECTION_START,
+    };
+
     let home = dirs::home_dir().ok_or_else(|| anyhow!("Cannot determine home directory"))?;
     let base_dir = home.join(".codex");
 
-    // Remove skrills integration from AGENTS.md
+    // Remove the sections `skrills sync-agents` writes into AGENTS.md, plus
+    // the marker pair older releases used.
     let agents_path = base_dir.join("AGENTS.md");
-    if agents_path.exists() {
-        if let Ok(content) = fs::read_to_string(&agents_path) {
-            if content.contains("<!-- skrills-integration-start -->") {
-                // Remove the skrills section from AGENTS.md
-                let start_marker = "<!-- skrills-integration-start -->";
-                let end_marker = "<!-- skrills-integration-end -->";
-                if let Some(start) = content.find(start_marker) {
-                    if let Some(end) = content.find(end_marker) {
-                        let end_pos = end + end_marker.len();
-                        let new_content = format!(
-                            "{}{}",
-                            content[..start].trim_end(),
-                            content[end_pos..].trim_start()
-                        );
-                        let new_content = new_content.trim().to_string();
-                        if new_content.is_empty() {
-                            fs::remove_file(&agents_path)?;
-                            println!("  Removed AGENTS.md: {}", agents_path.display());
-                        } else {
-                            fs::write(&agents_path, new_content)?;
-                            println!(
-                                "  Removed skrills integration from AGENTS.md: {}",
-                                agents_path.display()
-                            );
-                        }
-                    }
-                }
+    if let Ok(content) = fs::read_to_string(&agents_path) {
+        let mut updated = content.clone();
+        for (start, end) in [
+            (AGENTS_SECTION_START, AGENTS_SECTION_END),
+            (AGENTS_AGENT_SECTION_START, AGENTS_AGENT_SECTION_END),
+            (
+                "<!-- skrills-integration-start -->",
+                "<!-- skrills-integration-end -->",
+            ),
+        ] {
+            if let Some(next) = remove_marked_section(&updated, start, end) {
+                updated = next;
+            }
+        }
+        if updated != content {
+            if updated.trim().is_empty() {
+                fs::remove_file(&agents_path)?;
+                println!("  Removed AGENTS.md: {}", agents_path.display());
+            } else {
+                fs::write(&agents_path, format!("{}\n", updated.trim_end()))?;
+                println!(
+                    "  Removed skrills sections from AGENTS.md: {}",
+                    agents_path.display()
+                );
             }
         }
     }
 
     // Remove MCP server registration from config.toml
     let config_path = base_dir.join("config.toml");
-    if config_path.exists() {
-        if let Ok(content) = fs::read_to_string(&config_path) {
-            if content.contains("[mcp_servers.skrills]") {
-                // Remove the skrills MCP server section
-                // Find the section start and end
-                if let Some(start) = content.find("# Skrills MCP server") {
-                    // Find next section or end of file
-                    let section_end = content[start..]
-                        .find("\n[")
-                        .map(|pos| start + pos)
-                        .unwrap_or(content.len());
-                    let new_content =
-                        format!("{}{}", content[..start].trim_end(), &content[section_end..])
-                            .trim()
-                            .to_string();
-                    if new_content.is_empty() {
-                        fs::remove_file(&config_path)?;
-                        println!("  Removed config.toml: {}", config_path.display());
-                    } else {
-                        fs::write(&config_path, new_content)?;
-                        println!(
-                            "  Removed skrills MCP server from config.toml: {}",
-                            config_path.display()
-                        );
-                    }
-                } else if let Some(start) = content.find("[mcp_servers.skrills]") {
-                    // Find next section or end of file
-                    let section_end = content[start + 1..]
-                        .find("\n[")
-                        .map(|pos| start + 1 + pos)
-                        .unwrap_or(content.len());
-                    let new_content =
-                        format!("{}{}", content[..start].trim_end(), &content[section_end..])
-                            .trim()
-                            .to_string();
-                    if new_content.is_empty() {
-                        fs::remove_file(&config_path)?;
-                        println!("  Removed config.toml: {}", config_path.display());
-                    } else {
-                        fs::write(&config_path, new_content)?;
-                        println!(
-                            "  Removed skrills MCP server from config.toml: {}",
-                            config_path.display()
-                        );
-                    }
-                }
+    if let Ok(content) = fs::read_to_string(&config_path) {
+        if let Some(new_content) = remove_codex_mcp_table(&content) {
+            if toml::from_str::<toml::Table>(&content).is_ok()
+                && toml::from_str::<toml::Table>(&new_content).is_err()
+            {
+                return Err(anyhow!(
+                    "removing [mcp_servers.skrills] would leave {} unparseable; remove it by hand",
+                    config_path.display()
+                ));
+            }
+            if new_content.trim().is_empty() {
+                fs::remove_file(&config_path)?;
+                println!("  Removed config.toml: {}", config_path.display());
+            } else {
+                fs::write(&config_path, new_content)?;
+                println!(
+                    "  Removed skrills MCP server from config.toml: {}",
+                    config_path.display()
+                );
             }
         }
     }
@@ -1110,78 +1137,12 @@ fn uninstall_codex() -> Result<()> {
 
 /// Uninstalls Copilot configuration.
 fn uninstall_copilot() -> Result<()> {
-    let base_dir = Client::Copilot.base_dir()?;
-
-    // Remove MCP registration from mcp_servers.json
-    let mcp_path = base_dir.join("mcp_servers.json");
-    if mcp_path.exists() {
-        let content = fs::read_to_string(&mcp_path)?;
-        if let Ok(mut mcp_config) = serde_json::from_str::<serde_json::Value>(&content) {
-            if let Some(servers) = mcp_config.get_mut("mcpServers") {
-                if let Some(obj) = servers.as_object_mut() {
-                    if obj.remove("skrills").is_some() {
-                        // Write back the config
-                        if obj.is_empty() {
-                            // If no servers left, remove the mcpServers key entirely
-                            if let Some(root) = mcp_config.as_object_mut() {
-                                root.remove("mcpServers");
-                            }
-                        }
-                        if mcp_config
-                            .as_object()
-                            .map(|o| o.is_empty())
-                            .unwrap_or(false)
-                        {
-                            fs::remove_file(&mcp_path)?;
-                            println!("  Removed mcp_servers.json: {}", mcp_path.display());
-                        } else {
-                            fs::write(&mcp_path, serde_json::to_string_pretty(&mcp_config)?)?;
-                            println!("  Removed MCP registration from {}", mcp_path.display());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(())
+    unregister_json_mcp(&Client::Copilot.base_dir()?.join("mcp_servers.json"))
 }
 
 /// Uninstalls Cursor configuration.
 fn uninstall_cursor() -> Result<()> {
-    let base_dir = Client::Cursor.base_dir()?;
-
-    // Remove MCP registration from mcp.json
-    let mcp_path = base_dir.join("mcp.json");
-    if mcp_path.exists() {
-        let content = fs::read_to_string(&mcp_path)?;
-        if let Ok(mut mcp_config) = serde_json::from_str::<serde_json::Value>(&content) {
-            if let Some(servers) = mcp_config.get_mut("mcpServers") {
-                if let Some(obj) = servers.as_object_mut() {
-                    if obj.remove("skrills").is_some() {
-                        if obj.is_empty() {
-                            if let Some(root) = mcp_config.as_object_mut() {
-                                root.remove("mcpServers");
-                            }
-                        }
-                        if mcp_config
-                            .as_object()
-                            .map(|o| o.is_empty())
-                            .unwrap_or(false)
-                        {
-                            fs::remove_file(&mcp_path)?;
-                            println!("  Removed mcp.json: {}", mcp_path.display());
-                        } else {
-                            fs::write(&mcp_path, serde_json::to_string_pretty(&mcp_config)?)?;
-                            println!("  Removed MCP registration from {}", mcp_path.display());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(())
+    unregister_json_mcp(&Client::Cursor.base_dir()?.join("mcp.json"))
 }
 
 /// Prints next steps after setup.

@@ -16,19 +16,6 @@ use rmcp::model::{Tool, ToolAnnotations};
 use serde_json::{json, Map as JsonMap};
 use std::sync::Arc;
 
-/// Returns an empty object schema for parameterless tools.
-///
-/// Codex CLI expects every tool input_schema to include a JSON Schema "type".
-/// An empty map triggers "missing field `type`" during MCP -> OpenAI conversion,
-/// so explicitly mark parameterless tools as taking an empty object.
-pub(crate) fn empty_schema() -> Arc<JsonMap<String, serde_json::Value>> {
-    let mut schema = JsonMap::new();
-    schema.insert("type".into(), json!("object"));
-    schema.insert("properties".into(), json!({}));
-    schema.insert("additionalProperties".into(), json!(false));
-    Arc::new(schema)
-}
-
 /// Builds a tool with the four fields every definition below sets, so each one
 /// stays a single expression rustfmt can break.
 fn tool(
@@ -42,28 +29,84 @@ fn tool(
         .with_annotations(ToolAnnotations::default())
 }
 
-/// Returns a standard result output schema with success/message/data fields.
-fn result_output_schema() -> Arc<JsonMap<String, serde_json::Value>> {
+/// Input schema for `sync-from-claude`, whose handler reads
+/// `include_marketplace`.
+fn sync_from_claude_input_schema() -> Arc<JsonMap<String, serde_json::Value>> {
     let mut schema = JsonMap::new();
     schema.insert("type".into(), json!("object"));
     schema.insert(
         "properties".into(),
         json!({
-            "success": { "type": "boolean", "description": "Whether the operation succeeded" },
-            "message": { "type": "string", "description": "Human-readable result message" },
-            "data": { "type": "object", "description": "Operation-specific result data" }
+            "include_marketplace": {
+                "type": "boolean",
+                "default": false,
+                "description": "Also copy skills under ~/.claude/plugins/marketplaces"
+            }
         }),
     );
-    schema.insert("required".into(), json!(["success"]));
+    schema.insert("additionalProperties".into(), json!(false));
     Arc::new(schema)
 }
 
-/// Returns an array output schema for list operations.
-fn array_output_schema(item_desc: &str) -> Arc<JsonMap<String, serde_json::Value>> {
+/// Output schema for `sync-from-claude`: the copy report plus priority
+/// metadata, matching the handler's structured content.
+fn sync_from_claude_output_schema() -> Arc<JsonMap<String, serde_json::Value>> {
     let mut schema = JsonMap::new();
-    schema.insert("type".into(), json!("array"));
-    schema.insert("items".into(), json!({ "type": "object" }));
-    schema.insert("description".into(), json!(item_desc));
+    schema.insert("type".into(), json!("object"));
+    schema.insert(
+        "properties".into(),
+        json!({
+            "report": {
+                "type": "object",
+                "properties": {
+                    "copied": { "type": "integer", "description": "SKILL.md files copied or updated" },
+                    "skipped": { "type": "integer", "description": "SKILL.md files already up to date" },
+                    "synced": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Skills that were copied"
+                    }
+                },
+                "required": ["copied", "skipped", "synced"]
+            },
+            "_meta": {
+                "type": "object",
+                "properties": {
+                    "priority": { "type": "array", "items": { "type": "string" } },
+                    "priority_rank_by_source": { "type": "object" }
+                }
+            }
+        }),
+    );
+    schema.insert("required".into(), json!(["report"]));
+    Arc::new(schema)
+}
+
+/// Output schema for `validate-skills`, matching the handler's structured
+/// content: a summary object with one entry per validated skill.
+fn validate_skills_output_schema() -> Arc<JsonMap<String, serde_json::Value>> {
+    let mut schema = JsonMap::new();
+    schema.insert("type".into(), json!("object"));
+    schema.insert(
+        "properties".into(),
+        json!({
+            "total": { "type": "integer", "description": "Number of skills reported" },
+            "target": { "type": "string", "description": "Validation target used" },
+            "autofix": { "type": "boolean" },
+            "autofixed": { "type": "integer", "description": "Skills changed by autofix" },
+            "results": {
+                "type": "array",
+                "items": { "type": "object" },
+                "description": "Validation results per skill"
+            },
+            "check_dependencies": { "type": "boolean" },
+            "total_dependency_issues": { "type": "integer" }
+        }),
+    );
+    schema.insert(
+        "required".into(),
+        json!(["total", "target", "autofix", "autofixed", "results"]),
+    );
     Arc::new(schema)
 }
 
@@ -103,7 +146,6 @@ fn sync_schema() -> Arc<JsonMap<String, serde_json::Value>> {
 /// Tools: sync-from-claude, sync-from-copilot, sync-to-copilot, sync-skills,
 /// sync-commands, sync-mcp-servers, sync-preferences, sync-all, sync-status
 pub(crate) fn sync_tools() -> Vec<Tool> {
-    let schema_empty = empty_schema();
     let sync_schema = sync_schema();
 
     vec![
@@ -111,9 +153,9 @@ pub(crate) fn sync_tools() -> Vec<Tool> {
             "sync-from-claude",
             "Copy ~/.claude skills into ~/.codex",
             "Copy SKILL.md files from ~/.claude into ~/.codex/skills (Codex discovery root)",
-            schema_empty.clone(),
+            sync_from_claude_input_schema(),
         )
-        .with_raw_output_schema(result_output_schema()),
+        .with_raw_output_schema(sync_from_claude_output_schema()),
         tool(
             "sync-from-copilot",
             "Sync from GitHub Copilot CLI",
@@ -227,7 +269,7 @@ pub(crate) fn validation_tools() -> Vec<Tool> {
                 schema
             }),
         )
-        .with_raw_output_schema(array_output_schema("Validation results per skill")),
+        .with_raw_output_schema(validate_skills_output_schema()),
         tool(
             "analyze-skills",
             "Analyze skills for token usage and optimization",
@@ -1063,11 +1105,17 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_schema_has_required_fields() {
-        let schema = empty_schema();
-        assert_eq!(schema.get("type").unwrap(), "object");
-        assert!(schema.contains_key("properties"));
-        assert!(schema.contains_key("additionalProperties"));
+    fn every_input_schema_declares_an_object_type() {
+        // Codex rejects a tool whose input schema has no `type` during its
+        // MCP -> OpenAI conversion ("missing field `type`").
+        for tool in all_tools() {
+            assert_eq!(
+                tool.input_schema.get("type").and_then(|t| t.as_str()),
+                Some("object"),
+                "{} input schema lacks type: object",
+                tool.name
+            );
+        }
     }
 
     /// The builder rewrite defaults every optional field to `None`, so a

@@ -34,7 +34,7 @@
 //! cache_ttl_ms = 5000
 //! ```
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -155,8 +155,10 @@ pub fn load_config() -> Result<Option<Config>> {
         return Ok(None);
     }
 
-    let content = std::fs::read_to_string(&path)?;
-    let config: Config = toml::from_str(&content)?;
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let config: Config =
+        toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
 
     tracing::debug!(
         target: "skrills::config",
@@ -165,6 +167,21 @@ pub fn load_config() -> Result<Option<Config>> {
     );
 
     Ok(Some(config))
+}
+
+/// Applies configuration file settings to environment variables, failing when
+/// the file exists but cannot be read or parsed.
+///
+/// Only sets environment variables that are not already set, preserving
+/// the precedence: CLI > ENV > config file. Callers that start a server
+/// should use this rather than [`apply_config_to_env`]: a typo in the file
+/// would otherwise drop a configured `auth_token` and start unauthenticated.
+pub fn try_apply_config_to_env() -> Result<()> {
+    if let Some(config) = load_config()? {
+        warn_unknown_keys(&config);
+        apply_serve_config_to_env(&config.serve);
+    }
+    Ok(())
 }
 
 /// Applies configuration file settings to environment variables.
@@ -176,43 +193,34 @@ pub fn load_config() -> Result<Option<Config>> {
 /// parsing CLI arguments.
 ///
 /// # Warnings
-/// Logs a warning if the config file exists but fails to parse.
-/// This is a security concern because users may expect auth_token
-/// to be set from config, but a syntax error would cause the server
-/// to start without authentication.
+/// Logs a warning if the config file exists but fails to parse. That is a
+/// security concern for `serve`, where users may expect `auth_token` to be
+/// set from config; use [`try_apply_config_to_env`] there.
 pub fn apply_config_to_env() {
-    match load_config() {
-        Ok(Some(config)) => {
-            for key in config.unknown_keys() {
-                tracing::warn!(
-                    target: "skrills::config",
-                    key = %key,
-                    "Unknown key in config file (~/.skrills/config.toml) was ignored"
-                );
-                eprintln!(
-                    "WARNING: Unknown key `{key}` in ~/.skrills/config.toml was ignored. Check the spelling."
-                );
-            }
-            apply_serve_config_to_env(&config.serve);
-        }
-        Ok(None) => {
-            // Config file doesn't exist, nothing to apply
-        }
-        Err(e) => {
-            // Config file exists but failed to parse - this is important to warn about
-            // because users may have set auth_token expecting it to be applied
-            tracing::warn!(
-                target: "skrills::config",
-                error = %e,
-                "Failed to parse config file (~/.skrills/config.toml). \
-                 Server may start without expected settings (e.g., auth_token). \
-                 Fix the config file syntax or remove it."
-            );
-            eprintln!(
-                "WARNING: Config file parse error: {}. Server starting without config settings.",
-                e
-            );
-        }
+    if let Err(e) = try_apply_config_to_env() {
+        tracing::warn!(
+            target: "skrills::config",
+            error = %format!("{e:#}"),
+            "Failed to parse config file (~/.skrills/config.toml). \
+             Server may start without expected settings (e.g., auth_token). \
+             Fix the config file syntax or remove it."
+        );
+        eprintln!(
+            "WARNING: Config file parse error: {e:#}. Server starting without config settings."
+        );
+    }
+}
+
+fn warn_unknown_keys(config: &Config) {
+    for key in config.unknown_keys() {
+        tracing::warn!(
+            target: "skrills::config",
+            key = %key,
+            "Unknown key in config file (~/.skrills/config.toml) was ignored"
+        );
+        eprintln!(
+            "WARNING: Unknown key `{key}` in ~/.skrills/config.toml was ignored. Check the spelling."
+        );
     }
 }
 
@@ -452,11 +460,54 @@ mod tests {
 
     #[test]
     fn load_nonexistent_config_returns_none() {
-        // This test relies on the config file not existing in a typical CI environment
-        // In practice, we'd mock the filesystem
-        let result = load_config();
-        let _ = result.expect("load_config should not error");
-        // Config may or may not exist depending on environment
+        let _g = crate::test_support::env_guard();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
+
+        assert!(load_config()
+            .expect("a missing file is not an error")
+            .is_none());
+        try_apply_config_to_env().expect("a missing file is not an error");
+    }
+
+    /// A parse error used to be a warning, so a typo next to `auth_token`
+    /// started the server without authentication.
+    #[test]
+    fn try_apply_config_fails_on_a_file_that_does_not_parse() {
+        let _g = crate::test_support::env_guard();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
+        let _token = crate::test_support::set_env_var("SKRILLS_AUTH_TOKEN", None);
+        let dir = home.path().join(".skrills");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.toml"),
+            "[serve]\nauth_token = \"secret\"\nhttp = 0.0.0.0:3000\n",
+        )
+        .unwrap();
+
+        let err = try_apply_config_to_env().expect_err("a parse error should fail");
+        assert!(format!("{err:#}").contains("config.toml"), "{err:#}");
+        assert!(std::env::var("SKRILLS_AUTH_TOKEN").is_err());
+    }
+
+    #[test]
+    fn try_apply_config_exports_a_valid_file() {
+        let _g = crate::test_support::env_guard();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
+        let _http = crate::test_support::set_env_var("SKRILLS_HTTP", None);
+        let dir = home.path().join(".skrills");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.toml"),
+            "[serve]\nhttp = \"127.0.0.1:3999\"\n",
+        )
+        .unwrap();
+
+        try_apply_config_to_env().unwrap();
+
+        assert_eq!(std::env::var("SKRILLS_HTTP").unwrap(), "127.0.0.1:3999");
     }
 
     #[test]

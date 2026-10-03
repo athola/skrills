@@ -10,14 +10,17 @@
 use std::time::Duration;
 use tokio::time::timeout;
 
+fn service_factory() -> Result<skrills_server::app::SkillService, std::io::Error> {
+    skrills_server::app::SkillService::new_with_ttl(vec![], Duration::from_secs(60))
+        .map_err(std::io::Error::other)
+}
+
 /// Starts the MCP server on an ephemeral loopback port with the given
-/// security config and returns the bind address plus the server task.
+/// security config and returns the bound address plus the server task.
 ///
-/// The ephemeral port is discovered and released before the server re-binds
-/// it, the same accepted race as `pick_free_port` in the CLI smoke tests: if
-/// another process claims the port in the gap, `bind_with_fallback` moves the
-/// server to the next port and the assertions below fail rather than pass by
-/// accident.
+/// The test binds the listener itself and hands it over, so the server
+/// answers on exactly that port: there is no window in which another process
+/// can take a probed-and-released port.
 async fn spawn_server(
     security: skrills_server::http_transport::HttpSecurityConfig,
 ) -> (String, tokio::task::JoinHandle<()>) {
@@ -25,16 +28,11 @@ async fn spawn_server(
         .await
         .expect("should bind to ephemeral port");
     let bind = listener.local_addr().unwrap().to_string();
-    drop(listener);
 
-    let bind_for_server = bind.clone();
     let handle = tokio::spawn(async move {
-        let _ = skrills_server::http_transport::serve_http_with_security(
-            || {
-                skrills_server::app::SkillService::new_with_ttl(vec![], Duration::from_secs(60))
-                    .map_err(std::io::Error::other)
-            },
-            &bind_for_server,
+        let _ = skrills_server::http_transport::serve_http_on_listener(
+            service_factory,
+            listener,
             security,
             vec![],
             false,
@@ -287,4 +285,105 @@ async fn startup_fails_when_an_allowed_host_carries_a_scheme() {
         error.to_string().contains("https://skrills.internal:8080"),
         "the error should name the offending entry, got: {error}"
     );
+}
+
+/// The listener API must serve on the socket it was given rather than bind a
+/// new one; the old probe-and-rebind setup raced other processes for the port.
+#[tokio::test]
+async fn server_answers_on_exactly_the_listeners_port() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should bind to ephemeral port");
+    let port = listener.local_addr().unwrap().port();
+
+    let server = tokio::spawn(skrills_server::http_transport::serve_http_on_listener(
+        service_factory,
+        listener,
+        skrills_server::http_transport::HttpSecurityConfig::default(),
+        vec![],
+        false,
+    ));
+
+    let bind = format!("127.0.0.1:{port}");
+    let status = get_status(&bind, "/api/mcp-servers", &format!("localhost:{port}")).await;
+
+    assert!(
+        !server.is_finished(),
+        "the server task should still be serving"
+    );
+    server.abort();
+    assert_eq!(status, "HTTP/1.1 200 OK");
+}
+
+/// The listener API rejects a bad allow-list entry before serving, like the
+/// address-based entry point.
+#[tokio::test]
+async fn listener_startup_fails_when_an_allowed_host_carries_a_scheme() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let security = skrills_server::http_transport::HttpSecurityConfig {
+        allowed_hosts: vec!["https://skrills.internal".to_string()],
+        ..Default::default()
+    };
+
+    let error = timeout(
+        Duration::from_secs(5),
+        skrills_server::http_transport::serve_http_on_listener(
+            service_factory,
+            listener,
+            security,
+            vec![],
+            false,
+        ),
+    )
+    .await
+    .expect("startup should return instead of serving")
+    .expect_err("a host entry with a scheme should fail startup");
+
+    assert!(error.to_string().contains("https://skrills.internal"));
+}
+
+/// HTTPS used to bind its own socket and skip the port fallback; it now runs
+/// on the same bound listener as plain HTTP.
+#[tokio::test]
+async fn https_serves_on_the_given_listener() {
+    let dir = tempfile::tempdir().unwrap();
+    let (cert, key) = skrills_server::tls_auto::generate_self_signed_cert().unwrap();
+    let cert_path = dir.path().join("cert.pem");
+    let key_path = dir.path().join("key.pem");
+    std::fs::write(&cert_path, cert).unwrap();
+    std::fs::write(&key_path, key).unwrap();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let security = skrills_server::http_transport::HttpSecurityConfig {
+        tls_cert: Some(cert_path),
+        tls_key: Some(key_path),
+        ..Default::default()
+    };
+    let server = tokio::spawn(skrills_server::http_transport::serve_http_on_listener(
+        service_factory,
+        listener,
+        security,
+        vec![],
+        false,
+    ));
+
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .unwrap();
+    let url = format!("https://localhost:{port}/api/mcp-servers");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let response = loop {
+        match client.get(&url).send().await {
+            Ok(response) => break response,
+            Err(_) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Err(e) => panic!("HTTPS server never answered: {e}"),
+        }
+    };
+
+    server.abort();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
 }

@@ -25,7 +25,7 @@ use crate::discovery::priority_labels_and_rank_map;
 use crate::mcp_result::tool_ok;
 use crate::sync::mirror_source_root;
 use crate::tool_schemas;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListResourcesResult,
     ListToolsResult, PaginatedRequestParams, ProtocolVersion, ReadResourceRequestParams,
@@ -70,6 +70,47 @@ impl SyncToolArgs {
     }
 }
 
+/// A tool argument that is missing or has the wrong value. Mapped to the
+/// JSON-RPC `invalid_params` code (-32602) instead of `internal_error`.
+#[derive(Debug)]
+struct InvalidParams(String);
+
+impl std::fmt::Display for InvalidParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for InvalidParams {}
+
+fn invalid_params(message: impl Into<String>) -> anyhow::Error {
+    InvalidParams(message.into()).into()
+}
+
+/// Converts a tool error to the JSON-RPC error the client sees.
+fn tool_error(e: anyhow::Error) -> rmcp::ErrorData {
+    if e.downcast_ref::<InvalidParams>().is_some() {
+        rmcp::ErrorData::invalid_params(e.to_string(), None)
+    } else {
+        rmcp::ErrorData::internal_error(e.to_string(), None)
+    }
+}
+
+/// Runs synchronous filesystem work from an async handler.
+///
+/// On a multi-threaded runtime (the HTTP transport) the worker hands its other
+/// tasks to another thread first, so a directory walk in one tool call does
+/// not stall concurrent requests. A current-thread runtime cannot do that, so
+/// the work runs inline there, as it did before.
+fn run_blocking<T>(work: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(work)
+        }
+        _ => work(),
+    }
+}
+
 /// The newest MCP revision this server advertises.
 ///
 /// rmcp 3.4 knows 2026-07-28, whose sessions bypass the session manager and
@@ -90,8 +131,7 @@ impl ServerHandler for SkillService {
         __context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListResourcesResult, rmcp::ErrorData>> + Send + '_
     {
-        let result = self
-            .list_resources_payload()
+        let result = run_blocking(|| self.list_resources_payload())
             .map(ListResourcesResult::with_all_items)
             .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None));
         std::future::ready(result)
@@ -104,8 +144,7 @@ impl ServerHandler for SkillService {
         __context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ReadResourceResponse, rmcp::ErrorData>> + Send + '_
     {
-        let result = self
-            .read_resource_sync(&request.uri)
+        let result = run_blocking(|| self.read_resource_sync(&request.uri))
             .map(ReadResourceResponse::from)
             .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None));
         std::future::ready(result)
@@ -201,7 +240,7 @@ impl ServerHandler for SkillService {
                 "search-discussions" => self.search_discussions_tool(args).await,
                 "resolve-doi" => self.resolve_doi_tool(args).await,
                 "fetch-pdf" => self.fetch_pdf_tool(args).await,
-                _ => (|| -> Result<CallToolResult> {
+                _ => run_blocking(|| -> Result<CallToolResult> {
                     match canonical_name.as_str() {
                     "sync-from-claude" => {
                         let include_marketplace = request
@@ -538,7 +577,7 @@ impl ServerHandler for SkillService {
                         let uri = args
                             .get("uri")
                             .and_then(|v| v.as_str())
-                            .ok_or_else(|| anyhow!("uri parameter is required"))?;
+                            .ok_or_else(|| invalid_params("uri parameter is required"))?;
 
                         // Extract direction (default: dependencies)
                         let direction = args
@@ -554,8 +593,8 @@ impl ServerHandler for SkillService {
 
                         // Validate direction
                         if direction != "dependencies" && direction != "dependents" {
-                            return Err(anyhow!(
-                                "direction must be 'dependencies' or 'dependents'"
+                            return Err(invalid_params(
+                                "direction must be 'dependencies' or 'dependents'",
                             ));
                         }
 
@@ -627,7 +666,7 @@ impl ServerHandler for SkillService {
                         let uri = args
                             .get("uri")
                             .and_then(|v| v.as_str())
-                            .ok_or_else(|| anyhow!("uri parameter is required"))?;
+                            .ok_or_else(|| invalid_params("uri parameter is required"))?;
 
                         let limit = args
                             .get("limit")
@@ -704,17 +743,20 @@ impl ServerHandler for SkillService {
                         crate::mcp_gateway::list_mcp_tools(request.arguments.as_ref(), entries)
                     }
                     "describe-mcp-tool" => {
-                        // Track schema load for context stats
-                        self.context_stats.record_schema_load();
-
-                        // Lookup tool in all_tools by name
+                        // Lookup tool in all_tools by name; only a schema that
+                        // was actually returned counts as loaded.
                         let all = tool_schemas::all_tools();
                         let gateway_tools = crate::mcp_gateway::mcp_gateway_tools();
                         crate::mcp_gateway::describe_mcp_tool(request.arguments.as_ref(), |name| {
-                            all.iter()
+                            let found = all
+                                .iter()
                                 .find(|t| t.name.as_ref() == name)
                                 .cloned()
-                                .or_else(|| gateway_tools.iter().find(|t| t.name.as_ref() == name).cloned())
+                                .or_else(|| gateway_tools.iter().find(|t| t.name.as_ref() == name).cloned());
+                            if found.is_some() {
+                                self.context_stats.record_schema_load();
+                            }
+                            found
                         })
                     }
                     "get-context-stats" => {
@@ -743,11 +785,11 @@ impl ServerHandler for SkillService {
                         let args = request.arguments.clone().unwrap_or_default();
                         self.resolve_contradiction_tool(args)
                     }
-                    other => Err(anyhow!("unknown tool {other}")),
+                    other => Err(invalid_params(format!("unknown tool {other}"))),
                 }
-                })(),
+                }),
             }
-            .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))
+            .map_err(tool_error)
             .map(CallToolResponse::from)
         })
     }
@@ -1211,49 +1253,272 @@ mod tests {
             ),
         );
 
-        // Each (snake_case_name, minimal_valid_args) pair for async research tools.
-        // These tools require HTTP clients, so they may fail with network errors,
-        // but they must NOT fail with "unknown tool", that would mean the
-        // snake_case → kebab-case normalization did not dispatch them.
-        let cases: Vec<(&str, serde_json::Value)> = vec![
-            ("search_papers", serde_json::json!({"query": "test"})),
-            ("search_discussions", serde_json::json!({"query": "test"})),
-            ("resolve_doi", serde_json::json!({"doi": "10.1234/test"})),
-            (
-                "fetch_pdf",
-                serde_json::json!({"url": "https://example.com/test.pdf"}),
-            ),
+        // Each tool is called with no arguments, so it fails its own argument
+        // check before any network call. That error proves the snake_case
+        // name was normalized and dispatched, offline and deterministically.
+        let cases = [
+            ("search_papers", "query"),
+            ("search_discussions", "query"),
+            ("resolve_doi", "doi"),
+            ("fetch_pdf", "doi"),
         ];
 
-        for (name, args) in cases {
+        for (name, missing) in cases {
             let svc = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1))
                 .expect("service should build");
             let result = run_async(async move {
                 let (running, context, _client) = service_with_context(svc);
                 running
                     .service()
-                    .call_tool(
-                        CallToolRequestParams::new(name)
-                            .with_arguments(args.as_object().cloned().unwrap()),
-                        context,
-                    )
+                    .call_tool(CallToolRequestParams::new(name), context)
                     .await
             });
 
-            // The tool must be dispatched (no "unknown tool" error).
-            // Network errors are acceptable, they prove the tool was found
-            // and attempted execution rather than being rejected at dispatch.
-            match &result {
-                Ok(_) => {} // tool succeeded (unlikely without network, but fine)
-                Err(e) => {
-                    assert!(
-                        !e.message.contains("unknown tool"),
-                        "snake_case async tool '{}' should be dispatched, but got unknown tool error: {:?}",
-                        name,
-                        e
-                    );
+            let err = result.expect_err("a call with no arguments should fail");
+            assert!(
+                err.message
+                    .contains(&format!("Missing required parameter: {missing}")),
+                "snake_case async tool '{name}' should reach its own argument check, got: {err:?}"
+            );
+        }
+    }
+
+    fn call(
+        service: SkillService,
+        name: &'static str,
+        args: serde_json::Value,
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
+        run_async(async move {
+            let (running, context, _client) = service_with_context(service);
+            running
+                .service()
+                .call_tool(
+                    CallToolRequestParams::new(name)
+                        .with_arguments(args.as_object().cloned().unwrap_or_default()),
+                    context,
+                )
+                .await
+        })
+    }
+
+    /// A missing argument is the caller's mistake, not the server's.
+    #[test]
+    fn missing_uri_is_reported_as_invalid_params() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var("HOME", temp.path().to_str());
+
+        for name in ["resolve-dependencies", "recommend-skills"] {
+            let err = call(build_service(&temp), name, json!({})).expect_err("no uri");
+            assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{name}");
+            assert!(err.message.contains("uri"), "{name}: {}", err.message);
+        }
+
+        let err = call(build_service(&temp), "does-not-exist", json!({})).unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn invalid_direction_is_reported_as_invalid_params() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var("HOME", temp.path().to_str());
+
+        let err = call(
+            build_service(&temp),
+            "resolve-dependencies",
+            json!({"uri": "skill://x", "direction": "sideways"}),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    }
+
+    /// `describe-mcp-tool` counted a schema load even for a name it could not
+    /// find.
+    #[test]
+    fn describe_mcp_tool_counts_only_schemas_it_returned() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var("HOME", temp.path().to_str());
+        let service = build_service(&temp);
+        let stats = service.context_stats.clone();
+
+        let result = run_async(async move {
+            let (running, context, _client) = service_with_context(service);
+            let svc = running.service();
+            let _ = svc
+                .call_tool(
+                    CallToolRequestParams::new("describe-mcp-tool").with_arguments(
+                        json!({"tool_name": "no-such-tool"})
+                            .as_object()
+                            .cloned()
+                            .unwrap(),
+                    ),
+                    context.clone(),
+                )
+                .await;
+            svc.call_tool(
+                CallToolRequestParams::new("describe-mcp-tool").with_arguments(
+                    json!({"tool_name": "sync-from-claude"})
+                        .as_object()
+                        .cloned()
+                        .unwrap(),
+                ),
+                context,
+            )
+            .await
+        });
+
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(stats.snapshot().schemas_loaded, 1);
+    }
+
+    /// On the multi-threaded runtime the HTTP transport uses, a blocking tool
+    /// body must not hold the only worker while other requests wait.
+    #[test]
+    fn run_blocking_lets_other_tasks_progress_on_a_multi_thread_runtime() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let progressed = runtime.block_on(async {
+            let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let worker = tokio::spawn(async move {
+                let other = flag.clone();
+                tokio::spawn(async move {
+                    other.store(true, std::sync::atomic::Ordering::SeqCst);
+                });
+                run_blocking(|| {
+                    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+                    while std::time::Instant::now() < deadline {
+                        if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                            return true;
+                        }
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    false
+                })
+            });
+            worker.await.unwrap()
+        });
+        assert!(progressed, "a concurrent task was starved by blocking work");
+    }
+
+    /// Checks a value against the subset of JSON Schema the tool output
+    /// schemas use: `type`, `required` and nested `properties`/`items`.
+    fn assert_matches_schema(value: &serde_json::Value, schema: &serde_json::Value, at: &str) {
+        if let Some(kind) = schema.get("type").and_then(|t| t.as_str()) {
+            let ok = match kind {
+                "object" => value.is_object(),
+                "array" => value.is_array(),
+                "string" => value.is_string(),
+                "boolean" => value.is_boolean(),
+                "integer" => value.is_u64() || value.is_i64(),
+                "number" => value.is_number(),
+                other => panic!("schema type {other} not handled at {at}"),
+            };
+            assert!(ok, "{at}: expected {kind}, got {value}");
+        }
+        if let Some(required) = schema.get("required").and_then(|r| r.as_array()) {
+            for key in required {
+                let key = key.as_str().unwrap();
+                assert!(
+                    value.get(key).is_some(),
+                    "{at}: missing required {key} in {value}"
+                );
+            }
+        }
+        if let (Some(props), Some(obj)) = (
+            schema.get("properties").and_then(|p| p.as_object()),
+            value.as_object(),
+        ) {
+            for (key, sub) in props {
+                if let Some(v) = obj.get(key) {
+                    assert_matches_schema(v, sub, &format!("{at}.{key}"));
                 }
             }
         }
+        if let (Some(items), Some(arr)) = (schema.get("items"), value.as_array()) {
+            for (i, v) in arr.iter().enumerate() {
+                assert_matches_schema(v, items, &format!("{at}[{i}]"));
+            }
+        }
+    }
+
+    fn output_schema(name: &str) -> serde_json::Value {
+        let tool = tool_schemas::all_tools()
+            .into_iter()
+            .find(|t| t.name == name)
+            .unwrap();
+        serde_json::Value::Object(tool.output_schema.expect("output schema").as_ref().clone())
+    }
+
+    fn structured(response: CallToolResponse) -> serde_json::Value {
+        match response {
+            CallToolResponse::Complete(res) => res.structured_content.expect("structured content"),
+            other => panic!("expected a completed tool call, got {other:?}"),
+        }
+    }
+
+    /// The declared output schemas did not describe what the handlers return:
+    /// a validating client would reject both results.
+    #[test]
+    fn structured_tool_results_match_their_declared_output_schemas() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var("HOME", temp.path().to_str());
+        let claude_skill = temp.path().join(".claude/skills/alpha");
+        std::fs::create_dir_all(&claude_skill).unwrap();
+        std::fs::write(
+            claude_skill.join("SKILL.md"),
+            "---\nname: alpha\ndescription: a\n---\nbody",
+        )
+        .unwrap();
+
+        let sync = structured(
+            call(
+                build_service(&temp),
+                "sync-from-claude",
+                json!({"include_marketplace": true}),
+            )
+            .expect("sync-from-claude"),
+        );
+        assert_matches_schema(
+            &sync,
+            &output_schema("sync-from-claude"),
+            "sync-from-claude",
+        );
+
+        let validate = structured(
+            call(
+                build_service(&temp),
+                "validate-skills",
+                json!({"check_dependencies": true}),
+            )
+            .expect("validate-skills"),
+        );
+        assert_matches_schema(
+            &validate,
+            &output_schema("validate-skills"),
+            "validate-skills",
+        );
+        assert!(validate["results"]
+            .as_array()
+            .is_some_and(|r| !r.is_empty()));
+    }
+
+    /// The handler reads `include_marketplace`, so the input schema has to
+    /// allow it; `additionalProperties: false` used to forbid it.
+    #[test]
+    fn sync_from_claude_input_schema_declares_include_marketplace() {
+        let tool = tool_schemas::all_tools()
+            .into_iter()
+            .find(|t| t.name == "sync-from-claude")
+            .unwrap();
+        assert_eq!(
+            tool.input_schema["properties"]["include_marketplace"]["type"],
+            "boolean"
+        );
     }
 }

@@ -390,68 +390,26 @@ fn build_cors_layer(origins: &[String], has_auth: bool) -> CorsLayer {
     }
 }
 
-/// Starts the MCP server over HTTP transport with security configuration.
-///
-/// # Arguments
-/// * `service_factory` - Factory function to create SkillService instances
-/// * `bind_addr` - Socket address to bind (e.g., "127.0.0.1:3000")
-/// * `security` - Security configuration (auth, TLS, CORS)
-/// * `skill_dirs` - Directories to scan for skills (used by dashboard API)
-/// * `open_browser` - Whether to open the dashboard in the default browser after binding
-pub async fn serve_http_with_security<F>(
+/// The router and TLS paths a server is about to run with, built before any
+/// socket is touched so a configuration error fails startup without binding.
+struct PreparedServer {
+    app: axum::Router,
+    tls: Option<(PathBuf, PathBuf)>,
+}
+
+/// Builds the routes and layers shared by every serve entry point.
+fn prepare_server<F>(
     service_factory: F,
-    bind_addr: &str,
     security: HttpSecurityConfig,
     skill_dirs: Vec<std::path::PathBuf>,
-    open_browser: bool,
-) -> Result<()>
+) -> Result<PreparedServer>
 where
     F: Fn() -> Result<SkillService, std::io::Error> + Send + Sync + 'static,
 {
-    let addr: SocketAddr = bind_addr
-        .parse()
-        .with_context(|| format!("invalid bind address: {bind_addr}"))?;
-
-    let protocol = if security.has_tls() { "HTTPS" } else { "HTTP" };
-    let auth_status = if security.has_auth() {
-        "enabled"
-    } else {
-        "disabled"
-    };
-    let cors_status = if security.cors_origins.is_empty() {
-        "disabled".to_string()
-    } else if security.cors_origins.iter().any(|o| o == "*") {
-        "allow-all".to_string()
-    } else {
-        format!("{} origins", security.cors_origins.len())
-    };
-
-    // Configure the HTTP server. The effective Host allow-list is parsed once
-    // here so an entry rmcp could not match becomes a startup error instead of
-    // a 403 on every request.
+    // The effective Host allow-list is parsed once here so an entry rmcp could
+    // not match becomes a startup error instead of a 403 on every request.
     let config = build_streamable_config(&security);
     let allowed_hosts = Arc::new(parse_host_allow_list(&config.allowed_hosts)?);
-
-    tracing::info!(
-        target: "skrills::http",
-        bind = %addr,
-        protocol,
-        auth = auth_status,
-        cors = cors_status,
-        allowed_hosts = ?config.allowed_hosts,
-        "Starting MCP server"
-    );
-
-    // A non-loopback bind is reached under some other name, and every request
-    // carrying that name is refused until it is listed.
-    if !addr.ip().is_loopback() && security.allowed_hosts.is_empty() {
-        tracing::warn!(
-            target: "skrills::http",
-            bind = %addr,
-            "Bound a non-loopback address with no --allowed-hosts. Requests naming \
-             anything other than localhost, 127.0.0.1 or ::1 will be refused with 403."
-        );
-    }
 
     // Create session manager for stateful connections
     let session_manager = Arc::new(LocalSessionManager::default());
@@ -464,7 +422,7 @@ where
 
     // Extract TLS config before potential move of auth_token.
     // Uses pattern matching instead of unwrap() to avoid relying on has_tls() invariant.
-    let tls_config = match (&security.tls_cert, &security.tls_key) {
+    let tls = match (&security.tls_cert, &security.tls_key) {
         (Some(cert), Some(key)) => Some((cert.clone(), key.clone())),
         _ => None,
     };
@@ -537,11 +495,114 @@ where
         .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
         .layer(SetRequestIdLayer::new(request_id_header, MakeRequestUuid));
 
-    // Serve with or without TLS
-    if let Some((cert_path, key_path)) = tls_config {
-        serve_with_tls(app, addr, &cert_path, &key_path, open_browser).await
+    Ok(PreparedServer { app, tls })
+}
+
+/// Logs the startup line and the non-loopback warning for `addr`.
+fn log_startup(addr: SocketAddr, security: &HttpSecurityConfig) {
+    let protocol = if security.has_tls() { "HTTPS" } else { "HTTP" };
+    let auth_status = if security.has_auth() {
+        "enabled"
     } else {
-        serve_without_tls(app, addr, open_browser).await
+        "disabled"
+    };
+    let cors_status = if security.cors_origins.is_empty() {
+        "disabled".to_string()
+    } else if security.cors_origins.iter().any(|o| o == "*") {
+        "allow-all".to_string()
+    } else {
+        format!("{} origins", security.cors_origins.len())
+    };
+
+    tracing::info!(
+        target: "skrills::http",
+        bind = %addr,
+        protocol,
+        auth = auth_status,
+        cors = cors_status,
+        allowed_hosts = ?build_streamable_config(security).allowed_hosts,
+        "Starting MCP server"
+    );
+
+    // A non-loopback bind is reached under some other name, and every request
+    // carrying that name is refused until it is listed.
+    if !addr.ip().is_loopback() && security.allowed_hosts.is_empty() {
+        tracing::warn!(
+            target: "skrills::http",
+            bind = %addr,
+            "Bound a non-loopback address with no --allowed-hosts. Requests naming \
+             anything other than localhost, 127.0.0.1 or ::1 will be refused with 403."
+        );
+    }
+}
+
+/// Starts the MCP server over HTTP transport with security configuration.
+///
+/// Binds `bind_addr`, moving to one of the next nine ports when it is taken
+/// (for HTTP and HTTPS alike). Callers that need to know the port in advance,
+/// such as tests, should bind themselves and use [`serve_http_on_listener`].
+///
+/// # Arguments
+/// * `service_factory` - Factory function to create SkillService instances
+/// * `bind_addr` - Socket address to bind (e.g., "127.0.0.1:3000")
+/// * `security` - Security configuration (auth, TLS, CORS)
+/// * `skill_dirs` - Directories to scan for skills (used by dashboard API)
+/// * `open_browser` - Whether to open the dashboard in the default browser after binding
+pub async fn serve_http_with_security<F>(
+    service_factory: F,
+    bind_addr: &str,
+    security: HttpSecurityConfig,
+    skill_dirs: Vec<std::path::PathBuf>,
+    open_browser: bool,
+) -> Result<()>
+where
+    F: Fn() -> Result<SkillService, std::io::Error> + Send + Sync + 'static,
+{
+    let addr: SocketAddr = bind_addr
+        .parse()
+        .with_context(|| format!("invalid bind address: {bind_addr}"))?;
+
+    log_startup(addr, &security);
+    let prepared = prepare_server(service_factory, security, skill_dirs)?;
+    let (listener, _) = bind_with_fallback(addr).await?;
+    run_prepared(prepared, listener, open_browser).await
+}
+
+/// Starts the MCP server on a listener the caller already bound.
+///
+/// Behaves like [`serve_http_with_security`] except that it never binds: the
+/// server answers on exactly `listener`'s address. Binding first and handing
+/// the listener over removes the gap in which another process could take a
+/// port that was probed and released.
+pub async fn serve_http_on_listener<F>(
+    service_factory: F,
+    listener: tokio::net::TcpListener,
+    security: HttpSecurityConfig,
+    skill_dirs: Vec<std::path::PathBuf>,
+    open_browser: bool,
+) -> Result<()>
+where
+    F: Fn() -> Result<SkillService, std::io::Error> + Send + Sync + 'static,
+{
+    let addr = listener
+        .local_addr()
+        .context("failed to read the listener's address")?;
+    log_startup(addr, &security);
+    let prepared = prepare_server(service_factory, security, skill_dirs)?;
+    run_prepared(prepared, listener, open_browser).await
+}
+
+/// Serves a prepared router on `listener`, with TLS when configured.
+async fn run_prepared(
+    prepared: PreparedServer,
+    listener: tokio::net::TcpListener,
+    open_browser: bool,
+) -> Result<()> {
+    match prepared.tls {
+        Some((cert_path, key_path)) => {
+            serve_with_tls(prepared.app, listener, &cert_path, &key_path, open_browser).await
+        }
+        None => serve_without_tls(prepared.app, listener, open_browser).await,
     }
 }
 
@@ -638,9 +699,27 @@ fn open_in_browser(url: &str) {
     }
 }
 
+/// The URL to open in a browser for a server bound to `addr`.
+///
+/// A wildcard bind (`0.0.0.0` or `::`) is not an address a browser can visit,
+/// and the Host check accepts loopback names, so it maps to `localhost`.
+fn browser_url(scheme: &str, addr: SocketAddr) -> String {
+    if addr.ip().is_unspecified() {
+        format!("{scheme}://localhost:{}", addr.port())
+    } else {
+        format!("{scheme}://{addr}")
+    }
+}
+
 /// Serve HTTP without TLS.
-async fn serve_without_tls(app: axum::Router, addr: SocketAddr, open_browser: bool) -> Result<()> {
-    let (listener, actual_addr) = bind_with_fallback(addr).await?;
+async fn serve_without_tls(
+    app: axum::Router,
+    listener: tokio::net::TcpListener,
+    open_browser: bool,
+) -> Result<()> {
+    let actual_addr = listener
+        .local_addr()
+        .context("failed to read bound address")?;
 
     tracing::info!(
         target: "skrills::http",
@@ -649,8 +728,7 @@ async fn serve_without_tls(app: axum::Router, addr: SocketAddr, open_browser: bo
     );
 
     if open_browser {
-        let url = format!("http://{actual_addr}");
-        open_in_browser(&url);
+        open_in_browser(&browser_url("http", actual_addr));
     }
 
     axum::serve(listener, app)
@@ -663,7 +741,7 @@ async fn serve_without_tls(app: axum::Router, addr: SocketAddr, open_browser: bo
 /// Serve HTTPS with TLS.
 async fn serve_with_tls(
     app: axum::Router,
-    addr: SocketAddr,
+    listener: tokio::net::TcpListener,
     cert_path: &Path,
     key_path: &Path,
     open_browser: bool,
@@ -680,18 +758,26 @@ async fn serve_with_tls(
             )
         })?;
 
+    let actual_addr = listener
+        .local_addr()
+        .context("failed to read bound address")?;
+
     tracing::info!(
         target: "skrills::http",
-        bind = %addr,
+        bind = %actual_addr,
         cert = %cert_path.display(),
         "MCP HTTPS server listening (TLS enabled)"
     );
 
     if open_browser {
-        open_in_browser(&format!("https://{addr}"));
+        open_in_browser(&browser_url("https", actual_addr));
     }
 
-    axum_server::bind_rustls(addr, tls_config)
+    let listener = listener
+        .into_std()
+        .context("failed to hand the bound socket to the TLS server")?;
+    axum_server::from_tcp_rustls(listener, tls_config)
+        .context("failed to start the TLS server on the bound socket")?
         .serve(app.into_make_service())
         .await
         .context("HTTPS server error")?;
@@ -894,28 +980,25 @@ mod tests {
         assert!(!entry.accepts(&parse_host_authority("skrills.internal").unwrap()));
     }
 
+    /// `--open` on a wildcard bind used to hand the browser `0.0.0.0:port`.
     #[test]
-    fn parse_valid_bind_address() {
-        let addr: Result<SocketAddr, _> = "127.0.0.1:3000".parse();
-        assert!(addr.is_ok());
-    }
-
-    #[test]
-    fn parse_invalid_bind_address() {
-        let addr: Result<SocketAddr, _> = "not-an-address".parse();
-        assert!(addr.is_err());
-    }
-
-    #[test]
-    fn parse_ipv6_bind_address() {
-        let addr: Result<SocketAddr, _> = "[::1]:3000".parse();
-        assert!(addr.is_ok());
-    }
-
-    #[test]
-    fn parse_wildcard_bind_address() {
-        let addr: Result<SocketAddr, _> = "0.0.0.0:3000".parse();
-        assert!(addr.is_ok());
+    fn browser_url_maps_a_wildcard_bind_to_localhost() {
+        assert_eq!(
+            browser_url("http", "0.0.0.0:3000".parse().unwrap()),
+            "http://localhost:3000"
+        );
+        assert_eq!(
+            browser_url("https", "[::]:3000".parse().unwrap()),
+            "https://localhost:3000"
+        );
+        assert_eq!(
+            browser_url("http", "127.0.0.1:3000".parse().unwrap()),
+            "http://127.0.0.1:3000"
+        );
+        assert_eq!(
+            browser_url("https", "[::1]:8443".parse().unwrap()),
+            "https://[::1]:8443"
+        );
     }
 
     #[test]
@@ -946,29 +1029,71 @@ mod tests {
         assert!(!config.has_auth());
     }
 
-    #[test]
-    fn cors_layer_empty_origins() {
-        let layer = build_cors_layer(&[], false);
-        // Should create a layer (no panic)
-        let _ = layer;
-    }
+    mod cors_layer_tests {
+        use super::*;
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
 
-    #[test]
-    fn cors_layer_wildcard_origin() {
-        let layer = build_cors_layer(&["*".to_string()], false);
-        let _ = layer;
-    }
+        async fn preflight(origins: &[String], origin: &str) -> axum::response::Response {
+            let app = axum::Router::new()
+                .route("/test", axum::routing::get(|| async { "OK" }))
+                .layer(build_cors_layer(origins, false));
+            let req = Request::builder()
+                .method(Method::OPTIONS)
+                .uri("/test")
+                .header(header::ORIGIN, origin)
+                .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+                .body(Body::empty())
+                .unwrap();
+            app.oneshot(req).await.unwrap()
+        }
 
-    #[test]
-    fn cors_layer_specific_origins() {
-        let layer = build_cors_layer(
-            &[
+        fn allow_origin(response: &axum::response::Response) -> Option<&str> {
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|v| v.to_str().ok())
+        }
+
+        #[tokio::test]
+        async fn no_origins_grants_no_cross_origin_access() {
+            let response = preflight(&[], "http://app.example").await;
+            assert_eq!(allow_origin(&response), None);
+        }
+
+        #[tokio::test]
+        async fn wildcard_allows_any_origin() {
+            let response = preflight(&["*".to_string()], "http://anything.example").await;
+            assert_eq!(allow_origin(&response), Some("*"));
+        }
+
+        #[tokio::test]
+        async fn listed_origin_is_allowed_and_others_are_not() {
+            let origins = [
                 "http://localhost:3000".to_string(),
                 "https://app.example.com".to_string(),
-            ],
-            false,
-        );
-        let _ = layer;
+            ];
+            let allowed = preflight(&origins, "https://app.example.com").await;
+            assert_eq!(allow_origin(&allowed), Some("https://app.example.com"));
+            let allowed_methods = allowed
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_METHODS)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            assert!(allowed_methods.contains("GET"), "{allowed_methods}");
+
+            let refused = preflight(&origins, "https://evil.example").await;
+            assert_eq!(allow_origin(&refused), None);
+        }
+
+        #[tokio::test]
+        async fn unparseable_origins_are_skipped() {
+            let origins = ["bad\norigin".to_string(), "http://ok.example".to_string()];
+            let response = preflight(&origins, "http://ok.example").await;
+            assert_eq!(allow_origin(&response), Some("http://ok.example"));
+        }
     }
 
     #[test]

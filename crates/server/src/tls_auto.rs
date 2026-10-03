@@ -10,6 +10,8 @@
 
 use anyhow::{Context, Result};
 use std::fs;
+#[cfg(feature = "http-transport")]
+use std::path::Path;
 use std::path::PathBuf;
 
 /// Directory name for TLS certificates within ~/.skrills/
@@ -23,6 +25,10 @@ const KEY_FILENAME: &str = "key.pem";
 
 /// Validity period for self-signed certificates (365 days)
 const CERT_VALIDITY_DAYS: i64 = 365;
+
+/// A certificate is regenerated once it is this close to expiring, so a
+/// long-running server does not cross the expiry mid-session.
+const CERT_RENEW_MARGIN_DAYS: i64 = 7;
 
 /// Returns the path to the TLS directory (~/.skrills/tls/).
 fn tls_dir() -> Result<PathBuf> {
@@ -39,11 +45,11 @@ fn tls_dir() -> Result<PathBuf> {
 /// - If certificates don't exist, generates new self-signed certificates
 /// - Certificates are stored in `~/.skrills/tls/`
 ///
-/// # Note
-/// This function only checks for file existence, not certificate validity
-/// or expiration. Certificates are generated with a 365-day validity period.
-/// If certificates expire, delete the files to regenerate:
-/// `rm ~/.skrills/tls/cert.pem ~/.skrills/tls/key.pem`
+/// # Expiry
+/// Certificates are generated with a 365-day validity period. A pair whose
+/// certificate file was written more than that period (less a 7-day margin)
+/// ago is replaced with a fresh one. The key file's mode is reset to `0o600`
+/// on every reuse.
 ///
 /// # Errors
 /// Returns an error if:
@@ -53,22 +59,66 @@ fn tls_dir() -> Result<PathBuf> {
 /// - File I/O fails
 #[cfg(feature = "http-transport")]
 pub fn ensure_auto_tls_certs() -> Result<(PathBuf, PathBuf)> {
-    let tls_path = tls_dir()?;
+    ensure_auto_tls_certs_in(&tls_dir()?)
+}
+
+#[cfg(feature = "http-transport")]
+/// Whether the certificate at `cert_path` was written long enough ago that it
+/// has expired or is about to. An unreadable timestamp counts as stale.
+fn cert_is_stale(cert_path: &Path) -> bool {
+    let max_age = std::time::Duration::from_secs(
+        ((CERT_VALIDITY_DAYS - CERT_RENEW_MARGIN_DAYS) * 24 * 60 * 60) as u64,
+    );
+    fs::metadata(cert_path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|written| written.elapsed().ok())
+        .is_none_or(|age| age >= max_age)
+}
+
+#[cfg(feature = "http-transport")]
+/// Restricts the private key to its owner.
+fn restrict_key_permissions(key_path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(key_path, fs::Permissions::from_mode(0o600)).with_context(|| {
+            format!(
+                "Failed to restrict permissions on TLS private key {}",
+                key_path.display()
+            )
+        })?;
+    }
+    #[cfg(not(unix))]
+    let _ = key_path;
+    Ok(())
+}
+
+#[cfg(feature = "http-transport")]
+fn ensure_auto_tls_certs_in(tls_path: &Path) -> Result<(PathBuf, PathBuf)> {
     let cert_path = tls_path.join(CERT_FILENAME);
     let key_path = tls_path.join(KEY_FILENAME);
 
-    // Check if both files already exist
+    // Reuse an existing pair unless the certificate is near expiry.
     if cert_path.exists() && key_path.exists() {
-        tracing::debug!(
+        if !cert_is_stale(&cert_path) {
+            restrict_key_permissions(&key_path)?;
+            tracing::debug!(
+                target: "skrills::tls",
+                cert = %cert_path.display(),
+                "Reusing existing auto-generated TLS certificate"
+            );
+            return Ok((cert_path, key_path));
+        }
+        tracing::info!(
             target: "skrills::tls",
             cert = %cert_path.display(),
-            "Reusing existing auto-generated TLS certificate"
+            "Auto-generated TLS certificate has expired or is about to; regenerating"
         );
-        return Ok((cert_path, key_path));
     }
 
     // Create directory if it doesn't exist
-    fs::create_dir_all(&tls_path)
+    fs::create_dir_all(tls_path)
         .with_context(|| format!("Failed to create TLS directory at {}", tls_path.display()))?;
 
     // Generate new self-signed certificate
@@ -106,6 +156,10 @@ pub fn ensure_auto_tls_certs() -> Result<(PathBuf, PathBuf)> {
             format!("Failed to write TLS private key to {}", key_path.display())
         })?;
     }
+
+    // `mode` above applies only when the file is created; an existing key
+    // file keeps whatever mode it had.
+    restrict_key_permissions(&key_path)?;
 
     tracing::info!(
         target: "skrills::tls",
@@ -202,28 +256,76 @@ mod tests {
     #[test]
     #[cfg(feature = "http-transport")]
     fn ensure_auto_tls_certs_creates_files() {
-        // Use a temp directory to avoid polluting user's home
         let temp_dir = tempfile::tempdir().unwrap();
         let tls_path = temp_dir.path().join("tls");
-        let cert_path = tls_path.join(CERT_FILENAME);
-        let key_path = tls_path.join(KEY_FILENAME);
 
-        // Create the directory
-        std::fs::create_dir_all(&tls_path).unwrap();
+        let (cert_path, key_path) = ensure_auto_tls_certs_in(&tls_path).unwrap();
 
-        // Generate cert
-        let (cert, key) = generate_self_signed_cert().unwrap();
-        std::fs::write(&cert_path, &cert).unwrap();
-        std::fs::write(&key_path, &key).unwrap();
+        assert_eq!(cert_path, tls_path.join(CERT_FILENAME));
+        assert_eq!(key_path, tls_path.join(KEY_FILENAME));
+        assert!(std::fs::read_to_string(&cert_path)
+            .unwrap()
+            .contains("BEGIN CERTIFICATE"));
+        assert!(std::fs::read_to_string(&key_path)
+            .unwrap()
+            .contains("BEGIN PRIVATE KEY"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&key_path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
 
-        // Verify files exist
-        assert!(cert_path.exists());
-        assert!(key_path.exists());
+    #[test]
+    #[cfg(feature = "http-transport")]
+    fn ensure_auto_tls_certs_reuses_a_fresh_pair() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let tls_path = temp_dir.path().join("tls");
+        let (cert_path, _) = ensure_auto_tls_certs_in(&tls_path).unwrap();
+        let first = std::fs::read_to_string(&cert_path).unwrap();
 
-        // Verify content
-        let read_cert = std::fs::read_to_string(&cert_path).unwrap();
-        let read_key = std::fs::read_to_string(&key_path).unwrap();
-        assert!(read_cert.contains("BEGIN CERTIFICATE"));
-        assert!(read_key.contains("BEGIN PRIVATE KEY"));
+        ensure_auto_tls_certs_in(&tls_path).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&cert_path).unwrap(), first);
+    }
+
+    /// Reuse used to check existence only, so an expired certificate was
+    /// served indefinitely.
+    #[test]
+    #[cfg(feature = "http-transport")]
+    fn ensure_auto_tls_certs_regenerates_an_expired_pair() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let tls_path = temp_dir.path().join("tls");
+        let (cert_path, _) = ensure_auto_tls_certs_in(&tls_path).unwrap();
+        let first = std::fs::read_to_string(&cert_path).unwrap();
+        let written = std::time::SystemTime::now()
+            - std::time::Duration::from_secs((CERT_VALIDITY_DAYS as u64 + 1) * 24 * 60 * 60);
+        std::fs::File::options()
+            .write(true)
+            .open(&cert_path)
+            .unwrap()
+            .set_modified(written)
+            .unwrap();
+
+        ensure_auto_tls_certs_in(&tls_path).unwrap();
+
+        assert_ne!(std::fs::read_to_string(&cert_path).unwrap(), first);
+    }
+
+    /// The `0o600` mode applied only when the key file was created.
+    #[cfg(all(unix, feature = "http-transport"))]
+    #[test]
+    fn ensure_auto_tls_certs_tightens_a_reused_key() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let tls_path = temp_dir.path().join("tls");
+        let (_, key_path) = ensure_auto_tls_certs_in(&tls_path).unwrap();
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        ensure_auto_tls_certs_in(&tls_path).unwrap();
+
+        let mode = std::fs::metadata(&key_path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 }
