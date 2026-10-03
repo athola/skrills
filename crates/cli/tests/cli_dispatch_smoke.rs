@@ -22,20 +22,10 @@
 #![cfg(feature = "http-transport")]
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpStream};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
-
-/// Pick a 127.0.0.1 port by binding `:0` and dropping the listener. Used
-/// only for `serve`, which cannot bind `:0` yet (it logs the requested
-/// address, not the bound one); the address the test talks to is still read
-/// from the server's log, so a port taken in the meantime is survived
-/// through serve's fallback to the next port.
-fn pick_free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-    listener.local_addr().expect("local_addr").port()
-}
 
 /// Spawns `skrills <args>` with logs on a piped stderr and waits for the log
 /// line containing `marker`, returning the address in its `field=` value.
@@ -53,6 +43,15 @@ fn spawn_and_read_bound_addr(
         .env("HOME", home)
         .env("NO_COLOR", "1")
         .env_remove("RUST_LOG")
+        // A developer's shell settings would otherwise decide auth, TLS and
+        // the Host allow-list for the child.
+        .env_remove("SKRILLS_AUTH_TOKEN")
+        .env_remove("SKRILLS_TLS_CERT")
+        .env_remove("SKRILLS_TLS_KEY")
+        .env_remove("SKRILLS_TLS_AUTO")
+        .env_remove("SKRILLS_CORS_ORIGINS")
+        .env_remove("SKRILLS_ALLOWED_HOSTS")
+        .env_remove("SKRILLS_HTTP")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -102,11 +101,22 @@ fn field_value(line: &str, field: &str) -> Option<SocketAddr> {
 /// body). `Connection: close` makes the server close after one response so
 /// `read_to_end` terminates promptly.
 fn http_get(addr: SocketAddr, path: &str, host: &str) -> std::io::Result<String> {
+    http_get_with_headers(addr, path, host, "")
+}
+
+/// [`http_get`] with extra header lines, each ending in `\r\n`.
+fn http_get_with_headers(
+    addr: SocketAddr,
+    path: &str,
+    host: &str,
+    extra_headers: &str,
+) -> std::io::Result<String> {
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500))?;
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     stream.write_all(
-        format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes(),
+        format!("GET {path} HTTP/1.1\r\nHost: {host}\r\n{extra_headers}Connection: close\r\n\r\n")
+            .as_bytes(),
     )?;
     let mut buf = Vec::new();
     stream.read_to_end(&mut buf)?;
@@ -218,12 +228,11 @@ fn serve_allowed_hosts_flag_reaches_the_transport() {
     // child: an auth_token there would answer 401 and tls_auto would answer
     // TLS bytes, neither of which this test is about.
     let home = tempfile::tempdir().expect("temp HOME");
-    let requested = format!("127.0.0.1:{}", pick_free_port());
     let (mut child, addr) = spawn_and_read_bound_addr(
         &[
             "serve",
             "--http",
-            &requested,
+            "127.0.0.1:0",
             "--allowed-hosts",
             "foo.example",
         ],
@@ -245,7 +254,9 @@ fn serve_allowed_hosts_flag_reaches_the_transport() {
 }
 
 /// SB-8: `[serve] auth_token` in `~/.skrills/config.toml` turns auth on for
-/// `serve --http`, so a request without the token is refused.
+/// `serve --http`, so a request without the token is refused and one with it
+/// is served. The config loader does not export the token to the
+/// environment, so this proves `serve` reads it from the file.
 #[test]
 fn serve_config_file_auth_token_enables_auth() {
     let home = tempfile::tempdir().expect("temp HOME");
@@ -255,15 +266,20 @@ fn serve_config_file_auth_token_enables_auth() {
         "[serve]\nauth_token = \"file-token\"\n",
     )
     .unwrap();
-    let requested = format!("127.0.0.1:{}", pick_free_port());
     let (mut child, addr) = spawn_and_read_bound_addr(
-        &["serve", "--http", &requested],
+        &["serve", "--http", "127.0.0.1:0"],
         home.path(),
         "MCP HTTP server listening",
         "bind",
     );
 
     let response = poll_http_get(addr, "/mcp", "127.0.0.1");
+    let authorized = http_get_with_headers(
+        addr,
+        "/api/skills",
+        "127.0.0.1",
+        "Authorization: Bearer file-token\r\n",
+    );
 
     let _ = child.kill();
     let _ = child.wait();
@@ -272,5 +288,10 @@ fn serve_config_file_auth_token_enables_auth() {
     assert!(
         response.contains("HTTP/1.1 401"),
         "a request without the config-file token must be refused, got:\n{response}"
+    );
+    let authorized = authorized.expect("server did not answer /api/skills");
+    assert!(
+        authorized.starts_with("HTTP/1.1 200"),
+        "a request carrying the config-file token must be served, got:\n{authorized}"
     );
 }

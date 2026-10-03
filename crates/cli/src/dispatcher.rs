@@ -55,7 +55,7 @@ pub fn run() -> Result<()> {
 
     // Load config file and apply settings to env vars before CLI parsing.
     // This ensures precedence: CLI > ENV > config file.
-    skrills_server::config::apply_config_to_env();
+    let config_error = skrills_server::config::try_apply_config_to_env().err();
 
     let cli = Cli::parse();
 
@@ -63,6 +63,22 @@ pub fn run() -> Result<()> {
     // Also skip for batch/non-interactive commands like sync-all
     let command_ref = cli.command.as_ref();
     let is_serve = matches!(command_ref, Some(Commands::Serve { .. }) | None);
+
+    // The file may set `auth_token`; serving without it would drop auth.
+    // Other commands only lose defaults, so they warn and carry on.
+    if let Some(e) = config_error {
+        if is_serve {
+            return Err(e.context(
+                "refusing to serve: ~/.skrills/config.toml could not be read and may set auth_token; fix or remove it",
+            ));
+        }
+        tracing::warn!(
+            target: "skrills::config",
+            error = %format!("{e:#}"),
+            "Failed to parse config file (~/.skrills/config.toml); continuing without its settings"
+        );
+        eprintln!("WARNING: Config file parse error: {e:#}. Continuing without config settings.");
+    }
     let is_setup = matches!(command_ref, Some(Commands::Setup { .. }));
     let is_batch = matches!(command_ref, Some(Commands::SyncAll { .. }));
 

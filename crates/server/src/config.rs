@@ -245,9 +245,8 @@ fn apply_serve_config_to_env(serve: &ServeConfig) {
         }
     }
 
-    if let Some(ref token) = serve.auth_token {
-        set_if_absent("SKRILLS_AUTH_TOKEN", token);
-    }
+    // `auth_token` is deliberately not exported: every child process would
+    // inherit the bearer token. `serve` reads it from the file directly.
 
     if let Some(ref cert) = serve.tls_cert {
         set_if_absent("SKRILLS_TLS_CERT", cert);
@@ -513,11 +512,11 @@ mod tests {
     #[test]
     fn apply_config_respects_existing_env_vars() {
         let _g = crate::test_support::env_guard();
-        let _token = crate::test_support::set_env_var("SKRILLS_AUTH_TOKEN", Some("env-token"));
+        let _http = crate::test_support::set_env_var("SKRILLS_HTTP", Some("127.0.0.1:1111"));
 
         // Create config with different value
         let serve = ServeConfig {
-            auth_token: Some("config-token".to_string()),
+            http: Some("127.0.0.1:2222".to_string()),
             ..Default::default()
         };
 
@@ -526,10 +525,37 @@ mod tests {
 
         // Env var should remain unchanged
         assert_eq!(
-            std::env::var("SKRILLS_AUTH_TOKEN").unwrap(),
-            "env-token",
+            std::env::var("SKRILLS_HTTP").unwrap(),
+            "127.0.0.1:1111",
             "Config should not override existing env var"
         );
+    }
+
+    /// SB-8: the bearer token stays out of the process environment, where
+    /// every child process (hooks, CLIs, subagents) would inherit it. `serve`
+    /// reads `auth_token` from the file itself.
+    #[test]
+    fn apply_config_does_not_export_auth_token() {
+        let _g = crate::test_support::env_guard();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
+        let _token = crate::test_support::set_env_var("SKRILLS_AUTH_TOKEN", None);
+        let _http = crate::test_support::set_env_var("SKRILLS_HTTP", None);
+        let dir = home.path().join(".skrills");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.toml"),
+            "[serve]\nauth_token = \"secret\"\nhttp = \"127.0.0.1:3999\"\n",
+        )
+        .unwrap();
+
+        try_apply_config_to_env().unwrap();
+
+        assert!(
+            std::env::var("SKRILLS_AUTH_TOKEN").is_err(),
+            "the config-file token must not be exported"
+        );
+        assert_eq!(std::env::var("SKRILLS_HTTP").unwrap(), "127.0.0.1:3999");
     }
 
     #[test]
