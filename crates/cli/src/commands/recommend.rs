@@ -5,8 +5,10 @@ use crate::cli::OutputFormat;
 use anyhow::{bail, Result};
 use skrills_analyze::{analyze_skill, DependencyType, RelationshipGraph};
 use skrills_discovery::discover_skills;
-use skrills_server::app::{RecommendationRelationship, SkillRecommendations};
-use std::collections::{HashMap, HashSet};
+use skrills_server::app::{
+    rank_skill_recommendations, RecommendationRelationship, SkillRecommendations,
+};
+use std::collections::HashMap;
 
 /// Handle the `recommend` command.
 pub(crate) fn handle_recommend_command(
@@ -97,90 +99,12 @@ fn recommendations_for(
         );
     }
 
-    // Get relationships
-    let dependencies: HashSet<_> = dep_graph.dependencies(&uri);
-    let dependents: Vec<_> = dep_graph.dependents(&uri);
-    let source_deps = &dependencies;
-
-    // Find siblings (share common dependencies)
-    let mut siblings: Vec<String> = Vec::new();
-    if !source_deps.is_empty() {
-        for other_uri in dep_graph.skills() {
-            if other_uri == uri {
-                continue;
-            }
-            if dependencies.contains(&other_uri) || dependents.contains(&other_uri) {
-                continue;
-            }
-            let other_deps = dep_graph.dependencies(&other_uri);
-            if !source_deps.is_disjoint(&other_deps) {
-                siblings.push(other_uri);
-            }
-        }
-    }
-
-    // Build recommendations
-    let mut recommendations = Vec::new();
-
-    for dep_uri in &dependencies {
-        let quality = if include_quality {
-            quality_scores.get(dep_uri).copied()
-        } else {
-            None
-        };
-        let score = 3.0 + quality.unwrap_or(0.0);
-        recommendations.push(skrills_server::app::SkillRecommendation {
-            uri: dep_uri.clone(),
-            relationship: RecommendationRelationship::Dependency,
-            quality_score: quality,
-            score,
-        });
-    }
-
-    for dep_uri in &dependents {
-        let quality = if include_quality {
-            quality_scores.get(dep_uri).copied()
-        } else {
-            None
-        };
-        let score = 2.0 + quality.unwrap_or(0.0);
-        recommendations.push(skrills_server::app::SkillRecommendation {
-            uri: dep_uri.clone(),
-            relationship: RecommendationRelationship::Dependent,
-            quality_score: quality,
-            score,
-        });
-    }
-
-    for sib_uri in &siblings {
-        let quality = if include_quality {
-            quality_scores.get(sib_uri).copied()
-        } else {
-            None
-        };
-        let score = 1.0 + quality.unwrap_or(0.0);
-        recommendations.push(skrills_server::app::SkillRecommendation {
-            uri: sib_uri.clone(),
-            relationship: RecommendationRelationship::Sibling,
-            quality_score: quality,
-            score,
-        });
-    }
-
-    // Sort and limit
-    recommendations.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
+    // The ranking is the server's, so the CLI and the MCP tool agree (SA-44).
+    let result = rank_skill_recommendations(&dep_graph, &uri, limit, |u| {
+        include_quality
+            .then(|| quality_scores.get(u).copied())
+            .flatten()
     });
-    let total_found = recommendations.len();
-    recommendations.truncate(limit);
-
-    let result = SkillRecommendations {
-        source_uri: uri.clone(),
-        total_found,
-        recommendations,
-    };
 
     Ok((result, uri_to_name))
 }
@@ -342,6 +266,130 @@ A test skill.
             msg.contains("existing"),
             "the available skills are listed: {msg}"
         );
+    }
+
+    /// SA-44: the same fixture and expectations as the server's
+    /// `app::skill_recommendations::tests`, so `skrills recommend` and the
+    /// `recommend-skills` MCP tool rank alike.
+    /// a -> {b, c, f, g}; d -> b (sibling of a); e -> a (dependent of a).
+    fn write_shared_fixture(dir: &std::path::Path) -> Vec<skrills_discovery::SkillMeta> {
+        let links: &[(&str, &[&str])] = &[
+            ("a", &["b", "c", "f", "g"]),
+            ("b", &[]),
+            ("c", &[]),
+            ("d", &["b"]),
+            ("e", &["a"]),
+            ("f", &[]),
+            ("g", &[]),
+        ];
+        for (name, deps) in links {
+            let mut body =
+                format!("---\nname: {name}\ndescription: Fixture skill {name}\n---\n# {name}\n");
+            for dep in *deps {
+                body.push_str(&format!("\nSee [{dep}](../{dep}/SKILL.md).\n"));
+            }
+            create_skill(dir, name, &body);
+        }
+        discover_skills(
+            &[skrills_discovery::SkillRoot {
+                root: dir.to_path_buf(),
+                source: skrills_discovery::SkillSource::Extra(0),
+            }],
+            None,
+        )
+        .unwrap()
+    }
+
+    fn fixture_uri(name: &str) -> String {
+        format!("skill://skrills/extra0/{name}/SKILL.md")
+    }
+
+    fn rows(result: &SkillRecommendations) -> Vec<(String, String, f64)> {
+        result
+            .recommendations
+            .iter()
+            .map(|r| (r.uri.clone(), format!("{:?}", r.relationship), r.score))
+            .collect()
+    }
+
+    fn normalized(mut rows: Vec<(String, String, f64)>) -> Vec<(String, String, f64)> {
+        rows.sort_by(|a, b| b.2.total_cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+        rows
+    }
+
+    fn expected_without_quality() -> Vec<(String, String, f64)> {
+        vec![
+            (fixture_uri("b"), "Dependency".into(), 3.0),
+            (fixture_uri("c"), "Dependency".into(), 3.0),
+            (fixture_uri("f"), "Dependency".into(), 3.0),
+            (fixture_uri("g"), "Dependency".into(), 3.0),
+            (fixture_uri("e"), "Dependent".into(), 2.0),
+            (fixture_uri("d"), "Sibling".into(), 1.0),
+        ]
+    }
+
+    #[test]
+    fn cli_ranking_characterization_without_quality() {
+        let tmp = tempdir().unwrap();
+        let skills = write_shared_fixture(tmp.path());
+
+        let (result, _) = recommendations_for(&fixture_uri("a"), &skills, 10, false).unwrap();
+
+        assert_eq!(result.source_uri, fixture_uri("a"));
+        assert_eq!(result.total_found, 6);
+        assert!(result
+            .recommendations
+            .iter()
+            .all(|r| r.quality_score.is_none()));
+        assert_eq!(normalized(rows(&result)), expected_without_quality());
+
+        let (limited, _) = recommendations_for(&fixture_uri("a"), &skills, 2, false).unwrap();
+        assert_eq!(
+            limited.total_found, 6,
+            "total_found counts before the limit"
+        );
+        assert_eq!(limited.recommendations.len(), 2);
+        assert!(limited
+            .recommendations
+            .iter()
+            .all(|r| matches!(r.relationship, RecommendationRelationship::Dependency)));
+    }
+
+    #[test]
+    fn cli_ranking_characterization_with_quality() {
+        let tmp = tempdir().unwrap();
+        let skills = write_shared_fixture(tmp.path());
+
+        let (result, _) = recommendations_for(&fixture_uri("a"), &skills, 10, true).unwrap();
+
+        assert_eq!(result.total_found, 6);
+        for rec in &result.recommendations {
+            let name = rec.uri.split('/').nth(4).unwrap();
+            let path = tmp.path().join(name).join("SKILL.md");
+            let expected = analyze_skill(&path, &fs::read_to_string(&path).unwrap()).quality_score;
+            let base = match rec.relationship {
+                RecommendationRelationship::Dependency => 3.0,
+                RecommendationRelationship::Dependent => 2.0,
+                RecommendationRelationship::Sibling => 1.0,
+            };
+            assert_eq!(rec.quality_score, Some(expected), "{rec:?}");
+            assert_eq!(rec.score, base + expected, "{rec:?}");
+        }
+        assert!(result
+            .recommendations
+            .windows(2)
+            .all(|w| w[0].score >= w[1].score));
+    }
+
+    /// SA-44: equal scores came out in `HashSet` order.
+    #[test]
+    fn cli_equal_scores_are_ordered_by_uri() {
+        let tmp = tempdir().unwrap();
+        let skills = write_shared_fixture(tmp.path());
+
+        let (result, _) = recommendations_for(&fixture_uri("a"), &skills, 10, false).unwrap();
+
+        assert_eq!(rows(&result), expected_without_quality());
     }
 
     /// SA-25 / SA-49: relative links were added to the graph verbatim, and the

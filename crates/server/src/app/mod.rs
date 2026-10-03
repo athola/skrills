@@ -17,6 +17,7 @@ mod mcp_registry;
 mod research;
 mod skill_recommendations;
 mod tools;
+pub use skill_recommendations::rank_skill_recommendations;
 
 use mcp_registry::build_mcp_registry;
 
