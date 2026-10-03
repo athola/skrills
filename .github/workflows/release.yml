@@ -53,20 +53,21 @@ jobs:
         run: echo "Release is already published; skipping uploads."
       - uses: actions/checkout@v4
         if: needs.create-release.outputs.is-draft == 'true'
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, resolved 2026-10-02
         if: needs.create-release.outputs.is-draft == 'true'
         with:
+          toolchain: stable
           targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: needs.create-release.outputs.is-draft == 'true'
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
         if: needs.create-release.outputs.is-draft == 'true'
         with:
           tool: cross
       - name: Upload Linux binaries
         if: needs.create-release.outputs.is-draft == 'true'
-        uses: taiki-e/upload-rust-binary-action@v1
+        uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1.30.2
         with:
           bin: skrills
           target: ${{ matrix.target }}
@@ -92,15 +93,16 @@ jobs:
         run: echo "Release is already published; skipping uploads."
       - uses: actions/checkout@v4
         if: needs.create-release.outputs.is-draft == 'true'
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, resolved 2026-10-02
         if: needs.create-release.outputs.is-draft == 'true'
         with:
+          toolchain: stable
           targets: aarch64-apple-darwin,x86_64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: needs.create-release.outputs.is-draft == 'true'
       - name: Upload macOS binaries
         if: needs.create-release.outputs.is-draft == 'true'
-        uses: taiki-e/upload-rust-binary-action@v1
+        uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1.30.2
         with:
           bin: skrills
           target: ${{ matrix.target }}
@@ -125,15 +127,16 @@ jobs:
         run: echo "Release is already published; skipping uploads."
       - uses: actions/checkout@v4
         if: needs.create-release.outputs.is-draft == 'true'
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, resolved 2026-10-02
         if: needs.create-release.outputs.is-draft == 'true'
         with:
+          toolchain: stable
           targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: needs.create-release.outputs.is-draft == 'true'
       - name: Upload Windows binaries
         if: needs.create-release.outputs.is-draft == 'true'
-        uses: taiki-e/upload-rust-binary-action@v1
+        uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1.30.2
         with:
           bin: skrills
           target: ${{ matrix.target }}
@@ -176,8 +179,10 @@ jobs:
       CARGO_NET_RETRY: "5"
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, resolved 2026-10-02
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Preflight token and package/build (no upload)
         run: |
           set -euo pipefail

@@ -131,7 +131,10 @@ pub fn load_priority_override(
 }
 
 /// Checks if a `DirEntry` is a `SKILL.md` file.
-fn is_skill_file(entry: &walkdir::DirEntry) -> bool {
+///
+/// This is the one rule skill discovery uses to recognise a skill file, so a
+/// caller that walks a tree itself should use it rather than a copy.
+pub fn is_skill_file(entry: &walkdir::DirEntry) -> bool {
     entry.file_type().is_file() && entry.file_name() == "SKILL.md"
 }
 
@@ -178,24 +181,26 @@ fn file_hash(path: &Path) -> Result<String> {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    // Using size and mtime gives us a cheap fingerprint without reading file contents.
-    // Hash only a small prefix to stay cheap but content-sensitive.
+    // Size and mtime come from the stat, and the whole content follows. Hashing
+    // only a prefix missed an edit past it when the size and mtime were kept
+    // (`cp -p`, rsync, a checkout), so a changed skill looked unchanged. Skill
+    // files are small, and discovery reads each one for its frontmatter anyway.
     let mut hasher = Blake2b256::new();
     hasher.update(size.to_le_bytes());
     hasher.update(mtime.to_le_bytes());
     if size > 0 {
         use std::io::Read;
+        // Best-effort: an unreadable file still gets a stat-only hash, so it is
+        // listed rather than failing the scan.
         if let Ok(mut file) = fs::File::open(path) {
-            // Saturation-guard expresses intent
-            // explicitly. Pre-fix pattern was `1024.min(usize::try_from(size).unwrap_or(usize::MAX))`
-            //, benign today (the outer `.min(1024)` clamps back) but a
-            // refactor reordering the operands was one OOM allocation
-            // away. The new shape caps at the prefix length up front.
-            let prefix_len = usize::try_from(size).unwrap_or(1024).min(1024);
-            let mut prefix = vec![0u8; prefix_len];
-            if let Ok(n) = file.read(&mut prefix) {
-                prefix.truncate(n);
-                hasher.update(&prefix);
+            let mut buf = [0u8; 8192];
+            loop {
+                match file.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => hasher.update(&buf[..n]),
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
             }
         }
     }
@@ -252,11 +257,62 @@ fn jaccard_similarity(a: &str, b: &str) -> f64 {
     intersection as f64 / union as f64
 }
 
+/// Reports a symlink the walk refuses to follow. Skipping is deliberate (see
+/// issue #135), but a user who links skills in from a dotfiles repo otherwise
+/// sees them vanish with no explanation.
+fn log_skipped_symlink(path: &Path) {
+    tracing::info!(
+        path = %path.display(),
+        "symlink skipped: discovery does not follow symlinks (issue #135)"
+    );
+}
+
+/// Signature of the per-file hash step. Production passes [`file_hash`]; tests
+/// pass a stand-in to provoke failures a real walk only hits by racing.
+type HashFn = fn(&Path) -> Result<String>;
+
+/// Hashes `path`, or returns `None` when the file vanished between the walk
+/// and the stat.
+///
+/// Only a vanished file is skipped: that is routine while
+/// ~/.claude/plugins/cache is rewritten, and failing the whole scan for it made
+/// discovery return nothing. Every other stat failure (EACCES, EIO, ELOOP)
+/// would instead drop an entry from discovery, AGENTS.md and the MCP resource
+/// list behind one warning that stdio `serve` sends to the host's log, so it
+/// fails the scan where a caller can report it.
+fn hash_unless_vanished(path: &Path, hash: HashFn) -> Result<Option<String>> {
+    match hash(path) {
+        Ok(digest) => Ok(Some(digest)),
+        Err(e) => {
+            let vanished = e
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
+            if !vanished {
+                return Err(e);
+            }
+            tracing::debug!(
+                path = %path.display(),
+                "file vanished before it could be hashed (entry skipped)"
+            );
+            Ok(None)
+        }
+    }
+}
+
 /// Collects skill metadata from the provided roots.
 fn collect_skills_from(
     roots: &[SkillRoot],
+    dup_log: Option<&mut Vec<DuplicateInfo>>,
+    max_depth: usize,
+) -> Result<Vec<SkillMeta>> {
+    collect_skills_with_hasher(roots, dup_log, max_depth, file_hash)
+}
+
+fn collect_skills_with_hasher(
+    roots: &[SkillRoot],
     mut dup_log: Option<&mut Vec<DuplicateInfo>>,
     max_depth: usize,
+    hash_fn: HashFn,
 ) -> Result<Vec<SkillMeta>> {
     let mut skills = Vec::new();
     let mut seen: std::collections::HashMap<String, (String, String)> =
@@ -284,6 +340,7 @@ fn collect_skills_from(
                 // 3. The sanitize_name() function prevents path traversal in output paths
                 // See: https://github.com/athola/skrills/issues/135
                 if e.file_type().is_symlink() {
+                    log_skipped_symlink(e.path());
                     return false;
                 }
                 let name = e.file_name().to_string_lossy();
@@ -334,34 +391,20 @@ fn collect_skills_from(
                 } else {
                     raw_name
                 };
-                // Only a vanished file is skipped: that is routine while
-                // ~/.claude/plugins/cache is rewritten, and failing the whole
-                // scan for it made discovery return nothing. Every other stat
-                // failure (EACCES, EIO, ELOOP) would instead drop a skill from
-                // discovery, AGENTS.md and the MCP resource list behind one
-                // warning that stdio `serve` sends to the host's log, so it
-                // fails the scan where a caller can report it.
-                let hash = match file_hash(&path) {
-                    Ok(hash) => hash,
-                    Err(e) => {
-                        let vanished = e
-                            .downcast_ref::<std::io::Error>()
-                            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
-                        if !vanished {
-                            return Err(e);
-                        }
-                        tracing::debug!(
-                            path = %path.display(),
-                            "skill file vanished before it could be hashed (entry skipped)"
-                        );
-                        return Ok(None);
-                    }
+                let Some(hash) = hash_unless_vanished(&path, hash_fn)? else {
+                    return Ok(None);
                 };
                 // Extract frontmatter identity (best-effort, log errors)
                 let (frontmatter_name, description) = match fs::read_to_string(&path) {
                     Ok(content) => extract_frontmatter_identity(&content),
                     Err(e) => {
-                        tracing::trace!(path = %path.display(), error = %e, "Failed to read skill file");
+                        // The skill is still listed, but without its name and
+                        // description, so say so at a level an operator sees.
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "could not read skill file; listed without its frontmatter"
+                        );
                         (None, None)
                     }
                 };
@@ -469,7 +512,17 @@ pub fn discover_skills_with_depth(
 }
 
 /// Collects agent metadata from the provided roots.
+///
+/// Uses [`DEFAULT_MAX_DEPTH`] for directory traversal depth, as
+/// [`discover_skills`] does.
 pub fn discover_agents(roots: &[SkillRoot]) -> Result<Vec<crate::types::AgentMeta>> {
+    collect_agents_with_hasher(roots, file_hash)
+}
+
+fn collect_agents_with_hasher(
+    roots: &[SkillRoot],
+    hash_fn: HashFn,
+) -> Result<Vec<crate::types::AgentMeta>> {
     let mut agents = Vec::new();
     for root_cfg in roots {
         let root = &root_cfg.root;
@@ -478,7 +531,7 @@ pub fn discover_agents(roots: &[SkillRoot]) -> Result<Vec<crate::types::AgentMet
         }
         for entry in WalkDir::new(root)
             .min_depth(1)
-            .max_depth(20)
+            .max_depth(DEFAULT_MAX_DEPTH)
             .into_iter()
             .filter_entry(|e| {
                 // SAFETY: Known TOCTOU limitation - a file could become a symlink between
@@ -488,6 +541,7 @@ pub fn discover_agents(roots: &[SkillRoot]) -> Result<Vec<crate::types::AgentMet
                 // 3. The sanitize_name() function prevents path traversal in output paths
                 // See: https://github.com/athola/skrills/issues/135
                 if e.file_type().is_symlink() {
+                    log_skipped_symlink(e.path());
                     return false;
                 }
                 let name = e.file_name().to_string_lossy();
@@ -519,7 +573,9 @@ pub fn discover_agents(roots: &[SkillRoot]) -> Result<Vec<crate::types::AgentMet
             let name = diff_paths(&path, root)
                 .and_then(|p| p.to_str().map(|s| s.to_owned()))
                 .unwrap_or_else(|| path.to_string_lossy().into_owned());
-            let hash = file_hash(&path)?;
+            let Some(hash) = hash_unless_vanished(&path, hash_fn)? else {
+                continue;
+            };
             agents.push(crate::types::AgentMeta {
                 name,
                 path: path.clone(),
@@ -860,6 +916,147 @@ mod tests {
         assert!(skills[0].description.is_none());
     }
 
+    /// Deletes the file, then hashes it, reproducing the race where an entry
+    /// vanishes between the walk and the stat. The NotFound reaches the real
+    /// downcast in `hash_unless_vanished` through the real `file_hash`.
+    fn vanish_then_hash(path: &Path) -> Result<String> {
+        if path.to_string_lossy().contains("vanishing") {
+            fs::remove_file(path).unwrap();
+        }
+        file_hash(path)
+    }
+
+    #[test]
+    fn discover_skills_skips_a_skill_that_vanishes_before_it_is_hashed() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("codex");
+        fs::create_dir_all(root.join("vanishing")).unwrap();
+        fs::create_dir_all(root.join("kept")).unwrap();
+        fs::write(root.join("vanishing/SKILL.md"), "gone").unwrap();
+        fs::write(root.join("kept/SKILL.md"), "here").unwrap();
+        let roots = vec![SkillRoot {
+            root: root.clone(),
+            source: SkillSource::Codex,
+        }];
+
+        let skills = collect_skills_with_hasher(&roots, None, DEFAULT_MAX_DEPTH, vanish_then_hash)
+            .expect("a vanished skill must not fail the scan");
+
+        let names: Vec<_> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["kept/SKILL.md"]);
+    }
+
+    #[test]
+    fn discover_agents_skips_an_agent_that_vanishes_before_it_is_hashed() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("claude");
+        fs::create_dir_all(root.join("agents")).unwrap();
+        fs::write(root.join("agents/vanishing.md"), "gone").unwrap();
+        fs::write(root.join("agents/kept.md"), "here").unwrap();
+        let roots = vec![SkillRoot {
+            root: root.clone(),
+            source: SkillSource::Claude,
+        }];
+
+        let agents = collect_agents_with_hasher(&roots, vanish_then_hash)
+            .expect("a vanished agent must not fail the scan");
+
+        let names: Vec<_> = agents.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, vec!["agents/kept.md"]);
+    }
+
+    #[test]
+    fn discover_agents_honours_the_default_max_depth() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("claude");
+        // agents/ sits at depth 1, so DEFAULT_MAX_DEPTH - 1 nested dirs put the
+        // file at DEFAULT_MAX_DEPTH + 1, one level past the limit.
+        let mut deep = root.join("agents");
+        for i in 0..DEFAULT_MAX_DEPTH - 1 {
+            deep = deep.join(format!("d{i}"));
+        }
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("too-deep.md"), "x").unwrap();
+        fs::write(root.join("agents/shallow.md"), "x").unwrap();
+        let roots = vec![SkillRoot {
+            root: root.clone(),
+            source: SkillSource::Claude,
+        }];
+
+        let agents = discover_agents(&roots).unwrap();
+        let names: Vec<_> = agents.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, vec!["agents/shallow.md"]);
+    }
+
+    /// Records the `message` field of every event at `level` or above.
+    struct MessageCapture {
+        level: tracing::Level,
+        messages: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl tracing::Subscriber for MessageCapture {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            *metadata.level() <= self.level
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            struct Message(String);
+            impl tracing::field::Visit for Message {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    if field.name() == "message" {
+                        self.0 = format!("{value:?}");
+                    }
+                }
+            }
+            let mut message = Message(String::new());
+            event.record(&mut message);
+            self.messages.lock().unwrap().push(message.0);
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_skills_reports_a_skipped_symlink_at_info() {
+        let tmp = tempdir().unwrap();
+        let elsewhere = tmp.path().join("dotfiles/linked");
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::write(elsewhere.join("SKILL.md"), "linked").unwrap();
+        let root = tmp.path().join("claude");
+        fs::create_dir_all(&root).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join("linked")).unwrap();
+        let roots = vec![SkillRoot {
+            root,
+            source: SkillSource::Claude,
+        }];
+
+        let messages = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let capture = MessageCapture {
+            level: tracing::Level::INFO,
+            messages: messages.clone(),
+        };
+        // The walk filter runs on the calling thread, so a thread-local
+        // subscriber sees the event.
+        let skills =
+            tracing::subscriber::with_default(capture, || discover_skills(&roots, None)).unwrap();
+
+        assert!(skills.is_empty(), "symlinks are still not followed");
+        let messages = messages.lock().unwrap();
+        assert!(
+            messages.iter().any(|m| m.contains("symlink skipped")),
+            "expected a symlink diagnostic at info, got {messages:?}"
+        );
+    }
+
     #[test]
     fn discover_skills_propagates_a_hash_error_that_is_not_a_vanished_file() {
         use std::os::unix::fs::PermissionsExt;
@@ -1172,6 +1369,34 @@ mod tests {
         let hash2 = hash_file(&file).unwrap();
 
         assert_ne!(hash1, hash2, "hash should change when content changes");
+    }
+
+    #[test]
+    fn hash_file_detects_a_change_past_the_first_kilobyte_with_mtime_preserved() {
+        let tmp = tempdir().unwrap();
+        let file = tmp.path().join("long.md");
+        let mut content = vec![b'a'; 4096];
+        fs::write(&file, &content).unwrap();
+        let mtime = fs::metadata(&file).unwrap().modified().unwrap();
+        let hash1 = hash_file(&file).unwrap();
+
+        // Same length, one byte changed well past 1024, mtime put back the way
+        // `cp -p`, rsync or a git checkout can leave it.
+        content[3000] = b'b';
+        fs::write(&file, &content).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), mtime);
+        let hash2 = hash_file(&file).unwrap();
+
+        assert_ne!(
+            hash1, hash2,
+            "a change after byte 1024 must change the hash"
+        );
     }
 
     #[test]

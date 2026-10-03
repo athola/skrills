@@ -217,13 +217,10 @@ pub fn split_frontmatter(content: &str) -> (Option<String>, String, usize) {
     let after_open = &trimmed[3..];
     let after_open = after_open.trim_start_matches(['\r', '\n']);
 
-    // Searching for `\n---` also finds a CRLF closing delimiter, one byte later.
-    // A dedicated `\r\n---` arm would be unreachable, and putting it first would
-    // match a `\r\n---` in the body of an LF-terminated file.
-    if let Some(end_pos) = after_open.find("\n---") {
+    if let Some((end_pos, fence_end)) = find_closing_fence(after_open) {
         let block = &after_open[..end_pos];
         let yaml = block.strip_suffix('\r').unwrap_or(block);
-        let rest = &after_open[end_pos + 4..];
+        let rest = &after_open[fence_end..];
         let rest = rest.trim_start_matches(['\r', '\n']);
 
         // Calculate content start line
@@ -235,6 +232,30 @@ pub fn split_frontmatter(content: &str) -> (Option<String>, String, usize) {
         // No closing ---, treat entire content as body
         (None, content.to_string(), 1)
     }
+}
+
+/// Finds the line that closes a frontmatter block: one that is exactly `---`,
+/// apart from trailing whitespace or a CRLF `\r`. Returns the offset of the
+/// newline before it and the offset just past the fence text.
+///
+/// A plain search for `\n---` also matched `----` or `--- text` inside a block
+/// scalar and closed the block early. Matching on `\n` covers a CRLF fence too,
+/// since its `\r` trails the previous line, and a `\r\n---` in the body of an
+/// LF file is never mistaken for the fence.
+fn find_closing_fence(after_open: &str) -> Option<(usize, usize)> {
+    let mut search_from = 0;
+    while let Some(rel) = after_open[search_from..].find("\n---") {
+        let newline = search_from + rel;
+        let line_start = newline + 1;
+        let line_end = after_open[line_start..]
+            .find('\n')
+            .map_or(after_open.len(), |i| line_start + i);
+        if after_open[line_start..line_end].trim_end() == "---" {
+            return Some((newline, line_end));
+        }
+        search_from = line_start;
+    }
+    None
 }
 
 /// Parse YAML frontmatter from a skill file.
@@ -338,6 +359,32 @@ mod tests {
         assert_eq!(yaml.as_deref(), Some("name: test\r\nmodel: x"));
         assert_eq!(body, "# Body\r\n");
         assert_eq!(line, 5);
+    }
+
+    /// Only a line that is exactly `---` closes the block. A `----` rule or a
+    /// `--- text` line inside a block scalar is YAML content, not the fence.
+    #[test]
+    fn split_frontmatter_closes_only_on_a_bare_fence_line() {
+        let content =
+            "---\nname: test\ndescription: |\n  intro\n----\n--- not a fence\n---\nBody\n";
+        let (yaml, body, _) = split_frontmatter(content);
+
+        assert_eq!(
+            yaml.as_deref(),
+            Some("name: test\ndescription: |\n  intro\n----\n--- not a fence")
+        );
+        assert_eq!(body, "Body\n");
+    }
+
+    #[test]
+    fn split_frontmatter_accepts_a_fence_with_trailing_whitespace_or_cr() {
+        let (yaml, body, _) = split_frontmatter("---\nname: a\n---  \nBody\n");
+        assert_eq!(yaml.as_deref(), Some("name: a"));
+        assert_eq!(body, "Body\n");
+
+        let (yaml, body, _) = split_frontmatter("---\r\nname: a\r\n---\r\nBody\r\n");
+        assert_eq!(yaml.as_deref(), Some("name: a"));
+        assert_eq!(body, "Body\r\n");
     }
 
     /// A body that happens to contain `\r\n---` must not be mistaken for the

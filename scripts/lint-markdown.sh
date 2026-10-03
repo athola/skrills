@@ -27,6 +27,7 @@ PATTERNS=(
   "!.home-tmp/**"
   "!.codex/**"
   "!reviews/**"
+  "!.claude/**"
 )
 
 echo "running markdownlint-cli2..."

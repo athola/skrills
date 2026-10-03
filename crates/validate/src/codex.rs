@@ -172,29 +172,7 @@ fn validate_codex_content(result: &mut ValidationResult, parsed: &ParsedSkill) {
 
 /// Check if a skill is Codex-compatible.
 pub fn is_codex_compatible(content: &str) -> bool {
-    let parsed = match parse_frontmatter(content) {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
-
-    if let Some(fm) = parsed.frontmatter {
-        // Must have both name and description within limits
-        let name_ok = fm
-            .name
-            .as_ref()
-            .map(|n| !n.is_empty() && n.len() <= MAX_NAME_LENGTH)
-            .unwrap_or(false);
-
-        let desc_ok = fm
-            .description
-            .as_ref()
-            .map(|d| !d.is_empty() && d.len() <= MAX_DESCRIPTION_LENGTH)
-            .unwrap_or(false);
-
-        name_ok && desc_ok && !parsed.content.trim().is_empty()
-    } else {
-        false
-    }
+    crate::common::has_bounded_identity_and_body(content, MAX_NAME_LENGTH, MAX_DESCRIPTION_LENGTH)
 }
 
 #[cfg(test)]

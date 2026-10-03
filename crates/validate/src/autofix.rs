@@ -303,10 +303,40 @@ pub fn autofix_frontmatter(
             result.backup_path = Some(backup_path);
         }
 
-        fs::write(path, &new_content).map_err(|e| format!("Failed to write changes: {e}"))?;
+        write_atomically(path, &new_content)
+            .map_err(|e| format!("Failed to write changes: {e}"))?;
     }
 
     Ok(result)
+}
+
+/// Replaces `path` with `content` so a reader sees either the old file or the
+/// new one, never a truncated mix: the bytes go to a sibling temp file, are
+/// flushed, take the original's permissions, and are renamed over it.
+fn write_atomically(path: &Path, content: &str) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("path has no file name"))?;
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(file_name);
+    tmp_name.push(format!(".autofix-{}.tmp", std::process::id()));
+    let tmp_path = path.with_file_name(tmp_name);
+
+    let written = (|| {
+        let mut tmp = fs::File::create(&tmp_path)?;
+        tmp.write_all(content.as_bytes())?;
+        tmp.sync_all()?;
+        if let Ok(meta) = fs::metadata(path) {
+            fs::set_permissions(&tmp_path, meta.permissions())?;
+        }
+        fs::rename(&tmp_path, path)
+    })();
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp_path);
+    }
+    written
 }
 
 #[cfg(test)]
@@ -455,6 +485,48 @@ mod tests {
         assert!(result.modified);
         assert!(result.content.contains("name: my-cool-skill"));
         assert!(result.changes.iter().any(|c| c.contains("kebab-case")));
+    }
+
+    /// A kill or a full disk during an in-place `fs::write` leaves a truncated
+    /// SKILL.md. The fix writes a sibling file and renames it over the
+    /// original, which shows up as a new inode, with the mode carried over.
+    #[cfg(unix)]
+    #[test]
+    fn autofix_replaces_the_file_by_rename_and_keeps_its_mode() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let skill_path = temp_dir.path().join("SKILL.md");
+        let content = "# My Skill\nShort body only.";
+        fs::write(&skill_path, content).unwrap();
+        fs::set_permissions(&skill_path, fs::Permissions::from_mode(0o640)).unwrap();
+        let inode_before = fs::metadata(&skill_path).unwrap().ino();
+
+        let options = AutofixOptions {
+            write_changes: true,
+            ..Default::default()
+        };
+        let result = autofix_frontmatter(&skill_path, content, &options).unwrap();
+        assert!(result.modified);
+
+        let meta = fs::metadata(&skill_path).unwrap();
+        assert_ne!(
+            meta.ino(),
+            inode_before,
+            "the skill must be replaced by rename, not rewritten in place"
+        );
+        assert_eq!(meta.permissions().mode() & 0o777, 0o640);
+        assert_eq!(fs::read_to_string(&skill_path).unwrap(), result.content);
+        let leftovers: Vec<_> = fs::read_dir(temp_dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|n| n != "SKILL.md")
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "no temp file may remain: {leftovers:?}"
+        );
     }
 
     /// Verifies autofix creates backups with the `.md.bak` naming convention.

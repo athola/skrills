@@ -53,7 +53,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: filter
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
         with:
           filters: |
             server:
@@ -106,8 +106,9 @@ jobs:
             openssl
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, resolved 2026-10-02
         with:
+          toolchain: stable
           components: clippy, rustfmt
 
       - name: Build all workspace members
@@ -143,8 +144,9 @@ jobs:
             ${{ runner.os }}-test-target-
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, resolved 2026-10-02
         with:
+          toolchain: stable
           components: clippy, rustfmt
 
       - name: Run server integration tests
@@ -183,8 +185,9 @@ jobs:
             ${{ runner.os }}-test-target-
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, resolved 2026-10-02
         with:
+          toolchain: stable
           components: clippy, rustfmt
 
       - name: Run subagents integration tests
@@ -223,8 +226,9 @@ jobs:
             ${{ runner.os }}-test-target-
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, resolved 2026-10-02
         with:
+          toolchain: stable
           components: clippy, rustfmt
 
       - name: Run sync integration tests
@@ -297,7 +301,7 @@ jobs:
             --nocapture
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4.6.0
         with:
           files: lcov.info
           flags: integration-tests

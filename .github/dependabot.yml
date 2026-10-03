@@ -1,0 +1,13 @@
+# Third-party actions are pinned to commit SHAs (see
+# crates/test-utils/tests/workflow_pins.rs). Dependabot moves the SHA and the
+# trailing version comment together, so the pins do not go stale.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"

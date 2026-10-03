@@ -334,8 +334,9 @@ impl std::fmt::Display for AgentModel {
 /// - Security issues
 /// ```
 ///
-/// The `tools` and `skills` fields accept comma-separated strings in the
-/// YAML frontmatter, which are parsed into `Vec<String>` in `AgentConfig`.
+/// The `tools` and `skills` fields accept a comma-separated string or a YAML
+/// list (`tools: [Read, Grep]`), and are parsed into `Vec<String>` in
+/// `AgentConfig`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     /// Agent name.
@@ -364,15 +365,37 @@ struct RawAgentFrontmatter {
     name: Option<String>,
     /// Agent description.
     description: Option<String>,
-    /// Tools as comma-separated string (Claude Code format).
-    tools: Option<String>,
+    /// Tools as a comma-separated string (Claude Code format) or a YAML list.
+    tools: Option<StringOrList>,
     /// Model to use.
     model: Option<String>,
     /// Permission mode (camelCase in YAML).
     #[serde(rename = "permissionMode")]
     permission_mode: Option<String>,
-    /// Skills as comma-separated string.
-    skills: Option<String>,
+    /// Skills as a comma-separated string or a YAML list.
+    skills: Option<StringOrList>,
+}
+
+/// A frontmatter field written either as `a, b` or as `[a, b]`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum StringOrList {
+    Comma(String),
+    List(Vec<String>),
+}
+
+impl StringOrList {
+    /// Trimmed, non-empty entries, whichever form was written.
+    fn into_items(self) -> Vec<String> {
+        match self {
+            Self::Comma(s) => parse_comma_list(&s),
+            Self::List(items) => items
+                .into_iter()
+                .map(|item| item.trim().to_string())
+                .filter(|item| !item.is_empty())
+                .collect(),
+        }
+    }
 }
 
 /// Parse comma-separated string into a vector of trimmed strings.
@@ -395,11 +418,8 @@ pub fn parse_agent_config(content: &str, fallback_name: &str) -> Result<AgentCon
         RawAgentFrontmatter::default()
     };
 
-    // Convert tools from comma-separated string to Vec
-    let tools = raw.tools.map(|t| parse_comma_list(&t));
-
-    // Convert skills from comma-separated string to Vec
-    let skills = raw.skills.map(|s| parse_comma_list(&s));
+    let tools = raw.tools.map(StringOrList::into_items);
+    let skills = raw.skills.map(StringOrList::into_items);
 
     // Parse model string into AgentModel enum
     let model = raw.model.map(|m| match m.to_lowercase().as_str() {
@@ -479,6 +499,24 @@ pub struct Diagnostics {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn parse_agent_config_accepts_list_form_tools_and_skills() {
+        let content = "---\nname: lister\ntools: [Read, Write, Bash]\nskills:\n  - a:one\n  - b:two\n---\nBody\n";
+        let config = parse_agent_config(content, "fallback").unwrap();
+        assert_eq!(
+            config.tools,
+            Some(vec!["Read".into(), "Write".into(), "Bash".into()])
+        );
+        assert_eq!(config.skills, Some(vec!["a:one".into(), "b:two".into()]));
+    }
+
+    #[test]
+    fn parse_agent_config_list_form_drops_blank_entries_like_the_string_form() {
+        let content = "---\nname: lister\ntools: [\" Read \", \"\"]\n---\nBody\n";
+        let config = parse_agent_config(content, "fallback").unwrap();
+        assert_eq!(config.tools, Some(vec!["Read".into()]));
+    }
 
     // ============================================================
     // AgentConfig parsing tests

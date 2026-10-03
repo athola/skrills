@@ -19,33 +19,38 @@ graph TD
 
 ## Crate Dependency Graph
 
+Edges are the `[dependencies]` in each `crates/*/Cargo.toml`. Dashed edges are
+optional (feature-gated). `test-utils` is a dev-dependency only and is left out.
+
 ```mermaid
 graph TD
     cli[cli<br/>clap, commands, dispatcher] --> server[server<br/>MCP runtime, engine]
     cli --> sync & validate & analyze & intelligence
-    cli --> metrics & tome & discovery & state
-    cli -. optional .-> subagents & dashboard
+    cli --> tome & discovery & state & snapshot
+    cli -. optional .-> dashboard
     server --> sync[sync]
     server --> validate[validate]
     server --> analyze[analyze]
     server --> intelligence[intelligence]
-    server --> subagents[subagents]
-    server --> dashboard[dashboard<br/>TUI and browser UI]
+    server --> discovery[discovery]
     server --> metrics[metrics<br/>SQLite telemetry]
     server --> tome[tome<br/>research APIs, caching]
-    sync --> validate
-    analyze --> validate
-    analyze --> discovery
-    subagents --> state[state]
+    server --> state & snapshot
+    server -. optional .-> subagents[subagents]
+    server -. optional .-> dashboard[dashboard<br/>TUI and browser UI]
+    dashboard --> metrics & discovery & sync & snapshot
+    analyze --> validate & discovery & intelligence & snapshot
+    sync --> validate & snapshot
+    discovery --> validate
+    subagents --> discovery & state
+    intelligence --> snapshot
+    tome --> snapshot
 
     subgraph leaf["Leaf Crates (no internal deps)"]
-        discovery[discovery]
-        intelligence
-        state
         validate
+        state[state]
         metrics
-        dashboard
-        tome
+        snapshot[snapshot]
     end
 ```
 
@@ -65,11 +70,12 @@ graph TD
 | `dashboard` | TUI and browser-based skill visualization (Leptos SSR) |
 | `metrics` | SQLite-based telemetry for invocations, validations, sync |
 | `tome` | Research API orchestration, knowledge graph, citation tracking, caching |
+| `snapshot` | Cold-window wire-format types shared by the analyzer, the TUI and the browser SSE handler |
 | `test-utils` | Shared test infrastructure (fixtures, RAII guards, temp dirs) |
 
 ## Design Principles
 
-Leaf crates like `validate`, `discovery`, and `state` have no internal dependencies to prevent cycles. `AgentAdapter` allows pluggable adapters for Claude, Codex, Copilot, and Cursor, while `SyncOrchestrator<S, T>` uses compile-time dispatch for type safety. We gate features like `subagents` behind flags to minimize binary size.
+Leaf crates (`validate`, `state`, `metrics` and `snapshot`) have no internal dependencies, and `discovery` depends only on `validate`, which keeps the graph acyclic. `AgentAdapter` allows pluggable adapters for Claude, Codex, Copilot, and Cursor, while `SyncOrchestrator<S, T>` uses compile-time dispatch for type safety. We gate features like `subagents` behind flags to minimize binary size.
 
 ## Module Organization
 

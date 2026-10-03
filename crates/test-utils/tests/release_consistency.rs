@@ -8,7 +8,7 @@
 //! (`plugins/sanctum/tests/test_release_consistency.py`), adapted for a
 //! Rust cargo workspace and `plugin.json` plugin manifest layout.
 //!
-//! The five invariants:
+//! The invariants (6 and 7 are at the bottom of the file):
 //! 1. All `crates/*/Cargo.toml` versions agree.
 //! 2. `plugins/skrills/.claude-plugin/plugin.json` version matches the
 //!    workspace crate version.
@@ -20,6 +20,9 @@
 //! 5. `.claude-plugin/marketplace.json` plugin entries (and optional
 //!    `metadata.version`) agree with the workspace, and each entry's
 //!    `source` path exists on disk.
+//! 6. The newest `docs/CHANGELOG.md` heading is the workspace version.
+//! 7. `book/src/changelog.md` leads with the same version as
+//!    `docs/CHANGELOG.md`.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -261,5 +264,40 @@ fn marketplace_json_versions_and_sources_agree() {
         errors.is_empty(),
         "marketplace.json drift detected:\n  - {}",
         errors.join("\n  - ")
+    );
+}
+
+/// Version of the first `## ` heading in a changelog. The two changelogs
+/// format headings differently (`## 0.9.0 - Unreleased` in docs,
+/// `## 0.8.2 (2026-05-30)` in the book), and the version is the first token in
+/// both.
+fn top_changelog_version(path: &Path) -> String {
+    let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    text.lines()
+        .find_map(|line| line.strip_prefix("## "))
+        .and_then(|heading| heading.split_whitespace().next())
+        .unwrap_or_else(|| panic!("{} has no `## ` version heading", path.display()))
+        .to_string()
+}
+
+/// Invariant #6: the newest `docs/CHANGELOG.md` entry is the workspace version,
+/// so a version bump cannot ship without a changelog section for it.
+#[test]
+fn docs_changelog_top_entry_is_the_workspace_version() {
+    let docs = top_changelog_version(&workspace_root().join("docs").join("CHANGELOG.md"));
+    assert_eq!(docs, canonical_workspace_version());
+}
+
+/// Invariant #7: the published book's changelog leads with the same release as
+/// `docs/CHANGELOG.md`, so a reader of the book is not a release behind.
+#[test]
+#[ignore = "ST-6: enable once book/src/changelog.md gains the 0.9.0 section"]
+fn book_changelog_top_entry_matches_docs_changelog() {
+    let root = workspace_root();
+    let docs = top_changelog_version(&root.join("docs").join("CHANGELOG.md"));
+    let book = top_changelog_version(&root.join("book").join("src").join("changelog.md"));
+    assert_eq!(
+        book, docs,
+        "book/src/changelog.md leads with {book}, docs/CHANGELOG.md with {docs}"
     );
 }

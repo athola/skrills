@@ -168,8 +168,11 @@ See [security docs](docs/security.md) for TLS setup and the
   prompts at runtime.
 - Session-history mining works best with recent Claude Code / Codex CLI
   versions.
-- LLM-based skill generation requires `ANTHROPIC_API_KEY` or
-  `OPENAI_API_KEY`.
+- LLM-based skill generation (`create-skill`) runs the `claude` or `codex`
+  CLI found on `PATH` (override with `SKRILLS_CLI_BINARY`) and uses that
+  CLI's own login. skrills reads no model API key for it. The API-backed
+  subagent backends are separate and read `SKRILLS_CLAUDE_API_KEY` or
+  `SKRILLS_CODEX_API_KEY`.
 
 ## Contributing
 

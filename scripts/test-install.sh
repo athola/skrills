@@ -322,6 +322,57 @@ assert_eq "$VERIFY_RC" "1" "a digest tool that produces nothing fails"
 assert_contains "$VERIFY_OUT" "unable to compute" "a failed digest names the reason"
 unset SKRILLS_FORCE_SHASUM
 
+# End to end through DOWNLOAD_AND_EXTRACT: the check must run before tar, so a
+# tampered tarball never puts a binary in the install directory. The sidecar
+# URL is derived from the tarball URL, so both live side by side as a release
+# publishes them.
+echo ""
+echo "--- DOWNLOAD_AND_EXTRACT verifies before installing ---"
+REL_DIR="$CK_DIR/release"
+mkdir -p "$REL_DIR/stage"
+printf '#!/bin/sh\necho fake skrills\n' >"$REL_DIR/stage/skrills"
+tar -czf "$REL_DIR/skrills-x86_64-unknown-linux-gnu.tar.gz" -C "$REL_DIR/stage" skrills
+REL_TARBALL_URL="file://$REL_DIR/skrills-x86_64-unknown-linux-gnu.tar.gz"
+REL_SUM="$(SHA256_OF "$REL_DIR/skrills-x86_64-unknown-linux-gnu.tar.gz")"
+
+# DOWNLOAD_AND_EXTRACT installs its own EXIT trap and exits through fail(), so
+# every run happens in a subshell.
+run_install() {
+    INSTALL_RC=0
+    INSTALL_OUT="$( (DOWNLOAD_AND_EXTRACT "$REL_TARBALL_URL" "$1" skrills) 2>&1 )" \
+        || INSTALL_RC=$?
+}
+
+printf '%s  skrills-x86_64-unknown-linux-gnu.tar.gz\n' "$CK_BAD" \
+    >"$REL_DIR/skrills-x86_64-unknown-linux-gnu.sha256"
+run_install "$CK_DIR/bin-tampered"
+assert_eq "$INSTALL_RC" "1" "a tarball that fails its checksum is not installed"
+assert_contains "$INSTALL_OUT" "checksum mismatch" "the refusal names the mismatch"
+if [[ -e "$CK_DIR/bin-tampered/skrills" ]]; then
+    test_fail "a tarball that fails its checksum left a binary behind"
+else
+    pass "a tarball that fails its checksum leaves no binary behind"
+fi
+
+rm -f "$REL_DIR/skrills-x86_64-unknown-linux-gnu.sha256"
+run_install "$CK_DIR/bin-nosidecar"
+assert_eq "$INSTALL_RC" "1" "a release without a sidecar is not installed"
+if [[ -e "$CK_DIR/bin-nosidecar/skrills" ]]; then
+    test_fail "a release without a sidecar left a binary behind"
+else
+    pass "a release without a sidecar leaves no binary behind"
+fi
+
+printf '%s  skrills-x86_64-unknown-linux-gnu.tar.gz\n' "$REL_SUM" \
+    >"$REL_DIR/skrills-x86_64-unknown-linux-gnu.sha256"
+run_install "$CK_DIR/bin-good"
+assert_eq "$INSTALL_RC" "0" "a tarball matching its sidecar installs"
+if [[ -x "$CK_DIR/bin-good/skrills" ]]; then
+    pass "a verified tarball installs an executable binary"
+else
+    test_fail "a verified tarball did not install an executable binary ($INSTALL_OUT)"
+fi
+
 # Summary
 echo ""
 echo "========================================"

@@ -3,5 +3,8 @@ ignore = [
   # paste crate is unmaintained (RUSTSEC-2024-0436). It reaches the tree only
   # through the leptos family (search Cargo.lock for `paste`). rmcp uses pastey.
   # Remove this entry when leptos drops it.
+  # Added for leptos 0.8.20. Revisit by 2027-04-01, or at the next leptos
+  # upgrade, whichever comes first: run `cargo tree -i paste` and delete this
+  # entry if nothing prints.
   "RUSTSEC-2024-0436",
 ]

@@ -120,10 +120,12 @@ refusal() {  # $1=label  $2..=command
   scenario "$label refuses gracefully when stdout is not a TTY"
   local out err rc
   out="$WORK/out.$RANDOM"; err="$WORK/err.$RANDOM"
-  set +e
-  HOME="$HOME_DIR" "$@" </dev/null >"$out" 2>"$err"
-  rc=$?
-  set -e 2>/dev/null || true
+  # No `set +e`/`set -e` pair: this script runs without errexit by design, and
+  # every scenario reports through ok/bad. The old trailing `set -e` turned
+  # errexit on for the rest of the run after the first refusal, so a later
+  # failing check ended the script mid-feature with no summary.
+  rc=0
+  HOME="$HOME_DIR" "$@" </dev/null >"$out" 2>"$err" || rc=$?
   [ "$rc" -ne 0 ] && ok "exited non-zero ($rc) instead of rendering" \
     || bad "exited 0 — should refuse without a TTY"
   grep -qiE "tty|terminal" "$out" "$err" && ok "explains the TTY requirement" \
