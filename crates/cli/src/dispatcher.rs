@@ -11,7 +11,7 @@
 //! line, the logic belongs in `crate::commands::foo` (or a new
 //! handler under `crate::commands`).
 
-use crate::cli::{CertAction, Cli, Commands, SyncSource};
+use crate::cli::{CertAction, Cli, Commands};
 use crate::commands::{
     handle_agent_command, handle_analyze_command, handle_analyze_project_context_command,
     handle_cert_install_command, handle_cert_renew_command, handle_cert_status_command,
@@ -23,41 +23,30 @@ use crate::commands::{
     handle_setup_command, handle_skill_catalog_command, handle_skill_deprecate_command,
     handle_skill_diff_command, handle_skill_import_command, handle_skill_profile_command,
     handle_skill_rollback_command, handle_skill_score_command, handle_skill_usage_report_command,
-    handle_suggest_new_skills_command, handle_sync_agents_command, handle_sync_command,
-    handle_sync_pull_command, handle_validate_command,
+    handle_suggest_new_skills_command, handle_sync_agents_command, handle_sync_all_command,
+    handle_sync_command, handle_sync_pull_command, handle_sync_status_command,
+    handle_validate_command, run_sync_with_adapters, skipped_commands_note, ServeOptions,
+    SetupOptions, SmartRecommendOptions, SyncAllArgs,
 };
 use crate::doctor::doctor_report;
 use crate::tui::tui_flow;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use clap::Parser;
 use skrills_server::discovery::merge_extra_dirs;
-use skrills_server::sync::mirror_source_root;
-use skrills_state::home_dir;
 
-/// Sync helper used by Sync* command branches.
-///
-/// `pub(crate)` so `dispatcher_sync_tests.rs`, included at the bottom of this
-/// file through `#[path]`, can reach it.
-pub(crate) fn run_sync_with_adapters(
-    from: SyncSource,
-    to: SyncSource,
-    params: &skrills_sync::SyncParams,
-) -> Result<skrills_sync::SyncReport> {
-    // Same source and target - error
-    if from == to {
-        return Err(anyhow!(
-            "Source and target cannot be the same: {}",
-            from.as_str()
-        ));
-    }
-
-    // Delegate to sync_between which handles adapter creation for all platforms
-    skrills_sync::orchestrator::sync_between(from.as_str(), to.as_str(), params)
+/// Whether stdin and stdout are both a terminal.
+fn is_interactive_terminal() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
 /// Main application entry point.
 pub fn run() -> Result<()> {
+    // Logs go to stderr. stdout belongs to the command's output: the JSON
+    // document under `--format json`, and the JSON-RPC stream under stdio
+    // `serve`, where a log line is a protocol error.
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
@@ -77,7 +66,10 @@ pub fn run() -> Result<()> {
     let is_setup = matches!(command_ref, Some(Commands::Setup { .. }));
     let is_batch = matches!(command_ref, Some(Commands::SyncAll { .. }));
 
-    if !is_serve && !is_setup && !is_batch {
+    // The first-run prompt asks a question, so it needs a person at both
+    // ends. With stdout piped (a script, `--format json | jq`, CI) its banner
+    // would land in the captured output ahead of the document.
+    if !is_serve && !is_setup && !is_batch && is_interactive_terminal() {
         if let Ok(true) = skrills_server::setup::is_first_run() {
             if let Ok(true) = skrills_server::setup::prompt_first_run_setup() {
                 // Run interactive setup
@@ -126,7 +118,7 @@ pub fn run() -> Result<()> {
             allowed_hosts,
             tls_auto,
             open,
-        } => handle_serve_command(
+        } => handle_serve_command(ServeOptions {
             skill_dirs,
             cache_ttl_ms,
             trace_wire,
@@ -140,8 +132,8 @@ pub fn run() -> Result<()> {
             cors_origins,
             allowed_hosts,
             tls_auto,
-            open,
-        ),
+            open_browser: open,
+        }),
         Commands::Mirror {
             dry_run,
             skip_existing_commands,
@@ -196,20 +188,7 @@ pub fn run() -> Result<()> {
             tracing::info!(
                 "{}{}",
                 report.summary,
-                if skip_existing_commands && !report.commands.skipped.is_empty() {
-                    format!(
-                        "\nSkipped existing commands (kept target copy): {}",
-                        report
-                            .commands
-                            .skipped
-                            .iter()
-                            .map(|r| r.description())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                } else {
-                    String::new()
-                }
+                skipped_commands_note(skip_existing_commands, &report)
             );
             if dry_run {
                 tracing::info!("(dry run - no changes made)");
@@ -271,209 +250,24 @@ pub fn run() -> Result<()> {
             exclude_plugins,
             validate,
             autofix,
-        } => {
-            use skrills_sync::SyncParams;
-
-            // Neither flag is wired to the validator yet. Refuse instead of
-            // running an unvalidated sync that reports success.
-            if validate || autofix {
-                let flag = if validate { "--validate" } else { "--autofix" };
-                anyhow::bail!(
-                    "sync-all {flag} is not implemented; run `skrills validate --autofix` first, then `skrills sync-all`"
-                );
-            }
-
-            // Determine targets: explicit --to or all other CLIs
-            let targets: Vec<SyncSource> = match to {
-                Some(t) => vec![t],
-                None => from.other_targets(),
-            };
-
-            let multi_target = targets.len() > 1;
-
-            for target in targets {
-                if multi_target {
-                    tracing::info!(
-                        from = %from.as_str(),
-                        to = %target.as_str(),
-                        "syncing target"
-                    );
-                }
-
-                // First sync skills using existing mechanism (only for claude→codex)
-                if from.is_claude() && target.is_codex() && !dry_run {
-                    let home = home_dir()?;
-                    let claude_root = mirror_source_root(&home);
-                    let codex_skills_root = home.join(".codex/skills");
-                    let skill_report = skrills_server::sync::sync_skills_only_from_claude(
-                        &claude_root,
-                        &codex_skills_root,
-                        include_marketplace,
-                    )?;
-                    if let Err(err) = skrills_server::setup::ensure_codex_skills_feature_enabled(
-                        &home.join(".codex/config.toml"),
-                    ) {
-                        // Surface filesystem errors
-                        // (read-only home, disk full, malformed TOML) so
-                        // the user sees a hint when codex skills won't
-                        // start despite "skills synced" landing
-                        // successfully on the FS side.
-                        tracing::warn!(
-                            error = %err,
-                            "could not ensure codex skills feature flag; users may need \
-                             to re-run setup or check ~/.codex/config.toml"
-                        );
-                    }
-                    tracing::info!(
-                        synced = skill_report.copied,
-                        unchanged = skill_report.skipped,
-                        "skills synced"
-                    );
-                }
-
-                let delivery = skrills_sync::skill_delivery(from.as_str(), target.as_str());
-                let params = SyncParams {
-                    from: Some(from.as_str().to_string()),
-                    dry_run,
-                    sync_commands: true,
-                    skip_existing_commands,
-                    sync_mcp_servers: true,
-                    sync_preferences: true,
-                    sync_skills: delivery.sync_skills,
-                    include_marketplace,
-                    exclude_plugins: exclude_plugins.clone(),
-                    full_plugin_mirror: delivery.full_plugin_mirror,
-                    ..Default::default()
-                };
-
-                let report = run_sync_with_adapters(from, target, &params)?;
-
-                tracing::info!(
-                    "{}{}",
-                    report.summary,
-                    if skip_existing_commands && !report.commands.skipped.is_empty() {
-                        format!(
-                            "\nSkipped existing commands (kept target copy): {}",
-                            report
-                                .commands
-                                .skipped
-                                .iter()
-                                .map(|r| r.description())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        )
-                    } else {
-                        String::new()
-                    }
-                );
-            }
-
-            if dry_run {
-                tracing::info!("(dry run - no changes made)");
-            }
-            Ok(())
-        }
-        Commands::SyncStatus { from, to } => {
-            use skrills_sync::SyncParams;
-
-            let target = to.unwrap_or_else(|| from.default_target());
-            // Same rule as the `sync-all` arm, so the preview matches the run.
-            let delivery = skrills_sync::skill_delivery(from.as_str(), target.as_str());
-
-            let params = SyncParams {
-                from: Some(from.as_str().to_string()),
-                dry_run: true,
-                sync_commands: true,
-                sync_mcp_servers: true,
-                sync_preferences: true,
-                sync_skills: delivery.sync_skills,
-                full_plugin_mirror: delivery.full_plugin_mirror,
-                ..Default::default()
-            };
-
-            tracing::info!(
-                from = %from.as_str(),
-                to = %target.as_str(),
-                "sync direction"
-            );
-
-            let report = run_sync_with_adapters(from, target, &params)?;
-
-            tracing::info!(
-                commands = report.commands.written,
-                mcp_servers = report.mcp_servers.written,
-                preferences = report.preferences.written,
-                "pending changes"
-            );
-
-            // Count skills
-            let home = home_dir()?;
-            let source_root = match from {
-                SyncSource::Claude => mirror_source_root(&home),
-                SyncSource::Codex => home.join(".codex/skills"),
-                SyncSource::Copilot => {
-                    use skrills_sync::adapters::traits::AgentAdapter;
-                    use skrills_sync::CopilotAdapter;
-                    CopilotAdapter::new()
-                        .map(|a| a.config_root().join("skills"))
-                        .unwrap_or_else(|_| home.join(".copilot/skills"))
-                }
-                SyncSource::Cursor => {
-                    use skrills_sync::adapters::traits::AgentAdapter;
-                    use skrills_sync::CursorAdapter;
-                    CursorAdapter::new()
-                        .map(|a| a.config_root().join("skills"))
-                        .unwrap_or_else(|_| home.join(".cursor/skills"))
-                }
-            };
-            if source_root.exists() {
-                // Surface walkdir errors instead of
-                // silently dropping them. A single unreadable
-                // subdirectory under `~/.claude/skills` would otherwise
-                // make sibling skills appear absent in the count;
-                // operator sees "skills found in source: N" when the
-                // real number is N+errored.
-                let mut walk_errors: u64 = 0;
-                let mut skill_count: usize = 0;
-                for entry in walkdir::WalkDir::new(&source_root)
-                    .min_depth(1)
-                    .max_depth(6)
-                    .into_iter()
-                {
-                    match entry {
-                        Ok(e) => {
-                            if skrills_server::discovery::is_skill_file(&e) {
-                                skill_count += 1;
-                            }
-                        }
-                        Err(err) => {
-                            walk_errors += 1;
-                            tracing::warn!(
-                                error = %err,
-                                source_root = %source_root.display(),
-                                "walk error while counting skills (entry skipped)"
-                            );
-                        }
-                    }
-                }
-                if walk_errors > 0 {
-                    tracing::info!(skill_count, walk_errors, "skills found in source");
-                } else {
-                    tracing::info!(skill_count, "skills found in source");
-                }
-            } else {
-                tracing::info!("skills: 0 (source directory not found)");
-            }
-
-            Ok(())
-        }
+        } => handle_sync_all_command(SyncAllArgs {
+            from,
+            to,
+            dry_run,
+            skip_existing_commands,
+            include_marketplace,
+            exclude_plugins,
+            validate,
+            autofix,
+        }),
+        Commands::SyncStatus { from, to } => handle_sync_status_command(from, to),
         Commands::Doctor => doctor_report(),
         Commands::Tui { skill_dirs } => tui_flow(&merge_extra_dirs(&skill_dirs)),
         #[cfg(feature = "dashboard")]
         Commands::Dashboard { skill_dirs } => {
             use std::io::IsTerminal;
             if !std::io::stdout().is_terminal() {
-                return Err(anyhow!("Dashboard requires a TTY"));
+                return Err(anyhow::anyhow!("Dashboard requires a TTY"));
             }
             let dashboard = skrills_dashboard::Dashboard::new(skill_dirs)?;
             tokio::runtime::Runtime::new()?.block_on(dashboard.run())
@@ -491,7 +285,7 @@ pub fn run() -> Result<()> {
             yes,
             universal,
             mirror_source,
-        } => handle_setup_command(
+        } => handle_setup_command(SetupOptions {
             client,
             bin_dir,
             reinstall,
@@ -500,7 +294,7 @@ pub fn run() -> Result<()> {
             yes,
             universal,
             mirror_source,
-        ),
+        }),
         Commands::Validate {
             skill_dirs,
             target,
@@ -556,7 +350,7 @@ pub fn run() -> Result<()> {
             auto_persist,
             format,
             skill_dirs,
-        } => handle_recommend_skills_smart_command(
+        } => handle_recommend_skills_smart_command(SmartRecommendOptions {
             uri,
             prompt,
             project_dir,
@@ -566,7 +360,7 @@ pub fn run() -> Result<()> {
             auto_persist,
             format,
             skill_dirs,
-        ),
+        }),
         Commands::AnalyzeProjectContext {
             project_dir,
             include_git,

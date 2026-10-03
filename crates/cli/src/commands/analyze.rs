@@ -1,7 +1,6 @@
 use crate::cli::OutputFormat;
 use anyhow::Result;
-use skrills_discovery::{discover_skills, extra_skill_roots};
-use skrills_server::discovery::merge_extra_dirs;
+use skrills_discovery::discover_skills;
 
 /// Handle the `analyze` command.
 pub(crate) fn handle_analyze_command(
@@ -12,8 +11,7 @@ pub(crate) fn handle_analyze_command(
 ) -> Result<()> {
     use skrills_analyze::{analyze_skill, AnalysisSummary, Priority};
 
-    let extra_dirs = merge_extra_dirs(&skill_dirs);
-    let roots = extra_skill_roots(&extra_dirs);
+    let roots = crate::commands::skill_roots_for(&skill_dirs);
     let skills = discover_skills(&roots, None)?;
 
     if skills.is_empty() {
@@ -30,7 +28,12 @@ pub(crate) fn handle_analyze_command(
     for meta in skills.iter() {
         let content = match std::fs::read_to_string(&meta.path) {
             Ok(c) => c,
-            Err(_) => continue,
+            Err(e) => {
+                // Named on stderr rather than dropped, so a skill missing
+                // from the report is not mistaken for one that was fine.
+                tracing::warn!(path = %meta.path.display(), error = %e, "skipping unreadable skill");
+                continue;
+            }
         };
 
         let analysis = analyze_skill(&meta.path, &content);

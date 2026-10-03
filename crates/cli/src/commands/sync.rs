@@ -1,9 +1,13 @@
-use anyhow::Result;
+use super::validate::{run_validation, Autofix};
+use crate::cli::SyncSource;
+use anyhow::{anyhow, bail, Result};
+use skrills_discovery::{SkillRoot, SkillSource};
 use skrills_server::discovery::merge_extra_dirs;
 use skrills_server::sync::{
     mirror_source_root, sync_agents, sync_agents_only_from_claude, sync_skills_only_from_claude,
 };
 use skrills_state::home_dir;
+use skrills_validate::ValidationTarget as VT;
 use std::path::{Path, PathBuf};
 
 /// Reports what stops Codex from loading the skills that were just mirrored.
@@ -115,6 +119,307 @@ pub(crate) fn handle_mirror_command(
             println!("  - {}", reason.description());
         }
     }
+    Ok(())
+}
+
+/// Runs one adapter sync from `from` to `to`.
+pub(crate) fn run_sync_with_adapters(
+    from: SyncSource,
+    to: SyncSource,
+    params: &skrills_sync::SyncParams,
+) -> Result<skrills_sync::SyncReport> {
+    if from == to {
+        return Err(anyhow!(
+            "Source and target cannot be the same: {}",
+            from.as_str()
+        ));
+    }
+    // sync_between handles adapter creation for every platform.
+    skrills_sync::orchestrator::sync_between(from.as_str(), to.as_str(), params)
+}
+
+/// The directory a CLI keeps its skills in, as `sync-status` counts them.
+pub(crate) fn source_skill_root(from: SyncSource, home: &Path) -> PathBuf {
+    use skrills_sync::adapters::traits::AgentAdapter;
+    match from {
+        SyncSource::Claude => mirror_source_root(home),
+        SyncSource::Codex => home.join(".codex/skills"),
+        SyncSource::Copilot => skrills_sync::CopilotAdapter::new()
+            .map(|a| a.config_root().join("skills"))
+            .unwrap_or_else(|_| home.join(".copilot/skills")),
+        SyncSource::Cursor => skrills_sync::CursorAdapter::new()
+            .map(|a| a.config_root().join("skills"))
+            .unwrap_or_else(|_| home.join(".cursor/skills")),
+    }
+}
+
+/// The skill roots `sync-all` reads from `from`, for validation.
+///
+/// For Claude this is the user skills and the plugin cache under the mirror
+/// source, plus the marketplaces when `include_marketplace` is set: the same
+/// trees the skill sync walks. The rest of `~/.claude` (sessions, settings)
+/// holds no skills.
+fn source_validation_roots(
+    from: SyncSource,
+    home: &Path,
+    include_marketplace: bool,
+) -> Vec<SkillRoot> {
+    let root = source_skill_root(from, home);
+    let mut dirs = match from {
+        SyncSource::Claude => vec![root.join("skills"), root.join("plugins/cache")],
+        _ => vec![root.clone()],
+    };
+    if from.is_claude() && include_marketplace {
+        dirs.push(root.join("plugins/marketplaces"));
+    }
+    dirs.into_iter()
+        .enumerate()
+        .map(|(i, root)| SkillRoot {
+            root,
+            source: SkillSource::Extra(i as u32),
+        })
+        .collect()
+}
+
+/// The strictest validation target any of `targets` needs.
+fn validation_target_for(targets: &[SyncSource]) -> VT {
+    let codex = targets.contains(&SyncSource::Codex);
+    let copilot = targets.contains(&SyncSource::Copilot);
+    match (codex, copilot) {
+        (true, true) => VT::All,
+        (true, false) => VT::Codex,
+        (false, true) => VT::Copilot,
+        // Claude and Cursor accept what Claude accepts.
+        (false, false) => VT::Claude,
+    }
+}
+
+/// Options for `sync-all`, one field per flag.
+#[derive(Debug, Clone)]
+pub(crate) struct SyncAllArgs {
+    pub from: SyncSource,
+    pub to: Option<SyncSource>,
+    pub dry_run: bool,
+    pub skip_existing_commands: bool,
+    pub include_marketplace: bool,
+    pub exclude_plugins: Vec<String>,
+    pub validate: bool,
+    pub autofix: bool,
+}
+
+/// Validates (and with `--autofix`, repairs) the source skills before any
+/// target is touched. Returns an error, and so writes nothing, when an error
+/// remains.
+fn validate_sync_source(args: &SyncAllArgs, targets: &[SyncSource], home: &Path) -> Result<()> {
+    let roots = source_validation_roots(args.from, home, args.include_marketplace);
+    let target = validation_target_for(targets);
+    let mode = match (args.autofix, args.dry_run) {
+        (false, _) => Autofix::Off,
+        // A dry run writes nothing, the source included: validate the fix
+        // that would be made instead of making it.
+        (true, true) => Autofix::Preview,
+        (true, false) => Autofix::Write { backup: false },
+    };
+    let run = run_validation(&roots, target, mode)?;
+
+    if !run.fixed.is_empty() {
+        let verb = if args.dry_run { "would fix" } else { "fixed" };
+        eprintln!(
+            "sync-all: autofix {verb} {} source skill(s):",
+            run.fixed.len()
+        );
+        for path in &run.fixed {
+            eprintln!("  {}", path.display());
+        }
+    }
+    if run.failed() {
+        eprintln!("sync-all: source skills failed {target:?} validation:");
+        for line in run.failure_lines() {
+            eprintln!("{line}");
+        }
+        bail!(
+            "sync-all aborted before syncing any target: the {} source skills do not validate{}",
+            args.from.as_str(),
+            if args.autofix {
+                " even after autofix"
+            } else {
+                "; fix them or rerun with --autofix"
+            }
+        );
+    }
+    tracing::info!(
+        skills = run.results.len(),
+        target = ?target,
+        "source skills validated"
+    );
+    Ok(())
+}
+
+/// Handle the `sync-all` command.
+///
+/// With `--validate` or `--autofix`, the source skill tree is validated for
+/// the strictest of the targets before the first target is synced, and any
+/// remaining error aborts the whole run with nothing written to any target.
+/// `--autofix` repairs the source first (or, under `--dry-run`, checks what
+/// the repair would leave) and then validates as `--validate` does.
+pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
+    let targets: Vec<SyncSource> = match args.to {
+        Some(t) => vec![t],
+        None => args.from.other_targets(),
+    };
+
+    if args.validate || args.autofix {
+        validate_sync_source(&args, &targets, &home_dir()?)?;
+    }
+
+    let multi_target = targets.len() > 1;
+    let from = args.from;
+
+    for target in targets {
+        if multi_target {
+            tracing::info!(
+                from = %from.as_str(),
+                to = %target.as_str(),
+                "syncing target"
+            );
+        }
+
+        // Skills go through the dedicated mirror for claude -> codex.
+        if from.is_claude() && target.is_codex() && !args.dry_run {
+            let home = home_dir()?;
+            let skill_report = sync_skills_only_from_claude(
+                &mirror_source_root(&home),
+                &home.join(".codex/skills"),
+                args.include_marketplace,
+            )?;
+            if let Some(warning) = codex_skills_feature_warning(&home.join(".codex/config.toml")) {
+                eprintln!("{warning}");
+            }
+            tracing::info!(
+                synced = skill_report.copied,
+                unchanged = skill_report.skipped,
+                "skills synced"
+            );
+        }
+
+        let delivery = skrills_sync::skill_delivery(from.as_str(), target.as_str());
+        let params = skrills_sync::SyncParams {
+            from: Some(from.as_str().to_string()),
+            dry_run: args.dry_run,
+            sync_commands: true,
+            skip_existing_commands: args.skip_existing_commands,
+            sync_mcp_servers: true,
+            sync_preferences: true,
+            sync_skills: delivery.sync_skills,
+            include_marketplace: args.include_marketplace,
+            exclude_plugins: args.exclude_plugins.clone(),
+            full_plugin_mirror: delivery.full_plugin_mirror,
+            ..Default::default()
+        };
+
+        let report = run_sync_with_adapters(from, target, &params)?;
+
+        tracing::info!(
+            "{}{}",
+            report.summary,
+            skipped_commands_note(args.skip_existing_commands, &report)
+        );
+    }
+
+    if args.dry_run {
+        tracing::info!("(dry run - no changes made)");
+    }
+    Ok(())
+}
+
+/// The "kept target copy" line for `--skip-existing-commands`, or nothing.
+pub(crate) fn skipped_commands_note(
+    skip_existing_commands: bool,
+    report: &skrills_sync::SyncReport,
+) -> String {
+    if skip_existing_commands && !report.commands.skipped.is_empty() {
+        format!(
+            "\nSkipped existing commands (kept target copy): {}",
+            report
+                .commands
+                .skipped
+                .iter()
+                .map(|r| r.description())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    } else {
+        String::new()
+    }
+}
+
+/// Handle the `sync-status` command.
+pub(crate) fn handle_sync_status_command(from: SyncSource, to: Option<SyncSource>) -> Result<()> {
+    let target = to.unwrap_or_else(|| from.default_target());
+    // Same rule as sync-all, so the preview matches the run.
+    let delivery = skrills_sync::skill_delivery(from.as_str(), target.as_str());
+
+    let params = skrills_sync::SyncParams {
+        from: Some(from.as_str().to_string()),
+        dry_run: true,
+        sync_commands: true,
+        sync_mcp_servers: true,
+        sync_preferences: true,
+        sync_skills: delivery.sync_skills,
+        full_plugin_mirror: delivery.full_plugin_mirror,
+        ..Default::default()
+    };
+
+    tracing::info!(
+        from = %from.as_str(),
+        to = %target.as_str(),
+        "sync direction"
+    );
+
+    let report = run_sync_with_adapters(from, target, &params)?;
+
+    tracing::info!(
+        commands = report.commands.written,
+        mcp_servers = report.mcp_servers.written,
+        preferences = report.preferences.written,
+        "pending changes"
+    );
+
+    let source_root = source_skill_root(from, &home_dir()?);
+    if source_root.exists() {
+        // A walk error is counted and reported rather than dropped, so an
+        // unreadable subdirectory does not make its skills look absent.
+        let mut walk_errors: u64 = 0;
+        let mut skill_count: usize = 0;
+        for entry in walkdir::WalkDir::new(&source_root)
+            .min_depth(1)
+            .max_depth(6)
+        {
+            match entry {
+                Ok(e) => {
+                    if skrills_server::discovery::is_skill_file(&e) {
+                        skill_count += 1;
+                    }
+                }
+                Err(err) => {
+                    walk_errors += 1;
+                    tracing::warn!(
+                        error = %err,
+                        source_root = %source_root.display(),
+                        "walk error while counting skills (entry skipped)"
+                    );
+                }
+            }
+        }
+        if walk_errors > 0 {
+            tracing::info!(skill_count, walk_errors, "skills found in source");
+        } else {
+            tracing::info!(skill_count, "skills found in source");
+        }
+    } else {
+        tracing::info!("skills: 0 (source directory not found)");
+    }
+
     Ok(())
 }
 

@@ -1,126 +1,65 @@
-use anyhow::{Context, Result};
-use std::cmp::Reverse;
-use std::collections::HashMap;
-use std::path::PathBuf;
+use anyhow::Result;
+use std::path::{Path, PathBuf};
 
 use crate::cli::OutputFormat;
 
+use super::profiling::{load_usage_analytics, now_secs, usage_counts};
 use super::{UsageReportResult, UsageStats};
 
 /// Handle the skill-usage-report command.
+///
+/// `--skill-dir` (and `SKRILLS_SKILL_DIR`) narrow the report to skills whose
+/// recorded path lies under one of those directories.
 pub(crate) fn handle_skill_usage_report_command(
     period: u32,
     format: OutputFormat,
     output: Option<PathBuf>,
-    _skill_dirs: Vec<PathBuf>,
+    skill_dirs: Vec<PathBuf>,
 ) -> Result<()> {
-    let home = dirs::home_dir().with_context(|| "Could not determine home directory")?;
-    let cache_path = home.join(".skrills/analytics_cache.json");
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let generated_at = format!("{}", now);
+    let generated_at = now_secs().to_string();
+    let dirs = skrills_server::discovery::merge_extra_dirs(&skill_dirs);
 
-    if !cache_path.exists() {
-        let empty_result = UsageReportResult {
-            period_days: period,
-            generated_at: generated_at.clone(),
-            total_invocations: 0,
-            unique_skills: 0,
-            skills: vec![],
-        };
-
-        let report_text = if format.is_json() {
-            serde_json::to_string_pretty(&empty_result)?
-        } else {
-            format!(
-                "Skill Usage Report\n\
-                 ═══════════════════\n\
-                 Period: {} days\n\
-                 Generated: {}\n\n\
-                 No usage data available.\n\
-                 Run `skrills recommend-skills-smart --auto-persist` to build analytics.",
-                period, generated_at
-            )
-        };
-
-        if let Some(ref out_path) = output {
-            std::fs::write(out_path, &report_text)?;
-            println!("Report written to: {}", out_path.display());
-        } else {
-            println!("{}", report_text);
-        }
-
-        return Ok(());
-    }
-
-    let analytics_json = std::fs::read_to_string(&cache_path)?;
-    let analytics: serde_json::Value = serde_json::from_str(&analytics_json)?;
-
-    let mut skill_counts: HashMap<String, u64> = HashMap::new();
-    if let Some(usage) = analytics.get("skill_usage").and_then(|u| u.as_object()) {
-        for (name, count) in usage {
-            if let Some(n) = count.as_u64() {
-                skill_counts.insert(name.clone(), n);
-            }
-        }
-    }
-
-    let total: u64 = skill_counts.values().sum();
-    let mut sorted: Vec<_> = skill_counts.into_iter().collect();
-    sorted.sort_by_key(|b| Reverse(b.1));
-
-    let skills: Vec<UsageStats> = sorted
-        .into_iter()
-        .map(|(name, invocations)| {
-            let percentage = if total > 0 {
-                (invocations as f64 / total as f64) * 100.0
-            } else {
-                0.0
+    let report_text = match load_usage_analytics()? {
+        None => {
+            let empty = UsageReportResult {
+                period_days: period,
+                generated_at: generated_at.clone(),
+                total_invocations: 0,
+                unique_skills: 0,
+                skills: vec![],
             };
-            UsageStats {
-                skill_name: name,
-                invocations,
-                percentage,
+            if format.is_json() {
+                serde_json::to_string_pretty(&empty)?
+            } else {
+                format!(
+                    "Skill Usage Report\n\
+                     ═══════════════════\n\
+                     Period: {} days\n\
+                     Generated: {}\n\n\
+                     No usage data available.\n\
+                     Run `skrills recommend-skills-smart --auto-persist` to build analytics.",
+                    period, generated_at
+                )
             }
-        })
-        .collect();
-
-    let result = UsageReportResult {
-        period_days: period,
-        generated_at: generated_at.clone(),
-        total_invocations: total,
-        unique_skills: skills.len(),
-        skills: skills.clone(),
-    };
-
-    let report_text = if format.is_json() {
-        serde_json::to_string_pretty(&result)?
-    } else {
-        let mut text = String::new();
-        text.push_str("Skill Usage Report\n");
-        text.push_str("═══════════════════════════════════════════════════════════\n\n");
-        text.push_str(&format!("Period: {} days\n", period));
-        text.push_str(&format!("Generated: {}\n", generated_at));
-        text.push_str(&format!("Total Invocations: {}\n", total));
-        text.push_str(&format!("Unique Skills: {}\n\n", result.unique_skills));
-        text.push_str("Usage by Skill:\n");
-        text.push_str("───────────────────────────────────────────────────────────\n");
-
-        for stats in &skills {
-            text.push_str(&format!(
-                "  {:40} {:>6} ({:>5.1}%)\n",
-                stats.skill_name, stats.invocations, stats.percentage
-            ));
         }
-
-        text
+        Some(analytics) => {
+            let counts: Vec<(String, u64)> = usage_counts(&analytics, period, now_secs())
+                .into_iter()
+                .filter(|(key, _)| under_any(key, &dirs))
+                .collect();
+            let result = usage_report(&counts, period, generated_at);
+            if format.is_json() {
+                serde_json::to_string_pretty(&result)?
+            } else {
+                render_text(&result)
+            }
+        }
     };
 
     if let Some(ref out_path) = output {
         std::fs::write(out_path, &report_text)?;
-        println!("Report written to: {}", out_path.display());
+        // stdout stays free for a report; the confirmation is a notice.
+        eprintln!("Report written to: {}", out_path.display());
     } else {
         println!("{}", report_text);
     }
@@ -128,149 +67,89 @@ pub(crate) fn handle_skill_usage_report_command(
     Ok(())
 }
 
+/// Whether `key` is a path under one of `dirs`; true when `dirs` is empty.
+fn under_any(key: &str, dirs: &[PathBuf]) -> bool {
+    dirs.is_empty() || dirs.iter().any(|d| Path::new(key).starts_with(d))
+}
+
+fn usage_report(counts: &[(String, u64)], period: u32, generated_at: String) -> UsageReportResult {
+    let total: u64 = counts.iter().map(|(_, n)| n).sum();
+    let skills: Vec<UsageStats> = counts
+        .iter()
+        .map(|(name, invocations)| UsageStats {
+            skill_name: name.clone(),
+            invocations: *invocations,
+            percentage: if total > 0 {
+                (*invocations as f64 / total as f64) * 100.0
+            } else {
+                0.0
+            },
+        })
+        .collect();
+    UsageReportResult {
+        period_days: period,
+        generated_at,
+        total_invocations: total,
+        unique_skills: skills.len(),
+        skills,
+    }
+}
+
+fn render_text(result: &UsageReportResult) -> String {
+    let mut text = String::new();
+    text.push_str("Skill Usage Report\n");
+    text.push_str("═══════════════════════════════════════════════════════════\n\n");
+    text.push_str(&format!("Period: {} days\n", result.period_days));
+    text.push_str(&format!("Generated: {}\n", result.generated_at));
+    text.push_str(&format!(
+        "Total Invocations: {}\n",
+        result.total_invocations
+    ));
+    text.push_str(&format!("Unique Skills: {}\n\n", result.unique_skills));
+    text.push_str("Usage by Skill:\n");
+    text.push_str("───────────────────────────────────────────────────────────\n");
+    for stats in &result.skills {
+        text.push_str(&format!(
+            "  {:40} {:>6} ({:>5.1}%)\n",
+            stats.skill_name, stats.invocations, stats.percentage
+        ));
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
-    use super::super::{UsageReportResult, UsageStats};
-    use std::cmp::Reverse;
-    use std::collections::HashMap;
+    use super::*;
 
-    // GIVEN no analytics data
-    // WHEN building empty UsageReportResult
-    // THEN all counts are zero and skills list is empty
     #[test]
-    fn empty_usage_report_result() {
-        let result = UsageReportResult {
-            period_days: 30,
-            generated_at: "1706400000".to_string(),
-            total_invocations: 0,
-            unique_skills: 0,
-            skills: vec![],
-        };
-        let json = serde_json::to_string_pretty(&result).unwrap();
-        assert!(json.contains("\"total_invocations\": 0"));
-        assert!(json.contains("\"unique_skills\": 0"));
-        assert!(json.contains("\"skills\": []"));
-    }
-
-    // GIVEN skill counts
-    // WHEN computing percentages
-    // THEN each percentage is (invocations / total) * 100
-    #[test]
-    fn percentage_calculation() {
-        let total: u64 = 100;
-        let invocations: u64 = 25;
-        let percentage = (invocations as f64 / total as f64) * 100.0;
-        assert!((percentage - 25.0).abs() < f64::EPSILON);
-    }
-
-    // GIVEN zero total invocations
-    // WHEN computing percentage
-    // THEN percentage is 0.0
-    #[test]
-    fn percentage_with_zero_total() {
-        let total: u64 = 0;
-        let invocations: u64 = 0;
-        let percentage = if total > 0 {
-            (invocations as f64 / total as f64) * 100.0
-        } else {
-            0.0
-        };
-        assert!((percentage - 0.0).abs() < f64::EPSILON);
-    }
-
-    // GIVEN analytics JSON with skill_usage
-    // WHEN parsing and sorting by invocations
-    // THEN skills are in descending order
-    #[test]
-    fn skill_usage_sorted_descending() {
-        let mut skill_counts: HashMap<String, u64> = HashMap::new();
-        skill_counts.insert("commit".to_string(), 50);
-        skill_counts.insert("review".to_string(), 30);
-        skill_counts.insert("deploy".to_string(), 20);
-
-        let total: u64 = skill_counts.values().sum();
-        let mut sorted: Vec<_> = skill_counts.into_iter().collect();
-        sorted.sort_by_key(|b| Reverse(b.1));
-
-        let skills: Vec<UsageStats> = sorted
-            .into_iter()
-            .map(|(name, invocations)| {
-                let percentage = (invocations as f64 / total as f64) * 100.0;
-                UsageStats {
-                    skill_name: name,
-                    invocations,
-                    percentage,
-                }
-            })
-            .collect();
-
-        assert_eq!(skills.len(), 3);
-        assert_eq!(skills[0].skill_name, "commit");
-        assert_eq!(skills[0].invocations, 50);
-        assert!((skills[0].percentage - 50.0).abs() < f64::EPSILON);
-        assert_eq!(skills[2].skill_name, "deploy");
-    }
-
-    // GIVEN UsageStats struct
-    // WHEN serialized to JSON
-    // THEN all fields are present
-    #[test]
-    fn usage_stats_serialization() {
-        let stats = UsageStats {
-            skill_name: "test-skill".to_string(),
-            invocations: 42,
-            percentage: 21.5,
-        };
-        let json = serde_json::to_string(&stats).unwrap();
-        assert!(json.contains("\"skill_name\":\"test-skill\""));
-        assert!(json.contains("\"invocations\":42"));
-        assert!(json.contains("21.5"));
-    }
-
-    // GIVEN a UsageReportResult with skills
-    // WHEN checking unique_skills
-    // THEN it matches the skills vector length
-    #[test]
-    fn unique_skills_matches_vector_length() {
-        let skills = vec![
-            UsageStats {
-                skill_name: "a".to_string(),
-                invocations: 10,
-                percentage: 50.0,
-            },
-            UsageStats {
-                skill_name: "b".to_string(),
-                invocations: 10,
-                percentage: 50.0,
-            },
+    fn report_percentages_and_order() {
+        let counts = vec![
+            ("commit".to_string(), 50),
+            ("review".to_string(), 30),
+            ("deploy".to_string(), 20),
         ];
-        let result = UsageReportResult {
-            period_days: 7,
-            generated_at: "now".to_string(),
-            total_invocations: 20,
-            unique_skills: skills.len(),
-            skills,
-        };
-        assert_eq!(result.unique_skills, 2);
+
+        let result = usage_report(&counts, 30, "t".into());
+
+        assert_eq!(result.total_invocations, 100);
+        assert_eq!(result.unique_skills, 3);
+        assert_eq!(result.skills[0].skill_name, "commit");
+        assert!((result.skills[0].percentage - 50.0).abs() < f64::EPSILON);
     }
 
-    // GIVEN analytics JSON without skill_usage key
-    // WHEN parsing
-    // THEN skill_counts is empty
     #[test]
-    fn missing_skill_usage_yields_empty() {
-        let analytics_json = r#"{"other": "data"}"#;
-        let analytics: serde_json::Value = serde_json::from_str(analytics_json).unwrap();
+    fn an_empty_report_has_no_division_by_zero() {
+        let result = usage_report(&[], 7, "t".into());
+        assert_eq!(result.total_invocations, 0);
+        assert!(result.skills.is_empty());
+    }
 
-        let mut skill_counts: HashMap<String, u64> = HashMap::new();
-        if let Some(usage) = analytics.get("skill_usage").and_then(|u| u.as_object()) {
-            for (name, count) in usage {
-                if let Some(n) = count.as_u64() {
-                    skill_counts.insert(name.clone(), n);
-                }
-            }
-        }
-
-        assert!(skill_counts.is_empty());
+    /// SB-42: `--skill-dir` was accepted and ignored.
+    #[test]
+    fn skill_dirs_narrow_the_report() {
+        let dirs = vec![PathBuf::from("/home/u/.claude/skills")];
+        assert!(under_any("/home/u/.claude/skills/review/SKILL.md", &dirs));
+        assert!(!under_any("/home/u/.codex/skills/review/SKILL.md", &dirs));
+        assert!(under_any("anything", &[]));
     }
 }

@@ -8,6 +8,21 @@ use skrills_state::home_dir;
 use std::fs;
 use std::path::Path;
 
+/// Whether `cmd` is a bare program name (`skrills`) rather than a path.
+fn is_bare_command(cmd: &str) -> bool {
+    !cmd.contains('/') && !cmd.contains(std::path::MAIN_SEPARATOR)
+}
+
+/// Whether `cmd` names something Codex can start: an existing path, or a
+/// bare name found on `PATH`, which is how Codex resolves it.
+fn command_resolves(cmd: &str) -> bool {
+    if is_bare_command(cmd) {
+        crate::commands::is_on_path(cmd)
+    } else {
+        Path::new(cmd).exists()
+    }
+}
+
 /// Validates an MCP server entry and prints diagnostics.
 fn validate_mcp_entry(
     entry: &serde_json::Value,
@@ -40,18 +55,22 @@ fn validate_mcp_entry(
     if file_label.contains("json") && Path::new(cmd) != expected_cmd {
         lines.push("  i command differs; ensure binary path is correct and executable".to_string());
     }
-    if !Path::new(cmd).exists() {
-        lines.push("  ! command path does not exist on disk".to_string());
+    if !command_resolves(cmd) {
+        lines.push(if is_bare_command(cmd) {
+            "  ! command not found on PATH".to_string()
+        } else {
+            "  ! command path does not exist on disk".to_string()
+        });
     }
 }
 
-/// Inspects the MCP servers JSON configuration file.
+/// Inspects a legacy `mcp_servers.json`, if one is present.
+///
+/// `skrills setup` registers Codex in `config.toml` only, so a missing JSON
+/// file is normal and not reported. One that exists is still checked, since
+/// a stale entry there can confuse an older Codex.
 fn inspect_mcp_json(mcp_path: &Path, expected_cmd: &Path, lines: &mut Vec<String>) -> Result<()> {
     if !mcp_path.exists() {
-        lines.push(format!(
-            "mcp_servers.json: not found at {}",
-            mcp_path.display()
-        ));
         return Ok(());
     }
 
@@ -120,15 +139,16 @@ fn doctor_report_with_paths(
 ) -> Result<Vec<String>> {
     let mut lines = Vec::new();
     lines.push("== skrills doctor ==".to_string());
-    inspect_mcp_json(mcp_path, expected_cmd, &mut lines)?;
     inspect_config_toml(cfg_path, expected_cmd, &mut lines)?;
+    inspect_mcp_json(mcp_path, expected_cmd, &mut lines)?;
     lines.push("Hint: Codex CLI raises 'missing field `type`' when either file lacks type=\"stdio\" for skrills.".to_string());
     Ok(lines)
 }
 
 /// Runs diagnostics on Codex MCP configuration files.
 ///
-/// Inspects `~/.codex/mcp_servers.json` and `~/.codex/config.toml` to validate `skrills` server configuration and identify common issues.
+/// Inspects `~/.codex/config.toml`, where `skrills setup` registers the
+/// server, and a legacy `~/.codex/mcp_servers.json` when one exists.
 pub fn doctor_report() -> Result<()> {
     let home = home_dir()?;
     let mcp_path = home.join(".codex/mcp_servers.json");
@@ -164,8 +184,8 @@ mod tests {
         let joined = lines.join("\n");
 
         assert!(
-            joined.contains("mcp_servers.json: not found at"),
-            "missing json should be reported"
+            !joined.contains("mcp_servers.json"),
+            "setup never writes mcp_servers.json, so its absence is not a finding"
         );
         assert!(
             joined.contains("config.toml:    not found at"),
@@ -220,6 +240,66 @@ args = ["--flag"]
         assert!(
             joined.contains("command path does not exist"),
             "missing command path should be reported"
+        );
+    }
+
+    /// SB-40: the report looked for a file setup never writes, and flagged a
+    /// bare command name as a missing path.
+    #[test]
+    fn a_setup_style_config_toml_reports_no_problems() {
+        let _guard = skrills_test_utils::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let bin_dir = temp.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let bin = bin_dir.join("skrills");
+        fs::write(&bin, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let _path = skrills_test_utils::set_env_var("PATH", Some(bin_dir.to_str().unwrap()));
+        let cfg_path = temp.path().join("config.toml");
+        fs::write(
+            &cfg_path,
+            "[mcp_servers.skrills]\ncommand = \"skrills\"\ntype = \"stdio\"\nargs = [\"serve\"]\n",
+        )
+        .unwrap();
+
+        let lines =
+            doctor_report_with_paths(&temp.path().join("mcp_servers.json"), &cfg_path, &bin)
+                .unwrap();
+        let joined = lines.join("\n");
+
+        assert!(joined.contains("type=stdio command=skrills"), "{joined}");
+        assert!(
+            !joined.contains("  !"),
+            "no problem should be flagged: {joined}"
+        );
+        assert!(!joined.contains("mcp_servers.json"), "{joined}");
+    }
+
+    #[test]
+    fn a_bare_command_missing_from_path_is_reported_as_such() {
+        let _guard = skrills_test_utils::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _path = skrills_test_utils::set_env_var("PATH", Some(temp.path().to_str().unwrap()));
+        let cfg_path = temp.path().join("config.toml");
+        fs::write(
+            &cfg_path,
+            "[mcp_servers.skrills]\ncommand = \"skrills-nowhere\"\ntype = \"stdio\"\n",
+        )
+        .unwrap();
+
+        let lines =
+            doctor_report_with_paths(&temp.path().join("none.json"), &cfg_path, temp.path())
+                .unwrap();
+
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("command not found on PATH")),
+            "{lines:?}"
         );
     }
 }

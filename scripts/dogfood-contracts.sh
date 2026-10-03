@@ -63,19 +63,22 @@ run_entrypoint() {
 feature "skrills validate --format json stays machine-parseable on a noisy stdout"
 # The validate-skills action pipes validate's stdout through jq. Three real
 # regressions poisoned that stream: a first-run banner, interleaved tracing
-# logs, and an ambient RUST_LOG that re-enabled logging. The action must
-# recover clean JSON regardless. We drive the ACTUAL action entrypoint.
+# logs, and an ambient RUST_LOG that re-enabled logging. The binary now keeps
+# stdout clean itself; the action must still recover clean JSON from older
+# binaries. We drive the ACTUAL action entrypoint.
 
-scenario "Guard check — an unconfigured runner with RUST_LOG really does pollute stdout"
+scenario "The binary keeps --format json stdout clean on an unconfigured runner with RUST_LOG"
 # Given a fresh HOME (skrills not configured) and ambient RUST_LOG=debug
 FRESH="$WORK/fresh-home"; mkdir -p "$FRESH"
 HOME="$FRESH" RUST_LOG=debug "$BIN_PATH" validate --skill-dir "$SKILL_DIR" \
-  --target all --format json </dev/null >"$WORK/raw.out" 2>/dev/null || true
-# Then the raw stream carries the banner AND tracing lines AND is NOT valid JSON.
-# (If any of these stop holding, the recovery scenario below is vacuous.)
-if grep -q "not configured on this system" "$WORK/raw.out"; then ok "raw stdout carries the first-run banner"; else bad "raw stdout missing banner (scenario no longer meaningful)"; fi
-if grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T' "$WORK/raw.out"; then ok "raw stdout carries timestamped tracing lines"; else bad "raw stdout missing tracing lines"; fi
-if jq empty "$WORK/raw.out" >/dev/null 2>&1; then bad "raw stdout is already valid JSON (nothing to recover)"; else ok "raw stdout is NOT valid JSON as-is (jq would fail)"; fi
+  --target all --format json </dev/null >"$WORK/raw.out" 2>"$WORK/raw.err" || true
+# Then logging is really on (stderr has tracing lines), yet stdout carries no
+# banner and no tracing, and parses as JSON as-is. Tracing goes to stderr and
+# the first-run prompt only shows on a TTY.
+if grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T' "$WORK/raw.err"; then ok "tracing lines go to stderr"; else bad "no tracing lines on stderr (RUST_LOG had no effect, check is vacuous)"; fi
+if grep -q "not configured on this system" "$WORK/raw.out"; then bad "raw stdout carries the first-run banner"; else ok "raw stdout has no first-run banner"; fi
+if grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T' "$WORK/raw.out"; then bad "raw stdout carries tracing lines"; else ok "raw stdout has no tracing lines"; fi
+if jq empty "$WORK/raw.out" >/dev/null 2>&1; then ok "raw stdout is valid JSON as-is"; else bad "raw stdout is not valid JSON"; fi
 
 scenario "An unconfigured runner with ambient RUST_LOG still yields parseable JSON"
 # Given the same fresh, unconfigured HOME and RUST_LOG=debug

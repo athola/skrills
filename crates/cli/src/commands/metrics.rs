@@ -1,14 +1,14 @@
 //! CLI handler for the `metrics` command.
 
+use super::skill_uri::{skill_uri, DependencyResolver};
 use crate::cli::OutputFormat;
 use anyhow::Result;
 use skrills_analyze::RelationshipGraph;
-use skrills_discovery::{discover_skills, extra_skill_roots};
+use skrills_discovery::discover_skills;
 use skrills_server::app::{
     DependencyStats, HubSkill, MetricsValidationSummary, QualityDistribution, SkillMetrics,
     SkillTokenInfo, TokenStats,
 };
-use skrills_server::discovery::merge_extra_dirs;
 use std::cmp::Reverse;
 use std::collections::HashMap;
 
@@ -18,29 +18,32 @@ pub(crate) fn handle_metrics_command(
     format: OutputFormat,
     include_validation: bool,
 ) -> Result<()> {
+    let roots = crate::commands::skill_roots_for(&skill_dirs);
+    let skills = discover_skills(&roots, None)?;
+    let metrics = compute_metrics(&skills, include_validation);
+
+    if format.is_json() {
+        // No skills is the same document with zeros, so a consumer reads the
+        // same keys either way.
+        println!("{}", serde_json::to_string_pretty(&metrics)?);
+    } else if metrics.total_skills == 0 {
+        println!("No skills found.");
+    } else {
+        print_metrics_human(&metrics);
+    }
+    Ok(())
+}
+
+/// Aggregates the metrics for `skills`. A skill that cannot be read is
+/// logged and left out of every count, `total_skills` included.
+fn compute_metrics(
+    skills: &[skrills_discovery::SkillMeta],
+    include_validation: bool,
+) -> SkillMetrics {
     use skrills_analyze::analyze_skill;
     use skrills_validate::{validate_skill, ValidationTarget};
 
-    let extra_dirs = merge_extra_dirs(&skill_dirs);
-    let roots = extra_skill_roots(&extra_dirs);
-    let skills = discover_skills(&roots, None)?;
-
-    if skills.is_empty() {
-        if format.is_json() {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "total_skills": 0,
-                    "skills_by_source": {},
-                    "quality": {"high": 0, "medium": 0, "low": 0},
-                    "tokens": {"total": 0}
-                }))?
-            );
-        } else {
-            println!("No skills found.");
-        }
-        return Ok(());
-    }
+    let resolver = DependencyResolver::new(skills);
 
     // Collect metrics
     let mut by_source: HashMap<String, usize> = HashMap::new();
@@ -58,7 +61,8 @@ pub(crate) fn handle_metrics_command(
     // Build dependency graph
     let mut dep_graph = RelationshipGraph::new();
 
-    for meta in &skills {
+    let mut skill_count = 0usize;
+    for meta in skills {
         // Read skill content (before counting to ensure consistent totals)
         let content = match std::fs::read_to_string(&meta.path) {
             Ok(c) => c,
@@ -68,7 +72,8 @@ pub(crate) fn handle_metrics_command(
             }
         };
 
-        // Count by source (after successful read for consistent totals)
+        // Count after a successful read, so every total agrees.
+        skill_count += 1;
         *by_source
             .entry(meta.source.label().to_string())
             .or_default() += 1;
@@ -87,7 +92,7 @@ pub(crate) fn handle_metrics_command(
 
         // Token stats
         total_tokens += analysis.tokens.total;
-        let skill_uri = format!("skill://skrills/{}/{}", meta.source.label(), meta.name);
+        let skill_uri = skill_uri(meta);
 
         // Track largest skill
         let should_replace = match largest_skill.as_ref() {
@@ -105,7 +110,9 @@ pub(crate) fn handle_metrics_command(
         dep_graph.add_skill(&skill_uri);
         for dep in &analysis.dependencies.dependencies {
             if let skrills_analyze::DependencyType::Skill = dep.dep_type {
-                dep_graph.add_dependency(&skill_uri, &dep.target);
+                if let Some(target) = resolver.resolve(&meta.path, &dep.target) {
+                    dep_graph.add_dependency(&skill_uri, &target);
+                }
             }
         }
 
@@ -154,7 +161,6 @@ pub(crate) fn handle_metrics_command(
         })
         .collect();
 
-    let skill_count = skills.len();
     let avg_deps = if skill_count > 0 {
         total_dependencies as f64 / skill_count as f64
     } else {
@@ -173,7 +179,7 @@ pub(crate) fn handle_metrics_command(
         None
     };
 
-    let metrics = SkillMetrics {
+    SkillMetrics {
         total_skills: skill_count,
         by_source,
         by_quality: QualityDistribution {
@@ -193,16 +199,7 @@ pub(crate) fn handle_metrics_command(
             largest_skill,
         },
         validation_summary,
-    };
-
-    // Output
-    if format.is_json() {
-        println!("{}", serde_json::to_string_pretty(&metrics)?);
-    } else {
-        print_metrics_human(&metrics);
     }
-
-    Ok(())
 }
 
 /// Print metrics in human-readable format.
@@ -585,5 +582,70 @@ skill(high-quality)
         assert!(json.contains("\"passing\":4"));
         assert!(json.contains("\"with_errors\":0"));
         assert!(json.contains("\"with_warnings\":1"));
+    }
+
+    fn discovered(dir: &std::path::Path) -> Vec<skrills_discovery::SkillMeta> {
+        discover_skills(
+            &[skrills_discovery::SkillRoot {
+                root: dir.to_path_buf(),
+                source: skrills_discovery::SkillSource::Extra(0),
+            }],
+            None,
+        )
+        .unwrap()
+    }
+
+    /// SA-35: the no-skills JSON used different keys (`skills_by_source`,
+    /// `quality`, `tokens`) from the serialized `SkillMetrics`.
+    #[test]
+    fn empty_metrics_serialize_with_the_same_keys_as_non_empty() {
+        let tmp = tempdir().unwrap();
+        create_skill(tmp.path(), "a", &minimal_skill_content("a", "Test skill"));
+
+        let empty = serde_json::to_value(compute_metrics(&[], false)).unwrap();
+        let full = serde_json::to_value(compute_metrics(&discovered(tmp.path()), false)).unwrap();
+
+        let keys =
+            |v: &serde_json::Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+        assert_eq!(keys(&empty), keys(&full));
+        assert_eq!(empty["total_skills"], 0);
+        assert_eq!(full["total_skills"], 1);
+    }
+
+    /// SA-35: `total_skills` counted files that were skipped as unreadable.
+    #[test]
+    fn an_unreadable_skill_is_left_out_of_the_total() {
+        let tmp = tempdir().unwrap();
+        create_skill(tmp.path(), "a", &minimal_skill_content("a", "Test skill"));
+        let mut skills = discovered(tmp.path());
+        let mut gone = skills[0].clone();
+        gone.name = "gone/SKILL.md".into();
+        gone.path = tmp.path().join("gone/SKILL.md");
+        skills.push(gone);
+
+        let metrics = compute_metrics(&skills, false);
+
+        assert_eq!(metrics.total_skills, 1);
+        assert_eq!(metrics.by_source.values().sum::<usize>(), 1);
+    }
+
+    /// SA-25: relative links count as edges between the linked skills.
+    #[test]
+    fn relative_links_are_counted_as_dependencies() {
+        let tmp = tempdir().unwrap();
+        create_skill(
+            tmp.path(),
+            "a",
+            "---\nname: a\ndescription: Links to b\n---\n# A\n\nSee [b](../b/SKILL.md).\n",
+        );
+        create_skill(tmp.path(), "b", &minimal_skill_content("b", "Linked to"));
+
+        let metrics = compute_metrics(&discovered(tmp.path()), false);
+
+        assert_eq!(metrics.dependency_stats.total_dependencies, 1);
+        assert_eq!(metrics.dependency_stats.hub_skills.len(), 1);
+        assert!(metrics.dependency_stats.hub_skills[0]
+            .uri
+            .ends_with("b/SKILL.md"));
     }
 }

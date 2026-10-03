@@ -63,24 +63,66 @@ fn persist_analytics_on_exit() {
     }
 }
 
+/// The `serve` flags, one field per flag, so the call site names each one
+/// instead of passing a dozen positional `bool`s and paths.
+#[derive(Debug, Default)]
+pub(crate) struct ServeOptions {
+    pub skill_dirs: Vec<PathBuf>,
+    pub cache_ttl_ms: Option<u64>,
+    pub trace_wire: bool,
+    #[cfg(feature = "watch")]
+    pub watch: bool,
+    pub http: Option<String>,
+    pub list_tools: bool,
+    pub auth_token: Option<String>,
+    pub tls_cert: Option<PathBuf>,
+    pub tls_key: Option<PathBuf>,
+    pub cors_origins: Vec<String>,
+    pub allowed_hosts: Vec<String>,
+    pub tls_auto: bool,
+    pub open_browser: bool,
+}
+
+/// The bearer token for HTTP serve: `--auth-token` or `SKRILLS_AUTH_TOKEN`
+/// when given, else `[serve] auth_token` from `~/.skrills/config.toml`.
+///
+/// Read from the config file here rather than through the environment
+/// variable the config loader exports, so auth does not depend on that
+/// export. A config file that exists but cannot be read is an error: the
+/// server must not start without the auth the file asks for.
+#[cfg_attr(not(feature = "http-transport"), allow(dead_code))]
+fn resolve_auth_token(
+    from_cli_or_env: Option<String>,
+    load_config: impl FnOnce() -> Result<Option<skrills_server::config::Config>>,
+) -> Result<Option<String>> {
+    if from_cli_or_env.is_some() {
+        return Ok(from_cli_or_env);
+    }
+    let config = load_config().map_err(|e| {
+        anyhow!("could not read ~/.skrills/config.toml, which may set auth_token: {e}")
+    })?;
+    Ok(config.and_then(|c| c.serve.auth_token))
+}
+
 /// Handle the `serve` command.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn handle_serve_command(
-    skill_dirs: Vec<PathBuf>,
-    cache_ttl_ms: Option<u64>,
-    trace_wire: bool,
-    #[cfg(feature = "watch")] watch: bool,
-    http: Option<String>,
-    list_tools: bool,
-    // Phase 2 security options
-    auth_token: Option<String>,
-    tls_cert: Option<PathBuf>,
-    tls_key: Option<PathBuf>,
-    cors_origins: Vec<String>,
-    allowed_hosts: Vec<String>,
-    tls_auto: bool,
-    open_browser: bool,
-) -> Result<()> {
+pub(crate) fn handle_serve_command(options: ServeOptions) -> Result<()> {
+    let ServeOptions {
+        skill_dirs,
+        cache_ttl_ms,
+        trace_wire,
+        #[cfg(feature = "watch")]
+        watch,
+        http,
+        list_tools,
+        auth_token,
+        tls_cert,
+        tls_key,
+        cors_origins,
+        allowed_hosts,
+        tls_auto,
+        open_browser,
+    } = options;
+
     // Handle --list-tools: print tool names and exit
     if list_tools {
         let tools = all_tools();
@@ -134,6 +176,20 @@ pub(crate) fn handle_serve_command(
                 (tls_cert, tls_key)
             };
 
+            // `serve --http --watch` has no watcher to start: the HTTP
+            // transport builds a service per session. Refuse rather than
+            // accept the flag and serve a cache that never reloads.
+            #[cfg(feature = "watch")]
+            if watch {
+                return Err(anyhow!(
+                    "serve --watch is not supported with --http; restart the server to pick up skill changes"
+                ));
+            }
+
+            let auth_token = resolve_auth_token(auth_token, || {
+                skrills_server::config::load_config().map_err(|e| anyhow!(e))
+            })?;
+
             // Build security config from CLI arguments
             let security = HttpSecurityConfig {
                 auth_token,
@@ -143,8 +199,12 @@ pub(crate) fn handle_serve_command(
                 allowed_hosts,
             };
 
-            // Show certificate status on startup if available
-            if let Some(cert_status) = crate::commands::get_cert_status_summary() {
+            // Show the status of the certificate this server will use.
+            if let Some(cert_status) = security
+                .tls_cert
+                .as_deref()
+                .and_then(crate::commands::get_cert_status_summary)
+            {
                 tracing::info!(target: "skrills::tls", "{}", cert_status);
             }
 
@@ -225,4 +285,62 @@ pub(crate) fn handle_serve_command(
     drop(_watcher);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_with_token(token: &str) -> skrills_server::config::Config {
+        toml::from_str(&format!("[serve]\nauth_token = \"{token}\"\n")).unwrap()
+    }
+
+    /// SB-8: a config-file token has to reach the server without going
+    /// through the SKRILLS_AUTH_TOKEN export.
+    #[test]
+    fn a_config_file_token_is_used_when_no_flag_or_env_is_given() {
+        let token = resolve_auth_token(None, || Ok(Some(config_with_token("from-file")))).unwrap();
+        assert_eq!(token.as_deref(), Some("from-file"));
+    }
+
+    #[test]
+    fn the_flag_or_env_token_wins_and_the_file_is_not_read() {
+        let token = resolve_auth_token(Some("from-flag".into()), || {
+            panic!("the config file must not be read when a token was given")
+        })
+        .unwrap();
+        assert_eq!(token.as_deref(), Some("from-flag"));
+    }
+
+    #[test]
+    fn an_unreadable_config_file_stops_the_server() {
+        let err = resolve_auth_token(None, || Err(anyhow!("bad toml"))).unwrap_err();
+        assert!(err.to_string().contains("auth_token"), "{err}");
+    }
+
+    #[test]
+    fn no_token_anywhere_means_no_auth() {
+        assert_eq!(resolve_auth_token(None, || Ok(None)).unwrap(), None);
+    }
+
+    /// SB-8 through the real loader: `~/.skrills/config.toml` under a temp HOME.
+    #[test]
+    fn the_real_loader_reads_the_token_from_the_home_config() {
+        let _g = skrills_test_utils::env_guard();
+        let home = tempfile::tempdir().unwrap();
+        let _h = skrills_test_utils::set_env_var("HOME", Some(home.path().to_str().unwrap()));
+        std::fs::create_dir_all(home.path().join(".skrills")).unwrap();
+        std::fs::write(
+            home.path().join(".skrills/config.toml"),
+            "[serve]\nauth_token = \"home-token\"\n",
+        )
+        .unwrap();
+
+        let token = resolve_auth_token(None, || {
+            skrills_server::config::load_config().map_err(|e| anyhow!(e))
+        })
+        .unwrap();
+
+        assert_eq!(token.as_deref(), Some("home-token"));
+    }
 }

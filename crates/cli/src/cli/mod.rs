@@ -221,10 +221,12 @@ pub enum Commands {
         /// these plugins will not be synced to the target.
         #[arg(long, value_delimiter = ',', env = "SKRILLS_EXCLUDE_PLUGINS")]
         exclude_plugins: Vec<String>,
-        /// Validate skills before syncing.
+        /// Validate the source skills for the strictest target before
+        /// syncing. Any error aborts every target, with nothing written.
         #[arg(long)]
         validate: bool,
-        /// Automatically fix validation issues (add frontmatter).
+        /// Fix the source skills first (add missing frontmatter), then
+        /// validate as --validate does. With --dry-run, nothing is rewritten.
         #[arg(long)]
         autofix: bool,
     },

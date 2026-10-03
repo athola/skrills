@@ -3,49 +3,34 @@
 //! Routes agent execution across available CLI backends (Claude, Codex)
 //! with automatic fallback when the primary backend is unavailable.
 
+use super::agent::{run_with_codex, AgentPath};
 use crate::cli::AgentBackend;
 use anyhow::{anyhow, Result};
+use indexmap::IndexMap;
 use skrills_server::discovery::{collect_agents, merge_extra_dirs, resolve_agent};
 use std::path::PathBuf;
 use std::process::Command;
 
-/// A validated agent path that is safe for embedding in LLM prompts.
+/// Whether `bin` names an executable file in one of the `$PATH` directories.
 ///
-/// Rejects characters that could enable prompt injection when the path
-/// is interpolated into a prompt string.
-struct AgentPath(String);
-
-impl AgentPath {
-    /// Create a new `AgentPath`, validating that it contains no prompt-injection characters.
-    fn new(path: String) -> Result<Self> {
-        if path
-            .chars()
-            .any(|c| matches!(c, '\n' | '\r' | '\0' | '`' | '$' | '{' | '}'))
-        {
-            return Err(anyhow!("agent path contains invalid characters: {}", path));
-        }
-        Ok(Self(path))
-    }
-
-    fn as_str(&self) -> &str {
-        &self.0
-    }
+/// Searched in-process rather than by spawning `which`, which is not installed
+/// everywhere and turned its own absence into "backend unavailable".
+pub(crate) fn is_available(bin: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| is_executable(&dir.join(bin)))
 }
 
-/// Check whether a CLI binary is available on `$PATH`.
-fn is_available(bin: &str) -> bool {
-    match Command::new("which")
-        .arg(bin)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-    {
-        Ok(s) => s.success(),
-        Err(e) => {
-            eprintln!("warning: failed to run `which {bin}`: {e}");
-            false
-        }
-    }
+#[cfg(unix)]
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &std::path::Path) -> bool {
+    path.is_file() || path.with_extension("exe").is_file()
 }
 
 /// Find the first available binary from a list of candidates.
@@ -55,11 +40,10 @@ fn find_binary<'a>(candidates: &'a [&'a str]) -> Option<&'a str> {
 
 /// Launch an agent via the Claude CLI.
 fn run_with_claude(bin: &str, agent_path: &AgentPath) -> Result<()> {
-    let prompt = format!(
-        "Load agent spec at {} and execute its instructions",
-        agent_path.as_str()
-    );
-    let status = Command::new(bin).args(["--print", &prompt]).status()?;
+    let status = Command::new(bin)
+        .args(["--print", &agent_path.prompt()])
+        .status()
+        .map_err(|e| anyhow!("could not run {bin}: {e}"))?;
     if status.success() {
         Ok(())
     } else {
@@ -73,35 +57,45 @@ fn run_with_claude(bin: &str, agent_path: &AgentPath) -> Result<()> {
     }
 }
 
-/// Launch an agent via the Codex CLI.
-fn run_with_codex(bin: &str, agent_path: &AgentPath) -> Result<()> {
-    let prompt = format!(
-        "Load agent spec at {} and execute its instructions",
-        agent_path.as_str()
-    );
-    let status = Command::new(bin)
-        .args(["--yolo", "exec", "--timeout_ms", "1800000"])
-        .arg(&prompt)
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(anyhow!(
-            "codex agent exited with {}",
-            status
-                .code()
-                .map(|c| format!("code {c}"))
-                .unwrap_or_else(|| "signal (killed)".to_string())
-        ))
+/// Picks the backend to run.
+///
+/// `--backend auto` takes the first available backend in priority order. An
+/// explicit `--backend` is honoured or refused: falling back from `claude`,
+/// chosen for its permission prompts, to an approval-free `codex --yolo` run
+/// is not a substitution to make behind a warning.
+fn select_backend<'a>(
+    requested: AgentBackend,
+    backends: &'a IndexMap<AgentBackend, &'a [&'a str]>,
+    find: impl Fn(&'a [&'a str]) -> Option<&'a str>,
+) -> Result<(AgentBackend, &'a str)> {
+    if !matches!(requested, AgentBackend::Auto) {
+        let candidates = backends.get(&requested).copied().unwrap_or(&[]);
+        return find(candidates).map(|bin| (requested, bin)).ok_or_else(|| {
+            anyhow!(
+                "requested backend '{}' is not available (looked for: {}); \
+                     install it or pass --backend auto",
+                requested.as_str(),
+                candidates.join(", ")
+            )
+        });
     }
+    backends
+        .iter()
+        .find_map(|(kind, candidates)| find(candidates).map(|bin| (*kind, bin)))
+        .ok_or_else(|| {
+            anyhow!(
+                "no CLI backend available (tried: {})",
+                backends
+                    .keys()
+                    .map(|b| b.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
 }
 
-/// Run an agent across available CLI backends with automatic fallback.
-///
-/// Resolves the agent spec, probes for available backends in priority order
-/// (determined by the `backend` preference), and dispatches execution.
-/// When an explicit backend is requested but unavailable, a warning is emitted
-/// before falling back to the next available backend.
+/// Run an agent on the requested CLI backend, or the first available one
+/// under `--backend auto`.
 pub(crate) fn handle_multi_cli_agent_command(
     agent_spec: String,
     backend: AgentBackend,
@@ -110,7 +104,7 @@ pub(crate) fn handle_multi_cli_agent_command(
 ) -> Result<()> {
     let agents = collect_agents(&merge_extra_dirs(&skill_dirs))?;
     let agent = resolve_agent(&agent_spec, &agents)?;
-    let agent_path = AgentPath::new(agent.path.display().to_string())?;
+    let agent_path = AgentPath::new(&agent.path)?;
 
     println!(
         "Agent: {} (source: {}, path: {})",
@@ -120,36 +114,7 @@ pub(crate) fn handle_multi_cli_agent_command(
     );
 
     let backends = backend.backends();
-    let preferred = *backends.keys().next().unwrap();
-
-    // Find the first available backend
-    let mut selected: Option<(AgentBackend, &str)> = None;
-    for (backend_kind, candidates) in &backends {
-        if let Some(bin) = find_binary(candidates) {
-            selected = Some((*backend_kind, bin));
-            break;
-        }
-    }
-
-    let (backend_kind, bin) = selected.ok_or_else(|| {
-        anyhow!(
-            "no CLI backend available (tried: {})",
-            backends
-                .iter()
-                .map(|(b, _)| b.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    })?;
-
-    // Warn when an explicit backend preference was overridden by fallback
-    if !matches!(backend, AgentBackend::Auto) && backend_kind != preferred {
-        eprintln!(
-            "warning: requested backend '{}' is not available, falling back to '{}'",
-            preferred.as_str(),
-            backend_kind.as_str()
-        );
-    }
+    let (backend_kind, bin) = select_backend(backend, &backends, find_binary)?;
 
     let backend_label = backend_kind.as_str();
     println!("Backend: {backend_label} ({bin})");
@@ -260,5 +225,44 @@ mod tests {
     #[test]
     fn agent_backend_default_is_auto() {
         assert!(matches!(AgentBackend::default(), AgentBackend::Auto));
+    }
+
+    fn only<'a>(present: &'a [&'a str]) -> impl Fn(&'a [&'a str]) -> Option<&'a str> {
+        move |candidates: &'a [&'a str]| candidates.iter().copied().find(|c| present.contains(c))
+    }
+
+    /// SA-48: `--backend claude` with Claude missing ran `codex --yolo exec`
+    /// after a warning.
+    #[test]
+    fn an_explicit_backend_that_is_missing_is_refused_not_replaced() {
+        let backends = AgentBackend::Claude.backends();
+
+        let err = select_backend(AgentBackend::Claude, &backends, only(&["codex"]))
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("'claude' is not available"), "{err}");
+    }
+
+    #[test]
+    fn an_explicit_backend_that_is_present_is_used() {
+        let backends = AgentBackend::Codex.backends();
+        let (kind, bin) =
+            select_backend(AgentBackend::Codex, &backends, only(&["claude", "codex"])).unwrap();
+        assert_eq!(kind, AgentBackend::Codex);
+        assert_eq!(bin, "codex");
+    }
+
+    #[test]
+    fn auto_falls_back_to_the_next_available_backend() {
+        let backends = AgentBackend::Auto.backends();
+        let (kind, _) = select_backend(AgentBackend::Auto, &backends, only(&["codex"])).unwrap();
+        assert_eq!(kind, AgentBackend::Codex);
+    }
+
+    #[test]
+    fn auto_with_nothing_installed_is_an_error() {
+        let backends = AgentBackend::Auto.backends();
+        assert!(select_backend(AgentBackend::Auto, &backends, only(&[])).is_err());
     }
 }

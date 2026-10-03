@@ -5,8 +5,36 @@ use anyhow::{anyhow, Result};
 use serde_json::json;
 use skrills_discovery::{default_roots, discover_skills, SkillRoot, SkillSource};
 use skrills_state::home_dir;
-use std::collections::HashMap;
 use std::path::PathBuf;
+
+/// One copy of a skill: where it was found and what it says.
+type Version = (SkillSource, PathBuf, String);
+
+/// Every readable copy of the skill `name` under `roots`, one entry per file.
+///
+/// Each root is searched on its own so discovery's de-duplication does not
+/// hide a copy. A map keyed by source kept only the last copy per source.
+fn find_versions(roots: &[SkillRoot], name: &str) -> Result<Vec<Version>> {
+    let search_name = normalize_skill_name(name);
+    let mut versions: Vec<Version> = Vec::new();
+    for root in roots {
+        for meta in discover_skills(std::slice::from_ref(root), None)? {
+            if normalize_skill_name(&meta.name) != search_name && meta.name != name {
+                continue;
+            }
+            if versions.iter().any(|(_, p, _)| *p == meta.path) {
+                continue;
+            }
+            match std::fs::read_to_string(&meta.path) {
+                Ok(content) => versions.push((meta.source.clone(), meta.path.clone(), content)),
+                Err(e) => {
+                    tracing::warn!(path = %meta.path.display(), error = %e, "skipping unreadable copy")
+                }
+            }
+        }
+    }
+    Ok(versions)
+}
 
 /// Handle the `skill-diff` command.
 pub(crate) fn handle_skill_diff_command(
@@ -29,30 +57,13 @@ pub(crate) fn handle_skill_diff_command(
             source: SkillSource::Cursor,
         });
     }
-    let search_name = normalize_skill_name(&name);
-    let mut versions: HashMap<SkillSource, (PathBuf, String)> = HashMap::new();
-
-    // Process each root individually to capture all versions
-    for root in &roots {
-        let skills = discover_skills(std::slice::from_ref(root), None)?;
-        for meta in skills.iter() {
-            let normalized_meta_name = normalize_skill_name(&meta.name);
-            if normalized_meta_name == search_name || meta.name == name {
-                let content = match std::fs::read_to_string(&meta.path) {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
-                versions.insert(meta.source.clone(), (meta.path.clone(), content));
-            }
-        }
-    }
+    let versions = find_versions(&roots, &name)?;
 
     if versions.is_empty() {
         return Err(anyhow!("Skill '{}' not found in any CLI", name));
     }
 
-    if versions.len() == 1 {
-        let (source, (path, _)) = versions.iter().next().unwrap();
+    if let [(source, path, _)] = versions.as_slice() {
         if format.is_json() {
             println!(
                 "{}",
@@ -75,17 +86,16 @@ pub(crate) fn handle_skill_diff_command(
         return Ok(());
     }
 
-    // Compare versions
-    let sources: Vec<_> = versions.keys().cloned().collect();
+    // Compare every pair of copies. Two copies can share a source (two
+    // plugins both shipping `review/SKILL.md`), so each copy is its own entry.
+    let sources: Vec<_> = versions.iter().map(|(s, _, _)| s.clone()).collect();
     let mut comparisons = Vec::new();
     let mut all_identical = true;
 
-    for i in 0..sources.len() {
-        for j in (i + 1)..sources.len() {
-            let source_a = &sources[i];
-            let source_b = &sources[j];
-            let (path_a, content_a) = &versions[source_a];
-            let (path_b, content_b) = &versions[source_b];
+    for i in 0..versions.len() {
+        for j in (i + 1)..versions.len() {
+            let (source_a, path_a, content_a) = &versions[i];
+            let (source_b, path_b, content_b) = &versions[j];
 
             let diff = unified_diff(content_a, content_b, context_lines);
             let is_identical = content_a == content_b;
@@ -125,14 +135,14 @@ pub(crate) fn handle_skill_diff_command(
         );
     } else if all_identical {
         println!(
-            "Skill '{}' is identical across {} CLIs: {:?}",
+            "Skill '{}' is identical across {} copies: {:?}",
             name,
             versions.len(),
             sources
         );
     } else {
         println!(
-            "\nSummary: Skill '{}' found in {} CLIs with differences",
+            "\nSummary: Skill '{}' found in {} copies with differences",
             name,
             versions.len()
         );
@@ -213,5 +223,60 @@ fn normalize_skill_name(name: &str) -> String {
         name[last_slash + 1..].to_string()
     } else {
         name.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write(root: &std::path::Path, rel: &str, body: &str) -> PathBuf {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    /// SA-37: versions were keyed by source, so a second copy from the same
+    /// source overwrote the first and was never compared.
+    #[test]
+    fn two_copies_from_the_same_source_are_both_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = write(
+            tmp.path(),
+            "plugin-a/review/SKILL.md",
+            "---\nname: review\n---\nA\n",
+        );
+        let b = write(
+            tmp.path(),
+            "plugin-b/review/SKILL.md",
+            "---\nname: review\n---\nB\n",
+        );
+        let roots: Vec<SkillRoot> = ["plugin-a", "plugin-b"]
+            .iter()
+            .map(|d| SkillRoot {
+                root: tmp.path().join(d),
+                source: SkillSource::Claude,
+            })
+            .collect();
+
+        let versions = find_versions(&roots, "review").unwrap();
+
+        let paths: Vec<_> = versions.iter().map(|(_, p, _)| p.clone()).collect();
+        assert_eq!(paths, vec![a, b]);
+    }
+
+    #[test]
+    fn the_same_file_reached_from_two_roots_is_counted_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "review/SKILL.md", "x");
+        let root = SkillRoot {
+            root: tmp.path().to_path_buf(),
+            source: SkillSource::Claude,
+        };
+
+        let versions = find_versions(&[root.clone(), root], "review").unwrap();
+
+        assert_eq!(versions.len(), 1);
     }
 }

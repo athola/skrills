@@ -1,9 +1,8 @@
 use anyhow::{bail, Result};
-use skrills_discovery::{discover_skills, extra_skill_roots};
+use skrills_discovery::discover_skills;
 use std::path::PathBuf;
 
 use crate::cli::OutputFormat;
-use skrills_server::discovery::merge_extra_dirs;
 
 use super::{ScoreBreakdown, SkillScoreResult};
 
@@ -16,8 +15,7 @@ pub(crate) fn handle_skill_score_command(
 ) -> Result<()> {
     use skrills_validate::frontmatter::parse_frontmatter;
 
-    let extra_dirs = merge_extra_dirs(&skill_dirs);
-    let roots = extra_skill_roots(&extra_dirs);
+    let roots = crate::commands::skill_roots_for(&skill_dirs);
     let skills = discover_skills(&roots, None)?;
 
     let skills_to_score: Vec<_> = if let Some(ref target_name) = name {

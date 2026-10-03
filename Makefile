@@ -164,8 +164,8 @@ help:
 	@printf "  %-23s %s\n" "dogfood-tui-interactive" "BDD: drive the cold-window TUI under a real PTY (tmux)"
 	@printf "  %-23s %s\n" "dogfood-precommit" "truncated dogfood for the pre-commit hook"
 	@printf "  %-23s %s\n" "dogfood-cold-window-headless" "engine ticks for 3s, expects clean SIGTERM exit"
-	@printf "  %-23s %s\n" "dogfood-cold-window-chaos" "--no-adaptive + tiny budget; exercises kill-switch"
-	@printf "  %-23s %s\n" "dogfood-cold-window-browser" "HTML+SSE parity check + 2s graceful-shutdown budget"
+	@printf "  %-23s %s\n" "dogfood-cold-window-chaos" "--demo --no-adaptive + tiny budget; exercises kill-switch"
+	@printf "  %-23s %s\n" "dogfood-cold-window-browser" "--demo HTML+SSE parity check + 2s graceful-shutdown budget"
 	@printf "  %-23s %s\n" "dogfood-tui" "skrills tui smoke (timeout 3s)"
 	@printf "  %-23s %s\n" "dogfood-dashboard" "skrills dashboard smoke (timeout 3s)"
 	@printf "  %-23s %s\n" "dogfood-skill-diff" "skill-diff --format json validates as JSON"
@@ -675,9 +675,9 @@ dogfood-cold-window-headless: build
 	@echo "==> [headless] OK"
 
 dogfood-cold-window-chaos: build
-	@echo "==> [chaos] --no-adaptive + alert-budget=1 forces kill-switch path"
+	@echo "==> [chaos] --demo --no-adaptive + alert-budget=2 (the minimum) forces kill-switch path"
 	@set +e; HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) timeout --signal=TERM 3 \
-	  $(BIN_PATH) cold-window --no-adaptive --tick-rate-ms 200 --alert-budget 1 >/dev/null 2>&1 ; \
+	  $(BIN_PATH) cold-window --demo --no-adaptive --tick-rate-ms 200 --alert-budget 2 >/dev/null 2>&1 ; \
 	$(_assert_clean_exit)
 	@echo "==> [chaos] OK"
 
@@ -688,7 +688,7 @@ dogfood-cold-window-browser: build
 	mkdir -p $$TMP ; \
 	echo "==> [browser] starting cold-window on port $$PORT" ; \
 	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) \
-	  $(BIN_PATH) cold-window --browser --port $$PORT \
+	  $(BIN_PATH) cold-window --browser --demo --port $$PORT \
 	    --tick-rate-ms 200 --alert-budget 100000 \
 	    >$$TMP/server.log 2>&1 & \
 	PID=$$! ; \

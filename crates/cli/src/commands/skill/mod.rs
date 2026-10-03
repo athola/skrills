@@ -23,12 +23,64 @@ pub(crate) use scoring::handle_skill_score_command;
 pub(crate) use sync_pull::handle_sync_pull_command;
 pub(crate) use usage_report::handle_skill_usage_report_command;
 
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
+use skrills_discovery::SkillMeta;
 use std::path::PathBuf;
 
 /// Escape a string for safe embedding in YAML double-quoted values.
+///
+/// Newlines and tabs are escaped too: a raw newline inside a double-quoted
+/// scalar would be folded or, before a `key:` line, end the value.
 pub(super) fn escape_yaml_string(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
+/// The name a user would type for a skill: its directory name, which is the
+/// skill's name by convention (`review/SKILL.md` is `review`).
+pub(super) fn skill_dir_name(meta: &SkillMeta) -> String {
+    meta.path
+        .parent()
+        .and_then(|p| p.file_name())
+        .or_else(|| meta.path.file_stem())
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| meta.name.clone())
+}
+
+/// Finds the one discovered skill that `query` names.
+///
+/// A skill matches when `query` equals, ignoring ASCII case, its discovery
+/// key (`review/SKILL.md`), its directory name (`review`) or its frontmatter
+/// `name`. Commands that rewrite the file call this, so there is no substring
+/// fallback and no first-hit pick: no match and several matches are both
+/// errors, the latter listing every candidate.
+pub(super) fn find_skill<'a>(skills: &'a [SkillMeta], query: &str) -> Result<&'a SkillMeta> {
+    let matches: Vec<&SkillMeta> = skills
+        .iter()
+        .filter(|s| {
+            s.name.eq_ignore_ascii_case(query)
+                || skill_dir_name(s).eq_ignore_ascii_case(query)
+                || s.frontmatter_name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case(query))
+        })
+        .collect();
+    match matches.as_slice() {
+        [] => bail!("Skill '{query}' not found in discovered skills"),
+        [one] => Ok(one),
+        many => bail!(
+            "Skill name '{query}' is ambiguous; it matches {} skills:\n{}\nPass --skill-dir to narrow the search.",
+            many.len(),
+            many.iter()
+                .map(|s| format!("  {}", s.path.display()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
+    }
 }
 
 /// Result of skill deprecation operation.
@@ -157,49 +209,6 @@ pub struct SyncPullResult {
 mod tests {
     use super::*;
 
-    /// Test that invalid git version hashes are rejected (command injection prevention)
-    #[test]
-    fn rollback_invalid_version_hash_is_rejected() {
-        let valid_hashes = ["abc1", "abc12345", "abc123456789abcdef", "ABCDEF0123456789"];
-        let hash_pattern = regex::Regex::new(r"^[0-9a-fA-F]{4,40}$").unwrap();
-
-        for hash in &valid_hashes {
-            assert!(
-                hash_pattern.is_match(hash),
-                "Expected '{}' to be valid",
-                hash
-            );
-        }
-
-        let invalid_hashes = [
-            "abc",
-            "; rm -rf /",
-            "abc123; echo pwned",
-            "$(whoami)",
-            "`id`",
-            "abc\necho hacked",
-            "abc|cat /etc/passwd",
-            "--help",
-            "-",
-            "",
-        ];
-
-        for hash in &invalid_hashes {
-            assert!(
-                !hash_pattern.is_match(hash),
-                "Expected '{}' to be rejected as invalid",
-                hash
-            );
-        }
-    }
-
-    #[test]
-    fn deprecation_message_basic_format() {
-        let message = "Use new-skill instead";
-        let formatted = format!("deprecation_message: \"{}\"\n", message);
-        assert!(formatted.contains("\"Use new-skill instead\""));
-    }
-
     #[test]
     fn skill_version_serializes_correctly() {
         let version = SkillVersion {
@@ -245,33 +254,6 @@ mod tests {
     }
 
     #[test]
-    fn precommit_validation_error_flag_tracking() {
-        let mut errors_found = false;
-        let mut validated = 0;
-
-        validated += 1;
-
-        let read_failed = true;
-        if read_failed {
-            errors_found = true;
-        }
-
-        let has_validation_errors = true;
-        if has_validation_errors {
-            errors_found = true;
-        }
-
-        assert!(
-            errors_found,
-            "errors_found should be true when any error occurs"
-        );
-        assert_eq!(
-            validated, 1,
-            "Only successful validations should be counted"
-        );
-    }
-
-    #[test]
     fn escape_yaml_string_handles_special_chars() {
         assert_eq!(escape_yaml_string("hello"), "hello");
         assert_eq!(escape_yaml_string(r#"say "hi""#), r#"say \"hi\""#);
@@ -294,49 +276,6 @@ mod tests {
     }
 
     #[test]
-    fn rollback_version_hash_rejects_empty_string() {
-        let hash_pattern = regex::Regex::new(r"^[0-9a-fA-F]{4,40}$").unwrap();
-        assert!(!hash_pattern.is_match(""));
-    }
-
-    #[test]
-    fn rollback_version_hash_rejects_too_short() {
-        let hash_pattern = regex::Regex::new(r"^[0-9a-fA-F]{4,40}$").unwrap();
-        assert!(!hash_pattern.is_match("ab"));
-        assert!(!hash_pattern.is_match("abc"));
-    }
-
-    #[test]
-    fn rollback_version_hash_rejects_too_long() {
-        let hash_pattern = regex::Regex::new(r"^[0-9a-fA-F]{4,40}$").unwrap();
-        let long_hash = "a".repeat(41);
-        assert!(!hash_pattern.is_match(&long_hash));
-    }
-
-    #[test]
-    fn deprecation_result_nonexistent_skill() {
-        // Simulates the result structure when a skill is not found
-        let result = DeprecationResult {
-            skill_name: "nonexistent-skill".to_string(),
-            skill_path: PathBuf::from("/does/not/exist.md"),
-            deprecated: false,
-            message: Some("Skill not found".to_string()),
-            replacement: None,
-        };
-        let json = serde_json::to_string(&result).unwrap();
-        assert!(json.contains("\"deprecated\":false"));
-        assert!(json.contains("Skill not found"));
-    }
-
-    #[test]
-    fn deprecation_empty_message_uses_default() {
-        // The handle function uses a default when message is None
-        let message: Option<String> = None;
-        let deprecation_msg = message.as_deref().unwrap_or("This skill is deprecated");
-        assert_eq!(deprecation_msg, "This skill is deprecated");
-    }
-
-    #[test]
     fn deprecation_with_empty_string_message() {
         let message = Some("".to_string());
         let deprecation_msg = message.as_deref().unwrap_or("This skill is deprecated");
@@ -347,19 +286,6 @@ mod tests {
             escape_yaml_string(deprecation_msg)
         );
         assert_eq!(formatted, "deprecation_message: \"\"\n");
-    }
-
-    #[test]
-    fn import_result_url_source_error() {
-        // URL imports should produce an error
-        let source = "https://example.com/skill.md";
-        assert!(source.starts_with("http://") || source.starts_with("https://"));
-    }
-
-    #[test]
-    fn import_result_git_source_error() {
-        let source = "git://github.com/repo.git";
-        assert!(source.starts_with("git://") || source.ends_with(".git"));
     }
 
     #[test]
@@ -385,5 +311,78 @@ mod tests {
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"deprecated\":true"));
+    }
+
+    fn meta(root: &str, rel: &str, fm_name: Option<&str>) -> SkillMeta {
+        SkillMeta {
+            name: rel.to_string(),
+            path: PathBuf::from(root).join(rel),
+            source: skrills_discovery::SkillSource::Extra(0),
+            root: PathBuf::from(root),
+            hash: String::new(),
+            description: None,
+            frontmatter_name: fm_name.map(str::to_string),
+        }
+    }
+
+    /// SA-3 / SB-18: `test` used to match every skill whose absolute path
+    /// contained "test" and the first one was rewritten.
+    #[test]
+    fn find_skill_ignores_substrings_of_the_path() {
+        let skills = vec![
+            meta("/home/u/test-projects/skills", "alpha/SKILL.md", None),
+            meta("/home/u/test-projects/skills", "beta/SKILL.md", None),
+        ];
+
+        let err = find_skill(&skills, "test").unwrap_err().to_string();
+
+        assert!(err.contains("not found"), "{err}");
+    }
+
+    #[test]
+    fn find_skill_matches_directory_name_key_and_frontmatter_name() {
+        let skills = vec![
+            meta("/r", "alpha/SKILL.md", None),
+            meta("/r", "beta/SKILL.md", Some("Beta-Skill")),
+        ];
+
+        assert_eq!(find_skill(&skills, "ALPHA").unwrap().name, "alpha/SKILL.md");
+        assert_eq!(
+            find_skill(&skills, "alpha/SKILL.md").unwrap().name,
+            "alpha/SKILL.md"
+        );
+        assert_eq!(
+            find_skill(&skills, "beta-skill").unwrap().name,
+            "beta/SKILL.md"
+        );
+    }
+
+    #[test]
+    fn find_skill_refuses_an_ambiguous_name_and_lists_the_candidates() {
+        let skills = vec![
+            meta("/plugin-a/skills", "review/SKILL.md", None),
+            meta("/plugin-b/skills", "nested/review/SKILL.md", None),
+        ];
+
+        let err = find_skill(&skills, "review").unwrap_err().to_string();
+
+        assert!(err.contains("ambiguous"), "{err}");
+        assert!(err.contains("/plugin-a/skills/review/SKILL.md"), "{err}");
+        assert!(
+            err.contains("/plugin-b/skills/nested/review/SKILL.md"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn skill_dir_name_is_the_parent_directory() {
+        let m = meta("/r", "group/review/SKILL.md", None);
+        assert_eq!(skill_dir_name(&m), "review");
+    }
+
+    /// SA-46: a newline in `--message` ended the YAML scalar.
+    #[test]
+    fn escape_yaml_string_escapes_line_breaks_and_tabs() {
+        assert_eq!(escape_yaml_string("a\nb\r\tc"), r"a\nb\r\tc");
     }
 }

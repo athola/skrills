@@ -22,7 +22,18 @@ fn tool_text(result: &CallToolResult) -> String {
         .join("\n")
 }
 
+/// Prints a tool result, or returns its text as the error when the tool
+/// reported one, so a failed `create-skill` exits non-zero instead of
+/// printing "Failed to create skill" and exiting 0.
 fn print_tool_result(result: CallToolResult, format: OutputFormat) -> Result<()> {
+    if result.is_error == Some(true) {
+        let text = tool_text(&result);
+        anyhow::bail!(if text.is_empty() {
+            "the tool reported an error".to_string()
+        } else {
+            text
+        });
+    }
     if format.is_json() {
         if let Some(value) = result.structured_content {
             println!("{}", serde_json::to_string_pretty(&value)?);
@@ -39,19 +50,33 @@ fn print_tool_result(result: CallToolResult, format: OutputFormat) -> Result<()>
     Ok(())
 }
 
+/// The `recommend-skills-smart` flags, one field per flag.
+#[derive(Debug)]
+pub(crate) struct SmartRecommendOptions {
+    pub uri: Option<String>,
+    pub prompt: Option<String>,
+    pub project_dir: Option<PathBuf>,
+    pub limit: usize,
+    pub include_usage: bool,
+    pub include_context: bool,
+    pub auto_persist: bool,
+    pub format: OutputFormat,
+    pub skill_dirs: Vec<PathBuf>,
+}
+
 /// Handle the `recommend-skills-smart` command.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn handle_recommend_skills_smart_command(
-    uri: Option<String>,
-    prompt: Option<String>,
-    project_dir: Option<PathBuf>,
-    limit: usize,
-    include_usage: bool,
-    include_context: bool,
-    auto_persist: bool,
-    format: OutputFormat,
-    skill_dirs: Vec<PathBuf>,
-) -> Result<()> {
+pub(crate) fn handle_recommend_skills_smart_command(options: SmartRecommendOptions) -> Result<()> {
+    let SmartRecommendOptions {
+        uri,
+        prompt,
+        project_dir,
+        limit,
+        include_usage,
+        include_context,
+        auto_persist,
+        format,
+        skill_dirs,
+    } = options;
     use skrills_intelligence::{
         default_analytics_cache_path, load_or_build_analytics, save_analytics,
     };
@@ -298,6 +323,19 @@ mod tests {
 
     use skrills_test_utils::set_env_var;
 
+    /// SA-17: an `is_error` result was printed and the command exited 0.
+    #[test]
+    fn an_error_tool_result_is_returned_as_an_error() {
+        use rmcp::model::ContentBlock;
+        for format in [OutputFormat::Text, OutputFormat::Json] {
+            let result = CallToolResult::error(vec![ContentBlock::text("Failed to create skill")]);
+            let err = print_tool_result(result, format).unwrap_err();
+            assert!(err.to_string().contains("Failed to create skill"), "{err}");
+        }
+        let ok = CallToolResult::success(vec![ContentBlock::text("done")]);
+        assert!(print_tool_result(ok, OutputFormat::Text).is_ok());
+    }
+
     fn create_skill(dir: &std::path::Path, name: &str, content: &str) {
         let skill_dir = dir.join(name);
         fs::create_dir_all(&skill_dir).expect("create skill dir");
@@ -347,17 +385,17 @@ A test skill.
         );
         create_skill(&skill_dir, "skill-c", &skill_with_deps("skill-c", &[]));
 
-        let result = handle_recommend_skills_smart_command(
-            Some("skill://skrills/codex/skill-a".into()),
-            None,
-            None,
-            5,
-            false,
-            false,
-            false, // auto_persist
-            OutputFormat::Json,
-            vec![skill_dir],
-        );
+        let result = handle_recommend_skills_smart_command(SmartRecommendOptions {
+            uri: Some("skill://skrills/codex/skill-a".into()),
+            prompt: None,
+            project_dir: None,
+            limit: 5,
+            include_usage: false,
+            include_context: false,
+            auto_persist: false,
+            format: OutputFormat::Json,
+            skill_dirs: vec![skill_dir],
+        });
 
         result.expect("recommend-skills-smart should succeed");
     }
@@ -455,17 +493,17 @@ A test skill.
         assert!(!cache_path.exists(), "Cache should not exist before test");
 
         // Run with auto_persist=true
-        let result = handle_recommend_skills_smart_command(
-            None,
-            Some("test query".into()),
-            None,
-            5,
-            true,  // include_usage
-            false, // include_context
-            true,  // auto_persist enabled
-            OutputFormat::Json,
-            vec![skill_dir],
-        );
+        let result = handle_recommend_skills_smart_command(SmartRecommendOptions {
+            uri: None,
+            prompt: Some("test query".into()),
+            project_dir: None,
+            limit: 5,
+            include_usage: true,
+            include_context: false,
+            auto_persist: true,
+            format: OutputFormat::Json,
+            skill_dirs: vec![skill_dir],
+        });
 
         result.expect("Command should succeed");
         assert!(cache_path.exists(), "Cache should exist after auto-persist");
@@ -501,17 +539,17 @@ A test skill.
         assert!(!cache_path.exists(), "Cache should not exist before test");
 
         // Run with auto_persist=false (env var should override)
-        let result = handle_recommend_skills_smart_command(
-            None,
-            Some("test query".into()),
-            None,
-            5,
-            true,  // include_usage
-            false, // include_context
-            false, // auto_persist flag off, but env var is set
-            OutputFormat::Json,
-            vec![skill_dir],
-        );
+        let result = handle_recommend_skills_smart_command(SmartRecommendOptions {
+            uri: None,
+            prompt: Some("test query".into()),
+            project_dir: None,
+            limit: 5,
+            include_usage: true,
+            include_context: false,
+            auto_persist: false,
+            format: OutputFormat::Json,
+            skill_dirs: vec![skill_dir],
+        });
 
         result.expect("Command should succeed");
         assert!(

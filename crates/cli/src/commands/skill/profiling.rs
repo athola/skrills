@@ -1,10 +1,75 @@
 use anyhow::{Context, Result};
-use std::cmp::Reverse;
-use std::collections::HashMap;
+use skrills_intelligence::{load_analytics, UsageAnalytics};
+use std::path::Path;
 
 use crate::cli::OutputFormat;
 
 use super::{ProfileResult, SkillStats};
+
+/// Loads `~/.skrills/analytics_cache.json`, the cache that
+/// `recommend-skills-smart --auto-persist` and `export-analytics` write.
+///
+/// The commands used to read a `skill_usage` key that this cache never has,
+/// so every report said 0 invocations. It is decoded as the
+/// `UsageAnalytics` it was saved from instead.
+pub(super) fn load_usage_analytics() -> Result<Option<UsageAnalytics>> {
+    let home = dirs::home_dir().context("Could not determine home directory")?;
+    load_analytics(&home.join(".skrills/analytics_cache.json"))
+        .context("Failed to read the analytics cache")
+}
+
+/// Seconds since the Unix epoch, or 0 on a clock set before it.
+pub(super) fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Invocation counts per skill, most used first, for the skills last used
+/// within `period_days` of `now`.
+///
+/// The cache keeps one all-time count and one last-used time per skill, not a
+/// dated log, so the period selects skills by their last use and the counts
+/// stay totals over the analysed history. A `period_days` of 0, or a clock
+/// that reads 0, applies no period.
+pub(super) fn usage_counts(
+    analytics: &UsageAnalytics,
+    period_days: u32,
+    now: u64,
+) -> Vec<(String, u64)> {
+    let cutoff =
+        (period_days > 0 && now > 0).then(|| now.saturating_sub(u64::from(period_days) * 86_400));
+    let mut counts: Vec<(String, u64)> = analytics
+        .frequency
+        .iter()
+        .filter(|(skill, _)| match cutoff {
+            Some(cutoff) => analytics
+                .recency
+                .get(*skill)
+                .is_some_and(|&last| last >= cutoff),
+            None => true,
+        })
+        .map(|(skill, n)| (skill.clone(), *n))
+        .collect();
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    counts
+}
+
+/// Whether the analytics key `key` (a skill path or name) names `name`:
+/// equal, or naming the same skill directory (`.../review/SKILL.md`).
+fn key_names_skill(key: &str, name: &str) -> bool {
+    if key == name {
+        return true;
+    }
+    let path = Path::new(key);
+    let dir_name = if path.file_name().is_some_and(|f| f == "SKILL.md") {
+        path.parent().and_then(|p| p.file_name())
+    } else {
+        path.file_stem()
+    };
+    dir_name.is_some_and(|d| d == name)
+}
 
 /// Handle the skill-profile command.
 pub(crate) fn handle_skill_profile_command(
@@ -12,10 +77,7 @@ pub(crate) fn handle_skill_profile_command(
     period: u32,
     format: OutputFormat,
 ) -> Result<()> {
-    let home = dirs::home_dir().with_context(|| "Could not determine home directory")?;
-    let cache_path = home.join(".skrills/analytics_cache.json");
-
-    if !cache_path.exists() {
+    let Some(analytics) = load_usage_analytics()? else {
         if format.is_json() {
             let result = ProfileResult {
                 period_days: period,
@@ -31,26 +93,16 @@ pub(crate) fn handle_skill_profile_command(
             );
         }
         return Ok(());
-    }
+    };
 
-    let analytics_json =
-        std::fs::read_to_string(&cache_path).with_context(|| "Failed to read analytics cache")?;
-
-    let analytics: serde_json::Value =
-        serde_json::from_str(&analytics_json).with_context(|| "Failed to parse analytics cache")?;
-
-    let mut skill_counts: HashMap<String, u64> = HashMap::new();
-
-    if let Some(usage) = analytics.get("skill_usage").and_then(|u| u.as_object()) {
-        for (skill_name, count) in usage {
-            if let Some(n) = count.as_u64() {
-                skill_counts.insert(skill_name.clone(), n);
-            }
-        }
-    }
+    let counts = usage_counts(&analytics, period, now_secs());
 
     if let Some(ref target_name) = name {
-        let count = skill_counts.get(target_name).copied().unwrap_or(0);
+        let count: u64 = counts
+            .iter()
+            .filter(|(key, _)| key_names_skill(key, target_name))
+            .map(|(_, n)| n)
+            .sum();
         let stats = SkillStats {
             name: target_name.clone(),
             invocations: count,
@@ -71,39 +123,18 @@ pub(crate) fn handle_skill_profile_command(
         return Ok(());
     }
 
-    let total: u64 = skill_counts.values().sum();
-    let mut sorted: Vec<_> = skill_counts.into_iter().collect();
-    sorted.sort_by_key(|b| Reverse(b.1));
-
-    let top_skills: Vec<SkillStats> = sorted
-        .into_iter()
-        .take(10)
-        .map(|(name, invocations)| SkillStats {
-            name,
-            invocations,
-            last_used: None,
-            avg_tokens: None,
-            success_rate: None,
-        })
-        .collect();
-
-    let result = ProfileResult {
-        period_days: period,
-        total_invocations: total,
-        unique_skills_used: top_skills.len(),
-        top_skills: top_skills.clone(),
-    };
+    let result = profile(&counts, period);
 
     if format.is_json() {
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
         println!("Skill Usage Profile (last {} days)", period);
         println!("─────────────────────────────────────");
-        println!("Total invocations: {}", total);
+        println!("Total invocations: {}", result.total_invocations);
         println!("Unique skills used: {}", result.unique_skills_used);
         println!();
         println!("Top Skills:");
-        for (i, stats) in top_skills.iter().enumerate() {
+        for (i, stats) in result.top_skills.iter().enumerate() {
             println!(
                 "  {}. {} ({} invocations)",
                 i + 1,
@@ -116,127 +147,106 @@ pub(crate) fn handle_skill_profile_command(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::super::{ProfileResult, SkillStats};
-    use std::cmp::Reverse;
-    use std::collections::HashMap;
-
-    // GIVEN an empty analytics cache
-    // WHEN building a ProfileResult
-    // THEN all counts are zero
-    #[test]
-    fn empty_profile_result() {
-        let result = ProfileResult {
-            period_days: 30,
-            total_invocations: 0,
-            unique_skills_used: 0,
-            top_skills: vec![],
-        };
-        let json = serde_json::to_string_pretty(&result).unwrap();
-        assert!(json.contains("\"total_invocations\": 0"));
-        assert!(json.contains("\"unique_skills_used\": 0"));
-        assert!(json.contains("\"top_skills\": []"));
-    }
-
-    // GIVEN a SkillStats with only required fields
-    // WHEN optional fields are None
-    // THEN serialization includes null values
-    #[test]
-    fn skill_stats_optional_fields_null() {
-        let stats = SkillStats {
-            name: "test-skill".to_string(),
-            invocations: 42,
-            last_used: None,
-            avg_tokens: None,
-            success_rate: None,
-        };
-        let json = serde_json::to_string(&stats).unwrap();
-        assert!(json.contains("\"last_used\":null"));
-        assert!(json.contains("\"avg_tokens\":null"));
-        assert!(json.contains("\"success_rate\":null"));
-        assert!(json.contains("\"invocations\":42"));
-    }
-
-    // GIVEN skill usage counts from analytics JSON
-    // WHEN parsing into a HashMap
-    // THEN counts are correctly extracted
-    #[test]
-    fn parse_skill_usage_from_json() {
-        let analytics_json = r#"{"skill_usage": {"commit": 10, "review": 5, "deploy": 3}}"#;
-        let analytics: serde_json::Value = serde_json::from_str(analytics_json).unwrap();
-
-        let mut skill_counts: HashMap<String, u64> = HashMap::new();
-        if let Some(usage) = analytics.get("skill_usage").and_then(|u| u.as_object()) {
-            for (name, count) in usage {
-                if let Some(n) = count.as_u64() {
-                    skill_counts.insert(name.clone(), n);
-                }
-            }
-        }
-
-        assert_eq!(skill_counts.len(), 3);
-        assert_eq!(skill_counts["commit"], 10);
-        assert_eq!(skill_counts["review"], 5);
-        assert_eq!(skill_counts["deploy"], 3);
-    }
-
-    // GIVEN skill counts
-    // WHEN sorting by invocations descending and taking top 10
-    // THEN the result is in correct order and capped at 10
-    #[test]
-    fn top_skills_sorted_and_capped() {
-        let mut counts: Vec<(String, u64)> = (0..15)
-            .map(|i| (format!("skill-{}", i), i as u64))
-            .collect();
-        counts.sort_by_key(|b| Reverse(b.1));
-        let top: Vec<SkillStats> = counts
-            .into_iter()
+/// The overall profile: totals over every skill used in the period, and the
+/// ten most used.
+fn profile(counts: &[(String, u64)], period: u32) -> ProfileResult {
+    ProfileResult {
+        period_days: period,
+        total_invocations: counts.iter().map(|(_, n)| n).sum(),
+        // Every skill used in the period, not the length of the top-ten list.
+        unique_skills_used: counts.len(),
+        top_skills: counts
+            .iter()
             .take(10)
             .map(|(name, invocations)| SkillStats {
-                name,
-                invocations,
+                name: name.clone(),
+                invocations: *invocations,
                 last_used: None,
                 avg_tokens: None,
                 success_rate: None,
             })
-            .collect();
-
-        assert_eq!(top.len(), 10);
-        assert_eq!(top[0].name, "skill-14");
-        assert_eq!(top[0].invocations, 14);
-        assert_eq!(top[9].name, "skill-5");
+            .collect(),
     }
+}
 
-    // GIVEN a target skill name lookup
-    // WHEN the skill exists in counts
-    // THEN return its count; otherwise 0
-    #[test]
-    fn lookup_specific_skill_count() {
-        let mut skill_counts: HashMap<String, u64> = HashMap::new();
-        skill_counts.insert("commit".to_string(), 25);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        assert_eq!(skill_counts.get("commit").copied().unwrap_or(0), 25);
-        assert_eq!(skill_counts.get("nonexistent").copied().unwrap_or(0), 0);
-    }
+    const DAY: u64 = 86_400;
+    const NOW: u64 = 1_000 * DAY;
 
-    // GIVEN analytics JSON without skill_usage key
-    // WHEN parsing
-    // THEN skill_counts remains empty
-    #[test]
-    fn missing_skill_usage_key_yields_empty() {
-        let analytics_json = r#"{"other_data": 123}"#;
-        let analytics: serde_json::Value = serde_json::from_str(analytics_json).unwrap();
-
-        let mut skill_counts: HashMap<String, u64> = HashMap::new();
-        if let Some(usage) = analytics.get("skill_usage").and_then(|u| u.as_object()) {
-            for (name, count) in usage {
-                if let Some(n) = count.as_u64() {
-                    skill_counts.insert(name.clone(), n);
-                }
-            }
+    fn analytics(rows: &[(&str, u64, u64)]) -> UsageAnalytics {
+        let mut a = UsageAnalytics::default();
+        for (skill, count, last_used) in rows {
+            a.frequency.insert(skill.to_string(), *count);
+            a.recency.insert(skill.to_string(), *last_used);
         }
+        a
+    }
 
-        assert!(skill_counts.is_empty());
+    /// SB-33: the counts come from a cache written by `save_analytics`, the
+    /// way `recommend-skills-smart --auto-persist` writes it.
+    #[test]
+    fn counts_are_read_from_a_saved_analytics_cache() {
+        let _g = skrills_test_utils::env_guard();
+        let home = tempfile::tempdir().unwrap();
+        let _h = skrills_test_utils::set_env_var("HOME", Some(home.path().to_str().unwrap()));
+        let saved = analytics(&[("/s/review/SKILL.md", 7, now_secs())]);
+        skrills_intelligence::save_analytics(
+            &saved,
+            &home.path().join(".skrills/analytics_cache.json"),
+        )
+        .unwrap();
+
+        let loaded = load_usage_analytics().unwrap().expect("cache present");
+        let counts = usage_counts(&loaded, 30, now_secs());
+
+        assert_eq!(counts, vec![("/s/review/SKILL.md".to_string(), 7)]);
+    }
+
+    #[test]
+    fn the_period_selects_skills_by_last_use() {
+        let a = analytics(&[("recent", 3, NOW - DAY), ("stale", 9, NOW - 60 * DAY)]);
+
+        assert_eq!(usage_counts(&a, 30, NOW), vec![("recent".to_string(), 3)]);
+        assert_eq!(usage_counts(&a, 0, NOW).len(), 2, "0 applies no period");
+        assert_eq!(
+            usage_counts(&a, 30, 0).len(),
+            2,
+            "a zero clock applies none"
+        );
+    }
+
+    /// SB-33: `unique_skills_used` was the length of the top-ten list.
+    #[test]
+    fn unique_skills_counts_beyond_the_top_ten() {
+        let rows: Vec<(String, u64, u64)> = (0..12)
+            .map(|i| (format!("skill-{i:02}"), 12 - i, NOW))
+            .collect();
+        let a = analytics(
+            &rows
+                .iter()
+                .map(|(s, c, t)| (s.as_str(), *c, *t))
+                .collect::<Vec<_>>(),
+        );
+
+        let result = profile(&usage_counts(&a, 30, NOW), 30);
+
+        assert_eq!(result.unique_skills_used, 12);
+        assert_eq!(result.top_skills.len(), 10);
+        assert_eq!(result.top_skills[0].name, "skill-00");
+        assert_eq!(result.total_invocations, (1..=12).sum::<u64>());
+    }
+
+    #[test]
+    fn a_skill_is_found_by_its_directory_name() {
+        assert!(key_names_skill(
+            "/home/u/.claude/skills/review/SKILL.md",
+            "review"
+        ));
+        assert!(key_names_skill("review", "review"));
+        assert!(key_names_skill("/x/review.md", "review"));
+        assert!(!key_names_skill("/x/reviewer/SKILL.md", "review"));
     }
 }

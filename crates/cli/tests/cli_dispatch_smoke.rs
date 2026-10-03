@@ -21,27 +21,87 @@
 
 #![cfg(feature = "http-transport")]
 
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::process::{Command, Stdio};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// Pick a free 127.0.0.1 port by binding `:0` and immediately dropping
-/// the listener. Race window is real: the port could be claimed by
-/// another process between drop and `--port` arg. For a smoke test
-/// this is acceptable; the failure mode is "test flake", not silent
-/// regression.
+/// Pick a 127.0.0.1 port by binding `:0` and dropping the listener. Used
+/// only for `serve`, which cannot bind `:0` yet (it logs the requested
+/// address, not the bound one); the address the test talks to is still read
+/// from the server's log, so a port taken in the meantime is survived
+/// through serve's fallback to the next port.
 fn pick_free_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
     listener.local_addr().expect("local_addr").port()
+}
+
+/// Spawns `skrills <args>` with logs on a piped stderr and waits for the log
+/// line containing `marker`, returning the address in its `field=` value.
+///
+/// A reader thread forwards stderr lines, so a child that never logs the
+/// line fails the test after the deadline instead of hanging it.
+fn spawn_and_read_bound_addr(
+    args: &[&str],
+    home: &std::path::Path,
+    marker: &str,
+    field: &str,
+) -> (Child, SocketAddr) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_skrills"))
+        .args(args)
+        .env("HOME", home)
+        .env("NO_COLOR", "1")
+        .env_remove("RUST_LOG")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn skrills");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut seen = Vec::new();
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        match rx.recv_timeout(left) {
+            Ok(line) => {
+                if line.contains(marker) {
+                    if let Some(addr) = field_value(&line, field) {
+                        return (child, addr);
+                    }
+                }
+                seen.push(line);
+            }
+            Err(_) => break,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!(
+        "no `{marker}` log line with {field}=<addr> within 10 s; stderr so far:\n{}",
+        seen.join("\n")
+    );
+}
+
+/// The socket address in `field=<addr>` on a log line.
+fn field_value(line: &str, field: &str) -> Option<SocketAddr> {
+    let needle = format!("{field}=");
+    let start = line.find(&needle)? + needle.len();
+    line[start..].split_whitespace().next()?.parse().ok()
 }
 
 /// Issue a raw HTTP/1.1 GET to the given port and path with an explicit
 /// `Host` header, returning the full response (status line, headers, and
 /// body). `Connection: close` makes the server close after one response so
 /// `read_to_end` terminates promptly.
-fn http_get(port: u16, path: &str, host: &str) -> std::io::Result<String> {
-    let addr = format!("127.0.0.1:{port}").parse().unwrap();
+fn http_get(addr: SocketAddr, path: &str, host: &str) -> std::io::Result<String> {
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500))?;
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
@@ -54,10 +114,10 @@ fn http_get(port: u16, path: &str, host: &str) -> std::io::Result<String> {
 }
 
 /// Poll `path` on `port` until it answers or the deadline expires.
-fn poll_http_get(port: u16, path: &str, host: &str) -> Option<String> {
+fn poll_http_get(addr: SocketAddr, path: &str, host: &str) -> Option<String> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if let Ok(response) = http_get(port, path, host) {
+        if let Ok(response) = http_get(addr, path, host) {
             return Some(response);
         }
         if Instant::now() >= deadline {
@@ -108,17 +168,18 @@ fn cold_window_help_dispatches() {
 /// signal handler all wire up correctly via the CLI dispatch path.
 #[test]
 fn cold_window_browser_surface_serves_dashboard() {
-    let bin = env!("CARGO_BIN_EXE_skrills");
-    let port = pick_free_port();
-    let mut child = Command::new(bin)
-        .args(["cold-window", "--browser", "--port", &port.to_string()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn skrills cold-window");
+    // Port 0: the OS picks a free port and the bound address is read back
+    // from the startup log, so there is no bind/drop/re-bind race.
+    let home = tempfile::tempdir().expect("temp HOME");
+    let (mut child, addr) = spawn_and_read_bound_addr(
+        &["cold-window", "--browser", "--port", "0"],
+        home.path(),
+        "browser surface listening",
+        "addr",
+    );
+    assert_ne!(addr.port(), 0, "the log must carry the bound port");
 
-    // Poll until the dashboard responds or the deadline expires.
-    let response = poll_http_get(port, "/dashboard", "127.0.0.1");
+    let response = poll_http_get(addr, "/dashboard", "127.0.0.1");
 
     // Always tear down the child before asserting so a failure
     // doesn't leak a process that holds the test port hostage.
@@ -153,27 +214,25 @@ fn cold_window_browser_surface_serves_dashboard() {
 /// only reached once the Host check has passed.
 #[test]
 fn serve_allowed_hosts_flag_reaches_the_transport() {
-    let bin = env!("CARGO_BIN_EXE_skrills");
-    let port = pick_free_port();
     // An empty HOME keeps the developer's ~/.skrills/config.toml out of the
     // child: an auth_token there would answer 401 and tls_auto would answer
     // TLS bytes, neither of which this test is about.
     let home = tempfile::tempdir().expect("temp HOME");
-    let mut child = Command::new(bin)
-        .args([
+    let requested = format!("127.0.0.1:{}", pick_free_port());
+    let (mut child, addr) = spawn_and_read_bound_addr(
+        &[
             "serve",
             "--http",
-            &format!("127.0.0.1:{port}"),
+            &requested,
             "--allowed-hosts",
             "foo.example",
-        ])
-        .env("HOME", home.path())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn skrills serve");
+        ],
+        home.path(),
+        "MCP HTTP server listening",
+        "bind",
+    );
 
-    let response = poll_http_get(port, "/mcp", "foo.example");
+    let response = poll_http_get(addr, "/mcp", "foo.example");
 
     let _ = child.kill();
     let _ = child.wait();
@@ -182,5 +241,36 @@ fn serve_allowed_hosts_flag_reaches_the_transport() {
     assert!(
         response.contains("HTTP/1.1 406"),
         "an allow-listed Host should reach the MCP handler, got:\n{response}"
+    );
+}
+
+/// SB-8: `[serve] auth_token` in `~/.skrills/config.toml` turns auth on for
+/// `serve --http`, so a request without the token is refused.
+#[test]
+fn serve_config_file_auth_token_enables_auth() {
+    let home = tempfile::tempdir().expect("temp HOME");
+    std::fs::create_dir_all(home.path().join(".skrills")).unwrap();
+    std::fs::write(
+        home.path().join(".skrills/config.toml"),
+        "[serve]\nauth_token = \"file-token\"\n",
+    )
+    .unwrap();
+    let requested = format!("127.0.0.1:{}", pick_free_port());
+    let (mut child, addr) = spawn_and_read_bound_addr(
+        &["serve", "--http", &requested],
+        home.path(),
+        "MCP HTTP server listening",
+        "bind",
+    );
+
+    let response = poll_http_get(addr, "/mcp", "127.0.0.1");
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let response = response.expect("server did not answer /mcp within 5 s");
+    assert!(
+        response.contains("HTTP/1.1 401"),
+        "a request without the config-file token must be refused, got:\n{response}"
     );
 }

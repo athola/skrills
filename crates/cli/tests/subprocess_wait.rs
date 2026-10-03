@@ -18,19 +18,6 @@ fn git_on_path() -> bool {
     Command::new("git").arg("--version").output().is_ok()
 }
 
-/// Byte offset of the JSON document on a stdout that also carries notices.
-///
-/// The document is pretty-printed, so its opening brace is the last one at the
-/// start of a line: every nested brace is indented. A structured log line
-/// printed after the document would still be taken for it, which is why the
-/// real fix is for `--format json` to keep stdout to itself.
-fn json_document_start(stdout: &str) -> Option<usize> {
-    stdout
-        .rfind("\n{")
-        .map(|i| i + 1)
-        .or_else(|| stdout.starts_with('{').then_some(0))
-}
-
 fn git(repo: &std::path::Path, args: &[&str]) -> Result<()> {
     let status = Command::new("git")
         .args([
@@ -97,11 +84,10 @@ fn analyze_project_context_extracts_git_keywords_through_cli_dispatch() -> Resul
     );
 
     // THEN the git log subprocess was waited on and its words came back.
-    // Startup notices and log lines precede the JSON document on stdout.
-    let json_start = json_document_start(&stdout)
-        .with_context(|| format!("no JSON document on stdout: {stdout}"))?;
-    let context: serde_json::Value = serde_json::from_str(&stdout[json_start..])
-        .with_context(|| format!("stdout not JSON: {stdout}"))?;
+    // Under --format json stdout is the document alone (#234): log lines and
+    // notices go to stderr, so it parses as it is.
+    let context: serde_json::Value = serde_json::from_str(&stdout)
+        .with_context(|| format!("stdout is not one JSON document: {stdout}\nstderr: {stderr}"))?;
     let keywords: Vec<&str> = context["git_keywords"]
         .as_array()
         .with_context(|| format!("git_keywords missing: {context}"))?
@@ -113,28 +99,4 @@ fn analyze_project_context_extracts_git_keywords_through_cli_dispatch() -> Resul
         "git_keywords should carry commit words (the process cannot wait on children?): {keywords:?}\nstderr: {stderr}"
     );
     Ok(())
-}
-
-/// `find("\n{")` took the first line-initial brace, so a structured log line on
-/// stdout would have been parsed as the document.
-#[test]
-fn json_document_start_skips_a_notice_line_that_opens_with_a_brace() {
-    let stdout =
-        "{\"level\":\"warn\",\"msg\":\"notice\"}\n{\n  \"keywords\": [\n    \"telemetry\"\n  ]\n}\n";
-
-    let start = json_document_start(stdout).expect("a document on stdout");
-
-    let document: serde_json::Value =
-        serde_json::from_str(&stdout[start..]).expect("the document parses");
-    assert_eq!(document["keywords"][0], "telemetry");
-}
-
-#[test]
-fn json_document_start_accepts_a_document_that_owns_stdout() {
-    assert_eq!(json_document_start("{\n  \"a\": 1\n}\n"), Some(0));
-}
-
-#[test]
-fn json_document_start_is_none_without_a_document() {
-    assert_eq!(json_document_start("startup notice\nanother line\n"), None);
 }

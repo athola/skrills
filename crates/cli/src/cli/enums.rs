@@ -26,6 +26,18 @@ pub enum ValidationTarget {
     Both,
 }
 
+impl From<ValidationTarget> for skrills_validate::ValidationTarget {
+    fn from(target: ValidationTarget) -> Self {
+        match target {
+            ValidationTarget::Claude => Self::Claude,
+            ValidationTarget::Codex => Self::Codex,
+            ValidationTarget::Copilot => Self::Copilot,
+            ValidationTarget::All => Self::All,
+            ValidationTarget::Both => Self::Both,
+        }
+    }
+}
+
 /// Source/target for sync operations.
 #[derive(Debug, Clone, Copy, ValueEnum, Default, PartialEq, Eq)]
 pub enum SyncSource {
