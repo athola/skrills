@@ -27,16 +27,13 @@ fn stdio(name: &str) -> McpServer {
     }
 }
 
-/// Each target with the file its MCP map lives in.
+/// Each JSON target with the file its MCP map lives in. Codex keeps its
+/// servers in config.toml; its merge is covered in the Codex adapter tests.
 fn targets(root: &Path) -> Vec<(Box<dyn AgentAdapter>, std::path::PathBuf)> {
     vec![
         (
             Box::new(ClaudeAdapter::with_root(root.join("claude"))),
             root.join("claude/settings.json"),
-        ),
-        (
-            Box::new(CodexAdapter::with_root(root.join("codex"))),
-            root.join("codex/config.json"),
         ),
         (
             Box::new(CopilotAdapter::with_root(root.join("copilot"))),
@@ -153,7 +150,7 @@ fn preferences_without_a_model_touch_nothing() {
     let copilot = CopilotAdapter::with_root(tmp.path().join("copilot"));
     let adapters: [(&dyn AgentAdapter, &str); 3] = [
         (&claude, "claude/settings.json"),
-        (&codex, "codex/config.json"),
+        (&codex, "codex/config.toml"),
         (&copilot, "copilot/config.json"),
     ];
 

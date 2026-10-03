@@ -7,7 +7,7 @@
 //! with an "agent-" prefix (e.g., "my-agent" becomes skill "agent-my-agent").
 //! This allows agent functionality to be preserved until Codex adds official support.
 
-use super::json_config::{self, Dialect};
+use super::codex_toml;
 use super::traits::{AgentAdapter, FieldSupport};
 use super::utils::{
     collect_module_files, hash_content, inside_skill_dir, is_hidden_path, sanitize_name,
@@ -64,8 +64,9 @@ impl CodexAdapter {
         self.root.join("skills")
     }
 
-    fn settings_path(&self) -> PathBuf {
-        // Codex uses config.json, not settings.json
+    /// Legacy `config.json`, read only as a fallback for MCP servers and the
+    /// model when `config.toml` has none.
+    fn legacy_json_path(&self) -> PathBuf {
         self.root.join("config.json")
     }
 
@@ -94,23 +95,11 @@ impl CodexAdapter {
     }
 }
 
-/// Warning attached when MCP servers or the model are written to
-/// `config.json`. Current Codex CLI releases read both from `config.toml`
-/// (`[mcp_servers.<name>]`, top-level `model`), which this crate cannot yet
-/// edit without a TOML dependency, so the write is reported honestly.
-fn config_toml_notice(what: &str) -> String {
-    format!(
-        "Wrote {what} to ~/.codex/config.json, which current Codex releases do not read; \
-         copy them into ~/.codex/config.toml ([mcp_servers.<name>] tables, top-level `model`) \
-         for Codex to pick them up"
-    )
-}
-
 /// Returns `content` with `skills = true` under `[features]`, or `None` when
 /// it is already set.
 ///
-/// A line scanner rather than a TOML parser, because no format-preserving TOML
-/// editor is a dependency of this crate. It matches the key exactly (a
+/// A line scanner that predates the `toml_edit` dependency (MCP servers and
+/// the model go through [`codex_toml`]). It matches the key exactly (a
 /// `skills_beta` key used to be overwritten), ignores `#` inside quoted strings
 /// when finding table headers, and honours a top-level dotted
 /// `features.skills` key instead of appending a second `[features]` table,
@@ -302,7 +291,11 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn read_mcp_servers(&self) -> Result<HashMap<String, McpServer>> {
-        let path = self.settings_path();
+        let servers = codex_toml::read_servers(&codex_toml::load(&self.config_toml_path())?)?;
+        if !servers.is_empty() {
+            return Ok(servers);
+        }
+        let path = self.legacy_json_path();
         if !path.exists() {
             return Ok(HashMap::new());
         }
@@ -374,7 +367,13 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn read_preferences(&self) -> Result<Preferences> {
-        let path = self.settings_path();
+        if let Some(model) = codex_toml::read_model(&codex_toml::load(&self.config_toml_path())?) {
+            return Ok(Preferences {
+                model: Some(model),
+                custom: HashMap::new(),
+            });
+        }
+        let path = self.legacy_json_path();
         if !path.exists() {
             return Ok(Preferences::default());
         }
@@ -512,22 +511,35 @@ impl AgentAdapter for CodexAdapter {
 
     fn write_mcp_servers(&self, servers: &HashMap<String, McpServer>) -> Result<WriteReport> {
         super::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
-        let path = self.settings_path();
-        let mut settings = json_config::load_object(&path)?;
-        let mut report =
-            json_config::merge_servers(&mut settings, servers, Dialect::StdioOnly, "codex")?;
+        // Nothing to merge, so the user's config.toml is not read at all and
+        // an unreadable one cannot fail an otherwise empty phase.
+        if servers.is_empty() {
+            return Ok(WriteReport::default());
+        }
+        let path = self.config_toml_path();
+        let mut doc = codex_toml::load(&path)?;
+        let report = codex_toml::merge_servers(&mut doc, servers)?;
         if report.written > 0 {
-            json_config::write_json_config(&path, &settings)?;
-            report.warnings.push(config_toml_notice("MCP servers"));
+            codex_toml::save(&path, &doc)?;
         }
         Ok(report)
     }
 
     fn write_preferences(&self, prefs: &Preferences) -> Result<WriteReport> {
         super::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
-        let mut report = json_config::write_model(&self.settings_path(), prefs.model.as_deref())?;
-        if report.written > 0 {
-            report.warnings.push(config_toml_notice("the model"));
+        let mut report = WriteReport::default();
+        let Some(model) = prefs.model.as_deref() else {
+            return Ok(report);
+        };
+        let path = self.config_toml_path();
+        let mut doc = codex_toml::load(&path)?;
+        if codex_toml::set_model(&mut doc, model) {
+            codex_toml::save(&path, &doc)?;
+            report.written += 1;
+        } else {
+            report.skipped.push(crate::report::SkipReason::Unchanged {
+                item: "model".to_string(),
+            });
         }
         Ok(report)
     }
@@ -799,7 +811,7 @@ mod tests {
     }
 
     #[test]
-    fn read_mcp_servers_from_config() {
+    fn read_mcp_servers_falls_back_to_config_json() {
         let tmp = tempdir().unwrap();
         let config_path = tmp.path().join("config.json");
         fs::write(
@@ -825,91 +837,408 @@ mod tests {
         assert!(server.enabled);
     }
 
+    fn stdio_server(name: &str, command: &str) -> McpServer {
+        McpServer {
+            name: name.to_string(),
+            transport: McpTransport::Stdio,
+            command: command.to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            url: None,
+            headers: None,
+            enabled: true,
+            allowed_tools: vec![],
+            disabled_tools: vec![],
+        }
+    }
+
+    fn one_server(server: McpServer) -> HashMap<String, McpServer> {
+        HashMap::from([(server.name.clone(), server)])
+    }
+
+    /// Strict re-parse of the written config.toml.
+    fn parsed_toml(root: &Path) -> toml_edit::DocumentMut {
+        fs::read_to_string(root.join("config.toml"))
+            .unwrap()
+            .parse::<toml_edit::DocumentMut>()
+            .expect("config.toml must stay valid TOML")
+    }
+
+    /// Codex reads MCP servers from `[mcp_servers.<name>]` in config.toml
+    /// (SY-26); they used to go to config.json, which Codex never reads.
     #[test]
-    fn write_mcp_servers_creates_config() {
+    fn write_mcp_servers_with_nothing_to_write_leaves_the_config_unread() {
         let tmp = tempdir().unwrap();
+        // A directory where config.toml belongs fails every read of it.
+        std::fs::create_dir_all(tmp.path().join("config.toml")).unwrap();
         let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
 
-        let mut servers = HashMap::new();
-        servers.insert(
-            "my-server".to_string(),
-            McpServer {
-                name: "my-server".to_string(),
-                transport: McpTransport::Stdio,
-                command: "/bin/server".to_string(),
-                args: vec!["arg1".to_string()],
-                env: HashMap::new(),
-                url: None,
-                headers: None,
-                enabled: true,
-                allowed_tools: vec![],
-                disabled_tools: vec![],
-            },
+        let report = adapter.write_mcp_servers(&HashMap::new()).unwrap();
+
+        assert_eq!(report.written, 0);
+    }
+
+    #[test]
+    fn write_mcp_servers_creates_config_toml_tables() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let mut server = stdio_server("my-server", "/bin/server");
+        server.args = vec!["arg1".to_string()];
+        server.env = HashMap::from([("TOKEN".to_string(), "x".to_string())]);
+
+        let report = adapter.write_mcp_servers(&one_server(server)).unwrap();
+        assert_eq!(report.written, 1);
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert!(!tmp.path().join("config.json").exists());
+
+        let text = fs::read_to_string(tmp.path().join("config.toml")).unwrap();
+        assert!(text.contains("[mcp_servers.my-server]"), "{text}");
+        assert!(
+            !text.contains("[mcp_servers]\n"),
+            "no empty parent header: {text}"
+        );
+        let doc = parsed_toml(tmp.path());
+        let entry = &doc["mcp_servers"]["my-server"];
+        assert_eq!(entry["type"].as_str(), Some("stdio"));
+        assert_eq!(entry["command"].as_str(), Some("/bin/server"));
+        assert_eq!(entry["args"][0].as_str(), Some("arg1"));
+        assert_eq!(entry["env"]["TOKEN"].as_str(), Some("x"));
+
+        let read_back = adapter.read_mcp_servers().unwrap();
+        assert_eq!(read_back["my-server"].args, vec!["arg1"]);
+        assert_eq!(read_back["my-server"].env["TOKEN"], "x");
+
+        let again = adapter.write_mcp_servers(&one_server(read_back["my-server"].clone()));
+        assert_eq!(
+            again.unwrap().written,
+            0,
+            "an identical sync writes nothing"
+        );
+    }
+
+    #[test]
+    fn write_mcp_servers_keeps_comments_order_and_other_tables() {
+        let tmp = tempdir().unwrap();
+        let original = "\
+# my codex config
+model = \"gpt-5\" # pinned
+
+[features]
+skills = true # keep me
+
+# github server
+[mcp_servers.github]
+command = \"npx\"
+startup_timeout_sec = 180
+";
+        fs::write(tmp.path().join("config.toml"), original).unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        // Re-writing the existing server unchanged is a byte-for-byte no-op.
+        let mut github = stdio_server("github", "npx");
+        let report = adapter
+            .write_mcp_servers(&one_server(github.clone()))
+            .unwrap();
+        assert_eq!(report.written, 0);
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("config.toml")).unwrap(),
+            original
         );
 
-        let report = adapter.write_mcp_servers(&servers).unwrap();
+        github.args = vec!["-y".to_string()];
+        let report = adapter.write_mcp_servers(&one_server(github)).unwrap();
         assert_eq!(report.written, 1);
 
-        let config_path = tmp.path().join("config.json");
-        assert!(config_path.exists());
-
-        let content = fs::read_to_string(&config_path).unwrap();
-        let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert!(settings["mcpServers"]["my-server"].is_object());
+        let text = fs::read_to_string(tmp.path().join("config.toml")).unwrap();
+        for kept in [
+            "# my codex config",
+            "model = \"gpt-5\" # pinned",
+            "skills = true # keep me",
+            "# github server",
+            "startup_timeout_sec = 180",
+        ] {
+            assert!(text.contains(kept), "lost {kept:?}:\n{text}");
+        }
+        assert!(
+            text.find("[features]") < text.find("[mcp_servers.github]"),
+            "{text}"
+        );
+        assert_eq!(
+            parsed_toml(tmp.path())["mcp_servers"]["github"]["args"][0].as_str(),
+            Some("-y")
+        );
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("config.toml.skrills-bak")).unwrap(),
+            original
+        );
     }
 
-    /// Current Codex reads MCP servers and the model from config.toml, not
-    /// config.json, so a write there must not pass silently as synced.
     #[test]
-    fn writes_to_config_json_warn_that_codex_reads_config_toml() {
+    fn write_mcp_servers_merges_with_an_unmanaged_server() {
         let tmp = tempdir().unwrap();
+        fs::write(
+            tmp.path().join("config.toml"),
+            "[mcp_servers.mine]\ncommand = \"/bin/mine\"\ncwd = \"/srv\"\n",
+        )
+        .unwrap();
         let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
-        let mut servers = HashMap::new();
-        servers.insert(
-            "s".to_string(),
-            McpServer {
-                name: "s".to_string(),
-                transport: McpTransport::Stdio,
-                command: "/bin/s".to_string(),
-                args: vec![],
-                env: HashMap::new(),
-                url: None,
-                headers: None,
-                enabled: true,
-                allowed_tools: vec![],
-                disabled_tools: vec![],
-            },
+
+        let report = adapter
+            .write_mcp_servers(&one_server(stdio_server("synced", "/bin/synced")))
+            .unwrap();
+        assert_eq!(report.written, 1);
+
+        let doc = parsed_toml(tmp.path());
+        assert_eq!(
+            doc["mcp_servers"]["mine"]["command"].as_str(),
+            Some("/bin/mine")
+        );
+        assert_eq!(doc["mcp_servers"]["mine"]["cwd"].as_str(), Some("/srv"));
+        assert_eq!(
+            doc["mcp_servers"]["synced"]["command"].as_str(),
+            Some("/bin/synced")
         );
 
-        let mcp = adapter.write_mcp_servers(&servers).unwrap();
-        assert_eq!(mcp.written, 1);
-        assert!(
-            mcp.warnings.iter().any(|w| w.contains("config.toml")),
-            "{:?}",
-            mcp.warnings
-        );
+        // An empty source touches nothing.
+        let before = fs::read(tmp.path().join("config.toml")).unwrap();
+        adapter.write_mcp_servers(&HashMap::new()).unwrap();
+        assert_eq!(fs::read(tmp.path().join("config.toml")).unwrap(), before);
+    }
 
-        let prefs = adapter
+    /// A server spelled with dotted keys or inside an inline table must be
+    /// updated where it is: appending `[mcp_servers.x]` would redefine it,
+    /// and Codex would then refuse the whole file.
+    #[test]
+    fn write_mcp_servers_updates_dotted_and_inline_entries_in_place() {
+        let cases = [
+            "mcp_servers.dotted.command = \"/old\"\n",
+            "[mcp_servers]\ndotted.command = \"/old\"\n",
+            "mcp_servers = { dotted = { command = \"/old\" } }\n",
+            "[mcp_servers]\ndotted = { command = \"/old\", cwd = \"/srv\" }\n",
+        ];
+        for original in cases {
+            let tmp = tempdir().unwrap();
+            fs::write(tmp.path().join("config.toml"), original).unwrap();
+            let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+            let mut servers = one_server(stdio_server("dotted", "/new"));
+            servers.insert("added".to_string(), stdio_server("added", "/added"));
+
+            let report = adapter.write_mcp_servers(&servers).unwrap();
+            assert_eq!(report.written, 2, "{original}");
+
+            let text = fs::read_to_string(tmp.path().join("config.toml")).unwrap();
+            // The parser rejects a table defined twice, as Codex does.
+            let strict = text
+                .parse::<toml_edit::DocumentMut>()
+                .unwrap_or_else(|e| panic!("{original:?} became invalid TOML: {e}\n{text}"));
+            let servers = &strict["mcp_servers"];
+            assert_eq!(servers.as_table_like().unwrap().len(), 2, "{text}");
+            assert_eq!(
+                servers["dotted"]["command"].as_str(),
+                Some("/new"),
+                "{text}"
+            );
+            assert_eq!(servers["dotted"]["type"].as_str(), Some("stdio"), "{text}");
+            assert_eq!(
+                servers["added"]["command"].as_str(),
+                Some("/added"),
+                "{text}"
+            );
+            if original.contains("cwd") {
+                assert_eq!(servers["dotted"]["cwd"].as_str(), Some("/srv"), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_malformed_config_toml_is_refused_not_overwritten() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        let broken = "[mcp_servers.x\ncommand = \"/bin/x\"\n";
+        fs::write(&path, broken).unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        assert!(adapter
+            .write_mcp_servers(&one_server(stdio_server("s", "/bin/s")))
+            .is_err());
+        assert!(adapter
             .write_preferences(&Preferences {
-                model: Some("gpt-4o".to_string()),
+                model: Some("gpt-5".to_string()),
                 custom: HashMap::new(),
             })
-            .unwrap();
-        assert_eq!(prefs.written, 1);
+            .is_err());
         assert!(
-            prefs.warnings.iter().any(|w| w.contains("config.toml")),
-            "{:?}",
-            prefs.warnings
+            adapter.read_mcp_servers().is_err(),
+            "no silent JSON fallback"
         );
-
-        // Nothing written, nothing to warn about.
-        let again = adapter.write_mcp_servers(&servers).unwrap();
-        assert_eq!(again.written, 0);
-        assert!(again.warnings.is_empty());
+        assert!(
+            adapter.read_preferences().is_err(),
+            "no silent JSON fallback"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), broken);
+        assert!(!tmp.path().join("config.toml.skrills-bak").exists());
     }
 
     #[test]
-    fn read_preferences_from_config() {
+    fn a_non_table_mcp_servers_key_is_refused() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        fs::write(&path, "mcp_servers = 3\n").unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        assert!(adapter
+            .write_mcp_servers(&one_server(stdio_server("s", "/bin/s")))
+            .is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "mcp_servers = 3\n");
+    }
+
+    /// `model` must land in the root table even when the file ends inside
+    /// another table, where a plain append would nest it.
+    #[test]
+    fn write_preferences_sets_the_top_level_model_in_config_toml() {
+        let tmp = tempdir().unwrap();
+        let original = "# top\n[features]\nskills = true\n\n[mcp_servers.a]\ncommand = \"/a\"\n";
+        fs::write(tmp.path().join("config.toml"), original).unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let prefs = Preferences {
+            model: Some("gpt-5".to_string()),
+            custom: HashMap::new(),
+        };
+
+        let report = adapter.write_preferences(&prefs).unwrap();
+        assert_eq!(report.written, 1);
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert!(!tmp.path().join("config.json").exists());
+
+        let doc = parsed_toml(tmp.path());
+        assert_eq!(doc.get("model").and_then(|m| m.as_str()), Some("gpt-5"));
+        assert!(doc["features"].get("model").is_none());
+        assert!(doc["mcp_servers"]["a"].get("model").is_none());
+        // A root key must precede every header, so it goes above the comment
+        // that belongs to `[features]`; the comment stays with its table.
+        let text = fs::read_to_string(tmp.path().join("config.toml")).unwrap();
+        assert!(text.starts_with("model = \"gpt-5\"\n"), "{text}");
+        assert!(text.contains("# top\n[features]\n"), "{text}");
+
+        assert_eq!(
+            adapter.read_preferences().unwrap().model.as_deref(),
+            Some("gpt-5")
+        );
+        assert_eq!(adapter.write_preferences(&prefs).unwrap().written, 0);
+    }
+
+    #[test]
+    fn config_toml_wins_over_config_json_when_it_has_values() {
+        let tmp = tempdir().unwrap();
+        fs::write(
+            tmp.path().join("config.json"),
+            r#"{"model": "old", "mcpServers": {"legacy": {"command": "/legacy"}}}"#,
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("config.toml"),
+            "model = \"new\"\n[mcp_servers.current]\ncommand = \"/current\"\n",
+        )
+        .unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        assert_eq!(
+            adapter.read_preferences().unwrap().model.as_deref(),
+            Some("new")
+        );
+        let servers = adapter.read_mcp_servers().unwrap();
+        assert_eq!(servers.keys().collect::<Vec<_>>(), vec!["current"]);
+    }
+
+    /// Fallback: config.toml without servers or model still reads config.json.
+    #[test]
+    fn config_json_is_read_when_config_toml_has_none() {
+        let tmp = tempdir().unwrap();
+        fs::write(
+            tmp.path().join("config.json"),
+            r#"{"model": "gpt-4o", "mcpServers": {"legacy": {"command": "/legacy"}}}"#,
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("config.toml"),
+            "[features]\nskills = true\n",
+        )
+        .unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        assert_eq!(
+            adapter.read_preferences().unwrap().model.as_deref(),
+            Some("gpt-4o")
+        );
+        assert_eq!(
+            adapter.read_mcp_servers().unwrap()["legacy"].command,
+            "/legacy"
+        );
+    }
+
+    #[test]
+    fn disabled_and_tool_filtered_servers_use_codex_keys() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let mut server = stdio_server("s", "/bin/s");
+        server.enabled = false;
+        server.allowed_tools = vec!["read".to_string()];
+        server.disabled_tools = vec!["write".to_string()];
+
+        adapter
+            .write_mcp_servers(&one_server(server.clone()))
+            .unwrap();
+
+        let doc = parsed_toml(tmp.path());
+        let entry = &doc["mcp_servers"]["s"];
+        assert_eq!(entry["enabled"].as_bool(), Some(false));
+        assert_eq!(entry["enabled_tools"][0].as_str(), Some("read"));
+        assert_eq!(entry["disabled_tools"][0].as_str(), Some("write"));
+        assert_eq!(adapter.read_mcp_servers().unwrap()["s"], server);
+    }
+
+    /// Replacing an HTTP entry with the source's stdio server must not leave
+    /// `url` beside `command`, a mix Codex cannot run.
+    #[test]
+    fn a_stdio_server_replaces_an_http_entry_cleanly() {
+        let tmp = tempdir().unwrap();
+        fs::write(
+            tmp.path().join("config.toml"),
+            "[mcp_servers.s]\ntype = \"http\"\nurl = \"http://127.0.0.1:3001/mcp\"\nbearer_token_env_var = \"TOK\"\nstartup_timeout_sec = 30\n",
+        )
+        .unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        let report = adapter
+            .write_mcp_servers(&one_server(stdio_server("s", "/bin/s")))
+            .unwrap();
+        assert_eq!(report.written, 1);
+
+        let doc = parsed_toml(tmp.path());
+        let entry = &doc["mcp_servers"]["s"];
+        assert_eq!(entry["type"].as_str(), Some("stdio"));
+        assert_eq!(entry["command"].as_str(), Some("/bin/s"));
+        assert!(entry.get("url").is_none());
+        assert!(entry.get("bearer_token_env_var").is_none());
+        assert_eq!(entry["startup_timeout_sec"].as_integer(), Some(30));
+    }
+
+    #[test]
+    fn an_http_server_is_skipped_for_codex() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let mut server = stdio_server("web", "");
+        server.transport = McpTransport::Http;
+        server.url = Some("https://example.invalid/mcp".to_string());
+
+        let report = adapter.write_mcp_servers(&one_server(server)).unwrap();
+        assert_eq!(report.written, 0);
+        assert_eq!(report.skipped.len(), 1);
+        assert!(!tmp.path().join("config.toml").exists());
+    }
+
+    #[test]
+    fn read_preferences_falls_back_to_config_json() {
         let tmp = tempdir().unwrap();
         let config_path = tmp.path().join("config.json");
         fs::write(
@@ -1376,50 +1705,6 @@ mod tests {
     }
 
     #[test]
-    fn write_mcp_servers_invalid_existing_json_returns_error() {
-        let tmp = tempdir().unwrap();
-        let config_path = tmp.path().join("config.json");
-        fs::write(&config_path, "{ corrupted json }").unwrap();
-
-        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
-        let mut servers = HashMap::new();
-        servers.insert(
-            "test-server".to_string(),
-            McpServer {
-                name: "test-server".to_string(),
-                transport: McpTransport::Stdio,
-                command: "/bin/test".to_string(),
-                args: vec![],
-                env: HashMap::new(),
-                url: None,
-                headers: None,
-                enabled: true,
-                allowed_tools: vec![],
-                disabled_tools: vec![],
-            },
-        );
-
-        let result = adapter.write_mcp_servers(&servers);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn write_preferences_invalid_existing_json_returns_error() {
-        let tmp = tempdir().unwrap();
-        let config_path = tmp.path().join("config.json");
-        fs::write(&config_path, "{ malformed: json, }").unwrap();
-
-        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
-        let prefs = Preferences {
-            model: Some("gpt-4o".to_string()),
-            custom: HashMap::new(),
-        };
-
-        let result = adapter.write_preferences(&prefs);
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn read_mcp_servers_with_tool_configs() {
         let tmp = tempdir().unwrap();
         let config_path = tmp.path().join("config.json");
@@ -1480,33 +1765,21 @@ mod tests {
     }
 
     #[test]
-    fn mcp_servers_empty_tool_configs_omitted_from_json() {
+    fn mcp_servers_empty_tool_configs_omitted_from_toml() {
         let tmp = tempdir().unwrap();
         let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
 
-        let mut servers = HashMap::new();
-        servers.insert(
-            "clean-server".to_string(),
-            McpServer {
-                name: "clean-server".to_string(),
-                transport: McpTransport::Stdio,
-                command: "/bin/server".to_string(),
-                args: vec![],
-                env: HashMap::new(),
-                url: None,
-                headers: None,
-                enabled: true,
-                allowed_tools: vec![],
-                disabled_tools: vec![],
-            },
-        );
+        adapter
+            .write_mcp_servers(&one_server(stdio_server("clean-server", "/bin/server")))
+            .unwrap();
 
-        adapter.write_mcp_servers(&servers).unwrap();
-
-        let content = fs::read_to_string(tmp.path().join("config.json")).unwrap();
-        let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
-        let server_json = &settings["mcpServers"]["clean-server"];
-        assert!(server_json.get("allowedTools").is_none());
-        assert!(server_json.get("disabledTools").is_none());
+        let doc = parsed_toml(tmp.path());
+        let entry = &doc["mcp_servers"]["clean-server"];
+        for key in ["enabled", "enabled_tools", "disabled_tools", "args", "env"] {
+            assert!(
+                entry.get(key).is_none(),
+                "{key} written for a default server"
+            );
+        }
     }
 }

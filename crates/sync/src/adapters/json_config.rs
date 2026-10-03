@@ -1,8 +1,8 @@
 //! Shared reading, encoding and merging of JSON MCP server maps.
 //!
-//! Claude (`settings.json`), Codex (`config.json`), Copilot
-//! (`mcp-config.json`) and Cursor (`mcp.json`) all keep MCP servers as a JSON
-//! object keyed by server name under `mcpServers`. Each writer used to build a
+//! Claude (`settings.json`), Copilot (`mcp-config.json`) and Cursor
+//! (`mcp.json`) all keep MCP servers as a JSON object keyed by server name
+//! under `mcpServers`. Codex keeps them in `config.toml` (see `codex_toml`). Each writer used to build a
 //! fresh object from the source and assign it over the target's, so every
 //! server that only the target knew about was deleted on each sync, and a
 //! source with no servers emptied the target. Writers now merge through
@@ -36,7 +36,7 @@ const MANAGED_KEYS: &[&str] = &[
 pub(crate) enum Dialect {
     /// Claude: `type`/`url`/`headers` for HTTP, `disabled: true`.
     Claude,
-    /// Codex and Copilot: stdio only, `disabled: true`.
+    /// Copilot: stdio only, `disabled: true`.
     StdioOnly,
     /// Cursor: `url`/`headers` without `type`, `enabled: false`.
     Cursor,

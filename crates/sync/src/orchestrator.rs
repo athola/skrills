@@ -937,9 +937,12 @@ mod tests {
         let report = orchestrator.sync(&params).unwrap();
         assert_eq!(report.mcp_servers.written, 1);
 
-        // Verify config was created
-        let tgt_config = tgt_dir.path().join("config.json");
-        assert!(tgt_config.exists());
+        // Codex reads MCP servers from config.toml.
+        let tgt_config = fs::read_to_string(tgt_dir.path().join("config.toml")).unwrap();
+        assert!(
+            tgt_config.contains("[mcp_servers.test-server]"),
+            "{tgt_config}"
+        );
     }
 
     #[test]
@@ -967,10 +970,12 @@ mod tests {
         assert_eq!(report.preferences.written, 1);
 
         // Verify model was transformed to OpenAI equivalent
-        let tgt_config = tgt_dir.path().join("config.json");
-        let content = fs::read_to_string(&tgt_config).unwrap();
-        let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(settings["model"], "gpt-4o-mini");
+        let target = CodexAdapter::with_root(tgt_dir.path().to_path_buf());
+        assert_eq!(
+            target.read_preferences().unwrap().model.as_deref(),
+            Some("gpt-4o-mini")
+        );
+        assert!(!tgt_dir.path().join("config.json").exists());
     }
 
     #[test]
@@ -1016,7 +1021,7 @@ mod tests {
             r#"{"model": "custom-model-v1"}"#,
         )
         .unwrap();
-        fs::write(tgt_dir.path().join("config.json"), r#"{"model": "gpt-5"}"#).unwrap();
+        fs::write(tgt_dir.path().join("config.toml"), "model = \"gpt-5\"\n").unwrap();
 
         let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
         let target = CodexAdapter::with_root(tgt_dir.path().to_path_buf());
@@ -1041,9 +1046,8 @@ mod tests {
             "{:?}",
             report.preferences.warnings
         );
-        let content = fs::read_to_string(tgt_dir.path().join("config.json")).unwrap();
-        let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(settings["model"], "gpt-5");
+        let content = fs::read_to_string(tgt_dir.path().join("config.toml")).unwrap();
+        assert_eq!(content, "model = \"gpt-5\"\n");
     }
 
     /// Codex and Copilot share model ids, so an unmapped one still carries.
@@ -1088,8 +1092,8 @@ mod tests {
             r#"{"model": "sonnet"}"#,
         )
         .unwrap();
-        // A non-object root makes the preference writer fail.
-        fs::write(tgt_dir.path().join("config.json"), "[]").unwrap();
+        // A malformed config.toml makes the preference writer fail.
+        fs::write(tgt_dir.path().join("config.toml"), "[unclosed\n").unwrap();
 
         let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
         let target = CodexAdapter::with_root(tgt_dir.path().to_path_buf());

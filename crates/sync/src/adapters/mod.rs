@@ -2,6 +2,7 @@
 
 mod claude;
 mod codex;
+mod codex_toml;
 mod copilot;
 mod cursor;
 pub(crate) mod json_config;
