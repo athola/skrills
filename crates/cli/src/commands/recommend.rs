@@ -1,12 +1,13 @@
 //! CLI handler for the `recommend` command.
 
-use super::skill_uri::{skill_uri, DependencyResolver};
+use super::skill_uri::skill_uri;
 use crate::cli::OutputFormat;
 use anyhow::{bail, Result};
-use skrills_analyze::{analyze_skill, DependencyType, RelationshipGraph};
+use skrills_analyze::analyze_skill;
 use skrills_discovery::discover_skills;
 use skrills_server::app::{
-    rank_skill_recommendations, RecommendationRelationship, SkillRecommendations,
+    build_dependency_graph, rank_skill_recommendations, RecommendationRelationship,
+    SkillRecommendations,
 };
 use std::collections::HashMap;
 
@@ -42,10 +43,10 @@ fn recommendations_for(
     if skills.is_empty() {
         bail!("Skill not found: {uri} (no skills were discovered)");
     }
-    let resolver = DependencyResolver::new(skills);
+    // The graph is the server's, so the CLI and the MCP tool agree (SA-44).
+    let dep_graph = build_dependency_graph(skills);
 
-    // Build dependency graph and collect quality scores
-    let mut dep_graph = RelationshipGraph::new();
+    // Collect quality scores and names of the skills that can be read.
     let mut quality_scores: HashMap<String, f64> = HashMap::new();
     let mut uri_to_name: HashMap<String, String> = HashMap::new();
 
@@ -66,21 +67,12 @@ fn recommendations_for(
         uri_to_name.insert(skill_uri.clone(), meta.name.clone());
 
         let analysis = analyze_skill(&meta.path, &content);
-        quality_scores.insert(skill_uri.clone(), analysis.quality_score);
-
-        dep_graph.add_skill(&skill_uri);
-        for dep in &analysis.dependencies.dependencies {
-            if let DependencyType::Skill = dep.dep_type {
-                if let Some(target) = resolver.resolve(&meta.path, &dep.target) {
-                    dep_graph.add_dependency(&skill_uri, &target);
-                }
-            }
-        }
+        quality_scores.insert(skill_uri, analysis.quality_score);
     }
 
-    // Check if URI exists
-    if !dep_graph.skills().contains(&uri) {
-        let mut known: Vec<String> = dep_graph.skills();
+    // Check if URI exists among the skills that could be read
+    if !uri_to_name.contains_key(&uri) {
+        let mut known: Vec<String> = uri_to_name.keys().cloned().collect();
         known.sort();
         let mut listing: Vec<String> = known
             .iter()

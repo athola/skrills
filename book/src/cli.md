@@ -147,9 +147,9 @@ Start skrills as an MCP server (used by Claude Code, Codex CLI, Copilot CLI, and
 
 ```bash
 skrills serve                             # MCP server over stdio
-skrills serve --http --open               # Browser dashboard with auto-launch
-skrills serve --http --port 3000          # HTTP on specific port
-skrills serve --http --tls-auto           # HTTPS with auto-generated cert
+skrills serve --http 127.0.0.1:3000 --open      # Browser dashboard with auto-launch
+skrills serve --http 127.0.0.1:8080             # HTTP on a specific address and port
+skrills serve --http 127.0.0.1:3000 --tls-auto  # HTTPS with auto-generated cert
 skrills serve --watch                     # Auto-reload on file changes
 skrills serve --cache-ttl-ms 300000       # 5-minute cache
 skrills serve --skill-dir ~/.custom/skills  # Custom skill directory
@@ -159,9 +159,8 @@ skrills serve --skill-dir ~/.custom/skills  # Custom skill directory
 
 | Option | Purpose |
 |--------|---------|
-| `--http` | Enable HTTP transport with REST API and browser dashboard |
-| `--port <N>` | HTTP server port (default: auto-select, fallback up to 10 ports) |
-| `--open` | Auto-launch the browser dashboard after starting |
+| `--http <BIND_ADDR>` | Serve MCP over HTTP, with the REST API and browser dashboard, on this address (for example `127.0.0.1:3000`); there is no separate port flag |
+| `--open` | Auto-launch the browser dashboard after starting (requires `--http`) |
 | `--tls-auto` | Generate self-signed TLS cert for HTTPS in development |
 | `--allowed-hosts <HOSTS>` | Extra `Host` values the MCP transport accepts, on top of `localhost`, `127.0.0.1` and `::1` |
 | `--skill-dir <DIR>` | Additional skill directory to include |
@@ -181,6 +180,25 @@ skrills serve --http 0.0.0.0:8080 --allowed-hosts skrills.internal:8080
 Supplied hosts are added to the loopback set, never substituted for it.
 The same list is settable in the config file as `allowed_hosts` under
 `[serve]`, or through `SKRILLS_ALLOWED_HOSTS`.
+
+`recommend-skills-smart`, `analyze-project-context` and `suggest-new-skills`
+take a `project_dir` from the client and read that directory, and
+`create-skill` reads one when passed. To limit which directories they may read, list the allowed
+roots in `~/.skrills/config.toml`:
+
+```toml
+[serve]
+project_roots = ["~/src", "/work"]
+```
+
+A `project_dir` outside every root is refused with an `invalid_params` error
+naming the setting. Both sides are canonicalized before the check, so `..`
+segments and symlinks are judged by where they lead, and a `project_dir` that
+does not exist is refused too. `~` expands to your home directory. When
+`project_roots` is unset, any directory is accepted, and `serve --http` on a
+non-loopback address logs a warning at startup. The check applies only to a
+`project_dir` the client passes; when it passes none, the tools use the
+server's working directory.
 
 The MCP server exposes 36 core tools (49 with the default subagent and gateway features) for validation, analysis, sync, intelligence, and research directly to your AI assistant. The HTTP mode serves a browser dashboard with skills explorer, metrics, and activity feed.
 

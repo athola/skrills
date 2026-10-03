@@ -15,8 +15,11 @@
 mod intelligence;
 mod mcp_registry;
 mod research;
+mod skill_metrics;
 mod skill_recommendations;
 mod tools;
+pub use crate::cache::build_dependency_graph;
+pub use skill_metrics::compute_skill_metrics;
 pub use skill_recommendations::rank_skill_recommendations;
 
 use mcp_registry::build_mcp_registry;
@@ -43,8 +46,6 @@ use skrills_discovery::{DuplicateInfo, SkillMeta};
 use skrills_state::load_manifest_settings;
 #[cfg(feature = "subagents")]
 use skrills_subagents::SubagentService;
-use std::cmp::Reverse;
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -74,6 +75,9 @@ pub struct SkillService {
     /// Where skill reads, validations and syncs are recorded for the
     /// dashboard. `None` records nothing.
     pub(crate) metrics: Option<Arc<skrills_metrics::MetricsCollector>>,
+    /// `[serve] project_roots`: when set, a client-supplied `project_dir`
+    /// must resolve inside one of these directories. `None` admits any path.
+    pub(crate) project_roots: Option<Arc<Vec<PathBuf>>>,
 }
 
 /// Starts a filesystem watcher to invalidate caches on changes.
@@ -159,6 +163,7 @@ impl SkillService {
             mcp_registry,
             context_stats,
             metrics: None,
+            project_roots: None,
         })
     }
 
@@ -166,6 +171,14 @@ impl SkillService {
     /// dashboard's metrics API reads.
     pub fn with_metrics(mut self, collector: Arc<skrills_metrics::MetricsCollector>) -> Self {
         self.metrics = Some(collector);
+        self
+    }
+
+    /// Restricts every client-supplied `project_dir` to `roots` (the
+    /// `[serve] project_roots` setting). Paths are compared after
+    /// canonicalizing both sides, so `..` and symlinks cannot leave a root.
+    pub fn with_project_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.project_roots = Some(Arc::new(roots));
         self
     }
 
@@ -225,6 +238,7 @@ impl SkillService {
             mcp_registry,
             context_stats,
             metrics: None,
+            project_roots: None,
         })
     }
 
@@ -279,154 +293,18 @@ impl SkillService {
         cache.get_transitive_dependents(uri)
     }
 
-    /// Computes aggregate metrics for discovered skills.
-    pub(crate) fn compute_metrics(&self, include_validation: bool) -> Result<SkillMetrics> {
-        use skrills_analyze::analyze_skill;
-        use skrills_validate::{validate_skill, ValidationTarget};
-
+    /// Computes aggregate metrics for discovered skills: the readable ones
+    /// count, against the cache's dependency graph (see
+    /// [`compute_skill_metrics`]).
+    pub fn compute_metrics(&self, include_validation: bool) -> Result<SkillMetrics> {
         let (skills, _) = self.current_skills_with_dups()?;
-
-        let mut by_source: HashMap<String, usize> = HashMap::new();
-        let mut quality_high = 0usize;
-        let mut quality_medium = 0usize;
-        let mut quality_low = 0usize;
-        let mut total_tokens = 0usize;
-        let mut largest_skill: Option<SkillTokenInfo> = None;
-
-        // Validation counters (only computed if requested)
-        let mut passing = 0usize;
-        let mut with_errors = 0usize;
-        let mut with_warnings = 0usize;
-
-        let mut skill_count = 0usize;
-        for meta in &skills {
-            // Read skill content (before counting to ensure consistent totals)
-            let content = match fs::read_to_string(&meta.path) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!(path = %meta.path.display(), error = %e, "Failed to read skill file");
-                    continue;
-                }
-            };
-
-            // Count by source (after successful read for consistent totals)
-            skill_count += 1;
-            *by_source
-                .entry(meta.source.label().to_string())
-                .or_default() += 1;
-
-            // Analyze for quality and tokens
-            let analysis = analyze_skill(&meta.path, &content);
-
-            // Quality buckets
-            if analysis.quality_score >= 0.8 {
-                quality_high += 1;
-            } else if analysis.quality_score >= 0.5 {
-                quality_medium += 1;
-            } else {
-                quality_low += 1;
-            }
-
-            // Token stats
-            total_tokens += analysis.tokens.total;
-            let skill_uri = format!("skill://skrills/{}/{}", meta.source.label(), meta.name);
-            if largest_skill
-                .as_ref()
-                .is_none_or(|s| analysis.tokens.total > s.tokens)
-            {
-                largest_skill = Some(SkillTokenInfo {
-                    uri: skill_uri,
-                    tokens: analysis.tokens.total,
-                });
-            }
-
-            // Optional validation
-            if include_validation {
-                let result = validate_skill(&meta.path, &content, ValidationTarget::Both);
-                if result.claude_valid && result.codex_valid {
-                    passing += 1;
-                } else if result.has_errors() {
-                    with_errors += 1;
-                } else {
-                    with_warnings += 1;
-                }
-            }
-        }
-
-        // Compute dependency stats from the graph
         let mut cache = self.cache.lock();
         cache.ensure_fresh()?;
-        let all_skills: Vec<String> = cache.skill_uris()?;
-
-        let mut total_dependencies = 0usize;
-        let mut orphan_count = 0usize;
-        let mut hub_counts: Vec<(String, usize)> = Vec::new();
-
-        for skill_uri in &all_skills {
-            let deps = cache.dependencies_raw(skill_uri);
-            let dependents = cache.dependents_raw(skill_uri);
-
-            total_dependencies += deps.len();
-
-            if deps.is_empty() && dependents.is_empty() {
-                orphan_count += 1;
-            }
-
-            if !dependents.is_empty() {
-                hub_counts.push((skill_uri.to_string(), dependents.len()));
-            }
-        }
-
-        // Sort hubs by dependent count (descending) and take top 5
-        hub_counts.sort_by_key(|b| Reverse(b.1));
-        let hub_skills: Vec<HubSkill> = hub_counts
-            .into_iter()
-            .take(5)
-            .map(|(uri, count)| HubSkill {
-                uri,
-                dependent_count: count,
-            })
-            .collect();
-
-        let avg_deps = if skill_count > 0 {
-            total_dependencies as f64 / skill_count as f64
-        } else {
-            0.0
-        };
-
-        let avg_tokens = total_tokens.checked_div(skill_count).unwrap_or(0);
-
-        let validation_summary = if include_validation {
-            Some(MetricsValidationSummary {
-                passing,
-                with_errors,
-                with_warnings,
-            })
-        } else {
-            None
-        };
-
-        Ok(SkillMetrics {
-            total_skills: skill_count,
-            by_source,
-            by_quality: QualityDistribution {
-                high: quality_high,
-                medium: quality_medium,
-                low: quality_low,
-            },
-            dependency_stats: DependencyStats {
-                total_dependencies,
-                avg_per_skill: avg_deps,
-                orphan_count,
-                hub_skills,
-            },
-            token_stats: TokenStats {
-                total_tokens,
-                avg_per_skill: avg_tokens,
-                largest_skill,
-            },
-            validation_summary,
-        })
+        Ok(compute_skill_metrics(
+            &skills,
+            cache.dependency_graph(),
+            include_validation,
+        ))
     }
 
     // Note: Tool handlers (validate_skills_tool, sync_all_tool, skill_loading_status_tool,

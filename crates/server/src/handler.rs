@@ -83,7 +83,7 @@ impl std::fmt::Display for InvalidParams {
 
 impl std::error::Error for InvalidParams {}
 
-fn invalid_params(message: impl Into<String>) -> anyhow::Error {
+pub(crate) fn invalid_params(message: impl Into<String>) -> anyhow::Error {
     InvalidParams(message.into()).into()
 }
 
@@ -1422,6 +1422,31 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    }
+
+    /// SA-23: a `project_dir` outside `[serve] project_roots` is the caller's
+    /// mistake, reported as invalid params naming the setting.
+    #[test]
+    fn project_dir_outside_project_roots_is_invalid_params() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var("HOME", temp.path().to_str());
+        let allowed = temp.path().join("allowed");
+        std::fs::create_dir_all(&allowed).expect("create root");
+
+        let service = build_service(&temp).with_project_roots(vec![allowed]);
+        let err = call(
+            service,
+            "analyze-project-context",
+            json!({"project_dir": temp.path().to_str().unwrap()}),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message.contains("[serve] project_roots"),
+            "{}",
+            err.message
+        );
     }
 
     /// `describe-mcp-tool` counted a schema load even for a name it could not

@@ -146,6 +146,7 @@ auth_token = "your-secret-token"
 tls_auto = true
 cors_origins = "https://app.example.com"
 allowed_hosts = "skrills.internal:8080"  # needed when binding a non-loopback address
+project_roots = ["~/src"]                # project_dir a client may have analyzed
 ```
 
 See [security docs](docs/security.md) for TLS setup and the

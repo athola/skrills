@@ -26,6 +26,7 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
+        use crate::metrics_types::RecommendationRelationship;
         use skrills_analyze::analyze_skill;
         use skrills_intelligence::recommend::{RecommendationScorer, Scorer};
         use skrills_intelligence::usage::{
@@ -46,6 +47,12 @@ impl SkillService {
             .get("include_context")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
+
+        let include_context_dir = if include_context {
+            self.client_project_dir(project_dir, "recommend_skills_smart_tool")?
+        } else {
+            None
+        };
 
         // Build scorer with optional usage and context data
         let mut scorer = RecommendationScorer::new();
@@ -150,9 +157,7 @@ impl SkillService {
 
         // Load project context if requested
         if include_context {
-            if let Some(project_path) =
-                resolve_project_dir(project_dir, "recommend_skills_smart_tool")
-            {
+            if let Some(project_path) = include_context_dir {
                 match analyze_project(&project_path) {
                     Ok(profile) => {
                         scorer = scorer.with_context(profile);
@@ -184,56 +189,28 @@ impl SkillService {
             let mut cache = self.cache.lock();
             cache.ensure_fresh()?;
 
-            let dependencies: Vec<String> = cache.dependencies_raw(source_uri);
-            let dependents: Vec<String> = cache.dependents_raw(source_uri);
-
-            // Find siblings (skills sharing dependencies)
-            let source_deps: HashSet<_> = dependencies.iter().cloned().collect();
             let all_uris = cache.skill_uris()?;
-            let mut siblings: Vec<String> = Vec::new();
+            // The same walk `recommend-skills` uses (SA-44); scoring here is
+            // the RecommendationScorer's, so only the walk is shared.
+            let related = super::skill_recommendations::related_skills(
+                source_uri,
+                &all_uris,
+                |u| cache.dependencies_raw(u),
+                cache.dependents_raw(source_uri),
+            );
+            drop(cache);
 
-            for other_uri in &all_uris {
-                if other_uri == source_uri {
+            for (related_uri, relationship) in related {
+                if !seen_uris.insert(related_uri.clone()) {
                     continue;
                 }
-                if dependencies.contains(other_uri) || dependents.contains(other_uri) {
-                    continue;
-                }
-                let other_deps: HashSet<_> =
-                    cache.dependencies_raw(other_uri).into_iter().collect();
-                if !source_deps.is_disjoint(&other_deps) {
-                    siblings.push(other_uri.clone());
-                }
-            }
-
-            // Score dependencies
-            for dep_uri in &dependencies {
-                if seen_uris.insert(dep_uri.clone()) {
-                    let signals =
-                        scorer.enhance_signals(dep_uri, vec![RecommendationSignal::Dependency]);
-                    let rec = scorer.score(dep_uri, signals);
-                    all_recommendations.push(rec);
-                }
-            }
-
-            // Score dependents
-            for dep_uri in &dependents {
-                if seen_uris.insert(dep_uri.clone()) {
-                    let signals =
-                        scorer.enhance_signals(dep_uri, vec![RecommendationSignal::Dependent]);
-                    let rec = scorer.score(dep_uri, signals);
-                    all_recommendations.push(rec);
-                }
-            }
-
-            // Score siblings
-            for sib_uri in &siblings {
-                if seen_uris.insert(sib_uri.clone()) {
-                    let signals =
-                        scorer.enhance_signals(sib_uri, vec![RecommendationSignal::Sibling]);
-                    let rec = scorer.score(sib_uri, signals);
-                    all_recommendations.push(rec);
-                }
+                let signal = match relationship {
+                    RecommendationRelationship::Dependency => RecommendationSignal::Dependency,
+                    RecommendationRelationship::Dependent => RecommendationSignal::Dependent,
+                    RecommendationRelationship::Sibling => RecommendationSignal::Sibling,
+                };
+                let signals = scorer.enhance_signals(&related_uri, vec![signal]);
+                all_recommendations.push(scorer.score(&related_uri, signals));
             }
         }
 
@@ -320,11 +297,12 @@ impl SkillService {
     ) -> Result<CallToolResult> {
         use skrills_intelligence::{analyze_project_with_options, AnalyzeProjectOptions};
 
-        let project_dir = resolve_project_dir(
-            args.get("project_dir").and_then(|v| v.as_str()),
-            "analyze_project_context_tool",
-        )
-        .ok_or_else(|| anyhow!("Could not determine current directory; provide project_dir"))?;
+        let project_dir = self
+            .client_project_dir(
+                args.get("project_dir").and_then(|v| v.as_str()),
+                "analyze_project_context_tool",
+            )?
+            .ok_or_else(|| anyhow!("Could not determine current directory; provide project_dir"))?;
 
         let include_git = args
             .get("include_git")
@@ -386,11 +364,12 @@ impl SkillService {
     pub fn suggest_new_skills_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
         use skrills_intelligence::{analyze_project, SkillGap, SkillGapAnalysis};
 
-        let project_dir = resolve_project_dir(
-            args.get("project_dir").and_then(|v| v.as_str()),
-            "suggest_new_skills_tool",
-        )
-        .ok_or_else(|| anyhow!("Could not determine current directory; provide project_dir"))?;
+        let project_dir = self
+            .client_project_dir(
+                args.get("project_dir").and_then(|v| v.as_str()),
+                "suggest_new_skills_tool",
+            )?
+            .ok_or_else(|| anyhow!("Could not determine current directory; provide project_dir"))?;
         let focus_areas: Vec<String> = args
             .get("focus_areas")
             .and_then(|v| v.as_array())
@@ -519,6 +498,23 @@ impl SkillService {
             .await
     }
 
+    /// The project directory a tool should analyze: the client's
+    /// `project_dir` when given, else the server's working directory. With
+    /// `[serve] project_roots` set, a client-supplied path that does not
+    /// resolve inside a root is refused as invalid params.
+    fn client_project_dir(
+        &self,
+        project_dir: Option<&str>,
+        context: &str,
+    ) -> Result<Option<PathBuf>> {
+        match (project_dir, self.project_roots.as_deref()) {
+            (Some(dir), Some(roots)) => {
+                ensure_within_project_roots(Path::new(dir), roots).map(Some)
+            }
+            _ => Ok(resolve_project_dir(project_dir, context)),
+        }
+    }
+
     /// Writable skill roots: user-owned skill directories, not plugin caches,
     /// marketplace checkouts or the Codex mirror.
     fn writable_skill_roots(&self) -> Vec<PathBuf> {
@@ -590,7 +586,10 @@ impl SkillService {
             .get("dry_run")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let project_dir = args.get("project_dir").and_then(|v| v.as_str());
+        let project_dir = match args.get("project_dir").and_then(|v| v.as_str()) {
+            Some(dir) => self.client_project_dir(Some(dir), "create_skill")?,
+            None => None,
+        };
 
         let method: CreationMethod = method_str
             .parse()
@@ -614,7 +613,7 @@ impl SkillService {
 
         // Add project context if available
         if let Some(dir) = project_dir {
-            if let Ok(profile) = analyze_project(&PathBuf::from(dir)) {
+            if let Ok(profile) = analyze_project(&dir) {
                 request = request.with_context(profile);
             }
         }
@@ -1067,6 +1066,39 @@ fn ensure_within_roots(target: &Path, roots: &[PathBuf]) -> Result<()> {
                 .collect::<Vec<_>>()
                 .join(", ")
         ))
+    }
+}
+
+/// Resolve a client-supplied `project_dir` and refuse it unless it lies
+/// inside one of `roots` (`[serve] project_roots`). Both sides are
+/// canonicalized, so `..` and symlinks are judged by where they lead. A path
+/// that cannot be canonicalized (it does not exist) is refused too. Returns
+/// the canonical path, which is what the caller should analyze.
+fn ensure_within_project_roots(dir: &Path, roots: &[PathBuf]) -> Result<PathBuf> {
+    let setting = "[serve] project_roots in ~/.skrills/config.toml";
+    let resolved = dir.canonicalize().map_err(|e| {
+        crate::handler::invalid_params(format!(
+            "project_dir {} cannot be resolved ({e}); with {setting} set, it must be an existing directory inside one of them",
+            dir.display()
+        ))
+    })?;
+    let inside = roots.iter().any(|root| {
+        root.canonicalize()
+            .map(|r| resolved.starts_with(r))
+            .unwrap_or(false)
+    });
+    if inside {
+        Ok(resolved)
+    } else {
+        Err(crate::handler::invalid_params(format!(
+            "project_dir {} is outside {setting} ({})",
+            dir.display(),
+            roots
+                .iter()
+                .map(|r| r.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )))
     }
 }
 

@@ -103,6 +103,52 @@ fn resolve_auth_token(
     Ok(config.and_then(|c| c.serve.auth_token))
 }
 
+/// `[serve] project_roots` from `~/.skrills/config.toml`, with `~` expanded.
+/// `None` when the file or the key is absent.
+fn resolve_project_roots(
+    load_config: impl FnOnce() -> Result<Option<skrills_server::config::Config>>,
+) -> Result<Option<Vec<PathBuf>>> {
+    Ok(load_config()?.and_then(|c| c.serve.project_roots_expanded()))
+}
+
+/// Applies `[serve] project_roots`, when set, to a service about to be served.
+fn restrict_project_dirs(service: SkillService, roots: Option<&[PathBuf]>) -> SkillService {
+    match roots {
+        Some(roots) => service.with_project_roots(roots.to_vec()),
+        None => service,
+    }
+}
+
+/// Whether `bind` (a `--http` address) listens only on a loopback interface.
+/// `localhost` counts; a wildcard (`0.0.0.0`, `[::]`) or any other host does not.
+#[cfg_attr(not(feature = "http-transport"), allow(dead_code))]
+fn bind_is_loopback(bind: &str) -> bool {
+    if let Ok(addr) = bind.parse::<std::net::SocketAddr>() {
+        return addr.ip().is_loopback();
+    }
+    let host = bind.rsplit_once(':').map_or(bind, |(host, _)| host);
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Warn once at startup when other machines can reach the server and any
+/// `project_dir` a client names will be read.
+#[cfg_attr(not(feature = "http-transport"), allow(dead_code))]
+fn warn_if_project_dirs_unrestricted(bind: &str, project_roots: Option<&[PathBuf]>) {
+    if project_roots.is_none() && !bind_is_loopback(bind) {
+        tracing::warn!(
+            target: "skrills::serve",
+            bind,
+            "serving over a non-loopback address without [serve] project_roots: \
+             MCP clients can have any readable directory analyzed as project_dir; \
+             set project_roots in ~/.skrills/config.toml to restrict it"
+        );
+    }
+}
+
 /// Handle the `serve` command.
 pub(crate) fn handle_serve_command(options: ServeOptions) -> Result<()> {
     let ServeOptions {
@@ -148,6 +194,9 @@ pub(crate) fn handle_serve_command(options: ServeOptions) -> Result<()> {
     let ttl = cache_ttl_ms
         .map(Duration::from_millis)
         .unwrap_or_else(|| cache_ttl(&load_manifest_settings));
+
+    let project_roots =
+        resolve_project_roots(|| skrills_server::config::load_config().map_err(|e| anyhow!(e)))?;
 
     let rt = Runtime::new()?;
 
@@ -207,11 +256,15 @@ pub(crate) fn handle_serve_command(options: ServeOptions) -> Result<()> {
                 tracing::info!(target: "skrills::tls", "{}", cert_status);
             }
 
+            warn_if_project_dirs_unrestricted(&bind_addr, project_roots.as_deref());
+            let session_roots = project_roots.clone();
+
             let api_skill_dirs = skill_dirs.clone();
             return rt.block_on(async move {
                 skrills_server::http_transport::serve_http_with_security(
                     move || {
                         SkillService::new_with_ttl(merge_extra_dirs(&skill_dirs_clone), ttl)
+                            .map(|service| restrict_project_dirs(service, session_roots.as_deref()))
                             .map_err(std::io::Error::other)
                     },
                     &bind_addr,
@@ -244,8 +297,10 @@ pub(crate) fn handle_serve_command(options: ServeOptions) -> Result<()> {
     // Default: stdio transport
     // Skill reads, validations and syncs go to ~/.skrills/metrics.db, which
     // the dashboard of an HTTP server reads.
-    let service =
-        SkillService::new_with_ttl(merge_extra_dirs(&skill_dirs), ttl)?.with_persistent_metrics();
+    let service = restrict_project_dirs(
+        SkillService::new_with_ttl(merge_extra_dirs(&skill_dirs), ttl)?.with_persistent_metrics(),
+        project_roots.as_deref(),
+    );
 
     #[cfg(feature = "watch")]
     let _watcher = if watch {
@@ -292,6 +347,34 @@ pub(crate) fn handle_serve_command(options: ServeOptions) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SA-23: the warning fires only for an address other machines can reach.
+    #[test]
+    fn bind_is_loopback_tells_local_from_reachable_addresses() {
+        for bind in ["127.0.0.1:0", "[::1]:0", "localhost:3000", "LOCALHOST:3000"] {
+            assert!(bind_is_loopback(bind), "{bind} is loopback");
+        }
+        for bind in [
+            "0.0.0.0:3000",
+            "[::]:3000",
+            "10.0.0.5:8080",
+            "skrills.internal:8080",
+        ] {
+            assert!(!bind_is_loopback(bind), "{bind} is reachable");
+        }
+    }
+
+    /// SA-23: `[serve] project_roots` reaches serve with `~` expanded.
+    #[test]
+    fn project_roots_come_from_the_config_file() {
+        let config: skrills_server::config::Config =
+            toml::from_str("[serve]\nproject_roots = [\"/work\"]\n").unwrap();
+        assert_eq!(
+            resolve_project_roots(|| Ok(Some(config))).unwrap(),
+            Some(vec![PathBuf::from("/work")])
+        );
+        assert_eq!(resolve_project_roots(|| Ok(None)).unwrap(), None);
+    }
 
     fn config_with_token(token: &str) -> skrills_server::config::Config {
         toml::from_str(&format!("[serve]\nauth_token = \"{token}\"\n")).unwrap()

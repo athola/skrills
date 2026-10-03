@@ -1025,3 +1025,230 @@ fn write_generated_skill_refuses_to_overwrite() {
         super::super::intelligence::write_generated_skill(temp.path(), "fresh", "body").unwrap();
     assert_eq!(fs::read_to_string(written).unwrap(), "body");
 }
+
+// -------------------------------------------------------------------------
+// recommend-skills-smart relationship walk (SA-44 characterization)
+// -------------------------------------------------------------------------
+
+/// Pins which skills `recommend-skills-smart` relates to a URI and how:
+/// dependencies, dependents, then siblings sharing a dependency, each skill
+/// once. `both` depends on `app` and shares `db` with it, so it is listed as
+/// a dependent only; `lonely` shares nothing.
+#[test]
+fn recommend_skills_smart_relates_dependencies_dependents_and_siblings() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let _home = crate::test_support::set_env_var("HOME", temp.path().to_str());
+    let skills_dir = temp.path().join("skills");
+    let links = |names: &[&str]| {
+        names
+            .iter()
+            .map(|n| format!("[{n}](../{n}/SKILL.md)"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    for (name, deps) in [
+        ("app", vec!["db", "auth"]),
+        ("api", vec!["db"]),
+        ("tool", vec!["auth"]),
+        ("web", vec!["app"]),
+        ("both", vec!["app", "db"]),
+        ("db", vec![]),
+        ("auth", vec![]),
+        ("lonely", vec![]),
+    ] {
+        let dir = skills_dir.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!(
+                "---\nname: {name}\ndescription: {name} skill\n---\n# {name}\n{}\n",
+                links(&deps)
+            ),
+        )
+        .unwrap();
+    }
+    let service = SkillService::new_with_roots_for_test(
+        vec![SkillRoot {
+            root: skills_dir,
+            source: skrills_discovery::SkillSource::Extra(0),
+        }],
+        Duration::from_secs(60),
+    )
+    .unwrap();
+    service.invalidate_cache().unwrap();
+    let uris = service.cache.lock().skill_uris().unwrap();
+    let app_uri = uris
+        .iter()
+        .find(|u| u.ends_with("/app/SKILL.md"))
+        .unwrap_or_else(|| panic!("app uri: {uris:?}"))
+        .clone();
+
+    let args = json!({
+        "uri": app_uri,
+        "include_usage": false,
+        "include_context": false,
+        "limit": 50
+    })
+    .as_object()
+    .cloned()
+    .unwrap();
+    let result = service.recommend_skills_smart_tool(args).unwrap();
+    let structured = result.structured_content.unwrap();
+
+    let related: Vec<(String, Vec<String>)> = structured["recommendations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|rec| {
+            let name = rec["uri"].as_str().unwrap().rsplit('/').nth(1).unwrap();
+            let signals = rec["signals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|s| s.as_str().map(str::to_string))
+                .collect();
+            (name.to_string(), signals)
+        })
+        .collect();
+    // Output order is score, so dependencies, dependents, then siblings.
+    // Within a tier the order follows a HashSet and is not pinned.
+    let tier = |signals: &[String]| match signals.first().map(String::as_str) {
+        Some("Dependency") => 0,
+        Some("Dependent") => 1,
+        _ => 2,
+    };
+    let tiers: Vec<i32> = related.iter().map(|(_, s)| tier(s)).collect();
+    assert!(tiers.windows(2).all(|w| w[0] <= w[1]), "{tiers:?}");
+    let mut related = related;
+    related.sort_by(|a, b| tier(&a.1).cmp(&tier(&b.1)).then_with(|| a.0.cmp(&b.0)));
+    let expected: Vec<(String, Vec<String>)> = [
+        ("auth", "Dependency"),
+        ("db", "Dependency"),
+        ("both", "Dependent"),
+        ("web", "Dependent"),
+        ("api", "Sibling"),
+        ("tool", "Sibling"),
+    ]
+    .into_iter()
+    .map(|(n, s)| (n.to_string(), vec![s.to_string()]))
+    .collect();
+    assert_eq!(related, expected, "{structured}");
+}
+
+// -------------------------------------------------------------------------
+// [serve] project_roots containment (SA-23)
+// -------------------------------------------------------------------------
+
+/// A service restricted to `<temp>/allowed`, plus a sibling `<temp>/outside`
+/// that exists, so a refusal is containment and not a missing directory.
+/// Both sides are canonicalized, so the macOS `/tmp -> /private/tmp` link
+/// cannot make an in-root path look out of root.
+fn restricted_service(temp: &tempfile::TempDir) -> (SkillService, PathBuf, PathBuf) {
+    let allowed = temp.path().join("allowed");
+    let outside = temp.path().join("outside");
+    fs::create_dir_all(allowed.join("project")).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1))
+        .unwrap()
+        .with_project_roots(vec![allowed.clone()]);
+    (service, allowed, outside)
+}
+
+fn project_args(dir: &std::path::Path) -> serde_json::Map<String, serde_json::Value> {
+    json!({"project_dir": dir.to_str().unwrap(), "include_git": false})
+        .as_object()
+        .cloned()
+        .unwrap()
+}
+
+fn assert_refused(err: anyhow::Error) {
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("[serve] project_roots"),
+        "refusal should name the setting: {message}"
+    );
+}
+
+#[test]
+fn project_roots_admit_a_project_inside_a_root() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let (service, allowed, _) = restricted_service(&temp);
+
+    let result = service
+        .analyze_project_context_tool(project_args(&allowed.join("project")))
+        .expect("an in-root project_dir is analyzed");
+    assert!(!result.is_error.unwrap_or(true));
+}
+
+#[test]
+fn project_roots_refuse_a_project_outside_every_root() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let (service, _, outside) = restricted_service(&temp);
+
+    assert_refused(
+        service
+            .analyze_project_context_tool(project_args(&outside))
+            .expect_err("an out-of-root project_dir is refused"),
+    );
+    assert_refused(
+        service
+            .suggest_new_skills_tool(project_args(&outside))
+            .expect_err("suggest-new-skills checks project_dir too"),
+    );
+    assert_refused(
+        service
+            .recommend_skills_smart_tool(project_args(&outside))
+            .expect_err("recommend-skills-smart checks project_dir too"),
+    );
+}
+
+#[test]
+fn project_roots_refuse_a_dotdot_escape() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let (service, allowed, _) = restricted_service(&temp);
+
+    let escape = allowed
+        .join("project")
+        .join("..")
+        .join("..")
+        .join("outside");
+    assert!(escape.exists(), "the escape target must exist");
+    assert_refused(
+        service
+            .analyze_project_context_tool(project_args(&escape))
+            .expect_err("a `..` escape is refused"),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn project_roots_refuse_a_symlink_escape() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let (service, allowed, outside) = restricted_service(&temp);
+
+    let link = allowed.join("link-out");
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    assert_refused(
+        service
+            .analyze_project_context_tool(project_args(&link))
+            .expect_err("a symlink leaving the root is refused"),
+    );
+}
+
+#[test]
+fn project_roots_unset_leaves_project_dir_unrestricted() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let anywhere = temp.path().join("anywhere");
+    fs::create_dir_all(&anywhere).unwrap();
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
+
+    service
+        .analyze_project_context_tool(project_args(&anywhere))
+        .expect("no allowlist, no refusal");
+}

@@ -32,6 +32,11 @@
 //!
 //! # Cache TTL in milliseconds
 //! cache_ttl_ms = 5000
+//!
+//! # Directories an MCP client's `project_dir` must resolve inside
+//! # (recommend-skills-smart, analyze-project-context, suggest-new-skills,
+//! # create-skill). `~` is expanded. Unset admits any path.
+//! project_roots = ["~/src", "/work"]
 //! ```
 
 use anyhow::{Context, Result};
@@ -106,6 +111,10 @@ pub struct ServeConfig {
     pub http: Option<String>,
     /// Cache TTL in milliseconds for skill discovery.
     pub cache_ttl_ms: Option<u64>,
+    /// Directories a client-supplied `project_dir` must resolve inside.
+    /// `None` leaves `project_dir` unrestricted. Use
+    /// [`ServeConfig::project_roots_expanded`] to expand `~`.
+    pub project_roots: Option<Vec<PathBuf>>,
     /// Keys under `[serve]` that are not part of the schema.
     #[serde(flatten)]
     unrecognized: BTreeMap<String, toml::Value>,
@@ -128,11 +137,24 @@ impl std::fmt::Debug for ServeConfig {
             .field("allowed_hosts", &self.allowed_hosts)
             .field("http", &self.http)
             .field("cache_ttl_ms", &self.cache_ttl_ms)
+            .field("project_roots", &self.project_roots)
             .field(
                 "unrecognized",
                 &self.unrecognized.keys().collect::<Vec<_>>(),
             )
             .finish()
+    }
+}
+
+impl ServeConfig {
+    /// `project_roots` with a leading `~` expanded to the home directory.
+    pub fn project_roots_expanded(&self) -> Option<Vec<PathBuf>> {
+        self.project_roots.as_ref().map(|roots| {
+            roots
+                .iter()
+                .map(|root| PathBuf::from(shellexpand::tilde(&root.to_string_lossy()).as_ref()))
+                .collect()
+        })
     }
 }
 
@@ -297,6 +319,29 @@ mod tests {
 
         let config: Config = toml::from_str(toml).unwrap();
         assert!(config.serve.auth_token.is_none());
+        assert!(config.serve.project_roots_expanded().is_none());
+    }
+
+    /// SA-23: `project_roots` is a known key, and `~` expands to HOME.
+    #[test]
+    fn parse_project_roots() {
+        let _guard = crate::test_support::env_guard();
+        let toml = r#"
+            [serve]
+            project_roots = ["~/src", "/work"]
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(
+            config.unknown_keys().is_empty(),
+            "{:?}",
+            config.unknown_keys()
+        );
+        let home = dirs::home_dir().expect("home dir");
+        assert_eq!(
+            config.serve.project_roots_expanded(),
+            Some(vec![home.join("src"), PathBuf::from("/work")])
+        );
     }
 
     #[test]

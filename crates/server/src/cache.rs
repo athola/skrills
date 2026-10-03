@@ -155,87 +155,6 @@ impl SkillCache {
             .collect()
     }
 
-    /// Build the dependency graph for a set of skills.
-    fn build_dependency_graph(&self, skills: &[SkillMeta]) -> RelationshipGraph {
-        // Canonicalize each skill path once per build, not once per
-        // dependency per skill.
-        let by_canonical_path: HashMap<PathBuf, String> = skills
-            .iter()
-            .filter_map(|skill| {
-                let canonical = skill.path.canonicalize().ok()?;
-                let uri = format!("skill://skrills/{}/{}", skill.source.label(), skill.name);
-                Some((canonical, uri))
-            })
-            .collect();
-        let mut dep_graph = RelationshipGraph::new();
-        for skill in skills {
-            let skill_uri = format!("skill://skrills/{}/{}", skill.source.label(), skill.name);
-            dep_graph.add_skill(&skill_uri);
-
-            // Analyze dependencies
-            if let Ok(content) = fs::read_to_string(&skill.path) {
-                let analysis = skrills_analyze::analyze_dependencies(&skill.path, &content);
-
-                tracing::debug!(
-                    target: "skrills::deps",
-                    skill = %skill.name,
-                    total_deps = analysis.dependencies.len(),
-                    "analyzing dependencies"
-                );
-
-                // Extract skill dependencies and convert to URIs
-                for dep in &analysis.dependencies {
-                    tracing::debug!(
-                        target: "skrills::deps",
-                        skill = %skill.name,
-                        dep_type = ?dep.dep_type,
-                        dep_target = %dep.target,
-                        "found dependency"
-                    );
-
-                    if dep.dep_type == skrills_analyze::DependencyType::Skill {
-                        // Try to resolve the dependency path to a skill URI
-                        if let Some(dep_uri) = Self::resolve_dependency_to_uri(
-                            &skill.path,
-                            &dep.target,
-                            &by_canonical_path,
-                        ) {
-                            tracing::debug!(
-                                target: "skrills::deps",
-                                skill = %skill.name,
-                                dependency = %dep_uri,
-                                "added dependency"
-                            );
-                            dep_graph.add_dependency(&skill_uri, &dep_uri);
-                        } else {
-                            tracing::debug!(
-                                target: "skrills::deps",
-                                skill = %skill.name,
-                                dep_path = %dep.target,
-                                "failed to resolve dependency"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-        dep_graph
-    }
-
-    /// Resolve a dependency path to a skill URI.
-    ///
-    /// Takes a relative path from a skill file and looks it up among the
-    /// skills' canonical paths.
-    fn resolve_dependency_to_uri(
-        skill_path: &Path,
-        dep_path: &str,
-        by_canonical_path: &HashMap<PathBuf, String>,
-    ) -> Option<String> {
-        let skill_dir = skill_path.parent()?;
-        let canonical_path = skill_dir.join(dep_path).canonicalize().ok()?;
-        by_canonical_path.get(&canonical_path).cloned()
-    }
-
     /// Attempt to load a persisted snapshot if it is still within TTL and roots match.
     fn try_load_snapshot(&mut self) -> Result<()> {
         let Some(path) = self.snapshot_path() else {
@@ -289,7 +208,7 @@ impl SkillCache {
         self.uri_index = uri_index;
 
         // Build dependency graph for loaded skills
-        self.dep_graph = self.build_dependency_graph(&snap.skills);
+        self.dep_graph = build_dependency_graph(&snap.skills);
 
         // The snapshot is `age` seconds old; keep that age so loading it does
         // not grant a fresh TTL.
@@ -383,7 +302,7 @@ impl SkillCache {
         }
 
         // Build dependency graph
-        let dep_graph = self.build_dependency_graph(&skills);
+        let dep_graph = build_dependency_graph(&skills);
 
         self.skills = skills;
         self.duplicates = dup_log;
@@ -453,6 +372,11 @@ impl SkillCache {
     ///
     /// This is used for computing dependency statistics and should only be called
     /// after ensuring the cache is fresh.
+    /// The dependency graph of the cached skills.
+    pub(crate) fn dependency_graph(&self) -> &RelationshipGraph {
+        &self.dep_graph
+    }
+
     pub(crate) fn dependencies_raw(&self, uri: &str) -> Vec<String> {
         self.dep_graph.dependencies(uri).into_iter().collect()
     }
@@ -481,6 +405,91 @@ impl SkillCache {
         self.refresh_if_stale()?;
         Ok(self.dep_graph.transitive_dependents(uri))
     }
+}
+
+/// Builds the dependency graph of `skills`: one node per skill, keyed by its
+/// `skill://skrills/<source>/<name>` URI, and an edge for each relative link
+/// to another skill's file, matched by canonical path. A link to anything
+/// else is dropped, and a skill that cannot be read is a node without edges.
+///
+/// The MCP tools (through the skill cache) and the `skrills` CLI build their
+/// graphs with this one function (SA-44).
+pub fn build_dependency_graph(skills: &[SkillMeta]) -> RelationshipGraph {
+    // Canonicalize each skill path once per build, not once per
+    // dependency per skill.
+    let by_canonical_path: HashMap<PathBuf, String> = skills
+        .iter()
+        .filter_map(|skill| {
+            let canonical = skill.path.canonicalize().ok()?;
+            let uri = format!("skill://skrills/{}/{}", skill.source.label(), skill.name);
+            Some((canonical, uri))
+        })
+        .collect();
+    let mut dep_graph = RelationshipGraph::new();
+    for skill in skills {
+        let skill_uri = format!("skill://skrills/{}/{}", skill.source.label(), skill.name);
+        dep_graph.add_skill(&skill_uri);
+
+        // Analyze dependencies
+        if let Ok(content) = fs::read_to_string(&skill.path) {
+            let analysis = skrills_analyze::analyze_dependencies(&skill.path, &content);
+
+            tracing::debug!(
+                target: "skrills::deps",
+                skill = %skill.name,
+                total_deps = analysis.dependencies.len(),
+                "analyzing dependencies"
+            );
+
+            // Extract skill dependencies and convert to URIs
+            for dep in &analysis.dependencies {
+                tracing::debug!(
+                    target: "skrills::deps",
+                    skill = %skill.name,
+                    dep_type = ?dep.dep_type,
+                    dep_target = %dep.target,
+                    "found dependency"
+                );
+
+                if dep.dep_type == skrills_analyze::DependencyType::Skill {
+                    // Try to resolve the dependency path to a skill URI
+                    if let Some(dep_uri) =
+                        resolve_dependency_to_uri(&skill.path, &dep.target, &by_canonical_path)
+                    {
+                        tracing::debug!(
+                            target: "skrills::deps",
+                            skill = %skill.name,
+                            dependency = %dep_uri,
+                            "added dependency"
+                        );
+                        dep_graph.add_dependency(&skill_uri, &dep_uri);
+                    } else {
+                        tracing::debug!(
+                            target: "skrills::deps",
+                            skill = %skill.name,
+                            dep_path = %dep.target,
+                            "failed to resolve dependency"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    dep_graph
+}
+
+/// Resolve a dependency path to a skill URI.
+///
+/// Takes a relative path from a skill file and looks it up among the
+/// skills' canonical paths.
+fn resolve_dependency_to_uri(
+    skill_path: &Path,
+    dep_path: &str,
+    by_canonical_path: &HashMap<PathBuf, String>,
+) -> Option<String> {
+    let skill_dir = skill_path.parent()?;
+    let canonical_path = skill_dir.join(dep_path).canonicalize().ok()?;
+    by_canonical_path.get(&canonical_path).cloned()
 }
 
 #[cfg(test)]

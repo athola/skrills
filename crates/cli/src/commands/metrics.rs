@@ -1,16 +1,9 @@
 //! CLI handler for the `metrics` command.
 
-use super::skill_uri::{skill_uri, DependencyResolver};
 use crate::cli::OutputFormat;
 use anyhow::Result;
-use skrills_analyze::RelationshipGraph;
 use skrills_discovery::discover_skills;
-use skrills_server::app::{
-    DependencyStats, HubSkill, MetricsValidationSummary, QualityDistribution, SkillMetrics,
-    SkillTokenInfo, TokenStats,
-};
-use std::cmp::Reverse;
-use std::collections::HashMap;
+use skrills_server::app::{build_dependency_graph, compute_skill_metrics, SkillMetrics};
 
 /// Handle the `metrics` command.
 pub(crate) fn handle_metrics_command(
@@ -34,172 +27,14 @@ pub(crate) fn handle_metrics_command(
     Ok(())
 }
 
-/// Aggregates the metrics for `skills`. A skill that cannot be read is
-/// logged and left out of every count, `total_skills` included.
+/// Aggregates the metrics for `skills` the way the `skill-metrics` MCP tool
+/// does (SA-44). A skill that cannot be read is logged and left out of every
+/// count, `total_skills` included.
 fn compute_metrics(
     skills: &[skrills_discovery::SkillMeta],
     include_validation: bool,
 ) -> SkillMetrics {
-    use skrills_analyze::analyze_skill;
-    use skrills_validate::{validate_skill, ValidationTarget};
-
-    let resolver = DependencyResolver::new(skills);
-
-    // Collect metrics
-    let mut by_source: HashMap<String, usize> = HashMap::new();
-    let mut quality_high = 0usize;
-    let mut quality_medium = 0usize;
-    let mut quality_low = 0usize;
-    let mut total_tokens = 0usize;
-    let mut largest_skill: Option<SkillTokenInfo> = None;
-
-    // Validation counters
-    let mut passing = 0usize;
-    let mut with_errors = 0usize;
-    let mut with_warnings = 0usize;
-
-    // Build dependency graph
-    let mut dep_graph = RelationshipGraph::new();
-
-    let mut skill_count = 0usize;
-    for meta in skills {
-        // Read skill content (before counting to ensure consistent totals)
-        let content = match std::fs::read_to_string(&meta.path) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(path = %meta.path.display(), error = %e, "Failed to read skill file");
-                continue;
-            }
-        };
-
-        // Count after a successful read, so every total agrees.
-        skill_count += 1;
-        *by_source
-            .entry(meta.source.label().to_string())
-            .or_default() += 1;
-
-        // Analyze for quality and tokens
-        let analysis = analyze_skill(&meta.path, &content);
-
-        // Quality buckets
-        if analysis.quality_score >= 0.8 {
-            quality_high += 1;
-        } else if analysis.quality_score >= 0.5 {
-            quality_medium += 1;
-        } else {
-            quality_low += 1;
-        }
-
-        // Token stats
-        total_tokens += analysis.tokens.total;
-        let skill_uri = skill_uri(meta);
-
-        // Track largest skill
-        let should_replace = match largest_skill.as_ref() {
-            None => true,
-            Some(s) => analysis.tokens.total > s.tokens,
-        };
-        if should_replace {
-            largest_skill = Some(SkillTokenInfo {
-                uri: skill_uri.clone(),
-                tokens: analysis.tokens.total,
-            });
-        }
-
-        // Build dependency graph
-        dep_graph.add_skill(&skill_uri);
-        for dep in &analysis.dependencies.dependencies {
-            if let skrills_analyze::DependencyType::Skill = dep.dep_type {
-                if let Some(target) = resolver.resolve(&meta.path, &dep.target) {
-                    dep_graph.add_dependency(&skill_uri, &target);
-                }
-            }
-        }
-
-        // Optional validation
-        if include_validation {
-            let result = validate_skill(&meta.path, &content, ValidationTarget::Both);
-            if result.claude_valid && result.codex_valid {
-                passing += 1;
-            } else if result.has_errors() {
-                with_errors += 1;
-            } else {
-                with_warnings += 1;
-            }
-        }
-    }
-
-    // Compute dependency stats
-    let all_skills: Vec<String> = dep_graph.skills();
-    let mut total_dependencies = 0usize;
-    let mut orphan_count = 0usize;
-    let mut hub_counts: Vec<(String, usize)> = Vec::new();
-
-    for skill_uri in &all_skills {
-        let deps = dep_graph.dependencies(skill_uri);
-        let dependents = dep_graph.dependents(skill_uri);
-
-        total_dependencies += deps.len();
-
-        if deps.is_empty() && dependents.is_empty() {
-            orphan_count += 1;
-        }
-
-        if !dependents.is_empty() {
-            hub_counts.push((skill_uri.to_string(), dependents.len()));
-        }
-    }
-
-    // Sort hubs by dependent count (descending) and take top 5
-    hub_counts.sort_by_key(|b| Reverse(b.1));
-    let hub_skills: Vec<HubSkill> = hub_counts
-        .into_iter()
-        .take(5)
-        .map(|(uri, count)| HubSkill {
-            uri,
-            dependent_count: count,
-        })
-        .collect();
-
-    let avg_deps = if skill_count > 0 {
-        total_dependencies as f64 / skill_count as f64
-    } else {
-        0.0
-    };
-
-    let avg_tokens = total_tokens.checked_div(skill_count).unwrap_or(0);
-
-    let validation_summary = if include_validation {
-        Some(MetricsValidationSummary {
-            passing,
-            with_errors,
-            with_warnings,
-        })
-    } else {
-        None
-    };
-
-    SkillMetrics {
-        total_skills: skill_count,
-        by_source,
-        by_quality: QualityDistribution {
-            high: quality_high,
-            medium: quality_medium,
-            low: quality_low,
-        },
-        dependency_stats: DependencyStats {
-            total_dependencies,
-            avg_per_skill: avg_deps,
-            orphan_count,
-            hub_skills,
-        },
-        token_stats: TokenStats {
-            total_tokens,
-            avg_per_skill: avg_tokens,
-            largest_skill,
-        },
-        validation_summary,
-    }
+    compute_skill_metrics(skills, &build_dependency_graph(skills), include_validation)
 }
 
 /// Print metrics in human-readable format.
@@ -283,6 +118,11 @@ fn print_metrics_human(metrics: &SkillMetrics) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skrills_server::app::{
+        DependencyStats, HubSkill, MetricsValidationSummary, QualityDistribution, SkillTokenInfo,
+        TokenStats,
+    };
+    use std::collections::HashMap;
     use std::fs;
     use tempfile::tempdir;
 
@@ -627,6 +467,53 @@ skill(high-quality)
 
         assert_eq!(metrics.total_skills, 1);
         assert_eq!(metrics.by_source.values().sum::<usize>(), 1);
+    }
+
+    /// SA-44: `skrills metrics` and the `skill-metrics` MCP tool report the
+    /// same numbers for the same skills: b is a hub for a and c, d is an
+    /// orphan.
+    #[test]
+    fn cli_and_server_metrics_agree() {
+        let _g = skrills_test_utils::env_guard();
+        let home = tempdir().unwrap();
+        let _home = skrills_test_utils::set_env_var("HOME", Some(home.path().to_str().unwrap()));
+        let _dirs = skrills_test_utils::set_env_var("SKRILLS_EXTRA_SKILL_DIRS", None);
+        let tmp = tempdir().unwrap();
+        let linking = |name: &str| {
+            format!("---\nname: {name}\ndescription: Links to b\n---\n# {name}\n\nSee [b](../b/SKILL.md).\n")
+        };
+        create_skill(tmp.path(), "a", &linking("a"));
+        create_skill(tmp.path(), "c", &linking("c"));
+        create_skill(tmp.path(), "b", &minimal_skill_content("b", "Hub"));
+        create_skill(tmp.path(), "d", &minimal_skill_content("d", "Orphan"));
+
+        let cli = serde_json::to_value(compute_metrics(&discovered(tmp.path()), true)).unwrap();
+        let service = skrills_server::app::SkillService::new_with_ttl(
+            vec![tmp.path().to_path_buf()],
+            std::time::Duration::from_secs(60),
+        )
+        .unwrap();
+        let server = serde_json::to_value(service.compute_metrics(true).unwrap()).unwrap();
+
+        assert_eq!(cli, server);
+        assert_eq!(cli["dependency_stats"]["orphan_count"], 1);
+        assert_eq!(cli["dependency_stats"]["total_dependencies"], 2);
+    }
+
+    /// An unreadable skill is no orphan either: it is left out of every count.
+    #[test]
+    fn an_unreadable_skill_is_not_counted_as_an_orphan() {
+        let tmp = tempdir().unwrap();
+        create_skill(tmp.path(), "a", &minimal_skill_content("a", "Test skill"));
+        let mut skills = discovered(tmp.path());
+        let mut gone = skills[0].clone();
+        gone.name = "gone/SKILL.md".into();
+        gone.path = tmp.path().join("gone/SKILL.md");
+        skills.push(gone);
+
+        let metrics = compute_metrics(&skills, false);
+
+        assert_eq!(metrics.dependency_stats.orphan_count, 1);
     }
 
     /// SA-25: relative links count as edges between the linked skills.
