@@ -11,7 +11,7 @@
 //! Configured servers routinely carry credentials (API keys in `env`, tokens
 //! in `args` or the URL). The response keeps the shape of each entry but
 //! replaces every environment value and anything that looks like a secret in
-//! `args` or `url` with [`REDACTED`].
+//! `args` or `url` with the text `[redacted]`.
 
 use axum::{http::StatusCode, routing::get, Json, Router};
 use serde::Serialize;
