@@ -226,6 +226,9 @@ impl AgentAdapter for CursorAdapter {
                 continue;
             }
             touched.insert(dir_name.clone());
+            // Read before this run writes anything: only a directory skrills
+            // already owned may have files swept out of it.
+            let already_marked = plugin_dir.join(MIRROR_MARKER).exists();
 
             let mut kept: HashSet<PathBuf> = HashSet::new();
             for asset in batch {
@@ -238,8 +241,15 @@ impl AgentAdapter for CursorAdapter {
             // plugin, so only then can an absent file be read as "upstream
             // dropped it" rather than "this batch did not include it".
             if plan.authoritative.contains(dir_name) {
-                sweep_unreferenced(&plugin_dir, dir_name, &kept, &mut report);
-                if let Err(e) = fs::write(plugin_dir.join(MIRROR_MARKER), MIRROR_MARKER_BODY) {
+                if already_marked {
+                    sweep_unreferenced(&plugin_dir, dir_name, &kept, &mut report);
+                } else if !adoptable(&plugin_dir, dir_name, &kept, &mut report) {
+                    continue;
+                }
+                if let Err(e) = crate::adapters::utils::write_file(
+                    plugin_dir.join(MIRROR_MARKER),
+                    MIRROR_MARKER_BODY,
+                ) {
                     tracing::warn!(plugin = %dir_name, error = %e, "Could not stamp mirror marker");
                     report.warnings.push(format!(
                         "Could not mark plugins/local/{dir_name} as skrills-managed, so it will \
@@ -528,7 +538,7 @@ fn write_one_asset(
                 return None;
             }
         }
-        if let Err(e) = fs::write(&dest, &asset.content) {
+        if let Err(e) = crate::adapters::utils::write_file(&dest, &asset.content) {
             tracing::warn!(plugin = %dir_name, error = %e, "Could not write plugin asset");
             report.warnings.push(format!(
                 "Skipped plugin asset {}/{}: {e}",
@@ -701,6 +711,43 @@ fn sweep_unreferenced(
              ships"
         ));
     }
+}
+
+/// Decides whether an unmarked directory can become a managed mirror.
+///
+/// An unmarked directory is either a mirror from a build that predates the
+/// marker or a hand-made Cursor plugin that shares its name with a Claude
+/// plugin. A legacy mirror holds only files the plugin ships, so it is adopted.
+/// Anything else is left unmarked: stamping it would let the next run sweep the
+/// user's own files out of it.
+fn adoptable(
+    plugin_dir: &std::path::Path,
+    dir_name: &str,
+    kept: &std::collections::HashSet<std::path::PathBuf>,
+    report: &mut WriteReport,
+) -> bool {
+    use walkdir::WalkDir;
+
+    let foreign = WalkDir::new(plugin_dir)
+        .min_depth(1)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| !entry.file_type().is_dir())
+        .filter(|entry| !kept.contains(entry.path()))
+        .count();
+
+    if foreign == 0 {
+        return true;
+    }
+    tracing::warn!(plugin = %dir_name, foreign, "Leaving an unmarked plugin directory unmanaged");
+    report.warnings.push(format!(
+        "plugins/local/{dir_name} has no {MIRROR_MARKER} marker and holds {foreign} file(s) the \
+         plugin does not ship, so sync wrote the plugin into it but will never remove anything \
+         there. If the directory is yours, rename it; if it is an old mirror, delete it so sync \
+         can manage it."
+    ));
+    false
 }
 
 /// Lists the `plugins/local` directories carrying [`MIRROR_MARKER`], with one

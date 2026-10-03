@@ -7,20 +7,22 @@
 //! When writing Claude skills to Cursor, YAML frontmatter is stripped.
 //! The `description` field is preserved as a plain-text first line (Cursor
 //! shows it as the skill subtitle), and `model_hint` is kept as an HTML
-//! comment for routing. When reading Cursor skills back, no frontmatter
-//! is expected.
+//! comment for routing. The original frontmatter is kept in a trailing
+//! `<!-- skrills:frontmatter ... -->` comment, and reading the skill back
+//! from Cursor restores it, so a Claude -> Cursor -> Codex sync still gives
+//! Codex a `SKILL.md` with `name:` and `description:`.
 //!
 //! ## Lossy roundtrip warning
 //!
-//! Syncing Claude → Cursor **strips most YAML frontmatter** (name,
-//! dependencies, version, tags, etc.). `description` and `model_hint`
-//! are preserved in non-YAML form. A subsequent Cursor → Claude sync
-//! will **not** restore the original metadata. Treat Cursor as a
-//! one-way *consumer* of Claude skills; do not use it as the source
-//! of truth for skills that originated in Claude.
+//! The body is still trimmed on the way in: the "Supporting Modules",
+//! "See Also" and "Table of Contents" sections and `modules/...` link lines
+//! are dropped and are not restored by a sync back out of Cursor. A skill
+//! written in Cursor itself carries no stash and is read back as it is.
 
 use super::paths::skills_dir;
-use super::utils::{parse_frontmatter, strip_yaml_quotes, trim_skill_body};
+use super::utils::{
+    parse_frontmatter, restore_skill, stash_frontmatter, strip_yaml_quotes, trim_skill_body,
+};
 use crate::adapters::utils::sanitize_name_kebab;
 use crate::adapters::utils::{collect_module_files, hash_content};
 use crate::common::{Command, ContentFormat, PluginOrigin};
@@ -41,8 +43,6 @@ fn ensure_cursor_plugin_manifest(root: &Path, origin: &PluginOrigin) {
     use crate::adapters::utils::sanitize_name;
 
     let safe_name = sanitize_name(&origin.plugin_name);
-    let safe_publisher = sanitize_name(&origin.publisher);
-    let safe_version = sanitize_name(&origin.version);
 
     let local_plugin = root.join("plugins").join("local").join(&safe_name);
     let cursor_manifest = local_plugin.join(".cursor-plugin").join("plugin.json");
@@ -60,17 +60,12 @@ fn ensure_cursor_plugin_manifest(root: &Path, origin: &PluginOrigin) {
             return;
         }
     };
-    let claude_manifest_path = claude_home
-        .join("plugins")
-        .join("cache")
-        .join(&safe_publisher)
-        .join(&safe_name)
-        .join(&safe_version)
-        .join(".claude-plugin")
-        .join("plugin.json");
+    let claude_manifest_path = claude_cache_manifest_path(&claude_home, origin);
 
-    let manifest_json = if claude_manifest_path.exists() {
-        match fs::read_to_string(&claude_manifest_path) {
+    let manifest_json = if let Some(claude_manifest_path) =
+        claude_manifest_path.as_deref().filter(|p| p.exists())
+    {
+        match fs::read_to_string(claude_manifest_path) {
             Ok(content) => content,
             Err(e) => {
                 tracing::warn!(
@@ -89,6 +84,30 @@ fn ensure_cursor_plugin_manifest(root: &Path, origin: &PluginOrigin) {
     write_manifest_file(&cursor_manifest, &manifest_json, &safe_name);
 }
 
+/// Where the Claude cache keeps this plugin's manifest.
+///
+/// The components are the cache directory names exactly as read, so they are
+/// used verbatim: sanitizing turned version `1.2.3` into `123`, so the real
+/// manifest was never found and a synthetic one always written. A component
+/// that could leave the cache (empty, `.`, `..`, or holding a separator)
+/// yields `None`.
+fn claude_cache_manifest_path(
+    claude_home: &Path,
+    origin: &PluginOrigin,
+) -> Option<std::path::PathBuf> {
+    let parts = [&origin.publisher, &origin.plugin_name, &origin.version];
+    let safe =
+        |part: &str| !part.is_empty() && part != "." && part != ".." && !part.contains(['/', '\\']);
+    if !parts.iter().all(|p| safe(p)) {
+        return None;
+    }
+    let mut path = claude_home.join("plugins").join("cache");
+    for part in parts {
+        path.push(part);
+    }
+    Some(path.join(".claude-plugin").join("plugin.json"))
+}
+
 /// Writes a manifest file, creating parent directories as needed.
 fn write_manifest_file(path: &std::path::Path, content: &str, plugin_name: &str) {
     if let Some(parent) = path.parent() {
@@ -102,7 +121,7 @@ fn write_manifest_file(path: &std::path::Path, content: &str, plugin_name: &str)
             return;
         }
     }
-    if let Err(e) = fs::write(path, content) {
+    if let Err(e) = crate::adapters::utils::write_file(path, content) {
         tracing::warn!(
             plugin = %plugin_name,
             error = %e,
@@ -161,6 +180,11 @@ pub fn read_skills(root: &Path) -> Result<Vec<Command>> {
             .to_string();
 
         let content = fs::read(&skill_md)?;
+        // A copy this crate wrote gets its original frontmatter back.
+        let content = match std::str::from_utf8(&content).ok().and_then(restore_skill) {
+            Some(restored) => restored.into_bytes(),
+            None => content,
+        };
         let hash = hash_content(&content);
         let modified = fs::metadata(&skill_md)
             .and_then(|m| m.modified())
@@ -203,31 +227,26 @@ pub fn write_skills(root: &Path, skills: &[Command]) -> Result<WriteReport> {
     // Track which plugins we've written so we can create their manifests once
     let mut seen_plugins: std::collections::HashSet<String> = std::collections::HashSet::new();
 
+    let mut flat_writer = crate::adapters::utils::BatchWriter::new(&flat_dir);
+    let mut plugin_writer = crate::adapters::utils::BatchWriter::new(&local_plugins_dir);
+
     for skill in skills {
         let name = sanitize_name_kebab(&skill.name);
 
-        // Decide write target: plugin-local dir if origin is known, flat dir otherwise
-        let skill_dir = if let Some(ref origin) = skill.plugin_origin {
-            // Sanitized with the same function `ensure_cursor_plugin_manifest`
-            // uses, so the manifest and the skill body share one directory. The
-            // raw name also came straight from upstream plugin metadata, so
-            // joining it unfiltered let `../` steer the write out of
-            // `plugins/local/`.
-            let safe_plugin = crate::adapters::utils::sanitize_name(&origin.plugin_name);
-            let plugin_dir = local_plugins_dir.join(&safe_plugin);
-            // Ensure .cursor-plugin/plugin.json manifest exists (once per plugin)
-            if seen_plugins.insert(origin.plugin_name.clone()) {
-                ensure_cursor_plugin_manifest(root, origin);
+        // A lossy decode wrote U+FFFD into the copy; skip instead.
+        let content_str = match std::str::from_utf8(&skill.content) {
+            Ok(s) => s,
+            Err(e) => {
+                report.skipped.push(SkipReason::ParseError {
+                    item: skill.name.clone(),
+                    error: format!("not valid UTF-8: {e}"),
+                });
+                continue;
             }
-            plugin_dir.join("skills").join(&name)
-        } else {
-            flat_dir.join(&name)
         };
-        fs::create_dir_all(&skill_dir)?;
-
         // Parse Claude frontmatter to extract metadata before stripping
-        let content_str = String::from_utf8_lossy(&skill.content);
-        let (fields, raw_body) = parse_frontmatter(&content_str);
+        let (fields, raw_body) = parse_frontmatter(content_str);
+        let (raw_yaml, _, _) = skrills_validate::frontmatter::split_frontmatter(content_str);
 
         let description = fields.get("description").map(|d| strip_yaml_quotes(d));
         let model_hint = fields.get("model_hint").cloned();
@@ -250,46 +269,95 @@ pub fn write_skills(root: &Path, skills: &[Command]) -> Result<WriteReport> {
         } else {
             format!("{header}\n{trimmed}")
         };
-
-        let skill_path = skill_dir.join("SKILL.md");
-
-        let skill_unchanged = if skill_path.exists() {
-            let existing = fs::read(&skill_path)?;
-            hash_content(&existing) == hash_content(body.as_bytes())
-        } else {
-            false
+        // Cursor skills have no frontmatter; keep the original in a trailing
+        // comment so a sync out of Cursor can restore `name:` and the rest.
+        let body = match raw_yaml.as_deref() {
+            None => body,
+            Some(yaml) => stash_frontmatter(&body, yaml).unwrap_or_else(|| {
+                report.warnings.push(format!(
+                    "Skill {}: its frontmatter could not be kept for a sync back out of \
+                     Cursor (it contains `-->`)",
+                    skill.name
+                ));
+                body
+            }),
         };
 
-        if skill_unchanged && skill.modules.is_empty() {
-            report.skipped.push(SkipReason::Unchanged {
-                item: skill.name.clone(),
-            });
-            continue;
-        }
-
-        if !skill_unchanged {
-            debug!(name = %name, path = ?skill_path, "Writing Cursor skill");
-            fs::write(&skill_path, body.as_bytes())?;
-        }
-
-        // Write companion/module files (with path containment check)
-        for module in &skill.modules {
-            let module_path = skill_dir.join(&module.relative_path);
-            if !crate::adapters::utils::is_path_contained(&module_path, &skill_dir) {
-                debug!(
-                    path = %module.relative_path.display(),
-                    "Skipping module with path outside skill directory"
-                );
+        // Decide write target: plugin-local dir if origin is known, flat dir otherwise
+        if let Some(ref origin) = skill.plugin_origin {
+            // Sanitized with the same function `ensure_cursor_plugin_manifest`
+            // uses, so the manifest and the skill body share one directory. The
+            // raw name also came straight from upstream plugin metadata, so
+            // joining it unfiltered let `../` steer the write out of
+            // `plugins/local/`.
+            let safe_plugin = crate::adapters::utils::sanitize_name(&origin.plugin_name);
+            if safe_plugin.is_empty() || name.is_empty() {
+                report.skipped.push(SkipReason::Refused {
+                    item: skill.name.clone(),
+                    reason: "the plugin or skill name sanitizes to an empty directory name"
+                        .to_string(),
+                });
                 continue;
             }
-            if let Some(parent) = module_path.parent() {
-                fs::create_dir_all(parent)?;
+            // Ensure .cursor-plugin/plugin.json manifest exists (once per plugin)
+            if seen_plugins.insert(origin.plugin_name.clone()) {
+                ensure_cursor_plugin_manifest(root, origin);
             }
-            fs::write(&module_path, &module.content)?;
+            debug!(name = %name, plugin = %safe_plugin, "Writing Cursor plugin skill");
+            plugin_writer.write(
+                &skill.name,
+                &format!("{safe_plugin}/skills/{name}"),
+                "SKILL.md",
+                body.as_bytes(),
+                &skill.modules,
+                &mut report,
+            )?;
+        } else {
+            debug!(name = %name, "Writing Cursor skill");
+            flat_writer.write(
+                &skill.name,
+                &name,
+                "SKILL.md",
+                body.as_bytes(),
+                &skill.modules,
+                &mut report,
+            )?;
         }
-
-        report.written += 1;
     }
 
     Ok(report)
+}
+
+#[cfg(test)]
+mod manifest_path_tests {
+    use super::*;
+
+    fn origin(publisher: &str, plugin: &str, version: &str) -> PluginOrigin {
+        PluginOrigin {
+            plugin_name: plugin.to_string(),
+            publisher: publisher.to_string(),
+            version: version.to_string(),
+        }
+    }
+
+    #[test]
+    fn the_cache_manifest_path_keeps_the_dots_in_the_version() {
+        let path = claude_cache_manifest_path(
+            Path::new("/h/.claude"),
+            &origin("mp", "my.plugin", "1.2.3"),
+        )
+        .unwrap();
+        assert_eq!(
+            path,
+            Path::new("/h/.claude/plugins/cache/mp/my.plugin/1.2.3/.claude-plugin/plugin.json")
+        );
+    }
+
+    #[test]
+    fn a_component_that_leaves_the_cache_is_refused() {
+        let home = Path::new("/h/.claude");
+        assert!(claude_cache_manifest_path(home, &origin("..", "p", "1")).is_none());
+        assert!(claude_cache_manifest_path(home, &origin("mp", "a/b", "1")).is_none());
+        assert!(claude_cache_manifest_path(home, &origin("mp", "p", "")).is_none());
+    }
 }

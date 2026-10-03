@@ -289,6 +289,13 @@ fn claude_to_cursor_translates_agent_frontmatter() {
     let agent_path = setup.cursor_dir.path().join("agents/reviewer.md");
     assert!(agent_path.exists());
     let content = fs::read_to_string(&agent_path).unwrap();
+    // The stripped lines are kept in a trailing comment for a sync back out
+    // of Cursor; what Cursor reads is everything before it.
+    let content = content
+        .split("<!-- skrills:frontmatter")
+        .next()
+        .unwrap()
+        .to_string();
     assert!(
         content.contains("is_background: true"),
         "background should become is_background"
@@ -662,9 +669,19 @@ fn dry_run_does_not_write_files() {
 fn create_adapter_factory_works() {
     use skrills_sync::create_adapter;
 
+    // The factory resolves real config roots from HOME; point HOME at a
+    // temp dir so the test neither depends on nor touches the user's.
+    let _lock = skrills_test_utils::env_guard();
+    let fixture = skrills_test_utils::TestFixture::new().unwrap();
+    let _home = fixture.home_guard();
+
     // Valid platforms
     assert!(create_adapter("cursor").is_ok());
     assert_eq!(create_adapter("cursor").unwrap().name(), "cursor");
+    assert!(create_adapter("cursor")
+        .unwrap()
+        .config_root()
+        .starts_with(fixture.home_path()));
 
     // Invalid platform
     assert!(create_adapter("vscode").is_err());

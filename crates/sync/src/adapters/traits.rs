@@ -37,11 +37,11 @@ pub trait AgentAdapter: Send + Sync {
     /// implements one direction of an artifact and not the other would
     /// otherwise inherit a `true` for the direction it cannot do.
     ///
-    /// `plugin_assets: false` is the flag the orchestrator acts on. There the
-    /// reader is absent and the trait default returns an empty result, which is
-    /// indistinguishable from "the source genuinely had none". For the other
-    /// seven fields the orchestrator only logs and syncs anyway, because every
-    /// adapter implements those readers.
+    /// Only `plugin_assets: false` gates the sync on the source side. There
+    /// the reader is absent and the trait default returns an empty result,
+    /// which is indistinguishable from "the source genuinely had none". The
+    /// other seven readers exist on every adapter, so those flags are
+    /// informational.
     fn read_support(&self) -> FieldSupport;
 
     /// What this adapter can write, as a sync *target*.
@@ -49,9 +49,10 @@ pub trait AgentAdapter: Send + Sync {
     /// A symmetric adapter delegates: `fn write_support(&self) -> FieldSupport
     /// { self.read_support() }`.
     ///
-    /// As with [`read_support`](Self::read_support), only `plugin_assets` gates
-    /// the sync. A `false` there means the writer is absent and the trait
-    /// default would report a successful write of nothing.
+    /// Every field gates the sync: for a `false` field the orchestrator skips
+    /// the phase and records [`SkipReason::UnsupportedField`](crate::report::SkipReason)
+    /// instead of calling a writer that would report a successful write of
+    /// nothing. Declare `true` for anything the writer maps, even loosely.
     fn write_support(&self) -> FieldSupport;
 
     // --- Read operations ---

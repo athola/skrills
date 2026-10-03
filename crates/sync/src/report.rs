@@ -37,6 +37,10 @@ pub enum SkipReason {
     WouldOverwrite { item: String },
     /// Excluded by --exclude-plugins filter
     PluginExcluded,
+    /// The writer refused a destination it could not write safely: the name
+    /// sanitizes to nothing, it collides with another item after sanitizing,
+    /// or a symlink sits on the path.
+    Refused { item: String, reason: String },
 }
 
 impl SkipReason {
@@ -78,6 +82,7 @@ impl SkipReason {
                 format!("{} already exists on target (would overwrite)", item)
             }
             Self::PluginExcluded => "excluded by --exclude-plugins filter".to_string(),
+            Self::Refused { item, reason } => format!("{item} not written: {reason}"),
         }
     }
 
@@ -93,8 +98,13 @@ impl SkipReason {
             Self::ExcludedByConfig { .. } => Some("Intentional exclusion, no action needed"),
             Self::Unchanged { .. } => None,
             Self::ParseError { .. } => Some("Fix the source file syntax"),
-            Self::WouldOverwrite { .. } => Some("Use --skip-existing-commands to keep target copy"),
+            // Only produced when a skip-existing flag was already passed, so
+            // naming that flag again told the user to do what they had done.
+            Self::WouldOverwrite { .. } => {
+                Some("Kept the target copy; run without the skip-existing flag to overwrite it")
+            }
             Self::PluginExcluded => None,
+            Self::Refused { .. } => Some("Rename the item or fix the destination path"),
         }
     }
 }
@@ -180,7 +190,12 @@ impl SyncReport {
         }
 
         let mut out = String::new();
-        out.push_str(&format!("Sync Complete: {} → {}\n", source, target));
+        let status = if self.success {
+            "Sync Complete"
+        } else {
+            "Sync finished with errors"
+        };
+        out.push_str(&format!("{status}: {} → {}\n", source, target));
         out.push_str(&line("Skills:", &self.skills));
         out.push_str(&line("Commands:", &self.commands));
         out.push_str(&line("MCP Servers:", &self.mcp_servers));

@@ -19,9 +19,9 @@ fn copilot_adapter_basics() {
     let root = tmp.path().to_path_buf();
     let adapter = CopilotAdapter::with_root(root.clone());
     crate::adapters::tests_common::assert_adapter_basics(&adapter, "copilot", &root, |fields| {
-        // Copilot prompts are NOT equivalent to Claude commands/Codex prompts
-        // (prompts are detailed instruction files, commands are quick atomic shortcuts)
-        assert!(!fields.commands, "Copilot should NOT support commands");
+        // Commands go to prompt files. The orchestrator now honours a `false`
+        // here, so declaring it would stop the prompt sync the adapter does.
+        assert!(fields.commands, "Copilot writes commands as prompt files");
         assert!(fields.mcp_servers, "Copilot should support MCP servers");
         assert!(fields.preferences, "Copilot should support preferences");
         assert!(fields.skills, "Copilot should support skills");
@@ -70,9 +70,48 @@ fn write_commands_creates_prompts_files() {
     let report = adapter.write_commands(&commands).unwrap();
     assert_eq!(report.written, 1);
 
-    // Verify file was created with .prompts.md extension
-    let prompt_path = tmp.path().join("prompts/review.prompts.md");
+    // VS Code and Copilot look for `*.prompt.md`; `.prompts.md` was ignored.
+    let prompt_path = tmp.path().join("prompts/review.prompt.md");
     assert!(prompt_path.exists());
+}
+
+/// One suffix is removed, not every repeat of it.
+#[test]
+fn a_repeated_suffix_is_stripped_once() {
+    let tmp = tempdir().unwrap();
+    fs::create_dir_all(tmp.path().join("agents")).unwrap();
+    fs::write(
+        tmp.path().join("agents/x.agent.md.agent.md"),
+        "---\nname: x\n---\n",
+    )
+    .unwrap();
+    fs::create_dir_all(tmp.path().join("prompts")).unwrap();
+    fs::write(tmp.path().join("prompts/y.prompt.md.prompt.md"), "y").unwrap();
+
+    let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+
+    assert_eq!(adapter.read_agents().unwrap()[0].name, "x.agent.md");
+    assert_eq!(adapter.read_commands(false).unwrap()[0].name, "y.prompt.md");
+}
+
+/// Files written under the old `.prompts.md` suffix are still read, and a
+/// `.prompt.md` copy of the same name wins.
+#[test]
+fn read_commands_accepts_the_legacy_suffix_and_prefers_the_current_one() {
+    let tmp = tempdir().unwrap();
+    let prompts_dir = tmp.path().join("prompts");
+    fs::create_dir_all(&prompts_dir).unwrap();
+    fs::write(prompts_dir.join("old.prompts.md"), "legacy").unwrap();
+    fs::write(prompts_dir.join("both.prompts.md"), "legacy").unwrap();
+    fs::write(prompts_dir.join("both.prompt.md"), "current").unwrap();
+
+    let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+    let mut commands = adapter.read_commands(false).unwrap();
+    commands.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let names: Vec<_> = commands.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, vec!["both", "old"]);
+    assert_eq!(commands[0].content, b"current");
 }
 
 #[test]
@@ -81,7 +120,7 @@ fn write_commands_skips_unchanged() {
     let prompts_dir = tmp.path().join("prompts");
     fs::create_dir_all(&prompts_dir).unwrap();
     let content = b"# Test Prompt";
-    fs::write(prompts_dir.join("test.prompts.md"), content).unwrap();
+    fs::write(prompts_dir.join("test.prompt.md"), content).unwrap();
 
     let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
     let content_str = std::str::from_utf8(content).unwrap();

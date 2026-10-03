@@ -4,7 +4,7 @@ use super::paths::{agents_dir, instructions_dir};
 use super::utils::transform_agent_for_copilot;
 use crate::adapters::utils::{hash_content, is_hidden_path, sanitize_name_segments};
 use crate::common::{Command, ContentFormat};
-use crate::report::{SkipReason, WriteReport};
+use crate::report::WriteReport;
 use crate::Result;
 use anyhow::Context;
 use std::fs;
@@ -55,8 +55,10 @@ pub fn read_agents(root: &Path) -> Result<Vec<Command>> {
         }
 
         // Extract name: strip .agent.md or .md suffix
-        let name = if file_name.ends_with(".agent.md") {
-            file_name.trim_end_matches(".agent.md").to_string()
+        // `strip_suffix` removes one suffix; `trim_end_matches` stripped every
+        // repeat, so `x.agent.md.agent.md` read back as `x`.
+        let name = if let Some(stem) = file_name.strip_suffix(".agent.md") {
+            stem.to_string()
         } else {
             path.file_stem()
                 .and_then(|s| s.to_str())
@@ -92,27 +94,20 @@ pub fn write_agents(root: &Path, agents: &[Command]) -> Result<WriteReport> {
 
     let mut report = WriteReport::default();
 
+    let mut writer = crate::adapters::utils::BatchWriter::new(&dir);
     for agent in agents {
         let safe_name = sanitize_name_segments(&agent.name);
-        let path = dir.join(format!("{}.agent.md", safe_name));
 
         // Transform the content: Claude format -> Copilot format
         let transformed_content = transform_agent_for_copilot(&agent.content);
 
-        if path.exists() {
-            let existing = fs::read(&path)
-                .with_context(|| format!("Failed to read existing agent: {}", path.display()))?;
-            if hash_content(&existing) == hash_content(&transformed_content) {
-                report.skipped.push(SkipReason::Unchanged {
-                    item: agent.name.clone(),
-                });
-                continue;
-            }
-        }
-
-        fs::write(&path, &transformed_content)
-            .with_context(|| format!("Failed to write agent: {}", path.display()))?;
-        report.written += 1;
+        writer.write_single(
+            &agent.name,
+            &safe_name,
+            ".agent.md",
+            &transformed_content,
+            &mut report,
+        )?;
     }
 
     Ok(report)
@@ -159,7 +154,12 @@ pub fn read_instructions(root: &Path) -> Result<Vec<Command>> {
         }
 
         // Extract name: strip .instructions.md suffix
-        let name = file_name.trim_end_matches(".instructions.md").to_string();
+        let Some(name) = file_name
+            .strip_suffix(".instructions.md")
+            .map(str::to_owned)
+        else {
+            continue;
+        };
 
         let content = fs::read(path)?;
         let metadata = fs::metadata(path)?;
@@ -192,25 +192,17 @@ pub fn write_instructions(root: &Path, instructions: &[Command]) -> Result<Write
 
     let mut report = WriteReport::default();
 
+    let mut writer = crate::adapters::utils::BatchWriter::new(&dir);
     for instruction in instructions {
         let safe_name = sanitize_name_segments(&instruction.name);
-        let path = dir.join(format!("{}.instructions.md", safe_name));
 
-        if path.exists() {
-            let existing = fs::read(&path).with_context(|| {
-                format!("Failed to read existing instruction: {}", path.display())
-            })?;
-            if hash_content(&existing) == hash_content(&instruction.content) {
-                report.skipped.push(SkipReason::Unchanged {
-                    item: instruction.name.clone(),
-                });
-                continue;
-            }
-        }
-
-        fs::write(&path, &instruction.content)
-            .with_context(|| format!("Failed to write instruction: {}", path.display()))?;
-        report.written += 1;
+        writer.write_single(
+            &instruction.name,
+            &safe_name,
+            ".instructions.md",
+            &instruction.content,
+            &mut report,
+        )?;
     }
 
     // Add warning about the staging location

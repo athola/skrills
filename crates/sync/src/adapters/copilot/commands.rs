@@ -3,7 +3,7 @@
 use super::paths::prompts_dir;
 use crate::adapters::utils::{hash_content, is_hidden_path, sanitize_name_segments};
 use crate::common::{Command, ContentFormat};
-use crate::report::{SkipReason, WriteReport};
+use crate::report::WriteReport;
 use crate::Result;
 use anyhow::Context;
 use std::fs;
@@ -12,15 +12,20 @@ use std::time::SystemTime;
 use tracing::warn;
 use walkdir::WalkDir;
 
+/// Suffix of a Copilot / VS Code prompt file.
+const PROMPT_SUFFIX: &str = ".prompt.md";
+/// Suffix earlier releases wrote by mistake; such files are still read.
+const LEGACY_PROMPT_SUFFIX: &str = ".prompts.md";
+
 /// Reads commands (prompts) from the prompts directory.
 pub fn read_commands(root: &Path, _include_marketplace: bool) -> Result<Vec<Command>> {
-    // Copilot uses prompts (*.prompts.md) as the equivalent of slash commands
+    // Copilot uses prompts (*.prompt.md) as the equivalent of slash commands
     let prompts_dir = prompts_dir(root);
     if !prompts_dir.exists() {
         return Ok(Vec::new());
     }
 
-    let mut commands = Vec::new();
+    let mut commands: Vec<Command> = Vec::new();
     for entry in WalkDir::new(&prompts_dir)
         .min_depth(1)
         .max_depth(10)
@@ -48,17 +53,41 @@ pub fn read_commands(root: &Path, _include_marketplace: bool) -> Result<Vec<Comm
             continue;
         }
 
-        // Copilot prompts are *.prompts.md files
+        // Copilot prompts are *.prompt.md files; *.prompts.md is the old,
+        // mistaken suffix this crate used to write.
         let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        if !file_name.ends_with(".prompts.md") {
-            continue;
+        let (name, legacy) = match file_name.strip_suffix(PROMPT_SUFFIX) {
+            Some(name) => (name.to_string(), false),
+            None => match file_name.strip_suffix(LEGACY_PROMPT_SUFFIX) {
+                Some(name) => (name.to_string(), true),
+                None => continue,
+            },
+        };
+        let rel_dir = path
+            .parent()
+            .and_then(|p| p.strip_prefix(&prompts_dir).ok())
+            .unwrap_or(Path::new(""));
+        let name = if rel_dir.as_os_str().is_empty() {
+            name
+        } else {
+            format!("{}/{name}", rel_dir.display())
+        };
+        if let Some(existing) = commands.iter().position(|c| c.name == name) {
+            // Both suffixes exist for one prompt: the current one wins.
+            if legacy {
+                continue;
+            }
+            commands.remove(existing);
         }
 
-        // Extract name: strip .prompts.md suffix
-        let name = file_name.trim_end_matches(".prompts.md").to_string();
-
-        let content = fs::read(path)?;
-        let metadata = fs::metadata(path)?;
+        let read = fs::read(path).and_then(|c| Ok((c, fs::metadata(path)?)));
+        let (content, metadata) = match read {
+            Ok(pair) => pair,
+            Err(e) => {
+                warn!(path = %path.display(), error = %e, "Skipping unreadable prompt");
+                continue;
+            }
+        };
         let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
         let hash = hash_content(&content);
 
@@ -78,31 +107,22 @@ pub fn read_commands(root: &Path, _include_marketplace: bool) -> Result<Vec<Comm
 
 /// Writes commands (prompts) to the prompts directory.
 pub fn write_commands(root: &Path, commands: &[Command]) -> Result<WriteReport> {
-    // Copilot uses prompts (*.prompts.md) as the equivalent of slash commands
+    // Copilot uses prompts (*.prompt.md) as the equivalent of slash commands
     let dir = prompts_dir(root);
     fs::create_dir_all(&dir)
         .with_context(|| format!("Failed to create prompts directory: {}", dir.display()))?;
 
     let mut report = WriteReport::default();
 
+    let mut writer = crate::adapters::utils::BatchWriter::new(&dir);
     for cmd in commands {
-        let safe_name = sanitize_name_segments(&cmd.name);
-        let path = dir.join(format!("{}.prompts.md", safe_name));
-
-        if path.exists() {
-            let existing = fs::read(&path)
-                .with_context(|| format!("Failed to read existing prompt: {}", path.display()))?;
-            if hash_content(&existing) == cmd.hash {
-                report.skipped.push(SkipReason::Unchanged {
-                    item: cmd.name.clone(),
-                });
-                continue;
-            }
-        }
-
-        fs::write(&path, &cmd.content)
-            .with_context(|| format!("Failed to write prompt: {}", path.display()))?;
-        report.written += 1;
+        writer.write_single(
+            &cmd.name,
+            &sanitize_name_segments(&cmd.name),
+            PROMPT_SUFFIX,
+            &cmd.content,
+            &mut report,
+        )?;
     }
 
     Ok(report)

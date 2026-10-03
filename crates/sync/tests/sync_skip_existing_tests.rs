@@ -100,8 +100,8 @@ impl SyncTestContext {
 mod skip_existing_commands_tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_skip_existing_disabled_overwrites_all() {
+    #[test]
+    fn test_skip_existing_disabled_overwrites_all() {
         // GIVEN: a target with existing commands
         // WHEN: syncing with skip_existing_commands disabled
         // THEN: all commands should be overwritten
@@ -152,8 +152,8 @@ mod skip_existing_commands_tests {
         assert_eq!(report.commands.skipped.len(), 0, "Should skip none");
     }
 
-    #[tokio::test]
-    async fn test_skip_existing_enabled_preserves_matching() {
+    #[test]
+    fn test_skip_existing_enabled_preserves_matching() {
         // GIVEN: a target with existing commands
         // WHEN: syncing with skip_existing_commands enabled
         // THEN: existing commands should be skipped and only new ones written
@@ -226,8 +226,8 @@ mod skip_existing_commands_tests {
         assert!(!skipped_names.contains("cmd2"), "Should not skip cmd2");
     }
 
-    #[tokio::test]
-    async fn test_skip_existing_dry_run_mode() {
+    #[test]
+    fn test_skip_existing_dry_run_mode() {
         //
         /*
         GIVEN sync with skip_existing_commands enabled in dry run mode
@@ -285,8 +285,8 @@ mod skip_existing_commands_tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_skip_existing_actual_sync() {
+    #[test]
+    fn test_skip_existing_actual_sync() {
         //
         /*
         GIVEN sync with skip_existing_commands enabled in actual sync mode
@@ -352,8 +352,8 @@ mod skip_existing_commands_tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_skip_existing_empty_target() {
+    #[test]
+    fn test_skip_existing_empty_target() {
         //
         /*
         GIVEN an empty target
@@ -401,8 +401,8 @@ mod skip_existing_commands_tests {
         assert_eq!(report.commands.skipped.len(), 0, "Should skip none");
     }
 
-    #[tokio::test]
-    async fn test_skip_existing_empty_source() {
+    #[test]
+    fn test_skip_existing_empty_source() {
         //
         /*
         GIVEN an empty source
@@ -450,8 +450,8 @@ mod skip_existing_commands_tests {
         assert_eq!(report.commands.skipped.len(), 0, "Should skip none");
     }
 
-    #[tokio::test]
-    async fn test_skip_existing_reverse_direction() {
+    #[test]
+    fn test_skip_existing_reverse_direction() {
         //
         /*
         GIVEN skip_existing_commands enabled with reverse sync direction
@@ -512,8 +512,8 @@ mod skip_existing_commands_tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_skip_existing_with_force_flag() {
+    #[test]
+    fn test_skip_existing_with_force_flag() {
         //
         /*
         GIVEN skip_existing_commands enabled along with force flag
@@ -567,24 +567,23 @@ mod skip_existing_commands_tests {
         assert_eq!(report.commands.skipped.len(), 0, "Force should skip none");
     }
 
-    #[tokio::test]
-    async fn test_skip_existing_case_sensitivity() {
-        //
+    #[test]
+    fn test_skip_existing_case_sensitivity() {
         /*
-        GIVEN commands with different casing
+        GIVEN a source command whose name differs from a target command only
+        by case
         WHEN syncing with skip_existing_commands
-        THEN command comparison should be case-sensitive
+        THEN it counts as existing: writers on a case-insensitive file system
+        store both in one file, so skip-existing keeps the target copy
         */
-        //
         let ctx = SyncTestContext::new().unwrap();
 
         let source_commands = vec![
-            SyncTestContext::create_sample_command("cmd-mixed", "Mixed case"),
-            SyncTestContext::create_sample_command("cmd-lower", "Lowercase"),
-            SyncTestContext::create_sample_command("cmd-upper", "Uppercase"),
+            SyncTestContext::create_sample_command("Cmd-Lower", "Mixed case"),
+            SyncTestContext::create_sample_command("cmd-other", "Other"),
+            SyncTestContext::create_sample_command("cmd-third", "Third"),
         ];
 
-        // Target has one command that matches a source command exactly
         let target_commands = vec![SyncTestContext::create_sample_command(
             "cmd-lower",
             "Existing command",
@@ -595,7 +594,7 @@ mod skip_existing_commands_tests {
 
         let params = SyncParams {
             from: None,
-            dry_run: true,
+            dry_run: false,
             force: false,
             sync_skills: false,
             sync_commands: true,
@@ -616,7 +615,7 @@ mod skip_existing_commands_tests {
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
         let report = orchestrator.sync(&params).unwrap();
 
-        // Exact name match should be skipped, other two written
+        // The case-only match is skipped, the other two written
         assert_eq!(
             report.commands.written, 2,
             "Should write 2 commands (non-matching names)"
@@ -624,7 +623,19 @@ mod skip_existing_commands_tests {
         assert_eq!(
             report.commands.skipped.len(),
             1,
-            "Should skip 1 command (exact match)"
+            "Should skip the command that differs only by case"
         );
+        assert!(
+            matches!(
+                &report.commands.skipped[0],
+                SkipReason::WouldOverwrite { item } if item == "Cmd-Lower"
+            ),
+            "{:?}",
+            report.commands.skipped
+        );
+        // The target's own copy is left as it was.
+        let kept = fs::read_to_string(ctx.target_dir.join("prompts/cmd-lower.md")).unwrap();
+        assert_eq!(kept, "Existing command");
+        assert!(ctx.target_dir.join("prompts/cmd-other.md").exists());
     }
 }

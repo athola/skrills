@@ -131,6 +131,13 @@ pub fn read_hooks(root: &Path) -> Result<Vec<Command>> {
 ///
 /// Translates Claude PascalCase event names to Cursor camelCase.
 /// Events without a Cursor equivalent (e.g., Notification) are skipped.
+///
+/// The file is edited as a JSON value: unknown top-level keys and unknown
+/// per-entry fields survive, and a synced entry is merged into its event's
+/// list (replacing an entry with the same `command` and `matcher`) instead of
+/// replacing the list. A `hooks.json` that does not parse is left untouched and
+/// every hook is reported skipped: it used to be replaced by the synced entries
+/// alone.
 pub fn write_hooks(root: &Path, hooks: &[Command]) -> Result<WriteReport> {
     let mut report = WriteReport::default();
 
@@ -138,112 +145,124 @@ pub fn write_hooks(root: &Path, hooks: &[Command]) -> Result<WriteReport> {
         return Ok(report);
     }
 
-    // Read existing hooks to preserve Cursor-only events
     let path = hooks_path(root);
-    let mut config = if path.exists() {
-        let content = fs::read_to_string(&path)?;
-        match serde_json::from_str::<CursorHooksConfig>(&content) {
-            Ok(config) => config,
-            Err(e) => {
-                warn!(
-                    path = %path.display(),
-                    error = %e,
-                    "Existing hooks.json has invalid JSON; starting fresh"
-                );
-                report
-                    .warnings
-                    .push(format!("Existing hooks.json could not be parsed: {}", e));
-                CursorHooksConfig::default()
+    let mut config = match crate::adapters::json_config::load_object(&path) {
+        Ok(config) => config,
+        Err(e) => {
+            warn!(path = %path.display(), error = %e, "Leaving unreadable hooks.json untouched");
+            report.warnings.push(format!(
+                "{} could not be parsed, so no hooks were synced into it: {e}",
+                path.display()
+            ));
+            for hook in hooks {
+                report.skipped.push(SkipReason::ParseError {
+                    item: hook.name.clone(),
+                    error: format!("target {} is not valid JSON", path.display()),
+                });
             }
+            return Ok(report);
         }
-    } else {
-        CursorHooksConfig::default()
     };
-    config.version = 1;
+
+    let root_obj = config
+        .as_object_mut()
+        .expect("load_object returns an object");
+    root_obj
+        .entry("version")
+        .or_insert_with(|| serde_json::Value::from(1));
+    let events = root_obj
+        .entry("hooks")
+        .or_insert_with(|| serde_json::Value::Object(Default::default()));
+    let Some(events) = events.as_object_mut() else {
+        report.warnings.push(format!(
+            "`hooks` in {} is not an object, so no hooks were synced into it",
+            path.display()
+        ));
+        return Ok(report);
+    };
 
     for hook in hooks {
-        // Try to map the event name
         let cursor_event = if let Some(mapped) = claude_to_cursor_event(&hook.name) {
             mapped.to_string()
+        } else if CLAUDE_TO_CURSOR_EVENTS.iter().any(|(_, c)| *c == hook.name) {
+            // Already a Cursor event name (passthrough).
+            hook.name.clone()
         } else {
-            // Check if it's already a Cursor event name (passthrough)
-            if CLAUDE_TO_CURSOR_EVENTS.iter().any(|(_, c)| *c == hook.name) {
-                hook.name.clone()
-            } else {
-                warn!(
-                    event = %hook.name,
-                    "Skipping hook with no Cursor equivalent"
-                );
-                report.skipped.push(SkipReason::AgentSpecificFeature {
-                    item: hook.name.clone(),
-                    feature: format!("Hook event '{}' has no Cursor equivalent", hook.name),
-                    suggestion: "This hook event is Claude-specific and cannot be mapped to Cursor"
-                        .to_string(),
-                });
-                continue;
-            }
+            warn!(event = %hook.name, "Skipping hook with no Cursor equivalent");
+            report.skipped.push(SkipReason::AgentSpecificFeature {
+                item: hook.name.clone(),
+                feature: format!("Hook event '{}' has no Cursor equivalent", hook.name),
+                suggestion: "This hook event is Claude-specific and cannot be mapped to Cursor"
+                    .to_string(),
+            });
+            continue;
         };
 
-        // Parse hook content based on its declared format
+        // Both JSON and Markdown sources must hold a JSON array of entries.
         let content_str = String::from_utf8_lossy(&hook.content);
-        let entries: Vec<HookEntry> = if hook.content_format == ContentFormat::Json {
-            // JSON source, attempt parse, skip gracefully on failure
-            match serde_json::from_str(&content_str) {
-                Ok(e) => e,
+        let entries: Vec<serde_json::Value> =
+            match serde_json::from_str::<Vec<HookEntry>>(&content_str)
+                .and_then(|_| serde_json::from_str(&content_str))
+            {
+                Ok(entries) => entries,
                 Err(e) => {
-                    warn!(
-                        event = %hook.name,
-                        error = %e,
-                        "Skipping hook with malformed JSON content"
-                    );
-                    report.skipped.push(SkipReason::AgentSpecificFeature {
+                    warn!(event = %hook.name, error = %e, "Skipping hook with non-JSON content");
+                    report.skipped.push(SkipReason::ParseError {
                         item: hook.name.clone(),
-                        feature: "Hook content is not valid JSON".to_string(),
-                        suggestion: "Hook content must be a JSON array of hook entries".to_string(),
+                        error: format!("hook content must be a JSON array of hook entries: {e}"),
                     });
                     continue;
                 }
-            }
-        } else {
-            // Markdown/plain text, try JSON first, skip if unparseable
-            match serde_json::from_str(&content_str) {
-                Ok(e) => e,
-                Err(e) => {
-                    warn!(
-                        event = %hook.name,
-                        error = %e,
-                        "Skipping hook with non-JSON content"
-                    );
-                    report.skipped.push(SkipReason::AgentSpecificFeature {
-                        item: hook.name.clone(),
-                        feature: "Hook content is not valid JSON".to_string(),
-                        suggestion: "Hook content must be a JSON array of hook entries".to_string(),
-                    });
-                    continue;
-                }
-            }
-        };
+            };
 
         if entries.is_empty() {
             debug!(event = %cursor_event, "Skipping hook with empty entry list");
             continue;
         }
 
-        debug!(event = %cursor_event, count = entries.len(), "Writing Cursor hook");
-        config.hooks.insert(cursor_event, entries);
-        report.written += 1;
+        let list = events
+            .entry(cursor_event.clone())
+            .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+        let Some(list) = list.as_array_mut() else {
+            report.skipped.push(SkipReason::ParseError {
+                item: hook.name.clone(),
+                error: format!("`hooks.{cursor_event}` in hooks.json is not an array"),
+            });
+            continue;
+        };
+        let before = list.clone();
+        for entry in entries {
+            let key = entry_identity(&entry);
+            match list.iter_mut().find(|e| entry_identity(e) == key) {
+                Some(existing) => *existing = entry,
+                None => list.push(entry),
+            }
+        }
+        if *list == before {
+            report.skipped.push(SkipReason::Unchanged {
+                item: format!("hooks.{cursor_event}"),
+            });
+        } else {
+            debug!(event = %cursor_event, "Writing Cursor hook");
+            report.written += 1;
+        }
     }
 
-    if !config.hooks.is_empty() {
-        let path = hooks_path(root);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
+    if report.written > 0 {
         let json = serde_json::to_string_pretty(&config)?;
-        fs::write(&path, json)?;
+        crate::adapters::utils::write_config(&path, json.as_bytes(), false)?;
     }
 
     Ok(report)
+}
+
+/// What makes two hook entries the same hook: the command it runs and the
+/// tool matcher it runs for.
+fn entry_identity(entry: &serde_json::Value) -> (Option<&str>, Option<&str>) {
+    (
+        entry.get("command").and_then(|v| v.as_str()),
+        entry.get("matcher").and_then(|v| v.as_str()),
+    )
 }
 
 #[cfg(test)]
@@ -445,32 +464,76 @@ mod tests {
         assert_eq!(report.skipped.len(), 1);
     }
 
-    #[test]
-    fn write_hooks_warns_on_malformed_existing_hooks_json() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let root = tmp.path();
-
-        // Write malformed hooks.json
-        std::fs::create_dir_all(root).unwrap();
-        std::fs::write(hooks_path(root), "{ this is not valid json }").unwrap();
-
-        let hooks = vec![crate::common::Command {
-            name: "PreToolUse".to_string(),
-            content: br#"[{"command": "./lint.sh", "type": "command"}]"#.to_vec(),
+    fn json_hook(event: &str, entries: &str) -> crate::common::Command {
+        crate::common::Command {
+            name: event.to_string(),
+            content: entries.as_bytes().to_vec(),
             source_path: std::path::PathBuf::from("/test"),
             modified: std::time::SystemTime::UNIX_EPOCH,
             hash: "test".to_string(),
             modules: vec![],
             content_format: ContentFormat::Json,
             plugin_origin: None,
-        }];
+        }
+    }
 
-        // Should NOT error, should warn and proceed with fresh config
-        let report = write_hooks(root, &hooks).unwrap();
+    /// A hooks.json with a trailing comma used to be replaced by the synced
+    /// entries alone, losing every hook the user wrote.
+    #[test]
+    fn write_hooks_leaves_an_unparseable_hooks_json_untouched() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let original = r#"{"hooks": {"preToolUse": [{"command": "./mine.sh"}],}}"#;
+        std::fs::write(hooks_path(root), original).unwrap();
+
+        let report = write_hooks(
+            root,
+            &[json_hook("PreToolUse", r#"[{"command": "./lint.sh"}]"#)],
+        )
+        .unwrap();
+
+        assert_eq!(report.written, 0);
+        assert!(!report.warnings.is_empty());
+        assert!(matches!(report.skipped[0], SkipReason::ParseError { .. }));
+        assert_eq!(std::fs::read_to_string(hooks_path(root)).unwrap(), original);
+    }
+
+    /// Existing entries for a mapped event were replaced, and unknown keys
+    /// dropped by the typed structs.
+    #[test]
+    fn write_hooks_merges_entries_and_keeps_unknown_fields() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::write(
+            hooks_path(root),
+            r#"{"version": 1, "experimental": true, "hooks": {"preToolUse": [{"command": "./mine.sh", "env": {"A": "1"}}]}}"#,
+        )
+        .unwrap();
+
+        let report = write_hooks(
+            root,
+            &[json_hook("PreToolUse", r#"[{"command": "./lint.sh"}]"#)],
+        )
+        .unwrap();
         assert_eq!(report.written, 1);
-        assert!(
-            !report.warnings.is_empty(),
-            "Should have a warning about malformed JSON"
+
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(hooks_path(root)).unwrap()).unwrap();
+        assert_eq!(config["experimental"], true);
+        let entries = config["hooks"]["preToolUse"].as_array().unwrap();
+        assert_eq!(entries.len(), 2, "{entries:?}");
+        assert_eq!(entries[0]["command"], "./mine.sh");
+        assert_eq!(entries[0]["env"]["A"], "1");
+        assert_eq!(entries[1]["command"], "./lint.sh");
+
+        let again = write_hooks(
+            root,
+            &[json_hook("PreToolUse", r#"[{"command": "./lint.sh"}]"#)],
+        )
+        .unwrap();
+        assert_eq!(
+            again.written, 0,
+            "a repeat sync must not duplicate the entry"
         );
     }
 }

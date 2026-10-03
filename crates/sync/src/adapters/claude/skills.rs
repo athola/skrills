@@ -7,9 +7,13 @@
 //! - `write_skills_impl`: emits SKILL.md inside per-skill
 //!   directories with companion module files alongside.
 
-use crate::adapters::utils::{collect_module_files, hash_content, is_hidden_path, sanitize_name};
+use crate::adapters::utils::{
+    collect_module_files, hash_content, inside_skill_dir, is_hidden_path, sanitize_name,
+};
+
+use super::plugin_cache::plugin_cache_files;
 use crate::common::{Command, ContentFormat, ModuleFile};
-use crate::report::{SkipReason, WriteReport};
+use crate::report::WriteReport;
 use crate::Result;
 
 use std::collections::HashMap;
@@ -31,13 +35,13 @@ pub(super) fn read_skills_impl(adapter: &ClaudeAdapter) -> Result<Vec<Command>> 
          path: &std::path::Path,
          modules: Vec<ModuleFile>,
          plugin_origin: Option<crate::common::PluginOrigin>| {
-            let content = match fs::read(path) {
-                Ok(c) => c,
-                Err(_) => return,
-            };
-            let metadata = match fs::metadata(path) {
-                Ok(m) => m,
-                Err(_) => return,
+            let read = fs::read(path).and_then(|c| Ok((c, fs::metadata(path)?)));
+            let (content, metadata) = match read {
+                Ok(pair) => pair,
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "Skipping unreadable skill");
+                    return;
+                }
             };
             let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
             let hash = hash_content(&content);
@@ -72,7 +76,13 @@ pub(super) fn read_skills_impl(adapter: &ClaudeAdapter) -> Result<Vec<Command>> 
             .max_depth(20)
             .follow_links(false)
         {
-            let entry = entry?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Skipping unreadable entry under the skills directory");
+                    continue;
+                }
+            };
             if entry.file_type().is_symlink() {
                 continue;
             }
@@ -88,6 +98,10 @@ pub(super) fn read_skills_impl(adapter: &ClaudeAdapter) -> Result<Vec<Command>> 
             }
 
             let is_skill_md = path.file_name().is_some_and(|n| n == "SKILL.md");
+            // Markdown inside a skill directory is a module of that skill.
+            if !is_skill_md && inside_skill_dir(path, &skills_dir) {
+                continue;
+            }
             let (name, modules) = if is_skill_md {
                 let name = path
                     .parent()
@@ -113,72 +127,38 @@ pub(super) fn read_skills_impl(adapter: &ClaudeAdapter) -> Result<Vec<Command>> 
         }
     }
 
-    // 2) Plugins cache ~/.claude/plugins/cache/**/*
+    // 2) Plugins cache: the latest version of each plugin.
     let cache_dir = adapter.config_root_ref().join("plugins/cache");
-    if cache_dir.exists() {
-        for entry in WalkDir::new(&cache_dir).min_depth(1).max_depth(10) {
-            let entry = entry?;
-            let path = entry.path();
-
-            if !path.is_file() {
+    for (path, origin) in plugin_cache_files(&cache_dir, "skills") {
+        let is_skill_md = path.file_name().is_some_and(|n| n == "SKILL.md");
+        let (name, modules) = if is_skill_md {
+            // Use parent directory name as skill name
+            let Some(name) = path
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|s| s.to_str())
+                .filter(|s| !s.is_empty() && *s != "skills")
+                .map(str::to_owned)
+            else {
                 continue;
-            }
-            if path.extension().is_none_or(|ext| ext != "md") {
-                continue;
-            }
-
-            // Only include files under a skills directory
-            if !path
-                .ancestors()
-                .any(|p| p.file_name().is_some_and(|n| n == "skills"))
-            {
-                continue;
-            }
-
-            // Extract skill name from path
-            let is_skill_md = path.file_name().is_some_and(|n| n == "SKILL.md");
-            let (name, modules) = if is_skill_md {
-                // Use parent directory name as skill name
-                let name = path
-                    .parent()
-                    .and_then(|p| p.file_name())
-                    .and_then(|s| s.to_str())
-                    .filter(|s| !s.is_empty() && *s != "skills")
-                    .unwrap_or("unknown")
-                    .to_string();
-                // Collect companion files from the skill directory
-                let skill_dir = path.parent().unwrap_or(path);
-                let modules = collect_module_files(skill_dir);
-                (name, modules)
-            } else {
-                let name = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                (name, Vec::new())
             };
-
-            if name == "unknown" || name == "skills" {
+            let skill_dir = path.parent().unwrap_or(&path);
+            (name, collect_module_files(skill_dir))
+        } else {
+            let skills_root = path
+                .ancestors()
+                .find(|p| p.file_name().is_some_and(|n| n == "skills"))
+                .unwrap_or(&cache_dir);
+            if inside_skill_dir(&path, skills_root) {
                 continue;
             }
+            let Some(name) = path.file_stem().and_then(|s| s.to_str()).map(str::to_owned) else {
+                continue;
+            };
+            (name, Vec::new())
+        };
 
-            // Derive plugin origin from the cache path structure:
-            // plugins/cache/<publisher>/<plugin>/<version>/skills/...
-            let origin = path.strip_prefix(&cache_dir).ok().and_then(|rel| {
-                let mut components = rel.components();
-                let publisher = components.next()?.as_os_str().to_str()?.to_string();
-                let plugin_name = components.next()?.as_os_str().to_str()?.to_string();
-                let version = components.next()?.as_os_str().to_str()?.to_string();
-                Some(crate::common::PluginOrigin {
-                    plugin_name,
-                    publisher,
-                    version,
-                })
-            });
-
-            process_skill(&mut skills_map, name, path, modules, origin);
-        }
+        process_skill(&mut skills_map, name, &path, modules, Some(origin));
     }
 
     Ok(skills_map.into_values().collect())
@@ -193,60 +173,18 @@ pub(super) fn write_skills_impl(
 
     let mut report = WriteReport::default();
 
+    let mut writer = crate::adapters::utils::BatchWriter::new(&dir);
     for skill in skills {
         // Claude is permissive, but writing Codex-style SKILL.md keeps skills portable.
-        let skill_rel_dir = if skill.name.eq_ignore_ascii_case("skill")
-            || skill.name.eq_ignore_ascii_case("skill.md")
-            || skill.name.eq_ignore_ascii_case("SKILL")
-        {
-            skill
-                .source_path
-                .parent()
-                .and_then(|p| p.file_name())
-                .and_then(|s| s.to_str())
-                .unwrap_or(&skill.name)
-                .to_string()
-        } else {
-            skill.name.clone()
-        };
-
-        let safe_rel_dir = sanitize_name(&skill_rel_dir);
-        let path = dir.join(&safe_rel_dir).join("SKILL.md");
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        // Check if unchanged
-        if path.exists() {
-            let existing = fs::read(&path)?;
-            if hash_content(&existing) == skill.hash {
-                report.skipped.push(SkipReason::Unchanged {
-                    item: skill.name.clone(),
-                });
-                continue;
-            }
-        }
-
-        fs::write(&path, &skill.content)?;
-
-        // Write module files (companion files) alongside SKILL.md
-        let skill_dir = dir.join(&safe_rel_dir);
-        for module in &skill.modules {
-            let module_path = skill_dir.join(&module.relative_path);
-            if !crate::adapters::utils::is_path_contained(&module_path, &skill_dir) {
-                tracing::debug!(
-                    path = %module.relative_path.display(),
-                    "Skipping module with path outside skill directory"
-                );
-                continue;
-            }
-            if let Some(parent) = module_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::write(&module_path, &module.content)?;
-        }
-
-        report.written += 1;
+        let safe_rel_dir = sanitize_name(&crate::adapters::utils::skill_dir_name(skill));
+        writer.write(
+            &skill.name,
+            &safe_rel_dir,
+            "SKILL.md",
+            &skill.content,
+            &skill.modules,
+            &mut report,
+        )?;
     }
 
     Ok(report)

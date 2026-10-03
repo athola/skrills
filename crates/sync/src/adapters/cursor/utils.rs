@@ -114,6 +114,92 @@ pub fn strip_frontmatter(content: &str) -> String {
     body
 }
 
+/// Opens the trailing comment that carries frontmatter Cursor has no place for.
+const STASH_OPEN: &str = "<!-- skrills:frontmatter";
+/// Closes it.
+const STASH_CLOSE: &str = "-->";
+
+/// Appends `yaml` to `body` in a trailing HTML comment, so a later sync out of
+/// Cursor can put back the frontmatter the Cursor copy had to drop.
+///
+/// Trailing, because Cursor shows a skill's first line as its subtitle.
+/// Returns `None` (nothing stashed) when `yaml` is blank or holds `-->`,
+/// which would close the comment early.
+pub fn stash_frontmatter(body: &str, yaml: &str) -> Option<String> {
+    let yaml = yaml.trim_end_matches(['\r', '\n']);
+    if yaml.trim().is_empty() || yaml.contains(STASH_CLOSE) {
+        return None;
+    }
+    Some(format!(
+        "{}\n\n{STASH_OPEN}\n{yaml}\n{STASH_CLOSE}\n",
+        body.trim_end_matches(['\r', '\n'])
+    ))
+}
+
+/// Splits a trailing stash written by [`stash_frontmatter`] off `content`,
+/// returning `(body, yaml)`, or `None` when there is none.
+pub fn take_stash(content: &str) -> Option<(&str, &str)> {
+    let without_close = content.trim_end().strip_suffix(STASH_CLOSE)?;
+    let open = format!("\n{STASH_OPEN}\n");
+    let at = without_close.rfind(&open)?;
+    let yaml = without_close[at + open.len()..].strip_suffix('\n')?;
+    Some((without_close[..at].trim_end_matches('\n'), yaml))
+}
+
+/// Rebuilds the source skill from a Cursor copy written by `write_skills`:
+/// the stashed frontmatter goes back on top and the description and
+/// `model_hint` lines the writer put in front of the body come off again.
+///
+/// `None` when the file carries no stash (a skill written in Cursor).
+pub fn restore_skill(content: &str) -> Option<String> {
+    let (body, yaml) = take_stash(content)?;
+    let (fields, _) = parse_frontmatter(&format!("---\n{yaml}\n---\n"));
+    let mut rest = body;
+    if let Some(desc) = fields.get("description").map(|d| strip_yaml_quotes(d)) {
+        if let Some(r) = rest
+            .strip_prefix(desc.as_str())
+            .filter(|r| r.is_empty() || r.starts_with('\n'))
+        {
+            rest = r.strip_prefix('\n').unwrap_or(r);
+        }
+    }
+    if let Some(hint) = fields.get("model_hint") {
+        let line = format!("<!-- model_hint: {hint} -->");
+        if let Some(r) = rest
+            .strip_prefix(line.as_str())
+            .filter(|r| r.is_empty() || r.starts_with('\n'))
+        {
+            rest = r.strip_prefix('\n').unwrap_or(r);
+        }
+    }
+    let rest = rest.strip_prefix('\n').unwrap_or(rest);
+    Some(format!("---\n{yaml}\n---\n\n{rest}\n"))
+}
+
+/// Rebuilds the source command from a Cursor copy: the stashed frontmatter
+/// goes back on top of the body. `None` when there is no stash.
+pub fn restore_command(content: &str) -> Option<String> {
+    let (body, yaml) = take_stash(content)?;
+    Some(format!("---\n{yaml}\n---\n\n{body}\n"))
+}
+
+/// Renders one frontmatter value so YAML reads it back as the same string.
+///
+/// Values arrive unquoted from multi-line or folded sources, so a `: ` or ` #`
+/// inside one turned it into a mapping or a comment. Those are double-quoted;
+/// a value that is already quoted is kept as it is. `globs` is never quoted:
+/// Cursor reads it as raw text and a quoted glob stops matching.
+fn yaml_scalar(key: &str, value: &str) -> String {
+    let already_quoted = value.len() >= 2
+        && ((value.starts_with('"') && value.ends_with('"'))
+            || (value.starts_with('\'') && value.ends_with('\'')));
+    let misread = value.contains(": ") || value.contains(" #") || value.starts_with('#');
+    if key == "globs" || already_quoted || !misread {
+        return value.to_string();
+    }
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 /// Renders YAML frontmatter fields and body into a complete document.
 ///
 /// Fields are written in sorted order for deterministic output.
@@ -127,7 +213,7 @@ pub fn render_frontmatter(fields: &HashMap<String, String>, body: &str) -> Strin
     sorted_keys.sort();
 
     for key in sorted_keys {
-        result.push_str(&format!("{}: {}\n", key, fields[key]));
+        result.push_str(&format!("{}: {}\n", key, yaml_scalar(key, &fields[key])));
     }
     result.push_str("---\n");
 
@@ -175,11 +261,9 @@ static EXCESS_BLANKS: LazyLock<Regex> =
 
 /// Trims non-essential sections from a skill body for Cursor export.
 ///
-/// Strips: Troubleshooting, Supporting Modules, See Also, Testing,
-/// Verification, Technical Integration, Table of Contents sections.
-/// Also removes module file references and collapses excess blank lines.
-///
-/// This reduces token cost by ~40% on average across the skill catalog.
+/// Strips the sections named in [`STRIP_HEADINGS`] (Supporting Modules, See
+/// Also, Table of Contents), removes module file reference lines and
+/// collapses excess blank lines.
 pub fn trim_skill_body(body: &str) -> String {
     // Strip sections by finding their headings and removing until the next heading
     let mut result = String::with_capacity(body.len());
@@ -261,6 +345,33 @@ mod tests {
         assert!(result.contains("alwaysApply: true\n"));
         assert!(result.contains("description: My rule\n"));
         assert!(result.contains("# Rule content"));
+    }
+
+    /// A folded description `Use when: reviewing code` was emitted bare,
+    /// which YAML reads as a nested mapping and rejects.
+    #[test]
+    fn render_frontmatter_quotes_values_yaml_would_misread() {
+        let mut fields = HashMap::new();
+        fields.insert(
+            "description".to_string(),
+            "Use when: reviewing \"code\"".to_string(),
+        );
+        fields.insert("note".to_string(), "keep # this".to_string());
+        fields.insert("quoted".to_string(), "\"a: b\"".to_string());
+        fields.insert("globs".to_string(), "src/**/*.ts".to_string());
+
+        let result = render_frontmatter(&fields, "");
+
+        assert!(
+            result.contains("description: \"Use when: reviewing \\\"code\\\"\"\n"),
+            "{result}"
+        );
+        assert!(result.contains("note: \"keep # this\"\n"), "{result}");
+        assert!(result.contains("quoted: \"a: b\"\n"), "{result}");
+        // Cursor reads globs as raw text, so they are never quoted.
+        assert!(result.contains("globs: src/**/*.ts\n"), "{result}");
+        let (parsed, _) = parse_frontmatter(&result);
+        assert_eq!(strip_yaml_quotes(&parsed["note"]), "keep # this");
     }
 
     #[test]

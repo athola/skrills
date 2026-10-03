@@ -26,6 +26,20 @@ fn mark_as_mirrored(plugin_dir: &std::path::Path) {
     std::fs::write(plugin_dir.join(super::MIRROR_MARKER), b"marker").unwrap();
 }
 
+/// The items as Cursor sees them on disk, without the trailing frontmatter
+/// stash the reader turns back into frontmatter.
+fn as_written(mut items: Vec<Command>) -> Vec<Command> {
+    for item in &mut items {
+        let text = std::fs::read_to_string(&item.source_path).unwrap();
+        let body = match super::utils::take_stash(&text) {
+            Some((body, _)) => format!("{body}\n"),
+            None => text,
+        };
+        item.content = body.into_bytes();
+    }
+    items
+}
+
 fn make_skill_with_frontmatter(name: &str) -> Command {
     let content = format!(
         "---\nname: {}\ndescription: A test skill\ncategory: testing\ntags:\n  - test\n---\n\n# {} Skill\n\nDo the thing.\n",
@@ -175,7 +189,7 @@ fn skills_strip_frontmatter_on_write() {
     assert_eq!(report.written, 1);
 
     // Read back and verify frontmatter was stripped but description preserved
-    let read_back = adapter.read_skills().unwrap();
+    let read_back = as_written(adapter.read_skills().unwrap());
     assert_eq!(read_back.len(), 1);
     let content = String::from_utf8_lossy(&read_back[0].content);
     assert!(!content.contains("---"), "Frontmatter should be stripped");
@@ -200,7 +214,7 @@ fn skills_description_before_model_hint() {
     let report = adapter.write_skills(&skills).unwrap();
     assert_eq!(report.written, 1);
 
-    let read_back = adapter.read_skills().unwrap();
+    let read_back = as_written(adapter.read_skills().unwrap());
     let body = String::from_utf8_lossy(&read_back[0].content);
 
     assert!(
@@ -232,7 +246,7 @@ fn skills_description_strips_yaml_quotes() {
     let skills = vec![make_command("quoted", content)];
 
     adapter.write_skills(&skills).unwrap();
-    let read_back = adapter.read_skills().unwrap();
+    let read_back = as_written(adapter.read_skills().unwrap());
     let body = String::from_utf8_lossy(&read_back[0].content);
     assert!(
         body.starts_with("A quoted description\n"),
@@ -250,7 +264,7 @@ fn skills_block_scalar_description() {
     let skills = vec![make_command("research", content)];
 
     adapter.write_skills(&skills).unwrap();
-    let read_back = adapter.read_skills().unwrap();
+    let read_back = as_written(adapter.read_skills().unwrap());
     let body = String::from_utf8_lossy(&read_back[0].content);
     assert!(
         body.starts_with("Search GitHub for implementations. Use when the user wants code.\n"),
@@ -269,7 +283,7 @@ fn skills_single_quoted_description() {
     let skills = vec![make_command("single-q", content)];
 
     adapter.write_skills(&skills).unwrap();
-    let read_back = adapter.read_skills().unwrap();
+    let read_back = as_written(adapter.read_skills().unwrap());
     let body = String::from_utf8_lossy(&read_back[0].content);
     assert!(
         body.starts_with("A single-quoted desc\n"),
@@ -288,7 +302,7 @@ fn skills_description_only_no_model_hint() {
     let skills = vec![make_command("plain", content)];
 
     adapter.write_skills(&skills).unwrap();
-    let read_back = adapter.read_skills().unwrap();
+    let read_back = as_written(adapter.read_skills().unwrap());
     let body = String::from_utf8_lossy(&read_back[0].content);
     assert!(
         body.starts_with("Just a description\n"),
@@ -314,7 +328,7 @@ fn skills_model_hint_only_no_description() {
     let skills = vec![make_command("hinted", content)];
 
     adapter.write_skills(&skills).unwrap();
-    let read_back = adapter.read_skills().unwrap();
+    let read_back = as_written(adapter.read_skills().unwrap());
     let body = String::from_utf8_lossy(&read_back[0].content);
     assert!(
         body.starts_with("<!-- model_hint: fast -->\n"),
@@ -332,7 +346,7 @@ fn skills_multiline_quoted_description() {
     let skills = vec![make_command("modular-monolith", content)];
 
     adapter.write_skills(&skills).unwrap();
-    let read_back = adapter.read_skills().unwrap();
+    let read_back = as_written(adapter.read_skills().unwrap());
     let body = String::from_utf8_lossy(&read_back[0].content);
     assert!(
         body.starts_with("Single deployable with enforced module boundaries for team autonomy.\n"),
@@ -376,7 +390,7 @@ fn agents_translate_frontmatter_on_write() {
     let report = adapter.write_agents(&agents).unwrap();
     assert_eq!(report.written, 1);
 
-    let read_back = adapter.read_agents().unwrap();
+    let read_back = as_written(adapter.read_agents().unwrap());
     assert_eq!(read_back.len(), 1);
     let content = String::from_utf8_lossy(&read_back[0].content);
     assert!(
@@ -388,6 +402,27 @@ fn agents_translate_frontmatter_on_write() {
         !content.contains("isolation:"),
         "isolation should be stripped"
     );
+}
+
+/// Cursor agents have no tool list, so a Claude agent limited to `Read`
+/// became unrestricted without a word in the report.
+#[test]
+fn dropping_a_tool_restriction_is_reported() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let agents = vec![
+        make_command(
+            "reader",
+            "---\nname: reader\ntools: Read\n---\nRead only.\n",
+        ),
+        make_command("free", "---\nname: free\n---\nAnything.\n"),
+    ];
+
+    let report = adapter.write_agents(&agents).unwrap();
+
+    assert_eq!(report.written, 2);
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+    assert!(report.warnings[0].contains("reader"));
 }
 
 // --- Hooks ---
@@ -453,6 +488,27 @@ fn rules_claude_md_becomes_always_apply() {
     assert!(content.contains("alwaysApply: true"));
 }
 
+/// SY-44: the module docs said CLAUDE.md maps to `claude-md.mdc`; the Claude
+/// reader names it `CLAUDE`, which the kebab sanitiser turns into `claude`.
+#[test]
+fn the_claude_instruction_is_written_to_claude_mdc() {
+    let tmp = TempDir::new().unwrap();
+    let source = crate::adapters::ClaudeAdapter::with_root(tmp.path().join("claude"));
+    std::fs::create_dir_all(tmp.path().join("claude")).unwrap();
+    std::fs::write(
+        tmp.path().join("claude/CLAUDE.md"),
+        "# Rules\n\nBe brief.\n",
+    )
+    .unwrap();
+    let instructions = source.read_instructions().unwrap();
+
+    let adapter = CursorAdapter::with_root(tmp.path().join("cursor"));
+    adapter.write_instructions(&instructions).unwrap();
+
+    let rule = std::fs::read_to_string(tmp.path().join("cursor/rules/claude.mdc")).unwrap();
+    assert!(rule.contains("alwaysApply: true"), "{rule}");
+}
+
 #[test]
 fn rules_with_globs_preserved() {
     let tmp = TempDir::new().unwrap();
@@ -485,7 +541,7 @@ fn skills_frontmatter_only_content_preserves_description() {
     let report = adapter.write_skills(&skills).unwrap();
     assert_eq!(report.written, 1);
 
-    let read_back = adapter.read_skills().unwrap();
+    let read_back = as_written(adapter.read_skills().unwrap());
     assert_eq!(read_back.len(), 1);
     let body = String::from_utf8_lossy(&read_back[0].content);
     assert!(!body.contains("---"), "Frontmatter should be stripped");
@@ -1048,7 +1104,7 @@ fn commands_frontmatter_stripped_on_write() {
     let commands = vec![make_command("with-fm", content)];
     adapter.write_commands(&commands).unwrap();
 
-    let read_back = adapter.read_commands(false).unwrap();
+    let read_back = as_written(adapter.read_commands(false).unwrap());
     let body = String::from_utf8_lossy(&read_back[0].content);
     assert!(
         !body.contains("---"),
@@ -1117,7 +1173,7 @@ fn skills_model_hint_injected_as_comment() {
     let skills = vec![make_command("smart-skill", content)];
     adapter.write_skills(&skills).unwrap();
 
-    let read_back = adapter.read_skills().unwrap();
+    let read_back = as_written(adapter.read_skills().unwrap());
     let body = String::from_utf8_lossy(&read_back[0].content);
     assert!(
         body.contains("<!-- model_hint: opus -->"),
@@ -2060,4 +2116,173 @@ fn preview_plugin_assets_lists_prune_targets_without_touching_disk() {
         local_dir.join("goes/.cursor-plugin/plugin.json").exists(),
         "a preview must not delete anything"
     );
+}
+
+/// A hand-made Cursor plugin can share its directory name with a Claude plugin.
+/// The mirror then writes into a directory skrills never marked, and the sweep
+/// used to delete every file there that the Claude plugin does not ship, which
+/// is all of the user's own work.
+#[test]
+fn plugin_assets_never_sweeps_files_from_an_unmarked_directory() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let plugin_dir = tmp.path().join("plugins/local/shared-name");
+
+    std::fs::create_dir_all(plugin_dir.join("skills/mine")).unwrap();
+    std::fs::write(plugin_dir.join("skills/mine/SKILL.md"), b"# Mine\n").unwrap();
+
+    let report = adapter
+        .write_plugin_assets(&[plugin_manifest("shared-name")])
+        .unwrap();
+
+    assert!(
+        plugin_dir.join("skills/mine/SKILL.md").exists(),
+        "a file in an unmarked directory must survive, warnings were {:?}",
+        report.warnings
+    );
+    assert!(
+        !plugin_dir.join(super::MIRROR_MARKER).exists(),
+        "a directory holding files the plugin does not ship must not be adopted, \
+         or the next run would sweep them"
+    );
+    assert!(
+        report.warnings.iter().any(|w| w.contains("shared-name")),
+        "the user must be told the directory was left unmanaged: {:?}",
+        report.warnings
+    );
+}
+
+/// A mirror written before the marker existed holds exactly what the plugin
+/// ships, so it is adopted on its first complete mirror and prunable after.
+#[test]
+fn plugin_assets_adopts_an_unmarked_mirror_holding_only_plugin_files() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let plugin_dir = tmp.path().join("plugins/local/legacy");
+
+    std::fs::create_dir_all(plugin_dir.join(".cursor-plugin")).unwrap();
+    std::fs::write(
+        plugin_dir.join(".cursor-plugin/plugin.json"),
+        b"{\"name\": \"old\"}",
+    )
+    .unwrap();
+
+    adapter
+        .write_plugin_assets(&[plugin_manifest("legacy")])
+        .unwrap();
+
+    assert!(plugin_dir.join(super::MIRROR_MARKER).exists());
+}
+
+/// SY-25: a Claude skill written to Cursor loses its frontmatter there, so a
+/// sync back out of Cursor (to Codex, say) used to produce a SKILL.md with no
+/// `name:`/`description:`, which Codex does not load. The frontmatter now
+/// rides along in a trailing comment and the Cursor reader puts it back.
+#[test]
+fn skill_frontmatter_survives_a_trip_through_cursor() {
+    let tmp = TempDir::new().unwrap();
+    let mut skill = make_skill_with_frontmatter("deep-work");
+    skill.content = b"---\nname: deep-work\ndescription: A test skill\nmodel_hint: deep\ncategory: testing\n---\n\n# Deep Skill\n\nDo the thing.\n".to_vec();
+
+    super::skills::write_skills(tmp.path(), std::slice::from_ref(&skill)).unwrap();
+    let back = super::skills::read_skills(tmp.path()).unwrap();
+    let back = String::from_utf8(back[0].content.clone()).unwrap();
+
+    assert!(
+        back.starts_with("---\nname: deep-work\ndescription: A test skill\nmodel_hint: deep\ncategory: testing\n---\n"),
+        "frontmatter not restored:\n{back}"
+    );
+    assert!(back.contains("# Deep Skill\n\nDo the thing."), "{back}");
+    assert!(!back.contains("skrills:frontmatter"), "{back}");
+    assert!(!back.contains("model_hint: deep -->"), "{back}");
+    assert_eq!(back.matches("A test skill").count(), 1, "{back}");
+
+    // Writing the restored copy back to Cursor changes nothing.
+    let restored = make_command("deep-work", &back);
+    let again = super::skills::write_skills(tmp.path(), &[restored]).unwrap();
+    assert_eq!(again.written, 0, "{again:?}");
+}
+
+/// A Cursor skill the user wrote by hand carries no stash and reads back as is.
+#[test]
+fn a_native_cursor_skill_reads_back_unchanged() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("skills/native");
+    std::fs::create_dir_all(&dir).unwrap();
+    let text = "# Native\n\nBody <!-- note -->\n";
+    std::fs::write(dir.join("SKILL.md"), text).unwrap();
+
+    let back = super::skills::read_skills(tmp.path()).unwrap();
+    assert_eq!(back[0].content, text.as_bytes());
+}
+
+#[test]
+fn command_frontmatter_survives_a_trip_through_cursor() {
+    let tmp = TempDir::new().unwrap();
+    let original = "---\ndescription: Review code\nallowed-tools: Read, Grep\n---\n\n# Review\n\nLook closely.\n";
+    super::commands::write_commands(tmp.path(), &[make_command("review", original)]).unwrap();
+
+    let on_disk = std::fs::read_to_string(tmp.path().join("commands/review.md")).unwrap();
+    assert!(
+        on_disk.starts_with("# Review"),
+        "Cursor copy must not start with frontmatter:\n{on_disk}"
+    );
+
+    let back = super::commands::read_commands(tmp.path()).unwrap();
+    let back = String::from_utf8(back[0].content.clone()).unwrap();
+    assert_eq!(back, original);
+
+    let again =
+        super::commands::write_commands(tmp.path(), &[make_command("review", &back)]).unwrap();
+    assert_eq!(again.written, 0);
+}
+
+/// `tools:` and `isolation:` have no Cursor field; they are kept aside so a
+/// sync back restores the restriction, and dropping `isolation` is reported.
+#[test]
+fn agent_tool_restriction_survives_a_trip_through_cursor() {
+    let tmp = TempDir::new().unwrap();
+    let original = "---\nname: reader\ntools:\n  - Read\nisolation: worktree\nmodel: opus\n---\n\nRead only.\n";
+    let report =
+        super::agents::write_agents(tmp.path(), &[make_command("reader", original)]).unwrap();
+    assert!(
+        report.warnings.iter().any(|w| w.contains("isolation")),
+        "{:?}",
+        report.warnings
+    );
+
+    let back = super::agents::read_agents(tmp.path()).unwrap();
+    let back = String::from_utf8(back[0].content.clone()).unwrap();
+    assert!(back.contains("tools:\n  - Read\n"), "{back}");
+    assert!(back.contains("isolation: worktree\n"), "{back}");
+    assert!(back.contains("model: opus\n"), "{back}");
+    assert!(back.trim_end().ends_with("Read only."), "{back}");
+    assert!(!back.contains("skrills:frontmatter"), "{back}");
+
+    let again = super::agents::write_agents(tmp.path(), &[make_command("reader", &back)]).unwrap();
+    assert_eq!(again.written, 0, "{again:?}");
+}
+
+/// Invalid UTF-8 used to be decoded lossily, writing U+FFFD into the copy.
+#[test]
+fn invalid_utf8_is_skipped_not_mangled() {
+    let tmp = TempDir::new().unwrap();
+    let mut bad = make_command("bad", "x");
+    bad.content = vec![b'#', b' ', 0xff, 0xfe, b'\n'];
+
+    let skills = super::skills::write_skills(tmp.path(), std::slice::from_ref(&bad)).unwrap();
+    let commands = super::commands::write_commands(tmp.path(), std::slice::from_ref(&bad)).unwrap();
+    let agents = super::agents::write_agents(tmp.path(), std::slice::from_ref(&bad)).unwrap();
+
+    for report in [&skills, &commands, &agents] {
+        assert_eq!(report.written, 0);
+        assert!(
+            matches!(
+                report.skipped.as_slice(),
+                [crate::report::SkipReason::ParseError { .. }]
+            ),
+            "{:?}",
+            report.skipped
+        );
+    }
 }

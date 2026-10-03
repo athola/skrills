@@ -1,6 +1,7 @@
 //! MCP server reading and writing for Copilot adapter.
 
 use super::paths::mcp_config_path;
+use crate::adapters::json_config::{self, Dialect};
 use crate::common::{McpServer, McpTransport};
 use crate::report::WriteReport;
 use crate::Result;
@@ -32,11 +33,7 @@ pub fn read_mcp_servers(root: &Path) -> Result<HashMap<String, McpServer>> {
                 .unwrap_or("");
 
             if command.is_empty() {
-                eprintln!(
-                    "warning: skipping MCP server '{}' (missing or empty 'command' field in {})",
-                    name,
-                    path.display()
-                );
+                // Logged only: a library printing to stderr corrupted the TUI.
                 warn!(
                     server = %name,
                     path = %path.display(),
@@ -146,63 +143,14 @@ pub fn read_mcp_servers(root: &Path) -> Result<HashMap<String, McpServer>> {
     Ok(servers)
 }
 
-/// Writes MCP servers to the mcp-config.json file.
+/// Writes MCP servers to the mcp-config.json file, merged by name into what
+/// is already there.
 pub fn write_mcp_servers(root: &Path, servers: &HashMap<String, McpServer>) -> Result<WriteReport> {
     let path = mcp_config_path(root);
-
-    // Read existing config to preserve structure
-    let mut config: serde_json::Value = if path.exists() {
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read MCP config: {}", path.display()))?;
-        serde_json::from_str(&content)
-            .with_context(|| format!("Failed to parse MCP config as JSON: {}", path.display()))?
-    } else {
-        serde_json::json!({})
-    };
-
-    let mut report = WriteReport::default();
-    let mut mcp_obj = serde_json::Map::new();
-
-    for (name, server) in servers {
-        let mut server_config = serde_json::Map::new();
-        server_config.insert("command".into(), serde_json::json!(server.command));
-        if !server.args.is_empty() {
-            server_config.insert("args".into(), serde_json::json!(server.args));
-        }
-        if !server.env.is_empty() {
-            server_config.insert("env".into(), serde_json::json!(server.env));
-        }
-        if !server.enabled {
-            server_config.insert("disabled".into(), serde_json::json!(true));
-        }
-        if !server.allowed_tools.is_empty() {
-            server_config.insert(
-                "allowedTools".into(),
-                serde_json::json!(server.allowed_tools),
-            );
-        }
-        if !server.disabled_tools.is_empty() {
-            server_config.insert(
-                "disabledTools".into(),
-                serde_json::json!(server.disabled_tools),
-            );
-        }
-        mcp_obj.insert(name.clone(), serde_json::Value::Object(server_config));
-        report.written += 1;
+    let mut config = json_config::load_object(&path)?;
+    let report = json_config::merge_servers(&mut config, servers, Dialect::StdioOnly, "copilot")?;
+    if report.written > 0 {
+        json_config::write_json_config(&path, &config)?;
     }
-
-    config["mcpServers"] = serde_json::Value::Object(mcp_obj);
-
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "Failed to create MCP config directory: {}",
-                parent.display()
-            )
-        })?;
-    }
-    fs::write(&path, serde_json::to_string_pretty(&config)?)
-        .with_context(|| format!("Failed to write MCP config: {}", path.display()))?;
-
     Ok(report)
 }

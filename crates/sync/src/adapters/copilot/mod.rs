@@ -94,7 +94,9 @@ impl AgentAdapter for CopilotAdapter {
 
     fn read_support(&self) -> FieldSupport {
         FieldSupport {
-            commands: false, // Copilot prompts are NOT equivalent to Claude commands/Codex prompts
+            // Commands are read from and written to prompt files (`*.prompt.md`),
+            // the closest Copilot has; the orchestrator skips a `false` field.
+            commands: true,
             mcp_servers: true,
             preferences: true,
             skills: true,

@@ -10,6 +10,7 @@ use crate::report::WriteReport;
 use crate::Result;
 use anyhow::Context;
 use std::collections::HashMap;
+#[cfg(test)]
 use std::fs;
 use std::path::PathBuf;
 #[cfg(test)]
@@ -20,30 +21,9 @@ mod commands;
 mod hooks;
 mod instructions;
 mod plugin_assets;
+mod plugin_cache;
 mod settings;
 mod skills;
-
-/// Parse a directory entry name as a semver-ish tuple `(major, minor, patch)`.
-///
-/// Falls back to `(0, 0, 0)` for non-semver names so they sort before any real version.
-pub(super) fn semver_tuple(entry: &fs::DirEntry) -> (u64, u64, u64) {
-    let name = entry
-        .file_name()
-        .to_str()
-        .map(str::to_owned)
-        .unwrap_or_else(|| {
-            tracing::warn!(
-                ?entry,
-                "non-UTF-8 directory name; sorted before all valid semver entries"
-            );
-            String::new()
-        });
-    let parts: Vec<&str> = name.split('.').collect();
-    let major = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0u64);
-    let minor = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0u64);
-    let patch = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0u64);
-    (major, minor, patch)
-}
 
 /// Adapter for Claude Code configuration.
 pub struct ClaudeAdapter {
@@ -82,7 +62,7 @@ impl ClaudeAdapter {
     ///
     /// Used by sibling submodules (e.g. `plugin_assets`) that need to
     /// derive paths off the root without taking ownership.
-    pub(in crate::adapters::claude) fn config_root_ref(&self) -> &PathBuf {
+    pub(in crate::adapters::claude) fn config_root_ref(&self) -> &std::path::Path {
         &self.root
     }
 
@@ -258,8 +238,8 @@ mod tests {
         fs::create_dir_all(&mp_dir).unwrap();
         fs::write(mp_dir.join("market.md"), "# Market").unwrap();
 
-        // Cache command
-        let cache_dir = root.join("plugins/cache/pkg/commands");
+        // Cache command, in the real <publisher>/<plugin>/<version> layout
+        let cache_dir = root.join("plugins/cache/mp/pkg/1.0.0/commands");
         fs::create_dir_all(&cache_dir).unwrap();
         fs::write(cache_dir.join("cached.md"), "# Cached").unwrap();
 
@@ -695,19 +675,19 @@ mod tests {
         assert!(server.command.is_empty());
     }
 
+    /// An `sse` server read as stdio was written to every other tool with an
+    /// empty command and no URL. It is left out instead; the merging writers
+    /// then keep whatever the target already has under that name.
     #[test]
-    fn read_mcp_servers_unknown_type_falls_back_to_stdio() {
-        // Test that unknown transport types fall back to stdio with warning
+    fn read_mcp_servers_skips_a_transport_sync_cannot_carry() {
         let tmp = tempdir().unwrap();
         let settings_path = tmp.path().join("settings.json");
         fs::write(
             &settings_path,
             r#"{
             "mcpServers": {
-                "weird-server": {
-                    "type": "grpc",
-                    "command": "/usr/bin/weird"
-                }
+                "streaming": {"type": "sse", "url": "https://x/sse"},
+                "plain": {"command": "/usr/bin/plain"}
             }
         }"#,
         )
@@ -716,10 +696,8 @@ mod tests {
         let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
         let servers = adapter.read_mcp_servers().unwrap();
 
-        let server = servers.get("weird-server").unwrap();
-        // Unknown types should fall back to stdio
-        assert_eq!(server.transport, McpTransport::Stdio);
-        assert_eq!(server.command, "/usr/bin/weird");
+        assert!(!servers.contains_key("streaming"));
+        assert_eq!(servers["plain"].transport, McpTransport::Stdio);
     }
 
     #[test]
@@ -834,6 +812,175 @@ mod tests {
         assert_eq!(
             assets[0].relative_path,
             std::path::PathBuf::from("scripts/tool.py")
+        );
+    }
+
+    /// Cursor hooks are JSON entry lists; Claude reads hooks from
+    /// `settings.json`, not `~/.claude/hooks/*.md`, so writing them there
+    /// produced files Claude never loads while reporting them as synced.
+    #[test]
+    fn write_hooks_skips_json_hooks_instead_of_writing_dead_files() {
+        let tmp = tempdir().unwrap();
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let hook = Command {
+            name: "PreToolUse".to_string(),
+            content: br#"[{"command": "./check.sh"}]"#.to_vec(),
+            source_path: PathBuf::from("/c/hooks.json"),
+            modified: SystemTime::now(),
+            hash: String::new(),
+            modules: Vec::new(),
+            content_format: ContentFormat::Json,
+            plugin_origin: None,
+        };
+
+        let report = adapter.write_hooks(&[hook]).unwrap();
+
+        assert_eq!(report.written, 0);
+        assert!(!tmp.path().join("hooks/PreToolUse.md").exists());
+        assert!(matches!(
+            report.skipped.as_slice(),
+            [crate::report::SkipReason::AgentSpecificFeature { .. }]
+        ));
+    }
+
+    fn write_at(path: &std::path::Path, body: &str, mtime_secs: u64) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+        let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(mtime_secs))
+            .unwrap();
+    }
+
+    /// Cached plugin commands, agents and hooks carried no plugin origin, so
+    /// `exclude_plugins` could not filter them.
+    #[test]
+    fn plugin_cache_items_carry_their_plugin_origin() {
+        let tmp = tempdir().unwrap();
+        let version = tmp.path().join("plugins/cache/market/plug/1.0.0");
+        write_at(&version.join("commands/c.md"), "c", 1_000);
+        write_at(&version.join("agents/a.md"), "a", 1_000);
+        write_at(&version.join("hooks/h.md"), "h", 1_000);
+
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let items = adapter
+            .read_commands(false)
+            .unwrap()
+            .into_iter()
+            .chain(adapter.read_agents().unwrap())
+            .chain(adapter.read_hooks().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(items.len(), 3);
+        for item in items {
+            let origin = item.plugin_origin.expect("plugin origin");
+            assert_eq!(origin.plugin_name, "plug", "{}", item.name);
+            assert_eq!(origin.version, "1.0.0");
+        }
+    }
+
+    /// Skills were picked by mtime across every cached version and commands by
+    /// walk order, so one sync could mix two versions of a plugin.
+    #[test]
+    fn every_plugin_artifact_comes_from_the_latest_version() {
+        let tmp = tempdir().unwrap();
+        let plugin = tmp.path().join("plugins/cache/market/plug");
+        // The old version's files are newer on disk.
+        write_at(&plugin.join("1.9.0/skills/s/SKILL.md"), "old", 2_000);
+        write_at(&plugin.join("1.9.0/commands/c.md"), "old", 2_000);
+        write_at(&plugin.join("1.10.0/skills/s/SKILL.md"), "new", 1_000);
+        write_at(&plugin.join("1.10.0/commands/c.md"), "new", 1_000);
+
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let skill = adapter.read_skills().unwrap().pop().unwrap();
+        let command = adapter.read_commands(false).unwrap().pop().unwrap();
+
+        assert_eq!(skill.content, b"new");
+        assert_eq!(command.content, b"new");
+    }
+
+    /// A markdown file inside a skill directory is one of its modules, not a
+    /// second skill named after the file.
+    #[test]
+    fn read_skills_does_not_turn_a_skill_module_into_a_skill() {
+        let tmp = tempdir().unwrap();
+        let skills = tmp.path().join("skills");
+        write_at(&skills.join("foo/SKILL.md"), "foo", 1_000);
+        write_at(&skills.join("foo/docs/reference.md"), "ref", 1_000);
+        write_at(&skills.join("legacy.md"), "legacy", 1_000);
+        let cached = tmp.path().join("plugins/cache/market/plug/1.0.0/skills");
+        write_at(&cached.join("bar/SKILL.md"), "bar", 1_000);
+        write_at(&cached.join("bar/notes.md"), "notes", 1_000);
+
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let mut names: Vec<_> = adapter
+            .read_skills()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        names.sort();
+
+        assert_eq!(names, vec!["bar", "foo", "legacy"]);
+    }
+
+    /// The core walks skip hidden paths and symlinks; the cache walks did not.
+    #[cfg(unix)]
+    #[test]
+    fn plugin_cache_walk_skips_hidden_paths_and_symlinks() {
+        let tmp = tempdir().unwrap();
+        let version = tmp.path().join("plugins/cache/market/plug/1.0.0");
+        write_at(&version.join(".git/commands/hidden.md"), "x", 1_000);
+        write_at(&tmp.path().join("elsewhere.md"), "x", 1_000);
+        fs::create_dir_all(version.join("commands")).unwrap();
+        std::os::unix::fs::symlink(
+            tmp.path().join("elsewhere.md"),
+            version.join("commands/linked.md"),
+        )
+        .unwrap();
+        write_at(&version.join("commands/real.md"), "x", 1_000);
+
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let names: Vec<_> = adapter
+            .read_commands(false)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+
+        assert_eq!(names, vec!["real"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_plugin_assets_skips_symlinks_out_of_the_plugin_but_keeps_in_tree_ones() {
+        let tmp = tempdir().unwrap();
+        let version = tmp.path().join("plugins/cache/market/myplugin/1.0.0");
+        fs::create_dir_all(version.join("scripts")).unwrap();
+        fs::write(version.join("scripts/tool.py"), b"# tool\n").unwrap();
+        fs::write(tmp.path().join("secret"), b"key").unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("secret"), version.join("scripts/leak"))
+            .unwrap();
+        std::os::unix::fs::symlink(
+            version.join("scripts/tool.py"),
+            version.join("scripts/alias"),
+        )
+        .unwrap();
+
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let mut paths: Vec<_> = adapter
+            .read_plugin_assets(false)
+            .unwrap()
+            .into_iter()
+            .map(|a| a.relative_path)
+            .collect();
+        paths.sort();
+
+        assert_eq!(
+            paths,
+            vec![
+                std::path::PathBuf::from("scripts/alias"),
+                std::path::PathBuf::from("scripts/tool.py")
+            ]
         );
     }
 

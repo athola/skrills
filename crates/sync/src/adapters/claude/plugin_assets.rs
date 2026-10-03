@@ -16,7 +16,7 @@ use std::fs;
 
 use walkdir::WalkDir;
 
-use super::semver_tuple;
+use super::plugin_cache::latest_plugin_versions;
 use super::ClaudeAdapter;
 use crate::adapters::utils::is_hidden_path;
 
@@ -60,205 +60,164 @@ pub(super) fn read_plugin_assets_impl(
 
     let mut assets = Vec::new();
 
-    // Walk: cache/<marketplace>/<plugin>/<version>/
-    for marketplace_entry in fs::read_dir(&cache_dir)? {
-        let marketplace_entry = marketplace_entry?;
-        let marketplace_path = marketplace_entry.path();
-        if !marketplace_path.is_dir() {
-            continue;
-        }
-        let publisher = match marketplace_path.file_name().and_then(|n| n.to_str()) {
-            Some(name) => name.to_string(),
-            None => {
+    // One version per plugin, picked by the same rule as every other reader.
+    for version_dir in latest_plugin_versions(&cache_dir) {
+        let version_path = version_dir.path;
+        let crate::common::PluginOrigin {
+            plugin_name,
+            publisher,
+            version,
+        } = version_dir.origin;
+        let assets_before = assets.len();
+
+        // Walk the version directory collecting asset files
+        for entry in WalkDir::new(&version_path)
+            .min_depth(1)
+            .max_depth(10)
+            .follow_links(false)
+        {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::warn!(
+                        plugin = %plugin_name,
+                        error = %e,
+                        "Failed to read directory entry while scanning plugin assets"
+                    );
+                    continue;
+                }
+            };
+            let path = entry.path();
+
+            if !path.is_file() {
+                continue;
+            }
+            // A link may point anywhere on disk; mirroring its target
+            // would copy that file into another tool's plugin tree.
+            if entry.path_is_symlink()
+                && !crate::adapters::utils::is_path_contained(path, &version_path)
+            {
                 tracing::warn!(
-                    path = %marketplace_path.display(),
-                    "Skipping non-UTF-8 marketplace directory"
+                    path = %path.display(),
+                    plugin = %plugin_name,
+                    "Skipping plugin asset symlink that points outside the plugin"
                 );
                 continue;
             }
-        };
+            if let Ok(meta) = fs::metadata(path) {
+                if meta.len() > crate::adapters::utils::MAX_MODULE_FILE_BYTES {
+                    tracing::warn!(
+                        path = %path.display(),
+                        plugin = %plugin_name,
+                        bytes = meta.len(),
+                        "Skipping plugin asset over the size limit"
+                    );
+                    continue;
+                }
+            }
 
-        for plugin_entry in fs::read_dir(&marketplace_path)? {
-            let plugin_entry = plugin_entry?;
-            let plugin_path = plugin_entry.path();
-            if !plugin_path.is_dir() {
+            let rel_path = match path.strip_prefix(&version_path) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+
+            // Skip hidden files, but in full_mirror mode, allow
+            // .claude-plugin/ (plugin manifests needed by targets like Cursor)
+            if is_hidden_path(rel_path)
+                && (!full_mirror
+                    || rel_path
+                        .components()
+                        .next()
+                        .is_none_or(|c| c.as_os_str() != ".claude-plugin"))
+            {
                 continue;
             }
-            let plugin_name = match plugin_path.file_name().and_then(|n| n.to_str()) {
-                Some(name) => name.to_string(),
-                None => {
+
+            // Check if this file is under a synced or skipped directory
+            let top_component = rel_path
+                .components()
+                .next()
+                .and_then(|c| c.as_os_str().to_str())
+                .unwrap_or("");
+
+            if synced_dirs.contains(&top_component) {
+                continue; // Already synced by skills/commands/agents
+            }
+            if skip_dirs.contains(&top_component) {
+                continue;
+            }
+            // Also check any ancestor for skip dirs (e.g., nested __pycache__)
+            if rel_path.components().any(|c| {
+                c.as_os_str()
+                    .to_str()
+                    .is_some_and(|s| skip_dirs.contains(&s))
+            }) {
+                continue;
+            }
+
+            let content = match fs::read(path) {
+                Ok(c) => c,
+                Err(e) => {
                     tracing::warn!(
-                        path = %plugin_path.display(),
-                        "Skipping non-UTF-8 plugin directory"
+                        path = %path.display(),
+                        plugin = %plugin_name,
+                        error = %e,
+                        "Failed to read plugin asset file, skipping"
                     );
                     continue;
                 }
             };
 
-            // Find the latest version directory (prefer semver, fall back to mtime)
-            let mut versions: Vec<_> = fs::read_dir(&plugin_path)?
-                .filter_map(|e| match e {
-                    Ok(entry) => Some(entry),
-                    Err(err) => {
-                        tracing::warn!(
-                            plugin = %plugin_name,
-                            error = %err,
-                            "Failed to read version directory entry"
-                        );
-                        None
-                    }
-                })
-                .filter(|e| e.path().is_dir())
-                .collect();
-            versions.sort_by(|a, b| {
-                let ver_a = semver_tuple(a);
-                let ver_b = semver_tuple(b);
-                ver_a.cmp(&ver_b)
-            });
-            let version_entry = match versions.last() {
-                Some(e) => e,
-                None => continue,
-            };
-            let version_path = version_entry.path();
-            let version = match version_path.file_name().and_then(|n| n.to_str()) {
-                Some(name) => name.to_string(),
-                None => {
-                    tracing::warn!(
-                        path = %version_path.display(),
-                        "Skipping non-UTF-8 version directory"
-                    );
-                    continue;
-                }
-            };
-
-            let assets_before = assets.len();
-
-            // Walk the version directory collecting asset files
-            for entry in WalkDir::new(&version_path)
-                .min_depth(1)
-                .max_depth(10)
-                .follow_links(false)
-            {
-                let entry = match entry {
-                    Ok(e) => e,
-                    Err(e) => {
-                        tracing::warn!(
-                            plugin = %plugin_name,
-                            error = %e,
-                            "Failed to read directory entry while scanning plugin assets"
-                        );
-                        continue;
-                    }
-                };
-                let path = entry.path();
-
-                if !path.is_file() {
-                    continue;
-                }
-
-                let rel_path = match path.strip_prefix(&version_path) {
-                    Ok(p) => p,
-                    Err(_) => continue,
-                };
-
-                // Skip hidden files, but in full_mirror mode, allow
-                // .claude-plugin/ (plugin manifests needed by targets like Cursor)
-                if is_hidden_path(rel_path)
-                    && (!full_mirror
-                        || rel_path
-                            .components()
-                            .next()
-                            .is_none_or(|c| c.as_os_str() != ".claude-plugin"))
+            let executable = {
+                #[cfg(unix)]
                 {
-                    continue;
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::metadata(path)
+                        .map(|m| m.permissions().mode() & 0o111 != 0)
+                        .unwrap_or(false)
                 }
-
-                // Check if this file is under a synced or skipped directory
-                let top_component = rel_path
-                    .components()
-                    .next()
-                    .and_then(|c| c.as_os_str().to_str())
-                    .unwrap_or("");
-
-                if synced_dirs.contains(&top_component) {
-                    continue; // Already synced by skills/commands/agents
+                #[cfg(not(unix))]
+                {
+                    false
                 }
-                if skip_dirs.contains(&top_component) {
-                    continue;
-                }
-                // Also check any ancestor for skip dirs (e.g., nested __pycache__)
-                if rel_path.components().any(|c| {
-                    c.as_os_str()
-                        .to_str()
-                        .is_some_and(|s| skip_dirs.contains(&s))
-                }) {
-                    continue;
-                }
+            };
 
-                let content = match fs::read(path) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::warn!(
-                            path = %path.display(),
-                            plugin = %plugin_name,
-                            error = %e,
-                            "Failed to read plugin asset file, skipping"
-                        );
-                        continue;
-                    }
-                };
+            assets.push(PluginAsset::new(
+                plugin_name.clone(),
+                publisher.clone(),
+                version.clone(),
+                rel_path.to_path_buf(),
+                content,
+                executable,
+            ));
+        }
 
-                let executable = {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        fs::metadata(path)
-                            .map(|m| m.permissions().mode() & 0o111 != 0)
-                            .unwrap_or(false)
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        false
-                    }
-                };
-
+        if full_mirror {
+            // Use a structurally-built path so the comparison is correct on
+            // Windows (where `strip_prefix` produces backslash separators)
+            // as well as Unix. A `to_string_lossy().contains("/")` check
+            // would silently miss real Windows manifests and double-emit a
+            // synthetic one.
+            let manifest_rel_path = std::path::Path::new(".claude-plugin").join("plugin.json");
+            let has_manifest = assets[assets_before..]
+                .iter()
+                .any(|a| a.relative_path == manifest_rel_path);
+            if !has_manifest {
+                let description = derive_description(&version_path, &plugin_name);
+                let manifest = synthesize_manifest(&plugin_name, &version, &description);
+                tracing::info!(
+                    plugin = %plugin_name,
+                    version = %version,
+                    "Synthesized .claude-plugin/plugin.json for manifest-less plugin"
+                );
                 assets.push(PluginAsset::new(
                     plugin_name.clone(),
                     publisher.clone(),
                     version.clone(),
-                    rel_path.to_path_buf(),
-                    content,
-                    executable,
+                    manifest_rel_path,
+                    manifest,
+                    false,
                 ));
-            }
-
-            if full_mirror {
-                // Use a structurally-built path so the comparison is correct on
-                // Windows (where `strip_prefix` produces backslash separators)
-                // as well as Unix. A `to_string_lossy().contains("/")` check
-                // would silently miss real Windows manifests and double-emit a
-                // synthetic one.
-                let manifest_rel_path = std::path::Path::new(".claude-plugin").join("plugin.json");
-                let has_manifest = assets[assets_before..]
-                    .iter()
-                    .any(|a| a.relative_path == manifest_rel_path);
-                if !has_manifest {
-                    let description = derive_description(&version_path, &plugin_name);
-                    let manifest = synthesize_manifest(&plugin_name, &version, &description);
-                    tracing::info!(
-                        plugin = %plugin_name,
-                        version = %version,
-                        "Synthesized .claude-plugin/plugin.json for manifest-less plugin"
-                    );
-                    assets.push(PluginAsset::new(
-                        plugin_name.clone(),
-                        publisher.clone(),
-                        version.clone(),
-                        manifest_rel_path,
-                        manifest,
-                        false,
-                    ));
-                }
             }
         }
     }

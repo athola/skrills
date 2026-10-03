@@ -446,7 +446,7 @@ mod claude_to_copilot_tests {
         /*
         GIVEN a Claude configuration with commands
         WHEN syncing to Copilot with sync_commands enabled
-        THEN commands should be written as *.prompts.md files
+        THEN commands should be written as *.prompt.md files
         */
         let setup = CopilotSyncTestSetup::new().unwrap();
 
@@ -486,7 +486,7 @@ mod claude_to_copilot_tests {
             "Commands should be written to Copilot as prompts"
         );
 
-        // Verify the prompts directory was created with .prompts.md files
+        // Verify the prompts directory was created with .prompt.md files
         let prompts_dir = setup.copilot_dir.path().join("prompts");
         assert!(prompts_dir.exists(), "Prompts directory should be created");
     }
@@ -661,7 +661,7 @@ mod copilot_adapter_field_support_tests {
         /*
         GIVEN a CopilotAdapter
         WHEN checking field support
-        THEN commands should NOT be supported (prompts differ from Claude commands/Codex prompts)
+        THEN commands are supported (written as prompt files)
         AND skills, mcp_servers, preferences should be supported
         */
         let tmp = TempDir::new().unwrap();
@@ -669,12 +669,9 @@ mod copilot_adapter_field_support_tests {
 
         let support = adapter.read_support();
 
-        // Copilot prompts are detailed instruction files, NOT equivalent to
-        // Claude commands/Codex prompts (which are quick atomic shortcuts)
-        assert!(
-            !support.commands,
-            "Copilot should NOT support commands (prompts are different)"
-        );
+        // Commands are synced as prompt files, and the orchestrator skips a
+        // field declared `false`, so the flag has to say so.
+        assert!(support.commands, "Copilot writes commands as prompt files");
         assert!(support.skills, "Copilot should support skills");
         assert!(support.mcp_servers, "Copilot should support MCP servers");
         assert!(support.preferences, "Copilot should support preferences");
