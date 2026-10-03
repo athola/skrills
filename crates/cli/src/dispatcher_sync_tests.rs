@@ -84,6 +84,18 @@ fn sync_skills_tool_explicit_to_overrides_default() {
 /// Then: The default target "codex" is used (no same-source error)
 #[test]
 fn sync_skills_tool_uses_default_target_when_to_omitted() {
+    // A temp HOME: the sync reads ~/.claude and ~/.codex, which must not be
+    // the developer's.
+    let _g = skrills_test_utils::env_guard();
+    let fixture = skrills_test_utils::TestFixture::new().expect("fixture");
+    let _home = fixture.home_guard();
+    fixture
+        .create_skill(
+            "alpha",
+            &skrills_test_utils::skill_md("alpha", "A skill to sync", "Body"),
+        )
+        .expect("create skill");
+
     let service =
         SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).expect("create service");
     let mut args = serde_json::Map::new();
@@ -97,5 +109,9 @@ fn sync_skills_tool_uses_default_target_when_to_omitted() {
         result.is_ok(),
         "Expected success when using default target, got: {:?}",
         result.err()
+    );
+    assert!(
+        !fixture.codex_skills.join("alpha").exists(),
+        "a dry run writes nothing to the target"
     );
 }

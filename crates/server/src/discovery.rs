@@ -429,10 +429,9 @@ pub fn resolve_agent<'a>(spec: &str, agents: &'a [AgentMeta]) -> Result<&'a Agen
     }
 }
 
-/// Checks if a directory entry is a skill file (`SKILL.md`).
-pub fn is_skill_file(entry: &walkdir::DirEntry) -> bool {
-    entry.file_type().is_file() && entry.file_name() == "SKILL.md"
-}
+/// Checks if a directory entry is a skill file (`SKILL.md`): the rule
+/// discovery itself uses, re-exported so callers here cannot drift from it.
+pub use skrills_discovery::is_skill_file;
 
 /// Tokenizes a prompt into a set of lowercase alphanumeric words.
 pub fn tokenize_prompt(prompt: &str) -> HashSet<String> {
