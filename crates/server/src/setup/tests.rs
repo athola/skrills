@@ -22,6 +22,30 @@ fn set_test_home(dir: &TempDir) -> skrills_test_utils::EnvVarGuard {
     crate::test_support::set_env_var("HOME", Some(dir.path().to_str().unwrap()))
 }
 
+/// The installer passes `--bin-dir ~/.skrills/bin` while running the binary
+/// it just put there. When the two paths name the same file through a
+/// symlink, copying would truncate the binary onto itself.
+#[cfg(unix)]
+#[test]
+fn install_binary_leaves_the_running_binary_alone_behind_a_symlink() -> Result<()> {
+    let _guard = env_guard();
+    let home = create_test_home()?;
+    let _home = set_test_home(&home);
+
+    let real_dir = home.path().join("real-bin");
+    fs::create_dir_all(&real_dir)?;
+    let exe = installed_binary_path(&real_dir);
+    fs::write(&exe, b"binary contents")?;
+    let linked_dir = home.path().join("linked-bin");
+    std::os::unix::fs::symlink(&real_dir, &linked_dir)?;
+
+    let installed = install_binary(&linked_dir, &exe)?;
+
+    assert_eq!(installed, installed_binary_path(&linked_dir));
+    assert_eq!(fs::read(&exe)?, b"binary contents");
+    Ok(())
+}
+
 #[cfg(test)]
 mod client_tests {
     use super::*;

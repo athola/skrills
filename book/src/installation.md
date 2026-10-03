@@ -17,7 +17,7 @@ powershell -ExecutionPolicy Bypass -NoLogo -NoProfile -Command "iwr https://raw.
 The installer:
 1. Downloads the correct binary for your system
 2. Installs it to `~/.skrills/bin` (override with `SKRILLS_BIN_DIR`)
-3. Runs `skrills setup` to register skrills as an MCP server
+3. Runs `skrills setup --yes --client <client>` to register skrills as an MCP server, once for each client whose config directory (`~/.claude`, `~/.codex`, `~/.copilot`, `~/.cursor`) exists, or for Claude Code when none does
 4. With `SKRILLS_UNIVERSAL=1`, also syncs your Claude skills into `~/.agent/skills`
 
 ## Verify Installation
@@ -51,29 +51,34 @@ The installer accepts environment variables to customize behavior:
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `SKRILLS_CLIENT` | Target `codex` or `claude` | Auto-detected |
-| `SKRILLS_BIN_DIR` | Where to install the binary | `~/.codex/bin` |
-| `SKRILLS_VERSION` | Install a specific version | Latest |
-| `SKRILLS_NO_MIRROR` | Skip syncing Claude skills | Disabled |
+| `SKRILLS_CLIENT` | Client for `skrills setup`: `claude`, `codex`, `copilot`, `cursor`, `both` or `all` | Each client whose `~/.<client>` directory exists; `claude` if none does |
+| `SKRILLS_BIN_DIR` | Where to install the binary | `~/.skrills/bin` |
+| `SKRILLS_VERSION` | Install a specific version (tag without the leading `v`) | Latest |
+| `SKRILLS_NO_HOOK` | Set to `1` to skip `skrills setup` | Unset |
+| `SKRILLS_UNIVERSAL` | Set to `1` to also sync Claude skills into `~/.agent/skills` | Unset |
+| `SKRILLS_TARGET` | Target triple of the release asset | Detected from `uname` |
+| `SKRILLS_SKIP_CHECKSUM` | Set to `1` to install without verifying the release checksum | Unset |
+
+Set the variables on the `sh` side of the pipe; a variable placed before `curl` reaches only `curl`.
 
 ### Examples
 
 **Install for Claude Code only:**
 ```bash
-SKRILLS_CLIENT=claude SKRILLS_BIN_DIR="$HOME/.claude/bin" \
-  curl -LsSf https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh | sh
+curl -LsSf https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh \
+  | SKRILLS_CLIENT=claude sh
 ```
 
 **Install a specific version:**
 ```bash
-SKRILLS_VERSION=0.4.0 \
-  curl -LsSf https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh | sh
+curl -LsSf https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh \
+  | SKRILLS_VERSION=0.4.0 sh
 ```
 
-**Skip syncing Claude skills to Codex:**
+**Install the binary only, without running setup:**
 ```bash
-SKRILLS_NO_MIRROR=1 \
-  curl -LsSf https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh | sh
+curl -LsSf https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh \
+  | SKRILLS_NO_HOOK=1 sh
 ```
 
 ## What the Installer Configures
@@ -101,12 +106,10 @@ The installer does not copy skills between clients. Set `SKRILLS_UNIVERSAL=1` to
 Add the bin directory to your PATH:
 
 ```bash
-# For Codex (default)
-export PATH="$HOME/.codex/bin:$PATH"
-
-# For Claude
-export PATH="$HOME/.claude/bin:$PATH"
+export PATH="$HOME/.skrills/bin:$PATH"
 ```
+
+Use the directory you set in `SKRILLS_BIN_DIR` if you changed it.
 
 Add this line to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.) to make it permanent.
 
@@ -125,8 +128,8 @@ Then run `skrills doctor` to verify.
 If the installer picks the wrong architecture, specify it explicitly:
 
 ```bash
-SKRILLS_TARGET=x86_64-unknown-linux-gnu \
-  curl -LsSf https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh | sh
+curl -LsSf https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh \
+  | SKRILLS_TARGET=x86_64-unknown-linux-gnu sh
 ```
 
 Find your target triple with:

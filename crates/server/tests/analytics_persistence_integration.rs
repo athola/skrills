@@ -6,11 +6,34 @@ use skrills_intelligence::{
     default_analytics_cache_path, load_analytics, load_or_build_analytics, save_analytics,
     UsageAnalytics,
 };
+use skrills_test_utils::{env_guard, set_env_var, EnvVarGuard};
+use std::sync::MutexGuard;
 use tempfile::TempDir;
+
+/// Points HOME at a fresh temp dir for the life of the returned value, so
+/// `load_or_build_analytics` reads no real session logs and its auto-save
+/// lands in the temp dir instead of the user's `~/.skrills/analytics_cache.json`.
+struct IsolatedHome {
+    _home: EnvVarGuard,
+    dir: TempDir,
+    _lock: MutexGuard<'static, ()>,
+}
+
+fn isolated_home() -> IsolatedHome {
+    let lock = env_guard();
+    let dir = TempDir::new().expect("should create temp home");
+    let home = set_env_var("HOME", Some(dir.path().to_str().expect("utf-8 temp path")));
+    IsolatedHome {
+        _home: home,
+        dir,
+        _lock: lock,
+    }
+}
 
 /// Test that analytics can be saved and loaded in a round-trip.
 #[test]
 fn analytics_save_and_load_roundtrip() {
+    let _home = isolated_home();
     let temp_dir = TempDir::new().expect("should create temp dir");
     let cache_path = temp_dir.path().join("analytics_cache.json");
 
@@ -44,6 +67,7 @@ fn analytics_save_and_load_roundtrip() {
 /// Test that default_analytics_cache_path returns a valid path.
 #[test]
 fn default_cache_path_is_valid() {
+    let _home = isolated_home();
     let path = default_analytics_cache_path();
     assert!(path.is_some(), "should return a cache path");
 
@@ -62,6 +86,7 @@ fn default_cache_path_is_valid() {
 /// Test that load_or_build_analytics can build analytics without panicking.
 #[test]
 fn load_or_build_analytics_succeeds() {
+    let _home = isolated_home();
     // Should succeed even if no session data exists
     let result = load_or_build_analytics(false, false);
     assert!(
@@ -73,6 +98,7 @@ fn load_or_build_analytics_succeeds() {
 /// Test that save_analytics creates parent directories.
 #[test]
 fn save_analytics_creates_parent_dirs() {
+    let _home = isolated_home();
     let temp_dir = TempDir::new().expect("should create temp dir");
     let nested_path = temp_dir
         .path()
@@ -95,6 +121,7 @@ fn save_analytics_creates_parent_dirs() {
 /// Test that load_analytics returns None for non-existent file.
 #[test]
 fn load_analytics_returns_none_for_missing_file() {
+    let _home = isolated_home();
     let temp_dir = TempDir::new().expect("should create temp dir");
     let nonexistent = temp_dir.path().join("does_not_exist.json");
 
@@ -110,17 +137,23 @@ fn load_analytics_returns_none_for_missing_file() {
 /// 3. save_analytics()
 #[test]
 fn persist_analytics_workflow_integration() {
+    let home = isolated_home();
     let temp_dir = TempDir::new().expect("should create temp dir");
     let test_cache_path = temp_dir.path().join("test_analytics_cache.json");
 
     // Simulate persist_analytics_on_exit behavior
     let analytics = load_or_build_analytics(false, true).expect("should build analytics");
 
-    // Verify we can get a default cache path
-    let default_path = default_analytics_cache_path();
+    // The default cache path, and the auto-save above, stay inside HOME.
+    let default_path = default_analytics_cache_path().expect("default cache path");
     assert!(
-        default_path.is_some(),
-        "should have default cache path available"
+        default_path.starts_with(home.dir.path()),
+        "default cache path {} escaped the test HOME",
+        default_path.display()
+    );
+    assert!(
+        default_path.exists(),
+        "auto_save should write the cache under the test HOME"
     );
 
     // Save to test location (instead of default to avoid side effects)
@@ -145,6 +178,7 @@ fn persist_analytics_workflow_integration() {
 /// Test that force_rebuild flag actually bypasses cache.
 #[test]
 fn load_or_build_analytics_force_rebuild_bypasses_cache() {
+    let _home = isolated_home();
     let temp_dir = TempDir::new().expect("should create temp dir");
     let cache_path = temp_dir.path().join("stale_cache.json");
 

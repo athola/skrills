@@ -407,6 +407,16 @@ pub(crate) fn installed_binary_path(bin_dir: &Path) -> PathBuf {
     bin_dir.join(format!("skrills{}", std::env::consts::EXE_SUFFIX))
 }
 
+/// Whether `a` and `b` name the same file, also through symlinks. Copying a
+/// file onto itself truncates it, so a textual comparison is not enough.
+fn same_file(a: &Path, b: &Path) -> bool {
+    a == b
+        || matches!(
+            (a.canonicalize(), b.canonicalize()),
+            (Ok(ca), Ok(cb)) if ca == cb
+        )
+}
+
 /// Copies the running binary into `bin_dir` (and `~/.cargo/bin`) and returns
 /// the installed path.
 fn install_binary(bin_dir: &Path, current_exe: &Path) -> Result<PathBuf> {
@@ -414,7 +424,7 @@ fn install_binary(bin_dir: &Path, current_exe: &Path) -> Result<PathBuf> {
         .context(format!("Failed to create directory: {}", bin_dir.display()))?;
 
     let target_bin = installed_binary_path(bin_dir);
-    if target_bin != current_exe {
+    if !same_file(&target_bin, current_exe) {
         fs::copy(current_exe, &target_bin)
             .context(format!("Failed to copy binary to {}", target_bin.display()))?;
 
@@ -862,7 +872,7 @@ fn copy_to_cargo_bin(source_bin: &Path) -> Result<()> {
     let cargo_bin = installed_binary_path(&cargo_bin_dir);
 
     // Skip if already the same path or cargo bin dir doesn't exist
-    if source_bin == cargo_bin || !cargo_bin_dir.exists() {
+    if same_file(source_bin, &cargo_bin) || !cargo_bin_dir.exists() {
         return Ok(());
     }
 

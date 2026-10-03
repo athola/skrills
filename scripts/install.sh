@@ -11,6 +11,9 @@
 #   SKRILLS_SKIP_PATH_MESSAGE  set to 1 to silence PATH reminder
 #   SKRILLS_NO_HOOK   set to 1 to skip hook/MCP registration
 #   SKRILLS_UNIVERSAL set to 1 to also sync ~/.agent/skills
+#   SKRILLS_CLIENT    client to set up: claude, codex, copilot, cursor, both
+#                     or all (default: each client whose ~/.<client>
+#                     directory exists, else claude)
 #   SKRILLS_SKIP_CHECKSUM  set to 1 to install without verifying the release
 #                     checksum. Only for a host with no sha256 tool or a
 #                     release whose .sha256 sidecar is missing.
@@ -233,13 +236,32 @@ install_hook_and_mcp()
     echo "Warning: binary not found at $bin_dir/$bin_name; skipping setup." >&2
     return
   fi
-  # Use the installed binary's setup command
-  echo "Running skrills setup..."
+  # Use the installed binary's setup command. Setup refuses --yes without
+  # --client, so name one per run. --bin-dir keeps setup from copying the
+  # binary into a client's own bin directory.
+  set -- --bin-dir "$bin_dir"
   if [ "${SKRILLS_UNIVERSAL:-0}" != "0" ]; then
-    "$bin_dir/$bin_name" setup --yes --universal
-  else
-    "$bin_dir/$bin_name" setup --yes
+    set -- "$@" --universal
   fi
+  for client in $(DETECT_CLIENTS); do
+    echo "Running skrills setup for $client..."
+    "$bin_dir/$bin_name" setup --yes --client "$client" "$@"
+  done
+}
+
+# Clients to set up: SKRILLS_CLIENT when set (claude, codex, copilot, cursor,
+# both or all), otherwise every client whose ~/.<client> directory exists, and
+# Claude Code when none does.
+DETECT_CLIENTS()
+{
+  if [ -n "${SKRILLS_CLIENT:-}" ]; then
+    echo "$SKRILLS_CLIENT"; return
+  fi
+  found=""
+  for client in claude codex copilot cursor; do
+    if [ -d "$HOME/.$client" ]; then found="$found $client"; fi
+  done
+  echo "${found:-claude}"
 }
 
 ensure_path_hint()

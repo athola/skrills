@@ -94,8 +94,8 @@ pub struct ColdWindowArgs {
 
     /// Additional skill directories the producer walks each tick to
     /// build the snapshot's per-skill token attribution. Combined with
-    /// any directories supplied via `SKRILLS_EXTRA_SKILL_DIRS` and the
-    /// default skill roots. Token totals are estimated from file size
+    /// any directories supplied via `SKRILLS_EXTRA_SKILL_DIRS`; the
+    /// default skill roots are not walked. Token totals are estimated from file size
     /// (`bytes / 4`); a real BPE tokenizer is a follow-up.
     #[arg(long = "skill-dir", value_name = "DIR")]
     pub skill_dirs: Vec<PathBuf>,

@@ -171,6 +171,32 @@ fn cold_window_help_dispatches() {
     );
 }
 
+/// `--skill-dir` help must describe what the producer walks: the given
+/// directories plus `SKRILLS_EXTRA_SKILL_DIRS`, never the default skill
+/// roots (`merge_extra_dirs` does not add them).
+#[test]
+fn cold_window_skill_dir_help_matches_what_is_walked() {
+    let bin = env!("CARGO_BIN_EXE_skrills");
+    let output = Command::new(bin)
+        .args(["cold-window", "--help"])
+        .output()
+        .expect("spawn skrills cold-window --help");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let flat = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("SKRILLS_EXTRA_SKILL_DIRS"),
+        "--skill-dir help should name SKRILLS_EXTRA_SKILL_DIRS:\n{stdout}"
+    );
+    assert!(
+        !flat.contains("and the default skill roots"),
+        "--skill-dir help claims the default skill roots are walked:\n{stdout}"
+    );
+    assert!(
+        flat.contains("default skill roots are not walked"),
+        "--skill-dir help should say the default skill roots are not walked:\n{stdout}"
+    );
+}
+
 /// End-to-end smoke: spawn the real `skrills` binary in browser mode,
 /// poll `/dashboard` until it returns, assert HTTP/1.1 200 plus the
 /// expected SSE-bootstrap script. Validates that ColdWindowEngine,

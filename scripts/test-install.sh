@@ -373,6 +373,60 @@ else
     test_fail "a verified tarball did not install an executable binary ($INSTALL_OUT)"
 fi
 
+# install_hook_and_mcp runs `skrills setup --yes`. Setup refuses --yes without
+# --client, so the installer must always name one. A stub binary records each
+# invocation and rejects a call without --client the way the real one does.
+echo ""
+echo "--- install_hook_and_mcp names a client for setup ---"
+SETUP_DIR="$CK_DIR/setup"
+mkdir -p "$SETUP_DIR/bin"
+cat >"$SETUP_DIR/bin/skrills" <<'STUB'
+#!/bin/sh
+echo "$*" >>"$SETUP_LOG"
+case " $* " in
+  *" --client "*) exit 0 ;;
+  *) echo "Error: --client required in non-interactive mode (--yes)" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "$SETUP_DIR/bin/skrills"
+
+# Runs install_hook_and_mcp against a fresh HOME holding the given client
+# directories. Extra environment goes in front, e.g. `SKRILLS_CLIENT=all`.
+run_setup() {
+    local home="$SETUP_DIR/home-$1"
+    shift
+    rm -rf "$home"
+    mkdir -p "$home"
+    local d
+    for d in "$@"; do mkdir -p "$home/$d"; done
+    export SETUP_LOG="$home/setup.log"
+    : >"$SETUP_LOG"
+    SETUP_RC=0
+    SETUP_OUT="$( (HOME="$home" bin_dir="$SETUP_DIR/bin" bin_name=skrills \
+        install_hook_and_mcp) 2>&1 )" || SETUP_RC=$?
+    SETUP_CALLS="$(cat "$SETUP_LOG")"
+}
+
+unset SKRILLS_CLIENT SKRILLS_UNIVERSAL SKRILLS_NO_HOOK
+run_setup none
+assert_eq "$SETUP_RC" "0" "setup succeeds when no client directory exists"
+assert_eq "$SETUP_CALLS" "setup --yes --client claude --bin-dir $SETUP_DIR/bin" \
+    "with no client directory, setup targets Claude Code in the install dir"
+
+run_setup two .codex .cursor
+assert_eq "$SETUP_RC" "0" "setup succeeds for two detected clients"
+assert_eq "$SETUP_CALLS" "setup --yes --client codex --bin-dir $SETUP_DIR/bin
+setup --yes --client cursor --bin-dir $SETUP_DIR/bin" \
+    "each detected client directory gets its own setup run"
+
+SKRILLS_CLIENT=all run_setup override .codex
+assert_eq "$SETUP_CALLS" "setup --yes --client all --bin-dir $SETUP_DIR/bin" \
+    "SKRILLS_CLIENT overrides detection"
+
+SKRILLS_UNIVERSAL=1 run_setup universal .claude
+assert_eq "$SETUP_CALLS" "setup --yes --client claude --bin-dir $SETUP_DIR/bin --universal" \
+    "SKRILLS_UNIVERSAL=1 passes --universal"
+
 # Summary
 echo ""
 echo "========================================"

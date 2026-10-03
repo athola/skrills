@@ -57,17 +57,7 @@ export SKRILLS_MIRROR_SOURCE=/path/to/other/claude
 skrills sync-all
 ```
 
-**`SKRILLS_NO_MIRROR`**
-
-Skip automatic skill syncing during installation.
-
-- Default: disabled
-- Set to `1` to skip
-
-```bash
-# Install without syncing Claude skills
-SKRILLS_NO_MIRROR=1 ./scripts/install.sh
-```
+The installer syncs no skills unless `SKRILLS_UNIVERSAL=1` is set; see [Installation](installation.md#customizing-installation) for its variables.
 
 ### Client Settings
 
@@ -77,6 +67,7 @@ Force skrills to target a specific client instead of auto-detecting.
 
 - Default: auto-detected from `~/.claude` or `~/.codex` presence
 - Values: `claude` or `codex`
+- The installer also reads it to pick the client for `skrills setup`, where `copilot`, `cursor`, `both` and `all` are accepted too
 
 ```bash
 # Always target Claude
