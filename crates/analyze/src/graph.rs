@@ -18,12 +18,36 @@ use std::collections::{HashMap, HashSet, VecDeque};
 /// For full dependency resolution with version constraints, source pinning,
 /// and caching, use [`crate::resolve::DependencyGraph`] instead.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(from = "SerializedGraph")]
 pub struct RelationshipGraph {
     /// Adjacency list: skill URI → set of dependency URIs
     edges: HashMap<String, HashSet<String>>,
     /// Reverse adjacency list: dependency URI → set of dependent URIs
-    #[serde(default)]
     reverse_edges: HashMap<String, HashSet<String>>,
+}
+
+/// Wire form read by `Deserialize`. `reverse_edges` is derived data:
+/// it is rebuilt from `edges` on load, so a graph serialized before
+/// the field existed (or with a stale copy of it) still answers
+/// `dependents` correctly.
+#[derive(Deserialize)]
+struct SerializedGraph {
+    edges: HashMap<String, HashSet<String>>,
+    #[serde(default, rename = "reverse_edges")]
+    _reverse_edges: serde::de::IgnoredAny,
+}
+
+impl From<SerializedGraph> for RelationshipGraph {
+    fn from(wire: SerializedGraph) -> Self {
+        let mut graph = Self::new();
+        for (from, deps) in wire.edges {
+            graph.add_skill(from.clone());
+            for to in deps {
+                graph.add_dependency(from.clone(), to);
+            }
+        }
+        graph
+    }
 }
 
 impl RelationshipGraph {
@@ -76,7 +100,8 @@ impl RelationshipGraph {
     /// Resolve transitive dependencies for a skill.
     ///
     /// Returns all skills that the given skill depends on, directly or indirectly,
-    /// in breadth-first traversal order.
+    /// in breadth-first traversal order, with each skill's direct
+    /// dependencies visited in sorted order so the result is stable.
     ///
     /// Handles cycles gracefully by visiting each node only once.
     #[must_use]
@@ -87,9 +112,7 @@ impl RelationshipGraph {
 
         // Start with direct dependencies
         if let Some(deps) = self.edges.get(uri) {
-            for dep in deps {
-                queue.push_back(dep.clone());
-            }
+            queue.extend(sorted(deps).into_iter().cloned());
         }
 
         while let Some(current) = queue.pop_front() {
@@ -102,7 +125,7 @@ impl RelationshipGraph {
 
             // Add transitive dependencies
             if let Some(deps) = self.edges.get(&current) {
-                for dep in deps {
+                for dep in sorted(deps) {
                     if !visited.contains(dep) {
                         queue.push_back(dep.clone());
                     }
@@ -218,9 +241,40 @@ impl RelationshipGraph {
     }
 }
 
+/// A set's members in sorted order, for deterministic traversal.
+fn sorted(set: &HashSet<String>) -> Vec<&String> {
+    let mut items: Vec<&String> = set.iter().collect();
+    items.sort();
+    items
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graph_serialized_without_reverse_edges_still_answers_dependents() {
+        // IN-69: older serialized graphs have no `reverse_edges`; the
+        // field defaulted to empty and `dependents` returned nothing.
+        let json = r#"{"edges":{"a":["b"],"b":["c"],"c":[]}}"#;
+        let graph: RelationshipGraph = serde_json::from_str(json).unwrap();
+        assert_eq!(graph.dependents("b"), ["a"]);
+        assert_eq!(graph.transitive_dependents("c"), ["a", "b"]);
+    }
+
+    #[test]
+    fn resolve_order_is_deterministic() {
+        // IN-70: neighbours were enqueued in HashSet order. Breadth
+        // first, with each node's neighbours in sorted order.
+        let mut graph = RelationshipGraph::new();
+        let direct: Vec<String> = (0..12).map(|i| format!("d{i:02}")).collect();
+        graph.add_dependencies("root", direct.clone());
+        graph.add_dependency("d05", "z-deep");
+        graph.add_dependency("d00", "y-deep");
+        let mut expected = direct;
+        expected.extend(["y-deep".to_string(), "z-deep".to_string()]);
+        assert_eq!(graph.resolve("root"), expected);
+    }
 
     #[test]
     fn test_add_skill() {

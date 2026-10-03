@@ -99,13 +99,23 @@ impl CitationTracker {
         context: Option<&str>,
     ) -> TomeResult<()> {
         let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
-        let rows = conn.execute(
+        // OR IGNORE covers the duplicate case only; SQLite still raises a
+        // foreign-key violation when either paper is untracked.
+        let rows = match conn.execute(
             "INSERT OR IGNORE INTO citations (citing_id, cited_id, context) VALUES (?1, ?2, ?3)",
             rusqlite::params![citing_id, cited_id, context],
-        )?;
+        ) {
+            Ok(rows) => rows,
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY =>
+            {
+                0
+            }
+            Err(e) => return Err(e.into()),
+        };
         if rows == 0 {
             tracing::debug!(
-                "citation {citing_id} -> {cited_id} not inserted (duplicate or FK violation)"
+                "citation {citing_id} -> {cited_id} not inserted (duplicate or untracked paper)"
             );
         }
         Ok(())
@@ -237,6 +247,20 @@ mod tests {
             Some("first insert"),
             "original context should be preserved"
         );
+    }
+
+    #[test]
+    fn citation_to_an_untracked_paper_is_a_logged_no_op() {
+        // IN-53: OR IGNORE does not cover foreign-key failures, so this
+        // returned a constraint error despite the documented no-op.
+        let ct = CitationTracker::open_in_memory().unwrap();
+        ct.track_paper(&test_paper("p1", "Tracked")).unwrap();
+
+        ct.add_citation("untracked", "p1", None).unwrap();
+        ct.add_citation("p1", "untracked", None).unwrap();
+
+        assert!(ct.forward_citations("p1").unwrap().is_empty());
+        assert!(ct.backward_citations("p1").unwrap().is_empty());
     }
 
     #[test]

@@ -37,45 +37,24 @@ impl<'a, R: SkillRegistry> DependencyResolver<'a, R> {
     /// Resolve dependencies for a skill by name.
     #[must_use = "resolution result contains important dependency information"]
     pub fn resolve(&self, skill_name: &str) -> Result<ResolutionResult, ResolveError> {
-        let mut visited: HashSet<String> = HashSet::new();
-        let mut in_stack: HashSet<String> = HashSet::new();
-        let mut stack_order: Vec<String> = Vec::new();
-        let mut resolved: Vec<ResolvedDependency> = Vec::new();
-        let mut warnings: Vec<String> = Vec::new();
-
-        self.visit(
-            skill_name,
-            None,
-            false,
-            0,
-            "root",
-            &mut visited,
-            &mut in_stack,
-            &mut stack_order,
-            &mut resolved,
-            &mut warnings,
-        )?;
+        let mut walk = Walk::default();
+        self.visit(&mut walk, skill_name, None, false, 0, "root")?;
 
         Ok(ResolutionResult {
-            resolved,
-            warnings,
+            resolved: walk.resolved,
+            warnings: walk.warnings,
             success: true,
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn visit(
         &self,
+        walk: &mut Walk,
         skill_name: &str,
         source_constraint: Option<&str>,
         optional: bool,
         depth: usize,
         required_by: &str,
-        visited: &mut HashSet<String>,
-        in_stack: &mut HashSet<String>,
-        stack_order: &mut Vec<String>,
-        resolved: &mut Vec<ResolvedDependency>,
-        warnings: &mut Vec<String>,
     ) -> Result<(), ResolveError> {
         if depth > self.options.max_depth {
             return Err(ResolveError::MaxDepthExceeded(self.options.max_depth));
@@ -86,9 +65,9 @@ impl<'a, R: SkillRegistry> DependencyResolver<'a, R> {
             None => skill_name.to_string(),
         };
 
-        if in_stack.contains(&key) {
-            let cycle_start = stack_order.iter().position(|s| s == &key).unwrap_or(0);
-            let cycle: Vec<_> = stack_order[cycle_start..]
+        if walk.in_stack.contains(&key) {
+            let cycle_start = walk.stack_order.iter().position(|s| s == &key).unwrap_or(0);
+            let cycle: Vec<_> = walk.stack_order[cycle_start..]
                 .iter()
                 .chain(std::iter::once(&key))
                 .cloned()
@@ -98,7 +77,7 @@ impl<'a, R: SkillRegistry> DependencyResolver<'a, R> {
             });
         }
 
-        if visited.contains(&key) {
+        if walk.visited.contains(&key) {
             return Ok(());
         }
 
@@ -106,7 +85,7 @@ impl<'a, R: SkillRegistry> DependencyResolver<'a, R> {
             Some(i) => i,
             None => {
                 if optional && !self.options.strict_optional {
-                    warnings.push(format!(
+                    walk.warnings.push(format!(
                         "Skipped optional dependency '{}' (not found)",
                         skill_name
                     ));
@@ -119,8 +98,8 @@ impl<'a, R: SkillRegistry> DependencyResolver<'a, R> {
             }
         };
 
-        in_stack.insert(key.clone());
-        stack_order.push(key.clone());
+        walk.in_stack.insert(key.clone());
+        walk.stack_order.push(key.clone());
 
         if let Some(ref fm) = info.frontmatter {
             let deps = fm
@@ -131,45 +110,39 @@ impl<'a, R: SkillRegistry> DependencyResolver<'a, R> {
                 })?;
 
             for dep in deps {
-                // Version check
                 if !self.options.ignore_versions {
                     if let Some(req) = &dep.version_req {
                         if let Some(dep_info) =
                             self.registry.lookup(&dep.name, dep.source.as_deref())
                         {
-                            if let Some(actual) = &dep_info.version {
-                                if !req.matches(actual) {
-                                    return Err(ResolveError::VersionMismatch {
-                                        name: dep.name.clone(),
-                                        required: req.to_string(),
-                                        found: actual.to_string(),
-                                    });
-                                }
-                            }
+                            check_version(
+                                &dep.name,
+                                req,
+                                dep_info.version.as_ref(),
+                                &mut walk.warnings,
+                            )?;
                         }
                     }
                 }
 
+                // Optional propagates down: anything reached only through
+                // an optional edge is itself optional (same as the graph).
                 self.visit(
+                    walk,
                     &dep.name,
                     dep.source.as_deref(),
-                    dep.optional,
+                    optional || dep.optional,
                     depth + 1,
                     skill_name,
-                    visited,
-                    in_stack,
-                    stack_order,
-                    resolved,
-                    warnings,
                 )?;
             }
         }
 
-        in_stack.remove(&key);
-        stack_order.pop();
-        visited.insert(key);
+        walk.in_stack.remove(&key);
+        walk.stack_order.pop();
+        walk.visited.insert(key);
 
-        resolved.push(ResolvedDependency {
+        walk.resolved.push(ResolvedDependency {
             uri: info.uri.clone(),
             name: info.name.clone(),
             source: info.source.clone(),
@@ -179,6 +152,41 @@ impl<'a, R: SkillRegistry> DependencyResolver<'a, R> {
         });
 
         Ok(())
+    }
+}
+
+/// Traversal state for one `DependencyResolver::resolve` call.
+#[derive(Default)]
+struct Walk {
+    visited: HashSet<String>,
+    in_stack: HashSet<String>,
+    stack_order: Vec<String>,
+    resolved: Vec<ResolvedDependency>,
+    warnings: Vec<String>,
+}
+
+/// Check `req` against the dependency's declared version, shared by both
+/// resolvers. A requirement on an unversioned dependency cannot be checked,
+/// so it is reported as a warning instead of passing silently.
+pub(super) fn check_version(
+    name: &str,
+    req: &semver::VersionReq,
+    actual: Option<&semver::Version>,
+    warnings: &mut Vec<String>,
+) -> Result<(), ResolveError> {
+    match actual {
+        Some(actual) if !req.matches(actual) => Err(ResolveError::VersionMismatch {
+            name: name.to_string(),
+            required: req.to_string(),
+            found: actual.to_string(),
+        }),
+        Some(_) => Ok(()),
+        None => {
+            warnings.push(format!(
+                "Cannot check version requirement {req} for '{name}': it declares no version"
+            ));
+            Ok(())
+        }
     }
 }
 
@@ -195,10 +203,15 @@ impl InMemoryRegistry {
     }
 
     /// Add a skill to the registry.
+    ///
+    /// The first skill added under a name (or `source:name`) wins, matching
+    /// `GraphBuilder::build`, so both resolvers pick the same skill.
     pub fn add(&mut self, info: SkillInfo) {
-        self.skills.insert(info.name.clone(), info.clone());
+        let scoped = format!("{}:{}", info.source.label(), info.name);
         self.skills
-            .insert(format!("{}:{}", info.source.label(), info.name), info);
+            .entry(info.name.clone())
+            .or_insert_with(|| info.clone());
+        self.skills.entry(scoped).or_insert(info);
     }
 }
 

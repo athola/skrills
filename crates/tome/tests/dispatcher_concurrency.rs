@@ -5,7 +5,7 @@
 //! - `corrupt_persistence_file_recovers_at_full`: corrupt file
 //! - `persist_bucket_atomic_no_temp_leakage`: N7 (atomic write)
 //! - `load_clamps_negative_available_to_zero`: negative available
-//! - `load_rejects_nan_available`: NaN available
+//! - `load_recovers_from_unquoted_nan_literal`: non-JSON NaN literal
 //!
 //! Clock-warp is asserted via the unit-test path in
 //! `dispatcher.rs::tests`: see `clock_warp_does_not_saturate_bucket`.
@@ -155,9 +155,14 @@ fn load_clamps_negative_available_to_zero() {
     // to full bucket"; a negative or NaN value must NEVER survive.
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("quota.json");
+    //
+    // `last_refill_ms` is "now", so the boot refill adds almost
+    // nothing. With `0` the refill topped the bucket up to capacity
+    // and hid whether the clamp ran at all (IN-76).
+    let now_ms = skrills_tome::dispatcher::current_ms_checked().expect("system clock after epoch");
     std::fs::write(
         &path,
-        br#"{"rate_per_hour":10,"available":-5.0,"last_refill_ms":0}"#,
+        format!(r#"{{"rate_per_hour":10,"available":-5.0,"last_refill_ms":{now_ms}}}"#),
     )
     .unwrap();
 
@@ -165,14 +170,25 @@ fn load_clamps_negative_available_to_zero() {
         BucketedBudget::persistent(10, path).expect("validation must not propagate as Err");
     let state = budget.current_state();
     assert!(state.available().is_finite());
-    assert!(state.available() >= 0.0);
-    assert!(state.available() <= state.rate_per_hour() as f64);
+    assert!(
+        state.available() >= 0.0,
+        "negative available survived load: {}",
+        state.available()
+    );
+    assert!(
+        state.available() < 1.0,
+        "expected a clamp to ~0, not a fresh bucket: {}",
+        state.available()
+    );
 }
 
 #[test]
-fn load_rejects_nan_available() {
-    // NaN poisons `min` (`NaN.min(x) == NaN`) and would propagate
-    // forever through the bucket. Recover.
+fn load_recovers_from_unquoted_nan_literal() {
+    // Tampered files commonly emit an unquoted `NaN`. That is not
+    // valid JSON, so this exercises the corrupt-file recovery branch,
+    // not the `!is_finite()` check in `validated`: serde_json cannot
+    // produce a non-finite f64. The NaN check itself is unit-tested
+    // directly in `dispatcher.rs::tests::validated_rejects_nan_and_inf`.
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("quota.json");
     // JSON spec disallows literal NaN; tampered files commonly emit

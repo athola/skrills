@@ -19,14 +19,10 @@ impl Default for SemanticScholarClient {
 impl SemanticScholarClient {
     pub fn new() -> Self {
         Self {
-            http: reqwest::Client::builder()
-                .user_agent("skrills-tome/0.1 (https://github.com/athola/skrills)")
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "SemanticScholar client builder failed, using default");
-                    reqwest::Client::new()
-                }),
+            http: super::http_client(
+                "semantic_scholar",
+                Some("skrills-tome/0.1 (https://github.com/athola/skrills)"),
+            ),
         }
     }
 
@@ -45,14 +41,9 @@ impl SemanticScholarClient {
             .send()
             .await?;
 
-        if !resp.status().is_success() {
-            return Err(crate::TomeError::Api {
-                api: "semantic_scholar".to_string(),
-                message: format!("HTTP {}", resp.status()),
-            });
-        }
+        let resp = super::ensure_success("semantic_scholar", resp, "")?;
 
-        let body: serde_json::Value = resp.json().await?;
+        let body = super::read_json("semantic_scholar", resp).await?;
         let papers = body["data"]
             .as_array()
             .ok_or_else(|| crate::TomeError::Api {

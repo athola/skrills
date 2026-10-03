@@ -107,7 +107,7 @@ pub fn suggest_optimizations(
                 Suggestion::high(
                     OptimizationType::ReduceSize,
                     format!(
-                        "Skill is very large ({} tokens). Consider splitting into smaller skills.",
+                        "{VERY_LARGE_PREFIX}{} tokens). Consider splitting into smaller skills.",
                         tokens.total
                     ),
                 )
@@ -119,7 +119,7 @@ pub fn suggest_optimizations(
                 Suggestion::medium(
                     OptimizationType::ReduceSize,
                     format!(
-                        "Skill is large ({} tokens). Review for unnecessary content.",
+                        "{LARGE_PREFIX}{} tokens). Review for unnecessary content.",
                         tokens.total
                     ),
                 )
@@ -155,7 +155,7 @@ pub fn suggest_optimizations(
         suggestions.push(
             Suggestion::high(
                 OptimizationType::FixIssue,
-                format!("{} referenced files are missing", deps.missing.len()),
+                format!("{}{MISSING_FILES_SUFFIX}", deps.missing.len()),
             )
             .with_action("Create missing files or update references"),
         );
@@ -233,10 +233,31 @@ fn check_directory_usage(deps: &DependencyAnalysis, suggestions: &mut Vec<Sugges
     }
 }
 
+/// Lines outside fenced code blocks, with their 1-based line numbers.
+/// Fence lines themselves are dropped, as in `check_large_code_blocks`.
+fn prose_lines(content: &str) -> Vec<(usize, &str)> {
+    let mut in_code_block = false;
+    let mut out = Vec::new();
+    for (i, line) in content.lines().enumerate() {
+        if line.trim().starts_with("```") {
+            in_code_block = !in_code_block;
+            continue;
+        }
+        if !in_code_block {
+            out.push((i + 1, line));
+        }
+    }
+    out
+}
+
 fn check_content_patterns(content: &str, suggestions: &mut Vec<Suggestion>) {
+    // Code blocks hold comments like `# Example` and minified lines;
+    // neither is a markdown heading or paragraph.
+    let prose = prose_lines(content);
+
     // Check for duplicate headings
     let mut headings: Vec<&str> = Vec::new();
-    for line in content.lines() {
+    for &(_, line) in &prose {
         if line.starts_with('#') {
             let heading = line.trim_start_matches('#').trim();
             if headings.contains(&heading) {
@@ -254,10 +275,9 @@ fn check_content_patterns(content: &str, suggestions: &mut Vec<Suggestion>) {
     }
 
     // Check for very long paragraphs (no line breaks)
-    let lines: Vec<&str> = content.lines().collect();
-    for (i, line) in lines.iter().enumerate() {
-        // Skip code blocks, frontmatter, headings
-        if line.starts_with("```") || line.starts_with('#') || line.trim() == "---" {
+    for &(line_number, line) in &prose {
+        // Skip frontmatter delimiters and headings
+        if line.starts_with('#') || line.trim() == "---" {
             continue;
         }
 
@@ -267,7 +287,7 @@ fn check_content_patterns(content: &str, suggestions: &mut Vec<Suggestion>) {
                     OptimizationType::ImproveStructure,
                     format!(
                         "Very long paragraph at line {} ({} chars)",
-                        i + 1,
+                        line_number,
                         line.len()
                     ),
                 )
@@ -287,6 +307,22 @@ fn check_content_patterns(content: &str, suggestions: &mut Vec<Suggestion>) {
             )
             .with_action("Address or remove TODO/FIXME comments"),
         );
+    }
+}
+
+const VERY_LARGE_PREFIX: &str = "Skill is very large (";
+const LARGE_PREFIX: &str = "Skill is large (";
+const MISSING_FILES_SUFFIX: &str = " referenced files are missing";
+
+/// Whether `s` is one of the suggestions `suggest_optimizations` emits
+/// for a condition `quality_score` already deducts for directly (skill
+/// size, missing referenced files).
+fn mirrors_direct_deduction(s: &Suggestion) -> bool {
+    match (s.priority, s.opt_type) {
+        (Priority::High, OptimizationType::ReduceSize) => s.message.starts_with(VERY_LARGE_PREFIX),
+        (Priority::Medium, OptimizationType::ReduceSize) => s.message.starts_with(LARGE_PREFIX),
+        (Priority::High, OptimizationType::FixIssue) => s.message.ends_with(MISSING_FILES_SUFFIX),
+        _ => false,
     }
 }
 
@@ -310,16 +346,19 @@ pub fn quality_score(
         score -= 0.2 * (deps.missing.len() as f64 / 5.0).min(1.0);
     }
 
+    // Deduct for the remaining suggestions. The size and missing-file
+    // suggestions only restate the two deductions above, so counting
+    // them again would penalise the same problem twice.
+    let independent = || suggestions.iter().filter(|s| !mirrors_direct_deduction(s));
+
     // Deduct for high-priority suggestions
-    let high_count = suggestions
-        .iter()
+    let high_count = independent()
         .filter(|s| s.priority == Priority::High)
         .count();
     score -= 0.1 * (high_count as f64).min(3.0);
 
     // Deduct for medium-priority suggestions
-    let medium_count = suggestions
-        .iter()
+    let medium_count = independent()
         .filter(|s| s.priority == Priority::Medium)
         .count();
     score -= 0.05 * (medium_count as f64).min(4.0);
@@ -347,6 +386,64 @@ mod tests {
         assert!(suggestions
             .iter()
             .any(|s| s.priority == Priority::High && s.message.contains("very large")));
+    }
+
+    #[test]
+    fn code_block_contents_are_not_headings_or_paragraphs() {
+        // IN-71: `# Example` comments in two bash blocks were reported
+        // as a duplicate heading, and a long line in a code block as a
+        // long paragraph.
+        let long_line = "x".repeat(600);
+        let content = format!(
+            "# Title\n\n```bash\n# Example\necho a\n```\n\n```bash\n# Example\n{long_line}\n```\n"
+        );
+        let suggestions = suggest_optimizations(
+            &content,
+            &TokenBreakdown::default(),
+            &DependencyAnalysis::default(),
+        );
+        assert!(
+            !suggestions
+                .iter()
+                .any(|s| s.message.contains("Duplicate heading")
+                    || s.message.contains("long paragraph")),
+            "{:?}",
+            suggestions.iter().map(|s| &s.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn size_and_missing_files_are_each_penalised_once() {
+        // IN-72: the size and missing-file deductions were applied
+        // again through the High suggestions that report them.
+        let tokens = TokenBreakdown {
+            total: 12_000,
+            prose: 12_000,
+            ..Default::default()
+        };
+        let mut deps = DependencyAnalysis::default();
+        for i in 0..5 {
+            deps.missing.push(crate::deps::Dependency {
+                dep_type: crate::deps::DependencyType::Reference,
+                target: format!("references/missing{i}.md"),
+                line: Some(1),
+                exists: Some(false),
+            });
+        }
+        let suggestions = suggest_optimizations("# Skill\n", &tokens, &deps);
+        let score = quality_score(&tokens, &deps, &suggestions);
+        // 1.0 - 0.3 (very large) - 0.2 (five missing files).
+        assert!((score - 0.5).abs() < 1e-9, "score {score}");
+
+        let large = TokenBreakdown {
+            total: 3_000,
+            prose: 3_000,
+            ..Default::default()
+        };
+        let suggestions =
+            suggest_optimizations("# Skill\n", &large, &DependencyAnalysis::default());
+        let score = quality_score(&large, &DependencyAnalysis::default(), &suggestions);
+        assert!((score - 0.85).abs() < 1e-9, "score {score}");
     }
 
     #[test]

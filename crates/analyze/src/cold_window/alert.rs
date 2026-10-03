@@ -23,9 +23,7 @@
 //! - 100% of budget → `Warning` and kill-switch.
 
 use std::collections::VecDeque;
-use std::sync::Arc;
 
-use parking_lot::Mutex;
 use skrills_snapshot::{Alert, AlertBand, Severity, WindowSnapshot};
 
 use super::traits::{AlertHistory, AlertPolicy, AlertState};
@@ -46,8 +44,9 @@ pub const WARNING_BUDGET_FRACTION: f64 = 0.80;
 /// fraction of the firing threshold.
 pub const HYSTERESIS_CLEAR_RATIO: f64 = 0.95;
 
-/// Number of samples the rolling baseline window holds before it
-/// switches from static thresholds to adaptive (mean ± k·σ) thresholds.
+/// Number of samples a [`BaselineWindow`] needs before it leaves
+/// warm-up. [`LayeredAlertPolicy`] does not use the baseline; see
+/// [`BaselineWindow`] for why.
 /// Sized for ~1 minute of activity at 1 Hz tick, small enough for
 /// responsive adaptation, large enough that early jitter does not
 /// dominate the sample mean. Spec § 4.3 (rolling baseline).
@@ -60,15 +59,17 @@ pub const MIN_BASELINE_SAMPLES: usize = 60;
 /// grows unbounded.
 pub const MAX_BASELINE_SAMPLES: usize = 600;
 
-/// Adaptive threshold sigma multiplier for the **Advisory** tier.
+/// Sigma multiplier for an **Advisory**-level spike over a
+/// [`BaselineWindow`]. Not applied by [`LayeredAlertPolicy`].
 pub const ADVISORY_SIGMA_K: f64 = 2.0;
 
-/// Adaptive threshold sigma multiplier for the **Caution** tier.
+/// Sigma multiplier for a **Caution**-level spike over a
+/// [`BaselineWindow`]. Not applied by [`LayeredAlertPolicy`].
 pub const CAUTION_SIGMA_K: f64 = 3.0;
 
-/// Adaptive threshold sigma multiplier for the **Warning** tier.
-/// (Used only for the rolling-baseline floor; the absolute warning
-/// threshold remains anchored at 80 % of the user's budget ceiling.)
+/// Sigma multiplier for a **Warning**-level spike over a
+/// [`BaselineWindow`]. Not applied by [`LayeredAlertPolicy`]; the
+/// warning threshold is anchored at 80 % of the budget ceiling.
 pub const WARNING_SIGMA_K: f64 = 4.0;
 
 /// Validation failure when constructing or mutating a
@@ -99,14 +100,15 @@ impl std::error::Error for PolicyError {}
 
 /// Rolling baseline window of token-total samples.
 ///
-/// Maintained internally by [`LayeredAlertPolicy`]; a fresh window is
-/// created per policy instance. We compute mean and sample-stddev on
-/// demand at evaluate-time; the per-tick cost is `O(N)` with `N` ≤
-/// [`MAX_BASELINE_SAMPLES`], which at the engine's tight tick budget
-/// (~50 ms) is comfortably under the SC1 budget for any realistic N.
+/// A bounded sample window with mean and sample-stddev computed on
+/// demand; the cost is `O(N)` with `N` ≤ [`MAX_BASELINE_SAMPLES`].
 ///
-/// Pre-warmup behavior (size < [`MIN_BASELINE_SAMPLES`]): no
-/// adaptation, the policy's static thresholds drive classification.
+/// [`LayeredAlertPolicy`] no longer feeds or reads it. Raising the
+/// tier thresholds to `mean + k·σ` suppressed the Advisory and
+/// Caution alerts for any steadily growing token total (the current
+/// value of a linear ramp sits about 1.73σ above the window mean), so
+/// the static thresholds now always gate. The type stays public for
+/// a future spike detector that adds alerts rather than hiding them.
 #[derive(Debug, Default)]
 pub struct BaselineWindow {
     samples: VecDeque<u64>,
@@ -183,7 +185,7 @@ impl BaselineWindow {
 }
 
 /// Layered alert policy with hysteresis, min-dwell, 4-tier severity,
-/// and rolling-baseline adaptation.
+/// and fixed absolute tier thresholds.
 ///
 /// All configuration knobs are crate-private and reachable only
 /// through the validating builders. Builders return
@@ -207,10 +209,6 @@ pub struct LayeredAlertPolicy {
     pub(crate) advisory_threshold: u64,
     /// Threshold for the `Caution` tier (default 50K).
     pub(crate) caution_threshold: u64,
-    /// Rolling-baseline window. Wrapped in `Arc<Mutex<...>>` so the
-    /// policy can record samples through `&self` (the trait method
-    /// signature is immutable). Spec § 4.3.
-    pub(crate) baseline: Arc<Mutex<BaselineWindow>>,
 }
 
 impl LayeredAlertPolicy {
@@ -222,8 +220,28 @@ impl LayeredAlertPolicy {
             min_dwell_ticks: DEFAULT_MIN_DWELL_TICKS,
             advisory_threshold: TOKEN_ADVISORY_THRESHOLD,
             caution_threshold: TOKEN_CAUTION_THRESHOLD,
-            baseline: Arc::new(Mutex::new(BaselineWindow::new())),
         }
+    }
+
+    /// Construct with spec defaults, scaling the lower tiers down when
+    /// the ceiling would otherwise sit at or below them.
+    ///
+    /// [`Self::new`] keeps the static 20K/50K tiers whatever the
+    /// ceiling, so a budget of 10K engaged the kill-switch before
+    /// Advisory or Caution could fire. Here, when `budget_ceiling` is
+    /// at or below the caution threshold, Advisory moves to 20% and
+    /// Caution to 50% of the ceiling (the default ratios against a
+    /// 100K budget), which satisfies [`Self::validate`] for any
+    /// ceiling of 2 or more. Ceilings of 0 or 1 cannot hold ordered
+    /// tiers; the caller should reject them.
+    #[must_use]
+    pub fn for_budget(budget_ceiling: u64) -> Self {
+        let mut policy = Self::new(budget_ceiling);
+        if budget_ceiling <= policy.caution_threshold {
+            policy.advisory_threshold = budget_ceiling / 5;
+            policy.caution_threshold = budget_ceiling / 2;
+        }
+        policy
     }
 
     /// Validate the current configuration and return self on success.
@@ -307,34 +325,6 @@ impl LayeredAlertPolicy {
         token_total >= self.budget_ceiling
     }
 
-    /// Resolve effective tier thresholds, blending static configuration
-    /// with the rolling-baseline window when post-warmup. Returns
-    /// `(advisory, caution)`.
-    ///
-    /// Pre-warmup (n < [`MIN_BASELINE_SAMPLES`]) → static thresholds.
-    /// Post-warmup → `max(static, mean + k·σ)` per tier so the
-    /// adaptive scheme can only **raise** the floor when activity is
-    /// noisier than the static threshold expects (avoids raining
-    /// alerts during a high-baseline workload). When the workload is
-    /// quieter, the static threshold still gates so a rare spike still
-    /// surfaces. Spec § 4.3. The simplest viable adaptive
-    /// scheme; documented inline so future iterations can swap in
-    /// e.g. EWMA without touching the call sites.
-    pub(crate) fn effective_thresholds(&self) -> (u64, u64) {
-        let baseline = self.baseline.lock();
-        if baseline.pre_warmup() {
-            return (self.advisory_threshold, self.caution_threshold);
-        }
-        let mean = baseline.mean();
-        let stddev = baseline.stddev();
-        let advisory_dyn = (mean + ADVISORY_SIGMA_K * stddev).max(0.0) as u64;
-        let caution_dyn = (mean + CAUTION_SIGMA_K * stddev).max(0.0) as u64;
-        (
-            advisory_dyn.max(self.advisory_threshold),
-            caution_dyn.max(self.caution_threshold),
-        )
-    }
-
     /// Build a one-sided high-band with the standard hysteresis-clear
     /// ratio. Static thresholds are validated by construction so `expect`
     /// is safe.
@@ -357,23 +347,28 @@ impl LayeredAlertPolicy {
     fn active_tiers(&self, total: u64) -> Vec<(Severity, &'static str, AlertBand)> {
         let budget = self.budget_ceiling as f64;
         let warning_threshold = budget * WARNING_BUDGET_FRACTION;
-        let (advisory_eff, caution_eff) = self.effective_thresholds();
+        // The tier thresholds are absolute token totals and always
+        // gate. A rolling baseline must never raise them: on a steadily
+        // growing total that hid the Advisory and Caution alerts
+        // although the total was past both (IN-19).
+        let advisory = self.advisory_threshold;
+        let caution = self.caution_threshold;
         let mut tiers = Vec::new();
 
-        // Advisory at quadratic inflection (or rolling-baseline floor).
-        if total >= advisory_eff {
+        // Advisory at quadratic inflection.
+        if total >= advisory {
             tiers.push((
                 Severity::Advisory,
                 Self::fingerprint_for(Severity::Advisory),
-                Self::band_for(advisory_eff as f64),
+                Self::band_for(advisory as f64),
             ));
         }
-        // Caution at MCP-overhead range (or rolling-baseline floor).
-        if total >= caution_eff {
+        // Caution at MCP-overhead range.
+        if total >= caution {
             tiers.push((
                 Severity::Caution,
                 Self::fingerprint_for(Severity::Caution),
-                Self::band_for(caution_eff as f64),
+                Self::band_for(caution as f64),
             ));
         }
         // Soft warning at 80% of budget; at or above the hard ceiling the
@@ -424,13 +419,6 @@ impl AlertPolicy for LayeredAlertPolicy {
     ) -> Vec<Alert> {
         let mut alerts = Vec::new();
         let total = curr.token_ledger.total;
-        // Feed the rolling baseline with each tick's sample.
-        // Sampling happens before classification so the in-progress
-        // tick contributes to subsequent ticks but not its own
-        // threshold evaluation (avoids self-attribution in spike
-        // detection). Lock acquisition is contention-free on the
-        // engine's per-tick path.
-        self.baseline.lock().push(total);
 
         // Every tier the signal currently breaches; nested thresholds
         // on one signal stay concurrently active (see `active_tiers`).
@@ -890,15 +878,34 @@ mod tests {
     }
 
     #[test]
-    fn ni1_baseline_window_post_warmup_raises_advisory_floor() {
-        // After warmup with a noisy high-mean sample stream, the
-        // rolling baseline floor exceeds the static advisory
-        // threshold (mean + 2σ > 20K). Use mean ~25K with σ ~2K so
-        // the post-warmup advisory floor lands ~29K.
+    fn for_budget_keeps_defaults_above_caution_and_scales_below() {
+        let p = LayeredAlertPolicy::for_budget(100_000);
+        assert_eq!(p.advisory_threshold(), TOKEN_ADVISORY_THRESHOLD);
+        assert_eq!(p.caution_threshold(), TOKEN_CAUTION_THRESHOLD);
+
+        for budget in [2, 3, 10, 10_000, TOKEN_CAUTION_THRESHOLD] {
+            let p = LayeredAlertPolicy::for_budget(budget);
+            assert!(
+                p.clone().validate().is_ok(),
+                "budget {budget}: {} / {} / {}",
+                p.advisory_threshold(),
+                p.caution_threshold(),
+                p.budget_ceiling()
+            );
+        }
+        let p = LayeredAlertPolicy::for_budget(10_000);
+        assert_eq!(p.advisory_threshold(), 2_000);
+        assert_eq!(p.caution_threshold(), 5_000);
+    }
+
+    #[test]
+    fn noisy_high_workload_does_not_raise_the_advisory_threshold() {
+        // A noisy stream averaging 25K (sigma ~2K) used to lift the
+        // advisory floor to ~29K. The thresholds are absolute: 21K is
+        // past 20K and must fire regardless of history.
         let policy = LayeredAlertPolicy::new(200_000).with_min_dwell(1);
         let mut history = AlertHistory::new();
         for i in 0..MIN_BASELINE_SAMPLES {
-            // Alternate 23K / 27K so mean=25K, sample-stddev ~2K.
             let total = if i % 2 == 0 { 23_000 } else { 27_000 };
             let _ = policy.evaluate(
                 &snapshot_with_tokens(0),
@@ -906,35 +913,41 @@ mod tests {
                 &mut history,
             );
         }
-        let (advisory_eff, _) = policy.effective_thresholds();
-        assert!(
-            advisory_eff > 20_000,
-            "post-warmup advisory floor must exceed static 20K when mean ~25K + 2σ, got {}",
-            advisory_eff
+        let alerts = policy.evaluate(
+            &snapshot_with_tokens(0),
+            &snapshot_with_tokens(21_000),
+            &mut history,
         );
+        assert!(alerts.iter().any(|a| a.severity == Severity::Advisory));
     }
 
     #[test]
-    fn ni1_baseline_pre_warmup_falls_back_when_n_below_min() {
-        let policy = LayeredAlertPolicy::new(100_000);
-        // Drive one less than MIN_BASELINE_SAMPLES.
+    fn steadily_growing_total_keeps_advisory_and_caution_alerts() {
+        // IN-19: a linear ramp 30K -> 90K over 600 ticks sits ~1.73
+        // sigma above its own window mean, under a mean + 2/3 sigma
+        // floor, which silenced the advisory on 541 of 600 ticks.
+        let policy = LayeredAlertPolicy::new(1_000_000).with_min_dwell(1);
         let mut history = AlertHistory::new();
-        for _ in 0..(MIN_BASELINE_SAMPLES - 1) {
-            let _ = policy.evaluate(
+        let mut missing_advisory = 0;
+        let mut missing_caution = 0;
+        for i in 0..600u64 {
+            let total = 30_000 + i * 100;
+            let alerts = policy.evaluate(
                 &snapshot_with_tokens(0),
-                &snapshot_with_tokens(40_000),
+                &snapshot_with_tokens(total),
                 &mut history,
             );
+            if !alerts.iter().any(|a| a.severity == Severity::Advisory) {
+                missing_advisory += 1;
+            }
+            if total >= TOKEN_CAUTION_THRESHOLD
+                && !alerts.iter().any(|a| a.severity == Severity::Caution)
+            {
+                missing_caution += 1;
+            }
         }
-        let (advisory_eff, caution_eff) = policy.effective_thresholds();
-        assert_eq!(
-            advisory_eff, TOKEN_ADVISORY_THRESHOLD,
-            "pre-warmup must use static advisory"
-        );
-        assert_eq!(
-            caution_eff, TOKEN_CAUTION_THRESHOLD,
-            "pre-warmup must use static caution"
-        );
+        assert_eq!(missing_advisory, 0, "advisory went missing");
+        assert_eq!(missing_caution, 0, "caution went missing");
     }
 
     #[test]

@@ -3,11 +3,13 @@
 //! [`LoadAwareCadence`] is the default implementation. Policy:
 //!
 //! ```text
-//! recent edit (<10s)?  → tick = max(base / 2, min)
-//! load_ratio > 0.9     → tick = min(base * 4, max)
-//! load_ratio > 0.7     → tick = min(base * 2, max)
+//! recent edit (<10s)?  → tick = base / 2
+//! load_ratio > 0.9     → tick = base * 4
+//! load_ratio > 0.7     → tick = base * 2
 //! else                 → tick = base
 //! ```
+//!
+//! Every result is then clamped to `[min, max]`.
 //!
 //! The 0.7 / 0.9 thresholds borrow the Linux scheduler's
 //! "moderately loaded" / "heavily loaded" classifications so operator
@@ -102,26 +104,44 @@ impl Default for LoadAwareCadence {
     }
 }
 
+impl LoadAwareCadence {
+    /// Clamp `tick` into `[min, max]`. The fields are public and the
+    /// builders infallible, so `min > max` cannot be ruled out up
+    /// front; the two bounds are read as an unordered pair instead of
+    /// letting `Duration::clamp` panic.
+    fn bounded(&self, tick: Duration) -> Duration {
+        let (lo, hi) = if self.min <= self.max {
+            (self.min, self.max)
+        } else {
+            (self.max, self.min)
+        };
+        tick.clamp(lo, hi)
+    }
+}
+
 impl CadenceStrategy for LoadAwareCadence {
     fn next_tick(&self, sample: LoadSample) -> Duration {
         // Recent edit takes priority, keep the feedback loop tight
         // even when the system is also under load.
         if let Some(age_ms) = sample.last_edit_age_ms {
             if age_ms < RECENT_EDIT_THRESHOLD_MS {
-                return (self.base / 2).max(self.min);
+                return self.bounded(self.base / 2);
             }
         }
 
         let cores = self.cores.max(1) as f64;
         let load_ratio = sample.loadavg_1min / cores;
 
-        if load_ratio > HEAVY_LOAD_THRESHOLD {
-            (self.base * 4).min(self.max)
+        // Every branch goes through the same bounds, including the
+        // idle one, which used to return `base` unclamped.
+        let tick = if load_ratio > HEAVY_LOAD_THRESHOLD {
+            self.base.saturating_mul(4)
         } else if load_ratio > MODERATE_LOAD_THRESHOLD {
-            (self.base * 2).min(self.max)
+            self.base.saturating_mul(2)
         } else {
             self.base
-        }
+        };
+        self.bounded(tick)
     }
 }
 

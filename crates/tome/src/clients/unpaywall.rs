@@ -23,13 +23,7 @@ impl UnpaywallClient {
             tracing::warn!("UnpaywallClient created with empty email; API requests may fail");
         }
         Self {
-            http: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "Unpaywall client builder failed, using default");
-                    reqwest::Client::new()
-                }),
+            http: super::http_client("unpaywall", None),
             email,
         }
     }
@@ -51,13 +45,10 @@ impl UnpaywallClient {
             if status == reqwest::StatusCode::NOT_FOUND {
                 return Ok(None);
             }
-            return Err(crate::TomeError::Api {
-                api: "unpaywall".to_string(),
-                message: format!("HTTP {status}"),
-            });
+            return Err(super::status_error("unpaywall", status, resp.headers(), ""));
         }
 
-        let body: serde_json::Value = resp.json().await?;
+        let body = super::read_json("unpaywall", resp).await?;
         Ok(body["best_oa_location"]["url_for_pdf"]
             .as_str()
             .map(String::from))

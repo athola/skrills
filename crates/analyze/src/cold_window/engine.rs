@@ -35,7 +35,7 @@ use super::alert::LayeredAlertPolicy;
 use super::cadence::{CadenceStrategy, LoadAwareCadence};
 use super::diff::FieldwiseDiff;
 use super::plugin_health::{CollectorOutput, MalformedPlugin};
-use super::traits::{AlertHistory, AlertPolicy, HintScorer, SnapshotDiff};
+use super::traits::{AlertHistory, AlertPolicy, DiffField, HintScorer, SnapshotDiff};
 use super::{ActivityRing, ACTIVITY_RING_CAPACITY, SNAPSHOT_CHANNEL_CAPACITY};
 
 use tokio::sync::broadcast;
@@ -236,10 +236,14 @@ impl ColdWindowEngine {
     /// a user-supplied token-budget ceiling. Wires a fresh
     /// [`KillSwitch`]; share state by chaining
     /// [`ColdWindowEngine::with_kill_switch`].
+    ///
+    /// The alert tiers come from [`LayeredAlertPolicy::for_budget`], so
+    /// a ceiling at or below the default caution tier scales the lower
+    /// tiers under it instead of leaving them unreachable.
     pub fn with_defaults(budget_ceiling: u64) -> Self {
         Self::with_strategies(
             Box::new(LoadAwareCadence::new()),
-            Box::new(LayeredAlertPolicy::new(budget_ceiling)),
+            Box::new(LayeredAlertPolicy::for_budget(budget_ceiling)),
             Box::new(DefaultHintScorer(MultiSignalScorer::new())),
             Box::new(FieldwiseDiff::new()),
         )
@@ -336,6 +340,13 @@ impl ColdWindowEngine {
         self.state.lock().alert_history.clone()
     }
 
+    /// Alertable fields between two snapshots, via the configured
+    /// [`SnapshotDiff`] strategy. `tick` does not compute this itself;
+    /// callers that want the diff ask for it.
+    pub fn diff_snapshots(&self, prev: &WindowSnapshot, curr: &WindowSnapshot) -> Vec<DiffField> {
+        self.diff.is_alertable(prev, curr)
+    }
+
     /// Most recent snapshot, if any tick has been processed.
     pub fn last_snapshot(&self) -> Option<Arc<WindowSnapshot>> {
         self.state.lock().last_snapshot.clone()
@@ -380,11 +391,7 @@ impl ColdWindowEngine {
         state.version += 1;
         snapshot.version = state.version;
 
-        // Diff against prior snapshot (used by callers, optional here);
-        // we run it for the side-effect of validating the policy stack
-        // even when nothing observes the diff directly.
-        //
-        // Downstream `is_alertable`/`evaluate` only borrow `prev`
+        // The alert policy only borrows `prev`
         // immutably so we avoid the per-tick deep clone of
         // `WindowSnapshot` (which contains the full alert/hint/
         // research-finding/plugin-health vectors). `Arc::clone` is
@@ -393,7 +400,6 @@ impl ColdWindowEngine {
         let prev_arc = state.last_snapshot.clone();
         let empty_baseline = empty_window_snapshot_baseline();
         let prev: &WindowSnapshot = prev_arc.as_deref().unwrap_or(empty_baseline);
-        let _diff_fields = self.diff.is_alertable(prev, &snapshot);
 
         // Run alert policy. The policy mutates history to track
         // dwell counters even on ticks that haven't yet hit min-dwell;
@@ -487,6 +493,7 @@ impl ColdWindowEngine {
 
 #[cfg(test)]
 mod tests {
+    use super::super::alert::DEFAULT_MIN_DWELL_TICKS;
     use super::*;
     use skrills_snapshot::{HintCategory, ResearchChannel, Severity, TokenEntry};
     use skrills_test_utils::cold_window_fixtures::{
@@ -760,6 +767,29 @@ mod tests {
     }
 
     #[test]
+    fn small_budget_scales_lower_tiers_below_the_ceiling() {
+        // IN-18: `--alert-budget 10000` used to keep the static 20K
+        // advisory and 50K caution tiers, both above the ceiling, so
+        // they could never fire before the kill-switch. The lower
+        // tiers now scale from the ceiling (20% and 50%).
+        let engine = ColdWindowEngine::with_defaults(10_000);
+        let ledger = TokenLedger {
+            total: 6_000,
+            ..Default::default()
+        };
+        let mut snap = engine.tick(TickInput::empty().with_token_ledger(ledger.clone()));
+        for _ in 0..DEFAULT_MIN_DWELL_TICKS {
+            snap = engine.tick(TickInput::empty().with_token_ledger(ledger.clone()));
+        }
+        let severities: Vec<_> = snap.alerts.iter().map(|a| a.severity).collect();
+        assert!(
+            severities.contains(&Severity::Caution),
+            "6000 of 10000 must be past the scaled caution tier: {severities:?}"
+        );
+        assert!(!engine.kill_switch().is_engaged());
+    }
+
+    #[test]
     fn token_ledger_passed_through_unchanged() {
         let engine = ColdWindowEngine::with_defaults(100_000);
         let ledger = TokenLedger {
@@ -774,6 +804,33 @@ mod tests {
         let snap = engine.tick(input);
         assert_eq!(snap.token_ledger.total, 42);
         assert_eq!(snap.token_ledger.per_skill.len(), 1);
+    }
+
+    struct CountingDiff(Arc<std::sync::atomic::AtomicUsize>);
+    impl SnapshotDiff for CountingDiff {
+        fn is_alertable(&self, _prev: &WindowSnapshot, _curr: &WindowSnapshot) -> Vec<DiffField> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn tick_does_not_compute_a_diff_nobody_reads() {
+        // IN-63: the per-tick diff was built under the state mutex and
+        // dropped. Callers that want it ask through `diff_snapshots`.
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let engine = ColdWindowEngine::with_strategies(
+            Box::new(LoadAwareCadence::new()),
+            Box::new(LayeredAlertPolicy::new(100_000)),
+            Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+            Box::new(CountingDiff(Arc::clone(&calls))),
+        );
+        let first = engine.tick(TickInput::empty());
+        let second = engine.tick(TickInput::empty());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        let _ = engine.diff_snapshots(&first, &second);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     // ---------- Tick budget overrun ----------

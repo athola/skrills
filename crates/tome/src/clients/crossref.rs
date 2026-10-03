@@ -23,14 +23,7 @@ impl Default for CrossRefClient {
 impl CrossRefClient {
     pub fn new() -> Self {
         Self {
-            http: reqwest::Client::builder()
-                .user_agent("skrills-tome/0.1 (https://github.com/athola/skrills; mailto:research@skrills.dev)")
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "CrossRef client builder failed, falling back without User-Agent");
-                    reqwest::Client::new()
-                }),
+            http: super::http_client("crossref", Some("skrills-tome/0.1 (https://github.com/athola/skrills; mailto:research@skrills.dev)")),
         }
     }
 
@@ -42,14 +35,8 @@ impl CrossRefClient {
             .send()
             .await?;
 
-        if !resp.status().is_success() {
-            return Err(crate::TomeError::Api {
-                api: "crossref".to_string(),
-                message: format!("HTTP {} for DOI {doi}", resp.status()),
-            });
-        }
-
-        let body: serde_json::Value = resp.json().await?;
+        let resp = super::ensure_success("crossref", resp, &format!(" for DOI {doi}"))?;
+        let body = super::read_json("crossref", resp).await?;
         Ok(parse_crossref_message(doi, &body["message"]))
     }
 }
@@ -80,13 +67,9 @@ pub(crate) fn parse_crossref_message(doi: &str, msg: &serde_json::Value) -> DoiM
             })
             .unwrap_or_default(),
         publisher: msg["publisher"].as_str().map(String::from),
-        year: msg["published-print"]["date-parts"]
-            .as_array()
-            .and_then(|a| a.first())
-            .and_then(|a| a.as_array())
-            .and_then(|a| a.first())
-            .and_then(|y| y.as_i64())
-            .map(|y| y as i32),
+        year: ["published-print", "published", "issued", "published-online"]
+            .iter()
+            .find_map(|field| date_year(&msg[*field])),
         url: msg["URL"].as_str().map(String::from),
         journal: msg["container-title"]
             .as_array()
@@ -94,6 +77,17 @@ pub(crate) fn parse_crossref_message(doi: &str, msg: &serde_json::Value) -> DoiM
             .and_then(|t| t.as_str())
             .map(String::from),
     }
+}
+
+/// Year from a CrossRef date object (`{"date-parts": [[2021, 5]]}`).
+fn date_year(date: &serde_json::Value) -> Option<i32> {
+    date["date-parts"]
+        .as_array()
+        .and_then(|a| a.first())
+        .and_then(|a| a.as_array())
+        .and_then(|a| a.first())
+        .and_then(|y| y.as_i64())
+        .and_then(|y| i32::try_from(y).ok())
 }
 
 #[cfg(test)]
@@ -146,6 +140,27 @@ mod tests {
         });
         let meta = parse_crossref_message("10.0/x", &msg);
         assert_eq!(meta.authors, vec!["Alice Smith"]);
+    }
+
+    #[test]
+    fn year_falls_back_when_published_print_is_absent() {
+        // IN-54: online-only works carry no published-print.
+        for field in ["published", "issued", "published-online"] {
+            let msg = serde_json::json!({ field: {"date-parts": [[2021, 5]]} });
+            let meta = parse_crossref_message("10.0/y", &msg);
+            assert_eq!(meta.year, Some(2021), "field {field}");
+        }
+        let msg = serde_json::json!({
+            "published-print": {"date-parts": [[2019]]},
+            "published-online": {"date-parts": [[2018]]}
+        });
+        assert_eq!(parse_crossref_message("10.0/y", &msg).year, Some(2019));
+        // CrossRef sends [[null]] when the date is unknown.
+        let msg = serde_json::json!({
+            "published-print": {"date-parts": [[null]]},
+            "issued": {"date-parts": [[2020]]}
+        });
+        assert_eq!(parse_crossref_message("10.0/y", &msg).year, Some(2020));
     }
 
     #[test]

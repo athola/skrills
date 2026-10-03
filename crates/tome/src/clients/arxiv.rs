@@ -19,14 +19,10 @@ impl Default for ArxivClient {
 impl ArxivClient {
     pub fn new() -> Self {
         Self {
-            http: reqwest::Client::builder()
-                .user_agent("skrills-tome/0.1 (https://github.com/athola/skrills)")
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "ArXiv client builder failed, using default");
-                    reqwest::Client::new()
-                }),
+            http: super::http_client(
+                "arxiv",
+                Some("skrills-tome/0.1 (https://github.com/athola/skrills)"),
+            ),
         }
     }
 
@@ -46,14 +42,9 @@ impl ArxivClient {
             .send()
             .await?;
 
-        if !resp.status().is_success() {
-            return Err(crate::TomeError::Api {
-                api: "arxiv".to_string(),
-                message: format!("HTTP {}", resp.status()),
-            });
-        }
+        let resp = super::ensure_success("arxiv", resp, "")?;
 
-        let body = resp.text().await?;
+        let body = String::from_utf8_lossy(&super::read_body("arxiv", resp).await?).into_owned();
         Ok(parse_arxiv_atom(&body))
     }
 }
@@ -114,18 +105,19 @@ fn extract_authors(entry: &str) -> Vec<String> {
         .collect()
 }
 
-/// Strip arXiv field-prefix syntax (e.g. `ti:`, `au:`) from a query string
-/// to prevent users from altering search semantics.
+/// Strip arXiv query syntax so user text cannot alter search semantics:
+/// every `prefix:` segment (`ti:`, `x:ti:`), grouping parentheses, and the
+/// uppercase boolean operators `AND`, `OR` and `ANDNOT`.
 fn sanitize_query(query: &str) -> String {
     query
         .split_whitespace()
         .map(|word| {
-            if let Some((_prefix, rest)) = word.split_once(':') {
-                rest
-            } else {
-                word
-            }
+            word.rsplit(':')
+                .next()
+                .unwrap_or(word)
+                .trim_matches(|c| c == '(' || c == ')')
         })
+        .filter(|word| !word.is_empty() && !matches!(*word, "AND" | "OR" | "ANDNOT"))
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -150,7 +142,17 @@ mod tests {
     fn sanitize_handles_edge_cases() {
         assert_eq!(sanitize_query(""), "");
         assert_eq!(sanitize_query("ti:"), "");
-        assert_eq!(sanitize_query("word:with:colons"), "with:colons");
+        assert_eq!(sanitize_query("word:with:colons"), "colons");
+    }
+
+    #[test]
+    fn sanitize_strips_nested_prefixes_operators_and_grouping() {
+        // IN-49: `x:ti:quantum` used to reach arXiv as `ti:quantum`.
+        assert_eq!(sanitize_query("x:ti:quantum"), "quantum");
+        assert_eq!(sanitize_query("foo ANDNOT bar"), "foo bar");
+        assert_eq!(sanitize_query("(a OR b) AND c"), "a b c");
+        // Lowercase words are search terms, not operators.
+        assert_eq!(sanitize_query("and or not"), "and or not");
     }
 
     #[test]

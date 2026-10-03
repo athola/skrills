@@ -216,3 +216,38 @@ fn synthetic_load_stream_walks_through_all_branches() {
         ]
     );
 }
+
+#[test]
+fn every_branch_respects_the_min_and_max_bounds() {
+    // IN-62: the idle branch returned `base` unclamped, so a 100 ms
+    // base ticked every 100 ms under a 500 ms floor.
+    let idle = LoadSample {
+        loadavg_1min: 0.0,
+        last_edit_age_ms: None,
+    };
+    let fast = cadence().with_base(Duration::from_millis(100));
+    assert_eq!(fast.next_tick(idle), Duration::from_millis(500));
+
+    let slow = cadence().with_base(Duration::from_secs(30));
+    assert_eq!(slow.next_tick(idle), Duration::from_secs(8));
+    let recent_edit = LoadSample {
+        loadavg_1min: 0.0,
+        last_edit_age_ms: Some(0),
+    };
+    assert_eq!(slow.next_tick(recent_edit), Duration::from_secs(8));
+}
+
+#[test]
+fn inverted_min_and_max_are_treated_as_a_range_not_a_panic() {
+    // `min > max` cannot be rejected by the infallible builders (or the
+    // public fields), so the bounds are read as an unordered pair.
+    let idle = LoadSample {
+        loadavg_1min: 0.0,
+        last_edit_age_ms: None,
+    };
+    let inverted = cadence()
+        .with_min(Duration::from_secs(8))
+        .with_max(Duration::from_millis(500))
+        .with_base(Duration::from_millis(100));
+    assert_eq!(inverted.next_tick(idle), Duration::from_millis(500));
+}
