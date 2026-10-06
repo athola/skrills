@@ -15,7 +15,7 @@ jobs:
     outputs:
       is-draft: ${{ steps.release-info.outputs.is_draft }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Ensure draft release exists
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -51,7 +51,7 @@ jobs:
       - name: Explain skip if published
         if: needs.create-release.outputs.is-draft != 'true'
         run: echo "Release is already published; skipping uploads."
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: needs.create-release.outputs.is-draft == 'true'
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, resolved 2026-10-02
         if: needs.create-release.outputs.is-draft == 'true'
@@ -61,7 +61,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: needs.create-release.outputs.is-draft == 'true'
-      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+      - uses: taiki-e/install-action@861a07ce7084f55488e375df125cdc99bba60eb7 # v2
         if: needs.create-release.outputs.is-draft == 'true'
         with:
           tool: cross
@@ -91,7 +91,7 @@ jobs:
       - name: Explain skip if published
         if: needs.create-release.outputs.is-draft != 'true'
         run: echo "Release is already published; skipping uploads."
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: needs.create-release.outputs.is-draft == 'true'
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, resolved 2026-10-02
         if: needs.create-release.outputs.is-draft == 'true'
@@ -125,7 +125,7 @@ jobs:
       - name: Explain skip if published
         if: needs.create-release.outputs.is-draft != 'true'
         run: echo "Release is already published; skipping uploads."
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: needs.create-release.outputs.is-draft == 'true'
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, resolved 2026-10-02
         if: needs.create-release.outputs.is-draft == 'true'
@@ -155,7 +155,7 @@ jobs:
       - windows
     if: needs.create-release.outputs.is-draft == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Publish draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -178,7 +178,7 @@ jobs:
       CARGO_HTTP_MULTIPLEXING: "false"
       CARGO_NET_RETRY: "5"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, resolved 2026-10-02
         with:
           toolchain: stable
