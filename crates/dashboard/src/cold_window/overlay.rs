@@ -74,6 +74,10 @@ impl OverlayStack {
 /// and never exceeding the frame itself (tiny terminals get the whole
 /// frame rather than a clipped or out-of-bounds rect).
 pub fn popup_rect(frame: Rect) -> Rect {
+    // A zero-sized frame has no room for a popup; `clamp(1, 0)` would panic.
+    if frame.width == 0 || frame.height == 0 {
+        return frame;
+    }
     let w = (u32::from(frame.width) * 8 / 10).min(72) as u16;
     let h = (u32::from(frame.height) * 8 / 10).min(20) as u16;
     let w = w.clamp(1, frame.width).max(frame.width.min(10));
@@ -255,6 +259,18 @@ mod tests {
                 r.x + r.width <= w && r.y + r.height <= h,
                 "{w}x{h}: popup {r:?} exceeds frame"
             );
+        }
+    }
+
+    /// RT-52: `clamp(1, 0)` panicked on a zero-sized frame.
+    #[test]
+    fn popup_rect_on_a_zero_sized_frame_returns_the_frame() {
+        for frame in [
+            Rect::new(3, 4, 0, 10),
+            Rect::new(3, 4, 10, 0),
+            Rect::new(0, 0, 0, 0),
+        ] {
+            assert_eq!(popup_rect(frame), frame);
         }
     }
 

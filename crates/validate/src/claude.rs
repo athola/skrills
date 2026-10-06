@@ -5,8 +5,7 @@
 //! - Name/description not strictly required
 //! - Focuses on content quality
 
-#[allow(unused_imports)] // Severity used in tests
-use crate::common::{Severity, ValidationIssue, ValidationResult, ValidationTarget};
+use crate::common::{ValidationIssue, ValidationResult, ValidationTarget};
 use crate::frontmatter::{parse_frontmatter, ParsedSkill};
 use std::path::Path;
 
@@ -138,6 +137,7 @@ fn check_markdown_quality(result: &mut ValidationResult, content: &str, start_li
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::Severity;
     use std::path::PathBuf;
 
     #[test]

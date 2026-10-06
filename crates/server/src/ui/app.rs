@@ -16,9 +16,8 @@ pub fn App() -> impl IntoView {
             </head>
             <body>
                 <Dashboard/>
-                <script>
-                    {include_str!("dashboard.js")}
-                </script>
+                // Loaded by URL so the CSP can forbid inline script.
+                <script src="/static/dashboard.js"></script>
             </body>
         </html>
     }
@@ -106,6 +105,9 @@ pub fn McpServersPanel() -> impl IntoView {
         </section>
     }
 }
+
+/// The dashboard script, served at `/static/dashboard.js`.
+pub(crate) const DASHBOARD_JS: &str = include_str!("dashboard.js");
 
 /// Render the full dashboard HTML as a string for SSR.
 pub fn render_dashboard() -> String {

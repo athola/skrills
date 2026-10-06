@@ -1,11 +1,8 @@
 //! Database schema initialization and migrations.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 use crate::Result;
-
-/// Current schema version.
-const SCHEMA_VERSION: i32 = 2;
 
 /// SQL statements to create the initial metrics schema (version 1).
 const SCHEMA_V1: &str = r#"
@@ -60,48 +57,45 @@ CREATE INDEX IF NOT EXISTS idx_rule_triggers_time ON rule_triggers(created_at);
 CREATE INDEX IF NOT EXISTS idx_rule_triggers_category ON rule_triggers(category);
 "#;
 
+/// Migrations in order: entry `i` brings the schema to version `i + 1`.
+/// Append new migrations here; the current version follows from the length.
+const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2];
+
+/// Current schema version: the number of migrations.
+const SCHEMA_VERSION: i32 = MIGRATIONS.len() as i32;
+
 /// Initialize the database schema with versioned migrations.
 ///
 /// Creates a `schema_version` table to track the current version, then
-/// applies any pending migrations in order.
+/// applies any pending migrations in order. The version read and the
+/// migrations run in one `BEGIN IMMEDIATE` transaction, so two processes
+/// opening a fresh database cannot both apply the same migration.
 pub fn init_schema(conn: &Connection) -> Result<()> {
-    // Create version tracking table
-    conn.execute_batch(
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+
+    tx.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_version (
             version INTEGER PRIMARY KEY
         )",
     )?;
 
-    let current: i32 = conn
-        .query_row(
-            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
+    let current: i32 = tx.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+        [],
+        |row| row.get(0),
+    )?;
 
-    // Apply migrations in order
-    if current < 1 {
-        conn.execute_batch(SCHEMA_V1)?;
-        conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [1])?;
+    for (version, migration) in (1..=SCHEMA_VERSION).zip(MIGRATIONS) {
+        if current < version {
+            tx.execute_batch(migration)?;
+            tx.execute(
+                "INSERT OR IGNORE INTO schema_version (version) VALUES (?1)",
+                [version],
+            )?;
+        }
     }
 
-    if current < 2 {
-        conn.execute_batch(SCHEMA_V2)?;
-        conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [2])?;
-    }
-
-    // Future migrations go here:
-    // if current < 3 {
-    //     conn.execute_batch(SCHEMA_V3)?;
-    //     conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [3])?;
-    // }
-
-    debug_assert_eq!(
-        SCHEMA_VERSION, 2,
-        "update migrations when bumping SCHEMA_VERSION"
-    );
-
+    tx.commit()?;
     Ok(())
 }
 
@@ -170,5 +164,47 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM rule_triggers", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    /// RT-45: the latest recorded version is the number of migrations.
+    #[test]
+    fn schema_version_matches_the_migration_list() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let version: i32 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert_eq!(SCHEMA_VERSION as usize, MIGRATIONS.len());
+    }
+
+    /// RT-43: two processes opening a fresh database both saw version 0 and
+    /// both inserted version 1; the second failed on the primary key.
+    #[test]
+    fn concurrent_initialisation_of_a_fresh_database_succeeds() {
+        for _ in 0..10 {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("fresh.db");
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(6));
+            let handles: Vec<_> = (0..6)
+                .map(|_| {
+                    let path = path.clone();
+                    let barrier = barrier.clone();
+                    std::thread::spawn(move || {
+                        let conn = Connection::open(&path).unwrap();
+                        barrier.wait();
+                        init_schema(&conn)
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle
+                    .join()
+                    .unwrap()
+                    .expect("init_schema under contention");
+            }
+        }
     }
 }

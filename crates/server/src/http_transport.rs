@@ -8,6 +8,8 @@
 //! - **Bearer Token Auth**: Validates `Authorization: Bearer <token>` header with constant-time comparison
 //! - **TLS/HTTPS**: Supports TLS with custom certificates
 //! - **CORS**: Configurable Cross-Origin Resource Sharing for browser clients
+//! - **Host validation**: Every route answers 403 to a `Host` outside the
+//!   loopback names and the operator's allow-list, closing DNS rebinding
 
 use crate::api::{
     dashboard_routes, mcp_servers_routes,
@@ -16,9 +18,10 @@ use crate::api::{
     skills::{skills_routes, ApiState},
 };
 use crate::app::SkillService;
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
+use axum::http::uri::Authority;
 use axum::http::{header, HeaderValue, Method, StatusCode};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
 };
@@ -31,6 +34,11 @@ use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetReques
 
 /// Header name for request ID.
 const REQUEST_ID_HEADER: &str = "x-request-id";
+
+/// Content-Security-Policy served with every response. The dashboard loads
+/// its script and stylesheet from `/static/`, so inline script and style are
+/// refused.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'";
 
 /// Configuration for HTTP transport security.
 ///
@@ -45,6 +53,12 @@ pub struct HttpSecurityConfig {
     pub tls_key: Option<std::path::PathBuf>,
     /// Allowed CORS origins (empty = no CORS).
     pub cors_origins: Vec<String>,
+    /// Extra `Host` authorities the server accepts, on top of the loopback
+    /// names rmcp allows by default. Needed when clients address the server by
+    /// any name other than localhost, 127.0.0.1 or ::1, since Host validation
+    /// refuses the rest. Each entry is a bare authority (`host` or
+    /// `host:port`), never a URL.
+    pub allowed_hosts: Vec<String>,
 }
 
 // Custom Debug implementation that redacts auth_token to prevent credential leakage in logs.
@@ -58,6 +72,7 @@ impl std::fmt::Debug for HttpSecurityConfig {
             .field("tls_cert", &self.tls_cert)
             .field("tls_key", &self.tls_key)
             .field("cors_origins", &self.cors_origins)
+            .field("allowed_hosts", &self.allowed_hosts)
             .finish()
     }
 }
@@ -158,6 +173,163 @@ async fn auth_middleware(
         .into_response()
 }
 
+/// An authority to compare `Host` headers against: a host name with an
+/// optional port.
+#[derive(Debug, PartialEq, Eq)]
+struct HostAuthority {
+    host: String,
+    port: Option<u16>,
+}
+
+impl HostAuthority {
+    /// Whether this allow-list entry accepts the authority a client addressed.
+    /// An entry without a port accepts any port, which is how rmcp reads its
+    /// own list.
+    fn accepts(&self, requested: &HostAuthority) -> bool {
+        self.host == requested.host && (self.port.is_none() || self.port == requested.port)
+    }
+}
+
+/// Lower-cases a host name and strips the brackets an IPv6 literal carries in
+/// an authority, so `[::1]` and `::1` compare equal.
+fn normalize_host(host: &str) -> String {
+    host.trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase()
+}
+
+/// Parses a `Host` header value or an allow-list entry.
+///
+/// Returns `None` for anything that is not an authority, which is what makes a
+/// scheme in an allow-list entry a startup error rather than a silent 403: an
+/// unparseable entry would otherwise be compared as a literal host name and
+/// match nothing. A bare IPv6 literal is accepted because it is not a valid
+/// authority yet appears in rmcp's own default list as `::1`.
+fn parse_host_authority(raw: &str) -> Option<HostAuthority> {
+    let raw = raw.trim();
+    if let Ok(authority) = Authority::try_from(raw) {
+        if !authority.host().is_empty() {
+            return Some(HostAuthority {
+                host: normalize_host(authority.host()),
+                port: authority.port_u16(),
+            });
+        }
+    }
+    raw.parse::<std::net::IpAddr>().ok().map(|_| HostAuthority {
+        host: normalize_host(raw),
+        port: None,
+    })
+}
+
+/// Parses the effective `Host` allow-list, naming the first entry that is not
+/// an authority.
+///
+/// Blank entries are skipped rather than rejected: a trailing comma in
+/// `--allowed-hosts foo.example,` was harmless before the check existed, and
+/// refusing to start over one would be a worse trade than ignoring it.
+fn parse_host_allow_list(entries: &[String]) -> Result<Vec<HostAuthority>> {
+    entries
+        .iter()
+        .filter(|entry| !entry.trim().is_empty())
+        .map(|entry| {
+            parse_host_authority(entry).ok_or_else(|| {
+                anyhow!(
+                    "invalid allowed host {entry:?}: expected a bare authority such as \
+                     `skrills.internal` or `skrills.internal:8080`, with no scheme or path"
+                )
+            })
+        })
+        .collect()
+}
+
+/// Builds the MCP transport config, extending rmcp's loopback `allowed_hosts`
+/// with any the operator supplied and switching on `Origin` validation when
+/// CORS origins were named.
+///
+/// The loopback default is what blocks DNS rebinding (RUSTSEC-2026-0189): a
+/// page served from an attacker's domain that resolves to 127.0.0.1 still
+/// sends its own name in `Host`. Operator hosts are appended rather than
+/// substituted, so naming a LAN host to reach a non-loopback bind cannot
+/// silently drop the loopback protection.
+///
+/// A wildcard in `cors_origins` leaves `allowed_origins` empty on purpose:
+/// rmcp reads a non-empty list as "refuse every origin outside it", and `*`
+/// matches nothing, so copying it over would refuse the browsers the operator
+/// just allowed.
+fn build_streamable_config(security: &HttpSecurityConfig) -> StreamableHttpServerConfig {
+    let mut config = StreamableHttpServerConfig::default();
+    config
+        .allowed_hosts
+        .extend(security.allowed_hosts.iter().cloned());
+    if !security.cors_origins.iter().any(|origin| origin == "*") {
+        config
+            .allowed_origins
+            .extend(security.cors_origins.iter().cloned());
+    }
+    config
+}
+
+/// The authority a client addressed, from `Host` or, over HTTP/2, from the
+/// `:authority` pseudo-header hyper folds into the URI.
+fn requested_authority(req: &axum::extract::Request) -> Option<HostAuthority> {
+    match req.headers().get(header::HOST) {
+        Some(host) => parse_host_authority(host.to_str().ok()?),
+        None => req.uri().authority().map(|authority| HostAuthority {
+            host: normalize_host(authority.host()),
+            port: authority.port_u16(),
+        }),
+    }
+}
+
+/// `Host` validation for every route.
+///
+/// rmcp checks `Host` inside the MCP service, which left the dashboard and the
+/// REST API answering a rebound name. This applies the same allow-list to the
+/// whole router, so a page on an attacker's domain that resolves to the bind
+/// address cannot read `/api/skills` either.
+async fn host_middleware(
+    allowed: Arc<Vec<HostAuthority>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let Some(requested) = requested_authority(&req) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "Bad Request: missing or malformed Host header",
+        )
+            .into_response();
+    };
+
+    if allowed.iter().any(|entry| entry.accepts(&requested)) {
+        return next.run(req).await;
+    }
+
+    tracing::warn!(
+        target: "skrills::http::host",
+        host = %requested.host,
+        uri = req.uri().path(),
+        "Refused a Host outside the allow-list (possible DNS rebinding attempt)"
+    );
+    (
+        StatusCode::FORBIDDEN,
+        "Forbidden: Host header is not allowed",
+    )
+        .into_response()
+}
+
+/// Adds the dashboard's Content-Security-Policy to every response.
+pub(crate) async fn csp_middleware(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let mut response = next.run(req).await;
+    response.headers_mut().insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(CONTENT_SECURITY_POLICY),
+    );
+    response
+}
+
 /// Builds CORS layer from allowed origins.
 ///
 /// Invalid origins are logged as warnings and skipped. An empty result after
@@ -167,12 +339,21 @@ fn build_cors_layer(origins: &[String], has_auth: bool) -> CorsLayer {
         // No CORS - server-to-server only
         CorsLayer::new()
     } else if origins.iter().any(|o| o == "*") {
-        // Security: Warn about wildcard CORS with auth enabled
+        // Wildcard CORS is worth a warning whether or not auth is on: without
+        // a token any site a browser visits can drive the API, and with one it
+        // can also reach the token.
         if has_auth {
             tracing::warn!(
                 target: "skrills::http::cors",
                 "Using wildcard CORS ('*') with authentication enabled. \
                  This may expose auth tokens to malicious sites. \
+                 Consider specifying explicit origins instead."
+            );
+        } else {
+            tracing::warn!(
+                target: "skrills::http::cors",
+                "Using wildcard CORS ('*') with authentication disabled. \
+                 Any site a browser visits can drive this server's API. \
                  Consider specifying explicit origins instead."
             );
         }
@@ -213,7 +394,204 @@ fn build_cors_layer(origins: &[String], has_auth: bool) -> CorsLayer {
     }
 }
 
+/// The router and TLS paths a server is about to run with, built before any
+/// socket is touched so a configuration error fails startup without binding.
+struct PreparedServer {
+    app: axum::Router,
+    tls: Option<(PathBuf, PathBuf)>,
+}
+
+/// Opens the shared on-disk metrics store (`~/.skrills/metrics.db`), which
+/// stdio `serve` processes also write. Falls back to an in-memory store, with
+/// a warning, so a broken store never stops the server.
+fn open_metrics_collector() -> Result<Arc<skrills_metrics::MetricsCollector>> {
+    use skrills_metrics::MetricsCollector;
+    let collector = MetricsCollector::persistent_default()
+        .or_else(|e| {
+            tracing::warn!(
+                target: "skrills::http",
+                error = %e,
+                "could not open ~/.skrills/metrics.db; dashboard metrics will cover this run only"
+            );
+            MetricsCollector::in_memory()
+        })
+        .context("failed to create an in-memory SQLite metrics collector")?;
+    Ok(Arc::new(collector))
+}
+
+/// `/api/mcp-servers` lists every configured MCP server's command, args and
+/// env names. Without a token anyone who can reach the port could read that
+/// inventory, so the route answers 403 unless auth is on.
+fn mcp_servers_router(has_auth: bool) -> axum::Router {
+    if has_auth {
+        return mcp_servers_routes();
+    }
+    tracing::info!(
+        target: "skrills::http",
+        "/api/mcp-servers is disabled because no auth token is set"
+    );
+    axum::Router::new().route(
+        "/api/mcp-servers",
+        axum::routing::get(|| async {
+            (
+                StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({
+                    "error": "the MCP server list needs an auth token (--auth-token or [serve] auth_token)"
+                })),
+            )
+        }),
+    )
+}
+
+/// Builds the routes and layers shared by every serve entry point.
+fn prepare_server<F>(
+    service_factory: F,
+    security: HttpSecurityConfig,
+    skill_dirs: Vec<std::path::PathBuf>,
+) -> Result<PreparedServer>
+where
+    F: Fn() -> Result<SkillService, std::io::Error> + Send + Sync + 'static,
+{
+    // The effective Host allow-list is parsed once here so an entry rmcp could
+    // not match becomes a startup error instead of a 403 on every request.
+    let config = build_streamable_config(&security);
+    let allowed_hosts = Arc::new(parse_host_allow_list(&config.allowed_hosts)?);
+
+    // Create session manager for stateful connections
+    let session_manager = Arc::new(LocalSessionManager::default());
+
+    // One collector for the dashboard's metrics API and every MCP session,
+    // so the skills served, validated and synced here show up there.
+    let metrics_collector = open_metrics_collector()?;
+    let session_metrics = metrics_collector.clone();
+    let service_factory =
+        move || service_factory().map(|service| service.with_metrics(session_metrics.clone()));
+
+    // Create the streamable HTTP service
+    let http_service = StreamableHttpService::new(service_factory, session_manager, config);
+
+    // Build CORS layer (passes auth status for security warnings)
+    let cors_layer = build_cors_layer(&security.cors_origins, security.has_auth());
+
+    // Extract TLS config before potential move of auth_token.
+    // Uses pattern matching instead of unwrap() to avoid relying on has_tls() invariant.
+    let tls = match (&security.tls_cert, &security.tls_key) {
+        (Some(cert), Some(key)) => Some((cert.clone(), key.clone())),
+        _ => None,
+    };
+
+    // Build dashboard and API routes
+    let api_state = Arc::new(ApiState::new(skill_dirs));
+    let metrics_state = Arc::new(MetricsState {
+        collector: metrics_collector,
+    });
+
+    // Discover rules for rules API
+    let home = dirs::home_dir().unwrap_or_else(|| {
+        tracing::warn!(
+            target: "skrills::http",
+            "Could not determine home directory; rule discovery may miss user-level rules"
+        );
+        PathBuf::new()
+    });
+    let project_dir = std::env::current_dir().ok();
+    let rules = skrills_discovery::discover_rules(&home, project_dir.as_deref());
+    let rules_state = Arc::new(RulesState {
+        rules: Arc::new(rules),
+    });
+
+    // Serve the dashboard stylesheet, embedded at compile time. It is a file
+    // rather than an inline block so the CSP needs no 'unsafe-inline'; the
+    // script is served the same way by `dashboard_routes`.
+    let static_router = axum::Router::new().route(
+        "/static/style.css",
+        axum::routing::get(|| async {
+            (
+                [(axum::http::header::CONTENT_TYPE, "text/css")],
+                include_str!("../static/style.css"),
+            )
+        }),
+    );
+
+    // Request ID layers: SetRequestIdLayer generates UUID, PropagateRequestIdLayer copies to response
+    let request_id_header = axum::http::HeaderName::from_static(REQUEST_ID_HEADER);
+    let mut app = axum::Router::new()
+        .merge(dashboard_routes())
+        .merge(skills_routes(api_state))
+        .merge(metrics_routes(metrics_state))
+        .merge(rules_routes(rules_state))
+        .merge(mcp_servers_router(security.has_auth()))
+        .merge(static_router)
+        .fallback_service(http_service)
+        .layer(axum::middleware::from_fn(csp_middleware));
+
+    if let Some(token) = security.auth_token {
+        let token = Arc::new(token);
+        app = app.layer(axum::middleware::from_fn(move |req, next| {
+            let token = token.clone();
+            auth_middleware(token, req, next)
+        }));
+    }
+
+    // Layer order, outermost first: request id, Host, CORS, auth, CSP, routes.
+    // CORS sits outside auth because a browser preflight carries no
+    // Authorization header and would otherwise be answered with 401. Host
+    // validation sits outside CORS so a rebound name is refused even on a
+    // preflight.
+    let app = app
+        .layer(cors_layer)
+        .layer(axum::middleware::from_fn(move |req, next| {
+            host_middleware(allowed_hosts.clone(), req, next)
+        }))
+        .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
+        .layer(SetRequestIdLayer::new(request_id_header, MakeRequestUuid));
+
+    Ok(PreparedServer { app, tls })
+}
+
+/// Logs the startup line and the non-loopback warning for `addr`.
+fn log_startup(addr: SocketAddr, security: &HttpSecurityConfig) {
+    let protocol = if security.has_tls() { "HTTPS" } else { "HTTP" };
+    let auth_status = if security.has_auth() {
+        "enabled"
+    } else {
+        "disabled"
+    };
+    let cors_status = if security.cors_origins.is_empty() {
+        "disabled".to_string()
+    } else if security.cors_origins.iter().any(|o| o == "*") {
+        "allow-all".to_string()
+    } else {
+        format!("{} origins", security.cors_origins.len())
+    };
+
+    tracing::info!(
+        target: "skrills::http",
+        bind = %addr,
+        protocol,
+        auth = auth_status,
+        cors = cors_status,
+        allowed_hosts = ?build_streamable_config(security).allowed_hosts,
+        "Starting MCP server"
+    );
+
+    // A non-loopback bind is reached under some other name, and every request
+    // carrying that name is refused until it is listed.
+    if !addr.ip().is_loopback() && security.allowed_hosts.is_empty() {
+        tracing::warn!(
+            target: "skrills::http",
+            bind = %addr,
+            "Bound a non-loopback address with no --allowed-hosts. Requests naming \
+             anything other than localhost, 127.0.0.1 or ::1 will be refused with 403."
+        );
+    }
+}
+
 /// Starts the MCP server over HTTP transport with security configuration.
+///
+/// Binds `bind_addr`, moving to one of the next nine ports when it is taken
+/// (for HTTP and HTTPS alike). Callers that need to know the port in advance,
+/// such as tests, should bind themselves and use [`serve_http_on_listener`].
 ///
 /// # Arguments
 /// * `service_factory` - Factory function to create SkillService instances
@@ -235,148 +613,71 @@ where
         .parse()
         .with_context(|| format!("invalid bind address: {bind_addr}"))?;
 
-    let protocol = if security.has_tls() { "HTTPS" } else { "HTTP" };
-    let auth_status = if security.has_auth() {
-        "enabled"
-    } else {
-        "disabled"
-    };
-    let cors_status = if security.cors_origins.is_empty() {
-        "disabled".to_string()
-    } else if security.cors_origins.iter().any(|o| o == "*") {
-        "allow-all".to_string()
-    } else {
-        format!("{} origins", security.cors_origins.len())
-    };
+    let prepared = prepare_server(service_factory, security.clone(), skill_dirs)?;
+    let (listener, bound) = bind_with_fallback(addr).await?;
+    log_startup(bound, &security);
+    run_prepared(prepared, listener, open_browser).await
+}
 
-    tracing::info!(
-        target: "skrills::http",
-        bind = %addr,
-        protocol,
-        auth = auth_status,
-        cors = cors_status,
-        "Starting MCP server"
-    );
+/// Starts the MCP server on a listener the caller already bound.
+///
+/// Behaves like [`serve_http_with_security`] except that it never binds: the
+/// server answers on exactly `listener`'s address. Binding first and handing
+/// the listener over removes the gap in which another process could take a
+/// port that was probed and released.
+pub async fn serve_http_on_listener<F>(
+    service_factory: F,
+    listener: tokio::net::TcpListener,
+    security: HttpSecurityConfig,
+    skill_dirs: Vec<std::path::PathBuf>,
+    open_browser: bool,
+) -> Result<()>
+where
+    F: Fn() -> Result<SkillService, std::io::Error> + Send + Sync + 'static,
+{
+    let addr = listener
+        .local_addr()
+        .context("failed to read the listener's address")?;
+    log_startup(addr, &security);
+    let prepared = prepare_server(service_factory, security, skill_dirs)?;
+    run_prepared(prepared, listener, open_browser).await
+}
 
-    // Create session manager for stateful connections
-    let session_manager = Arc::new(LocalSessionManager::default());
-
-    // Configure the HTTP server
-    let config = StreamableHttpServerConfig::default();
-
-    // Create the streamable HTTP service
-    let http_service = StreamableHttpService::new(service_factory, session_manager, config);
-
-    // Build CORS layer (passes auth status for security warnings)
-    let cors_layer = build_cors_layer(&security.cors_origins, security.has_auth());
-
-    // Extract TLS config before potential move of auth_token.
-    // Uses pattern matching instead of unwrap() to avoid relying on has_tls() invariant.
-    let tls_config = match (&security.tls_cert, &security.tls_key) {
-        (Some(cert), Some(key)) => Some((cert.clone(), key.clone())),
-        _ => None,
-    };
-
-    // Build dashboard and API routes
-    let api_state = Arc::new(ApiState::new(skill_dirs));
-    let metrics_collector = Arc::new(
-        skrills_metrics::MetricsCollector::new()
-            .context("failed to create in-memory SQLite metrics collector")?,
-    );
-    let metrics_state = Arc::new(MetricsState {
-        collector: metrics_collector,
-    });
-
-    // Discover rules for rules API
-    let home = dirs::home_dir().unwrap_or_else(|| {
-        tracing::warn!(
-            target: "skrills::http",
-            "Could not determine home directory; rule discovery may miss user-level rules"
-        );
-        PathBuf::new()
-    });
-    let project_dir = std::env::current_dir().ok();
-    let rules = skrills_discovery::discover_rules(&home, project_dir.as_deref());
-    let rules_state = Arc::new(RulesState {
-        rules: Arc::new(rules),
-    });
-
-    // Serve static files (CSS) embedded at compile time
-    let static_router = axum::Router::new().route(
-        "/static/style.css",
-        axum::routing::get(|| async {
-            (
-                [(axum::http::header::CONTENT_TYPE, "text/css")],
-                include_str!("../static/style.css"),
-            )
-        }),
-    );
-
-    // Create router with request ID and optional auth middleware
-    // Request ID layers: SetRequestIdLayer generates UUID, PropagateRequestIdLayer copies to response
-    let request_id_header = axum::http::HeaderName::from_static(REQUEST_ID_HEADER);
-    let app = if let Some(token) = security.auth_token {
-        let token = Arc::new(token);
-        axum::Router::new()
-            .merge(dashboard_routes())
-            .merge(skills_routes(api_state))
-            .merge(metrics_routes(metrics_state))
-            .merge(rules_routes(rules_state))
-            .merge(mcp_servers_routes())
-            .merge(static_router)
-            .fallback_service(http_service)
-            .layer(cors_layer)
-            .layer(axum::middleware::from_fn(|req: axum::extract::Request, next: axum::middleware::Next| async move {
-                let mut response = next.run(req).await;
-                response.headers_mut().insert(
-                    axum::http::header::CONTENT_SECURITY_POLICY,
-                    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'".parse().unwrap(),
-                );
-                response
-            }))
-            .layer(axum::middleware::from_fn(move |req, next| {
-                let token = token.clone();
-                auth_middleware(token, req, next)
-            }))
-            .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
-            .layer(SetRequestIdLayer::new(request_id_header, MakeRequestUuid))
-    } else {
-        axum::Router::new()
-            .merge(dashboard_routes())
-            .merge(skills_routes(api_state))
-            .merge(metrics_routes(metrics_state))
-            .merge(rules_routes(rules_state))
-            .merge(mcp_servers_routes())
-            .merge(static_router)
-            .fallback_service(http_service)
-            .layer(cors_layer)
-            .layer(axum::middleware::from_fn(|req: axum::extract::Request, next: axum::middleware::Next| async move {
-                let mut response = next.run(req).await;
-                response.headers_mut().insert(
-                    axum::http::header::CONTENT_SECURITY_POLICY,
-                    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'".parse().unwrap(),
-                );
-                response
-            }))
-            .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
-            .layer(SetRequestIdLayer::new(request_id_header, MakeRequestUuid))
-    };
-
-    // Serve with or without TLS
-    if let Some((cert_path, key_path)) = tls_config {
-        serve_with_tls(app, addr, &cert_path, &key_path, open_browser).await
-    } else {
-        serve_without_tls(app, addr, open_browser).await
+/// Serves a prepared router on `listener`, with TLS when configured.
+async fn run_prepared(
+    prepared: PreparedServer,
+    listener: tokio::net::TcpListener,
+    open_browser: bool,
+) -> Result<()> {
+    match prepared.tls {
+        Some((cert_path, key_path)) => {
+            serve_with_tls(prepared.app, listener, &cert_path, &key_path, open_browser).await
+        }
+        None => serve_without_tls(prepared.app, listener, open_browser).await,
     }
 }
 
+/// Pairs a listener with the address it is actually bound to, which differs
+/// from the requested one for port 0.
+fn with_bound_addr(
+    listener: tokio::net::TcpListener,
+) -> Result<(tokio::net::TcpListener, SocketAddr)> {
+    let addr = listener
+        .local_addr()
+        .context("failed to read the bound address")?;
+    Ok((listener, addr))
+}
+
 /// Try to bind to the given address, falling back to up to 9 subsequent ports on conflict.
+///
+/// Returns the listener and the address it is bound to (for port 0, the port
+/// the OS picked).
 async fn bind_with_fallback(addr: SocketAddr) -> Result<(tokio::net::TcpListener, SocketAddr)> {
     const MAX_PORT_ATTEMPTS: u16 = 10;
 
     // Try the requested port first
     match tokio::net::TcpListener::bind(addr).await {
-        Ok(listener) => return Ok((listener, addr)),
+        Ok(listener) => return with_bound_addr(listener),
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
             tracing::warn!(
                 target: "skrills::http",
@@ -403,7 +704,7 @@ async fn bind_with_fallback(addr: SocketAddr) -> Result<(tokio::net::TcpListener
                     actual = %try_port,
                     "Bound to fallback port"
                 );
-                return Ok((listener, try_addr));
+                return with_bound_addr(listener);
             }
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => continue,
             Err(e) => return Err(e).with_context(|| format!("failed to bind to {try_addr}")),
@@ -463,9 +764,27 @@ fn open_in_browser(url: &str) {
     }
 }
 
+/// The URL to open in a browser for a server bound to `addr`.
+///
+/// A wildcard bind (`0.0.0.0` or `::`) is not an address a browser can visit,
+/// and the Host check accepts loopback names, so it maps to `localhost`.
+fn browser_url(scheme: &str, addr: SocketAddr) -> String {
+    if addr.ip().is_unspecified() {
+        format!("{scheme}://localhost:{}", addr.port())
+    } else {
+        format!("{scheme}://{addr}")
+    }
+}
+
 /// Serve HTTP without TLS.
-async fn serve_without_tls(app: axum::Router, addr: SocketAddr, open_browser: bool) -> Result<()> {
-    let (listener, actual_addr) = bind_with_fallback(addr).await?;
+async fn serve_without_tls(
+    app: axum::Router,
+    listener: tokio::net::TcpListener,
+    open_browser: bool,
+) -> Result<()> {
+    let actual_addr = listener
+        .local_addr()
+        .context("failed to read bound address")?;
 
     tracing::info!(
         target: "skrills::http",
@@ -474,8 +793,7 @@ async fn serve_without_tls(app: axum::Router, addr: SocketAddr, open_browser: bo
     );
 
     if open_browser {
-        let url = format!("http://{actual_addr}");
-        open_in_browser(&url);
+        open_in_browser(&browser_url("http", actual_addr));
     }
 
     axum::serve(listener, app)
@@ -488,7 +806,7 @@ async fn serve_without_tls(app: axum::Router, addr: SocketAddr, open_browser: bo
 /// Serve HTTPS with TLS.
 async fn serve_with_tls(
     app: axum::Router,
-    addr: SocketAddr,
+    listener: tokio::net::TcpListener,
     cert_path: &Path,
     key_path: &Path,
     open_browser: bool,
@@ -505,18 +823,26 @@ async fn serve_with_tls(
             )
         })?;
 
+    let actual_addr = listener
+        .local_addr()
+        .context("failed to read bound address")?;
+
     tracing::info!(
         target: "skrills::http",
-        bind = %addr,
+        bind = %actual_addr,
         cert = %cert_path.display(),
         "MCP HTTPS server listening (TLS enabled)"
     );
 
     if open_browser {
-        open_in_browser(&format!("https://{addr}"));
+        open_in_browser(&browser_url("https", actual_addr));
     }
 
-    axum_server::bind_rustls(addr, tls_config)
+    let listener = listener
+        .into_std()
+        .context("failed to hand the bound socket to the TLS server")?;
+    axum_server::from_tcp_rustls(listener, tls_config)
+        .context("failed to start the TLS server on the bound socket")?
         .serve(app.into_make_service())
         .await
         .context("HTTPS server error")?;
@@ -528,28 +854,216 @@ async fn serve_with_tls(
 mod tests {
     use super::*;
 
+    /// The loopback allowlist is what stops a rebound attacker domain from
+    /// driving a locally bound MCP server (RUSTSEC-2026-0189), so it must be
+    /// on with no configuration at all.
     #[test]
-    fn parse_valid_bind_address() {
-        let addr: Result<SocketAddr, _> = "127.0.0.1:3000".parse();
-        assert!(addr.is_ok());
+    fn streamable_config_allows_only_loopback_hosts_by_default() {
+        let config = build_streamable_config(&HttpSecurityConfig::default());
+
+        assert_eq!(
+            config.allowed_hosts,
+            vec![
+                "localhost".to_string(),
+                "127.0.0.1".to_string(),
+                "::1".to_string()
+            ],
+            "default Host allowlist should be loopback only"
+        );
+    }
+
+    /// Binding a non-loopback address (`--http 0.0.0.0:8080`) is documented,
+    /// and Host validation rejects it unless the operator names the host.
+    #[test]
+    fn streamable_config_accepts_operator_supplied_hosts() {
+        let config = build_streamable_config(&HttpSecurityConfig {
+            allowed_hosts: vec!["skrills.internal:8080".to_string()],
+            ..Default::default()
+        });
+
+        assert!(
+            config
+                .allowed_hosts
+                .contains(&"skrills.internal:8080".to_string()),
+            "operator host should be accepted, got {:?}",
+            config.allowed_hosts
+        );
+    }
+
+    /// Naming an extra host must not be a way to switch the loopback
+    /// protection off by accident.
+    #[test]
+    fn streamable_config_keeps_loopback_when_hosts_are_added() {
+        let config = build_streamable_config(&HttpSecurityConfig {
+            allowed_hosts: vec!["example.com".to_string()],
+            ..Default::default()
+        });
+
+        for loopback in ["localhost", "127.0.0.1", "::1"] {
+            assert!(
+                config.allowed_hosts.iter().any(|h| h == loopback),
+                "{loopback} should survive an operator-supplied host, got {:?}",
+                config.allowed_hosts
+            );
+        }
+    }
+
+    /// rmcp skips `Origin` validation while the list is empty, so naming CORS
+    /// origins has to reach the transport for the check to run at all.
+    #[test]
+    fn streamable_config_carries_cors_origins_as_allowed_origins() {
+        let config = build_streamable_config(&HttpSecurityConfig {
+            cors_origins: vec!["https://app.example".to_string()],
+            ..Default::default()
+        });
+
+        assert_eq!(config.allowed_origins, vec!["https://app.example"]);
+    }
+
+    /// `*` matches no origin in rmcp, so copying it into the list would turn
+    /// "allow every browser" into "refuse every browser".
+    #[test]
+    fn streamable_config_leaves_origins_unset_for_wildcard_cors() {
+        let config = build_streamable_config(&HttpSecurityConfig {
+            cors_origins: vec!["*".to_string()],
+            ..Default::default()
+        });
+
+        assert!(
+            config.allowed_origins.is_empty(),
+            "wildcard CORS should leave Origin validation off, got {:?}",
+            config.allowed_origins
+        );
+    }
+
+    /// The loopback names rmcp defaults to have to survive the parser, or a
+    /// plain `skrills serve --http` would refuse to start.
+    #[test]
+    fn host_allow_list_parses_the_rmcp_defaults() {
+        let defaults = build_streamable_config(&HttpSecurityConfig::default()).allowed_hosts;
+
+        let parsed = parse_host_allow_list(&defaults).expect("rmcp defaults should parse");
+
+        assert_eq!(
+            parsed,
+            vec![
+                HostAuthority {
+                    host: "localhost".to_string(),
+                    port: None
+                },
+                HostAuthority {
+                    host: "127.0.0.1".to_string(),
+                    port: None
+                },
+                HostAuthority {
+                    host: "::1".to_string(),
+                    port: None
+                },
+            ]
+        );
     }
 
     #[test]
-    fn parse_invalid_bind_address() {
-        let addr: Result<SocketAddr, _> = "not-an-address".parse();
-        assert!(addr.is_err());
+    fn host_allow_list_parses_authorities_with_and_without_ports() {
+        let parsed = parse_host_allow_list(&[
+            "skrills.internal".to_string(),
+            "skrills.internal:8080".to_string(),
+            "[::1]:3000".to_string(),
+        ])
+        .expect("bare authorities should parse");
+
+        assert_eq!(
+            parsed,
+            vec![
+                HostAuthority {
+                    host: "skrills.internal".to_string(),
+                    port: None
+                },
+                HostAuthority {
+                    host: "skrills.internal".to_string(),
+                    port: Some(8080)
+                },
+                HostAuthority {
+                    host: "::1".to_string(),
+                    port: Some(3000)
+                },
+            ]
+        );
+    }
+
+    /// An entry written by analogy with `cors_origins` matched nothing and left
+    /// every client with a 403, so it has to be named at startup instead.
+    #[test]
+    fn host_allow_list_rejects_entries_that_are_not_authorities() {
+        for bad in ["https://skrills.internal:8080", "skrills.internal/mcp"] {
+            let Err(error) = parse_host_allow_list(&[bad.to_string()]) else {
+                panic!("{bad} should be rejected");
+            };
+
+            let error = error.to_string();
+            assert!(
+                error.contains(bad),
+                "the error should name the entry, got: {error}"
+            );
+        }
+    }
+
+    /// A trailing comma in `--allowed-hosts foo.example,` cost nothing before
+    /// the entries were parsed, and should not start costing a failed startup.
+    #[test]
+    fn host_allow_list_skips_blank_entries() {
+        let parsed =
+            parse_host_allow_list(&["foo.example".to_string(), String::new(), "  ".to_string()])
+                .expect("a blank entry should be ignored, not rejected");
+
+        assert_eq!(
+            parsed,
+            vec![HostAuthority {
+                host: "foo.example".to_string(),
+                port: None
+            }]
+        );
+    }
+
+    /// An entry without a port is a host name, not a demand that the client
+    /// omit the port it connected on.
+    #[test]
+    fn host_entry_without_port_accepts_any_port() {
+        let entry = parse_host_authority("skrills.internal").unwrap();
+
+        assert!(entry.accepts(&parse_host_authority("skrills.internal:8080").unwrap()));
+        assert!(entry.accepts(&parse_host_authority("SKRILLS.INTERNAL").unwrap()));
+        assert!(!entry.accepts(&parse_host_authority("other.internal:8080").unwrap()));
     }
 
     #[test]
-    fn parse_ipv6_bind_address() {
-        let addr: Result<SocketAddr, _> = "[::1]:3000".parse();
-        assert!(addr.is_ok());
+    fn host_entry_with_port_rejects_another_port() {
+        let entry = parse_host_authority("skrills.internal:8080").unwrap();
+
+        assert!(entry.accepts(&parse_host_authority("skrills.internal:8080").unwrap()));
+        assert!(!entry.accepts(&parse_host_authority("skrills.internal:9090").unwrap()));
+        assert!(!entry.accepts(&parse_host_authority("skrills.internal").unwrap()));
     }
 
+    /// `--open` on a wildcard bind used to hand the browser `0.0.0.0:port`.
     #[test]
-    fn parse_wildcard_bind_address() {
-        let addr: Result<SocketAddr, _> = "0.0.0.0:3000".parse();
-        assert!(addr.is_ok());
+    fn browser_url_maps_a_wildcard_bind_to_localhost() {
+        assert_eq!(
+            browser_url("http", "0.0.0.0:3000".parse().unwrap()),
+            "http://localhost:3000"
+        );
+        assert_eq!(
+            browser_url("https", "[::]:3000".parse().unwrap()),
+            "https://localhost:3000"
+        );
+        assert_eq!(
+            browser_url("http", "127.0.0.1:3000".parse().unwrap()),
+            "http://127.0.0.1:3000"
+        );
+        assert_eq!(
+            browser_url("https", "[::1]:8443".parse().unwrap()),
+            "https://[::1]:8443"
+        );
     }
 
     #[test]
@@ -580,29 +1094,71 @@ mod tests {
         assert!(!config.has_auth());
     }
 
-    #[test]
-    fn cors_layer_empty_origins() {
-        let layer = build_cors_layer(&[], false);
-        // Should create a layer (no panic)
-        let _ = layer;
-    }
+    mod cors_layer_tests {
+        use super::*;
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
 
-    #[test]
-    fn cors_layer_wildcard_origin() {
-        let layer = build_cors_layer(&["*".to_string()], false);
-        let _ = layer;
-    }
+        async fn preflight(origins: &[String], origin: &str) -> axum::response::Response {
+            let app = axum::Router::new()
+                .route("/test", axum::routing::get(|| async { "OK" }))
+                .layer(build_cors_layer(origins, false));
+            let req = Request::builder()
+                .method(Method::OPTIONS)
+                .uri("/test")
+                .header(header::ORIGIN, origin)
+                .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+                .body(Body::empty())
+                .unwrap();
+            app.oneshot(req).await.unwrap()
+        }
 
-    #[test]
-    fn cors_layer_specific_origins() {
-        let layer = build_cors_layer(
-            &[
+        fn allow_origin(response: &axum::response::Response) -> Option<&str> {
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|v| v.to_str().ok())
+        }
+
+        #[tokio::test]
+        async fn no_origins_grants_no_cross_origin_access() {
+            let response = preflight(&[], "http://app.example").await;
+            assert_eq!(allow_origin(&response), None);
+        }
+
+        #[tokio::test]
+        async fn wildcard_allows_any_origin() {
+            let response = preflight(&["*".to_string()], "http://anything.example").await;
+            assert_eq!(allow_origin(&response), Some("*"));
+        }
+
+        #[tokio::test]
+        async fn listed_origin_is_allowed_and_others_are_not() {
+            let origins = [
                 "http://localhost:3000".to_string(),
                 "https://app.example.com".to_string(),
-            ],
-            false,
-        );
-        let _ = layer;
+            ];
+            let allowed = preflight(&origins, "https://app.example.com").await;
+            assert_eq!(allow_origin(&allowed), Some("https://app.example.com"));
+            let allowed_methods = allowed
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_METHODS)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            assert!(allowed_methods.contains("GET"), "{allowed_methods}");
+
+            let refused = preflight(&origins, "https://evil.example").await;
+            assert_eq!(allow_origin(&refused), None);
+        }
+
+        #[tokio::test]
+        async fn unparseable_origins_are_skipped() {
+            let origins = ["bad\norigin".to_string(), "http://ok.example".to_string()];
+            let response = preflight(&origins, "http://ok.example").await;
+            assert_eq!(allow_origin(&response), Some("http://ok.example"));
+        }
     }
 
     #[test]
@@ -782,6 +1338,22 @@ mod tests {
             drop(listener);
         }
 
+        /// `serve --http 127.0.0.1:0` asks the OS for a port; the address
+        /// returned (and logged) must be the one actually bound, not `:0`.
+        #[tokio::test]
+        async fn bind_with_fallback_reports_the_bound_port_for_port_zero() {
+            let requested: SocketAddr = "127.0.0.1:0".parse().unwrap();
+
+            let (listener, actual) = bind_with_fallback(requested).await.unwrap();
+
+            assert_ne!(
+                actual.port(),
+                0,
+                "port 0 is not an address a client can reach"
+            );
+            assert_eq!(actual, listener.local_addr().unwrap());
+        }
+
         #[tokio::test]
         async fn bind_with_fallback_falls_back_when_port_occupied() {
             // Occupy a port
@@ -835,6 +1407,177 @@ mod tests {
             );
 
             drop(blockers);
+        }
+    }
+
+    /// Tests over the full router `prepare_server` builds, with HOME pointed
+    /// at a temp dir so nothing touches the developer's ~/.skrills.
+    mod prepared_router_tests {
+        use super::*;
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        /// Builds the served router and answers `requests` on a current-thread
+        /// runtime, holding the env lock for the whole run.
+        fn respond(
+            auth_token: Option<&str>,
+            requests: Vec<Request<Body>>,
+        ) -> Vec<axum::response::Response> {
+            let _g = crate::test_support::env_guard();
+            let home = tempfile::tempdir().unwrap();
+            let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
+            let security = HttpSecurityConfig {
+                auth_token: auth_token.map(str::to_string),
+                ..Default::default()
+            };
+            let prepared = prepare_server(
+                || Err(std::io::Error::other("no MCP session in this test")),
+                security,
+                Vec::new(),
+            )
+            .unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async move {
+                let mut responses = Vec::new();
+                for req in requests {
+                    responses.push(prepared.app.clone().oneshot(req).await.unwrap());
+                }
+                responses
+            })
+        }
+
+        fn get(path: &str, bearer: Option<&str>) -> Request<Body> {
+            let mut builder = Request::builder().uri(path).header("Host", "127.0.0.1");
+            if let Some(token) = bearer {
+                builder = builder.header("Authorization", format!("Bearer {token}"));
+            }
+            builder.body(Body::empty()).unwrap()
+        }
+
+        /// SA-2: MCP server inventories (commands, args, env names) are not
+        /// served by a server anyone on the network can reach without a token.
+        #[test]
+        fn mcp_servers_route_is_refused_without_auth() {
+            let mut responses = respond(None, vec![get("/api/mcp-servers", None)]);
+            let response = responses.remove(0);
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            let body = body_text(response);
+            assert!(!body.contains("servers"), "no inventory in: {body}");
+        }
+
+        fn body_text(response: axum::response::Response) -> String {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            let bytes = rt
+                .block_on(http_body_util::BodyExt::collect(response.into_body()))
+                .unwrap()
+                .to_bytes();
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+
+        /// RT-21: the dashboard reads the shared on-disk store, which other
+        /// skrills processes (stdio serve) also write.
+        #[test]
+        fn metrics_use_the_on_disk_store_under_home() {
+            let _g = crate::test_support::env_guard();
+            let home = tempfile::tempdir().unwrap();
+            let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
+
+            let collector = open_metrics_collector().unwrap();
+
+            assert!(matches!(
+                collector.storage_mode(),
+                skrills_metrics::StorageMode::Persistent(p)
+                    if p == &home.path().join(".skrills/metrics.db")
+            ));
+        }
+
+        #[test]
+        fn metrics_fall_back_to_memory_when_the_store_cannot_be_opened() {
+            let _g = crate::test_support::env_guard();
+            let home = tempfile::tempdir().unwrap();
+            // A file where the .skrills directory should be.
+            std::fs::write(home.path().join(".skrills"), "not a directory").unwrap();
+            let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
+
+            let collector = open_metrics_collector().unwrap();
+
+            assert!(matches!(
+                collector.storage_mode(),
+                skrills_metrics::StorageMode::InMemory
+            ));
+        }
+
+        /// SB-27: the dashboard's script and stylesheet are files, so the CSP
+        /// needs no `'unsafe-inline'`, which would let an injected inline
+        /// script run.
+        #[test]
+        fn csp_forbids_inline_script_and_style() {
+            let responses = respond(None, vec![get("/", None)]);
+            let csp = responses[0]
+                .headers()
+                .get(header::CONTENT_SECURITY_POLICY)
+                .expect("CSP header")
+                .to_str()
+                .unwrap()
+                .to_string();
+            assert!(!csp.contains("unsafe-inline"), "{csp}");
+            assert!(csp.contains("script-src 'self'"), "{csp}");
+            assert!(csp.contains("style-src 'self'"), "{csp}");
+        }
+
+        #[test]
+        fn dashboard_loads_its_script_from_a_static_file() {
+            let mut responses = respond(
+                None,
+                vec![get("/", None), get("/static/dashboard.js", None)],
+            );
+            let script = responses.pop().unwrap();
+            let page = responses.pop().unwrap();
+
+            assert_eq!(page.status(), StatusCode::OK);
+            let html = body_text(page);
+            assert!(
+                html.contains(r#"<script src="/static/dashboard.js""#),
+                "the page should load the script by URL: {html}"
+            );
+            assert!(
+                !html.contains("fetch("),
+                "no script body should be inlined in the page"
+            );
+            assert!(!html.contains("<style"), "no inline stylesheet");
+
+            assert_eq!(script.status(), StatusCode::OK);
+            let content_type = script
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
+            assert!(
+                content_type.starts_with("text/javascript"),
+                "{content_type}"
+            );
+            assert!(body_text(script).contains("fetch('/api/mcp-servers')"));
+        }
+
+        #[test]
+        fn mcp_servers_route_requires_the_token_when_auth_is_on() {
+            let responses = respond(
+                Some("tok"),
+                vec![
+                    get("/api/mcp-servers", None),
+                    get("/api/mcp-servers", Some("tok")),
+                ],
+            );
+            assert_eq!(responses[0].status(), StatusCode::UNAUTHORIZED);
+            assert_eq!(responses[1].status(), StatusCode::OK);
         }
     }
 }

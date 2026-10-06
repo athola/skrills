@@ -195,6 +195,11 @@ pub fn has_frontmatter(content: &str) -> bool {
 /// Split content into frontmatter and body sections.
 ///
 /// Returns (frontmatter_yaml, body_content, content_start_line).
+///
+/// The returned block keeps whatever line endings the file used, minus the `\r`
+/// of its final line. `str::lines` strips that `\r` from every other line, so
+/// leaving it in made callers that rebuild the block line by line emit the
+/// closing `---` on the same line as the last key.
 pub fn split_frontmatter(content: &str) -> (Option<String>, String, usize) {
     let trimmed = content.trim_start();
 
@@ -212,9 +217,10 @@ pub fn split_frontmatter(content: &str) -> (Option<String>, String, usize) {
     let after_open = &trimmed[3..];
     let after_open = after_open.trim_start_matches(['\r', '\n']);
 
-    if let Some(end_pos) = after_open.find("\n---") {
-        let yaml = &after_open[..end_pos];
-        let rest = &after_open[end_pos + 4..];
+    if let Some((end_pos, fence_end)) = find_closing_fence(after_open) {
+        let block = &after_open[..end_pos];
+        let yaml = block.strip_suffix('\r').unwrap_or(block);
+        let rest = &after_open[fence_end..];
         let rest = rest.trim_start_matches(['\r', '\n']);
 
         // Calculate content start line
@@ -222,19 +228,34 @@ pub fn split_frontmatter(content: &str) -> (Option<String>, String, usize) {
         let content_start = leading_lines + frontmatter_lines + 1;
 
         (Some(yaml.to_string()), rest.to_string(), content_start)
-    } else if let Some(end_pos) = after_open.find("\r\n---") {
-        let yaml = &after_open[..end_pos];
-        let rest = &after_open[end_pos + 5..];
-        let rest = rest.trim_start_matches(['\r', '\n']);
-
-        let frontmatter_lines = yaml.lines().count() + 2;
-        let content_start = leading_lines + frontmatter_lines + 1;
-
-        (Some(yaml.to_string()), rest.to_string(), content_start)
     } else {
         // No closing ---, treat entire content as body
         (None, content.to_string(), 1)
     }
+}
+
+/// Finds the line that closes a frontmatter block: one that is exactly `---`,
+/// apart from trailing whitespace or a CRLF `\r`. Returns the offset of the
+/// newline before it and the offset just past the fence text.
+///
+/// A plain search for `\n---` also matched `----` or `--- text` inside a block
+/// scalar and closed the block early. Matching on `\n` covers a CRLF fence too,
+/// since its `\r` trails the previous line, and a `\r\n---` in the body of an
+/// LF file is never mistaken for the fence.
+fn find_closing_fence(after_open: &str) -> Option<(usize, usize)> {
+    let mut search_from = 0;
+    while let Some(rel) = after_open[search_from..].find("\n---") {
+        let newline = search_from + rel;
+        let line_start = newline + 1;
+        let line_end = after_open[line_start..]
+            .find('\n')
+            .map_or(after_open.len(), |i| line_start + i);
+        if after_open[line_start..line_end].trim_end() == "---" {
+            return Some((newline, line_end));
+        }
+        search_from = line_start;
+    }
+    None
 }
 
 /// Parse YAML frontmatter from a skill file.
@@ -325,6 +346,83 @@ mod tests {
         assert!(yaml.unwrap().contains("name: test"));
         assert!(body.starts_with("# Heading"));
         assert_eq!(line, 5);
+    }
+
+    /// `str::lines` strips the `\r` from every line except the last one, which
+    /// has no `\n` after it. A caller that rebuilds the block line by line
+    /// therefore emitted the closing `---` on the same line as the last key.
+    #[test]
+    fn split_frontmatter_drops_the_carriage_return_of_the_last_crlf_line() {
+        let content = "---\r\nname: test\r\nmodel: x\r\n---\r\n\r\n# Body\r\n";
+        let (yaml, body, line) = split_frontmatter(content);
+
+        assert_eq!(yaml.as_deref(), Some("name: test\r\nmodel: x"));
+        assert_eq!(body, "# Body\r\n");
+        assert_eq!(line, 5);
+    }
+
+    /// Only a line that is exactly `---` closes the block. A `----` rule or a
+    /// `--- text` line inside a block scalar is YAML content, not the fence.
+    #[test]
+    fn split_frontmatter_closes_only_on_a_bare_fence_line() {
+        let content =
+            "---\nname: test\ndescription: |\n  intro\n----\n--- not a fence\n---\nBody\n";
+        let (yaml, body, _) = split_frontmatter(content);
+
+        assert_eq!(
+            yaml.as_deref(),
+            Some("name: test\ndescription: |\n  intro\n----\n--- not a fence")
+        );
+        assert_eq!(body, "Body\n");
+    }
+
+    #[test]
+    fn split_frontmatter_accepts_a_fence_with_trailing_whitespace_or_cr() {
+        let (yaml, body, _) = split_frontmatter("---\nname: a\n---  \nBody\n");
+        assert_eq!(yaml.as_deref(), Some("name: a"));
+        assert_eq!(body, "Body\n");
+
+        let (yaml, body, _) = split_frontmatter("---\r\nname: a\r\n---\r\nBody\r\n");
+        assert_eq!(yaml.as_deref(), Some("name: a"));
+        assert_eq!(body, "Body\r\n");
+    }
+
+    /// A body that happens to contain `\r\n---` must not be mistaken for the
+    /// closing delimiter of an LF-terminated block.
+    #[test]
+    fn split_frontmatter_closes_on_the_first_delimiter_not_the_crlf_one() {
+        let content = "---\nname: test\n---\nBody\r\n--- a horizontal rule\n";
+        let (yaml, body, _) = split_frontmatter(content);
+
+        assert_eq!(yaml.as_deref(), Some("name: test"));
+        assert_eq!(body, "Body\r\n--- a horizontal rule\n");
+    }
+
+    /// An agent file that starts with blank lines still has frontmatter, and the
+    /// reported content line has to count those lines.
+    #[test]
+    fn split_frontmatter_allows_leading_blank_lines() {
+        let content = "  \n  ---\nname: test\n---\nBody";
+        let (yaml, body, line) = split_frontmatter(content);
+
+        assert_eq!(yaml.as_deref(), Some("name: test"));
+        assert_eq!(body, "Body");
+        assert_eq!(line, 5);
+    }
+
+    /// An opening `---` with no closing one is not frontmatter, so the whole file
+    /// is the body rather than a block that swallows it.
+    #[test]
+    fn split_frontmatter_without_a_closing_delimiter_returns_the_whole_body() {
+        for content in [
+            "---\nkey: val\n",
+            "---\nname: test\ndescription: something\n\n# Body\nHere.\n",
+        ] {
+            let (yaml, body, line) = split_frontmatter(content);
+            assert!(yaml.is_none(), "{content:?} has no closing delimiter");
+            assert_eq!(body, content);
+            assert_eq!(line, 1);
+        }
     }
 
     #[test]

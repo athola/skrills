@@ -1,7 +1,18 @@
 # Changelog Highlights
 
+## 0.9.0 (Unreleased)
+
+- **Security**: `Host` is validated on every HTTP route, not only `/mcp`. `setup --universal` syncs skill directories only, instead of copying all of `~/.claude` (credentials and transcripts included) into `~/.agent`. `serve --http` reads `auth_token` from the config file itself, subagent CLI children no longer inherit server secrets, and skill generation sends the GitHub token only to GitHub. `fetch-pdf`, the tome clients and MCP `create-skill` are bounded. Third-party GitHub Actions are pinned to commit SHAs, and rustls, h2, quinn-proto and crossbeam-epoch advisories are closed.
+- **BREAKING: `cold-window` shows only real data unless `--demo` is passed**. `--alert-budget` must be at least 2, and a ceiling at or below 50K scales the Advisory and Caution tiers to 20% and 50% of it. See [Cold-Window Real-Time Analysis](cold-window.md).
+- **BREAKING: Commands fail loudly**: `validate` exits non-zero on errors, `serve --http --watch` and `skill-catalog --category` are refused, `cert renew` refuses a CA-issued certificate without `--force`, and tracing goes to stderr so `--format json` stdout stays parseable.
+- **Fix: `sync-all --validate` and `--autofix` work**: the source skills are validated for the strictest target before any target is written, and any error aborts every target. See [CLI Reference](cli.md#sync-all).
+- **Change: Copilot prompt files are written as `.prompt.md`** (`.prompts.md` is still read). Sync writes are atomic, keep a `.skrills-bak` of user config files, merge MCP servers by name, and write CLAUDE.md inside a marked block.
+- **Migration: rmcp 1.8 to 3.4**, with the advertised MCP protocol capped at 2025-11-25. The CLI moved from `skrills-server` into the `skrills` crate.
+- **Fix**: setup, uninstall and `doctor` agree on where each client is registered (Codex in `~/.codex/config.toml`). Subagent CLI runs honour timeouts and `stop-run` kills the child. The dashboard reads the shared `~/.skrills/metrics.db`. Cursor plugin sync mirrors the whole plugin tree, not only its manifest.
+
 ## 0.8.2 (2026-05-30)
 
+- **BREAKING: `Esc` no longer quits the cold-window TUI**: it closes the topmost overlay, then clears zoom, and does nothing at the base surface (lazygit/gitui/k9s convention). Quit with `q` or `Ctrl-C`. See [Cold-Window Real-Time Analysis](cold-window.md).
 - **Feature: Cold-Window TUI surface (`skrills cold-window --tui`)**: The cold-window panes now mount in a crossterm raw-mode loop, completing the surface the v0.8.0 panes were built for. `--tui` renders alerts, ranked hints, the research panel, and the token/budget status bar live in the current terminal, subscribing to the same engine bus as the browser surface; both can run together. Quit with `q` or `Ctrl-C`; `--no-bell` silences the WARNING-tier bell. First paint is asserted under the spec § 6 SC3 500ms budget (`cold_window_tui_startup_under_five_hundred_ms`, previously `#[ignore]`d for the missing launch path). See [`Cold-Window Real-Time Analysis`](cold-window.md).
 - **Feature: Responsive `--tui` layout**: The panes re-flow live on resize across three width tiers: wide (≥ 80 cols) keeps the 60/40 two-column layout, medium (60-79 cols) slims the research column so alert/hint text stays readable, and narrow (< 60 cols) stacks every pane full-width with a collapsed research pane as a three-line badge. The status bar stays pinned to the bottom in every tier. Layout is a pure `plan_layout` function tested without a terminal. Also fixes `ResearchPaneState::default` to start collapsed (matching `new()`) instead of silently opening the pane on launch.
 

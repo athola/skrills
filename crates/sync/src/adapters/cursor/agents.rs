@@ -3,20 +3,24 @@
 //! Cursor agents are markdown files with YAML frontmatter in `.cursor/agents/`.
 //! Key differences from Claude agents:
 //! - `background: true` → `is_background: true`
-//! - `tools` and `isolation` fields are Claude-only (stripped on write)
+//! - `tools` and `isolation` fields are Claude-only: stripped from the Cursor
+//!   frontmatter, reported as a warning, and kept in a trailing
+//!   `<!-- skrills:frontmatter ... -->` comment that reading the agent back
+//!   from Cursor puts into the frontmatter again
+//! - `is_background` is not renamed back to `background` on read
 //! - `readonly` is Cursor-only (preserved on read)
-//! - Model names translated via `transform_model`
+//! - `model` is copied unchanged (not translated)
 
 use super::paths::agents_dir;
-use super::utils::sanitize_name;
-use crate::adapters::utils::{hash_content, split_frontmatter};
+use super::utils::{stash_frontmatter, take_stash};
+use crate::adapters::utils::hash_content;
+use crate::adapters::utils::sanitize_name_kebab;
 use crate::common::{Command, ContentFormat};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
-use tracing::debug;
 
 /// Reads all agents from `.cursor/agents/*.md`.
 pub fn read_agents(root: &Path) -> Result<Vec<Command>> {
@@ -53,6 +57,11 @@ pub fn read_agents(root: &Path) -> Result<Vec<Command>> {
             .to_string();
 
         let content = fs::read(&path)?;
+        // A copy this crate wrote gets its Claude-only lines back.
+        let content = match std::str::from_utf8(&content).ok().and_then(restore_agent) {
+            Some(restored) => restored.into_bytes(),
+            None => content,
+        };
         let hash = hash_content(&content);
         let modified = fs::metadata(&path)
             .and_then(|m| m.modified())
@@ -89,30 +98,75 @@ pub fn write_agents(root: &Path, agents: &[Command]) -> Result<WriteReport> {
 
     fs::create_dir_all(&dir)?;
 
+    let mut writer = crate::adapters::utils::BatchWriter::new(&dir);
     for agent in agents {
-        let name = sanitize_name(&agent.name);
-        let path = dir.join(format!("{}.md", name));
+        let name = sanitize_name_kebab(&agent.name);
 
         // Translate frontmatter fields
-        let content_str = String::from_utf8_lossy(&agent.content);
-        let translated = translate_agent_frontmatter(&content_str);
-
-        if path.exists() {
-            let existing = fs::read(&path)?;
-            if hash_content(&existing) == hash_content(translated.as_bytes()) {
-                report.skipped.push(SkipReason::Unchanged {
+        let content_str = match std::str::from_utf8(&agent.content) {
+            Ok(s) => s,
+            Err(e) => {
+                report.skipped.push(SkipReason::ParseError {
                     item: agent.name.clone(),
+                    error: format!("not valid UTF-8: {e}"),
                 });
                 continue;
             }
+        };
+        let (translated, dropped) = translate_agent_frontmatter(content_str);
+        let translated = if dropped.is_empty() {
+            translated
+        } else {
+            stash_frontmatter(&translated, &dropped).unwrap_or(translated)
+        };
+        if dropped.lines().any(|l| l.starts_with("isolation:")) {
+            report.warnings.push(format!(
+                "Agent {} sets `isolation` in Claude; Cursor agents have no such field, so \
+                 the Cursor copy runs without it.",
+                agent.name
+            ));
+        }
+        if restricts_tools(content_str) {
+            report.warnings.push(format!(
+                "Agent {} limits its tools in Claude; Cursor agents have no tool list, so it \
+                 can use every tool there. Add `readonly: true` to the Cursor copy if it \
+                 should not write.",
+                agent.name
+            ));
         }
 
-        debug!(name = %name, path = ?path, "Writing Cursor agent");
-        fs::write(&path, translated.as_bytes())?;
-        report.written += 1;
+        writer.write_single(
+            &agent.name,
+            &name,
+            ".md",
+            translated.as_bytes(),
+            &mut report,
+        )?;
     }
 
     Ok(report)
+}
+
+/// Whether the agent's frontmatter has a `tools:` key, the restriction
+/// [`translate_agent_frontmatter`] has to drop.
+fn restricts_tools(content: &str) -> bool {
+    let (raw, _body, _line) = skrills_validate::frontmatter::split_frontmatter(content);
+    raw.is_some_and(|fm| fm.lines().any(|line| line.starts_with("tools:")))
+}
+
+/// Puts the Claude-only lines a Cursor copy stashed back at the end of its
+/// frontmatter. `None` when the file carries no stash.
+fn restore_agent(content: &str) -> Option<String> {
+    let (body, dropped) = take_stash(content)?;
+    let (raw, rest, _) = skrills_validate::frontmatter::split_frontmatter(body);
+    let fm = raw?;
+    let mut out = format!("---\n{fm}\n{dropped}\n---\n");
+    if !rest.is_empty() {
+        out.push('\n');
+        out.push_str(&rest);
+        out.push('\n');
+    }
+    Some(out)
 }
 
 /// Translates Claude agent frontmatter to Cursor conventions.
@@ -120,14 +174,17 @@ pub fn write_agents(root: &Path, agents: &[Command]) -> Result<WriteReport> {
 /// - Renames `background` → `is_background`
 /// - Strips `tools` and `isolation` fields (not supported by Cursor)
 /// - Passes through all other fields unchanged
-fn translate_agent_frontmatter(content: &str) -> String {
-    let (raw_frontmatter, body) = split_frontmatter(content);
+///
+/// Returns the translated file and the stripped lines (empty when none).
+fn translate_agent_frontmatter(content: &str) -> (String, String) {
+    let (raw_frontmatter, body, _line) = skrills_validate::frontmatter::split_frontmatter(content);
 
     let Some(frontmatter_str) = raw_frontmatter else {
-        return content.to_string();
+        return (content.to_string(), String::new());
     };
 
     let mut translated_lines = Vec::new();
+    let mut dropped_lines: Vec<&str> = Vec::new();
     let mut skipping_block = false;
 
     for line in frontmatter_str.lines() {
@@ -136,6 +193,7 @@ fn translate_agent_frontmatter(content: &str) -> String {
         // Skip Claude-only fields and their multi-line continuations
         if trimmed_line.starts_with("tools:") || trimmed_line.starts_with("isolation:") {
             skipping_block = true;
+            dropped_lines.push(line);
             continue;
         }
 
@@ -143,6 +201,7 @@ fn translate_agent_frontmatter(content: &str) -> String {
         // (indented lines or list items that belong to the previous field)
         if skipping_block {
             if line.starts_with(' ') || line.starts_with('\t') {
+                dropped_lines.push(line);
                 continue;
             }
             // Non-continuation line: stop skipping
@@ -166,9 +225,9 @@ fn translate_agent_frontmatter(content: &str) -> String {
     result.push_str("\n---\n");
     if !body.is_empty() {
         result.push('\n');
-        result.push_str(body);
+        result.push_str(&body);
     }
-    result
+    (result, dropped_lines.join("\n"))
 }
 
 #[cfg(test)]
@@ -178,7 +237,7 @@ mod tests {
     #[test]
     fn translate_background_to_is_background() {
         let input = "---\nname: reviewer\nbackground: true\nmodel: claude-sonnet-4-6\n---\n\nReview code.\n";
-        let output = translate_agent_frontmatter(input);
+        let output = translate_agent_frontmatter(input).0;
         assert!(output.contains("is_background: true"));
         // Verify the standalone "background:" key is gone (not just a substring match)
         for line in output.lines() {
@@ -195,7 +254,7 @@ mod tests {
     #[test]
     fn translate_strips_tools_and_isolation() {
         let input = "---\nname: builder\ntools: [Read, Write, Bash]\nisolation: worktree\nmodel: opus\n---\n\nBuild things.\n";
-        let output = translate_agent_frontmatter(input);
+        let output = translate_agent_frontmatter(input).0;
         assert!(!output.contains("tools:"));
         assert!(!output.contains("isolation:"));
         assert!(output.contains("name: builder"));
@@ -205,7 +264,7 @@ mod tests {
     #[test]
     fn translate_strips_multiline_tools_list() {
         let input = "---\nname: builder\ntools:\n  - Read\n  - Write\n  - Bash\nmodel: opus\n---\n\nBuild things.\n";
-        let output = translate_agent_frontmatter(input);
+        let output = translate_agent_frontmatter(input).0;
         assert!(!output.contains("tools:"), "tools: should be stripped");
         assert!(
             !output.contains("  - Read"),
@@ -226,7 +285,7 @@ mod tests {
     #[test]
     fn translate_no_frontmatter_passthrough() {
         let input = "# Just markdown\n\nNo frontmatter here.\n";
-        let output = translate_agent_frontmatter(input);
+        let output = translate_agent_frontmatter(input).0;
         assert_eq!(output, input);
     }
 
@@ -236,7 +295,7 @@ mod tests {
     fn translate_agent_frontmatter_output_format() {
         let input =
             "---\nname: test-agent\ndescription: A test agent\nmodel: opus\n---\n\nDo the work.\n";
-        let output = translate_agent_frontmatter(input);
+        let output = translate_agent_frontmatter(input).0;
 
         // Must start with opening delimiter
         assert!(

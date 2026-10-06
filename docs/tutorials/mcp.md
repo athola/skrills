@@ -6,7 +6,7 @@ This tutorial shows how to use Skrills as an MCP server with Claude Code CLI and
 
 ## Overview
 
-Skrills runs as an MCP (Model Context Protocol) server, providing 36 tools for skill management and research:
+Skrills runs as an MCP (Model Context Protocol) server, providing 36 core tools for skill management and research, plus 10 subagent and 3 gateway tools in a default build:
 
 - **Sync Tools**: Bidirectional sync between Claude, Codex, Copilot, and Cursor
 - **Validation Tools**: Validate skills for CLI compatibility

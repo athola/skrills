@@ -31,8 +31,29 @@ pub trait AgentAdapter: Send + Sync {
     /// Root configuration directory (e.g., ~/.claude, ~/.codex)
     fn config_root(&self) -> PathBuf;
 
-    /// What this adapter supports
-    fn supported_fields(&self) -> FieldSupport;
+    /// What this adapter can read, as a sync *source*.
+    ///
+    /// Required, with no direction-agnostic fallback: an adapter that
+    /// implements one direction of an artifact and not the other would
+    /// otherwise inherit a `true` for the direction it cannot do.
+    ///
+    /// Only `plugin_assets: false` gates the sync on the source side. There
+    /// the reader is absent and the trait default returns an empty result,
+    /// which is indistinguishable from "the source genuinely had none". The
+    /// other seven readers exist on every adapter, so those flags are
+    /// informational.
+    fn read_support(&self) -> FieldSupport;
+
+    /// What this adapter can write, as a sync *target*.
+    ///
+    /// A symmetric adapter delegates: `fn write_support(&self) -> FieldSupport
+    /// { self.read_support() }`.
+    ///
+    /// Every field gates the sync: for a `false` field the orchestrator skips
+    /// the phase and records [`SkipReason::UnsupportedField`](crate::report::SkipReason)
+    /// instead of calling a writer that would report a successful write of
+    /// nothing. Declare `true` for anything the writer maps, even loosely.
+    fn write_support(&self) -> FieldSupport;
 
     // --- Read operations ---
 
@@ -112,6 +133,19 @@ pub trait AgentAdapter: Send + Sync {
     fn write_plugin_assets(&self, _assets: &[PluginAsset]) -> Result<WriteReport> {
         Ok(WriteReport::default())
     }
+
+    /// Previews [`write_plugin_assets`](Self::write_plugin_assets) for a dry run.
+    ///
+    /// The default only counts the batch, which is all a purely additive writer
+    /// can do. An adapter whose writer also deletes overrides this so a dry run
+    /// names what would go: Cursor prunes the mirrors of plugins that left the
+    /// batch, and `--dry-run` has to show that before it happens.
+    fn preview_plugin_assets(&self, assets: &[PluginAsset]) -> Result<WriteReport> {
+        Ok(WriteReport {
+            written: assets.len(),
+            ..WriteReport::default()
+        })
+    }
 }
 
 /// Blanket impl so `Box<dyn AgentAdapter>` can be used with `SyncOrchestrator`.
@@ -122,8 +156,12 @@ impl AgentAdapter for Box<dyn AgentAdapter> {
     fn config_root(&self) -> PathBuf {
         (**self).config_root()
     }
-    fn supported_fields(&self) -> FieldSupport {
-        (**self).supported_fields()
+    fn read_support(&self) -> FieldSupport {
+        (**self).read_support()
+    }
+
+    fn write_support(&self) -> FieldSupport {
+        (**self).write_support()
     }
     fn read_commands(&self, include_marketplace: bool) -> Result<Vec<Command>> {
         (**self).read_commands(include_marketplace)
@@ -172,5 +210,8 @@ impl AgentAdapter for Box<dyn AgentAdapter> {
     }
     fn write_plugin_assets(&self, assets: &[PluginAsset]) -> Result<WriteReport> {
         (**self).write_plugin_assets(assets)
+    }
+    fn preview_plugin_assets(&self, assets: &[PluginAsset]) -> Result<WriteReport> {
+        (**self).preview_plugin_assets(assets)
     }
 }

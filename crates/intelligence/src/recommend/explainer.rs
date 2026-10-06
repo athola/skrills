@@ -70,8 +70,10 @@ fn format_recency(timestamp: u64) -> String {
     let age_hours = age_minutes / 60;
     let age_days = age_hours / 24;
 
-    if age_days > 30 {
-        format!("Used {} days ago", age_days)
+    if age_days >= 60 {
+        format!("Used {} months ago", age_days / 30)
+    } else if age_days > 30 {
+        "Used over a month ago".to_string()
     } else if age_days > 0 {
         if age_days == 1 {
             "Used yesterday".to_string()
@@ -156,6 +158,20 @@ mod tests {
     #[test]
     fn test_format_recency_zero() {
         assert_eq!(format_recency(0), "Previously used");
+    }
+
+    /// IN-48: past a month the wording changes instead of repeating the
+    /// days branch.
+    #[test]
+    fn format_recency_uses_months_for_old_usage() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let days_ago = |d: u64| format_recency(now - d * 86_400 - 60);
+        assert_eq!(days_ago(10), "Used 10 days ago");
+        assert_eq!(days_ago(45), "Used over a month ago");
+        assert_eq!(days_ago(95), "Used 3 months ago");
     }
 
     #[test]

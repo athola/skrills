@@ -4,9 +4,10 @@
 //! to the LLM. Each handler processes arguments and returns a `CallToolResult`.
 
 use super::SkillService;
+use crate::mcp_result::{tool_err, tool_ok};
 use crate::skill_trace::{self, ClientTarget as TraceTarget, TraceInstallOptions};
 use anyhow::Result;
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::{json, Map as JsonMap, Value};
 use skrills_state::home_dir;
 use std::fs;
@@ -14,19 +15,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 impl SkillService {
     /// Parse the trace target from tool arguments.
-    pub(crate) fn parse_trace_target(args: &JsonMap<String, Value>) -> TraceTarget {
+    ///
+    /// A missing target means both; an unrecognized one is an error, so a
+    /// typo cannot silently instrument both skill trees.
+    pub(crate) fn parse_trace_target(args: &JsonMap<String, Value>) -> Result<TraceTarget> {
         match args
             .get("target")
             .and_then(|v| v.as_str())
             .unwrap_or("both")
         {
-            "claude" => TraceTarget::Claude,
-            "codex" => TraceTarget::Codex,
-            "both" => TraceTarget::Both,
-            other => {
-                tracing::warn!(target = %other, "Unknown trace target, defaulting to Both");
-                TraceTarget::Both
-            }
+            "claude" => Ok(TraceTarget::Claude),
+            "codex" => Ok(TraceTarget::Codex),
+            "both" => Ok(TraceTarget::Both),
+            other => Err(anyhow::anyhow!(
+                "Unknown target '{other}': expected claude, codex or both"
+            )),
         }
     }
 
@@ -73,7 +76,12 @@ impl SkillService {
         let validation_target = match target_str {
             "claude" => VT::Claude,
             "codex" => VT::Codex,
-            _ => VT::Both,
+            "both" => VT::Both,
+            other => {
+                return Err(anyhow::anyhow!(
+                    "Unknown target '{other}': expected claude, codex or both"
+                ))
+            }
         };
 
         let (skills, _) = self.current_skills_with_dups()?;
@@ -87,6 +95,11 @@ impl SkillService {
         let mut results = Vec::new();
         let mut autofixed = 0usize;
         let mut total_dep_issues = 0usize;
+        // Counted over every validated skill, independent of `errors_only`,
+        // which only filters the rows returned.
+        let mut validated = 0usize;
+        let mut claude_valid = 0usize;
+        let mut codex_valid = 0usize;
 
         for meta in &skills {
             let mut content = match fs::read_to_string(&meta.path) {
@@ -99,9 +112,14 @@ impl SkillService {
             let mut result = validate_skill(&meta.path, &content, validation_target);
             let mut autofixed_skill = false;
 
-            if autofix && !result.codex_valid && validation_target != VT::Claude {
+            if autofix
+                && !result.codex_valid
+                && validation_target != VT::Claude
+                && autofix_may_write(&meta.source)
+            {
+                // Keep a backup: this rewrites files in place on a tool call.
                 let opts = AutofixOptions {
-                    create_backup: false,
+                    create_backup: true,
                     write_changes: true,
                     suggested_name: Some(meta.name.clone()),
                     suggested_description: None,
@@ -170,6 +188,40 @@ impl SkillService {
                 total_dep_issues += dependency_issues.len();
             }
 
+            let mut passed = Vec::new();
+            let mut failed = Vec::new();
+            if validation_target != VT::Codex {
+                if result.claude_valid {
+                    &mut passed
+                } else {
+                    &mut failed
+                }
+                .push("claude");
+            }
+            if validation_target != VT::Claude {
+                if result.codex_valid {
+                    &mut passed
+                } else {
+                    &mut failed
+                }
+                .push("codex");
+            }
+            if check_dependencies {
+                if dependency_issues.is_empty() {
+                    &mut passed
+                } else {
+                    &mut failed
+                }
+                .push("dependencies");
+            }
+            self.record_metric("validation", |m| {
+                m.record_validation(&meta.name, &passed, &failed)
+            });
+
+            validated += 1;
+            claude_valid += usize::from(result.claude_valid);
+            codex_valid += usize::from(result.codex_valid);
+
             if !errors_only || result.has_errors() || !dependency_issues.is_empty() {
                 let mut skill_json = json!({
                     "name": meta.name,
@@ -213,23 +265,11 @@ impl SkillService {
 
         let text = {
             let mut base = format!(
-                "Validated {} skills: {} Claude-valid, {} Codex-valid",
-                results.len(),
-                results
-                    .iter()
-                    .filter(|r| r
-                        .get("claude_valid")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false))
-                    .count(),
-                results
-                    .iter()
-                    .filter(|r| r
-                        .get("codex_valid")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false))
-                    .count()
+                "Validated {validated} skills: {claude_valid} Claude-valid, {codex_valid} Codex-valid"
             );
+            if errors_only {
+                base = format!("{base}\nShowing {} with issues", results.len());
+            }
             if autofixed > 0 {
                 base = format!("{base}\nAuto-fixed {autofixed} skills");
             }
@@ -241,6 +281,9 @@ impl SkillService {
 
         let mut structured = json!({
             "total": results.len(),
+            "validated": validated,
+            "claude_valid": claude_valid,
+            "codex_valid": codex_valid,
             "target": target_str,
             "autofix": autofix,
             "autofixed": autofixed,
@@ -257,12 +300,7 @@ impl SkillService {
             }
         }
 
-        Ok(CallToolResult {
-            content: vec![Content::text(text)],
-            structured_content: Some(structured),
-            is_error: Some(false),
-            meta: None,
-        })
+        Ok(tool_ok(vec![ContentBlock::text(text)], Some(structured)))
     }
 
     /// Compares a skill across Claude, Codex, and Copilot to show differences.
@@ -291,8 +329,22 @@ impl SkillService {
             .and_then(|v| v.as_u64())
             .unwrap_or(3) as usize;
 
-        // Get all discovered skills
-        let (skills, _) = self.current_skills_with_dups()?;
+        // The cached list is de-duplicated by name, which keeps exactly one
+        // copy of the skill this tool exists to compare. Scan each root on its
+        // own so every copy is seen.
+        let roots = self.cache.lock().roots().to_vec();
+        let mut skills = Vec::new();
+        for root in &roots {
+            match skrills_discovery::discover_skills(std::slice::from_ref(root), None) {
+                Ok(found) => skills.extend(found),
+                Err(e) => tracing::warn!(
+                    root = %root.root.display(),
+                    error = %e,
+                    "skill-diff could not scan root"
+                ),
+            }
+        }
+        let wanted = skill_dir_name(name);
 
         // Find matching skills across each source
         let mut claude_skill: Option<(String, String)> = None;
@@ -300,7 +352,7 @@ impl SkillService {
         let mut copilot_skill: Option<(String, String)> = None;
 
         for meta in &skills {
-            if meta.name == name {
+            if meta.name == name || skill_dir_name(&meta.name) == wanted {
                 let content = fs::read_to_string(&meta.path).ok();
                 if let Some(c) = content {
                     let path_str = meta.path.display().to_string();
@@ -324,18 +376,16 @@ impl SkillService {
 
         // Check if skill exists anywhere
         if claude_skill.is_none() && codex_skill.is_none() && copilot_skill.is_none() {
-            return Ok(CallToolResult {
-                content: vec![Content::text(format!(
+            return Ok(tool_err(
+                vec![ContentBlock::text(format!(
                     "Skill '{}' not found in any location",
                     name
                 ))],
-                is_error: Some(true),
-                structured_content: Some(json!({
+                Some(json!({
                     "error": "skill_not_found",
                     "name": name
                 })),
-                meta: None,
-            });
+            ));
         }
 
         // Generate diffs
@@ -350,69 +400,6 @@ impl SkillService {
         }
         if let Some((path, _)) = &copilot_skill {
             locations.push(json!({"source": "copilot", "path": path}));
-        }
-
-        // Helper to generate unified diff
-        fn unified_diff(a: &str, b: &str, label_a: &str, label_b: &str, context: usize) -> String {
-            let a_lines: Vec<&str> = a.lines().collect();
-            let b_lines: Vec<&str> = b.lines().collect();
-
-            if a_lines == b_lines {
-                return String::new();
-            }
-
-            let mut output = String::new();
-            output.push_str(&format!("--- {}\n", label_a));
-            output.push_str(&format!("+++ {}\n", label_b));
-
-            // Simple line-by-line diff with context
-            let max_len = a_lines.len().max(b_lines.len());
-            let mut in_hunk = false;
-            let mut hunk_start = 0;
-
-            for i in 0..max_len {
-                let a_line = a_lines.get(i).copied();
-                let b_line = b_lines.get(i).copied();
-
-                if a_line != b_line {
-                    if !in_hunk {
-                        // Start new hunk with context
-                        hunk_start = i.saturating_sub(context);
-                        output.push_str(&format!(
-                            "@@ -{},{} +{},{} @@\n",
-                            hunk_start + 1,
-                            context * 2 + 1,
-                            hunk_start + 1,
-                            context * 2 + 1
-                        ));
-
-                        // Add leading context
-                        for j in hunk_start..i {
-                            if let Some(line) = a_lines.get(j) {
-                                output.push_str(&format!(" {}\n", line));
-                            }
-                        }
-                        in_hunk = true;
-                    }
-
-                    if let Some(line) = a_line {
-                        output.push_str(&format!("-{}\n", line));
-                    }
-                    if let Some(line) = b_line {
-                        output.push_str(&format!("+{}\n", line));
-                    }
-                } else if in_hunk {
-                    // Trailing context
-                    if let Some(line) = a_line {
-                        output.push_str(&format!(" {}\n", line));
-                    }
-                    if i >= hunk_start + context * 2 {
-                        in_hunk = false;
-                    }
-                }
-            }
-
-            output
         }
 
         // Count tokens (simple word count approximation)
@@ -543,18 +530,16 @@ impl SkillService {
             }
         }
 
-        Ok(CallToolResult {
-            content: vec![Content::text(summary)],
-            is_error: Some(false),
-            structured_content: Some(json!({
+        Ok(tool_ok(
+            vec![ContentBlock::text(summary)],
+            Some(json!({
                 "name": name,
                 "locations": locations,
                 "comparisons": diffs,
                 "token_counts": token_counts,
                 "context_lines": context_lines
             })),
-            meta: None,
-        })
+        ))
     }
 
     /// Syncs configuration (commands, skills, MCP servers, preferences) between Claude and Codex.
@@ -595,6 +580,7 @@ impl SkillService {
         let is_claude_to_codex = from == "claude" && to == "codex";
 
         // Sync skills first (Codex discovery root) for Claude→Codex only.
+        let mut feature_flag_warning = String::new();
         let skill_report = if is_claude_to_codex && !dry_run {
             let home = home_dir()?;
             let claude_root = mirror_source_root(&home);
@@ -604,22 +590,31 @@ impl SkillService {
                 &codex_skills_root,
                 include_marketplace,
             )?;
-            let _ =
-                crate::setup::ensure_codex_skills_feature_enabled(&home.join(".codex/config.toml"));
+            if let Err(err) =
+                crate::setup::ensure_codex_skills_feature_enabled(&home.join(".codex/config.toml"))
+            {
+                // Surface filesystem errors (read-only home, disk full, malformed
+                // TOML) so the caller learns why Codex loads nothing despite the
+                // skills landing on disk.
+                tracing::warn!(error = %err, "could not ensure codex skills feature flag");
+                feature_flag_warning = format!(
+                    "\nwarning: could not enable the codex skills feature in \
+                     ~/.codex/config.toml: {err}"
+                );
+            }
             report
         } else {
-            crate::sync::SyncReport::default()
+            crate::sync::MirrorReport::default()
         };
-
-        // For Claude→Codex, skills are handled above via sync_skills_only_from_claude.
-        // For all other directions, let the orchestrator handle skills.
-        let sync_skills_via_orchestrator = !is_claude_to_codex;
 
         let skip_existing_commands = args
             .get("skip_existing_commands")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        // One rule for every caller, so `sync-all`, `sync-to-cursor` and the CLI
+        // cannot drift apart again.
+        let delivery = skrills_sync::skill_delivery(from, to);
         let params = SyncParams {
             from: Some(from.to_string()),
             dry_run,
@@ -627,29 +622,32 @@ impl SkillService {
             skip_existing_commands,
             sync_mcp_servers: true,
             sync_preferences: true,
-            sync_skills: sync_skills_via_orchestrator,
+            sync_skills: delivery.sync_skills,
             include_marketplace,
+            full_plugin_mirror: delivery.full_plugin_mirror,
             ..Default::default()
         };
 
         let report = sync_between(from, to, &params)?;
 
-        Ok(CallToolResult {
-            content: vec![Content::text(format!(
-                "{}\nSkills: {} copied, {} skipped",
-                report.summary, skill_report.copied, skill_report.skipped
-            ))],
-            is_error: Some(false),
-            structured_content: Some(json!({
-                "report": report,
-                "skill_report": {
-                    "copied": skill_report.copied,
-                    "skipped": skill_report.skipped
-                },
-                "dry_run": dry_run,
-                "skip_existing_commands": skip_existing_commands
-            })),
-            meta: None,
+        let succeeded = report.success;
+        let content = vec![ContentBlock::text(format!(
+            "{}\nSkills: {} copied, {} skipped{}",
+            report.summary, skill_report.copied, skill_report.skipped, feature_flag_warning
+        ))];
+        let structured = Some(json!({
+            "report": report,
+            "skill_report": {
+                "copied": skill_report.copied,
+                "skipped": skill_report.skipped
+            },
+            "dry_run": dry_run,
+            "skip_existing_commands": skip_existing_commands
+        }));
+        Ok(if succeeded {
+            tool_ok(content, structured)
+        } else {
+            tool_err(content, structured)
         })
     }
 
@@ -673,7 +671,7 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
-        let target = Self::parse_trace_target(&args);
+        let target = Self::parse_trace_target(&args)?;
         let opts = TraceInstallOptions {
             include_cache: args
                 .get("include_cache")
@@ -697,15 +695,13 @@ impl SkillService {
         let home = home_dir()?;
         let status = skill_trace::status(&home, target, &opts)?;
 
-        Ok(CallToolResult {
-            content: vec![Content::text(format!(
+        Ok(tool_ok(
+            vec![ContentBlock::text(format!(
                 "Skill loading status: found {} skill files; markers in {} files",
                 status.skill_files_found, status.instrumented_markers_found
             ))],
-            structured_content: Some(serde_json::to_value(status)?),
-            is_error: Some(false),
-            meta: None,
-        })
+            Some(serde_json::to_value(status)?),
+        ))
     }
 
     /// Enables skill tracing for debugging and observability.
@@ -728,7 +724,7 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
-        let target = Self::parse_trace_target(&args);
+        let target = Self::parse_trace_target(&args)?;
         let opts = TraceInstallOptions {
             instrument: args
                 .get("instrument")
@@ -760,8 +756,8 @@ impl SkillService {
         let home = home_dir()?;
         let report = skill_trace::enable_trace(&home, target, opts)?;
 
-        Ok(CallToolResult {
-            content: vec![Content::text(format!(
+        Ok(tool_ok(
+            vec![ContentBlock::text(format!(
                 "Enabled skill trace{}: installed trace={}, probe={}, instrumented={} (skipped={})",
                 if report.warnings.iter().any(|w| w.contains("failed to read")) {
                     " (with warnings)"
@@ -773,10 +769,8 @@ impl SkillService {
                 report.instrumented_files,
                 report.skipped_files
             ))],
-            structured_content: Some(serde_json::to_value(report)?),
-            is_error: Some(false),
-            meta: None,
-        })
+            Some(serde_json::to_value(report)?),
+        ))
     }
 
     /// Disables skill tracing by removing trace skills and instrumentation.
@@ -794,7 +788,7 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
-        let target = Self::parse_trace_target(&args);
+        let target = Self::parse_trace_target(&args)?;
         let dry_run = args
             .get("dry_run")
             .and_then(|v| v.as_bool())
@@ -802,15 +796,13 @@ impl SkillService {
         let home = home_dir()?;
         let removed = skill_trace::disable_trace(&home, target, dry_run)?;
 
-        Ok(CallToolResult {
-            content: vec![Content::text(format!(
+        Ok(tool_ok(
+            vec![ContentBlock::text(format!(
                 "{} trace/probe skill directories",
                 if dry_run { "Would remove" } else { "Removed" }
             ))],
-            structured_content: Some(json!({ "dry_run": dry_run, "removed": removed })),
-            is_error: Some(false),
-            meta: None,
-        })
+            Some(json!({ "dry_run": dry_run, "removed": removed })),
+        ))
     }
 
     /// Runs a self-test to verify skill loading is working correctly.
@@ -831,7 +823,7 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
-        let target = Self::parse_trace_target(&args);
+        let target = Self::parse_trace_target(&args)?;
         let dry_run = args
             .get("dry_run")
             .and_then(|v| v.as_bool())
@@ -846,11 +838,11 @@ impl SkillService {
             format!("{:x}", now)
         };
 
-        Ok(CallToolResult {
-            content: vec![Content::text(
+        Ok(tool_ok(
+            vec![ContentBlock::text(
                 "Skill selftest prepared. Send the probe line shown in structured_content.",
             )],
-            structured_content: Some(json!({
+            Some(json!({
                 "target": target,
                 "probe_skill_installed": installed,
                 "probe_line": format!("SKRILLS_PROBE:{token}"),
@@ -860,9 +852,7 @@ impl SkillService {
                     "If you also enabled skill tracing, every assistant response will end with a SKRILLS_SKILLS_LOADED footer."
                 ]
             })),
-            is_error: Some(false),
-            meta: None,
-        })
+        ))
     }
 
     // Copilot sync tools
@@ -902,6 +892,7 @@ impl SkillService {
             ..Default::default()
         };
 
+        check_sync_peer("to", to, &["claude", "codex"])?;
         let source = CopilotAdapter::new()?;
         let report = if to == "codex" {
             use skrills_sync::CodexAdapter;
@@ -912,16 +903,18 @@ impl SkillService {
             SyncOrchestrator::new(source, target).sync(&params)?
         };
 
-        Ok(CallToolResult {
-            content: vec![Content::text(report.summary.clone())],
-            is_error: Some(!report.success),
-            structured_content: Some(json!({
-                "from": "copilot",
-                "to": to,
-                "dry_run": dry_run,
-                "report": report
-            })),
-            meta: None,
+        let succeeded = report.success;
+        let content = vec![ContentBlock::text(report.summary.clone())];
+        let structured = Some(json!({
+            "from": "copilot",
+            "to": to,
+            "dry_run": dry_run,
+            "report": report
+        }));
+        Ok(if succeeded {
+            tool_ok(content, structured)
+        } else {
+            tool_err(content, structured)
         })
     }
 
@@ -963,6 +956,7 @@ impl SkillService {
             ..Default::default()
         };
 
+        check_sync_peer("from", from, &["claude", "codex", "cursor"])?;
         let target = CopilotAdapter::new()?;
         let report = if from == "codex" {
             use skrills_sync::CodexAdapter;
@@ -977,16 +971,18 @@ impl SkillService {
             SyncOrchestrator::new(source, target).sync(&params)?
         };
 
-        Ok(CallToolResult {
-            content: vec![Content::text(report.summary.clone())],
-            is_error: Some(!report.success),
-            structured_content: Some(json!({
-                "from": from,
-                "to": "copilot",
-                "dry_run": dry_run,
-                "report": report
-            })),
-            meta: None,
+        let succeeded = report.success;
+        let content = vec![ContentBlock::text(report.summary.clone())];
+        let structured = Some(json!({
+            "from": from,
+            "to": "copilot",
+            "dry_run": dry_run,
+            "report": report
+        }));
+        Ok(if succeeded {
+            tool_ok(content, structured)
+        } else {
+            tool_err(content, structured)
         })
     }
 
@@ -1018,6 +1014,7 @@ impl SkillService {
             ..Default::default()
         };
 
+        check_sync_peer("to", to, &["claude", "codex", "copilot"])?;
         let source = CursorAdapter::new()?;
         let report = match to {
             "codex" => {
@@ -1034,16 +1031,18 @@ impl SkillService {
             }
         };
 
-        Ok(CallToolResult {
-            content: vec![Content::text(report.summary.clone())],
-            is_error: Some(!report.success),
-            structured_content: Some(json!({
-                "from": "cursor",
-                "to": to,
-                "dry_run": dry_run,
-                "report": report
-            })),
-            meta: None,
+        let succeeded = report.success;
+        let content = vec![ContentBlock::text(report.summary.clone())];
+        let structured = Some(json!({
+            "from": "cursor",
+            "to": to,
+            "dry_run": dry_run,
+            "report": report
+        }));
+        Ok(if succeeded {
+            tool_ok(content, structured)
+        } else {
+            tool_err(content, structured)
         })
     }
 
@@ -1066,22 +1065,21 @@ impl SkillService {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        // Skip flat skills copy, Cursor discovers skills from its own
-        // plugins/cache/ which is populated by the plugin_assets sync.
-        // Copying skills separately creates duplicates that inflate context.
+        let delivery = skrills_sync::skill_delivery(from, "cursor");
         let params = SyncParams {
             from: Some(from.to_string()),
             dry_run,
             sync_commands: true,
             sync_mcp_servers: true,
             sync_preferences: false, // Cursor preferences are not yet mapped
-            sync_skills: false,
+            sync_skills: delivery.sync_skills,
             sync_agents: true,
             sync_instructions: true,
-            full_plugin_mirror: true, // Cursor needs complete plugin cache
+            full_plugin_mirror: delivery.full_plugin_mirror,
             ..Default::default()
         };
 
+        check_sync_peer("from", from, &["claude", "codex", "copilot"])?;
         let target = CursorAdapter::new()?;
         let report = match from {
             "codex" => {
@@ -1098,16 +1096,18 @@ impl SkillService {
             }
         };
 
-        Ok(CallToolResult {
-            content: vec![Content::text(report.summary.clone())],
-            is_error: Some(!report.success),
-            structured_content: Some(json!({
-                "from": from,
-                "to": "cursor",
-                "dry_run": dry_run,
-                "report": report
-            })),
-            meta: None,
+        let succeeded = report.success;
+        let content = vec![ContentBlock::text(report.summary.clone())];
+        let structured = Some(json!({
+            "from": from,
+            "to": "cursor",
+            "dry_run": dry_run,
+            "report": report
+        }));
+        Ok(if succeeded {
+            tool_ok(content, structured)
+        } else {
+            tool_err(content, structured)
         })
     }
 
@@ -1124,7 +1124,7 @@ impl SkillService {
     /// # Returns
     ///
     /// A `CallToolResult` with sync summary and structured report.
-    pub(crate) fn sync_skills_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
+    pub fn sync_skills_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
         use skrills_sync::{
             ClaudeAdapter, CodexAdapter, CopilotAdapter, CursorAdapter, SyncOrchestrator,
             SyncParams,
@@ -1239,21 +1239,197 @@ impl SkillService {
             }
         };
 
-        Ok(CallToolResult {
-            content: vec![Content::text(report.summary.clone())],
-            is_error: Some(!report.success),
-            structured_content: Some(json!({
-                "from": from,
-                "to": to,
-                "dry_run": dry_run,
-                "include_marketplace": include_marketplace,
-                "summary": report.summary,
-                "skills": {
-                    "written": report.skills.written,
-                    "skipped": report.skills.skipped.len(),
-                }
-            })),
-            meta: None,
+        let succeeded = report.success;
+        let content = vec![ContentBlock::text(report.summary.clone())];
+        let structured = Some(json!({
+            "from": from,
+            "to": to,
+            "dry_run": dry_run,
+            "include_marketplace": include_marketplace,
+            "summary": report.summary,
+            "skills": {
+                "written": report.skills.written,
+                "skipped": report.skills.skipped.len(),
+            }
+        }));
+        Ok(if succeeded {
+            tool_ok(content, structured)
+        } else {
+            tool_err(content, structured)
         })
     }
+}
+
+/// Refuse a sync peer this tool does not handle instead of quietly treating it
+/// as Claude, which would write to `~/.claude` while echoing the requested name.
+fn check_sync_peer(field: &str, value: &str, allowed: &[&str]) -> Result<()> {
+    if allowed.contains(&value) {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "Invalid '{field}' value '{value}': expected one of {}",
+            allowed.join(", ")
+        ))
+    }
+}
+
+/// Whether autofix may rewrite skills from this source. Marketplace
+/// checkouts, the plugin cache and the Codex mirror belong to other tools and
+/// are overwritten on their next update, so they are reported, not edited.
+fn autofix_may_write(source: &skrills_discovery::SkillSource) -> bool {
+    use skrills_discovery::SkillSource;
+    !matches!(
+        source,
+        SkillSource::Marketplace | SkillSource::Cache | SkillSource::Mirror
+    )
+}
+
+/// The skill's directory name: `review/SKILL.md` and `plugins/x/review` both
+/// give `review`.
+fn skill_dir_name(name: &str) -> &str {
+    let trimmed = name
+        .trim_end_matches("/SKILL.md")
+        .trim_end_matches("SKILL.md")
+        .trim_end_matches('/');
+    trimmed.rsplit('/').next().unwrap_or(trimmed)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DiffOp {
+    Same,
+    Del,
+    Add,
+}
+
+/// Above this many LCS table cells the middle section is reported as a
+/// wholesale replacement instead of being aligned line by line.
+const MAX_LCS_CELLS: usize = 4_000_000;
+
+/// Line-level edit script from `a` to `b` (longest common subsequence).
+fn diff_lines<'a>(a: &[&'a str], b: &[&'a str]) -> Vec<(DiffOp, &'a str)> {
+    let prefix = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    let suffix = a[prefix..]
+        .iter()
+        .rev()
+        .zip(b[prefix..].iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    let (am, bm) = (&a[prefix..a.len() - suffix], &b[prefix..b.len() - suffix]);
+
+    let mut ops: Vec<(DiffOp, &str)> = a[..prefix].iter().map(|l| (DiffOp::Same, *l)).collect();
+    let (n, m) = (am.len(), bm.len());
+    if (n + 1).saturating_mul(m + 1) > MAX_LCS_CELLS {
+        ops.extend(am.iter().map(|l| (DiffOp::Del, *l)));
+        ops.extend(bm.iter().map(|l| (DiffOp::Add, *l)));
+    } else {
+        let width = m + 1;
+        let mut lcs = vec![0u32; (n + 1) * width];
+        for i in (0..n).rev() {
+            for j in (0..m).rev() {
+                lcs[i * width + j] = if am[i] == bm[j] {
+                    lcs[(i + 1) * width + j + 1] + 1
+                } else {
+                    lcs[(i + 1) * width + j].max(lcs[i * width + j + 1])
+                };
+            }
+        }
+        let (mut i, mut j) = (0, 0);
+        while i < n && j < m {
+            if am[i] == bm[j] {
+                ops.push((DiffOp::Same, am[i]));
+                i += 1;
+                j += 1;
+            } else if lcs[(i + 1) * width + j] >= lcs[i * width + j + 1] {
+                ops.push((DiffOp::Del, am[i]));
+                i += 1;
+            } else {
+                ops.push((DiffOp::Add, bm[j]));
+                j += 1;
+            }
+        }
+        ops.extend(am[i..].iter().map(|l| (DiffOp::Del, *l)));
+        ops.extend(bm[j..].iter().map(|l| (DiffOp::Add, *l)));
+    }
+    ops.extend(a[a.len() - suffix..].iter().map(|l| (DiffOp::Same, *l)));
+    ops
+}
+
+/// Unified diff of two texts with `context` lines around each change.
+/// Returns an empty string when the texts have the same lines.
+pub(crate) fn unified_diff(
+    a: &str,
+    b: &str,
+    label_a: &str,
+    label_b: &str,
+    context: usize,
+) -> String {
+    let a_lines: Vec<&str> = a.lines().collect();
+    let b_lines: Vec<&str> = b.lines().collect();
+    if a_lines == b_lines {
+        return String::new();
+    }
+    let ops = diff_lines(&a_lines, &b_lines);
+
+    // Lines of `a` and `b` consumed before each op index.
+    let mut a_before = Vec::with_capacity(ops.len() + 1);
+    let mut b_before = Vec::with_capacity(ops.len() + 1);
+    let (mut ai, mut bi) = (0usize, 0usize);
+    for (op, _) in &ops {
+        a_before.push(ai);
+        b_before.push(bi);
+        match op {
+            DiffOp::Same => {
+                ai += 1;
+                bi += 1;
+            }
+            DiffOp::Del => ai += 1,
+            DiffOp::Add => bi += 1,
+        }
+    }
+    a_before.push(ai);
+    b_before.push(bi);
+
+    let changes: Vec<usize> = ops
+        .iter()
+        .enumerate()
+        .filter(|(_, (op, _))| *op != DiffOp::Same)
+        .map(|(i, _)| i)
+        .collect();
+
+    let mut out = format!("--- {label_a}\n+++ {label_b}\n");
+    let mut k = 0;
+    while k < changes.len() {
+        let start = changes[k].saturating_sub(context);
+        let mut end = (changes[k] + context + 1).min(ops.len());
+        k += 1;
+        while k < changes.len() && changes[k].saturating_sub(context) <= end {
+            end = (changes[k] + context + 1).min(ops.len());
+            k += 1;
+        }
+        let a_len = a_before[end] - a_before[start];
+        let b_len = b_before[end] - b_before[start];
+        // Unified format names the line before an empty range.
+        let a_start = if a_len == 0 {
+            a_before[start]
+        } else {
+            a_before[start] + 1
+        };
+        let b_start = if b_len == 0 {
+            b_before[start]
+        } else {
+            b_before[start] + 1
+        };
+        out.push_str(&format!("@@ -{a_start},{a_len} +{b_start},{b_len} @@\n"));
+        for (op, line) in &ops[start..end] {
+            let mark = match op {
+                DiffOp::Same => ' ',
+                DiffOp::Del => '-',
+                DiffOp::Add => '+',
+            };
+            out.push(mark);
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
 }

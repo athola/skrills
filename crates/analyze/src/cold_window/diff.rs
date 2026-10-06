@@ -115,17 +115,26 @@ impl SnapshotDiff for FieldwiseDiff {
         }
 
         // Validation transitions: derived from plugin_health checks.
+        // A check missing on one side counts as passing there, so a
+        // check that first appears already failing, or a failing check
+        // that disappears, still reports a transition.
         let prev_validation = validation_map(prev);
         let curr_validation = validation_map(curr);
-        for (uri, &curr_ok) in &curr_validation {
-            if let Some(&prev_ok) = prev_validation.get(uri) {
-                if prev_ok != curr_ok {
-                    diffs.push(DiffField::ValidationTransition {
-                        uri: uri.clone(),
-                        from: prev_ok,
-                        to: curr_ok,
-                    });
-                }
+        let mut uris: Vec<&String> = prev_validation
+            .keys()
+            .chain(curr_validation.keys())
+            .collect();
+        uris.sort();
+        uris.dedup();
+        for uri in uris {
+            let prev_ok = prev_validation.get(uri).copied().unwrap_or(true);
+            let curr_ok = curr_validation.get(uri).copied().unwrap_or(true);
+            if prev_ok != curr_ok {
+                diffs.push(DiffField::ValidationTransition {
+                    uri: uri.clone(),
+                    from: prev_ok,
+                    to: curr_ok,
+                });
             }
         }
 
@@ -262,6 +271,53 @@ mod tests {
             .count();
         assert_eq!(added, 1);
         assert_eq!(removed, 1);
+    }
+
+    fn snap_with_check(status: HealthStatus) -> WindowSnapshot {
+        let mut s = empty_snapshot();
+        s.plugin_health.push(PluginHealth {
+            plugin_name: "p1".into(),
+            overall: status,
+            checks: vec![HealthCheck {
+                name: "schema".into(),
+                status,
+                message: None,
+            }],
+        });
+        s
+    }
+
+    fn transitions(diffs: &[DiffField]) -> Vec<(bool, bool)> {
+        diffs
+            .iter()
+            .filter_map(|d| match d {
+                DiffField::ValidationTransition { from, to, .. } => Some((*from, *to)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn check_that_first_appears_failing_emits_a_transition() {
+        // IN-66: a check absent before counts as passing, so a new
+        // failing check is a true -> false transition.
+        let diffs = FieldwiseDiff::new()
+            .is_alertable(&empty_snapshot(), &snap_with_check(HealthStatus::Error));
+        assert_eq!(transitions(&diffs), [(true, false)]);
+    }
+
+    #[test]
+    fn failing_check_that_disappears_emits_a_transition() {
+        let diffs = FieldwiseDiff::new()
+            .is_alertable(&snap_with_check(HealthStatus::Error), &empty_snapshot());
+        assert_eq!(transitions(&diffs), [(false, true)]);
+    }
+
+    #[test]
+    fn passing_check_appearing_or_disappearing_is_not_a_transition() {
+        let ok = snap_with_check(HealthStatus::Ok);
+        assert!(transitions(&FieldwiseDiff::new().is_alertable(&empty_snapshot(), &ok)).is_empty());
+        assert!(transitions(&FieldwiseDiff::new().is_alertable(&ok, &empty_snapshot())).is_empty());
     }
 
     #[test]

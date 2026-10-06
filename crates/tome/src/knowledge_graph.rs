@@ -217,42 +217,32 @@ impl KnowledgeGraph {
         }
     }
 
-    /// Query: "what do I know about X?", find nodes matching a label pattern.
+    /// Query: "what do I know about X?", find nodes whose label contains
+    /// `query` as literal text (`%` and `_` are not wildcards).
+    ///
+    /// Returns at most `MAX_SEARCH_RESULTS` nodes, newest first.
     pub fn search_nodes(&self, query: &str, kind: Option<NodeKind>) -> TomeResult<Vec<Node>> {
         let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
-        let pattern = format!("%{query}%");
-        let sql = match kind {
-            Some(k) => {
-                let mut stmt = conn.prepare(
-                    "SELECT id, kind, label, metadata_json, created_at FROM nodes WHERE label LIKE ?1 AND kind = ?2 ORDER BY created_at DESC"
-                )?;
-                let rows = stmt.query_map(rusqlite::params![pattern, k.as_str()], |row| {
-                    Ok(Node {
-                        id: row.get(0)?,
-                        kind: parse_node_kind(row.get::<_, String>(1)?.as_str())
+        let pattern = format!("%{}%", escape_like(query));
+        let mut stmt = conn.prepare(
+            "SELECT id, kind, label, metadata_json, created_at FROM nodes \
+             WHERE label LIKE ?1 ESCAPE '\\' AND (?2 IS NULL OR kind = ?2) \
+             ORDER BY created_at DESC LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![pattern, kind.map(|k| k.as_str()), MAX_SEARCH_RESULTS as i64],
+            |row| {
+                Ok(Node {
+                    id: row.get(0)?,
+                    kind: parse_node_kind(row.get::<_, String>(1)?.as_str())
                         .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
-                        label: row.get(2)?,
-                        metadata_json: row.get(3)?,
-                        created_at: parse_timestamp(row.get::<_, String>(4)?.as_str())
-                            .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
-                    })
-                })?;
-                return rows.collect::<Result<Vec<_>, _>>().map_err(TomeError::Cache);
-            }
-            None => "SELECT id, kind, label, metadata_json, created_at FROM nodes WHERE label LIKE ?1 ORDER BY created_at DESC",
-        };
-        let mut stmt = conn.prepare(sql)?;
-        let rows = stmt.query_map([&pattern], |row| {
-            Ok(Node {
-                id: row.get(0)?,
-                kind: parse_node_kind(row.get::<_, String>(1)?.as_str())
-                    .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
-                label: row.get(2)?,
-                metadata_json: row.get(3)?,
-                created_at: parse_timestamp(row.get::<_, String>(4)?.as_str())
-                    .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
-            })
-        })?;
+                    label: row.get(2)?,
+                    metadata_json: row.get(3)?,
+                    created_at: parse_timestamp(row.get::<_, String>(4)?.as_str())
+                        .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
+                })
+            },
+        )?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(TomeError::Cache)
     }
@@ -309,8 +299,10 @@ impl KnowledgeGraph {
 /// Legacy SQLite `datetime('now')` format: `YYYY-MM-DD HH:MM:SS`
 static LEGACY_TIMESTAMP_FMT: LazyLock<Vec<time::format_description::FormatItem<'static>>> =
     LazyLock::new(|| {
-        time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]")
-            .expect("static format description")
+        time::format_description::parse_borrowed::<1>(
+            "[year]-[month]-[day] [hour]:[minute]:[second]",
+        )
+        .expect("static format description")
     });
 
 /// Parse a timestamp string from SQLite TEXT storage into `OffsetDateTime`.
@@ -335,6 +327,21 @@ fn parse_node_kind(s: &str) -> TomeResult<NodeKind> {
 fn parse_edge_kind(s: &str) -> TomeResult<EdgeKind> {
     serde_json::from_value(serde_json::Value::String(s.to_owned()))
         .map_err(|_| TomeError::Other(format!("unknown EdgeKind: {s}")))
+}
+
+/// Upper bound on `KnowledgeGraph::search_nodes` results.
+const MAX_SEARCH_RESULTS: usize = 200;
+
+/// Escape `\`, `%` and `_` for a `LIKE ... ESCAPE '\'` pattern.
+fn escape_like(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if matches!(c, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -387,6 +394,52 @@ mod tests {
 
         let results = kg.search_nodes("learning", None).unwrap();
         assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn search_treats_like_wildcards_as_literal_text() {
+        // IN-52: `%` and `_` used to match every node.
+        let kg = KnowledgeGraph::open_in_memory().unwrap();
+        kg.add_node("a", NodeKind::Topic, "a_b", None).unwrap();
+        kg.add_node("b", NodeKind::Topic, "axb", None).unwrap();
+        kg.add_node("c", NodeKind::Topic, "50% off", None).unwrap();
+        kg.add_node("d", NodeKind::Topic, r"back\slash", None)
+            .unwrap();
+
+        let ids = |q: &str, kind| {
+            let mut v: Vec<String> = kg
+                .search_nodes(q, kind)
+                .unwrap()
+                .into_iter()
+                .map(|n| n.id)
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(ids("a_b", None), vec!["a"]);
+        assert_eq!(ids("a_b", Some(NodeKind::Topic)), vec!["a"]);
+        assert_eq!(ids("%", None), vec!["c"]);
+        assert_eq!(ids("_", Some(NodeKind::Topic)), vec!["a"]);
+        assert_eq!(ids(r"\", None), vec!["d"]);
+    }
+
+    #[test]
+    fn search_results_are_capped() {
+        let kg = KnowledgeGraph::open_in_memory().unwrap();
+        for i in 0..MAX_SEARCH_RESULTS + 5 {
+            kg.add_node(&format!("t-{i}"), NodeKind::Topic, "topic", None)
+                .unwrap();
+        }
+        assert_eq!(
+            kg.search_nodes("topic", None).unwrap().len(),
+            MAX_SEARCH_RESULTS
+        );
+        assert_eq!(
+            kg.search_nodes("topic", Some(NodeKind::Topic))
+                .unwrap()
+                .len(),
+            MAX_SEARCH_RESULTS
+        );
     }
 
     #[test]

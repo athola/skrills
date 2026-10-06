@@ -177,29 +177,38 @@ fn parse_codex_session_file(path: &Path) -> Result<Vec<SkillUsageEvent>> {
         if let Ok(entry) = serde_json::from_str::<Value>(line) {
             // Look for skill-related entries in payload
             if let Some(payload) = entry.get("payload") {
-                // Check for skill loading in tool calls
-                if let Some(tools) = payload.get("tools").and_then(|t| t.as_array()) {
-                    for tool in tools {
-                        if let Some(name) = tool.get("name").and_then(|n| n.as_str()) {
-                            if name.contains("skill") {
-                                if let Some(args) = tool.get("arguments") {
-                                    if let Some(skill_path) = extract_skill_from_args(args) {
-                                        let timestamp = entry
-                                            .get("timestamp")
-                                            .and_then(|t| t.as_str())
-                                            .and_then(parse_codex_timestamp)
-                                            .unwrap_or(0);
+                // Tool calls arrive either as a `tools` array or, in current
+                // rollout files, as a payload of type `function_call`.
+                let mut tools: Vec<&Value> = payload
+                    .get("tools")
+                    .and_then(|t| t.as_array())
+                    .map(|t| t.iter().collect())
+                    .unwrap_or_default();
+                if payload.get("type").and_then(|t| t.as_str()) == Some("function_call") {
+                    tools.push(payload);
+                }
+                for tool in tools {
+                    let Some(name) = tool.get("name").and_then(|n| n.as_str()) else {
+                        continue;
+                    };
+                    if !name.contains("skill") {
+                        continue;
+                    }
+                    if let Some(skill_path) =
+                        tool.get("arguments").and_then(extract_skill_from_args)
+                    {
+                        let timestamp = entry
+                            .get("timestamp")
+                            .and_then(|t| t.as_str())
+                            .and_then(parse_codex_timestamp)
+                            .unwrap_or(0);
 
-                                        events.push(SkillUsageEvent {
-                                            timestamp,
-                                            skill_path,
-                                            session_id: session_id.clone(),
-                                            prompt_context: None,
-                                        });
-                                    }
-                                }
-                            }
-                        }
+                        events.push(SkillUsageEvent {
+                            timestamp,
+                            skill_path,
+                            session_id: session_id.clone(),
+                            prompt_context: None,
+                        });
                     }
                 }
             }
@@ -210,6 +219,15 @@ fn parse_codex_session_file(path: &Path) -> Result<Vec<SkillUsageEvent>> {
 }
 
 fn extract_skill_from_args(args: &Value) -> Option<String> {
+    // Codex records function-call arguments as a JSON-encoded string.
+    if let Some(encoded) = args.as_str() {
+        let decoded = serde_json::from_str::<Value>(encoded).ok()?;
+        return if decoded.is_object() {
+            extract_skill_from_args(&decoded)
+        } else {
+            None
+        };
+    }
     if let Some(skill) = args.get("skill").and_then(|s| s.as_str()) {
         return Some(skill.to_string());
     }
@@ -314,9 +332,12 @@ mod tests {
         let path = tmp.path().join("skills-history.json");
         fs::write(&path, "").unwrap();
 
-        // Empty file should fail JSON parsing but not panic.
-        // Reaching this point without a panic proves graceful handling.
-        let _result = parse_codex_skills_history(&path);
+        // An empty history file has no events in it.
+        let result = parse_codex_skills_history(&path);
+        assert!(
+            matches!(&result, Ok(events) if events.is_empty()),
+            "expected Ok(empty), got {result:?}"
+        );
     }
 
     #[test]
@@ -510,6 +531,27 @@ mod tests {
         let tmp = tempdir().unwrap();
         let events = parse_codex_sessions(tmp.path()).unwrap();
         assert!(events.is_empty());
+    }
+
+    /// IN-35: Codex rollout files carry function-call arguments as a
+    /// JSON-encoded string inside a `function_call` payload (checked against
+    /// a real `~/.codex/sessions` rollout).
+    #[test]
+    fn parse_sessions_reads_string_encoded_function_call_arguments() {
+        let tmp = tempdir().unwrap();
+        let content = concat!(
+            r#"{"timestamp":"2026-08-22T15:20:01Z","type":"response_item","payload":{"type":"function_call","name":"load_skill","arguments":"{\"skill\":\"string-skill\"}"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-22T15:20:02Z","payload":{"tools":[{"name":"load_skill","arguments":"{\"uri\":\"skill://x/y\"}"}]}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-22T15:20:03Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"ls\"}"}}"#,
+        );
+        fs::write(tmp.path().join("rollout.jsonl"), content).unwrap();
+
+        let events = parse_codex_sessions(tmp.path()).unwrap();
+        let skills: Vec<_> = events.iter().map(|e| e.skill_path.as_str()).collect();
+        assert_eq!(skills, vec!["string-skill", "skill://x/y"]);
+        assert!(events.iter().all(|e| e.timestamp > 0));
     }
 
     #[test]

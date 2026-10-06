@@ -176,12 +176,47 @@ mod tests {
         assert_eq!(deserialized.category, "pre-commit");
     }
 
-    #[test]
-    fn rules_routes_creates_router() {
-        let state = Arc::new(RulesState {
-            rules: Arc::new(vec![]),
-        });
-        // Verify router creation does not panic
-        let _router = rules_routes(state);
+    async fn get(app: Router, uri: &str) -> (StatusCode, serde_json::Value) {
+        use tower::ServiceExt;
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(uri)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, body)
+    }
+
+    #[tokio::test]
+    async fn rules_routes_list_and_lookup() {
+        let app = rules_routes(Arc::new(RulesState {
+            rules: Arc::new(make_test_rules()),
+        }));
+
+        let (status, body) = get(app.clone(), "/api/rules").await;
+        assert_eq!(status, StatusCode::OK);
+        let names: Vec<&str> = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["pre-commit-lint", "post-commit-notify"]);
+
+        let (status, body) = get(app.clone(), "/api/rules/post-commit-notify").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["source"], "project");
+        assert_eq!(body["enabled"], false);
+
+        let (status, _) = get(app, "/api/rules/nope").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 }

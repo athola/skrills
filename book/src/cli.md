@@ -26,6 +26,10 @@ skrills validate --format json --errors-only  # Machine-readable output
 | `--format <FORMAT>` | `text` or `json` (default: `text`) |
 | `--errors-only` | Hide passing skills |
 
+`validate` exits non-zero when any skill has an error, cannot be read, or
+could not be auto-fixed, so a script or CI step can gate on the exit code.
+`--watch` is not implemented yet and is refused.
+
 ### analyze
 
 Find skills that consume too many tokens or need optimization:
@@ -80,6 +84,8 @@ Sync everything between Claude Code and Codex CLI:
 skrills sync-all --from claude                        # Copy everything from Claude
 skrills sync-all --from claude --skip-existing-commands  # Keep local commands
 skrills sync-all --dry-run                            # Preview without changing
+skrills sync-all --from claude --validate             # Refuse to sync skills that do not validate
+skrills sync-all --from claude --autofix --dry-run    # Check what autofix would leave, write nothing
 ```
 
 **Options:**
@@ -89,6 +95,15 @@ skrills sync-all --dry-run                            # Preview without changing
 | `--from` | Source side: `claude` or `codex` (default: `claude`) |
 | `--dry-run` | Preview changes without writing |
 | `--skip-existing-commands` | Keep existing commands on target side |
+| `--validate` | Validate the source skills before any target is written |
+| `--autofix` | Add missing frontmatter to the source skills, then validate as `--validate` does |
+
+With `--validate` or `--autofix`, the `--from` skill tree is validated for
+the strictest of the targets being synced (Codex and Copilot are stricter
+than Claude and Cursor) before the first target is touched. Any remaining
+error aborts every target, with nothing written. `--autofix` rewrites the
+source skills in place, without a backup, before validating; under
+`--dry-run` it only checks what the fix would leave and rewrites nothing.
 
 ### sync-status
 
@@ -132,9 +147,9 @@ Start skrills as an MCP server (used by Claude Code, Codex CLI, Copilot CLI, and
 
 ```bash
 skrills serve                             # MCP server over stdio
-skrills serve --http --open               # Browser dashboard with auto-launch
-skrills serve --http --port 3000          # HTTP on specific port
-skrills serve --http --tls-auto           # HTTPS with auto-generated cert
+skrills serve --http 127.0.0.1:3000 --open      # Browser dashboard with auto-launch
+skrills serve --http 127.0.0.1:8080             # HTTP on a specific address and port
+skrills serve --http 127.0.0.1:3000 --tls-auto  # HTTPS with auto-generated cert
 skrills serve --watch                     # Auto-reload on file changes
 skrills serve --cache-ttl-ms 300000       # 5-minute cache
 skrills serve --skill-dir ~/.custom/skills  # Custom skill directory
@@ -144,15 +159,48 @@ skrills serve --skill-dir ~/.custom/skills  # Custom skill directory
 
 | Option | Purpose |
 |--------|---------|
-| `--http` | Enable HTTP transport with REST API and browser dashboard |
-| `--port <N>` | HTTP server port (default: auto-select, fallback up to 10 ports) |
-| `--open` | Auto-launch the browser dashboard after starting |
+| `--http <BIND_ADDR>` | Serve MCP over HTTP, with the REST API and browser dashboard, on this address (for example `127.0.0.1:3000`); there is no separate port flag |
+| `--open` | Auto-launch the browser dashboard after starting (requires `--http`) |
 | `--tls-auto` | Generate self-signed TLS cert for HTTPS in development |
+| `--allowed-hosts <HOSTS>` | Extra `Host` values the MCP transport accepts, on top of `localhost`, `127.0.0.1` and `::1` |
 | `--skill-dir <DIR>` | Additional skill directory to include |
 | `--cache-ttl-ms <N>` | Discovery cache TTL in milliseconds |
-| `--watch` | Enable live filesystem invalidation |
+| `--watch` | Enable live filesystem invalidation (stdio only; refused with `--http`, so restart an HTTP server to pick up skill changes) |
 
-The MCP server exposes 36 tools for validation, analysis, sync, intelligence, and research directly to your AI assistant. The HTTP mode serves a browser dashboard with skills explorer, metrics, and activity feed.
+The MCP transport validates the inbound `Host` header and accepts only
+`localhost`, `127.0.0.1` and `::1` unless told otherwise. That is what stops a
+page on an attacker's domain from resolving to your loopback address and
+driving the server through your browser. Binding a non-loopback address needs
+the hostname clients actually use:
+
+```bash
+skrills serve --http 0.0.0.0:8080 --allowed-hosts skrills.internal:8080
+```
+
+Supplied hosts are added to the loopback set, never substituted for it.
+The same list is settable in the config file as `allowed_hosts` under
+`[serve]`, or through `SKRILLS_ALLOWED_HOSTS`.
+
+`recommend-skills-smart`, `analyze-project-context` and `suggest-new-skills`
+take a `project_dir` from the client and read that directory, and
+`create-skill` reads one when passed. To limit which directories they may read, list the allowed
+roots in `~/.skrills/config.toml`:
+
+```toml
+[serve]
+project_roots = ["~/src", "/work"]
+```
+
+A `project_dir` outside every root is refused with an `invalid_params` error
+naming the setting. Both sides are canonicalized before the check, so `..`
+segments and symlinks are judged by where they lead, and a `project_dir` that
+does not exist is refused too. `~` expands to your home directory. When
+`project_roots` is unset, any directory is accepted, and `serve --http` on a
+non-loopback address logs a warning at startup. The check applies only to a
+`project_dir` the client passes; when it passes none, the tools use the
+server's working directory.
+
+The MCP server exposes 36 core tools (49 with the default subagent and gateway features) for validation, analysis, sync, intelligence, and research directly to your AI assistant. The HTTP mode serves a browser dashboard with skills explorer, metrics, and activity feed.
 
 Skrills can generate a self-contained HTML portal (`skrills-portal.html`) via the `html-portal-generator` skill. It works offline without a running server and includes a skills browser, validator with autofix, token analyzer, cross-CLI converter, and full CLI/MCP reference. Open it directly in any browser or upload it into AI application portals. The file is git-ignored, so regenerate it as part of release prep.
 
@@ -345,7 +393,7 @@ Check your configuration:
 skrills doctor
 ```
 
-Verifies Codex MCP configuration and identifies problems.
+Verifies the Codex MCP registration in `~/.codex/config.toml`, where `skrills setup` writes it, and identifies problems. A legacy `~/.codex/mcp_servers.json` is inspected only when present.
 
 ### setup
 
@@ -397,7 +445,7 @@ skrills cert install --cert my.pem --key my-key.pem  # Install custom certificat
 | Subcommand | Purpose |
 |------------|---------|
 | `status` | Display certificate path, validity, issuer, and days until expiry |
-| `renew` | Generate a new self-signed certificate (365-day validity) |
+| `renew` | Generate a new self-signed certificate (365-day validity). Without `--force` it does nothing while the current certificate is valid for more than 30 days, and refuses to replace one that is not self-signed (a CA-issued certificate) |
 | `install` | Import certificate and key from external files |
 
 > **Note:** Certificate management is currently CLI-only. There is no MCP tool or plugin skill for cert operations yet. Use the `skrills cert` subcommands directly from a terminal.

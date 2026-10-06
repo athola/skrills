@@ -187,10 +187,14 @@ fn extract_session_features(events: &[BehavioralEvent]) -> Vec<SessionFeatures> 
             }
 
             // Calculate duration and intervals
-            let timestamps: Vec<u64> = session_events
+            let mut timestamps: Vec<u64> = session_events
                 .iter()
                 .flat_map(|e| e.tool_sequence.iter().map(|t| t.timestamp))
                 .collect();
+
+            // Events within a session are not guaranteed to be in time
+            // order; unsorted, a backwards step saturates to a 0 interval.
+            timestamps.sort_unstable();
 
             if timestamps.len() > 1 {
                 let min_ts = *timestamps.iter().min().unwrap_or(&0);
@@ -217,6 +221,10 @@ fn extract_session_features(events: &[BehavioralEvent]) -> Vec<SessionFeatures> 
 // ============================================================================
 
 /// Cluster sessions by behavioral similarity.
+#[deprecated(
+    since = "0.9.0",
+    note = "the behavioural pipeline has no caller in skrills; unused, will be removed in a future release"
+)]
 pub fn cluster_sessions(
     events: &[BehavioralEvent],
     num_clusters: usize,
@@ -580,6 +588,10 @@ fn generate_recovery_suggestions(errors: &[String]) -> Vec<String> {
 // ============================================================================
 
 /// Generate a skill from a behavioral cluster.
+#[deprecated(
+    since = "0.9.0",
+    note = "the behavioural pipeline has no caller in skrills; unused, will be removed in a future release"
+)]
 pub fn generate_skill_from_cluster(
     cluster: &ClusteredBehavior,
     base_name: Option<&str>,
@@ -717,6 +729,10 @@ cluster_id: {}
 }
 
 /// Format empirical skill as SKILL.md content.
+#[deprecated(
+    since = "0.9.0",
+    note = "the behavioural pipeline has no caller in skrills; unused, will be removed in a future release"
+)]
 pub fn format_as_skill_md(skill: &EmpiricalSkillContent) -> String {
     let mut content = String::new();
     content.push_str(&skill.frontmatter);
@@ -758,6 +774,7 @@ mod tests {
                     timestamp: 1000 + i as u64 * 100,
                     input_summary: "{}".to_string(),
                     status: ToolStatus::Success,
+                    file_path: None,
                 })
                 .collect(),
             files_accessed: vec![],
@@ -769,6 +786,23 @@ mod tests {
                 duration_seconds: 60,
             }),
         }
+    }
+
+    /// IN-46: events listed out of order must not understate the interval.
+    #[test]
+    fn tool_interval_is_computed_over_sorted_timestamps() {
+        let mut late = make_test_event("s1", vec!["Read"], OutcomeStatus::Success);
+        late.tool_sequence[0].timestamp = 30;
+        let mut early = make_test_event("s1", vec!["Read"], OutcomeStatus::Success);
+        early.tool_sequence[0].timestamp = 10;
+        let mut middle = make_test_event("s1", vec!["Read"], OutcomeStatus::Success);
+        middle.tool_sequence[0].timestamp = 20;
+
+        let features = extract_session_features(&[late, early, middle]);
+        assert_eq!(features.len(), 1);
+        // 10 -> 20 -> 30: two 10 s gaps.
+        assert_eq!(features[0].avg_tool_interval_ms, 10_000.0);
+        assert_eq!(features[0].duration_ms, 20_000);
     }
 
     #[test]

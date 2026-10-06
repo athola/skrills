@@ -3,14 +3,15 @@
 //! Cursor stores MCP config in `.cursor/mcp.json`, similar to Claude's `.mcp.json`.
 
 use super::paths::mcp_config_path;
+use crate::adapters::json_config::{self, Dialect};
 use crate::common::{McpServer, McpTransport};
-use crate::report::{SkipReason, WriteReport};
+use crate::report::WriteReport;
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use tracing::{debug, warn};
+use tracing::warn;
 
 /// Cursor's MCP config structure (mirrors Claude's format).
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -103,56 +104,18 @@ pub fn read_mcp_servers(root: &Path) -> Result<HashMap<String, McpServer>> {
     Ok(servers)
 }
 
-/// Writes MCP server configs to `.cursor/mcp.json`.
+/// Writes MCP server configs to `.cursor/mcp.json`, merged by name into what
+/// is already there.
+///
+/// The file used to be rebuilt from a typed struct, which dropped every server
+/// the source lacked, every other top-level key, and every per-server field the
+/// struct did not model.
 pub fn write_mcp_servers(root: &Path, servers: &HashMap<String, McpServer>) -> Result<WriteReport> {
-    let mut report = WriteReport::default();
-
-    if servers.is_empty() {
-        return Ok(report);
-    }
-
-    let mut config = CursorMcpConfig::default();
-
-    for (name, server) in servers {
-        let entry = McpServerEntry {
-            command: if server.command.is_empty() {
-                None
-            } else {
-                Some(server.command.clone())
-            },
-            args: server.args.clone(),
-            env: server.env.clone(),
-            url: server.url.clone(),
-            headers: server.headers.clone(),
-            enabled: server.enabled,
-            allowed_tools: server.allowed_tools.clone(),
-            disabled_tools: server.disabled_tools.clone(),
-        };
-
-        debug!(name = %name, "Writing Cursor MCP server");
-        config.mcp_servers.insert(name.clone(), entry);
-    }
-
-    let json = serde_json::to_string_pretty(&config)?;
-
-    // Skip write if existing config matches
     let path = mcp_config_path(root);
-    if path.exists() {
-        if let Ok(existing) = fs::read_to_string(&path) {
-            if existing == json {
-                report.skipped.push(SkipReason::Unchanged {
-                    item: "mcp.json".to_string(),
-                });
-                return Ok(report);
-            }
-        }
+    let mut config = json_config::load_object(&path)?;
+    let report = json_config::merge_servers(&mut config, servers, Dialect::Cursor, "cursor")?;
+    if report.written > 0 {
+        json_config::write_json_config(&path, &config)?;
     }
-
-    report.written = servers.len();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(&path, &json)?;
-
     Ok(report)
 }

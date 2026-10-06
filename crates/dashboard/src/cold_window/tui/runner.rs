@@ -79,25 +79,26 @@ pub async fn run(
         }));
     }
 
-    enable_raw_mode().context("enable raw mode")?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen).context("enter alternate screen")?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend).context("create terminal")?;
+    let loop_result = async {
+        enable_raw_mode().context("enable raw mode")?;
+        // From here the guard restores the terminal on every exit,
+        // including a setup step below that fails after raw mode is on.
+        let _restore = TerminalGuard;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen).context("enter alternate screen")?;
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend).context("create terminal")?;
 
-    let loop_result = event_loop(
-        &mut terminal,
-        &mut snapshots,
-        &mut shutdown,
-        quota.as_deref(),
-        opts,
-    )
+        event_loop(
+            &mut terminal,
+            &mut snapshots,
+            &mut shutdown,
+            quota.as_deref(),
+            opts,
+        )
+        .await
+    }
     .await;
-
-    // Always restore, regardless of how the loop ended.
-    let _ = disable_raw_mode();
-    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
-    let _ = terminal.show_cursor();
 
     // Reinstate the prior panic hook on the normal-exit path so our
     // terminal-restoring hook does not persist for the rest of the
@@ -106,6 +107,28 @@ pub async fn run(
     std::panic::set_hook(Box::new(move |info| original_hook(info)));
 
     loop_result
+}
+
+/// Restores the terminal when dropped: raw mode off, main screen, cursor
+/// shown. Each step is attempted even if an earlier one failed.
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show);
+    }
+}
+
+/// Whether the result of `shutdown.changed()` means the loop should end:
+/// the flag turned true, or the sender is gone and can never signal again.
+/// Treating a closed channel as "keep going" spun the biased select, since
+/// `changed()` then resolves at once on every iteration.
+pub(super) fn shutdown_signalled(
+    changed: std::result::Result<(), watch::error::RecvError>,
+    shutdown: &watch::Receiver<bool>,
+) -> bool {
+    changed.is_err() || *shutdown.borrow()
 }
 
 /// The core select loop, split out from terminal setup/teardown so the
@@ -161,8 +184,8 @@ async fn event_loop(
         }
         tokio::select! {
             biased;
-            _ = shutdown.changed() => {
-                if *shutdown.borrow() {
+            changed = shutdown.changed() => {
+                if shutdown_signalled(changed, shutdown) {
                     break;
                 }
             }

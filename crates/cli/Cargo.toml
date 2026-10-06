@@ -1,6 +1,6 @@
 [package]
 name = "skrills"
-version = "0.8.2"
+version = "0.9.0"
 edition = "2021"
 description = "A command-line interface and MCP server for managing local SKILL.md files."
 license = "MIT"
@@ -12,15 +12,52 @@ keywords = ["mcp", "cli", "skills", "agents", "codex"]
 categories = ["command-line-utilities", "development-tools"]
 
 [features]
-# Ship CLI with subagents and HTTP transport enabled by default.
-# Required so release binaries from GitHub have full functionality.
-default = ["subagents", "http-transport"]
+# Release binaries and `cargo install skrills` build with default features, so
+# every user-facing surface has to be listed here. The `dashboard` and `watch`
+# cfgs are evaluated in this crate; leaving them out compiles out
+# `skrills dashboard`, `cold-window --tui` and `serve --watch`.
+default = ["subagents", "http-transport", "dashboard", "watch"]
 subagents = ["skrills-server/subagents"]
-http-transport = ["skrills-server/http-transport"]
+http-transport = ["skrills-server/http-transport", "dep:rcgen", "dep:x509-parser", "dep:axum"]
+dashboard = ["skrills-server/dashboard", "dep:skrills-dashboard"]
+watch = ["skrills-server/watch"]
 
 [dependencies]
-skrills-server = { path = "../server", version = "0.8.2" }
+# default-features off so the features above are the only switch: with it on,
+# server's own defaults compile axum, leptos and notify into a
+# `--no-default-features` build whose cli code is gated out.
+skrills-server = { path = "../server", version = "0.9.0", default-features = false }
 anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# `signal` is named here because cold_window_cli uses tokio::signal in every
+# build; it used to arrive only through the optional dashboard crate.
+tokio = { workspace = true, features = ["signal"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+walkdir.workspace = true
+dirs.workspace = true
+inquire.workspace = true
+toml.workspace = true
+time.workspace = true
+sha2.workspace = true
+rmcp.workspace = true
+regex = "1"
+hex = "0.4.3"
+indexmap = "2.13.0"
+skrills-snapshot = { path = "../snapshot", version = "0.9.0" }
+skrills-discovery = { path = "../discovery", version = "0.9.0" }
+skrills-state = { path = "../state", version = "0.9.0" }
+skrills_sync = { path = "../sync", version = "0.9.0" }
+skrills-validate = { path = "../validate", version = "0.9.0" }
+skrills-analyze = { path = "../analyze", version = "0.9.0" }
+skrills-intelligence = { path = "../intelligence", version = "0.9.0" }
+skrills-tome = { path = "../tome", version = "0.9.0" }
+skrills-dashboard = { path = "../dashboard", version = "0.9.0", optional = true }
+rcgen = { version = "0.14", optional = true }
+x509-parser = { version = "0.18", optional = true }
+axum = { version = "0.8", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

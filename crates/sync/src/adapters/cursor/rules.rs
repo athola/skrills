@@ -12,20 +12,21 @@
 //!
 //! ## Claude → Cursor Mapping
 //!
-//! - `CLAUDE.md` → `.cursor/rules/claude-md.mdc` with `alwaysApply: true`
+//! - `CLAUDE.md` (read as the instruction `CLAUDE`) → `.cursor/rules/claude.mdc`
+//!   with `alwaysApply: true`
 //! - `.claude/rules/*.md` with globs → `.cursor/rules/*.mdc` preserving globs
 //! - Other instructions → agent-requested rules with description
 
 use super::paths::rules_dir;
-use super::utils::{parse_frontmatter, render_frontmatter, sanitize_name};
+use super::utils::{parse_frontmatter, render_frontmatter};
 use crate::adapters::utils::hash_content;
+use crate::adapters::utils::sanitize_name_kebab;
 use crate::common::{Command, ContentFormat};
-use crate::report::{SkipReason, WriteReport};
+use crate::report::WriteReport;
 use crate::Result;
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
-use tracing::debug;
 use walkdir::WalkDir;
 
 /// Reads all rules from `.cursor/rules/` (both `.mdc` and `.md` files).
@@ -116,29 +117,22 @@ pub fn write_rules(root: &Path, instructions: &[Command]) -> Result<WriteReport>
 
     fs::create_dir_all(&dir)?;
 
+    let mut writer = crate::adapters::utils::BatchWriter::new(&dir);
     for instruction in instructions {
         let content_str = String::from_utf8_lossy(&instruction.content);
-        let name = sanitize_name(&instruction.name);
+        let name = sanitize_name_kebab(&instruction.name);
 
         // Determine rule mode based on source
         let (frontmatter, body) = derive_rule_mode(&instruction.name, &content_str);
         let mdc_content = render_frontmatter(&frontmatter, &body);
 
-        let path = dir.join(format!("{}.mdc", name));
-
-        if path.exists() {
-            let existing = fs::read(&path)?;
-            if hash_content(&existing) == hash_content(mdc_content.as_bytes()) {
-                report.skipped.push(SkipReason::Unchanged {
-                    item: instruction.name.clone(),
-                });
-                continue;
-            }
-        }
-
-        debug!(name = %name, path = ?path, "Writing Cursor rule");
-        fs::write(&path, mdc_content.as_bytes())?;
-        report.written += 1;
+        writer.write_single(
+            &instruction.name,
+            &name,
+            ".mdc",
+            mdc_content.as_bytes(),
+            &mut report,
+        )?;
     }
 
     Ok(report)
@@ -227,7 +221,8 @@ mod tests {
 
     #[test]
     fn derive_claude_md_readback_form_as_always_apply() {
-        // After roundtrip: CLAUDE.md → claude-md.mdc → read back as "claude-md"
+        // An instruction named `CLAUDE.md` (not the reader's `CLAUDE`) is
+        // written to claude-md.mdc and reads back as "claude-md"
         let (fields, _body) =
             derive_rule_mode("claude-md", "# Project Instructions\n\nDo things.\n");
         assert_eq!(

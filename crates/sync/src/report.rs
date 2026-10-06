@@ -13,6 +13,12 @@ pub enum SkipReason {
         source_agent: String,
         suggestion: String,
     },
+    /// The source has no reader for this field, so there was nothing to collect.
+    ///
+    /// Separate from [`Self::UnsupportedField`], which blames the target. A
+    /// source-side gap used to be reported as "not supported by target" with the
+    /// truth only in the free-text suggestion.
+    SourceCannotRead { field: String, source_agent: String },
     /// References a path that doesn't exist
     PathNotFound { path: PathBuf, context: String },
     /// Uses agent-specific features
@@ -31,6 +37,10 @@ pub enum SkipReason {
     WouldOverwrite { item: String },
     /// Excluded by --exclude-plugins filter
     PluginExcluded,
+    /// The writer refused a destination it could not write safely: the name
+    /// sanitizes to nothing, it collides with another item after sanitizing,
+    /// or a symlink sits on the path.
+    Refused { item: String, reason: String },
 }
 
 impl SkipReason {
@@ -46,6 +56,12 @@ impl SkipReason {
                     "Field '{}' from {} not supported by target",
                     field, source_agent
                 )
+            }
+            Self::SourceCannotRead {
+                field,
+                source_agent,
+            } => {
+                format!("Field '{field}' cannot be read from {source_agent}")
             }
             Self::PathNotFound { path, .. } => {
                 format!("Path not found: {}", path.display())
@@ -66,6 +82,7 @@ impl SkipReason {
                 format!("{} already exists on target (would overwrite)", item)
             }
             Self::PluginExcluded => "excluded by --exclude-plugins filter".to_string(),
+            Self::Refused { item, reason } => format!("{item} not written: {reason}"),
         }
     }
 
@@ -73,13 +90,21 @@ impl SkipReason {
     pub fn guidance(&self) -> Option<&str> {
         match self {
             Self::UnsupportedField { suggestion, .. } => Some(suggestion),
+            Self::SourceCannotRead { .. } => {
+                Some("Sync this field from the agent that owns it, or turn it off for this run")
+            }
             Self::PathNotFound { .. } => Some("Update path in source config or exclude this item"),
             Self::AgentSpecificFeature { suggestion, .. } => Some(suggestion),
             Self::ExcludedByConfig { .. } => Some("Intentional exclusion, no action needed"),
             Self::Unchanged { .. } => None,
             Self::ParseError { .. } => Some("Fix the source file syntax"),
-            Self::WouldOverwrite { .. } => Some("Use --skip-existing-commands to keep target copy"),
+            // Only produced when a skip-existing flag was already passed, so
+            // naming that flag again told the user to do what they had done.
+            Self::WouldOverwrite { .. } => {
+                Some("Kept the target copy; run without the skip-existing flag to overwrite it")
+            }
             Self::PluginExcluded => None,
+            Self::Refused { .. } => Some("Rename the item or fix the destination path"),
         }
     }
 }
@@ -165,7 +190,12 @@ impl SyncReport {
         }
 
         let mut out = String::new();
-        out.push_str(&format!("Sync Complete: {} → {}\n", source, target));
+        let status = if self.success {
+            "Sync Complete"
+        } else {
+            "Sync finished with errors"
+        };
+        out.push_str(&format!("{status}: {} → {}\n", source, target));
         out.push_str(&line("Skills:", &self.skills));
         out.push_str(&line("Commands:", &self.commands));
         out.push_str(&line("MCP Servers:", &self.mcp_servers));
@@ -175,6 +205,40 @@ impl SyncReport {
         out.push_str(&line("Instructions:", &self.instructions));
         if self.plugin_assets.written > 0 || !self.plugin_assets.skipped.is_empty() {
             out.push_str(&line("Plugin Assets:", &self.plugin_assets));
+            // "Plugin Assets: 0 synced, 1 skipped" was the whole of the message
+            // for a source with no plugin reader. Unchanged and excluded items
+            // stay in the counts: a steady-state mirror has thousands of them.
+            for reason in &self.plugin_assets.skipped {
+                if matches!(
+                    reason,
+                    SkipReason::Unchanged { .. } | SkipReason::PluginExcluded
+                ) {
+                    continue;
+                }
+                out.push_str(&format!("    - {}\n", reason.description()));
+            }
+        }
+
+        // Warnings only ever reached the report struct, so a prune that removed a
+        // whole mirrored plugin tree left no trace in what the operator sees.
+        let warnings: Vec<&String> = [
+            &self.skills,
+            &self.commands,
+            &self.mcp_servers,
+            &self.preferences,
+            &self.agents,
+            &self.hooks,
+            &self.instructions,
+            &self.plugin_assets,
+        ]
+        .iter()
+        .flat_map(|r| r.warnings.iter())
+        .collect();
+        if !warnings.is_empty() {
+            out.push_str("\n  Warnings:\n");
+            for warning in warnings {
+                out.push_str(&format!("    - {warning}\n"));
+            }
         }
 
         let total_dups = self.skills.duplicates

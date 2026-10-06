@@ -51,12 +51,14 @@ Enter
 Sleep 400ms
 
 # --- launch the live TUI ---
-# Default 100K ceiling so every tier is reachable: the demo ledger adds
-# ~8K tokens per tick, so the meter steps Advisory (20K) -> Caution (50K)
-# -> Warning (80K) -> kill-switch (100K) over the hold below. A slow,
+# --demo feeds the invented ledger, hints and research (live data is the
+# default). Default 100K ceiling so every tier is reachable: the token total
+# grows each tick, at a rate set by the skills under --skill-dir (they stand in
+# for part of the invented ledger), so the meter steps Advisory (20K) ->
+# Caution (50K) -> Warning (80K) -> kill-switch (100K) as it climbs. A slow,
 # deliberate 500ms base cadence (--no-adaptive pins it) makes each
 # real-time tick a discrete, trackable step.
-Type "skrills cold-window --tui --skill-dir assets/demo-skills --tick-rate-ms 500 --no-adaptive --alert-budget 100000 --no-bell"
+Type "skrills cold-window --tui --demo --skill-dir assets/demo-skills --tick-rate-ms 500 --no-adaptive --alert-budget 100000 --no-bell"
 Sleep 800ms
 Enter
 

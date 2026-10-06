@@ -23,14 +23,16 @@ pub struct PluginAsset {
     pub relative_path: PathBuf,
     /// File content as bytes
     pub content: Vec<u8>,
-    /// SHA256 hash of `content` for change detection (auto-computed by `new()`)
-    pub hash: String,
     /// Whether the file should be executable
     pub executable: bool,
 }
 
 impl PluginAsset {
-    /// Creates a new `PluginAsset`, auto-computing the SHA256 hash from `content`.
+    /// Creates a new `PluginAsset`.
+    ///
+    /// There is deliberately no stored hash: a `pub` field beside `content`
+    /// could disagree with it, and the one reader (the Cursor mirror's
+    /// unchanged check) hashes `content` itself.
     pub fn new(
         plugin_name: String,
         publisher: String,
@@ -39,14 +41,12 @@ impl PluginAsset {
         content: Vec<u8>,
         executable: bool,
     ) -> Self {
-        let hash = crate::adapters::utils::hash_content(&content);
         Self {
             plugin_name,
             publisher,
             version,
             relative_path,
             content,
-            hash,
             executable,
         }
     }
@@ -93,6 +93,9 @@ pub struct PluginOrigin {
 }
 
 /// A slash command that can be synced between agents.
+///
+/// The same type also carries skills, agents, hooks and instructions; the
+/// [`Artifact`] alias names it neutrally.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Command {
     /// Command name without leading slash (e.g., "commit-msg")
@@ -120,6 +123,13 @@ pub struct Command {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugin_origin: Option<PluginOrigin>,
 }
+
+/// Any synced file-based artifact: a skill, agent, hook, command or
+/// instruction file.
+///
+/// An alias of [`Command`], which carries all of these despite its name.
+/// Prefer `Artifact` in new code that handles more than slash commands.
+pub type Artifact = Command;
 
 impl Command {
     /// Creates a new Command with auto-computed SHA-256 hash.
@@ -217,6 +227,15 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    /// SY-41: `Artifact` is the neutral, re-exported name for `Command`.
+    #[test]
+    fn artifact_is_the_command_type() {
+        let skill: crate::Artifact =
+            Command::new("s".to_string(), b"x".to_vec(), PathBuf::from("s/SKILL.md"));
+        let as_command: Command = skill;
+        assert_eq!(as_command.name, "s");
+    }
+
     #[test]
     fn command_new_computes_hash() {
         let cmd = Command::new(
@@ -271,8 +290,6 @@ mod tests {
             PathBuf::from("scripts/makefile_dogfooder.py")
         );
         assert_eq!(restored.content, asset.content);
-        assert_eq!(restored.hash, asset.hash, "hash should roundtrip");
-        assert!(!restored.hash.is_empty(), "hash should be auto-computed");
         assert!(restored.executable);
     }
 }

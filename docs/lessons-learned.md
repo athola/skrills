@@ -70,6 +70,66 @@ Specify phase summarized module doc comments and skipped the run loop body where
 
 The repaint-floor invariant was corrected against the code (ratatui buffer diffing makes idle-floor repaints zero-write) and now lives in book/src/cold-window.md under "Design model and research basis". Rule going forward: every 'already true' claim gets a code citation (file:line) before it is written down.
 
+## LL-003: The local gate built one feature set, so three blocking review findings passed `make precommit`
+
+- Status: open
+- Date: 2026-09-21
+- Phase: review
+- Category: testing
+- Owner: -
+- Links: PR #232, commit 8f84757
+
+### What happened
+
+`make lint`, `make test` and `make build` all ran with `--all-features`. An import used only behind `#[cfg(feature = "watch")]`, a default feature list that had lost `dashboard` and `watch` in the crate split, and a helper gated on `http-transport` but called from ungated code all passed the hook four times and turned six CI jobs red.
+
+### What went well / where we got lucky
+
+The review reproduced each finding against the built binary before posting, so the fix was mechanical once the gate was widened.
+
+### What did not work
+
+Trusting a single feature configuration as the definition of "compiles". A warning that exists only under default features cannot fail an all-features build, and the release binaries use default features.
+
+### Root cause
+
+The cfgs moved between crates in the CLI split, but the feature lists and the gate did not move with them. Nothing compared the set of features the gate built against the set the release built.
+
+### Recommendation / action item
+
+- Action: `make lint` and the CI clippy step run three passes (all, default, none). Keep them in sync with the release build's feature set. -- Owner: - -- Due: done in 8f84757 -- Status: done
+- Action: when a cfg moves crates, grep the destination crate's `default` list in the same change. -- Owner: - -- Due: - -- Status: open
+
+## LL-004: A dogfood test sourced a shell slice that reached the installer's main body
+
+- Status: open
+- Date: 2026-09-21
+- Phase: review
+- Category: testing
+- Owner: -
+- Links: PR #232, commit d9b1f9b
+
+### What happened
+
+`scripts/dogfood-contracts.sh` cut a function slice out of `install.sh` with `sed -n '/^fail()/,/^# --- main/p'`. Writing the regression test for a renamed end marker, before the guard existed, ran the slice: it downloaded a release into `~/.skrills/bin` on the developer machine and started `skrills setup`.
+
+### What went well / where we got lucky
+
+`setup --yes` refused without `--client`, so nothing beyond the binary was written, and the test now pins `SKRILLS_BIN_DIR` at a throwaway path.
+
+### What did not work
+
+Sourcing text cut by a pattern whose end may not match. `sed` prints to end of file when the end pattern is absent.
+
+### Root cause
+
+The guard checked that a function was defined after sourcing, which is true whether or not the slice also ran the installer. The check ran after the harm.
+
+### Recommendation / action item
+
+- Action: assert both markers exist and reject a slice that still contains a download call, before sourcing. -- Owner: - -- Due: done in d9b1f9b -- Status: done
+- Action: any test that sources generated shell sets `HOME` and every install path to a temp dir first. -- Owner: - -- Due: - -- Status: open
+
 ## Archive
 
 Superseded or deprecated entries sink here; nothing is deleted (git keeps history).

@@ -22,16 +22,19 @@
 
 use crate::app::SkillService;
 use crate::discovery::priority_labels_and_rank_map;
+use crate::mcp_result::tool_ok;
 use crate::sync::mirror_source_root;
 use crate::tool_schemas;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use rmcp::model::{
-    CallToolRequestParam, CallToolResult, Content, ListResourcesResult, ListToolsResult,
-    PaginatedRequestParam, ReadResourceRequestParam, ReadResourceResult,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListResourcesResult,
+    ListToolsResult, PaginatedRequestParams, ProtocolVersion, ReadResourceRequestParams,
+    ReadResourceResponse,
 };
 use rmcp::ServerHandler;
 use serde_json::json;
 use skrills_state::home_dir;
+use std::borrow::Cow;
 use std::fs;
 
 /// Common arguments for sync tool requests.
@@ -43,7 +46,7 @@ struct SyncToolArgs {
 }
 
 impl SyncToolArgs {
-    fn from_request(request: &CallToolRequestParam) -> Self {
+    fn from_request(request: &CallToolRequestParams) -> Self {
         let args = request.arguments.as_ref();
         Self {
             from: args
@@ -67,20 +70,152 @@ impl SyncToolArgs {
     }
 }
 
+/// A tool argument that is missing or has the wrong value. Mapped to the
+/// JSON-RPC `invalid_params` code (-32602) instead of `internal_error`.
+#[derive(Debug)]
+struct InvalidParams(String);
+
+impl std::fmt::Display for InvalidParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for InvalidParams {}
+
+pub(crate) fn invalid_params(message: impl Into<String>) -> anyhow::Error {
+    InvalidParams(message.into()).into()
+}
+
+/// Converts a tool error to the JSON-RPC error the client sees.
+fn tool_error(e: anyhow::Error) -> rmcp::ErrorData {
+    if e.downcast_ref::<InvalidParams>().is_some() {
+        rmcp::ErrorData::invalid_params(e.to_string(), None)
+    } else {
+        rmcp::ErrorData::internal_error(e.to_string(), None)
+    }
+}
+
+/// Runs synchronous filesystem work from an async handler.
+///
+/// On a multi-threaded runtime (the HTTP transport) the worker hands its other
+/// tasks to another thread first, so a directory walk in one tool call does
+/// not stall concurrent requests. A current-thread runtime cannot do that, so
+/// the work runs inline there, as it did before.
+fn run_blocking<T>(work: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(work)
+        }
+        _ => work(),
+    }
+}
+
+/// Files a sync tool wrote, from its structured result: the sum of every
+/// `written` (adapter reports) and `copied` (skill mirror report) count.
+fn synced_file_count(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Object(map) => map
+            .iter()
+            .map(|(key, v)| match (key.as_str(), v.as_u64()) {
+                ("written" | "copied", Some(n)) => usize::try_from(n).unwrap_or(usize::MAX),
+                _ => synced_file_count(v),
+            })
+            .fold(0usize, usize::saturating_add),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(synced_file_count)
+            .fold(0usize, usize::saturating_add),
+        _ => 0,
+    }
+}
+
+impl SkillService {
+    /// Feeds `get-context-stats` from a `list-mcp-tools` answer: the listed
+    /// schemas the client did not have to load, less the listing itself, and
+    /// the schema size of each category.
+    fn record_listing_savings(
+        &self,
+        registry: &crate::mcp_gateway::McpToolRegistry,
+        listing: &CallToolResult,
+    ) {
+        let listed_tokens = listing
+            .structured_content
+            .as_ref()
+            .and_then(|v| v.get("total_estimated_tokens"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let listing_tokens = listing
+            .content
+            .iter()
+            .filter_map(|block| block.as_text())
+            .map(|t| crate::mcp_gateway::estimate_tokens(&t.text) as u64)
+            .sum::<u64>();
+        self.context_stats
+            .record_tokens_saved(listed_tokens.saturating_sub(listing_tokens));
+        for category in registry.categories() {
+            let tokens = registry
+                .list_by_category(category)
+                .iter()
+                .map(|e| e.estimated_tokens as u64)
+                .sum();
+            self.context_stats.set_category_tokens(category, tokens);
+        }
+    }
+
+    /// Records a `sync-*` tool call for the dashboard. Previews
+    /// (`sync-status`, `dry_run: true`) wrote nothing and are not recorded.
+    fn record_sync_tool(
+        &self,
+        tool: &str,
+        args: Option<&serde_json::Map<String, serde_json::Value>>,
+        result: &Result<CallToolResult>,
+    ) {
+        use skrills_metrics::{SyncOperation, SyncStatus};
+
+        let dry_run = args
+            .and_then(|a| a.get("dry_run"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !tool.starts_with("sync-") || tool == "sync-status" || dry_run {
+            return;
+        }
+        let (files, status) = match result {
+            Ok(res) if res.is_error != Some(true) => (
+                res.structured_content.as_ref().map_or(0, synced_file_count),
+                SyncStatus::Success,
+            ),
+            _ => (0, SyncStatus::Failed),
+        };
+        // Every sync tool writes into another tool's configuration.
+        self.record_metric("sync", |m| {
+            m.record_sync_event(SyncOperation::Push, files, status)
+        });
+    }
+}
+
+/// The newest MCP revision this server advertises.
+///
+/// rmcp 3.4 knows 2026-07-28, whose sessions bypass the session manager and
+/// are served statelessly. That behaviour has not been exercised here, so the
+/// advertised ceiling stays one revision below it.
+const MAX_SUPPORTED_PROTOCOL: ProtocolVersion = ProtocolVersion::V_2025_11_25;
+
 impl ServerHandler for SkillService {
+    /// Narrows rmcp's default, which advertises every revision the SDK knows.
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(ProtocolVersion::known_up_to(&MAX_SUPPORTED_PROTOCOL))
+    }
+
     /// List all available resources, including skills and the AGENTS.md document.
     fn list_resources(
         &self,
-        _request: Option<PaginatedRequestParam>,
+        _request: Option<PaginatedRequestParams>,
         __context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListResourcesResult, rmcp::ErrorData>> + Send + '_
     {
-        let result = self
-            .list_resources_payload()
-            .map(|resources| ListResourcesResult {
-                resources,
-                next_cursor: None,
-            })
+        let result = run_blocking(|| self.list_resources_payload())
+            .map(ListResourcesResult::with_all_items)
             .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None));
         std::future::ready(result)
     }
@@ -88,12 +223,12 @@ impl ServerHandler for SkillService {
     /// Read the content of a specific resource identified by its URI.
     fn read_resource(
         &self,
-        request: ReadResourceRequestParam,
+        request: ReadResourceRequestParams,
         __context: rmcp::service::RequestContext<rmcp::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<ReadResourceResult, rmcp::ErrorData>> + Send + '_
+    ) -> impl std::future::Future<Output = Result<ReadResourceResponse, rmcp::ErrorData>> + Send + '_
     {
-        let result = self
-            .read_resource_sync(&request.uri)
+        let result = run_blocking(|| self.read_resource_sync(&request.uri))
+            .map(ReadResourceResponse::from)
             .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None));
         std::future::ready(result)
     }
@@ -107,7 +242,7 @@ impl ServerHandler for SkillService {
     /// Tool schemas are defined in the `tool_schemas` module for maintainability.
     fn list_tools(
         &self,
-        _request: Option<PaginatedRequestParam>,
+        _request: Option<PaginatedRequestParams>,
         __context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListToolsResult, rmcp::ErrorData>> + Send + '_
     {
@@ -122,10 +257,7 @@ impl ServerHandler for SkillService {
         // Add MCP gateway tools for context optimization
         tools.extend(crate::mcp_gateway::mcp_gateway_tools());
 
-        std::future::ready(Ok(ListToolsResult {
-            tools,
-            next_cursor: None,
-        }))
+        std::future::ready(Ok(ListToolsResult::with_all_items(tools)))
     }
 
     /// Executes a specific tool identified by `request.name`.
@@ -135,11 +267,12 @@ impl ServerHandler for SkillService {
     /// configurations between Claude Code and Codex CLI.
     fn call_tool(
         &self,
-        request: CallToolRequestParam,
+        request: CallToolRequestParams,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<CallToolResult, rmcp::ErrorData>> + Send + '_
+    ) -> impl std::future::Future<Output = Result<CallToolResponse, rmcp::ErrorData>> + Send + '_
     {
         Box::pin(async move {
+            self.context_stats.record_invocation();
             #[cfg(feature = "subagents")]
             {
                 let name = request.name.to_string();
@@ -175,7 +308,7 @@ impl ServerHandler for SkillService {
                                 None,
                             )
                         })?;
-                        return Ok(res);
+                        return Ok(CallToolResponse::from(res));
                     }
                 }
             }
@@ -183,7 +316,7 @@ impl ServerHandler for SkillService {
             // use either convention (e.g. "search_papers" -> "search-papers").
             let canonical_name = request.name.replace('_', "-");
             let args = request.arguments.clone().unwrap_or_default();
-            let result = match canonical_name.as_str() {
+            match canonical_name.as_str() {
                 "create-skill" => self.create_skill_tool(args).await,
                 "search-skills-github" => self.search_skills_github_tool(args).await,
                 // Research tools (async, require HTTP calls to external APIs)
@@ -191,7 +324,8 @@ impl ServerHandler for SkillService {
                 "search-discussions" => self.search_discussions_tool(args).await,
                 "resolve-doi" => self.resolve_doi_tool(args).await,
                 "fetch-pdf" => self.fetch_pdf_tool(args).await,
-                _ => (|| -> Result<CallToolResult> {
+                _ => {
+                let result = run_blocking(|| -> Result<CallToolResult> {
                     match canonical_name.as_str() {
                     "sync-from-claude" => {
                         let include_marketplace = request
@@ -208,10 +342,7 @@ impl ServerHandler for SkillService {
                             &codex_skills_root,
                             include_marketplace,
                         )?;
-                        let _ = crate::setup::ensure_codex_skills_feature_enabled(
-                            &home.join(".codex/config.toml"),
-                        );
-                        let text = if report.copied_names.is_empty() {
+                        let mut text = if report.copied_names.is_empty() {
                             format!("copied: {}, skipped: {}", report.copied, report.skipped)
                         } else {
                             format!(
@@ -221,10 +352,25 @@ impl ServerHandler for SkillService {
                                 report.copied_names.join(", ")
                             )
                         };
+                        if let Err(err) = crate::setup::ensure_codex_skills_feature_enabled(
+                            &home.join(".codex/config.toml"),
+                        ) {
+                            // Surface filesystem errors (read-only home, disk full,
+                            // malformed TOML) so the caller learns why Codex loads
+                            // nothing despite the skills landing on disk.
+                            tracing::warn!(
+                                error = %err,
+                                "could not ensure codex skills feature flag"
+                            );
+                            text.push_str(&format!(
+                                "\nwarning: could not enable the codex skills feature in \
+                                 ~/.codex/config.toml: {err}"
+                            ));
+                        }
                         let (priority, rank_map) = priority_labels_and_rank_map();
-                        Ok(CallToolResult {
-                            content: vec![Content::text(text)],
-                            structured_content: Some(json!({
+                        Ok(tool_ok(
+                            vec![ContentBlock::text(text)],
+                            Some(json!({
                                 "report": {
                                     "copied": report.copied,
                                     "skipped": report.skipped,
@@ -235,9 +381,7 @@ impl ServerHandler for SkillService {
                                     "priority_rank_by_source": rank_map
                                 }
                             })),
-                            is_error: Some(false),
-                            meta: None,
-                        })
+                        ))
                     }
                     // Copilot-specific sync tools
                     "sync-from-copilot" => {
@@ -289,18 +433,16 @@ impl ServerHandler for SkillService {
 
                         let report = sync_between(&args.from, to, &params)?;
 
-                        Ok(CallToolResult {
-                            content: vec![Content::text(report.summary.clone())],
-                            is_error: Some(false),
-                            structured_content: Some(json!({
+                        Ok(tool_ok(
+                            vec![ContentBlock::text(report.summary.clone())],
+                            Some(json!({
                                 "from": args.from,
                                 "to": to,
                                 "report": report,
                                 "dry_run": args.dry_run,
                                 "skip_existing_commands": args.skip_existing_commands
                             })),
-                            meta: None,
-                        })
+                        ))
                     }
                     "sync-mcp-servers" => {
                         use skrills_sync::{default_target_for, sync_between, SyncParams};
@@ -327,17 +469,15 @@ impl ServerHandler for SkillService {
 
                         let report = sync_between(&args.from, to, &params)?;
 
-                        Ok(CallToolResult {
-                            content: vec![Content::text(report.summary.clone())],
-                            is_error: Some(false),
-                            structured_content: Some(json!({
+                        Ok(tool_ok(
+                            vec![ContentBlock::text(report.summary.clone())],
+                            Some(json!({
                                 "from": args.from,
                                 "to": to,
                                 "report": report,
                                 "dry_run": args.dry_run
                             })),
-                            meta: None,
-                        })
+                        ))
                     }
                     "sync-preferences" => {
                         use skrills_sync::{default_target_for, sync_between, SyncParams};
@@ -364,17 +504,15 @@ impl ServerHandler for SkillService {
 
                         let report = sync_between(&args.from, to, &params)?;
 
-                        Ok(CallToolResult {
-                            content: vec![Content::text(report.summary.clone())],
-                            is_error: Some(false),
-                            structured_content: Some(json!({
+                        Ok(tool_ok(
+                            vec![ContentBlock::text(report.summary.clone())],
+                            Some(json!({
                                 "from": args.from,
                                 "to": to,
                                 "report": report,
                                 "dry_run": args.dry_run
                             })),
-                            meta: None,
-                        })
+                        ))
                     }
                     "sync-all" => {
                         let args = request.arguments.clone().unwrap_or_default();
@@ -406,20 +544,18 @@ impl ServerHandler for SkillService {
 
                         let report = sync_between(&args.from, to, &params)?;
 
-                        Ok(CallToolResult {
-                            content: vec![Content::text(format!(
+                        Ok(tool_ok(
+                            vec![ContentBlock::text(format!(
                                 "Sync Preview ({} → {})\n{}",
                                 args.from, to, report.summary
                             ))],
-                            is_error: Some(false),
-                            structured_content: Some(json!({
+                            Some(json!({
                                 "preview": true,
                                 "from": args.from,
                                 "to": to,
                                 "report": report
                             })),
-                            meta: None,
-                        })
+                        ))
                     }
                     "validate-skills" => {
                         let args = request.arguments.clone().unwrap_or_default();
@@ -511,15 +647,13 @@ impl ServerHandler for SkillService {
                                 .sum::<u64>()
                         );
 
-                        Ok(CallToolResult {
-                            content: vec![Content::text(text)],
-                            structured_content: Some(json!({
+                        Ok(tool_ok(
+                            vec![ContentBlock::text(text)],
+                            Some(json!({
                                 "total": analyses.len(),
                                 "analyses": analyses
                             })),
-                            is_error: Some(false),
-                            meta: None,
-                        })
+                        ))
                     }
                     "resolve-dependencies" => {
                         let args = request.arguments.clone().unwrap_or_default();
@@ -528,7 +662,7 @@ impl ServerHandler for SkillService {
                         let uri = args
                             .get("uri")
                             .and_then(|v| v.as_str())
-                            .ok_or_else(|| anyhow!("uri parameter is required"))?;
+                            .ok_or_else(|| invalid_params("uri parameter is required"))?;
 
                         // Extract direction (default: dependencies)
                         let direction = args
@@ -544,8 +678,8 @@ impl ServerHandler for SkillService {
 
                         // Validate direction
                         if direction != "dependencies" && direction != "dependents" {
-                            return Err(anyhow!(
-                                "direction must be 'dependencies' or 'dependents'"
+                            return Err(invalid_params(
+                                "direction must be 'dependencies' or 'dependents'",
                             ));
                         }
 
@@ -579,18 +713,16 @@ impl ServerHandler for SkillService {
                             uri
                         );
 
-                        Ok(CallToolResult {
-                            content: vec![Content::text(text)],
-                            structured_content: Some(json!({
+                        Ok(tool_ok(
+                            vec![ContentBlock::text(text)],
+                            Some(json!({
                                 "uri": uri,
                                 "direction": direction,
                                 "transitive": transitive,
                                 "results": results,
                                 "count": results.len()
                             })),
-                            is_error: Some(false),
-                            meta: None,
-                        })
+                        ))
                     }
                     "skill-metrics" => {
                         let args = request.arguments.clone().unwrap_or_default();
@@ -608,12 +740,10 @@ impl ServerHandler for SkillService {
                             metrics.by_quality.high
                         );
 
-                        Ok(CallToolResult {
-                            content: vec![Content::text(summary)],
-                            structured_content: Some(serde_json::to_value(&metrics)?),
-                            is_error: Some(false),
-                            meta: None,
-                        })
+                        Ok(tool_ok(
+                            vec![ContentBlock::text(summary)],
+                            Some(serde_json::to_value(&metrics)?),
+                        ))
                     }
                     "recommend-skills" => {
                         let args = request.arguments.clone().unwrap_or_default();
@@ -621,7 +751,7 @@ impl ServerHandler for SkillService {
                         let uri = args
                             .get("uri")
                             .and_then(|v| v.as_str())
-                            .ok_or_else(|| anyhow!("uri parameter is required"))?;
+                            .ok_or_else(|| invalid_params("uri parameter is required"))?;
 
                         let limit = args
                             .get("limit")
@@ -652,12 +782,10 @@ impl ServerHandler for SkillService {
                                 .count(),
                         );
 
-                        Ok(CallToolResult {
-                            content: vec![Content::text(summary)],
-                            structured_content: Some(serde_json::to_value(&recommendations)?),
-                            is_error: Some(false),
-                            meta: None,
-                        })
+                        Ok(tool_ok(
+                            vec![ContentBlock::text(summary)],
+                            Some(serde_json::to_value(&recommendations)?),
+                        ))
                     }
                     "skill-loading-status" => {
                         let args = request.arguments.clone().unwrap_or_default();
@@ -697,20 +825,26 @@ impl ServerHandler for SkillService {
                         // Get tool entries from the real registry
                         let registry = self.mcp_registry.lock();
                         let entries: Vec<_> = registry.list_all();
-                        crate::mcp_gateway::list_mcp_tools(request.arguments.as_ref(), entries)
+                        let listing =
+                            crate::mcp_gateway::list_mcp_tools(request.arguments.as_ref(), entries)?;
+                        self.record_listing_savings(&registry, &listing);
+                        Ok(listing)
                     }
                     "describe-mcp-tool" => {
-                        // Track schema load for context stats
-                        self.context_stats.record_schema_load();
-
-                        // Lookup tool in all_tools by name
+                        // Lookup tool in all_tools by name; only a schema that
+                        // was actually returned counts as loaded.
                         let all = tool_schemas::all_tools();
                         let gateway_tools = crate::mcp_gateway::mcp_gateway_tools();
                         crate::mcp_gateway::describe_mcp_tool(request.arguments.as_ref(), |name| {
-                            all.iter()
+                            let found = all
+                                .iter()
                                 .find(|t| t.name.as_ref() == name)
                                 .cloned()
-                                .or_else(|| gateway_tools.iter().find(|t| t.name.as_ref() == name).cloned())
+                                .or_else(|| gateway_tools.iter().find(|t| t.name.as_ref() == name).cloned());
+                            if found.is_some() {
+                                self.context_stats.record_schema_load();
+                            }
+                            found
                         })
                     }
                     "get-context-stats" => {
@@ -739,12 +873,15 @@ impl ServerHandler for SkillService {
                         let args = request.arguments.clone().unwrap_or_default();
                         self.resolve_contradiction_tool(args)
                     }
-                    other => Err(anyhow!("unknown tool {other}")),
+                    other => Err(invalid_params(format!("unknown tool {other}"))),
                 }
-                })(),
+                });
+                self.record_sync_tool(&canonical_name, request.arguments.as_ref(), &result);
+                result
+                }
             }
-            .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None));
-            result
+            .map_err(tool_error)
+            .map(CallToolResponse::from)
         })
     }
 }
@@ -752,14 +889,16 @@ impl ServerHandler for SkillService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::discovery::AGENTS_URI;
+    use crate::discovery::{AGENTS_DESCRIPTION, AGENTS_URI};
     use crate::test_support;
-    use rmcp::model::{Extensions, Meta, RequestId};
+    use rmcp::model::{
+        ClientCapabilities, Implementation, InitializeRequestParams, ProtocolVersion, RequestId,
+        ResourceContents,
+    };
     use rmcp::service::{serve_directly, RequestContext, RunningService};
     use std::future::Future;
     use std::time::Duration;
     use tempfile::tempdir;
-    use tokio_util::sync::CancellationToken;
 
     fn service_with_context(
         service: SkillService,
@@ -770,13 +909,7 @@ mod tests {
     ) {
         let (client, server) = tokio::io::duplex(64);
         let running = serve_directly::<rmcp::RoleServer, _, _, _, _>(service, server, None);
-        let context = RequestContext {
-            ct: CancellationToken::new(),
-            id: RequestId::Number(1),
-            meta: Meta::new(),
-            extensions: Extensions::new(),
-            peer: running.peer().clone(),
-        };
+        let context = RequestContext::new(RequestId::Number(1), running.peer().clone());
         (running, context, client)
     }
 
@@ -828,10 +961,67 @@ mod tests {
                 .expect("list_resources should succeed")
         });
 
-        assert!(
-            result.resources.iter().any(|r| r.uri == AGENTS_URI),
-            "AGENTS resource should be listed"
+        let agents = result
+            .resources
+            .iter()
+            .find(|r| r.uri == AGENTS_URI)
+            .expect("AGENTS resource should be listed");
+        // A dropped `.with_mime_type(..)` or `.with_description(..)` still
+        // compiles, and clients lose the rendering hint and the label.
+        assert_eq!(agents.mime_type.as_deref(), Some("text/markdown"));
+        assert_eq!(agents.description.as_deref(), Some(AGENTS_DESCRIPTION));
+    }
+
+    #[test]
+    fn read_resource_returns_completed_agents_doc() {
+        /*
+        GIVEN a service with a temp home
+        WHEN reading the AGENTS.md resource through the MCP handler
+        THEN it completes with the document text and its location metadata
+        */
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var(
+            "HOME",
+            Some(
+                temp.path()
+                    .to_str()
+                    .expect("temp home should be valid utf-8"),
+            ),
         );
+
+        let service = build_service(&temp);
+        let response = run_async(async move {
+            let (running, context, _client) = service_with_context(service);
+            running
+                .service()
+                .read_resource(
+                    ReadResourceRequestParams::new(AGENTS_URI.to_string()),
+                    context,
+                )
+                .await
+                .expect("read_resource should succeed")
+        });
+
+        let result = match response {
+            ReadResourceResponse::Complete(result) => result,
+            other => panic!("expected a completed resource read, got {other:?}"),
+        };
+        let content = result
+            .contents
+            .first()
+            .expect("AGENTS.md read should return content");
+        match content {
+            ResourceContents::TextResourceContents { uri, meta, .. } => {
+                assert_eq!(uri, AGENTS_URI);
+                let meta = meta.as_ref().expect("location metadata should be present");
+                assert_eq!(
+                    meta.get("location").and_then(|v| v.as_str()),
+                    Some("global")
+                );
+            }
+            other => panic!("expected text contents, got {other:?}"),
+        }
     }
 
     #[test]
@@ -891,13 +1081,7 @@ mod tests {
             let (running, context, _client) = service_with_context(service);
             running
                 .service()
-                .call_tool(
-                    CallToolRequestParam {
-                        name: "does-not-exist".into(),
-                        arguments: None,
-                    },
-                    context,
-                )
+                .call_tool(CallToolRequestParams::new("does-not-exist"), context)
                 .await
         });
 
@@ -906,6 +1090,125 @@ mod tests {
             err.message.contains("unknown tool"),
             "error message should mention unknown tool"
         );
+    }
+
+    #[test]
+    fn sync_from_claude_reports_an_unwritable_codex_config() {
+        /*
+        GIVEN a home whose ~/.codex/config.toml cannot be read as a file
+        WHEN calling sync-from-claude
+        THEN the tool result text names the codex skills feature flag
+        */
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var(
+            "HOME",
+            Some(
+                temp.path()
+                    .to_str()
+                    .expect("temp home should be valid utf-8"),
+            ),
+        );
+        // A directory where the config file belongs makes every read and write
+        // of it fail, which is the shape of a read-only or corrupted home.
+        std::fs::create_dir_all(temp.path().join(".codex/config.toml"))
+            .expect("create config.toml as a directory");
+
+        let service = build_service(&temp);
+        let result = run_async(async move {
+            let (running, context, _client) = service_with_context(service);
+            running
+                .service()
+                .call_tool(CallToolRequestParams::new("sync-from-claude"), context)
+                .await
+        });
+
+        let res = match result.expect("sync-from-claude should complete") {
+            CallToolResponse::Complete(res) => res,
+            other => panic!("expected a completed tool call, got {other:?}"),
+        };
+        assert_eq!(
+            res.is_error,
+            Some(false),
+            "the skills themselves synced, so the call still succeeds"
+        );
+        let text = res
+            .content
+            .iter()
+            .filter_map(|block| block.as_text().map(|t| t.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("codex skills feature"),
+            "result text should surface the feature-flag failure, got: {text}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Protocol version negotiation tests
+    // -------------------------------------------------------------------------
+
+    fn initialize_request(version: ProtocolVersion) -> InitializeRequestParams {
+        InitializeRequestParams::new(
+            ClientCapabilities::default(),
+            Implementation::new("skrills-test-client", "0"),
+        )
+        .with_protocol_version(version)
+    }
+
+    /// 2026-07-28 serves its sessions statelessly, bypassing the session
+    /// manager, and rmcp's default advertises every version it knows. Nothing
+    /// here has been exercised against those semantics, so the advertised set
+    /// stops one revision earlier.
+    #[test]
+    fn supported_versions_exclude_the_unvalidated_2026_revision() {
+        let temp = tempdir().expect("tempdir");
+        let service = build_service(&temp);
+        let supported = ServerHandler::supported_protocol_versions(&service);
+
+        assert!(
+            !supported.contains(&ProtocolVersion::V_2026_07_28),
+            "2026-07-28 should not be advertised, got {supported:?}"
+        );
+        assert_eq!(
+            supported.as_ref(),
+            ProtocolVersion::known_up_to(&ProtocolVersion::V_2025_11_25),
+            "the cap should keep every revision up to 2025-11-25"
+        );
+    }
+
+    /// Guards the cap against over-narrowing: the versions real clients pin
+    /// must still be agreed to by `initialize`.
+    #[test]
+    fn initialize_still_negotiates_the_legacy_client_versions() {
+        let temp = tempdir().expect("tempdir");
+        let service = build_service(&temp);
+
+        for version in [
+            ProtocolVersion::V_2024_11_05,
+            ProtocolVersion::V_2025_06_18,
+            ProtocolVersion::V_2025_11_25,
+        ] {
+            let negotiated = service
+                .negotiate_initialize(&initialize_request(version.clone()))
+                .expect("initialize should negotiate")
+                .protocol_version;
+            assert_eq!(negotiated, version, "{version} should be negotiated as-is");
+        }
+    }
+
+    /// A client asking for the capped-out revision is not rejected: rmcp falls
+    /// back to the newest version that still has an `initialize` handshake.
+    #[test]
+    fn initialize_falls_back_when_client_requests_the_2026_revision() {
+        let temp = tempdir().expect("tempdir");
+        let service = build_service(&temp);
+
+        let negotiated = service
+            .negotiate_initialize(&initialize_request(ProtocolVersion::V_2026_07_28))
+            .expect("initialize should fall back rather than fail")
+            .protocol_version;
+        assert_eq!(negotiated, ProtocolVersion::V_2025_11_25);
     }
 
     // -------------------------------------------------------------------------
@@ -936,24 +1239,25 @@ mod tests {
             running
                 .service()
                 .call_tool(
-                    CallToolRequestParam {
-                        name: "resolve_contradiction".into(),
-                        arguments: Some(
-                            serde_json::json!({
-                                "improve": "performance",
-                                "degrades": "reliability"
-                            })
-                            .as_object()
-                            .cloned()
-                            .unwrap(),
-                        ),
-                    },
+                    CallToolRequestParams::new("resolve_contradiction").with_arguments(
+                        serde_json::json!({
+                            "improve": "performance",
+                            "degrades": "reliability"
+                        })
+                        .as_object()
+                        .cloned()
+                        .unwrap(),
+                    ),
                     context,
                 )
                 .await
         });
 
-        let res = result.expect("resolve_contradiction should not return unknown tool error");
+        let res = match result.expect("resolve_contradiction should not return unknown tool error")
+        {
+            CallToolResponse::Complete(res) => res,
+            other => panic!("expected a completed tool call, got {other:?}"),
+        };
         assert!(
             !res.is_error.unwrap_or(true),
             "resolve_contradiction should succeed"
@@ -1008,10 +1312,8 @@ mod tests {
                 running
                     .service()
                     .call_tool(
-                        CallToolRequestParam {
-                            name: name.into(),
-                            arguments: Some(args.as_object().cloned().unwrap()),
-                        },
+                        CallToolRequestParams::new(name)
+                            .with_arguments(args.as_object().cloned().unwrap()),
                         context,
                     )
                     .await
@@ -1042,51 +1344,485 @@ mod tests {
             ),
         );
 
-        // Each (snake_case_name, minimal_valid_args) pair for async research tools.
-        // These tools require HTTP clients, so they may fail with network errors,
-        // but they must NOT fail with "unknown tool", that would mean the
-        // snake_case → kebab-case normalization did not dispatch them.
-        let cases: Vec<(&str, serde_json::Value)> = vec![
-            ("search_papers", serde_json::json!({"query": "test"})),
-            ("search_discussions", serde_json::json!({"query": "test"})),
-            ("resolve_doi", serde_json::json!({"doi": "10.1234/test"})),
-            (
-                "fetch_pdf",
-                serde_json::json!({"url": "https://example.com/test.pdf"}),
-            ),
+        // Each tool is called with no arguments, so it fails its own argument
+        // check before any network call. That error proves the snake_case
+        // name was normalized and dispatched, offline and deterministically.
+        let cases = [
+            ("search_papers", "query"),
+            ("search_discussions", "query"),
+            ("resolve_doi", "doi"),
+            ("fetch_pdf", "doi"),
         ];
 
-        for (name, args) in cases {
+        for (name, missing) in cases {
             let svc = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1))
                 .expect("service should build");
             let result = run_async(async move {
                 let (running, context, _client) = service_with_context(svc);
                 running
                     .service()
-                    .call_tool(
-                        CallToolRequestParam {
-                            name: name.into(),
-                            arguments: Some(args.as_object().cloned().unwrap()),
-                        },
-                        context,
-                    )
+                    .call_tool(CallToolRequestParams::new(name), context)
                     .await
             });
 
-            // The tool must be dispatched (no "unknown tool" error).
-            // Network errors are acceptable, they prove the tool was found
-            // and attempted execution rather than being rejected at dispatch.
-            match &result {
-                Ok(_) => {} // tool succeeded (unlikely without network, but fine)
-                Err(e) => {
-                    assert!(
-                        !e.message.contains("unknown tool"),
-                        "snake_case async tool '{}' should be dispatched, but got unknown tool error: {:?}",
-                        name,
-                        e
-                    );
+            let err = result.expect_err("a call with no arguments should fail");
+            assert!(
+                err.message
+                    .contains(&format!("Missing required parameter: {missing}")),
+                "snake_case async tool '{name}' should reach its own argument check, got: {err:?}"
+            );
+        }
+    }
+
+    fn call(
+        service: SkillService,
+        name: &'static str,
+        args: serde_json::Value,
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
+        run_async(async move {
+            let (running, context, _client) = service_with_context(service);
+            running
+                .service()
+                .call_tool(
+                    CallToolRequestParams::new(name)
+                        .with_arguments(args.as_object().cloned().unwrap_or_default()),
+                    context,
+                )
+                .await
+        })
+    }
+
+    /// A missing argument is the caller's mistake, not the server's.
+    #[test]
+    fn missing_uri_is_reported_as_invalid_params() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var("HOME", temp.path().to_str());
+
+        for name in ["resolve-dependencies", "recommend-skills"] {
+            let err = call(build_service(&temp), name, json!({})).expect_err("no uri");
+            assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{name}");
+            assert!(err.message.contains("uri"), "{name}: {}", err.message);
+        }
+
+        let err = call(build_service(&temp), "does-not-exist", json!({})).unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn invalid_direction_is_reported_as_invalid_params() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var("HOME", temp.path().to_str());
+
+        let err = call(
+            build_service(&temp),
+            "resolve-dependencies",
+            json!({"uri": "skill://x", "direction": "sideways"}),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    }
+
+    /// SA-23: a `project_dir` outside `[serve] project_roots` is the caller's
+    /// mistake, reported as invalid params naming the setting.
+    #[test]
+    fn project_dir_outside_project_roots_is_invalid_params() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var("HOME", temp.path().to_str());
+        let allowed = temp.path().join("allowed");
+        std::fs::create_dir_all(&allowed).expect("create root");
+
+        let service = build_service(&temp).with_project_roots(vec![allowed]);
+        let err = call(
+            service,
+            "analyze-project-context",
+            json!({"project_dir": temp.path().to_str().unwrap()}),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message.contains("[serve] project_roots"),
+            "{}",
+            err.message
+        );
+    }
+
+    /// `describe-mcp-tool` counted a schema load even for a name it could not
+    /// find.
+    #[test]
+    fn describe_mcp_tool_counts_only_schemas_it_returned() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var("HOME", temp.path().to_str());
+        let service = build_service(&temp);
+        let stats = service.context_stats.clone();
+
+        let result = run_async(async move {
+            let (running, context, _client) = service_with_context(service);
+            let svc = running.service();
+            let _ = svc
+                .call_tool(
+                    CallToolRequestParams::new("describe-mcp-tool").with_arguments(
+                        json!({"tool_name": "no-such-tool"})
+                            .as_object()
+                            .cloned()
+                            .unwrap(),
+                    ),
+                    context.clone(),
+                )
+                .await;
+            svc.call_tool(
+                CallToolRequestParams::new("describe-mcp-tool").with_arguments(
+                    json!({"tool_name": "sync-from-claude"})
+                        .as_object()
+                        .cloned()
+                        .unwrap(),
+                ),
+                context,
+            )
+            .await
+        });
+
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(stats.snapshot().schemas_loaded, 1);
+    }
+
+    /// On the multi-threaded runtime the HTTP transport uses, a blocking tool
+    /// body must not hold the only worker while other requests wait.
+    #[test]
+    fn run_blocking_lets_other_tasks_progress_on_a_multi_thread_runtime() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let progressed = runtime.block_on(async {
+            let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let worker = tokio::spawn(async move {
+                let other = flag.clone();
+                tokio::spawn(async move {
+                    other.store(true, std::sync::atomic::Ordering::SeqCst);
+                });
+                run_blocking(|| {
+                    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+                    while std::time::Instant::now() < deadline {
+                        if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                            return true;
+                        }
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    false
+                })
+            });
+            worker.await.unwrap()
+        });
+        assert!(progressed, "a concurrent task was starved by blocking work");
+    }
+
+    /// Checks a value against the subset of JSON Schema the tool output
+    /// schemas use: `type`, `required` and nested `properties`/`items`.
+    fn assert_matches_schema(value: &serde_json::Value, schema: &serde_json::Value, at: &str) {
+        if let Some(kind) = schema.get("type").and_then(|t| t.as_str()) {
+            let ok = match kind {
+                "object" => value.is_object(),
+                "array" => value.is_array(),
+                "string" => value.is_string(),
+                "boolean" => value.is_boolean(),
+                "integer" => value.is_u64() || value.is_i64(),
+                "number" => value.is_number(),
+                other => panic!("schema type {other} not handled at {at}"),
+            };
+            assert!(ok, "{at}: expected {kind}, got {value}");
+        }
+        if let Some(required) = schema.get("required").and_then(|r| r.as_array()) {
+            for key in required {
+                let key = key.as_str().unwrap();
+                assert!(
+                    value.get(key).is_some(),
+                    "{at}: missing required {key} in {value}"
+                );
+            }
+        }
+        if let (Some(props), Some(obj)) = (
+            schema.get("properties").and_then(|p| p.as_object()),
+            value.as_object(),
+        ) {
+            for (key, sub) in props {
+                if let Some(v) = obj.get(key) {
+                    assert_matches_schema(v, sub, &format!("{at}.{key}"));
                 }
             }
+        }
+        if let (Some(items), Some(arr)) = (schema.get("items"), value.as_array()) {
+            for (i, v) in arr.iter().enumerate() {
+                assert_matches_schema(v, items, &format!("{at}[{i}]"));
+            }
+        }
+    }
+
+    fn output_schema(name: &str) -> serde_json::Value {
+        let tool = tool_schemas::all_tools()
+            .into_iter()
+            .find(|t| t.name == name)
+            .unwrap();
+        serde_json::Value::Object(tool.output_schema.expect("output schema").as_ref().clone())
+    }
+
+    fn structured(response: CallToolResponse) -> serde_json::Value {
+        match response {
+            CallToolResponse::Complete(res) => res.structured_content.expect("structured content"),
+            other => panic!("expected a completed tool call, got {other:?}"),
+        }
+    }
+
+    /// The declared output schemas did not describe what the handlers return:
+    /// a validating client would reject both results.
+    #[test]
+    fn structured_tool_results_match_their_declared_output_schemas() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var("HOME", temp.path().to_str());
+        let claude_skill = temp.path().join(".claude/skills/alpha");
+        std::fs::create_dir_all(&claude_skill).unwrap();
+        std::fs::write(
+            claude_skill.join("SKILL.md"),
+            "---\nname: alpha\ndescription: a\n---\nbody",
+        )
+        .unwrap();
+
+        let sync = structured(
+            call(
+                build_service(&temp),
+                "sync-from-claude",
+                json!({"include_marketplace": true}),
+            )
+            .expect("sync-from-claude"),
+        );
+        assert_matches_schema(
+            &sync,
+            &output_schema("sync-from-claude"),
+            "sync-from-claude",
+        );
+
+        let validate = structured(
+            call(
+                build_service(&temp),
+                "validate-skills",
+                json!({"check_dependencies": true}),
+            )
+            .expect("validate-skills"),
+        );
+        assert_matches_schema(
+            &validate,
+            &output_schema("validate-skills"),
+            "validate-skills",
+        );
+        assert!(validate["results"]
+            .as_array()
+            .is_some_and(|r| !r.is_empty()));
+    }
+
+    /// The handler reads `include_marketplace`, so the input schema has to
+    /// allow it; `additionalProperties: false` used to forbid it.
+    #[test]
+    fn sync_from_claude_input_schema_declares_include_marketplace() {
+        let tool = tool_schemas::all_tools()
+            .into_iter()
+            .find(|t| t.name == "sync-from-claude")
+            .unwrap();
+        assert_eq!(
+            tool.input_schema["properties"]["include_marketplace"]["type"],
+            "boolean"
+        );
+    }
+
+    /// SB-16: `get-context-stats` reported zero invocations and zero tokens
+    /// saved because nothing called the counters.
+    #[test]
+    fn context_stats_count_invocations_and_listing_savings() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = set_env_var("HOME", temp.path().to_str());
+        let service = build_service(&temp);
+        let stats = service.context_stats.clone();
+        let registry_tokens = service.mcp_registry.lock().total_estimated_tokens() as u64;
+        let categorized_tokens: u64 = service
+            .mcp_registry
+            .lock()
+            .list_all()
+            .iter()
+            .filter(|e| e.category.is_some())
+            .map(|e| e.estimated_tokens as u64)
+            .sum();
+
+        let listing = run_async(async move {
+            let (running, context, _client) = service_with_context(service);
+            let svc = running.service();
+            let listing = svc
+                .call_tool(
+                    CallToolRequestParams::new("list-mcp-tools"),
+                    context.clone(),
+                )
+                .await;
+            let _ = svc
+                .call_tool(CallToolRequestParams::new("get-context-stats"), context)
+                .await;
+            listing
+        });
+
+        let listing_text = match listing.expect("list-mcp-tools") {
+            CallToolResponse::Complete(res) => res.content[0].as_text().expect("text").text.clone(),
+            other => panic!("expected a completed tool call, got {other:?}"),
+        };
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.total_invocations, 2);
+        assert_eq!(
+            snapshot.tokens_saved,
+            registry_tokens
+                .saturating_sub(crate::mcp_gateway::estimate_tokens(&listing_text) as u64)
+        );
+        assert!(snapshot.tokens_saved > 0);
+        assert!(
+            !snapshot.category_tokens.is_empty(),
+            "per-category totals should be filled in"
+        );
+        assert_eq!(
+            snapshot.category_tokens.values().sum::<u64>(),
+            categorized_tokens,
+            "each category holds the schema size of its tools"
+        );
+    }
+
+    /// RT-21: the dashboard reads skill, validation and sync rows that
+    /// nothing wrote. These pin the writers, using an in-memory collector.
+    mod metrics_writers {
+        use super::*;
+        use skrills_metrics::{MetricEvent, MetricsCollector, SyncStatus};
+        use std::sync::Arc;
+
+        /// The skill `build_service` writes, by the name `/api/skills`
+        /// reports, so the dashboard can join the two.
+        const DEMO: &str = "demo/SKILL.md";
+
+        fn events(collector: &MetricsCollector) -> Vec<MetricEvent> {
+            collector.get_recent_events(100).expect("read events")
+        }
+
+        #[test]
+        fn serving_a_skill_records_an_invocation() {
+            let _guard = test_support::env_guard();
+            let temp = tempdir().expect("tempdir");
+            let _home = set_env_var("HOME", temp.path().to_str());
+            let collector = Arc::new(MetricsCollector::in_memory().unwrap());
+            let service = build_service(&temp).with_metrics(collector.clone());
+            let uri = service
+                .list_resources_payload()
+                .unwrap()
+                .into_iter()
+                .map(|r| r.uri.clone())
+                .find(|u| u.starts_with("skill://"))
+                .expect("a skill resource");
+
+            service.read_resource_sync(&uri).expect("read skill");
+
+            assert!(
+                events(&collector).iter().any(|e| matches!(
+                    e,
+                    MetricEvent::SkillInvocation { skill_name, success: true, .. }
+                        if skill_name == DEMO
+                )),
+                "{:?}",
+                events(&collector)
+            );
+        }
+
+        #[test]
+        fn validate_skills_records_a_validation_per_skill() {
+            let _guard = test_support::env_guard();
+            let temp = tempdir().expect("tempdir");
+            let _home = set_env_var("HOME", temp.path().to_str());
+            let collector = Arc::new(MetricsCollector::in_memory().unwrap());
+            let service = build_service(&temp).with_metrics(collector.clone());
+
+            call(service, "validate-skills", json!({"target": "claude"})).expect("validate");
+
+            let recorded = events(&collector);
+            assert!(
+                recorded.iter().any(|e| matches!(
+                    e,
+                    MetricEvent::Validation { skill_name, checks_passed, checks_failed, .. }
+                        if skill_name == DEMO
+                            && checks_passed.len() + checks_failed.len() == 1
+                )),
+                "{recorded:?}"
+            );
+        }
+
+        #[test]
+        fn a_sync_tool_records_a_sync_event_with_its_file_count() {
+            let _guard = test_support::env_guard();
+            let temp = tempdir().expect("tempdir");
+            let _home = set_env_var("HOME", temp.path().to_str());
+            let claude_skill = temp.path().join(".claude/skills/alpha");
+            std::fs::create_dir_all(&claude_skill).unwrap();
+            std::fs::write(
+                claude_skill.join("SKILL.md"),
+                "---\nname: alpha\ndescription: a\n---\nbody",
+            )
+            .unwrap();
+            let collector = Arc::new(MetricsCollector::in_memory().unwrap());
+            let service = build_service(&temp).with_metrics(collector.clone());
+
+            call(service, "sync-from-claude", json!({})).expect("sync");
+
+            let recorded = events(&collector);
+            assert!(
+                recorded.iter().any(|e| matches!(
+                    e,
+                    MetricEvent::Sync {
+                        files_count: 1,
+                        status: SyncStatus::Success,
+                        ..
+                    }
+                )),
+                "{recorded:?}"
+            );
+        }
+
+        /// A preview writes nothing, so it is not a sync.
+        #[test]
+        fn sync_status_records_nothing() {
+            let _guard = test_support::env_guard();
+            let temp = tempdir().expect("tempdir");
+            let _home = set_env_var("HOME", temp.path().to_str());
+            let collector = Arc::new(MetricsCollector::in_memory().unwrap());
+            let service = build_service(&temp).with_metrics(collector.clone());
+
+            let _ = call(service, "sync-status", json!({}));
+
+            assert!(
+                !events(&collector)
+                    .iter()
+                    .any(|e| matches!(e, MetricEvent::Sync { .. })),
+                "{:?}",
+                events(&collector)
+            );
+        }
+
+        #[test]
+        fn synced_file_count_sums_written_and_copied_counts() {
+            let report = json!({
+                "report": {
+                    "skills": {"written": 2, "skipped": [], "duplicates": 0},
+                    "commands": {"written": 3, "skipped": []},
+                    "copied": 1,
+                    "summary": "x"
+                },
+                "_meta": {"priority": []}
+            });
+            assert_eq!(synced_file_count(&report), 6);
         }
     }
 }

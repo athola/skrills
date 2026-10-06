@@ -160,7 +160,11 @@ pub fn analyze_project_with_options(
         match extract_git_keywords(root, options.commit_limit) {
             Ok(git_keywords) => profile.git_keywords = git_keywords,
             Err(e) => {
-                tracing::debug!(error = %e, "Could not extract git keywords");
+                // `warn!` and a recorded reason: at `debug!` under the default
+                // `info` filter this failure produced an empty keyword list, a
+                // success exit and no output at all.
+                tracing::warn!(error = %e, "Could not extract git keywords");
+                profile.git_keywords_error = Some(e.to_string());
             }
         }
     }
@@ -292,14 +296,9 @@ fn parse_requirements_txt(path: &Path) -> Result<Vec<DependencyInfo>> {
             continue;
         }
 
-        // Parse name and optional version specifier
-        let (name, version) = if let Some(idx) = line.find(|c| ['=', '<', '>'].contains(&c)) {
-            let name = line[..idx].trim();
-            let version = line[idx..].trim();
-            (name.to_string(), Some(version.to_string()))
-        } else {
-            (line.to_string(), None)
-        };
+        // Same grammar as pyproject entries (PEP 508): handles `~=`, `!=`,
+        // extras, environment markers and trailing comments.
+        let (name, version) = super::dependencies::parse_python_dep_string(line);
 
         if !name.is_empty() {
             deps.push(DependencyInfo {
@@ -313,13 +312,18 @@ fn parse_requirements_txt(path: &Path) -> Result<Vec<DependencyInfo>> {
     Ok(deps)
 }
 
-/// Framework patterns: `(dependency-name substring, framework label)`.
+/// Framework patterns: `(package name, framework label)`.
 ///
-/// Substring semantics are intentional: `react-dom` and `react-router`
-/// both match `react`. See `test_detect_frameworks_no_duplicates`.
+/// A dependency matches when one of its `/`-separated segments, with any
+/// npm `@` scope marker dropped, equals the pattern: `react`, `@angular/core`
+/// and `github.com/labstack/echo/v4` match, while `cargo-nextest`,
+/// `expression-parser` and `echo-cli` do not. Companion packages that imply
+/// the framework are listed explicitly (see
+/// `test_detect_frameworks_no_duplicates`).
 const KNOWN_FRAMEWORKS: &[(&str, &str)] = &[
     // JavaScript/TypeScript
     ("react", "React"),
+    ("react-dom", "React"),
     ("next", "Next.js"),
     ("vue", "Vue"),
     ("nuxt", "Nuxt"),
@@ -366,8 +370,12 @@ pub fn detect_frameworks(deps: &HashMap<String, Vec<DependencyInfo>>) -> Vec<Str
     for deps_list in deps.values() {
         for dep in deps_list {
             let dep_lower = dep.name.to_lowercase();
+            let segments: Vec<&str> = dep_lower
+                .split('/')
+                .map(|s| s.trim_start_matches('@'))
+                .collect();
             for (pattern, framework) in KNOWN_FRAMEWORKS {
-                if !found.contains(framework) && dep_lower.contains(pattern) {
+                if segments.contains(pattern) {
                     found.insert(framework);
                 }
             }
@@ -482,14 +490,10 @@ fn classify_project_type(root: &Path, profile: &ProjectProfile) -> ProjectType {
         return ProjectType::Monorepo;
     }
 
-    // Check for plugin markers
-    if root.join("plugin.json").exists()
-        || root.join(".claude-plugin").exists()
-        || profile
-            .keywords
-            .iter()
-            .any(|k| k.contains("plugin") || k.contains("extension"))
-    {
+    // Check for plugin file markers. README keywords are only a fallback,
+    // checked last: a service whose README has a "## Plugins" section is
+    // still a service.
+    if root.join("plugin.json").exists() || root.join(".claude-plugin").exists() {
         return ProjectType::Plugin;
     }
 
@@ -527,6 +531,14 @@ fn classify_project_type(root: &Path, profile: &ProjectProfile) -> ProjectType {
         || root.join("app.py").exists()
     {
         return ProjectType::Application;
+    }
+
+    if profile
+        .keywords
+        .iter()
+        .any(|k| k.contains("plugin") || k.contains("extension"))
+    {
+        return ProjectType::Plugin;
     }
 
     ProjectType::Unknown
@@ -567,6 +579,42 @@ mod tests {
                 message,
             ],
         );
+    }
+
+    /// A `debug!` under a default `info` filter was the only trace of a failed
+    /// `git log`, so an empty keyword list read as a project without history.
+    #[test]
+    fn analyze_project_records_the_reason_git_keywords_are_missing() {
+        let temp = tempdir().unwrap();
+
+        let options = AnalyzeProjectOptions {
+            include_git: true,
+            commit_limit: 1,
+            max_languages: 10,
+        };
+        let profile = analyze_project_with_options(temp.path(), options).unwrap();
+
+        assert!(profile.git_keywords.is_empty());
+        assert!(
+            profile.git_keywords_error.is_some(),
+            "a directory that is not a repository should say so, not report no history"
+        );
+    }
+
+    #[test]
+    fn analyze_project_leaves_the_git_keyword_error_unset_when_git_reads() {
+        let temp = tempdir().unwrap();
+        run_git(temp.path(), &["init"]);
+        commit_file(temp.path(), "alphaunique", "alpha");
+
+        let options = AnalyzeProjectOptions {
+            include_git: true,
+            commit_limit: 1,
+            max_languages: 10,
+        };
+        let profile = analyze_project_with_options(temp.path(), options).unwrap();
+
+        assert_eq!(profile.git_keywords_error, None);
     }
 
     #[test]
@@ -1302,6 +1350,83 @@ Some text under first header.
         // Both contain "react" but should only have one React entry
         let react_count = frameworks.iter().filter(|f| *f == "React").count();
         assert_eq!(react_count, 1);
+    }
+
+    fn deps_named(names: &[&str]) -> HashMap<String, Vec<DependencyInfo>> {
+        let mut deps = HashMap::new();
+        deps.insert(
+            "any".to_string(),
+            names
+                .iter()
+                .map(|n| DependencyInfo {
+                    name: n.to_string(),
+                    version: None,
+                    dev: false,
+                })
+                .collect(),
+        );
+        deps
+    }
+
+    /// IN-42: framework names must match a whole package (or path segment),
+    /// not a substring.
+    #[test]
+    fn detect_frameworks_ignores_substring_lookalikes() {
+        let frameworks = detect_frameworks(&deps_named(&[
+            "cargo-nextest",
+            "next-auth",
+            "expression-parser",
+            "echo-cli",
+        ]));
+        assert!(frameworks.is_empty(), "got {frameworks:?}");
+
+        let frameworks = detect_frameworks(&deps_named(&[
+            "next",
+            "@angular/core",
+            "github.com/labstack/echo/v4",
+            "github.com/gin-gonic/gin",
+        ]));
+        assert_eq!(frameworks, vec!["Angular", "Echo", "Gin", "Next.js"]);
+    }
+
+    /// IN-43: a README mention of plugins does not override service markers.
+    #[test]
+    fn readme_plugin_keyword_does_not_override_service_markers() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+        let profile = ProjectProfile {
+            keywords: vec!["plugins".to_string()],
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_project_type(tmp.path(), &profile),
+            ProjectType::Service
+        );
+
+        // With nothing else to go on, the keyword still decides.
+        let bare = tempdir().unwrap();
+        assert_eq!(
+            classify_project_type(bare.path(), &profile),
+            ProjectType::Plugin
+        );
+    }
+
+    /// IN-41: requirements.txt uses the PEP 508 parser.
+    #[test]
+    fn parse_requirements_txt_handles_pep508_operators_extras_and_markers() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("requirements.txt");
+        fs::write(
+            &path,
+            "requests~=2.0\npkg!=1.0\nuvicorn[standard]==0.3\ntomli; python_version < \"3.11\"\nblack  # formatter\n",
+        )
+        .unwrap();
+        let names: Vec<String> = parse_requirements_txt(&path)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert_eq!(names, vec!["requests", "pkg", "uvicorn", "tomli", "black"]);
     }
 
     #[test]

@@ -408,6 +408,41 @@ fn test_create_skill_tool_invalid_method() {
     );
 }
 
+/// GIVEN a home with no Claude session history
+/// WHEN create_skill_tool is called with the empirical method
+/// THEN the tool result is flagged as a tool-level error
+#[test]
+fn create_skill_reports_a_tool_error_when_empirical_generation_finds_no_sessions() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let _home_guard = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
+    let args = json!({
+        "name": "no-sessions",
+        "description": "a skill built from behaviour that was never recorded",
+        "method": "empirical",
+        "dry_run": true
+    })
+    .as_object()
+    .cloned()
+    .unwrap();
+
+    let result = service
+        .create_skill_tool_sync(args)
+        .expect("empirical generation reports failure in the result, not as an Err");
+
+    assert_eq!(
+        result.is_error,
+        Some(true),
+        "the failed-creation branch must set is_error"
+    );
+    let structured = result
+        .structured_content
+        .expect("structured content should be present");
+    assert_eq!(structured["success"], json!(false));
+}
+
 // -------------------------------------------------------------------------
 // search_skills_github_tool Tests
 // -------------------------------------------------------------------------
@@ -773,4 +808,447 @@ fn test_create_skill_empirical_without_sessions() {
         (errors.is_some() && !errors.unwrap().is_empty()) || preview == Some(true),
         "Expected errors or preview mode for empirical without sessions"
     );
+}
+
+// -------------------------------------------------------------------------
+// Gap detection and limits (SA-38, SA-39)
+// -------------------------------------------------------------------------
+
+/// SA-38: short language names match whole tokens only.
+#[test]
+fn name_covers_matches_whole_tokens() {
+    use super::super::intelligence::name_covers;
+    assert!(name_covers("go-testing/SKILL.md", "go"));
+    assert!(!name_covers("django-patterns/SKILL.md", "go"));
+    assert!(!name_covers("rust-best-practices/SKILL.md", "r"));
+    assert!(!name_covers("commit-helper/SKILL.md", "c"));
+    assert!(name_covers("c-best-practices/SKILL.md", "c++"));
+    assert!(name_covers("next-js-patterns/SKILL.md", "next.js"));
+    assert!(!name_covers("anything", ""));
+}
+
+/// SA-39: caller-supplied limits are bounded.
+#[test]
+fn clamp_limit_bounds_requests() {
+    use super::super::intelligence::clamp_limit;
+    assert_eq!(clamp_limit(None, 10), 10);
+    assert_eq!(clamp_limit(Some(0), 10), 1);
+    assert_eq!(clamp_limit(Some(5), 10), 5);
+    assert_eq!(clamp_limit(Some(u64::MAX), 10), 100);
+}
+
+/// SA-38: a project whose primary language is Go reports a gap even when
+/// an unrelated skill name contains the letters "go".
+#[test]
+fn suggest_new_skills_does_not_count_substring_matches() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let _cache = crate::test_support::set_env_var(
+        "SKRILLS_CACHE_PATH",
+        Some(temp.path().join("cache.json").to_str().unwrap()),
+    );
+    let project = temp.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    for i in 0..5 {
+        fs::write(project.join(format!("m{i}.go")), "package main\n").unwrap();
+    }
+    let skills_dir = temp.path().join("skills");
+    let skill = skills_dir.join("django-patterns");
+    fs::create_dir_all(&skill).unwrap();
+    fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: django-patterns\ndescription: d\n---\n",
+    )
+    .unwrap();
+    let service = service_with_claude_root(&skills_dir);
+
+    let result = service
+        .suggest_new_skills_tool(
+            json!({"project_dir": project.display().to_string()})
+                .as_object()
+                .cloned()
+                .unwrap(),
+        )
+        .unwrap();
+    let structured = result.structured_content.unwrap();
+    let suggestions = structured["suggestions"].as_array().unwrap();
+    assert!(
+        suggestions.iter().any(|s| s == "go-best-practices"),
+        "{structured}"
+    );
+}
+
+// -------------------------------------------------------------------------
+// create_skill target_dir containment (SA-1)
+// -------------------------------------------------------------------------
+
+fn run_mcp_create_skill(
+    service: &SkillService,
+    args: serde_json::Map<String, serde_json::Value>,
+) -> Result<rmcp::model::CallToolResult> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(service.create_skill_tool(args))
+}
+
+fn service_with_claude_root(skills_dir: &std::path::Path) -> SkillService {
+    let roots = vec![SkillRoot {
+        root: skills_dir.to_path_buf(),
+        source: skrills_discovery::SkillSource::Claude,
+    }];
+    SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap()
+}
+
+/// GIVEN an MCP caller
+/// WHEN create-skill names a target_dir outside every writable skill root
+/// THEN the request is refused before any generation runs
+#[test]
+fn mcp_create_skill_rejects_target_dir_outside_skill_roots() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let _cache = crate::test_support::set_env_var(
+        "SKRILLS_CACHE_PATH",
+        Some(temp.path().join("cache.json").to_str().unwrap()),
+    );
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).unwrap();
+    let service = service_with_claude_root(&skills_dir);
+
+    let outside = temp.path().join("autostart");
+    for target in [
+        outside.display().to_string(),
+        skills_dir.join("../autostart").display().to_string(),
+    ] {
+        let args = json!({
+            "name": "evil",
+            "description": "x",
+            "method": "github",
+            "target_dir": target,
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+        let err = run_mcp_create_skill(&service, args)
+            .expect_err("target_dir outside the skill roots must be refused");
+        assert!(
+            err.to_string().contains("target_dir"),
+            "unexpected error for {target}: {err}"
+        );
+    }
+    assert!(
+        !outside.exists(),
+        "nothing may be created outside the roots"
+    );
+}
+
+/// GIVEN an MCP caller
+/// WHEN target_dir sits inside a writable skill root
+/// THEN containment does not refuse it
+#[test]
+fn mcp_create_skill_accepts_target_dir_inside_skill_root() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let _home = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+    let _cache = crate::test_support::set_env_var(
+        "SKRILLS_CACHE_PATH",
+        Some(temp.path().join("cache.json").to_str().unwrap()),
+    );
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).unwrap();
+    let service = service_with_claude_root(&skills_dir);
+
+    let args = json!({
+        "name": "ok-skill",
+        "description": "x",
+        "method": "empirical",
+        "dry_run": true,
+        "target_dir": skills_dir.join("nested").display().to_string(),
+    })
+    .as_object()
+    .cloned()
+    .unwrap();
+    run_mcp_create_skill(&service, args).expect("target_dir inside a root is allowed");
+}
+
+/// GIVEN the CLI wrapper
+/// WHEN the user passes an explicit --target-dir anywhere
+/// THEN containment does not apply (the user chose the path)
+#[test]
+fn cli_create_skill_keeps_arbitrary_target_dir() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let _home = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+    let _cache = crate::test_support::set_env_var(
+        "SKRILLS_CACHE_PATH",
+        Some(temp.path().join("cache.json").to_str().unwrap()),
+    );
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).unwrap();
+    let service = service_with_claude_root(&skills_dir);
+
+    let args = json!({
+        "name": "cli-skill",
+        "description": "x",
+        "method": "empirical",
+        "dry_run": true,
+        "target_dir": temp.path().join("elsewhere").display().to_string(),
+    })
+    .as_object()
+    .cloned()
+    .unwrap();
+    service
+        .create_skill_tool_sync(args)
+        .expect("CLI target_dir is trusted");
+}
+
+/// GIVEN an existing SKILL.md
+/// WHEN a generated skill is written to the same place
+/// THEN the write is refused and the file is untouched
+#[test]
+fn write_generated_skill_refuses_to_overwrite() {
+    let temp = tempdir().unwrap();
+    let skill_dir = temp.path().join("demo");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(skill_dir.join("SKILL.md"), "mine").unwrap();
+
+    let err = super::super::intelligence::write_generated_skill(temp.path(), "demo", "theirs")
+        .expect_err("existing SKILL.md must not be overwritten");
+    assert!(err.to_string().contains("already exists"), "{err}");
+    assert_eq!(
+        fs::read_to_string(skill_dir.join("SKILL.md")).unwrap(),
+        "mine"
+    );
+
+    let written =
+        super::super::intelligence::write_generated_skill(temp.path(), "fresh", "body").unwrap();
+    assert_eq!(fs::read_to_string(written).unwrap(), "body");
+}
+
+// -------------------------------------------------------------------------
+// recommend-skills-smart relationship walk (SA-44 characterization)
+// -------------------------------------------------------------------------
+
+/// Pins which skills `recommend-skills-smart` relates to a URI and how:
+/// dependencies, dependents, then siblings sharing a dependency, each skill
+/// once. `both` depends on `app` and shares `db` with it, so it is listed as
+/// a dependent only; `lonely` shares nothing.
+#[test]
+fn recommend_skills_smart_relates_dependencies_dependents_and_siblings() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let _home = crate::test_support::set_env_var("HOME", temp.path().to_str());
+    let skills_dir = temp.path().join("skills");
+    let links = |names: &[&str]| {
+        names
+            .iter()
+            .map(|n| format!("[{n}](../{n}/SKILL.md)"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    for (name, deps) in [
+        ("app", vec!["db", "auth"]),
+        ("api", vec!["db"]),
+        ("tool", vec!["auth"]),
+        ("web", vec!["app"]),
+        ("both", vec!["app", "db"]),
+        ("db", vec![]),
+        ("auth", vec![]),
+        ("lonely", vec![]),
+    ] {
+        let dir = skills_dir.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!(
+                "---\nname: {name}\ndescription: {name} skill\n---\n# {name}\n{}\n",
+                links(&deps)
+            ),
+        )
+        .unwrap();
+    }
+    let service = SkillService::new_with_roots_for_test(
+        vec![SkillRoot {
+            root: skills_dir,
+            source: skrills_discovery::SkillSource::Extra(0),
+        }],
+        Duration::from_secs(60),
+    )
+    .unwrap();
+    service.invalidate_cache().unwrap();
+    let uris = service.cache.lock().skill_uris().unwrap();
+    let app_uri = uris
+        .iter()
+        .find(|u| u.ends_with("/app/SKILL.md"))
+        .unwrap_or_else(|| panic!("app uri: {uris:?}"))
+        .clone();
+
+    let args = json!({
+        "uri": app_uri,
+        "include_usage": false,
+        "include_context": false,
+        "limit": 50
+    })
+    .as_object()
+    .cloned()
+    .unwrap();
+    let result = service.recommend_skills_smart_tool(args).unwrap();
+    let structured = result.structured_content.unwrap();
+
+    let related: Vec<(String, Vec<String>)> = structured["recommendations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|rec| {
+            let name = rec["uri"].as_str().unwrap().rsplit('/').nth(1).unwrap();
+            let signals = rec["signals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|s| s.as_str().map(str::to_string))
+                .collect();
+            (name.to_string(), signals)
+        })
+        .collect();
+    // Output order is score, so dependencies, dependents, then siblings.
+    // Within a tier the order follows a HashSet and is not pinned.
+    let tier = |signals: &[String]| match signals.first().map(String::as_str) {
+        Some("Dependency") => 0,
+        Some("Dependent") => 1,
+        _ => 2,
+    };
+    let tiers: Vec<i32> = related.iter().map(|(_, s)| tier(s)).collect();
+    assert!(tiers.windows(2).all(|w| w[0] <= w[1]), "{tiers:?}");
+    let mut related = related;
+    related.sort_by(|a, b| tier(&a.1).cmp(&tier(&b.1)).then_with(|| a.0.cmp(&b.0)));
+    let expected: Vec<(String, Vec<String>)> = [
+        ("auth", "Dependency"),
+        ("db", "Dependency"),
+        ("both", "Dependent"),
+        ("web", "Dependent"),
+        ("api", "Sibling"),
+        ("tool", "Sibling"),
+    ]
+    .into_iter()
+    .map(|(n, s)| (n.to_string(), vec![s.to_string()]))
+    .collect();
+    assert_eq!(related, expected, "{structured}");
+}
+
+// -------------------------------------------------------------------------
+// [serve] project_roots containment (SA-23)
+// -------------------------------------------------------------------------
+
+/// A service restricted to `<temp>/allowed`, plus a sibling `<temp>/outside`
+/// that exists, so a refusal is containment and not a missing directory.
+/// Both sides are canonicalized, so the macOS `/tmp -> /private/tmp` link
+/// cannot make an in-root path look out of root.
+fn restricted_service(temp: &tempfile::TempDir) -> (SkillService, PathBuf, PathBuf) {
+    let allowed = temp.path().join("allowed");
+    let outside = temp.path().join("outside");
+    fs::create_dir_all(allowed.join("project")).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1))
+        .unwrap()
+        .with_project_roots(vec![allowed.clone()]);
+    (service, allowed, outside)
+}
+
+fn project_args(dir: &std::path::Path) -> serde_json::Map<String, serde_json::Value> {
+    json!({"project_dir": dir.to_str().unwrap(), "include_git": false})
+        .as_object()
+        .cloned()
+        .unwrap()
+}
+
+fn assert_refused(err: anyhow::Error) {
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("[serve] project_roots"),
+        "refusal should name the setting: {message}"
+    );
+}
+
+#[test]
+fn project_roots_admit_a_project_inside_a_root() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let (service, allowed, _) = restricted_service(&temp);
+
+    let result = service
+        .analyze_project_context_tool(project_args(&allowed.join("project")))
+        .expect("an in-root project_dir is analyzed");
+    assert!(!result.is_error.unwrap_or(true));
+}
+
+#[test]
+fn project_roots_refuse_a_project_outside_every_root() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let (service, _, outside) = restricted_service(&temp);
+
+    assert_refused(
+        service
+            .analyze_project_context_tool(project_args(&outside))
+            .expect_err("an out-of-root project_dir is refused"),
+    );
+    assert_refused(
+        service
+            .suggest_new_skills_tool(project_args(&outside))
+            .expect_err("suggest-new-skills checks project_dir too"),
+    );
+    assert_refused(
+        service
+            .recommend_skills_smart_tool(project_args(&outside))
+            .expect_err("recommend-skills-smart checks project_dir too"),
+    );
+}
+
+#[test]
+fn project_roots_refuse_a_dotdot_escape() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let (service, allowed, _) = restricted_service(&temp);
+
+    let escape = allowed
+        .join("project")
+        .join("..")
+        .join("..")
+        .join("outside");
+    assert!(escape.exists(), "the escape target must exist");
+    assert_refused(
+        service
+            .analyze_project_context_tool(project_args(&escape))
+            .expect_err("a `..` escape is refused"),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn project_roots_refuse_a_symlink_escape() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let (service, allowed, outside) = restricted_service(&temp);
+
+    let link = allowed.join("link-out");
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    assert_refused(
+        service
+            .analyze_project_context_tool(project_args(&link))
+            .expect_err("a symlink leaving the root is refused"),
+    );
+}
+
+#[test]
+fn project_roots_unset_leaves_project_dir_unrestricted() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let anywhere = temp.path().join("anywhere");
+    fs::create_dir_all(&anywhere).unwrap();
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
+
+    service
+        .analyze_project_context_tool(project_args(&anywhere))
+        .expect("no allowlist, no refusal");
 }

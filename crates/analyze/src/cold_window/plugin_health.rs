@@ -152,8 +152,14 @@ impl PluginHealthCollector {
                     continue;
                 }
             };
+            // `DirEntry::file_type` does not follow symlinks; a plugin
+            // installed as a link to its checkout is still a plugin. A
+            // dangling link is skipped like any other non-directory.
             match entry.file_type() {
                 Ok(ft) if ft.is_dir() => plugin_dirs.push(entry.path()),
+                Ok(ft) if ft.is_symlink() && entry.path().is_dir() => {
+                    plugin_dirs.push(entry.path())
+                }
                 Ok(_) => {} // non-dir siblings (stray files) are ignored as before
                 Err(err) => {
                     let plugin_name = entry
@@ -293,6 +299,23 @@ status = "warn"
         assert_eq!(h.checks[0].message.as_deref(), Some("all systems nominal"));
         assert_eq!(h.checks[1].status, HealthStatus::Warn);
         assert!(h.checks[1].message.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_plugin_dir_is_collected() {
+        // IN-20: a plugin installed as a symlink must still report.
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src").join("linked-plugin");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("health.toml"), "overall = \"ok\"\n").unwrap();
+        let plugins = dir.path().join("plugins");
+        fs::create_dir_all(&plugins).unwrap();
+        std::os::unix::fs::symlink(&src, plugins.join("linked-plugin")).unwrap();
+
+        let out = PluginHealthCollector::new(&plugins).collect();
+        assert_eq!(out.healths.len(), 1, "{:?}", out.malformed);
+        assert_eq!(out.healths[0].plugin_name, "linked-plugin");
     }
 
     #[test]

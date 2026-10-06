@@ -5,6 +5,7 @@
 //! `GraphBuilder` validates edges at build time so resolution itself can avoid
 //! string lookups.
 
+use super::resolver::check_version;
 use super::types::{ResolutionResult, ResolveError, ResolveOptions, ResolvedDependency, SkillInfo};
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
@@ -45,8 +46,17 @@ pub struct DependencyGraph {
     build_warnings: Vec<String>,
 }
 
+/// Traversal state for one `DependencyGraph::compute_resolution` call.
+#[derive(Default)]
+struct IndexWalk {
+    visited: HashSet<usize>,
+    in_stack: HashSet<usize>,
+    stack_path: Vec<usize>,
+    result: CachedResolution,
+}
+
 /// Cached resolution result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct CachedResolution {
     /// Indices in topological order.
     order: Vec<usize>,
@@ -103,48 +113,17 @@ impl DependencyGraph {
 
     /// Compute resolution for a skill (not cached).
     fn compute_resolution(&self, root_idx: usize) -> Result<CachedResolution, ResolveError> {
-        let mut visited: HashSet<usize> = HashSet::new();
-        let mut in_stack: HashSet<usize> = HashSet::new();
-        let mut stack_path: Vec<usize> = Vec::new();
-        let mut order: Vec<usize> = Vec::new();
-        let mut depths: Vec<usize> = Vec::new();
-        let mut warnings: Vec<String> = Vec::new();
-        let mut optionals: Vec<bool> = Vec::new();
-
-        self.visit_index(
-            root_idx,
-            false,
-            0,
-            &mut visited,
-            &mut in_stack,
-            &mut stack_path,
-            &mut order,
-            &mut depths,
-            &mut warnings,
-            &mut optionals,
-        )?;
-
-        Ok(CachedResolution {
-            order,
-            depths,
-            optionals,
-            warnings,
-        })
+        let mut walk = IndexWalk::default();
+        self.visit_index(&mut walk, root_idx, false, 0)?;
+        Ok(walk.result)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn visit_index(
         &self,
+        walk: &mut IndexWalk,
         idx: usize,
         optional: bool,
         depth: usize,
-        visited: &mut HashSet<usize>,
-        in_stack: &mut HashSet<usize>,
-        stack_path: &mut Vec<usize>,
-        order: &mut Vec<usize>,
-        depths: &mut Vec<usize>,
-        warnings: &mut Vec<String>,
-        optionals: &mut Vec<bool>,
     ) -> Result<(), ResolveError> {
         // Depth limit
         if depth > self.options.max_depth {
@@ -152,9 +131,9 @@ impl DependencyGraph {
         }
 
         // Cycle detection
-        if in_stack.contains(&idx) {
-            let cycle_start = stack_path.iter().position(|&i| i == idx).unwrap_or(0);
-            let cycle_names: Vec<_> = stack_path[cycle_start..]
+        if walk.in_stack.contains(&idx) {
+            let cycle_start = walk.stack_path.iter().position(|&i| i == idx).unwrap_or(0);
+            let cycle_names: Vec<_> = walk.stack_path[cycle_start..]
                 .iter()
                 .chain(std::iter::once(&idx))
                 .map(|&i| self.skills[i].name.as_str())
@@ -165,31 +144,16 @@ impl DependencyGraph {
         }
 
         // Already resolved
-        if visited.contains(&idx) {
+        if walk.visited.contains(&idx) {
             return Ok(());
         }
 
         // Mark in-progress
-        in_stack.insert(idx);
-        stack_path.push(idx);
+        walk.in_stack.insert(idx);
+        walk.stack_path.push(idx);
 
         // Visit dependencies
         for edge in &self.edges[idx] {
-            // Version check
-            if !self.options.ignore_versions {
-                if let (Some(req), Some(actual)) =
-                    (&edge.version_req, &self.skills[edge.target].version)
-                {
-                    if !req.matches(actual) {
-                        return Err(ResolveError::VersionMismatch {
-                            name: self.skills[edge.target].name.clone(),
-                            required: req.to_string(),
-                            found: actual.to_string(),
-                        });
-                    }
-                }
-            }
-
             // Handle missing (edges only point to valid indices, but check anyway)
             debug_assert!(
                 edge.target < self.skills.len(),
@@ -199,7 +163,9 @@ impl DependencyGraph {
             );
             if edge.target >= self.skills.len() {
                 if edge.optional && !self.options.strict_optional {
-                    warnings.push("Skipped optional dependency (invalid index)".to_string());
+                    walk.result
+                        .warnings
+                        .push("Skipped optional dependency (invalid index)".to_string());
                     continue;
                 }
                 return Err(ResolveError::NotFound {
@@ -208,30 +174,32 @@ impl DependencyGraph {
                 });
             }
 
+            // Version check
+            if !self.options.ignore_versions {
+                if let Some(req) = &edge.version_req {
+                    let target = &self.skills[edge.target];
+                    check_version(
+                        &target.name,
+                        req,
+                        target.version.as_ref(),
+                        &mut walk.result.warnings,
+                    )?;
+                }
+            }
+
             let child_optional = optional || edge.optional;
-            self.visit_index(
-                edge.target,
-                child_optional,
-                depth + 1,
-                visited,
-                in_stack,
-                stack_path,
-                order,
-                depths,
-                warnings,
-                optionals,
-            )?;
+            self.visit_index(walk, edge.target, child_optional, depth + 1)?;
         }
 
         // Done processing
-        in_stack.remove(&idx);
-        stack_path.pop();
-        visited.insert(idx);
+        walk.in_stack.remove(&idx);
+        walk.stack_path.pop();
+        walk.visited.insert(idx);
 
         // Post-order: add after dependencies
-        order.push(idx);
-        depths.push(depth);
-        optionals.push(optional);
+        walk.result.order.push(idx);
+        walk.result.depths.push(depth);
+        walk.result.optionals.push(optional);
 
         Ok(())
     }

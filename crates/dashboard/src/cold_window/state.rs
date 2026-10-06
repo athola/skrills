@@ -34,6 +34,11 @@ pub struct ColdWindowState {
     /// Whether to ring the terminal bell when a new WARNING fires.
     /// Maps to the `--no-bell` CLI flag.
     pub bell_enabled: bool,
+    /// WARNING fingerprints in the current snapshot that have already
+    /// been rung, so a standing warning rings once rather than on every
+    /// tick. A fingerprint that drops out of a snapshot is forgotten, so
+    /// the warning rings again if it re-fires later.
+    rung_warnings: HashSet<String>,
 }
 
 impl ColdWindowState {
@@ -44,6 +49,7 @@ impl ColdWindowState {
             acked_warnings: HashSet::new(),
             master_ack_version: 0,
             bell_enabled: true,
+            rung_warnings: HashSet::new(),
         }
     }
 
@@ -54,15 +60,16 @@ impl ColdWindowState {
     /// gate is applied here, so a `true` return means ring
     /// unconditionally; the caller does not re-check the flag.
     pub fn ingest(&mut self, snapshot: Arc<WindowSnapshot>) -> bool {
-        let mut new_warning = false;
-        for alert in &snapshot.alerts {
-            if matches!(alert.severity, Severity::Warning)
-                && !self.acked_warnings.contains(&alert.fingerprint)
-            {
-                new_warning = true;
-                break;
-            }
-        }
+        let warnings: HashSet<String> = snapshot
+            .alerts
+            .iter()
+            .filter(|alert| matches!(alert.severity, Severity::Warning))
+            .map(|alert| alert.fingerprint.clone())
+            .collect();
+        let new_warning = warnings.iter().any(|fingerprint| {
+            !self.acked_warnings.contains(fingerprint) && !self.rung_warnings.contains(fingerprint)
+        });
+        self.rung_warnings = warnings;
         self.current = Some(snapshot);
         new_warning && self.bell_enabled
     }
@@ -92,6 +99,7 @@ impl ColdWindowState {
     /// Re-arm a warning fingerprint so a future re-trigger surfaces
     /// again (used when alert history clears via policy).
     pub fn unack_warning(&mut self, fingerprint: &str) -> bool {
+        self.rung_warnings.remove(fingerprint);
         self.acked_warnings.remove(fingerprint)
     }
 
@@ -234,6 +242,45 @@ mod tests {
         let snap = snapshot(1, vec![alert("w1", Severity::Warning, 100)]);
         let bell = s.ingest(snap);
         assert!(!bell);
+    }
+
+    /// RT-25: a standing WARNING rang the bell on every snapshot tick.
+    #[test]
+    fn standing_warning_rings_once() {
+        let mut s = ColdWindowState::new();
+        assert!(s.ingest(snapshot(1, vec![alert("w1", Severity::Warning, 100)])));
+        assert!(!s.ingest(snapshot(2, vec![alert("w1", Severity::Warning, 100)])));
+        assert!(!s.ingest(snapshot(3, vec![alert("w1", Severity::Warning, 100)])));
+    }
+
+    #[test]
+    fn a_second_warning_rings_while_the_first_stands() {
+        let mut s = ColdWindowState::new();
+        assert!(s.ingest(snapshot(1, vec![alert("w1", Severity::Warning, 100)])));
+        assert!(s.ingest(snapshot(
+            2,
+            vec![
+                alert("w1", Severity::Warning, 100),
+                alert("w2", Severity::Warning, 200),
+            ],
+        )));
+    }
+
+    #[test]
+    fn a_warning_that_clears_and_returns_rings_again() {
+        let mut s = ColdWindowState::new();
+        assert!(s.ingest(snapshot(1, vec![alert("w1", Severity::Warning, 100)])));
+        assert!(!s.ingest(snapshot(2, vec![])));
+        assert!(s.ingest(snapshot(3, vec![alert("w1", Severity::Warning, 300)])));
+    }
+
+    #[test]
+    fn unack_after_ringing_lets_the_warning_ring_again() {
+        let mut s = ColdWindowState::new();
+        assert!(s.ingest(snapshot(1, vec![alert("w1", Severity::Warning, 100)])));
+        s.ack_warning("w1");
+        s.unack_warning("w1");
+        assert!(s.ingest(snapshot(2, vec![alert("w1", Severity::Warning, 100)])));
     }
 
     #[test]

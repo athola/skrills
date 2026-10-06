@@ -6,25 +6,47 @@ use async_trait::async_trait;
 use reqwest::Url;
 use serde::Serialize;
 use serde_json::{json, Value};
-use time::OffsetDateTime;
 
 use crate::backend::{
-    config::AdapterConfig, run_http_adapter, AdapterCapabilities, BackendAdapter,
+    config::{endpoint, AdapterConfig},
+    run_http_adapter, spawn_run, AdapterCapabilities, BackendAdapter, HttpProvider,
 };
 use crate::store::{
-    BackendKind, RunEvent, RunId, RunRecord, RunRequest, RunState, RunStatus, RunStore,
-    SubagentTemplate,
+    BackendKind, RunId, RunRecord, RunRequest, RunStatus, RunStore, SubagentTemplate,
 };
 
 const DEFAULT_BASE: &str = "https://api.anthropic.com/v1/";
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+/// Default output cap. A non-streaming request with a much larger cap risks the
+/// HTTP timeout; `SKRILLS_CLAUDE_MAX_TOKENS` overrides it.
+const DEFAULT_MAX_TOKENS: u32 = 16_000;
 const API_KEY_ERROR: &str = "Claude API key not set. Set SKRILLS_CLAUDE_API_KEY environment variable with your Anthropic API key. Get one at https://console.anthropic.com/settings/keys";
 
 #[derive(Debug, Clone)]
 pub struct ClaudeAdapter {
     config: AdapterConfig,
     client: reqwest::Client,
+    max_tokens: u32,
+}
+
+/// Reads `SKRILLS_CLAUDE_MAX_TOKENS`, warning on a value that is not a
+/// positive whole number.
+fn max_tokens_from_env() -> u32 {
+    match std::env::var("SKRILLS_CLAUDE_MAX_TOKENS") {
+        Err(_) => DEFAULT_MAX_TOKENS,
+        Ok(raw) => match raw.trim().parse::<u32>() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                tracing::warn!(
+                    value = %raw,
+                    default = DEFAULT_MAX_TOKENS,
+                    "invalid SKRILLS_CLAUDE_MAX_TOKENS; using the default"
+                );
+                DEFAULT_MAX_TOKENS
+            }
+        },
+    }
 }
 
 impl ClaudeAdapter {
@@ -51,7 +73,11 @@ impl ClaudeAdapter {
             .timeout(config.timeout)
             .build()
             .context("failed to build HTTP client")?;
-        Ok(Self { config, client })
+        Ok(Self {
+            config,
+            client,
+            max_tokens: max_tokens_from_env(),
+        })
     }
 
     async fn execute_run(
@@ -60,29 +86,17 @@ impl ClaudeAdapter {
         request: RunRequest,
         store: Arc<dyn RunStore>,
     ) -> Result<()> {
-        let url = self
-            .config
-            .base_url
-            .join("messages")
-            .unwrap_or_else(|_| self.config.base_url.clone());
-        let body = build_anthropic_body(&self.config.model, &request);
+        let url = endpoint(&self.config.base_url, "messages")?;
+        let body = build_anthropic_body(&self.config.model, self.max_tokens, &request);
         let api_key = self.config.api_key.clone();
 
-        run_http_adapter(
-            run_id,
-            &store,
-            &self.config.api_key,
-            API_KEY_ERROR,
-            "Claude",
-            || {
-                self.client
-                    .post(url)
-                    .header("x-api-key", &api_key)
-                    .header("anthropic-version", ANTHROPIC_VERSION)
-                    .json(&body)
-            },
-            extract_anthropic_text,
-        )
+        run_http_adapter(run_id, &store, &self.config.api_key, &PROVIDER, || {
+            self.client
+                .post(url)
+                .header("x-api-key", &api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .json(&body)
+        })
         .await
     }
 }
@@ -100,37 +114,31 @@ struct AnthropicBody {
     max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
+    /// Structured output: `{"format": {"type": "json_schema", "schema": ...}}`.
+    /// The Messages API has no OpenAI-style `response_format`, and its
+    /// `metadata` accepts only `user_id`, so neither is sent.
     #[serde(skip_serializing_if = "Option::is_none")]
-    metadata: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    response_format: Option<Value>,
+    output_config: Option<Value>,
 }
 
-fn build_anthropic_body(model: &str, request: &RunRequest) -> AnthropicBody {
-    let response_format = request.output_schema.as_ref().map(|schema| {
+fn build_anthropic_body(model: &str, max_tokens: u32, request: &RunRequest) -> AnthropicBody {
+    let output_config = request.output_schema.as_ref().map(|schema| {
         json!({
-            "type": "json_schema",
-            "json_schema": {
-                "name": "subagent_output",
+            "format": {
+                "type": "json_schema",
                 "schema": schema
             }
         })
     });
-    let metadata = if request.tracing {
-        Some(json!({"trace": true}))
-    } else {
-        None
-    };
     AnthropicBody {
         model: model.to_string(),
         messages: vec![AnthropicMessage {
             role: "user".into(),
             content: request.prompt.clone(),
         }],
-        max_tokens: 1024,
+        max_tokens,
         stream: None, // streaming not currently supported; do not conflate with async_mode
-        metadata,
-        response_format,
+        output_config,
     }
 }
 
@@ -155,6 +163,20 @@ fn extract_anthropic_text(val: &Value) -> Option<String> {
                 .and_then(|c| c.as_str())
                 .map(|s| s.to_string())
         })
+}
+
+const PROVIDER: HttpProvider = HttpProvider {
+    label: "Claude",
+    api_key_error: API_KEY_ERROR,
+    truncated_reason: "max_tokens",
+    extract_text: extract_anthropic_text,
+    extract_stop_reason: anthropic_stop_reason,
+};
+
+fn anthropic_stop_reason(val: &Value) -> Option<String> {
+    val.get("stop_reason")
+        .and_then(|r| r.as_str())
+        .map(str::to_string)
 }
 
 #[async_trait]
@@ -184,69 +206,17 @@ impl BackendAdapter for ClaudeAdapter {
 
     async fn run(&self, mut request: RunRequest, store: Arc<dyn RunStore>) -> Result<RunId> {
         request.backend = BackendKind::Claude;
-        let run_id = store.create_run(request.clone()).await?;
-        store
-            .update_status(
-                run_id,
-                RunStatus {
-                    state: RunState::Running,
-                    message: Some("dispatched".into()),
-                    updated_at: OffsetDateTime::now_utc(),
-                },
-            )
-            .await?;
-
-        let cloned = self.clone();
-        let store_monitor = store.clone();
-        let handle = tokio::spawn(async move {
-            if let Err(err) = cloned.execute_run(run_id, request, store.clone()).await {
-                if let Err(e) = store
-                    .append_event(
-                        run_id,
-                        RunEvent {
-                            ts: OffsetDateTime::now_utc(),
-                            kind: "error".into(),
-                            data: Some(json!({"message": err.to_string()})),
-                        },
-                    )
-                    .await
-                {
-                    tracing::warn!(error = %e, %run_id, "Failed to record error event");
-                }
-                if let Err(e) = store
-                    .update_status(
-                        run_id,
-                        RunStatus {
-                            state: RunState::Failed,
-                            message: Some(err.to_string()),
-                            updated_at: OffsetDateTime::now_utc(),
-                        },
-                    )
-                    .await
-                {
-                    tracing::warn!(error = %e, %run_id, "Failed to update run status to failed");
-                }
-            }
-        });
-        // Monitor the spawned task: if it panics, mark the run as failed so it
-        // does not stay orphaned in Running state.
-        tokio::spawn(async move {
-            if let Err(join_err) = handle.await {
-                tracing::error!(%run_id, error = %join_err, "Claude backend task panicked");
-                let _ = store_monitor
-                    .update_status(
-                        run_id,
-                        RunStatus {
-                            state: RunState::Failed,
-                            message: Some("internal error: task panicked".into()),
-                            updated_at: OffsetDateTime::now_utc(),
-                        },
-                    )
-                    .await;
-            }
-        });
-
-        Ok(run_id)
+        let adapter = self.clone();
+        spawn_run(
+            request,
+            store,
+            "dispatched",
+            "Claude",
+            move |run_id, request, store| async move {
+                adapter.execute_run(run_id, request, store).await
+            },
+        )
+        .await
     }
 
     async fn status(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<Option<RunStatus>> {
@@ -336,16 +306,15 @@ mod tests {
             async_mode: false,
         };
 
-        let body = build_anthropic_body("claude-3-haiku-20240307", &request);
+        let body = build_anthropic_body("claude-3-haiku-20240307", DEFAULT_MAX_TOKENS, &request);
 
         assert_eq!(body.model, "claude-3-haiku-20240307");
         assert_eq!(body.messages.len(), 1);
         assert_eq!(body.messages[0].role, "user");
         assert_eq!(body.messages[0].content, "Hello, world!");
-        assert_eq!(body.max_tokens, 1024);
+        assert_eq!(body.max_tokens, DEFAULT_MAX_TOKENS);
         assert_eq!(body.stream, None); // streaming not supported
-        assert!(body.metadata.is_none());
-        assert!(body.response_format.is_none());
+        assert!(body.output_config.is_none());
     }
 
     #[test]
@@ -365,19 +334,21 @@ mod tests {
             async_mode: true,
         };
 
-        let body = build_anthropic_body("claude-3-haiku-20240307", &request);
+        let body = build_anthropic_body("claude-3-haiku-20240307", 512, &request);
 
         assert_eq!(body.stream, None); // streaming not supported
-        assert!(body.metadata.is_some());
-        assert!(body.response_format.is_some());
+        assert_eq!(body.max_tokens, 512);
 
-        let response_format = body.response_format.unwrap();
-        assert_eq!(response_format["type"], "json_schema");
-        assert_eq!(response_format["json_schema"]["name"], "subagent_output");
-        assert_eq!(response_format["json_schema"]["schema"]["type"], "object");
-
-        let metadata = body.metadata.unwrap();
-        assert_eq!(metadata["trace"], true);
+        // RT-20: the Messages API takes `output_config.format`; an OpenAI-style
+        // `response_format` or a `metadata.trace` key is rejected with a 400.
+        let parsed = serde_json::to_value(&body).unwrap();
+        assert_eq!(parsed["output_config"]["format"]["type"], "json_schema");
+        assert_eq!(
+            parsed["output_config"]["format"]["schema"]["type"],
+            "object"
+        );
+        assert!(parsed.get("response_format").is_none());
+        assert!(parsed.get("metadata").is_none());
     }
 
     #[test]
@@ -456,8 +427,7 @@ mod tests {
             }],
             max_tokens: 100,
             stream: Some(true),
-            metadata: Some(json!({"trace": true})),
-            response_format: None,
+            output_config: None,
         };
 
         let json = serde_json::to_string(&body).unwrap();
@@ -466,8 +436,7 @@ mod tests {
         assert_eq!(parsed["model"], "claude-3-haiku-20240307");
         assert_eq!(parsed["max_tokens"], 100);
         assert_eq!(parsed["stream"], true);
-        assert_eq!(parsed["metadata"]["trace"], true);
-        assert!(parsed.get("response_format").is_none());
+        assert!(parsed.get("output_config").is_none());
     }
 
     #[test]
@@ -480,16 +449,14 @@ mod tests {
             }],
             max_tokens: 100,
             stream: None,
-            metadata: None,
-            response_format: None,
+            output_config: None,
         };
 
         let json = serde_json::to_string(&body).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
 
         assert!(parsed.get("stream").is_none());
-        assert!(parsed.get("metadata").is_none());
-        assert!(parsed.get("response_format").is_none());
+        assert!(parsed.get("output_config").is_none());
     }
 
     // Integration-style tests that demonstrate usage patterns

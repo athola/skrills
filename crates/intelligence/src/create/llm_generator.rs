@@ -3,7 +3,9 @@
 use super::{cli_detector, CreateSkillRequest, CreateSkillResult, CreationMethod};
 use crate::context::ProjectProfile;
 use anyhow::Result;
-use std::process::Command;
+use std::process::Stdio;
+use std::time::Duration;
+use tokio::process::Command;
 use tracing::{debug, info};
 
 /// Prompt template for skill generation.
@@ -105,9 +107,8 @@ pub async fn generate_skill_with_llm(request: &CreateSkillRequest) -> Result<Cre
     debug!("Generation prompt:\n{}", prompt);
 
     // Shell out to CLI
-    let output = Command::new(&binary)
-        .args(["--print", "-p", &prompt])
-        .output();
+    let args = cli_args(&binary, &prompt);
+    let output = run_cli(&binary, &args, LLM_CLI_TIMEOUT).await;
 
     match output {
         Ok(output) => {
@@ -138,6 +139,54 @@ pub async fn generate_skill_with_llm(request: &CreateSkillRequest) -> Result<Cre
         Err(e) => Ok(CreateSkillResult::failure(
             CreationMethod::LLMGenerate,
             format!("Failed to run CLI: {}", e),
+        )),
+    }
+}
+
+/// How long a skill-generation CLI may run before it is killed.
+const LLM_CLI_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Arguments for a one-shot, non-interactive run of `binary`.
+///
+/// Claude Code takes `--print -p <prompt>`. Codex has no `--print` and its
+/// `-p` selects a config profile; its non-interactive entry point is
+/// `codex exec <prompt>`, read-only so generation cannot touch the tree.
+fn cli_args(binary: &str, prompt: &str) -> Vec<String> {
+    if binary.starts_with("codex") {
+        vec![
+            "exec".to_string(),
+            "--skip-git-repo-check".to_string(),
+            "--sandbox".to_string(),
+            "read-only".to_string(),
+            prompt.to_string(),
+        ]
+    } else {
+        vec!["--print".to_string(), "-p".to_string(), prompt.to_string()]
+    }
+}
+
+/// Run `program` without blocking the async runtime, killing it after `timeout`.
+async fn run_cli(
+    program: &str,
+    args: &[String],
+    timeout: Duration,
+) -> std::result::Result<std::process::Output, String> {
+    let child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    // On timeout the future is dropped, which drops the child and, through
+    // `kill_on_drop`, kills it.
+    match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(result) => result.map_err(|e| e.to_string()),
+        Err(_) => Err(format!(
+            "{program} timed out after {}s",
+            timeout.as_secs_f64()
         )),
     }
 }
@@ -183,6 +232,12 @@ fn build_context_section(ctx: &ProjectProfile) -> String {
 /// Extract skill content from CLI output.
 fn extract_skill_content(response: &str) -> String {
     let response = response.trim();
+
+    // A response that already opens with frontmatter is the skill. Any fence
+    // inside it is an example in the body, not a wrapper.
+    if response.starts_with("---") {
+        return response.to_string();
+    }
 
     // Look for code blocks
     if let Some(start) = response.find("```") {
@@ -761,5 +816,70 @@ description: Code block never closed
         assert!(SKILL_GENERATION_PROMPT.contains("name:"));
         assert!(SKILL_GENERATION_PROMPT.contains("description:"));
         assert!(SKILL_GENERATION_PROMPT.contains("SKILL.md"));
+    }
+
+    /// A child that never exits must not pin the caller: the CLI runs on
+    /// tokio's process driver and is killed once the timeout elapses.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_cli_times_out_and_returns_promptly() {
+        let started = std::time::Instant::now();
+        let result = run_cli(
+            "sleep",
+            &["30".to_string()],
+            std::time::Duration::from_millis(200),
+        )
+        .await;
+        let err = result.expect_err("a 30s child must hit a 200ms timeout");
+        assert!(err.contains("timed out"), "unexpected error: {err}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "run_cli waited {:?} for a child it should have abandoned",
+            started.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_cli_returns_output_of_a_finished_child() {
+        let output = run_cli(
+            "echo",
+            &["hello".to_string()],
+            std::time::Duration::from_secs(10),
+        )
+        .await
+        .expect("echo runs");
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "hello");
+    }
+
+    #[test]
+    fn cli_args_use_print_mode_for_claude() {
+        assert_eq!(
+            cli_args("claude", "do it"),
+            vec!["--print".to_string(), "-p".to_string(), "do it".to_string()]
+        );
+    }
+
+    /// Codex has no `--print`, and its `-p` selects a config profile. The
+    /// non-interactive entry point is `codex exec <prompt>`.
+    #[test]
+    fn cli_args_use_exec_subcommand_for_codex() {
+        let args = cli_args("codex", "do it");
+        assert_eq!(args.first().map(String::as_str), Some("exec"));
+        assert_eq!(args.last().map(String::as_str), Some("do it"));
+        assert!(!args.iter().any(|a| a == "--print" || a == "-p"));
+        assert!(args.iter().any(|a| a == "--skip-git-repo-check"));
+    }
+
+    /// A response that already is a skill must be returned whole, even when
+    /// its body carries a fenced example with its own `---` lines.
+    #[test]
+    fn extract_skill_content_keeps_skill_that_contains_fenced_frontmatter_example() {
+        let response = "---\nname: x\ndescription: d\n---\n# T\n\n```yaml\n---\nfoo: 1\n---\n```\n";
+        let content = extract_skill_content(response);
+        assert!(content.starts_with("---\nname: x"), "got: {content}");
+        assert!(content.contains("# T"));
+        assert!(content.contains("foo: 1"));
     }
 }

@@ -1,0 +1,50 @@
+body { font-family: ui-monospace, monospace; background: #0a0a0a; color: #e0e0e0; margin: 0; padding: 16px; }
+h1 { margin: 0 0 12px 0; font-size: 18px; }
+.pane { border: 1px solid #444; padding: 12px; margin-bottom: 12px; border-radius: 4px; background: #121212; }
+.pane h2 { margin: 0 0 8px 0; font-size: 12px; text-transform: uppercase; color: #888; }
+.severity-warning  { color: #ff5555; font-weight: bold; }
+.severity-caution  { color: #ffaa00; }
+.severity-advisory { color: #44ddff; }
+.severity-status   { color: #888; }
+.tier-tag { display: inline-block; padding: 0 6px; margin-right: 8px; background: #444; color: #fff; font-size: 11px; }
+.tier-tag.warning  { background: #ff5555; color: #000; }
+.tier-tag.caution  { background: #ffaa00; color: #000; }
+.tier-tag.advisory { background: #44ddff; color: #000; }
+.tier-tag.status   { background: #888; color: #000; }
+.pinned { color: #ffff00; }
+.channel-tag { display: inline-block; padding: 0 6px; margin-right: 6px; font-size: 11px; }
+.channel-tag.github   { background: #c000c0; color: #000; }
+.channel-tag.hn       { background: #ff8800; color: #000; }
+.channel-tag.lobsters { background: #cc3333; color: #000; }
+.channel-tag.paper    { background: #4488ff; color: #000; }
+.channel-tag.triz     { background: #00cc00; color: #000; }
+ul { list-style: none; padding: 0; margin: 0; }
+li { padding: 3px 0; border-bottom: 1px dashed #2a2a2a; }
+li:last-child { border-bottom: 0; }
+.empty { color: #555; font-style: italic; }
+#status-bar { font-size: 12px; }
+.budget-bar { display: inline-block; width: 200px; height: 8px; background: #222; vertical-align: middle; margin: 0 8px; border-radius: 2px; overflow: hidden; }
+.budget-fill { display: block; height: 100%; background: #00cc00; }
+.budget-fill.warn { background: #ffaa00; }
+.budget-fill.crit { background: #ff5555; }
+.fill-0 { width: 0%; }
+.fill-5 { width: 5%; }
+.fill-10 { width: 10%; }
+.fill-15 { width: 15%; }
+.fill-20 { width: 20%; }
+.fill-25 { width: 25%; }
+.fill-30 { width: 30%; }
+.fill-35 { width: 35%; }
+.fill-40 { width: 40%; }
+.fill-45 { width: 45%; }
+.fill-50 { width: 50%; }
+.fill-55 { width: 55%; }
+.fill-60 { width: 60%; }
+.fill-65 { width: 65%; }
+.fill-70 { width: 70%; }
+.fill-75 { width: 75%; }
+.fill-80 { width: 80%; }
+.fill-85 { width: 85%; }
+.fill-90 { width: 90%; }
+.fill-95 { width: 95%; }
+.fill-100 { width: 100%; }

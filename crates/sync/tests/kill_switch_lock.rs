@@ -236,13 +236,16 @@ fn cursor_pruning_surfaces_warning_on_unreadable_subentry() {
     let local = root.join("plugins").join("local");
     let stale = local.join("stale-plugin");
     fs::create_dir_all(&stale).unwrap();
+    // Only a directory carrying the mirror marker is a prune candidate.
+    fs::write(stale.join(".skrills-mirror"), b"marker").unwrap();
+    fs::write(stale.join("inner.txt"), b"content").unwrap();
 
-    // Make `stale-plugin` mode 0 so `remove_dir_all` fails with EACCES /
-    // similar. The directory entry itself is still listable from the
-    // parent, but the recursive remove inside surfaces an I/O error that
-    // must land in `report.warnings`.
+    // Drop write permission on `stale-plugin` so `remove_dir_all` fails with
+    // EACCES when it tries to unlink `inner.txt`. The marker stays statable, so
+    // the directory is still recognized as a prune candidate and the I/O error
+    // has to land in `report.warnings`.
     let mut perms = fs::metadata(&stale).unwrap().permissions();
-    perms.set_mode(0o000);
+    perms.set_mode(0o555);
     fs::set_permissions(&stale, perms).unwrap();
 
     // Defer perm restoration so the tempdir cleanup doesn't fail when the

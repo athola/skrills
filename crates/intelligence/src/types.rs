@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(nan.value(), 0.0);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(transparent)]
+#[serde(from = "f64", into = "f64")]
 pub struct Confidence(f64);
 
 impl Confidence {
@@ -91,6 +91,21 @@ impl std::fmt::Display for Confidence {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// IN-47: deserialisation goes through `Confidence::new`, so a
+    /// hand-edited cache cannot smuggle in an out-of-range value.
+    #[test]
+    fn deserialize_clamps_like_new() {
+        let c: Confidence = serde_json::from_str("7.5").unwrap();
+        assert_eq!(c.value(), 1.0);
+        let c: Confidence = serde_json::from_str("-2").unwrap();
+        assert_eq!(c.value(), 0.0);
+        // Serialised form is still a bare number.
+        assert_eq!(
+            serde_json::to_string(&Confidence::new(0.25)).unwrap(),
+            "0.25"
+        );
+    }
 
     #[test]
     fn test_confidence_clamps_high_values() {

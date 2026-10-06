@@ -19,14 +19,10 @@ impl Default for OpenAlexClient {
 impl OpenAlexClient {
     pub fn new() -> Self {
         Self {
-            http: reqwest::Client::builder()
-                .user_agent("skrills-tome/0.1 (https://github.com/athola/skrills)")
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "OpenAlex client builder failed, falling back without User-Agent");
-                    reqwest::Client::new()
-                }),
+            http: super::http_client(
+                "openalex",
+                Some("skrills-tome/0.1 (https://github.com/athola/skrills)"),
+            ),
         }
     }
 
@@ -40,14 +36,9 @@ impl OpenAlexClient {
             .send()
             .await?;
 
-        if !resp.status().is_success() {
-            return Err(crate::TomeError::Api {
-                api: "openalex".to_string(),
-                message: format!("HTTP {}", resp.status()),
-            });
-        }
+        let resp = super::ensure_success("openalex", resp, "")?;
 
-        let body: serde_json::Value = resp.json().await?;
+        let body = super::read_json("openalex", resp).await?;
         let papers = body["results"]
             .as_array()
             .ok_or_else(|| crate::TomeError::Api {

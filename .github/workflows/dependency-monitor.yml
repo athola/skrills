@@ -21,8 +21,9 @@ jobs:
       uses: actions/checkout@v4
 
     - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, resolved 2026-10-02
       with:
+        toolchain: stable
         components: rustfmt, clippy
 
     - name: Cache cargo registry

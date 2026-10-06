@@ -35,11 +35,18 @@ impl McpToolRegistry {
         Self::default()
     }
 
-    /// Register a tool entry.
+    /// Register a tool entry, replacing any earlier entry with the same name.
     pub fn register(&mut self, entry: McpToolEntry) {
         let name = entry.name.clone();
         let source = entry.source.clone();
         let category = entry.category.clone();
+
+        if let Some(old) = self.tools.remove(&name) {
+            Self::unindex(&mut self.by_source, &old.source, &name);
+            if let Some(old_cat) = &old.category {
+                Self::unindex(&mut self.by_category, old_cat, &name);
+            }
+        }
 
         self.by_source.entry(source).or_default().push(name.clone());
 
@@ -48,6 +55,16 @@ impl McpToolRegistry {
         }
 
         self.tools.insert(name, entry);
+    }
+
+    /// Remove `name` from one group of an index, dropping the group if empty.
+    fn unindex(index: &mut HashMap<String, Vec<String>>, key: &str, name: &str) {
+        if let Some(names) = index.get_mut(key) {
+            names.retain(|n| n != name);
+            if names.is_empty() {
+                index.remove(key);
+            }
+        }
     }
 
     /// Get a tool entry by name.
@@ -138,5 +155,28 @@ mod tests {
         assert_eq!(registry.list_by_source("playwright").len(), 2);
         assert_eq!(registry.list_by_category("browser").len(), 2);
         assert_eq!(registry.total_estimated_tokens(), 650);
+    }
+
+    #[test]
+    fn re_registering_a_tool_replaces_its_index_rows() {
+        let entry = |source: &str, category: &str| McpToolEntry {
+            name: "browser_click".into(),
+            description: "Click".into(),
+            source: source.into(),
+            estimated_tokens: 10,
+            category: Some(category.into()),
+        };
+        let mut registry = McpToolRegistry::new();
+        registry.register(entry("playwright", "browser"));
+        registry.register(entry("playwright", "browser"));
+        assert_eq!(registry.list_by_source("playwright").len(), 1);
+        assert_eq!(registry.list_by_category("browser").len(), 1);
+
+        registry.register(entry("puppeteer", "automation"));
+        assert_eq!(registry.len(), 1);
+        assert!(registry.list_by_source("playwright").is_empty());
+        assert!(registry.list_by_category("browser").is_empty());
+        assert_eq!(registry.sources(), vec!["puppeteer"]);
+        assert_eq!(registry.categories(), vec!["automation"]);
     }
 }

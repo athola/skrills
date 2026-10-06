@@ -8,31 +8,76 @@ use tempfile::TempDir;
 use uuid::Uuid;
 
 use serde_json::json;
+use skrills_discovery::{SkillRoot, SkillSource};
+use skrills_subagents::registry::AgentRegistry;
 use skrills_subagents::store::MemRunStore;
 use skrills_subagents::{
     BackendKind, RunId, RunRecord, RunRequest, RunState, RunStatus, RunStore, SubagentService,
 };
+use skrills_test_utils::{env_guard, set_env_var, EnvVarGuard};
 
-/// Test context for SubagentService tests
+/// Test context for SubagentService tests.
+///
+/// Hermetic: HOME is a temp dir, the agent registry is empty and built from
+/// that dir, API keys are cleared, and every CLI run goes to `cli_binary`, a
+/// harmless program, never a real `claude` or `codex`. The env lock is held
+/// for the context's lifetime.
 struct TestContext {
-    #[allow(dead_code)]
-    temp_dir: TempDir,
     store: Arc<MemRunStore>,
     service: SubagentService,
+    _vars: Vec<EnvVarGuard>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+    _temp_dir: TempDir,
 }
 
 impl TestContext {
     /// Create a new test context with isolated storage
     fn new() -> anyhow::Result<Self> {
+        Self::with_cli("true")
+    }
+
+    fn with_cli(cli_binary: &str) -> anyhow::Result<Self> {
+        let lock = env_guard();
         let temp_dir = TempDir::new()?;
+        let vars = vec![
+            set_env_var("HOME", Some(temp_dir.path().to_str().unwrap())),
+            set_env_var("SKRILLS_CLI_BINARY", Some(cli_binary)),
+            set_env_var("SKRILLS_CODEX_API_KEY", None),
+            set_env_var("SKRILLS_CLAUDE_API_KEY", None),
+            set_env_var("SKRILLS_SUBAGENTS_EXECUTION_MODE", None),
+            set_env_var("SKRILLS_SUBAGENTS_DEFAULT_BACKEND", None),
+        ];
         let store = Arc::new(MemRunStore::new());
-        let service = SubagentService::with_store(store.clone(), BackendKind::Codex)?;
+        let roots = vec![SkillRoot {
+            root: temp_dir.path().join(".codex/agents"),
+            source: SkillSource::Codex,
+        }];
+        let registry = Arc::new(AgentRegistry::discover_from_roots(&roots)?);
+        let service =
+            SubagentService::with_store_and_registry(store.clone(), BackendKind::Codex, registry)?;
 
         Ok(Self {
-            temp_dir,
             store,
             service,
+            _vars: vars,
+            _lock: lock,
+            _temp_dir: temp_dir,
         })
+    }
+
+    /// Calls `run-subagent` and returns the finished run's record.
+    async fn run(&self, args: serde_json::Value) -> RunRecord {
+        let result = self
+            .service
+            .handle_call("run-subagent", args.as_object())
+            .await
+            .expect("run-subagent");
+        let run_id = result.structured_content.as_ref().unwrap()["run_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let run_id = RunId(Uuid::parse_str(&run_id).unwrap());
+        self.store.run(run_id).await.unwrap().unwrap()
     }
 }
 
@@ -61,33 +106,29 @@ mod subagent_service_tests {
     #[tokio::test]
     async fn test_create_and_execute_run() {
         /*
-        GIVEN a SubagentService with a configured backend
-        WHEN a user creates a new run with a specific request
-        THEN the run should be created with proper metadata and be executable
+        GIVEN a SubagentService whose CLI is `echo`
+        WHEN run-subagent is called
+        THEN the run executes and its output is the completion
         */
-        let ctx = TestContext::new().unwrap();
+        let ctx = TestContext::with_cli("echo").unwrap();
 
-        // Create a run request
-        let request = RunRequest {
-            backend: BackendKind::Codex,
-            prompt: "Test prompt for subagent execution".to_string(),
-            template_id: None,
-            output_schema: None,
-            async_mode: false,
-            tracing: false,
-        };
+        let run = ctx
+            .run(json!({"prompt": "Test prompt for subagent execution"}))
+            .await;
 
-        // Create the run via the store
-        let run_id: RunId = ctx.store.create_run(request).await.unwrap();
-
-        // Verify run was created
-        let run_record = ctx.store.run(run_id).await.unwrap().unwrap();
-        assert_eq!(run_record.id, run_id);
-        assert_eq!(run_record.status.state, RunState::Pending);
-        assert_eq!(run_record.request.backend, BackendKind::Codex);
-        assert_eq!(
-            run_record.request.prompt,
-            "Test prompt for subagent execution"
+        assert_eq!(run.status.state, RunState::Succeeded, "{:?}", run.status);
+        assert_eq!(run.request.prompt, "Test prompt for subagent execution");
+        let completion = run
+            .events
+            .iter()
+            .find(|e| e.kind == "completion")
+            .and_then(|e| e.data.as_ref())
+            .and_then(|d| d.get("text"))
+            .and_then(|t| t.as_str())
+            .expect("completion event");
+        assert!(
+            completion.contains("Test prompt for subagent execution"),
+            "{completion}"
         );
     }
 
@@ -148,78 +189,41 @@ mod subagent_service_tests {
     #[tokio::test]
     async fn test_run_failure_handling() {
         /*
-        GIVEN a run that encounters an error during execution
-        WHEN the error is handled
-        THEN the run should be marked as failed with appropriate error information
+        GIVEN a SubagentService whose CLI exits non-zero
+        WHEN run-subagent is called
+        THEN the run is marked failed with the exit code
         */
-        let ctx = TestContext::new().unwrap();
+        let ctx = TestContext::with_cli("false").unwrap();
 
-        // Create a run request
-        let request = RunRequest {
-            backend: BackendKind::Codex,
-            prompt: "This will fail".to_string(),
-            template_id: None,
-            output_schema: None,
-            async_mode: false,
-            tracing: false,
-        };
+        let run = ctx.run(json!({"prompt": "This will fail"})).await;
 
-        // Create the run
-        let run_id: RunId = ctx.store.create_run(request).await.unwrap();
-
-        // Set status to Failed
-        let failed_status = RunStatus {
-            state: RunState::Failed,
-            message: Some("Simulated execution error".to_string()),
-            updated_at: time::OffsetDateTime::now_utc(),
-        };
-        ctx.store
-            .update_status(run_id, failed_status)
-            .await
-            .unwrap();
-
-        // Verify failure state
-        let run = ctx.store.run(run_id).await.unwrap().unwrap();
         assert_eq!(run.status.state, RunState::Failed);
-        assert_eq!(
-            run.status.message.as_deref(),
-            Some("Simulated execution error")
-        );
+        let message = run.status.message.unwrap_or_default();
+        assert!(message.contains("exited with code"), "{message}");
+        assert!(run.events.iter().any(|e| e.kind == "error"));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn test_run_timeout_handling() {
         /*
-        GIVEN a run with a configured timeout
-        WHEN the timeout is exceeded
-        THEN the run should be stopped appropriately
+        GIVEN a run whose CLI hangs
+        WHEN its timeout_ms passes
+        THEN the run fails with a timeout and the call returns promptly
         */
-        let ctx = TestContext::new().unwrap();
+        let ctx = TestContext::with_cli("/bin/sh").unwrap();
+        let script = ctx._temp_dir.path().join("hang.sh");
+        std::fs::write(&script, "exec sleep 30\n").unwrap();
 
-        // Create a run request (note: async_mode handles timeouts in real implementation)
-        let request = RunRequest {
-            backend: BackendKind::Codex,
-            prompt: "Long running task".to_string(),
-            template_id: None,
-            output_schema: None,
-            async_mode: true, // Use async for potentially long tasks
-            tracing: false,
-        };
+        let started = std::time::Instant::now();
+        let run = ctx
+            .run(json!({"prompt": script.to_str().unwrap(), "timeout_ms": 200}))
+            .await;
 
-        // Create the run
-        let run_id: RunId = ctx.store.create_run(request).await.unwrap();
-
-        // Verify it starts in Pending state
-        let run = ctx.store.run(run_id).await.unwrap().unwrap();
-        assert_eq!(run.status.state, RunState::Pending);
-
-        // Test stopping the run
-        let stopped = ctx.store.stop(run_id).await.unwrap();
-        assert!(stopped, "Run should be stoppable");
-
-        // Verify it's now in Canceled state
-        let run = ctx.store.run(run_id).await.unwrap().unwrap();
-        assert_eq!(run.status.state, RunState::Canceled);
+        assert_eq!(run.status.state, RunState::Failed);
+        let message = run.status.message.unwrap_or_default();
+        assert!(message.contains("timed out"), "{message}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
     }
 
     #[tokio::test]

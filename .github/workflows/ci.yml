@@ -20,12 +20,13 @@ jobs:
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
       book: ${{ steps.filter.outputs.book }}
+      scripts: ${{ steps.filter.outputs.scripts }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - id: filter
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
         with:
           filters: |
             rust:
@@ -40,6 +41,15 @@ jobs:
             book:
               - 'book/**'
               - '.github/workflows/ci.yml'
+            # The hygiene lints read crate sources and markdown, and the pytest
+            # suite covers the scripts under scripts/, so all three trigger it.
+            scripts:
+              - 'scripts/**'
+              - 'tests/unit/**'
+              - 'Makefile'
+              - 'crates/**'
+              - '**/*.md'
+              - '.github/workflows/ci.yml'
 
   lint-and-test:
     needs: changes
@@ -47,20 +57,46 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, resolved 2026-10-02
         with:
+          toolchain: stable
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Format
         run: cargo fmt --all -- --check
 
       # NOTE: Keep flags in sync with Makefile `lint` target
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: |
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo clippy --workspace --all-targets --no-default-features -- -D warnings
 
       - name: Tests (all features)
         run: cargo test --workspace --all-features
+
+  hygiene-and-scripts:
+    name: Hygiene lints + script tests
+    needs: changes
+    if: needs.changes.outputs.scripts == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # lint-prose-slop.sh and lint-rust-decoration.sh exit 2 without ripgrep,
+      # `make test-scripts` refuses to run without pytest on PATH, and the
+      # dogfood slice tests skip themselves without jq.
+      - name: Install ripgrep, jq and pytest
+        run: |
+          sudo apt-get update && sudo apt-get install -y ripgrep jq
+          python -m pip install --upgrade pytest
+      - name: Hygiene lints
+        run: make lint-hygiene
+      - name: Script test suite
+        run: make test-scripts
 
   dogfood:
     name: Dogfood output contracts
@@ -69,8 +105,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, resolved 2026-10-02
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install jq + tmux
         run: sudo apt-get update && sudo apt-get install -y jq tmux
       # install.sh helper-function tests (OS/arch/target detection, asset
@@ -79,7 +117,7 @@ jobs:
         run: ./scripts/test-install.sh
       # The validate JSON output contract drives the real binary through the
       # real validate-skills action entrypoint, so build the release binary.
-      # Default features pull in skrills-server's `dashboard` feature, so the
+      # The cli crate's default features include `dashboard`, so the
       # cold-window TUI is compiled in for the PTY scenarios below.
       - name: Build release binary
         run: cargo build --release --bin skrills
@@ -96,8 +134,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, resolved 2026-10-02
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Cargo docs
         run: cargo doc --workspace --all-features --no-deps
 
@@ -120,10 +160,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, resolved 2026-10-02
+        with:
+          toolchain: stable
       - name: Install nightly toolchain for cargo-public-api
         run: rustup toolchain install nightly --profile minimal
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install cargo-public-api
         run: cargo install cargo-public-api --locked
       - name: Fetch master for baseline
@@ -172,13 +214,14 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, resolved 2026-10-02
         with:
+          toolchain: stable
           targets: ${{ matrix.toolchain_targets }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install cross (Linux only)
         if: matrix.build_tool == 'cross'
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
         with:
           tool: cross
       - name: Build release binaries (no upload)

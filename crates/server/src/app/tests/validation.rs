@@ -176,3 +176,189 @@ This skill references:
         "Expected at least 2 total dependency issues"
     );
 }
+
+// -------------------------------------------------------------------------
+// Review fixes: SA-4, SA-7, SA-19, SA-20, SA-31
+// -------------------------------------------------------------------------
+
+fn args(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    value.as_object().cloned().unwrap()
+}
+
+fn write_skill_file(root: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+    let dir = root.join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("SKILL.md");
+    std::fs::write(&path, body).unwrap();
+    path
+}
+
+fn service_for(roots: Vec<skrills_discovery::SkillRoot>) -> SkillService {
+    SkillService::new_with_roots_for_test(roots, Duration::from_secs(60)).unwrap()
+}
+
+/// SA-4: the same skill in the Claude and Codex trees is compared, even
+/// though the cached list keeps only one copy per name.
+#[test]
+fn skill_diff_compares_copies_from_each_root() {
+    use skrills_discovery::{SkillRoot, SkillSource};
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let _cache = crate::test_support::set_env_var(
+        "SKRILLS_CACHE_PATH",
+        Some(temp.path().join("cache.json").to_str().unwrap()),
+    );
+    let claude = temp.path().join("claude");
+    let codex = temp.path().join("codex");
+    let fm = "---\nname: demo\ndescription: demo skill\n---\n";
+    write_skill_file(&claude, "demo", &format!("{fm}line one\n"));
+    write_skill_file(&codex, "demo", &format!("{fm}line two\n"));
+    let service = service_for(vec![
+        SkillRoot {
+            root: claude,
+            source: SkillSource::Claude,
+        },
+        SkillRoot {
+            root: codex,
+            source: SkillSource::Codex,
+        },
+    ]);
+
+    let result = service
+        .skill_diff_tool(args(json!({"name": "demo"})))
+        .unwrap();
+    let structured = result.structured_content.unwrap();
+    assert_eq!(structured["locations"].as_array().unwrap().len(), 2);
+    let comparison = &structured["comparisons"][0];
+    assert_eq!(comparison["comparison"], "claude_vs_codex");
+    assert_eq!(comparison["identical"], false);
+    let diff = comparison["diff"].as_str().unwrap();
+    assert!(
+        diff.contains("-line one") && diff.contains("+line two"),
+        "{diff}"
+    );
+}
+
+/// SA-19: inserting one line at the top is one added line, not a rewrite
+/// of the whole file, and the hunk header counts the real lines.
+#[test]
+fn unified_diff_aligns_lines_after_an_insertion() {
+    let a: String = (0..200).map(|i| format!("line {i}\n")).collect();
+    let b = format!("inserted\n{a}");
+    let diff = super::super::tools::unified_diff(&a, &b, "a", "b", 3);
+    let added = diff
+        .lines()
+        .filter(|l| l.starts_with('+') && !l.starts_with("+++"));
+    let removed = diff
+        .lines()
+        .filter(|l| l.starts_with('-') && !l.starts_with("---"));
+    assert_eq!(added.count(), 1, "{diff}");
+    assert_eq!(removed.count(), 0, "{diff}");
+    assert!(diff.contains("@@ -1,3 +1,4 @@\n+inserted\n"), "{diff}");
+
+    // Two distant edits give two hunks with matching counts.
+    let mut lines: Vec<String> = (0..50).map(|i| format!("l{i}")).collect();
+    let a2 = lines.join("\n");
+    lines[5] = "changed".into();
+    lines.remove(40);
+    let b2 = lines.join("\n");
+    let diff2 = super::super::tools::unified_diff(&a2, &b2, "a", "b", 1);
+    assert!(
+        diff2.contains("@@ -5,3 +5,3 @@\n l4\n-l5\n+changed\n l6\n"),
+        "{diff2}"
+    );
+    assert!(
+        diff2.contains("@@ -40,3 +40,2 @@\n l39\n-l40\n l41\n"),
+        "{diff2}"
+    );
+    assert_eq!(super::super::tools::unified_diff(&a2, &a2, "a", "b", 3), "");
+}
+
+/// SA-7: an unknown peer is refused before anything is written.
+#[test]
+fn copilot_and_cursor_sync_tools_reject_unknown_peers() {
+    let service = service_for(Vec::new());
+    let cases = [
+        service.sync_from_copilot_tool(args(json!({"to": "cursor", "dry_run": true}))),
+        service.sync_to_copilot_tool(args(json!({"from": "cluade", "dry_run": true}))),
+        service.sync_from_cursor_tool(args(json!({"to": "gemini", "dry_run": true}))),
+        service.sync_to_cursor_tool(args(json!({"from": "cursor", "dry_run": true}))),
+    ];
+    for result in cases {
+        let err = result.expect_err("unknown peer must be rejected");
+        assert!(err.to_string().contains("expected one of"), "{err}");
+    }
+}
+
+/// SA-20: autofix keeps a backup of user skills and leaves marketplace and
+/// plugin-cache copies alone.
+#[test]
+fn validate_autofix_backs_up_and_skips_third_party_sources() {
+    use skrills_discovery::{SkillRoot, SkillSource};
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let _cache = crate::test_support::set_env_var(
+        "SKRILLS_CACHE_PATH",
+        Some(temp.path().join("cache.json").to_str().unwrap()),
+    );
+    let user = write_skill_file(&temp.path().join("user"), "mine", "no frontmatter");
+    let market = write_skill_file(&temp.path().join("market"), "theirs", "no frontmatter");
+    let service = service_for(vec![
+        SkillRoot {
+            root: temp.path().join("user"),
+            source: SkillSource::Claude,
+        },
+        SkillRoot {
+            root: temp.path().join("market"),
+            source: SkillSource::Marketplace,
+        },
+    ]);
+
+    service
+        .validate_skills_tool(args(json!({"target": "codex", "autofix": true})))
+        .unwrap();
+
+    assert!(std::fs::read_to_string(&user).unwrap().starts_with("---"));
+    assert_eq!(
+        std::fs::read_to_string(user.with_extension("md.bak")).unwrap(),
+        "no frontmatter",
+        "a backup of the original must be kept"
+    );
+    assert_eq!(std::fs::read_to_string(&market).unwrap(), "no frontmatter");
+}
+
+/// SA-31: with errors_only the summary still counts every skill validated.
+#[test]
+fn validate_errors_only_summary_counts_all_skills() {
+    use skrills_discovery::{SkillRoot, SkillSource};
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let _cache = crate::test_support::set_env_var(
+        "SKRILLS_CACHE_PATH",
+        Some(temp.path().join("cache.json").to_str().unwrap()),
+    );
+    let root = temp.path().join("skills");
+    write_skill_file(
+        &root,
+        "good",
+        "---\nname: good\ndescription: A well formed skill for testing\n---\n# Good\n",
+    );
+    write_skill_file(&root, "bad", "no frontmatter");
+    let service = service_for(vec![SkillRoot {
+        root,
+        source: SkillSource::Claude,
+    }]);
+
+    let result = service
+        .validate_skills_tool(args(json!({"target": "codex", "errors_only": true})))
+        .unwrap();
+    let structured = result.structured_content.unwrap();
+    assert_eq!(structured["validated"], 2);
+    assert_eq!(structured["codex_valid"], 1);
+    assert_eq!(structured["total"], 1, "only the failing skill is listed");
+    let text = format!("{:?}", result.content);
+    assert!(
+        text.contains("Validated 2 skills") && text.contains("1 Codex-valid"),
+        "{text}"
+    );
+}

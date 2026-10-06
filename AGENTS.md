@@ -302,7 +302,7 @@ Agents can be registered via:
 2. **Plugin agents**: Discovered from installed plugins
 3. **Sync command**: `skrills sync-agents` to sync from external sources
 
-For detailed configuration options, see `docs/runtime-options.md` and `book/src/cli.md`.
+For detailed configuration options, see `book/src/runtime-tuning.md` and `book/src/cli.md`.
 
 <!-- available_skills:start -->
 <!-- Skills discovered dynamically. Last sync: 1765958141 UTC. Total: 120 skills. -->

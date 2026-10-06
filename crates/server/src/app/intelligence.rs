@@ -4,9 +4,10 @@
 //! per ADR-0001. These methods provide smart recommendations, project context analysis,
 //! skill gap detection, and skill creation capabilities.
 
+use crate::mcp_result::{tool_err, tool_ok};
 use crate::setup;
 use anyhow::{anyhow, Result};
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::{json, Map as JsonMap, Value};
 use skrills_state::home_dir;
 use std::collections::{HashMap, HashSet};
@@ -21,10 +22,11 @@ impl SkillService {
     // -------------------------------------------------------------------------
 
     /// Smart skill recommendations combining dependency graph, usage patterns, and project context.
-    pub(crate) fn recommend_skills_smart_tool(
+    pub fn recommend_skills_smart_tool(
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
+        use crate::metrics_types::RecommendationRelationship;
         use skrills_analyze::analyze_skill;
         use skrills_intelligence::recommend::{RecommendationScorer, Scorer};
         use skrills_intelligence::usage::{
@@ -36,7 +38,7 @@ impl SkillService {
         let uri = args.get("uri").and_then(|v| v.as_str());
         let prompt = args.get("prompt").and_then(|v| v.as_str());
         let project_dir = args.get("project_dir").and_then(|v| v.as_str());
-        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+        let limit = clamp_limit(args.get("limit").and_then(|v| v.as_u64()), 10);
         let include_usage = args
             .get("include_usage")
             .and_then(|v| v.as_bool())
@@ -45,6 +47,12 @@ impl SkillService {
             .get("include_context")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
+
+        let include_context_dir = if include_context {
+            self.client_project_dir(project_dir, "recommend_skills_smart_tool")?
+        } else {
+            None
+        };
 
         // Build scorer with optional usage and context data
         let mut scorer = RecommendationScorer::new();
@@ -149,9 +157,7 @@ impl SkillService {
 
         // Load project context if requested
         if include_context {
-            if let Some(project_path) =
-                resolve_project_dir(project_dir, "recommend_skills_smart_tool")
-            {
+            if let Some(project_path) = include_context_dir {
                 match analyze_project(&project_path) {
                     Ok(profile) => {
                         scorer = scorer.with_context(profile);
@@ -183,56 +189,28 @@ impl SkillService {
             let mut cache = self.cache.lock();
             cache.ensure_fresh()?;
 
-            let dependencies: Vec<String> = cache.dependencies_raw(source_uri);
-            let dependents: Vec<String> = cache.dependents_raw(source_uri);
-
-            // Find siblings (skills sharing dependencies)
-            let source_deps: HashSet<_> = dependencies.iter().cloned().collect();
             let all_uris = cache.skill_uris()?;
-            let mut siblings: Vec<String> = Vec::new();
+            // The same walk `recommend-skills` uses (SA-44); scoring here is
+            // the RecommendationScorer's, so only the walk is shared.
+            let related = super::skill_recommendations::related_skills(
+                source_uri,
+                &all_uris,
+                |u| cache.dependencies_raw(u),
+                cache.dependents_raw(source_uri),
+            );
+            drop(cache);
 
-            for other_uri in &all_uris {
-                if other_uri == source_uri {
+            for (related_uri, relationship) in related {
+                if !seen_uris.insert(related_uri.clone()) {
                     continue;
                 }
-                if dependencies.contains(other_uri) || dependents.contains(other_uri) {
-                    continue;
-                }
-                let other_deps: HashSet<_> =
-                    cache.dependencies_raw(other_uri).into_iter().collect();
-                if !source_deps.is_disjoint(&other_deps) {
-                    siblings.push(other_uri.clone());
-                }
-            }
-
-            // Score dependencies
-            for dep_uri in &dependencies {
-                if seen_uris.insert(dep_uri.clone()) {
-                    let signals =
-                        scorer.enhance_signals(dep_uri, vec![RecommendationSignal::Dependency]);
-                    let rec = scorer.score(dep_uri, signals);
-                    all_recommendations.push(rec);
-                }
-            }
-
-            // Score dependents
-            for dep_uri in &dependents {
-                if seen_uris.insert(dep_uri.clone()) {
-                    let signals =
-                        scorer.enhance_signals(dep_uri, vec![RecommendationSignal::Dependent]);
-                    let rec = scorer.score(dep_uri, signals);
-                    all_recommendations.push(rec);
-                }
-            }
-
-            // Score siblings
-            for sib_uri in &siblings {
-                if seen_uris.insert(sib_uri.clone()) {
-                    let signals =
-                        scorer.enhance_signals(sib_uri, vec![RecommendationSignal::Sibling]);
-                    let rec = scorer.score(sib_uri, signals);
-                    all_recommendations.push(rec);
-                }
+                let signal = match relationship {
+                    RecommendationRelationship::Dependency => RecommendationSignal::Dependency,
+                    RecommendationRelationship::Dependent => RecommendationSignal::Dependent,
+                    RecommendationRelationship::Sibling => RecommendationSignal::Sibling,
+                };
+                let signals = scorer.enhance_signals(&related_uri, vec![signal]);
+                all_recommendations.push(scorer.score(&related_uri, signals));
             }
         }
 
@@ -301,31 +279,30 @@ impl SkillService {
             all_recommendations.len()
         );
 
-        Ok(CallToolResult {
-            content: vec![Content::text(text)],
-            structured_content: Some(json!({
+        Ok(tool_ok(
+            vec![ContentBlock::text(text)],
+            Some(json!({
                 "total_found": total_found,
                 "recommendations": all_recommendations,
                 "include_usage": include_usage,
                 "include_context": include_context,
             })),
-            is_error: Some(false),
-            meta: None,
-        })
+        ))
     }
 
     /// Analyze project context for skill recommendations.
-    pub(crate) fn analyze_project_context_tool(
+    pub fn analyze_project_context_tool(
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
         use skrills_intelligence::{analyze_project_with_options, AnalyzeProjectOptions};
 
-        let project_dir = resolve_project_dir(
-            args.get("project_dir").and_then(|v| v.as_str()),
-            "analyze_project_context_tool",
-        )
-        .ok_or_else(|| anyhow!("Could not determine current directory; provide project_dir"))?;
+        let project_dir = self
+            .client_project_dir(
+                args.get("project_dir").and_then(|v| v.as_str()),
+                "analyze_project_context_tool",
+            )?
+            .ok_or_else(|| anyhow!("Could not determine current directory; provide project_dir"))?;
 
         let include_git = args
             .get("include_git")
@@ -377,26 +354,22 @@ impl SkillService {
                 .sum::<usize>()
         );
 
-        Ok(CallToolResult {
-            content: vec![Content::text(text)],
-            structured_content: Some(serde_json::to_value(&profile)?),
-            is_error: Some(false),
-            meta: None,
-        })
+        Ok(tool_ok(
+            vec![ContentBlock::text(text)],
+            Some(serde_json::to_value(&profile)?),
+        ))
     }
 
     /// Suggest new skills to create based on project needs.
-    pub(crate) fn suggest_new_skills_tool(
-        &self,
-        args: JsonMap<String, Value>,
-    ) -> Result<CallToolResult> {
+    pub fn suggest_new_skills_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
         use skrills_intelligence::{analyze_project, SkillGap, SkillGapAnalysis};
 
-        let project_dir = resolve_project_dir(
-            args.get("project_dir").and_then(|v| v.as_str()),
-            "suggest_new_skills_tool",
-        )
-        .ok_or_else(|| anyhow!("Could not determine current directory; provide project_dir"))?;
+        let project_dir = self
+            .client_project_dir(
+                args.get("project_dir").and_then(|v| v.as_str()),
+                "suggest_new_skills_tool",
+            )?
+            .ok_or_else(|| anyhow!("Could not determine current directory; provide project_dir"))?;
         let focus_areas: Vec<String> = args
             .get("focus_areas")
             .and_then(|v| v.as_array())
@@ -421,7 +394,7 @@ impl SkillService {
         for (lang, info) in &profile.languages {
             if info.primary {
                 let lang_lower = lang.to_lowercase();
-                let has_lang_skill = skill_names.iter().any(|n| n.contains(&lang_lower));
+                let has_lang_skill = skill_names.iter().any(|n| name_covers(n, &lang_lower));
                 if !has_lang_skill {
                     gaps.push(SkillGap {
                         area: format!("{} development", lang),
@@ -439,7 +412,7 @@ impl SkillService {
         // Check for framework-specific skill gaps
         for framework in &profile.frameworks {
             let fw_lower = framework.to_lowercase();
-            let has_fw_skill = skill_names.iter().any(|n| n.contains(&fw_lower));
+            let has_fw_skill = skill_names.iter().any(|n| name_covers(n, &fw_lower));
             if !has_fw_skill {
                 gaps.push(SkillGap {
                     area: format!("{} framework", framework),
@@ -453,7 +426,7 @@ impl SkillService {
         // Check for focus area gaps
         for area in &focus_areas {
             let area_lower = area.to_lowercase();
-            let has_area_skill = skill_names.iter().any(|n| n.contains(&area_lower));
+            let has_area_skill = skill_names.iter().any(|n| name_covers(n, &area_lower));
             if !has_area_skill {
                 gaps.push(SkillGap {
                     area: area.clone(),
@@ -478,7 +451,7 @@ impl SkillService {
             }
             let has_area_skill = skill_names
                 .iter()
-                .any(|n| patterns.iter().any(|p| n.contains(p)));
+                .any(|n| name_tokens(n).any(|token| patterns.iter().any(|p| token.starts_with(p))));
             if !has_area_skill {
                 // Check if this area is relevant to the project
                 let relevant = profile
@@ -507,18 +480,66 @@ impl SkillService {
             analysis.suggestions.len()
         );
 
-        Ok(CallToolResult {
-            content: vec![Content::text(text)],
-            structured_content: Some(serde_json::to_value(&analysis)?),
-            is_error: Some(false),
-            meta: None,
-        })
+        Ok(tool_ok(
+            vec![ContentBlock::text(text)],
+            Some(serde_json::to_value(&analysis)?),
+        ))
     }
 
     /// Create a new skill via GitHub search, LLM generation, or both.
+    ///
+    /// This is the MCP entry point: the arguments come from a client, so an
+    /// explicit `target_dir` must resolve inside one of the writable skill roots.
     pub(crate) async fn create_skill_tool(
         &self,
         args: JsonMap<String, Value>,
+    ) -> Result<CallToolResult> {
+        self.create_skill(args, TargetDirPolicy::WithinSkillRoots)
+            .await
+    }
+
+    /// The project directory a tool should analyze: the client's
+    /// `project_dir` when given, else the server's working directory. With
+    /// `[serve] project_roots` set, a client-supplied path that does not
+    /// resolve inside a root is refused as invalid params.
+    fn client_project_dir(
+        &self,
+        project_dir: Option<&str>,
+        context: &str,
+    ) -> Result<Option<PathBuf>> {
+        match (project_dir, self.project_roots.as_deref()) {
+            (Some(dir), Some(roots)) => {
+                ensure_within_project_roots(Path::new(dir), roots).map(Some)
+            }
+            _ => Ok(resolve_project_dir(project_dir, context)),
+        }
+    }
+
+    /// Writable skill roots: user-owned skill directories, not plugin caches,
+    /// marketplace checkouts or the Codex mirror.
+    fn writable_skill_roots(&self) -> Vec<PathBuf> {
+        use skrills_discovery::SkillSource;
+        self.cache
+            .lock()
+            .roots()
+            .iter()
+            .filter(|r| {
+                !matches!(
+                    r.source,
+                    SkillSource::Marketplace
+                        | SkillSource::Cache
+                        | SkillSource::Mirror
+                        | SkillSource::Cursor
+                )
+            })
+            .map(|r| r.root.clone())
+            .collect()
+    }
+
+    async fn create_skill(
+        &self,
+        args: JsonMap<String, Value>,
+        policy: TargetDirPolicy,
     ) -> Result<CallToolResult> {
         use skrills_intelligence::{
             analyze_project, generate_skill_with_llm, search_github_skills, CreateSkillRequest,
@@ -565,11 +586,21 @@ impl SkillService {
             .get("dry_run")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let project_dir = args.get("project_dir").and_then(|v| v.as_str());
+        let project_dir = match args.get("project_dir").and_then(|v| v.as_str()) {
+            Some(dir) => self.client_project_dir(Some(dir), "create_skill")?,
+            None => None,
+        };
 
         let method: CreationMethod = method_str
             .parse()
             .map_err(|err| anyhow!("Invalid creation method: {}", err))?;
+
+        // Check containment before any search or generation runs, so a refused
+        // request costs nothing and creates nothing.
+        if let (Some(dir), TargetDirPolicy::WithinSkillRoots) = (target_dir, policy) {
+            let expanded = PathBuf::from(shellexpand::tilde(dir).as_ref());
+            ensure_within_roots(&expanded, &self.writable_skill_roots())?;
+        }
 
         // Build request with optional project context
         let mut request = CreateSkillRequest::new(name, description);
@@ -582,7 +613,7 @@ impl SkillService {
 
         // Add project context if available
         if let Some(dir) = project_dir {
-            if let Ok(profile) = analyze_project(&PathBuf::from(dir)) {
+            if let Ok(profile) = analyze_project(&dir) {
                 request = request.with_context(profile);
             }
         }
@@ -634,17 +665,15 @@ impl SkillService {
                         e
                     );
                     errors.push(error_msg.clone());
-                    return Ok(CallToolResult {
-                        content: vec![Content::text(error_msg)],
-                        structured_content: Some(json!({
+                    return Ok(tool_err(
+                        vec![ContentBlock::text(error_msg)],
+                        Some(json!({
                             "success": false,
                             "method": method_str,
                             "name": name,
                             "errors": errors,
                         })),
-                        is_error: Some(true),
-                        meta: None,
-                    });
+                    ));
                 }
             };
 
@@ -654,16 +683,18 @@ impl SkillService {
                         // Empirical generation requires BehavioralEvent data with tool
                         // sequences and file accesses. Currently we only have basic
                         // SkillUsageEvent data. This feature is in preview.
+                        // Nothing is generated on this path, so report it as
+                        // not done rather than as a success.
                         let preview_msg = format!(
-                            "Found {} session events. Empirical skill generation from \
-                             behavioral patterns is in preview. Use --method llm or \
-                             --method both for production use.",
+                            "Found {} session events, but empirical skill generation \
+                             is not implemented yet; no skill was created. Use \
+                             --method llm or --method both.",
                             events.len()
                         );
-                        return Ok(CallToolResult {
-                            content: vec![Content::text(&preview_msg)],
-                            structured_content: Some(json!({
-                                "success": true,
+                        return Ok(tool_err(
+                            vec![ContentBlock::text(&preview_msg)],
+                            Some(json!({
+                                "success": false,
                                 "method": method_str,
                                 "name": name,
                                 "dry_run": dry_run,
@@ -671,9 +702,7 @@ impl SkillService {
                                 "session_events": events.len(),
                                 "message": preview_msg,
                             })),
-                            is_error: Some(false),
-                            meta: None,
-                        });
+                        ));
                     }
                     Ok(events) => {
                         errors.push(format!(
@@ -711,19 +740,9 @@ impl SkillService {
                 let target = target_dir
                     .map(|s| shellexpand::tilde(s).to_string())
                     .unwrap_or_else(|| default_skill_target_dir().display().to_string());
-                let skill_dir = PathBuf::from(&target).join(name);
-                if let Err(e) = fs::create_dir_all(&skill_dir) {
-                    errors.push(format!("Failed to create directory: {}", e));
-                } else {
-                    let skill_path = skill_dir.join("SKILL.md");
-                    match fs::write(&skill_path, content) {
-                        Ok(()) => {
-                            written_path = Some(skill_path.display().to_string());
-                        }
-                        Err(e) => {
-                            errors.push(format!("Failed to write skill file: {}", e));
-                        }
-                    }
+                match write_generated_skill(Path::new(&target), name, content) {
+                    Ok(path) => written_path = Some(path.display().to_string()),
+                    Err(e) => errors.push(format!("{e:#}")),
                 }
             }
         }
@@ -750,20 +769,21 @@ impl SkillService {
             format!("Failed to create skill: {}", errors.join("; "))
         };
 
-        Ok(CallToolResult {
-            content: vec![Content::text(text)],
-            structured_content: Some(json!({
-                "success": success,
-                "method": method_str,
-                "name": name,
-                "dry_run": dry_run,
-                "github_results": github_results,
-                "llm_content": llm_content,
-                "written_path": written_path,
-                "errors": errors,
-            })),
-            is_error: Some(!success),
-            meta: None,
+        let content = vec![ContentBlock::text(text)];
+        let structured = Some(json!({
+            "success": success,
+            "method": method_str,
+            "name": name,
+            "dry_run": dry_run,
+            "github_results": github_results,
+            "llm_content": llm_content,
+            "written_path": written_path,
+            "errors": errors,
+        }));
+        Ok(if success {
+            tool_ok(content, structured)
+        } else {
+            tool_err(content, structured)
         })
     }
 
@@ -778,7 +798,7 @@ impl SkillService {
             .get("query")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("Missing required parameter: query"))?;
-        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+        let limit = clamp_limit(args.get("limit").and_then(|v| v.as_u64()), 10);
 
         let results = search_github_skills(query, limit).await?;
 
@@ -797,31 +817,29 @@ impl SkillService {
             )
         };
 
-        Ok(CallToolResult {
-            content: vec![Content::text(text)],
-            structured_content: Some(json!({
+        Ok(tool_ok(
+            vec![ContentBlock::text(text)],
+            Some(json!({
                 "query": query,
                 "total_found": results.len(),
                 "results": results,
             })),
-            is_error: Some(false),
-            meta: None,
-        })
+        ))
     }
 
     /// Sync wrapper for create-skill in CLI contexts.
-    pub(crate) fn create_skill_tool_sync(
-        &self,
-        args: JsonMap<String, Value>,
-    ) -> Result<CallToolResult> {
+    ///
+    /// The CLI user chose `target_dir` on the command line, so it is not
+    /// confined to the skill roots the way the MCP tool's argument is.
+    pub fn create_skill_tool_sync(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        rt.block_on(self.create_skill_tool(args))
+        rt.block_on(self.create_skill(args, TargetDirPolicy::Trusted))
     }
 
     /// Sync wrapper for search-skills-github in CLI contexts.
-    pub(crate) fn search_skills_github_tool_sync(
+    pub fn search_skills_github_tool_sync(
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
@@ -834,10 +852,7 @@ impl SkillService {
     /// Fuzzy search for installed skills using trigram matching.
     ///
     /// Tolerates typos and finds similar skill names.
-    pub(crate) fn search_skills_fuzzy_tool(
-        &self,
-        args: JsonMap<String, Value>,
-    ) -> Result<CallToolResult> {
+    pub fn search_skills_fuzzy_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
         use anyhow::Context;
         use skrills_intelligence::{find_similar_skills, SkillInfo, DEFAULT_THRESHOLD};
 
@@ -940,9 +955,9 @@ impl SkillService {
             lines.join("\n")
         };
 
-        Ok(CallToolResult {
-            content: vec![Content::text(text)],
-            structured_content: Some(json!({
+        Ok(tool_ok(
+            vec![ContentBlock::text(text)],
+            Some(json!({
                 "query": query,
                 "threshold": threshold,
                 "total_found": results.len(),
@@ -954,15 +969,172 @@ impl SkillService {
                     "matched_field": format!("{:?}", m.matched_field),
                 })).collect::<Vec<_>>(),
             })),
-            is_error: Some(false),
-            meta: None,
-        })
+        ))
     }
 }
 
 // -------------------------------------------------------------------------
 // Helper Functions
 // -------------------------------------------------------------------------
+
+/// Upper bound for caller-supplied result limits.
+const MAX_RESULT_LIMIT: u64 = 100;
+
+/// Clamp a caller-supplied `limit` to `1..=MAX_RESULT_LIMIT`.
+pub(crate) fn clamp_limit(requested: Option<u64>, default: usize) -> usize {
+    requested.map_or(default, |l| l.clamp(1, MAX_RESULT_LIMIT) as usize)
+}
+
+/// Lower-case alphanumeric tokens of a skill name (`rust-best-practices/SKILL.md`
+/// gives `rust`, `best`, `practices`, `skill`, `md`).
+fn name_tokens(name: &str) -> impl Iterator<Item = String> + '_ {
+    name.split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_ascii_lowercase())
+}
+
+/// Whether a skill name covers `term` as whole tokens, so "go" matches
+/// `go-testing` but not `django`, and "c" does not match every name with a c.
+pub(crate) fn name_covers(name: &str, term: &str) -> bool {
+    let wanted: Vec<String> = name_tokens(term).collect();
+    if wanted.is_empty() {
+        return false;
+    }
+    let have: HashSet<String> = name_tokens(name).collect();
+    wanted.iter().all(|t| have.contains(t))
+}
+
+/// Who supplied `target_dir`, and therefore how far it is trusted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TargetDirPolicy {
+    /// An MCP client: the directory must sit inside a writable skill root.
+    WithinSkillRoots,
+    /// The local CLI user: the directory is used as given.
+    Trusted,
+}
+
+/// Resolve `path` to an absolute, symlink-free form even when its tail does
+/// not exist yet: canonicalize the longest existing ancestor and append the
+/// rest. Any `..` component is refused rather than interpreted.
+fn resolve_for_containment(path: &Path) -> Result<PathBuf> {
+    use std::path::Component;
+
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(anyhow!("'..' is not allowed"));
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut existing = absolute.as_path();
+    let mut tail = Vec::new();
+    while !existing.exists() {
+        let Some(name) = existing.file_name() else {
+            break;
+        };
+        tail.push(name.to_os_string());
+        existing = existing
+            .parent()
+            .ok_or_else(|| anyhow!("target_dir has no existing ancestor"))?;
+    }
+    let mut resolved = existing.canonicalize()?;
+    for part in tail.into_iter().rev() {
+        resolved.push(part);
+    }
+    Ok(resolved)
+}
+
+/// Refuse a `target_dir` that does not resolve inside one of `roots`.
+fn ensure_within_roots(target: &Path, roots: &[PathBuf]) -> Result<()> {
+    let resolved = resolve_for_containment(target)
+        .map_err(|e| anyhow!("Invalid target_dir {}: {e}", target.display()))?;
+    let inside = roots.iter().any(|root| {
+        resolve_for_containment(root)
+            .map(|r| resolved.starts_with(r))
+            .unwrap_or(false)
+    });
+    if inside {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "Invalid target_dir {}: it must be inside a skill directory ({})",
+            target.display(),
+            roots
+                .iter()
+                .map(|r| r.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    }
+}
+
+/// Resolve a client-supplied `project_dir` and refuse it unless it lies
+/// inside one of `roots` (`[serve] project_roots`). Both sides are
+/// canonicalized, so `..` and symlinks are judged by where they lead. A path
+/// that cannot be canonicalized (it does not exist) is refused too. Returns
+/// the canonical path, which is what the caller should analyze.
+fn ensure_within_project_roots(dir: &Path, roots: &[PathBuf]) -> Result<PathBuf> {
+    let setting = "[serve] project_roots in ~/.skrills/config.toml";
+    let resolved = dir.canonicalize().map_err(|e| {
+        crate::handler::invalid_params(format!(
+            "project_dir {} cannot be resolved ({e}); with {setting} set, it must be an existing directory inside one of them",
+            dir.display()
+        ))
+    })?;
+    let inside = roots.iter().any(|root| {
+        root.canonicalize()
+            .map(|r| resolved.starts_with(r))
+            .unwrap_or(false)
+    });
+    if inside {
+        Ok(resolved)
+    } else {
+        Err(crate::handler::invalid_params(format!(
+            "project_dir {} is outside {setting} ({})",
+            dir.display(),
+            roots
+                .iter()
+                .map(|r| r.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )))
+    }
+}
+
+/// Write `content` to `<target>/<name>/SKILL.md`, refusing to replace an
+/// existing file.
+pub(crate) fn write_generated_skill(target: &Path, name: &str, content: &str) -> Result<PathBuf> {
+    use anyhow::Context;
+    use std::io::Write;
+
+    let skill_dir = target.join(name);
+    fs::create_dir_all(&skill_dir)
+        .with_context(|| format!("Failed to create directory {}", skill_dir.display()))?;
+    let skill_path = skill_dir.join("SKILL.md");
+    let mut file = match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&skill_path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(anyhow!(
+                "{} already exists; remove it first to regenerate the skill",
+                skill_path.display()
+            ));
+        }
+        Err(e) => {
+            return Err(anyhow::Error::new(e).context(format!(
+                "Failed to write skill file {}",
+                skill_path.display()
+            )));
+        }
+    };
+    file.write_all(content.as_bytes())
+        .with_context(|| format!("Failed to write skill file {}", skill_path.display()))?;
+    Ok(skill_path)
+}
 
 pub(crate) fn select_default_skill_root(
     home: &Path,

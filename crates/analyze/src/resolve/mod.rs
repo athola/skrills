@@ -170,6 +170,130 @@ mod tests {
         assert!(matches!(result, Err(ResolveError::VersionMismatch { .. })));
     }
 
+    fn unversioned(name: &str, deps: Vec<DeclaredDependency>) -> SkillInfo {
+        SkillInfo {
+            version: None,
+            ..make_skill(name, deps)
+        }
+    }
+
+    #[test]
+    fn unverifiable_version_requirement_warns_in_both_resolvers() {
+        // IN-74: `foo@^2` against an unversioned `foo` passed silently.
+        let parent = make_skill(
+            "parent",
+            vec![DeclaredDependency::Simple("foo@^2".to_string())],
+        );
+        let mut registry = InMemoryRegistry::new();
+        registry.add(unversioned("foo", vec![]));
+        registry.add(parent.clone());
+        let result = DependencyResolver::new(&registry, ResolveOptions::default())
+            .resolve("parent")
+            .unwrap();
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.contains("foo") && w.contains("^2")),
+            "{:?}",
+            result.warnings
+        );
+
+        let graph = GraphBuilder::new()
+            .add_skill(unversioned("foo", vec![]))
+            .add_skill(parent)
+            .build()
+            .unwrap();
+        let result = graph.resolve("parent").unwrap();
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.contains("foo") && w.contains("^2")),
+            "{:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn duplicate_names_resolve_to_the_same_skill_in_both_resolvers() {
+        // IN-73: InMemoryRegistry was last-wins, GraphBuilder first-wins.
+        let mut first = make_skill("shared", vec![]);
+        first.source = SkillSource::Claude;
+        first.uri = "skill://claude/shared".into();
+        let mut second = make_skill("shared", vec![]);
+        second.source = SkillSource::Codex;
+        second.uri = "skill://codex/shared".into();
+        let parent = make_skill("parent", vec![DeclaredDependency::Simple("shared".into())]);
+
+        let mut registry = InMemoryRegistry::new();
+        registry.add(first.clone());
+        registry.add(second.clone());
+        registry.add(parent.clone());
+        let via_resolver = DependencyResolver::new(&registry, ResolveOptions::default())
+            .resolve("parent")
+            .unwrap();
+
+        let graph = GraphBuilder::new()
+            .add_skill(first)
+            .add_skill(second)
+            .add_skill(parent)
+            .build()
+            .unwrap();
+        let via_graph = graph.resolve("parent").unwrap();
+
+        let uri_of = |r: &ResolutionResult| {
+            r.resolved
+                .iter()
+                .find(|d| d.name == "shared")
+                .map(|d| d.uri.clone())
+        };
+        assert_eq!(uri_of(&via_resolver), uri_of(&via_graph));
+        assert_eq!(uri_of(&via_graph).as_deref(), Some("skill://claude/shared"));
+    }
+
+    #[test]
+    fn dependency_reached_through_an_optional_edge_is_optional_in_both_resolvers() {
+        // IN-73: the graph propagated `optional` down the tree; the
+        // trait resolver used only the edge's own flag.
+        let parent = make_skill(
+            "parent",
+            vec![DeclaredDependency::Structured {
+                name: "mid".into(),
+                version: None,
+                source: None,
+                optional: true,
+            }],
+        );
+        let mid = make_skill("mid", vec![DeclaredDependency::Simple("leaf".into())]);
+        let leaf = make_skill("leaf", vec![]);
+
+        let mut registry = InMemoryRegistry::new();
+        for s in [&parent, &mid, &leaf] {
+            registry.add(s.clone());
+        }
+        let via_resolver = DependencyResolver::new(&registry, ResolveOptions::default())
+            .resolve("parent")
+            .unwrap();
+        let graph = GraphBuilder::new()
+            .add_skills([parent, mid, leaf])
+            .build()
+            .unwrap();
+        let via_graph = graph.resolve("parent").unwrap();
+
+        let flags = |r: &ResolutionResult| {
+            let mut v: Vec<(String, bool)> = r
+                .resolved
+                .iter()
+                .map(|d| (d.name.clone(), d.optional))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(flags(&via_resolver), flags(&via_graph));
+        assert!(flags(&via_graph).contains(&("leaf".to_string(), true)));
+    }
+
     // ========== DependencyGraph (pre-computed) tests ==========
 
     #[test]

@@ -198,6 +198,30 @@ impl ValidationResult {
     }
 }
 
+/// Shared rule behind `is_codex_compatible` and `is_copilot_compatible`: the
+/// skill parses, has a non-empty name and description within the given
+/// lengths, and has a body after the frontmatter.
+pub(crate) fn has_bounded_identity_and_body(
+    content: &str,
+    max_name_len: usize,
+    max_description_len: usize,
+) -> bool {
+    let Ok(parsed) = crate::frontmatter::parse_frontmatter(content) else {
+        return false;
+    };
+    let Some(fm) = parsed.frontmatter else {
+        return false;
+    };
+    let within = |field: &Option<String>, max: usize| {
+        field
+            .as_ref()
+            .is_some_and(|value| !value.is_empty() && value.len() <= max)
+    };
+    within(&fm.name, max_name_len)
+        && within(&fm.description, max_description_len)
+        && !parsed.content.trim().is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

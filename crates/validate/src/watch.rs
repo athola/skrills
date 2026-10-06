@@ -326,6 +326,13 @@ fn collect_debounced_paths_interruptible(
 }
 
 /// Sets up a Ctrl+C handler that sends on the given channel.
+///
+/// # Safety
+///
+/// The one `unsafe` block installs a SIGINT handler with `libc::signal`. See
+/// the `SAFETY:` comment on the block for the invariant it relies on.
+/// `signal` is process-global, so a call replaces any SIGINT handler installed
+/// earlier in the process; [`run_watch_loop`] is the only caller.
 #[allow(unsafe_code)]
 fn ctrlc_channel(tx: &mpsc::Sender<()>) {
     #[cfg(unix)]
@@ -335,6 +342,11 @@ fn ctrlc_channel(tx: &mpsc::Sender<()>) {
             use std::sync::atomic::{AtomicBool, Ordering};
             static SIGNALED: AtomicBool = AtomicBool::new(false);
 
+            // SAFETY: `sigint_handler` is an `extern "C" fn` whose only action
+            // is a store to a `static AtomicBool`. An atomic store is
+            // async-signal-safe: it does not allocate, lock, or touch state the
+            // interrupted thread could be holding. The channel send happens on
+            // this polling thread, never inside the handler.
             unsafe {
                 libc::signal(
                     libc::SIGINT,

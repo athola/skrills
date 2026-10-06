@@ -3,18 +3,92 @@
 use anyhow::Result;
 use reqwest::header::AUTHORIZATION;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
+const GITHUB_RAW_BASE: &str = "https://raw.githubusercontent.com";
 
-/// Get the GitHub API base URL, allowing override for testing.
-fn github_api_base() -> String {
-    std::env::var("GITHUB_API_BASE_URL").unwrap_or_else(|_| GITHUB_API_BASE.to_string())
+/// Whole-request timeout for GitHub calls.
+const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+/// Connect timeout for GitHub calls.
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Largest response body read from GitHub. Search pages and SKILL.md files
+/// are far smaller; anything bigger is refused rather than buffered.
+const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
+/// How much of an error body is echoed into the error message.
+const MAX_ERROR_BODY_CHARS: usize = 2048;
+
+/// Read a base-URL override from the environment.
+///
+/// Only test builds honour it. In a release build a stray
+/// `GITHUB_API_BASE_URL` would otherwise redirect every search, with the
+/// `GITHUB_TOKEN` bearer header, to an arbitrary (possibly plain-http) host.
+#[cfg(test)]
+fn base_url_override(var: &str) -> Option<String> {
+    std::env::var(var).ok()
 }
 
-/// Get the raw content base URL, allowing override for testing.
+#[cfg(not(test))]
+fn base_url_override(_var: &str) -> Option<String> {
+    None
+}
+
+/// The GitHub API base URL (overridable in tests only).
+fn github_api_base() -> String {
+    base_url_override("GITHUB_API_BASE_URL").unwrap_or_else(|| GITHUB_API_BASE.to_string())
+}
+
+/// The raw content base URL (overridable in tests only).
 fn raw_content_base() -> String {
-    std::env::var("GITHUB_RAW_BASE_URL")
-        .unwrap_or_else(|_| "https://raw.githubusercontent.com".to_string())
+    base_url_override("GITHUB_RAW_BASE_URL").unwrap_or_else(|| GITHUB_RAW_BASE.to_string())
+}
+
+/// A client with request and connect timeouts.
+fn build_client(timeout: Duration) -> Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .timeout(timeout)
+        .connect_timeout(HTTP_CONNECT_TIMEOUT.min(timeout))
+        .user_agent(concat!("skrills-intelligence/", env!("CARGO_PKG_VERSION")))
+        .build()?)
+}
+
+/// Read a response body, refusing it once it grows past `max_bytes`.
+async fn read_body_capped(mut response: reqwest::Response, max_bytes: usize) -> Result<String> {
+    if let Some(len) = response.content_length() {
+        if len > max_bytes as u64 {
+            anyhow::bail!("response body of {len} bytes exceeds the {max_bytes}-byte limit");
+        }
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len() + chunk.len() > max_bytes {
+            anyhow::bail!("response body exceeds the {max_bytes}-byte limit");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+/// Shorten an error body before it is echoed into a message.
+fn truncate_for_message(body: &str) -> String {
+    if body.chars().count() <= MAX_ERROR_BODY_CHARS {
+        body.to_string()
+    } else {
+        let head: String = body.chars().take(MAX_ERROR_BODY_CHARS).collect();
+        format!("{head}... (truncated)")
+    }
+}
+
+/// True when `url` has the same scheme, host and port as `base`.
+fn same_origin(url: &reqwest::Url, base: &str) -> bool {
+    match reqwest::Url::parse(base) {
+        Ok(base) => {
+            url.scheme() == base.scheme()
+                && url.host_str() == base.host_str()
+                && url.port_or_known_default() == base.port_or_known_default()
+        }
+        Err(_) => false,
+    }
 }
 
 fn github_token() -> Option<String> {
@@ -76,6 +150,30 @@ struct Repository {
     description: Option<String>,
 }
 
+/// Byte offset of the first case-insensitive occurrence of `needle`.
+///
+/// `to_ascii_lowercase` is used rather than `to_lowercase` because only the
+/// former preserves byte length ('\u{130}' is 2 bytes and lowercases to 3), and
+/// the offset is used to slice the original string. Every operator searched for
+/// here is ASCII, so folding only ASCII loses no match.
+///
+/// Only matches that start a token count: at the start of the string, or after
+/// whitespace, `(` or a `-` negation. `plugin:foo` is ordinary text to GitHub,
+/// so the `in:` inside it must not be stripped.
+fn find_ignore_ascii_case(haystack: &str, needle: &str) -> Option<usize> {
+    let lowered = haystack.to_ascii_lowercase();
+    let bytes = lowered.as_bytes();
+    lowered
+        .match_indices(&needle.to_ascii_lowercase())
+        .map(|(pos, _)| pos)
+        .find(|&pos| {
+            let opens_token =
+                |p: usize| p == 0 || matches!(bytes[p - 1], b'(' | b' ' | b'\t' | b'\n' | b'\r');
+            // `-repo:x` negates a qualifier; `built-in:` is a plain word.
+            opens_token(pos) || (bytes[pos - 1] == b'-' && opens_token(pos - 1))
+        })
+}
+
 /// Sanitize user input to prevent GitHub search operator injection.
 /// Strips known GitHub search operators that could manipulate search semantics.
 fn sanitize_github_query(query: &str) -> String {
@@ -110,27 +208,22 @@ fn sanitize_github_query(query: &str) -> String {
 
     // Remove colon-based operators
     for op in colon_operators {
-        loop {
-            let lower = sanitized.to_lowercase();
-            if let Some(pos) = lower.find(&op.to_lowercase()) {
-                // Find the end of the operator value (space or end of string)
-                let rest = &sanitized[pos + op.len()..];
-                let end = if rest.starts_with('"') {
-                    // Quoted value - find closing quote
-                    rest.strip_prefix('"')
-                        .and_then(|s| s.find('"'))
-                        .map(|p| pos + op.len() + p + 2)
-                        .unwrap_or(sanitized.len())
-                } else {
-                    // Unquoted value - find next space
-                    rest.find(' ')
-                        .map(|p| pos + op.len() + p)
-                        .unwrap_or(sanitized.len())
-                };
-                sanitized = format!("{}{}", &sanitized[..pos], &sanitized[end..]);
+        while let Some(pos) = find_ignore_ascii_case(&sanitized, op) {
+            // Find the end of the operator value (space or end of string)
+            let rest = &sanitized[pos + op.len()..];
+            let end = if rest.starts_with('"') {
+                // Quoted value - find closing quote
+                rest.strip_prefix('"')
+                    .and_then(|s| s.find('"'))
+                    .map(|p| pos + op.len() + p + 2)
+                    .unwrap_or(sanitized.len())
             } else {
-                break;
-            }
+                // Unquoted value - find next space
+                rest.find(' ')
+                    .map(|p| pos + op.len() + p)
+                    .unwrap_or(sanitized.len())
+            };
+            sanitized = format!("{}{}", &sanitized[..pos], &sanitized[end..]);
         }
     }
 
@@ -163,21 +256,23 @@ pub async fn search_github_skills(query: &str, limit: usize) -> Result<Vec<GitHu
 /// This function does NOT sanitize the query, so it should only be called
 /// with trusted input (e.g., from `search_skills_advanced`).
 async fn search_github_raw(query: &str, limit: usize) -> Result<Vec<GitHubSkillResult>> {
-    let client = reqwest::Client::new();
+    let client = build_client(HTTP_TIMEOUT)?;
 
     let response = apply_github_auth(
         client
             .get(format!("{}/search/code", github_api_base()))
             .query(&[("q", query), ("per_page", &limit.to_string())])
-            .header("Accept", "application/vnd.github.v3+json")
-            .header("User-Agent", "skrills-intelligence/0.4.0"),
+            .header("Accept", "application/vnd.github.v3+json"),
     )
     .send()
     .await?;
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = read_body_capped(response, MAX_BODY_BYTES)
+            .await
+            .map(|b| truncate_for_message(&b))
+            .unwrap_or_default();
 
         // Provide actionable error messages for common GitHub API errors
         let error_msg = match status.as_u16() {
@@ -209,7 +304,8 @@ async fn search_github_raw(query: &str, limit: usize) -> Result<Vec<GitHubSkillR
         .into());
     }
 
-    let search_result: SearchResponse = response.json().await?;
+    let body = read_body_capped(response, MAX_BODY_BYTES).await?;
+    let search_result: SearchResponse = serde_json::from_str(&body)?;
 
     Ok(search_result
         .items
@@ -223,28 +319,43 @@ async fn search_github_raw(query: &str, limit: usize) -> Result<Vec<GitHubSkillR
                 description: item.repository.description,
                 stars: item.repository.stargazers_count,
                 last_updated: item.repository.updated_at,
-                raw_url: Some(raw_url),
+                raw_url,
             }
         })
         .collect())
 }
 
 /// Build a raw.githubusercontent.com URL for fetching file content.
-fn build_raw_url(full_name: &str, path: &str) -> String {
-    format!("{}/{}/HEAD/{}", raw_content_base(), full_name, path)
+///
+/// Each path segment is percent-encoded, so a repository path containing a
+/// space, `#` or `?` still names that file. Returns `None` if the base URL
+/// cannot carry a path.
+fn build_raw_url(full_name: &str, path: &str) -> Option<String> {
+    let mut url = reqwest::Url::parse(&raw_content_base()).ok()?;
+    {
+        let mut segments = url.path_segments_mut().ok()?;
+        segments.pop_if_empty();
+        segments.extend(full_name.split('/').filter(|s| !s.is_empty()));
+        segments.push("HEAD");
+        segments.extend(path.split('/').filter(|s| !s.is_empty()));
+    }
+    Some(url.into())
 }
 
 /// Fetch the content of a skill from its raw URL.
+///
+/// Only URLs on the raw content host (`https://raw.githubusercontent.com`)
+/// are fetched. Anything else is refused before a request is made, so the
+/// `GITHUB_TOKEN` bearer header is never sent to another host.
 pub async fn fetch_skill_content(raw_url: &str) -> Result<String> {
-    let client = reqwest::Client::new();
+    let url = reqwest::Url::parse(raw_url)?;
+    let raw_base = raw_content_base();
+    if !same_origin(&url, &raw_base) {
+        anyhow::bail!("refusing to fetch {raw_url}: only {raw_base} URLs are allowed");
+    }
 
-    let response = apply_github_auth(
-        client
-            .get(raw_url)
-            .header("User-Agent", "skrills-intelligence/0.4.0"),
-    )
-    .send()
-    .await?;
+    let client = build_client(HTTP_TIMEOUT)?;
+    let response = apply_github_auth(client.get(url)).send().await?;
 
     if !response.status().is_success() {
         return Err(crate::IntelligenceError::FetchFailed {
@@ -253,7 +364,7 @@ pub async fn fetch_skill_content(raw_url: &str) -> Result<String> {
         .into());
     }
 
-    Ok(response.text().await?)
+    read_body_capped(response, MAX_BODY_BYTES).await
 }
 
 /// Search for skills with specific criteria.
@@ -292,6 +403,28 @@ pub async fn search_skills_advanced(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `to_lowercase()` is not byte-length preserving: 'İ' (U+0130, 2 bytes)
+    /// lowercases to 3 bytes. The operator search ran over the lowercased copy
+    /// and sliced the original with the offset it found there, so a query
+    /// carrying such a character panicked on an out-of-bounds slice. Reachable
+    /// from the `search-skills-github` MCP tool directly, and from
+    /// `create-skill`, which builds the query out of an unvalidated description.
+    #[test]
+    fn sanitize_github_query_handles_multibyte_case_change() {
+        // Glued to a preceding word the operator is plain text to GitHub
+        // (IN-22), so it is kept; what matters here is that nothing panics.
+        assert_eq!(sanitize_github_query("\u{130}repo:"), "\u{130}repo:");
+        assert_eq!(
+            sanitize_github_query("\u{130} repo:owner/name tail"),
+            "\u{130} tail"
+        );
+        assert_eq!(
+            sanitize_github_query("\u{130}\u{130}\u{130} user:someone"),
+            "\u{130}\u{130}\u{130}"
+        );
+    }
+
     use crate::test_support::{env_guard, set_env_var};
     use reqwest::header::AUTHORIZATION;
     use serial_test::serial;
@@ -301,7 +434,7 @@ mod tests {
     fn test_build_raw_url_default() {
         let _g = env_guard();
         let _raw_guard = set_env_var("GITHUB_RAW_BASE_URL", None);
-        let url = build_raw_url("owner/repo", "skills/test/SKILL.md");
+        let url = build_raw_url("owner/repo", "skills/test/SKILL.md").unwrap();
         assert_eq!(
             url,
             "https://raw.githubusercontent.com/owner/repo/HEAD/skills/test/SKILL.md"
@@ -313,11 +446,53 @@ mod tests {
     fn test_build_raw_url_with_custom_base() {
         let _g = env_guard();
         let _raw_guard = set_env_var("GITHUB_RAW_BASE_URL", Some("http://localhost:8080"));
-        let url = build_raw_url("owner/repo", "skills/test/SKILL.md");
+        let url = build_raw_url("owner/repo", "skills/test/SKILL.md").unwrap();
         assert_eq!(
             url,
             "http://localhost:8080/owner/repo/HEAD/skills/test/SKILL.md"
         );
+    }
+
+    /// IN-23: a space or `#` in the repository path must be percent-encoded,
+    /// or the URL names a different resource (`#` starts a fragment).
+    #[test]
+    #[serial]
+    fn build_raw_url_percent_encodes_path_segments() {
+        let _g = env_guard();
+        let _raw_guard = set_env_var("GITHUB_RAW_BASE_URL", None);
+        assert_eq!(
+            build_raw_url("owner/repo", "skills/my skill/SKILL.md").unwrap(),
+            "https://raw.githubusercontent.com/owner/repo/HEAD/skills/my%20skill/SKILL.md"
+        );
+        assert_eq!(
+            build_raw_url("owner/repo", "skills/c#/SKILL.md").unwrap(),
+            "https://raw.githubusercontent.com/owner/repo/HEAD/skills/c%23/SKILL.md"
+        );
+    }
+
+    /// IN-22: operators count only at token starts. `in:` inside `plugin:`
+    /// and `built-in:` is plain text to GitHub.
+    #[test]
+    fn sanitize_github_query_matches_operators_only_at_token_start() {
+        assert_eq!(sanitize_github_query("plugin:foo bar"), "plugin:foo bar");
+        assert_eq!(sanitize_github_query("built-in: tools"), "built-in: tools");
+        // Real operators, including a negated one, are still stripped.
+        assert_eq!(sanitize_github_query("foo -repo:x bar"), "foo - bar");
+        assert_eq!(sanitize_github_query("(repo:x) foo"), "( foo");
+        assert_eq!(sanitize_github_query("foo in:path"), "foo");
+    }
+
+    /// IN-4: the base-URL overrides exist for the wiremock tests. Whatever a
+    /// release build does with them, they must never name a non-https host
+    /// by default.
+    #[test]
+    #[serial]
+    fn default_bases_are_https_github_hosts() {
+        let _g = env_guard();
+        let _a = set_env_var("GITHUB_API_BASE_URL", None);
+        let _r = set_env_var("GITHUB_RAW_BASE_URL", None);
+        assert_eq!(github_api_base(), "https://api.github.com");
+        assert_eq!(raw_content_base(), "https://raw.githubusercontent.com");
     }
 
     #[test]
@@ -664,6 +839,33 @@ mod proptest_tests {
             );
         }
 
+        /// Property (IN-78): characters whose lowercase form has a different
+        /// byte length, placed right before an operator, never panic the
+        /// sanitizer and never let the operator through. `\\PC*` almost
+        /// never generates this combination.
+        #[test]
+        fn sanitize_handles_case_folding_chars_next_to_operators(
+            folding in prop::collection::vec(
+                prop::sample::select(vec!['\u{130}', '\u{1E9E}', '\u{212A}', '\u{2126}', '\u{23A}', 'ß', 'Σ']),
+                0..6,
+            ),
+            operator in prop::sample::select(vec!["repo:", "user:", "in:", "path:", "REPO:"]),
+            value in "[a-z0-9/]{1,10}",
+            spaced in any::<bool>(),
+        ) {
+            let prefix: String = folding.iter().collect();
+            let sep = if spaced { " " } else { "" };
+            let input = format!("{prefix}{sep}{operator}{value} tail");
+            let result = sanitize_github_query(&input);
+            prop_assert!(result.ends_with("tail"));
+            if spaced || prefix.is_empty() {
+                prop_assert!(
+                    !result.to_ascii_lowercase().contains(&operator.to_ascii_lowercase()),
+                    "operator survived: {result:?} from {input:?}"
+                );
+            }
+        }
+
         /// Property: Empty and whitespace-only inputs should return empty string.
         #[test]
         fn sanitize_handles_whitespace_only(spaces in "[ \t\n\r]*") {
@@ -886,6 +1088,7 @@ mod integration_tests {
     #[serial]
     async fn test_fetch_skill_content_success() {
         let server = MockServer::start().await;
+        let _raw_guard = set_env_var("GITHUB_RAW_BASE_URL", Some(&server.uri()));
         let _token_guard = set_env_var("GITHUB_TOKEN", None);
 
         let skill_content = r#"---
@@ -910,10 +1113,76 @@ This is a test skill."#;
         assert!(content.contains("This is a test skill"));
     }
 
+    /// IN-3: a URL off the raw content host is refused before any request,
+    /// so the bearer token cannot leak to it.
+    #[tokio::test]
+    #[serial]
+    async fn fetch_skill_content_refuses_foreign_host_without_sending_token() {
+        let server = MockServer::start().await;
+        let _raw_guard = set_env_var("GITHUB_RAW_BASE_URL", None);
+        let _token_guard = set_env_var("GITHUB_TOKEN", Some("secret-token"));
+
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("---\n"))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/owner/repo/HEAD/SKILL.md", server.uri());
+        let err = fetch_skill_content(&url).await.unwrap_err().to_string();
+        assert!(err.contains("refusing"), "unexpected error: {err}");
+
+        // Plain http on the right host name is refused too.
+        let err = fetch_skill_content("http://raw.githubusercontent.com/o/r/HEAD/SKILL.md")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("refusing"), "unexpected error: {err}");
+        server.verify().await;
+    }
+
+    /// IN-5: an oversized body is refused instead of buffered whole.
+    #[tokio::test]
+    #[serial]
+    async fn fetch_skill_content_refuses_oversized_body() {
+        let server = MockServer::start().await;
+        let _raw_guard = set_env_var("GITHUB_RAW_BASE_URL", Some(&server.uri()));
+        let _token_guard = set_env_var("GITHUB_TOKEN", None);
+
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("x".repeat(MAX_BODY_BYTES + 1)),
+            )
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/owner/repo/HEAD/SKILL.md", server.uri());
+        let err = fetch_skill_content(&url).await.unwrap_err().to_string();
+        assert!(err.contains("limit"), "unexpected error: {err}");
+    }
+
+    /// IN-5: a stalled server fails the request once the timeout elapses.
+    #[tokio::test]
+    #[serial]
+    async fn client_times_out_on_stalled_server() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(10)))
+            .mount(&server)
+            .await;
+
+        let client = build_client(std::time::Duration::from_millis(200)).unwrap();
+        let started = std::time::Instant::now();
+        let result = client.get(server.uri()).send().await;
+        assert!(result.is_err(), "a 10s delay must hit a 200ms timeout");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
     #[tokio::test]
     #[serial]
     async fn test_fetch_skill_content_not_found() {
         let server = MockServer::start().await;
+        let _raw_guard = set_env_var("GITHUB_RAW_BASE_URL", Some(&server.uri()));
         let _token_guard = set_env_var("GITHUB_TOKEN", None);
 
         Mock::given(method("GET"))

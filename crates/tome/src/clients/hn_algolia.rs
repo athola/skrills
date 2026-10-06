@@ -19,37 +19,17 @@ impl Default for HnAlgoliaClient {
 impl HnAlgoliaClient {
     pub fn new() -> Self {
         Self {
-            http: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "HnAlgolia client builder failed, using default");
-                    reqwest::Client::new()
-                }),
+            http: super::http_client("hn_algolia", None),
         }
     }
 
     /// Search HN stories and comments.
     pub async fn search(&self, query: &str, limit: usize) -> TomeResult<Vec<Discussion>> {
-        let resp = self
-            .http
-            .get(format!("{BASE_URL}/search"))
-            .query(&[
-                ("query", query),
-                ("tags", "story"),
-                ("hitsPerPage", &limit.to_string()),
-            ])
-            .send()
-            .await?;
+        let resp = self.http.execute(self.request(query, limit)?).await?;
 
-        if !resp.status().is_success() {
-            return Err(crate::TomeError::Api {
-                api: "hn_algolia".to_string(),
-                message: format!("HTTP {}", resp.status()),
-            });
-        }
+        let resp = super::ensure_success("hn_algolia", resp, "")?;
 
-        let body: serde_json::Value = resp.json().await?;
+        let body = super::read_json("hn_algolia", resp).await?;
         let discussions = body["hits"]
             .as_array()
             .ok_or_else(|| crate::TomeError::Api {
@@ -61,6 +41,19 @@ impl HnAlgoliaClient {
             .collect();
 
         Ok(discussions)
+    }
+}
+
+impl HnAlgoliaClient {
+    fn request(&self, query: &str, limit: usize) -> reqwest::Result<reqwest::Request> {
+        self.http
+            .get(format!("{BASE_URL}/search"))
+            .query(&[
+                ("query", query),
+                ("tags", "story"),
+                ("hitsPerPage", &limit.min(100).to_string()),
+            ])
+            .build()
     }
 }
 
@@ -89,6 +82,18 @@ pub(crate) fn parse_hit(v: &serde_json::Value) -> Option<Discussion> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hits_per_page_is_capped_like_the_other_clients() {
+        // IN-51: the limit used to be forwarded uncapped.
+        let req = HnAlgoliaClient::new().request("rust", 100_000).unwrap();
+        let hits = req
+            .url()
+            .query_pairs()
+            .find(|(k, _)| k == "hitsPerPage")
+            .map(|(_, v)| v.into_owned());
+        assert_eq!(hits.as_deref(), Some("100"));
+    }
 
     #[test]
     fn parse_hit_full() {

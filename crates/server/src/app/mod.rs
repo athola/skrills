@@ -1,29 +1,29 @@
 //! Implements primary `skrills` application functionality.
 //!
-//! Includes the MCP server, skill discovery, caching, and CLI.
+//! Includes the MCP server, skill discovery and caching. The CLI is in the
+//! `skrills` crate.
 //!
-//! The `run` function initiates the server. `runtime` manages runtime options.
+//! `runtime` manages runtime options.
 //! Internal components are subject to change.
 //!
 //! See `docs/semver-policy.md` for versioning.
 //!
 //! The `watch` feature enables filesystem monitoring. Build with `--no-default-features` to disable.
 //!
-//! On Unix, a `SIGCHLD` handler prevents zombie processes.
 //! Keep this file under ~2500 LOC; split modules if needed.
 
-mod dispatcher;
 mod intelligence;
 mod mcp_registry;
 mod research;
+mod skill_metrics;
 mod skill_recommendations;
 mod tools;
+pub use crate::cache::build_dependency_graph;
+pub use skill_metrics::compute_skill_metrics;
+pub use skill_recommendations::rank_skill_recommendations;
 
-pub use dispatcher::run;
 use mcp_registry::build_mcp_registry;
 
-#[cfg(test)]
-pub(crate) use dispatcher::run_sync_with_adapters;
 #[cfg(test)]
 pub(crate) use intelligence::{resolve_project_dir, select_default_skill_root};
 
@@ -38,7 +38,7 @@ use anyhow::{anyhow, Result};
 #[cfg(feature = "watch")]
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::Mutex;
-use rmcp::model::{Meta, RawResource, ReadResourceResult, Resource, ResourceContents};
+use rmcp::model::{MetaObject, ReadResourceResult, Resource, ResourceContents};
 use serde_json::json;
 #[cfg(test)]
 use skrills_discovery::SkillRoot;
@@ -46,8 +46,6 @@ use skrills_discovery::{DuplicateInfo, SkillMeta};
 use skrills_state::load_manifest_settings;
 #[cfg(feature = "subagents")]
 use skrills_subagents::SubagentService;
-use std::cmp::Reverse;
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -74,11 +72,17 @@ pub struct SkillService {
     pub(crate) mcp_registry: Arc<Mutex<McpToolRegistry>>,
     /// Context usage statistics for tracking token savings.
     pub(crate) context_stats: Arc<ContextStats>,
+    /// Where skill reads, validations and syncs are recorded for the
+    /// dashboard. `None` records nothing.
+    pub(crate) metrics: Option<Arc<skrills_metrics::MetricsCollector>>,
+    /// `[serve] project_roots`: when set, a client-supplied `project_dir`
+    /// must resolve inside one of these directories. `None` admits any path.
+    pub(crate) project_roots: Option<Arc<Vec<PathBuf>>>,
 }
 
 /// Starts a filesystem watcher to invalidate caches on changes.
 #[cfg(feature = "watch")]
-pub(crate) fn start_fs_watcher(service: &SkillService) -> Result<RecommendedWatcher> {
+pub fn start_fs_watcher(service: &SkillService) -> Result<RecommendedWatcher> {
     let cache = service.cache.clone();
     let roots = {
         let guard = cache.lock();
@@ -87,8 +91,10 @@ pub(crate) fn start_fs_watcher(service: &SkillService) -> Result<RecommendedWatc
 
     let mut watcher = RecommendedWatcher::new(
         move |event: notify::Result<notify::Event>| {
-            if event.is_ok() {
-                cache.lock().invalidate();
+            if let Ok(event) = event {
+                if invalidates_cache(&event.kind) {
+                    cache.lock().invalidate();
+                }
             }
         },
         NotifyConfig::default(),
@@ -103,11 +109,29 @@ pub(crate) fn start_fs_watcher(service: &SkillService) -> Result<RecommendedWatc
     Ok(watcher)
 }
 
+/// Whether a filesystem event can change what discovery finds.
+///
+/// Reads are excluded: inotify reports every open and access, including the
+/// server's own discovery walk, so reacting to them would invalidate the
+/// cache the walk just built.
+#[cfg(feature = "watch")]
+pub(crate) fn invalidates_cache(kind: &notify::EventKind) -> bool {
+    use notify::event::{MetadataKind, ModifyKind};
+    use notify::EventKind;
+    match kind {
+        EventKind::Access(_) => false,
+        EventKind::Modify(ModifyKind::Metadata(MetadataKind::AccessTime)) => false,
+        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => true,
+        // Unknown kinds may hide a real change; rescanning is the safe side.
+        EventKind::Any | EventKind::Other => true,
+    }
+}
+
 /// Placeholder for the disabled 'watch' feature.
 ///
 /// Returns an error if called.
 #[cfg(not(feature = "watch"))]
-pub(crate) fn start_fs_watcher(_service: &SkillService) -> Result<()> {
+pub fn start_fs_watcher(_service: &SkillService) -> Result<()> {
     Err(anyhow!(
         "watch feature is disabled; rebuild with --features watch"
     ))
@@ -138,7 +162,55 @@ impl SkillService {
             subagents: Some(SubagentService::new()?),
             mcp_registry,
             context_stats,
+            metrics: None,
+            project_roots: None,
         })
+    }
+
+    /// Records skill reads, validations and syncs to `collector`, which the
+    /// dashboard's metrics API reads.
+    pub fn with_metrics(mut self, collector: Arc<skrills_metrics::MetricsCollector>) -> Self {
+        self.metrics = Some(collector);
+        self
+    }
+
+    /// Restricts every client-supplied `project_dir` to `roots` (the
+    /// `[serve] project_roots` setting). Paths are compared after
+    /// canonicalizing both sides, so `..` and symlinks cannot leave a root.
+    pub fn with_project_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.project_roots = Some(Arc::new(roots));
+        self
+    }
+
+    /// Records to the shared on-disk store (`~/.skrills/metrics.db`), where a
+    /// dashboard in another process can read it. When the store cannot be
+    /// opened this logs a warning and records nothing.
+    pub fn with_persistent_metrics(self) -> Self {
+        match skrills_metrics::MetricsCollector::persistent_default() {
+            Ok(collector) => self.with_metrics(Arc::new(collector)),
+            Err(e) => {
+                tracing::warn!(
+                    target: "skrills::metrics",
+                    error = %e,
+                    "could not open ~/.skrills/metrics.db; skill usage will not be recorded"
+                );
+                self
+            }
+        }
+    }
+
+    /// Runs `record` against the collector, if any. A failed write is logged
+    /// and never fails the request it describes.
+    pub(crate) fn record_metric(
+        &self,
+        what: &str,
+        record: impl FnOnce(&skrills_metrics::MetricsCollector) -> skrills_metrics::Result<()>,
+    ) {
+        if let Some(collector) = &self.metrics {
+            if let Err(e) = record(collector) {
+                tracing::warn!(target: "skrills::metrics", error = %e, what, "failed to record metric");
+            }
+        }
     }
 
     /// Test-only helper to build a service from explicit roots without
@@ -165,6 +237,8 @@ impl SkillService {
             subagents: Some(SubagentService::new()?),
             mcp_registry,
             context_stats,
+            metrics: None,
+            project_roots: None,
         })
     }
 
@@ -185,171 +259,52 @@ impl SkillService {
         cache.skills_with_dups()
     }
 
+    /// Reports whether a skill URI is present in the cache.
+    ///
+    /// The refresh is explicit so a discovery failure surfaces as an error
+    /// rather than as a missing skill.
+    pub fn has_skill(&self, uri: &str) -> Result<bool> {
+        let mut cache = self.cache.lock();
+        cache.ensure_fresh()?;
+        Ok(cache.skill_by_uri(uri).is_ok())
+    }
+
     /// Resolves transitive dependencies for a skill URI.
-    pub(crate) fn resolve_dependencies(&self, uri: &str) -> Result<Vec<String>> {
+    pub fn resolve_dependencies(&self, uri: &str) -> Result<Vec<String>> {
         let mut cache = self.cache.lock();
         cache.resolve_dependencies(uri)
     }
 
+    /// Gets direct, non-transitive dependencies for a skill URI.
+    pub fn get_direct_dependencies(&self, uri: &str) -> Result<Vec<String>> {
+        let mut cache = self.cache.lock();
+        cache.get_direct_dependencies(uri)
+    }
+
     /// Gets direct dependents for a skill URI.
-    pub(crate) fn get_dependents(&self, uri: &str) -> Result<Vec<String>> {
+    pub fn get_dependents(&self, uri: &str) -> Result<Vec<String>> {
         let mut cache = self.cache.lock();
         cache.get_dependents(uri)
     }
 
     /// Gets transitive dependents for a skill URI.
-    pub(crate) fn get_transitive_dependents(&self, uri: &str) -> Result<Vec<String>> {
+    pub fn get_transitive_dependents(&self, uri: &str) -> Result<Vec<String>> {
         let mut cache = self.cache.lock();
         cache.get_transitive_dependents(uri)
     }
 
-    /// Computes aggregate metrics for discovered skills.
-    pub(crate) fn compute_metrics(&self, include_validation: bool) -> Result<SkillMetrics> {
-        use skrills_analyze::analyze_skill;
-        use skrills_validate::{validate_skill, ValidationTarget};
-
+    /// Computes aggregate metrics for discovered skills: the readable ones
+    /// count, against the cache's dependency graph (see
+    /// [`compute_skill_metrics`]).
+    pub fn compute_metrics(&self, include_validation: bool) -> Result<SkillMetrics> {
         let (skills, _) = self.current_skills_with_dups()?;
-
-        let mut by_source: HashMap<String, usize> = HashMap::new();
-        let mut quality_high = 0usize;
-        let mut quality_medium = 0usize;
-        let mut quality_low = 0usize;
-        let mut total_tokens = 0usize;
-        let mut largest_skill: Option<SkillTokenInfo> = None;
-
-        // Validation counters (only computed if requested)
-        let mut passing = 0usize;
-        let mut with_errors = 0usize;
-        let mut with_warnings = 0usize;
-
-        for meta in &skills {
-            // Read skill content (before counting to ensure consistent totals)
-            let content = match fs::read_to_string(&meta.path) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!(path = %meta.path.display(), error = %e, "Failed to read skill file");
-                    continue;
-                }
-            };
-
-            // Count by source (after successful read for consistent totals)
-            *by_source
-                .entry(meta.source.label().to_string())
-                .or_default() += 1;
-
-            // Analyze for quality and tokens
-            let analysis = analyze_skill(&meta.path, &content);
-
-            // Quality buckets
-            if analysis.quality_score >= 0.8 {
-                quality_high += 1;
-            } else if analysis.quality_score >= 0.5 {
-                quality_medium += 1;
-            } else {
-                quality_low += 1;
-            }
-
-            // Token stats
-            total_tokens += analysis.tokens.total;
-            let skill_uri = format!("skill://skrills/{}/{}", meta.source.label(), meta.name);
-            if largest_skill
-                .as_ref()
-                .is_none_or(|s| analysis.tokens.total > s.tokens)
-            {
-                largest_skill = Some(SkillTokenInfo {
-                    uri: skill_uri,
-                    tokens: analysis.tokens.total,
-                });
-            }
-
-            // Optional validation
-            if include_validation {
-                let result = validate_skill(&meta.path, &content, ValidationTarget::Both);
-                if result.claude_valid && result.codex_valid {
-                    passing += 1;
-                } else if result.has_errors() {
-                    with_errors += 1;
-                } else {
-                    with_warnings += 1;
-                }
-            }
-        }
-
-        // Compute dependency stats from the graph
         let mut cache = self.cache.lock();
         cache.ensure_fresh()?;
-        let all_skills: Vec<String> = cache.skill_uris()?;
-
-        let mut total_dependencies = 0usize;
-        let mut orphan_count = 0usize;
-        let mut hub_counts: Vec<(String, usize)> = Vec::new();
-
-        for skill_uri in &all_skills {
-            let deps = cache.dependencies_raw(skill_uri);
-            let dependents = cache.dependents_raw(skill_uri);
-
-            total_dependencies += deps.len();
-
-            if deps.is_empty() && dependents.is_empty() {
-                orphan_count += 1;
-            }
-
-            if !dependents.is_empty() {
-                hub_counts.push((skill_uri.to_string(), dependents.len()));
-            }
-        }
-
-        // Sort hubs by dependent count (descending) and take top 5
-        hub_counts.sort_by_key(|b| Reverse(b.1));
-        let hub_skills: Vec<HubSkill> = hub_counts
-            .into_iter()
-            .take(5)
-            .map(|(uri, count)| HubSkill {
-                uri,
-                dependent_count: count,
-            })
-            .collect();
-
-        let skill_count = skills.len();
-        let avg_deps = if skill_count > 0 {
-            total_dependencies as f64 / skill_count as f64
-        } else {
-            0.0
-        };
-
-        let avg_tokens = total_tokens.checked_div(skill_count).unwrap_or(0);
-
-        let validation_summary = if include_validation {
-            Some(MetricsValidationSummary {
-                passing,
-                with_errors,
-                with_warnings,
-            })
-        } else {
-            None
-        };
-
-        Ok(SkillMetrics {
-            total_skills: skill_count,
-            by_source,
-            by_quality: QualityDistribution {
-                high: quality_high,
-                medium: quality_medium,
-                low: quality_low,
-            },
-            dependency_stats: DependencyStats {
-                total_dependencies,
-                avg_per_skill: avg_deps,
-                orphan_count,
-                hub_skills,
-            },
-            token_stats: TokenStats {
-                total_tokens,
-                avg_per_skill: avg_tokens,
-                largest_skill,
-            },
-            validation_summary,
-        })
+        Ok(compute_skill_metrics(
+            &skills,
+            cache.dependency_graph(),
+            include_validation,
+        ))
     }
 
     // Note: Tool handlers (validate_skills_tool, sync_all_tool, skill_loading_status_tool,
@@ -363,22 +318,21 @@ impl SkillService {
             .into_iter()
             .map(|s| {
                 let uri = format!("skill://skrills/{}/{}", s.source.label(), s.name);
-                let mut raw = RawResource::new(uri, s.name.clone());
-                raw.description = Some(format!(
-                    "Skill from {} [location: {}]",
-                    s.source.label(),
-                    s.source.location()
-                ));
-                raw.mime_type = Some("text/markdown".to_string());
-                Resource::new(raw, None)
+                Resource::new(uri, s.name.clone())
+                    .with_description(format!(
+                        "Skill from {} [location: {}]",
+                        s.source.label(),
+                        s.source.location()
+                    ))
+                    .with_mime_type("text/markdown")
             })
             .collect();
         // Expose AGENTS.md guidelines as a first-class resource for clients, unless disabled.
         if self.expose_agents_doc()? {
-            let mut agents = RawResource::new(AGENTS_URI, AGENTS_NAME);
-            agents.description = Some(AGENTS_DESCRIPTION.to_string());
-            agents.mime_type = Some("text/markdown".to_string());
-            resources.insert(0, Resource::new(agents, None));
+            let agents = Resource::new(AGENTS_URI, AGENTS_NAME)
+                .with_description(AGENTS_DESCRIPTION)
+                .with_mime_type("text/markdown");
+            resources.insert(0, agents);
         }
         if !dup_log.is_empty() {
             for dup in dup_log {
@@ -399,9 +353,12 @@ impl SkillService {
             if !self.expose_agents_doc()? {
                 return Err(anyhow!("resource not found"));
             }
-            return Ok(ReadResourceResult {
-                contents: vec![text_with_location(AGENTS_TEXT, uri, None, "global")],
-            });
+            return Ok(ReadResourceResult::new(vec![text_with_location(
+                AGENTS_TEXT,
+                uri,
+                None,
+                "global",
+            )]));
         }
         if !uri.starts_with("skill://") {
             return Err(anyhow!("unsupported uri"));
@@ -431,7 +388,13 @@ impl SkillService {
             let mut cache = self.cache.lock();
             cache.skill_by_uri(&canonical_uri)?
         };
-        let text = self.read_skill_cached(&meta)?;
+        let read_started = Instant::now();
+        let read = self.read_skill_cached(&meta);
+        let elapsed_ms = u64::try_from(read_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.record_metric("skill invocation", |m| {
+            m.record_skill_invocation(&meta.name, elapsed_ms, read.is_ok(), None)
+        });
+        let text = read?;
 
         let mut contents = vec![text_with_location_and_role(
             text,
@@ -462,7 +425,7 @@ impl SkillService {
             }
         }
 
-        Ok(ReadResourceResult { contents })
+        Ok(ReadResourceResult::new(contents))
     }
 
     /// Reads skill content from disk.
@@ -516,7 +479,7 @@ fn text_with_location(
     source_label: Option<&str>,
     location: &str,
 ) -> ResourceContents {
-    let mut meta = Meta::new();
+    let mut meta = MetaObject::new();
     meta.insert("location".into(), json!(location));
     if let Some(label) = source_label {
         if let Some(rank) = priority_labels()
@@ -544,7 +507,7 @@ fn text_with_location_and_role(
     location: &str,
     role: &str,
 ) -> ResourceContents {
-    let mut meta = Meta::new();
+    let mut meta = MetaObject::new();
     meta.insert("location".into(), json!(location));
     meta.insert("role".into(), json!(role));
     if let Some(label) = source_label {

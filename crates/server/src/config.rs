@@ -22,27 +22,77 @@
 //! # CORS allowed origins (comma-separated)
 //! cors_origins = "http://localhost:3000,https://app.example.com"
 //!
+//! # Extra Host values the server accepts, on top of localhost, 127.0.0.1
+//! # and ::1 (comma-separated). Needed when clients address the server by
+//! # any other name. Each entry is a bare authority, never a URL.
+//! allowed_hosts = "skrills.internal:8080"
+//!
 //! # Bind address for HTTP transport
 //! http = "127.0.0.1:3000"
 //!
 //! # Cache TTL in milliseconds
 //! cache_ttl_ms = 5000
+//!
+//! # Directories an MCP client's `project_dir` must resolve inside
+//! # (recommend-skills-smart, analyze-project-context, suggest-new-skills,
+//! # create-skill). `~` is expanded. Unset admits any path.
+//! project_roots = ["~/src", "/work"]
 //! ```
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// Top-level configuration structure.
-#[derive(Debug, Default, Deserialize)]
+///
+/// Note: `Debug` is manually implemented so unrecognized tables print by name
+/// only, since `[server] auth_token = "secret"` lands there verbatim.
+#[derive(Default, Deserialize)]
 pub struct Config {
     /// Serve command configuration.
     #[serde(default)]
     pub serve: ServeConfig,
+    /// Top-level tables that are not part of the schema, e.g. `[server]`.
+    #[serde(flatten)]
+    unrecognized: BTreeMap<String, toml::Value>,
+}
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("serve", &self.serve)
+            .field(
+                "unrecognized",
+                &self.unrecognized.keys().collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
+impl Config {
+    /// Dotted paths of keys the file sets that skrills does not read.
+    ///
+    /// serde ignores unknown keys, so `allowed_host` or `auth-token` would
+    /// otherwise vanish without a word. Rejecting them outright is worse:
+    /// a parse failure discards the whole file, including an `auth_token`
+    /// that was spelled correctly.
+    pub fn unknown_keys(&self) -> Vec<String> {
+        let top_level = self.unrecognized.keys().cloned();
+        let serve = self
+            .serve
+            .unrecognized
+            .keys()
+            .map(|key| format!("serve.{key}"));
+        top_level.chain(serve).collect()
+    }
 }
 
 /// Configuration for the serve command.
-#[derive(Debug, Default, Deserialize)]
+///
+/// Note: `Debug` is manually implemented to prevent auth_token from being
+/// logged, mirroring `HttpSecurityConfig`.
+#[derive(Default, Deserialize)]
 pub struct ServeConfig {
     /// Bearer token for HTTP authentication.
     pub auth_token: Option<String>,
@@ -54,10 +104,58 @@ pub struct ServeConfig {
     pub tls_auto: Option<bool>,
     /// Comma-separated list of allowed CORS origins.
     pub cors_origins: Option<String>,
+    /// Comma-separated `Host` authorities the server accepts, added to the
+    /// loopback names rmcp allows by default.
+    pub allowed_hosts: Option<String>,
     /// Bind address for HTTP transport (e.g., "127.0.0.1:3000").
     pub http: Option<String>,
     /// Cache TTL in milliseconds for skill discovery.
     pub cache_ttl_ms: Option<u64>,
+    /// Directories a client-supplied `project_dir` must resolve inside.
+    /// `None` leaves `project_dir` unrestricted. Use
+    /// [`ServeConfig::project_roots_expanded`] to expand `~`.
+    pub project_roots: Option<Vec<PathBuf>>,
+    /// Keys under `[serve]` that are not part of the schema.
+    #[serde(flatten)]
+    unrecognized: BTreeMap<String, toml::Value>,
+}
+
+// Custom Debug implementation that redacts auth_token to prevent credential
+// leakage in logs. Unrecognized keys are printed by name only: a hyphenated
+// `auth-token` lands there with its value intact.
+impl std::fmt::Debug for ServeConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServeConfig")
+            .field(
+                "auth_token",
+                &self.auth_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("tls_cert", &self.tls_cert)
+            .field("tls_key", &self.tls_key)
+            .field("tls_auto", &self.tls_auto)
+            .field("cors_origins", &self.cors_origins)
+            .field("allowed_hosts", &self.allowed_hosts)
+            .field("http", &self.http)
+            .field("cache_ttl_ms", &self.cache_ttl_ms)
+            .field("project_roots", &self.project_roots)
+            .field(
+                "unrecognized",
+                &self.unrecognized.keys().collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
+impl ServeConfig {
+    /// `project_roots` with a leading `~` expanded to the home directory.
+    pub fn project_roots_expanded(&self) -> Option<Vec<PathBuf>> {
+        self.project_roots.as_ref().map(|roots| {
+            roots
+                .iter()
+                .map(|root| PathBuf::from(shellexpand::tilde(&root.to_string_lossy()).as_ref()))
+                .collect()
+        })
+    }
 }
 
 /// Returns the path to the config file (~/.skrills/config.toml).
@@ -79,8 +177,10 @@ pub fn load_config() -> Result<Option<Config>> {
         return Ok(None);
     }
 
-    let content = std::fs::read_to_string(&path)?;
-    let config: Config = toml::from_str(&content)?;
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let config: Config =
+        toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
 
     tracing::debug!(
         target: "skrills::config",
@@ -89,6 +189,21 @@ pub fn load_config() -> Result<Option<Config>> {
     );
 
     Ok(Some(config))
+}
+
+/// Applies configuration file settings to environment variables, failing when
+/// the file exists but cannot be read or parsed.
+///
+/// Only sets environment variables that are not already set, preserving
+/// the precedence: CLI > ENV > config file. Callers that start a server
+/// should use this rather than [`apply_config_to_env`]: a typo in the file
+/// would otherwise drop a configured `auth_token` and start unauthenticated.
+pub fn try_apply_config_to_env() -> Result<()> {
+    if let Some(config) = load_config()? {
+        warn_unknown_keys(&config);
+        apply_serve_config_to_env(&config.serve);
+    }
+    Ok(())
 }
 
 /// Applies configuration file settings to environment variables.
@@ -100,33 +215,34 @@ pub fn load_config() -> Result<Option<Config>> {
 /// parsing CLI arguments.
 ///
 /// # Warnings
-/// Logs a warning if the config file exists but fails to parse.
-/// This is a security concern because users may expect auth_token
-/// to be set from config, but a syntax error would cause the server
-/// to start without authentication.
+/// Logs a warning if the config file exists but fails to parse. That is a
+/// security concern for `serve`, where users may expect `auth_token` to be
+/// set from config; use [`try_apply_config_to_env`] there.
 pub fn apply_config_to_env() {
-    match load_config() {
-        Ok(Some(config)) => {
-            apply_serve_config_to_env(&config.serve);
-        }
-        Ok(None) => {
-            // Config file doesn't exist, nothing to apply
-        }
-        Err(e) => {
-            // Config file exists but failed to parse - this is important to warn about
-            // because users may have set auth_token expecting it to be applied
-            tracing::warn!(
-                target: "skrills::config",
-                error = %e,
-                "Failed to parse config file (~/.skrills/config.toml). \
-                 Server may start without expected settings (e.g., auth_token). \
-                 Fix the config file syntax or remove it."
-            );
-            eprintln!(
-                "WARNING: Config file parse error: {}. Server starting without config settings.",
-                e
-            );
-        }
+    if let Err(e) = try_apply_config_to_env() {
+        tracing::warn!(
+            target: "skrills::config",
+            error = %format!("{e:#}"),
+            "Failed to parse config file (~/.skrills/config.toml). \
+             Server may start without expected settings (e.g., auth_token). \
+             Fix the config file syntax or remove it."
+        );
+        eprintln!(
+            "WARNING: Config file parse error: {e:#}. Server starting without config settings."
+        );
+    }
+}
+
+fn warn_unknown_keys(config: &Config) {
+    for key in config.unknown_keys() {
+        tracing::warn!(
+            target: "skrills::config",
+            key = %key,
+            "Unknown key in config file (~/.skrills/config.toml) was ignored"
+        );
+        eprintln!(
+            "WARNING: Unknown key `{key}` in ~/.skrills/config.toml was ignored. Check the spelling."
+        );
     }
 }
 
@@ -151,9 +267,8 @@ fn apply_serve_config_to_env(serve: &ServeConfig) {
         }
     }
 
-    if let Some(ref token) = serve.auth_token {
-        set_if_absent("SKRILLS_AUTH_TOKEN", token);
-    }
+    // `auth_token` is deliberately not exported: every child process would
+    // inherit the bearer token. `serve` reads it from the file directly.
 
     if let Some(ref cert) = serve.tls_cert {
         set_if_absent("SKRILLS_TLS_CERT", cert);
@@ -169,6 +284,10 @@ fn apply_serve_config_to_env(serve: &ServeConfig) {
 
     if let Some(ref origins) = serve.cors_origins {
         set_if_absent("SKRILLS_CORS_ORIGINS", origins);
+    }
+
+    if let Some(ref hosts) = serve.allowed_hosts {
+        set_if_absent("SKRILLS_ALLOWED_HOSTS", hosts);
     }
 
     if let Some(ref bind) = serve.http {
@@ -200,6 +319,29 @@ mod tests {
 
         let config: Config = toml::from_str(toml).unwrap();
         assert!(config.serve.auth_token.is_none());
+        assert!(config.serve.project_roots_expanded().is_none());
+    }
+
+    /// SA-23: `project_roots` is a known key, and `~` expands to HOME.
+    #[test]
+    fn parse_project_roots() {
+        let _guard = crate::test_support::env_guard();
+        let toml = r#"
+            [serve]
+            project_roots = ["~/src", "/work"]
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(
+            config.unknown_keys().is_empty(),
+            "{:?}",
+            config.unknown_keys()
+        );
+        let home = dirs::home_dir().expect("home dir");
+        assert_eq!(
+            config.serve.project_roots_expanded(),
+            Some(vec![home.join("src"), PathBuf::from("/work")])
+        );
     }
 
     #[test]
@@ -211,6 +353,7 @@ mod tests {
             tls_key = "/path/to/key.pem"
             tls_auto = true
             cors_origins = "http://localhost:3000,https://example.com"
+            allowed_hosts = "skrills.internal:8080,10.0.0.5:8080"
             http = "0.0.0.0:8080"
             cache_ttl_ms = 5000
         "#;
@@ -224,27 +367,201 @@ mod tests {
             config.serve.cors_origins.as_deref(),
             Some("http://localhost:3000,https://example.com")
         );
+        assert_eq!(
+            config.serve.allowed_hosts.as_deref(),
+            Some("skrills.internal:8080,10.0.0.5:8080")
+        );
         assert_eq!(config.serve.http.as_deref(), Some("0.0.0.0:8080"));
         assert_eq!(config.serve.cache_ttl_ms, Some(5000));
     }
 
+    /// `config` is a public module, so anything that formats a `ServeConfig`
+    /// would otherwise print the bearer token in plain text.
+    #[test]
+    fn serve_config_debug_redacts_auth_token() {
+        let config = ServeConfig {
+            auth_token: Some("super-secret-token".to_string()),
+            ..Default::default()
+        };
+
+        let rendered = format!("{config:?}");
+
+        assert!(
+            !rendered.contains("super-secret-token"),
+            "Debug output leaked the token: {rendered}"
+        );
+        assert!(
+            rendered.contains("[REDACTED]"),
+            "Debug output should mark the token as redacted: {rendered}"
+        );
+    }
+
+    /// An unrecognized table is kept verbatim so `unknown_keys` can name it,
+    /// which would put a misplaced secret in any Debug output that printed
+    /// values.
+    #[test]
+    fn config_debug_omits_unrecognized_table_values() {
+        let toml = r#"
+            [server]
+            auth_token = "misplaced-secret"
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+
+        let rendered = format!("{config:?}");
+
+        assert!(
+            !rendered.contains("misplaced-secret"),
+            "Debug output leaked an unrecognized table's value: {rendered}"
+        );
+        assert!(
+            rendered.contains("server"),
+            "Debug output should still name the unrecognized table: {rendered}"
+        );
+    }
+
+    /// A hyphenated `auth-token` is kept verbatim so `unknown_keys` can name
+    /// it, which would put the secret in any Debug output that printed values.
+    #[test]
+    fn serve_config_debug_omits_unrecognized_values() {
+        let toml = r#"
+            [serve]
+            auth-token = "hyphenated-secret"
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+
+        let rendered = format!("{:?}", config.serve);
+
+        assert!(
+            !rendered.contains("hyphenated-secret"),
+            "Debug output leaked an unrecognized key's value: {rendered}"
+        );
+        assert!(
+            rendered.contains("auth-token"),
+            "Debug output should still name the unrecognized key: {rendered}"
+        );
+    }
+
+    /// A mistyped key must be named, and must not cost the operator the keys
+    /// they spelled correctly: dropping a good `auth_token` because
+    /// `allowed_host` was misspelled would start the server unauthenticated.
+    #[test]
+    fn unknown_serve_key_is_reported_and_known_keys_still_apply() {
+        let toml = r#"
+            [serve]
+            auth_token = "secret"
+            allowed_host = "skrills.internal:8080"
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert_eq!(config.unknown_keys(), ["serve.allowed_host"]);
+        assert_eq!(config.serve.auth_token.as_deref(), Some("secret"));
+        assert_eq!(config.serve.allowed_hosts, None);
+    }
+
+    #[test]
+    fn hyphenated_auth_token_is_reported_as_unknown() {
+        let toml = r#"
+            [serve]
+            auth-token = "secret"
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert_eq!(config.unknown_keys(), ["serve.auth-token"]);
+        assert_eq!(config.serve.auth_token, None);
+    }
+
+    #[test]
+    fn unknown_top_level_table_is_reported() {
+        let toml = r#"
+            [server]
+            auth_token = "secret"
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert_eq!(config.unknown_keys(), ["server"]);
+    }
+
+    #[test]
+    fn fully_known_config_reports_no_unknown_keys() {
+        let toml = r#"
+            [serve]
+            auth_token = "secret"
+            tls_auto = true
+            allowed_hosts = "skrills.internal:8080"
+            cache_ttl_ms = 10000
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert!(config.unknown_keys().is_empty());
+        assert_eq!(config.serve.cache_ttl_ms, Some(10000));
+    }
+
     #[test]
     fn load_nonexistent_config_returns_none() {
-        // This test relies on the config file not existing in a typical CI environment
-        // In practice, we'd mock the filesystem
-        let result = load_config();
-        let _ = result.expect("load_config should not error");
-        // Config may or may not exist depending on environment
+        let _g = crate::test_support::env_guard();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
+
+        assert!(load_config()
+            .expect("a missing file is not an error")
+            .is_none());
+        try_apply_config_to_env().expect("a missing file is not an error");
+    }
+
+    /// A parse error used to be a warning, so a typo next to `auth_token`
+    /// started the server without authentication.
+    #[test]
+    fn try_apply_config_fails_on_a_file_that_does_not_parse() {
+        let _g = crate::test_support::env_guard();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
+        let _token = crate::test_support::set_env_var("SKRILLS_AUTH_TOKEN", None);
+        let dir = home.path().join(".skrills");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.toml"),
+            "[serve]\nauth_token = \"secret\"\nhttp = 0.0.0.0:3000\n",
+        )
+        .unwrap();
+
+        let err = try_apply_config_to_env().expect_err("a parse error should fail");
+        assert!(format!("{err:#}").contains("config.toml"), "{err:#}");
+        assert!(std::env::var("SKRILLS_AUTH_TOKEN").is_err());
+    }
+
+    #[test]
+    fn try_apply_config_exports_a_valid_file() {
+        let _g = crate::test_support::env_guard();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
+        let _http = crate::test_support::set_env_var("SKRILLS_HTTP", None);
+        let dir = home.path().join(".skrills");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.toml"),
+            "[serve]\nhttp = \"127.0.0.1:3999\"\n",
+        )
+        .unwrap();
+
+        try_apply_config_to_env().unwrap();
+
+        assert_eq!(std::env::var("SKRILLS_HTTP").unwrap(), "127.0.0.1:3999");
     }
 
     #[test]
     fn apply_config_respects_existing_env_vars() {
         let _g = crate::test_support::env_guard();
-        let _token = crate::test_support::set_env_var("SKRILLS_AUTH_TOKEN", Some("env-token"));
+        let _http = crate::test_support::set_env_var("SKRILLS_HTTP", Some("127.0.0.1:1111"));
 
         // Create config with different value
         let serve = ServeConfig {
-            auth_token: Some("config-token".to_string()),
+            http: Some("127.0.0.1:2222".to_string()),
             ..Default::default()
         };
 
@@ -253,10 +570,37 @@ mod tests {
 
         // Env var should remain unchanged
         assert_eq!(
-            std::env::var("SKRILLS_AUTH_TOKEN").unwrap(),
-            "env-token",
+            std::env::var("SKRILLS_HTTP").unwrap(),
+            "127.0.0.1:1111",
             "Config should not override existing env var"
         );
+    }
+
+    /// SB-8: the bearer token stays out of the process environment, where
+    /// every child process (hooks, CLIs, subagents) would inherit it. `serve`
+    /// reads `auth_token` from the file itself.
+    #[test]
+    fn apply_config_does_not_export_auth_token() {
+        let _g = crate::test_support::env_guard();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
+        let _token = crate::test_support::set_env_var("SKRILLS_AUTH_TOKEN", None);
+        let _http = crate::test_support::set_env_var("SKRILLS_HTTP", None);
+        let dir = home.path().join(".skrills");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.toml"),
+            "[serve]\nauth_token = \"secret\"\nhttp = \"127.0.0.1:3999\"\n",
+        )
+        .unwrap();
+
+        try_apply_config_to_env().unwrap();
+
+        assert!(
+            std::env::var("SKRILLS_AUTH_TOKEN").is_err(),
+            "the config-file token must not be exported"
+        );
+        assert_eq!(std::env::var("SKRILLS_HTTP").unwrap(), "127.0.0.1:3999");
     }
 
     #[test]
@@ -275,5 +619,44 @@ mod tests {
 
         assert_eq!(std::env::var("SKRILLS_HTTP").unwrap(), "127.0.0.1:9000");
         assert_eq!(std::env::var("SKRILLS_CACHE_TTL_MS").unwrap(), "7500");
+    }
+
+    /// The config file is the only way a non-CLI user reaches the Host
+    /// allow-list; it has to arrive in the env var clap reads.
+    #[test]
+    fn apply_config_exports_allowed_hosts_for_clap() {
+        let _g = crate::test_support::env_guard();
+        let _hosts = crate::test_support::set_env_var("SKRILLS_ALLOWED_HOSTS", None);
+
+        let serve = ServeConfig {
+            allowed_hosts: Some("mcp.internal:8080,10.0.0.5".to_string()),
+            ..Default::default()
+        };
+
+        apply_serve_config_to_env(&serve);
+
+        assert_eq!(
+            std::env::var("SKRILLS_ALLOWED_HOSTS").unwrap(),
+            "mcp.internal:8080,10.0.0.5"
+        );
+    }
+
+    #[test]
+    fn apply_config_keeps_allowed_hosts_already_in_env() {
+        let _g = crate::test_support::env_guard();
+        let _hosts = crate::test_support::set_env_var("SKRILLS_ALLOWED_HOSTS", Some("env.example"));
+
+        let serve = ServeConfig {
+            allowed_hosts: Some("config.example".to_string()),
+            ..Default::default()
+        };
+
+        apply_serve_config_to_env(&serve);
+
+        assert_eq!(
+            std::env::var("SKRILLS_ALLOWED_HOSTS").unwrap(),
+            "env.example",
+            "an operator's env var outranks the config file"
+        );
     }
 }

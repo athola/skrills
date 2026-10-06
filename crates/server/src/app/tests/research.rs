@@ -1003,3 +1003,96 @@ fn edge_kind_enum_matches_schema() {
         );
     }
 }
+
+// -------------------------------------------------------------------------
+// fetch_pdf helpers (SA-8, SA-9, SA-40)
+// -------------------------------------------------------------------------
+
+use super::super::research::{check_pdf_url, download_pdf, pdf_cache_file_name};
+
+/// SA-40: DOIs that used to collide get distinct files with no separators.
+#[test]
+fn pdf_cache_file_name_is_injective_and_flat() {
+    let a = pdf_cache_file_name("10.1/a_b");
+    let b = pdf_cache_file_name("10.1/a/b");
+    assert_ne!(a, b);
+    for name in [&a, &b, &pdf_cache_file_name("10.1/../../etc")] {
+        assert!(!name.contains('/') && !name.contains('\\'), "{name}");
+        assert!(name.ends_with(".pdf"));
+    }
+}
+
+/// SA-9: only https on a public host is accepted.
+#[test]
+fn check_pdf_url_rejects_local_and_plain_http_targets() {
+    let ok = reqwest::Url::parse("https://arxiv.org/pdf/1234.pdf").unwrap();
+    assert!(check_pdf_url(&ok).is_ok());
+    for bad in [
+        "http://arxiv.org/x.pdf",
+        "file:///etc/passwd",
+        "https://localhost/x.pdf",
+        "https://api.localhost/x.pdf",
+        "https://127.0.0.1/x.pdf",
+        "https://169.254.169.254/latest/meta-data",
+        "https://10.0.0.5/x.pdf",
+        "https://192.168.1.1/x.pdf",
+        "https://100.64.0.1/x.pdf",
+        "https://[::1]/x.pdf",
+        "https://[fd00::1]/x.pdf",
+        "https://[fe80::1]/x.pdf",
+        "https://[::ffff:127.0.0.1]/x.pdf",
+    ] {
+        let url = reqwest::Url::parse(bad).unwrap();
+        assert!(check_pdf_url(&url).is_err(), "{bad} should be refused");
+    }
+}
+
+async fn serve(body: Vec<u8>) -> wiremock::MockServer {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, ResponseTemplate};
+    let server = wiremock::MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
+        .mount(&server)
+        .await;
+    server
+}
+
+/// SA-8: a PDF is written whole; an HTML error page or an oversized body
+/// leaves no cache file behind.
+#[tokio::test]
+async fn download_pdf_checks_magic_and_size_and_writes_atomically() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = reqwest::Client::new();
+
+    let pdf = b"%PDF-1.7\nbody".to_vec();
+    let server = serve(pdf.clone()).await;
+    let dest = dir.path().join("ok.pdf");
+    let url = reqwest::Url::parse(&server.uri()).unwrap();
+    let n = download_pdf(&client, url, &dest, 1024).await.unwrap();
+    assert_eq!(n, pdf.len() as u64);
+    assert_eq!(std::fs::read(&dest).unwrap(), pdf);
+
+    let server = serve(b"<html>not found</html>".to_vec()).await;
+    let dest = dir.path().join("html.pdf");
+    let url = reqwest::Url::parse(&server.uri()).unwrap();
+    let err = download_pdf(&client, url, &dest, 1024).await.unwrap_err();
+    assert!(err.to_string().contains("did not return a PDF"), "{err}");
+    assert!(!dest.exists());
+
+    let mut big = b"%PDF-".to_vec();
+    big.resize(4096, b'x');
+    let server = serve(big).await;
+    let dest = dir.path().join("big.pdf");
+    let url = reqwest::Url::parse(&server.uri()).unwrap();
+    let err = download_pdf(&client, url, &dest, 1024).await.unwrap_err();
+    assert!(err.to_string().contains("larger than"), "{err}");
+    assert!(!dest.exists());
+
+    // No stray temporary files are left in the cache directory.
+    let names: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names, vec![std::ffi::OsString::from("ok.pdf")]);
+}

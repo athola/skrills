@@ -12,77 +12,58 @@ use tempfile::tempdir;
 #[test]
 fn test_parse_trace_target_claude_returns_claude_target() {
     let args = json!({"target": "claude"}).as_object().cloned().unwrap();
-    let target = SkillService::parse_trace_target(&args);
+    let target = SkillService::parse_trace_target(&args).unwrap();
     assert_eq!(format!("{:?}", target), "Claude");
 }
 
 #[test]
 fn test_parse_trace_target_codex_returns_codex_target() {
     let args = json!({"target": "codex"}).as_object().cloned().unwrap();
-    let target = SkillService::parse_trace_target(&args);
+    let target = SkillService::parse_trace_target(&args).unwrap();
     assert_eq!(format!("{:?}", target), "Codex");
 }
 
 #[test]
-fn test_parse_trace_target_both_or_invalid_returns_both_target() {
-    // Test "both" explicitly
+fn test_parse_trace_target_both_and_missing_return_both() {
     let args = json!({"target": "both"}).as_object().cloned().unwrap();
-    let target = SkillService::parse_trace_target(&args);
+    let target = SkillService::parse_trace_target(&args).unwrap();
     assert_eq!(format!("{:?}", target), "Both");
 
-    // Test missing/invalid target (defaults to both)
     let args = json!({}).as_object().cloned().unwrap();
-    let target = SkillService::parse_trace_target(&args);
-    assert_eq!(format!("{:?}", target), "Both");
-
-    // Test random invalid value
-    let args = json!({"target": "invalid"}).as_object().cloned().unwrap();
-    let target = SkillService::parse_trace_target(&args);
+    let target = SkillService::parse_trace_target(&args).unwrap();
     assert_eq!(format!("{:?}", target), "Both");
 }
 
-/// Tests for parse_trace_target case sensitivity
-/// GIVEN uppercase and mixed-case target values
+/// GIVEN a misspelled or wrongly cased target
 /// WHEN parse_trace_target is called
-/// THEN it should treat them as invalid and default to Both
-/// NOTE: This documents intentional case-sensitive matching behavior
+/// THEN it is rejected rather than instrumenting both trees (SA-33)
 #[test]
-fn test_parse_trace_target_case_sensitivity() {
-    // Uppercase "CLAUDE" should NOT match "claude"
-    let args = json!({"target": "CLAUDE"}).as_object().cloned().unwrap();
-    let target = SkillService::parse_trace_target(&args);
-    assert_eq!(
-        format!("{:?}", target),
-        "Both",
-        "Uppercase CLAUDE should default to Both (case-sensitive matching)"
-    );
+fn test_parse_trace_target_rejects_unknown_values() {
+    for bad in ["invalid", "cluade", "CLAUDE", "Claude", "CODEX", "BOTH"] {
+        let args = json!({"target": bad}).as_object().cloned().unwrap();
+        let err =
+            SkillService::parse_trace_target(&args).expect_err("unknown target must be rejected");
+        assert!(err.to_string().contains(bad), "{err}");
+    }
+}
 
-    // Mixed case "Claude" should NOT match "claude"
-    let args = json!({"target": "Claude"}).as_object().cloned().unwrap();
-    let target = SkillService::parse_trace_target(&args);
-    assert_eq!(
-        format!("{:?}", target),
-        "Both",
-        "Mixed case Claude should default to Both (case-sensitive matching)"
+/// GIVEN validate-skills with an unknown target
+/// THEN the call fails instead of validating for both clients (SA-33)
+#[test]
+fn validate_skills_rejects_unknown_target() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let _cache = crate::test_support::set_env_var(
+        "SKRILLS_CACHE_PATH",
+        Some(temp.path().join("cache.json").to_str().unwrap()),
     );
-
-    // Uppercase "CODEX" should NOT match "codex"
-    let args = json!({"target": "CODEX"}).as_object().cloned().unwrap();
-    let target = SkillService::parse_trace_target(&args);
-    assert_eq!(
-        format!("{:?}", target),
-        "Both",
-        "Uppercase CODEX should default to Both (case-sensitive matching)"
-    );
-
-    // Uppercase "BOTH" should NOT match "both" but still default to Both
-    let args = json!({"target": "BOTH"}).as_object().cloned().unwrap();
-    let target = SkillService::parse_trace_target(&args);
-    assert_eq!(
-        format!("{:?}", target),
-        "Both",
-        "Uppercase BOTH should default to Both (wildcard default)"
-    );
+    let service =
+        SkillService::new_with_roots_for_test(Vec::new(), Duration::from_secs(60)).unwrap();
+    let args = json!({"target": "cluade"}).as_object().cloned().unwrap();
+    let err = service
+        .validate_skills_tool(args)
+        .expect_err("unknown target must be rejected");
+    assert!(err.to_string().contains("cluade"), "{err}");
 }
 
 /// Tests for skill_loading_status_tool

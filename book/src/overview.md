@@ -37,8 +37,8 @@ skrills sync                # Bidirectional sync
 You can expose these capabilities directly to your AI assistant by running Skrills as an MCP server, or launch the browser dashboard:
 
 ```bash
-skrills serve                    # MCP server over stdio
-skrills serve --http --open      # Browser dashboard with REST API
+skrills serve                               # MCP server over stdio
+skrills serve --http 127.0.0.1:3000 --open  # Browser dashboard with REST API
 ```
 
 ### HTML Portal

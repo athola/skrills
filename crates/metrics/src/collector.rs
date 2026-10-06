@@ -107,7 +107,8 @@ impl MetricsCollector {
 
     /// Create a persistent metrics collector at the specified path.
     ///
-    /// Uses WAL mode for concurrent access.
+    /// Uses WAL mode for concurrent access. Rows older than 30 days are
+    /// deleted on open (see [`Self::apply_retention_policy`]).
     pub fn persistent(path: PathBuf) -> Result<Self> {
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
@@ -123,11 +124,17 @@ impl MetricsCollector {
 
         let (sender, _) = broadcast::channel(CHANNEL_CAPACITY);
 
-        Ok(Self {
+        let collector = Self {
             conn: Mutex::new(conn),
             sender,
             mode: StorageMode::Persistent(path),
-        })
+        };
+        // The on-disk store is shared and long-lived, so the 30-day
+        // retention runs on open. A failure here costs only disk space.
+        if let Err(e) = collector.apply_retention_policy() {
+            tracing::warn!(error = %e, "metrics retention cleanup failed");
+        }
+        Ok(collector)
     }
 
     /// Create a persistent metrics collector at the default path.
@@ -163,15 +170,16 @@ impl MetricsCollector {
             }
         }
 
+        if matches!(self.mode, StorageMode::Persistent(_)) {
+            return Ok(());
+        }
+
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
         let conn = self.conn.lock();
-        conn.execute_batch(&format!(
-            "VACUUM INTO '{}'",
-            path.to_string_lossy().replace('\'', "''")
-        ))?;
+        conn.execute("VACUUM INTO ?1", [path.to_string_lossy()])?;
         Ok(())
     }
 
@@ -363,10 +371,10 @@ impl MetricsCollector {
                 id: row.get(0)?,
                 skill_name: row.get(1)?,
                 plugin: row.get(2)?,
-                duration_ms: row.get::<_, i64>(3)? as u64,
-                success: row.get::<_, i32>(4)? != 0,
+                duration_ms: row.get::<_, Option<i64>>(3)?.unwrap_or(0) as u64,
+                success: row.get::<_, Option<i32>>(4)?.unwrap_or(0) != 0,
                 tokens_used: row.get::<_, Option<i64>>(5)?.map(|t| t as u64),
-                created_at: row.get(6)?,
+                created_at: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
             })
         })?;
         for inv in invocations {
@@ -379,14 +387,19 @@ impl MetricsCollector {
              FROM validation_runs ORDER BY created_at DESC, id DESC LIMIT ?1",
         )?;
         let validations = stmt.query_map([limit as i64], |row| {
-            let passed_json: String = row.get(2)?;
-            let failed_json: String = row.get(3)?;
+            // A NULL check list reads as no checks rather than failing the query.
+            let passed_json = row
+                .get::<_, Option<String>>(2)?
+                .unwrap_or_else(|| "[]".into());
+            let failed_json = row
+                .get::<_, Option<String>>(3)?
+                .unwrap_or_else(|| "[]".into());
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
                 passed_json,
                 failed_json,
-                row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(4)?.unwrap_or_default(),
             ))
         })?;
         for val in validations {
@@ -431,13 +444,13 @@ impl MetricsCollector {
         )?;
         let syncs = stmt.query_map([limit as i64], |row| {
             let op_str: String = row.get(1)?;
-            let status_str: String = row.get(3)?;
+            let status_str = row.get::<_, Option<String>>(3)?.unwrap_or_default();
             Ok(MetricEvent::Sync {
                 id: row.get(0)?,
                 operation: parse_sync_operation(&op_str),
-                files_count: row.get::<_, i64>(2)? as usize,
+                files_count: row.get::<_, Option<i64>>(2)?.unwrap_or(0) as usize,
                 status: parse_sync_status(&status_str),
-                created_at: row.get(4)?,
+                created_at: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
             })
         })?;
         for sync in syncs {
@@ -457,7 +470,7 @@ impl MetricsCollector {
                 category: row.get(2)?,
                 outcome: parse_rule_outcome(&outcome_str),
                 duration_ms: row.get::<_, Option<i64>>(3)?.map(|d| d as u64),
-                created_at: row.get(5)?,
+                created_at: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
             })
         })?;
         for trigger in triggers {
@@ -539,30 +552,13 @@ impl MetricsCollector {
         let mut details = Vec::new();
         for row in rows {
             let (id, skill_name, passed_json, failed_json, created_at) = row?;
-            let checks_passed: Vec<String> = match serde_json::from_str(&passed_json) {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(
-                        id,
-                        skill_name = %skill_name,
-                        error = %e,
-                        "failed to deserialize checks_passed JSON, skipping row"
-                    );
-                    continue;
-                }
-            };
-            let checks_failed: Vec<String> = match serde_json::from_str(&failed_json) {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(
-                        id,
-                        skill_name = %skill_name,
-                        error = %e,
-                        "failed to deserialize checks_failed JSON, skipping row"
-                    );
-                    continue;
-                }
-            };
+            // Reported rather than skipped so that history agrees with the
+            // summary and the export on the same rows: skipping the newest run
+            // served an older one as the current result.
+            let checks_passed =
+                decode_validation_checks(&passed_json, &skill_name, "checks_passed")?;
+            let checks_failed =
+                decode_validation_checks(&failed_json, &skill_name, "checks_failed")?;
             details.push(ValidationDetail {
                 id,
                 skill_name,
@@ -603,9 +599,13 @@ impl MetricsCollector {
         let mut summary = ValidationSummary::default();
 
         for row in rows {
-            let (_skill_name, passed_json, failed_json) = row?;
-            let passed: Vec<String> = serde_json::from_str(&passed_json).unwrap_or_default();
-            let failed: Vec<String> = serde_json::from_str(&failed_json).unwrap_or_default();
+            let (skill_name, passed_json, failed_json) = row?;
+            // Not `unwrap_or_default()`: an unreadable `checks_failed` would
+            // decode as an empty list, and an empty failure list is how a skill
+            // is counted valid. A corrupt row would inflate the pass count
+            // rather than report that the run could not be read.
+            let passed = decode_validation_checks(&passed_json, &skill_name, "checks_passed")?;
+            let failed = decode_validation_checks(&failed_json, &skill_name, "checks_failed")?;
 
             summary.total_skills += 1;
             if failed.is_empty() {
@@ -653,8 +653,15 @@ impl MetricsCollector {
         let mut skills = Vec::new();
         for row in rows {
             let (id, skill_name, passed_json, failed_json, created_at) = row?;
-            let checks_passed: Vec<String> = serde_json::from_str(&passed_json).unwrap_or_default();
-            let checks_failed: Vec<String> = serde_json::from_str(&failed_json).unwrap_or_default();
+            // `get_validation_summary` above reads these same rows and already
+            // rejects a corrupt one, so this decode only fires on a row written
+            // between the two queries. It stays an error rather than
+            // `unwrap_or_default()` because an empty `checks_failed` is how a
+            // skill is reported valid.
+            let checks_passed =
+                decode_validation_checks(&passed_json, &skill_name, "checks_passed")?;
+            let checks_failed =
+                decode_validation_checks(&failed_json, &skill_name, "checks_failed")?;
 
             let status = if checks_failed.is_empty() {
                 "valid"
@@ -1062,6 +1069,22 @@ impl MetricsCollector {
     }
 }
 
+/// Decode one `checks_passed` / `checks_failed` column of a validation run.
+///
+/// The failure names the skill and the column: a repair means finding that one
+/// row, and `serde_json`'s own message carries neither.
+fn decode_validation_checks(
+    json: &str,
+    skill_name: &str,
+    column: &'static str,
+) -> Result<Vec<String>> {
+    serde_json::from_str(json).map_err(|source| MetricsError::CorruptValidationRow {
+        skill_name: skill_name.to_owned(),
+        column,
+        source,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1096,6 +1119,74 @@ mod tests {
         let stats = collector.get_skill_stats("test-skill").unwrap();
         assert_eq!(stats.total_invocations(), 1);
         assert_eq!(stats.failed_invocations, 1);
+    }
+
+    /// A corrupt `checks_failed` column used to decode as an empty list, and
+    /// an empty failure list is exactly how a skill is counted valid: the
+    /// summary reported a failing skill as passing instead of reporting that
+    /// the row could not be read.
+    #[test]
+    fn validation_summary_reports_corrupt_row_instead_of_counting_it_valid() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        collector
+            .record_validation("broken-skill", &["check1"], &["check2"])
+            .unwrap();
+        {
+            let conn = collector.conn.lock();
+            conn.execute(
+                "UPDATE validation_runs SET checks_failed = ?1 WHERE skill_name = ?2",
+                rusqlite::params!["{not json", "broken-skill"],
+            )
+            .unwrap();
+        }
+
+        let result = collector.get_validation_summary();
+
+        let Err(MetricsError::CorruptValidationRow {
+            skill_name, column, ..
+        }) = result
+        else {
+            panic!(
+                "corrupt checks_failed should name the row, got {:?}",
+                result.map(|s| (s.total_skills, s.valid))
+            );
+        };
+        assert_eq!(skill_name, "broken-skill");
+        assert_eq!(column, "checks_failed");
+    }
+
+    /// History used to `warn + continue` past a corrupt row: with `limit` 1 the
+    /// newest run returned nothing, and with a larger limit an older run was
+    /// served as the current one, so the three readers of these rows disagreed.
+    #[test]
+    fn validation_history_reports_corrupt_row_instead_of_serving_an_older_run() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        collector
+            .record_validation("broken-skill", &["old-check"], &[])
+            .unwrap();
+        collector
+            .record_validation("broken-skill", &["check1"], &["check2"])
+            .unwrap();
+        {
+            let conn = collector.conn.lock();
+            conn.execute(
+                "UPDATE validation_runs SET checks_passed = ?1
+                 WHERE id = (SELECT MAX(id) FROM validation_runs WHERE skill_name = ?2)",
+                rusqlite::params!["{not json", "broken-skill"],
+            )
+            .unwrap();
+        }
+
+        let history = collector.get_validation_history("broken-skill", 2);
+
+        let Err(MetricsError::CorruptValidationRow {
+            skill_name, column, ..
+        }) = history
+        else {
+            panic!("corrupt checks_passed should name the row, got {history:?}");
+        };
+        assert_eq!(skill_name, "broken-skill");
+        assert_eq!(column, "checks_passed");
     }
 
     #[test]
@@ -2009,5 +2100,94 @@ mod tests {
             let v = collector.collect_metric_values(hostile, window).unwrap();
             assert!(v.is_empty(), "hostile metric name leaked rows: {hostile:?}");
         }
+    }
+
+    /// RT-42: the doc promised a no-op for a persistent collector, but it
+    /// copied the whole database.
+    #[test]
+    fn flush_to_disk_is_a_no_op_for_a_persistent_collector() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let collector = MetricsCollector::persistent(temp_dir.path().join("live.db")).unwrap();
+        let target = temp_dir.path().join("copy.db");
+        collector.flush_to_disk(&target).unwrap();
+        assert!(
+            !target.exists(),
+            "a persistent collector must not copy itself"
+        );
+    }
+
+    /// RT-42: the path is bound as a parameter, so quotes in it are data.
+    #[test]
+    fn flush_to_disk_handles_a_quote_in_the_path() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        collector
+            .record_skill_invocation("quoted", 1, true, None)
+            .unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let target = temp_dir.path().join("it's.db");
+        collector.flush_to_disk(&target).unwrap();
+        let copy = MetricsCollector::persistent(target).unwrap();
+        assert_eq!(
+            copy.get_skill_stats("quoted").unwrap().total_invocations(),
+            1
+        );
+    }
+
+    /// RT-44: the 30-day retention was never applied to the on-disk store.
+    #[test]
+    fn opening_a_persistent_store_applies_retention() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("metrics.db");
+        {
+            let collector = MetricsCollector::persistent(path.clone()).unwrap();
+            collector
+                .record_skill_invocation("recent", 1, true, None)
+                .unwrap();
+            collector
+                .conn
+                .lock()
+                .execute(
+                    "INSERT INTO skill_invocations (skill_name, duration_ms, success, created_at)
+                     VALUES ('ancient', 1, 1, datetime('now', '-31 days'))",
+                    [],
+                )
+                .unwrap();
+        }
+
+        let reopened = MetricsCollector::persistent(path).unwrap();
+        assert_eq!(
+            reopened
+                .get_skill_stats("ancient")
+                .unwrap()
+                .total_invocations(),
+            0
+        );
+        assert_eq!(
+            reopened
+                .get_skill_stats("recent")
+                .unwrap()
+                .total_invocations(),
+            1
+        );
+    }
+
+    /// RT-46: a NULL in a nullable column failed the whole query.
+    #[test]
+    fn recent_events_tolerate_null_columns() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        {
+            let conn = collector.conn.lock();
+            conn.execute_batch(
+                "INSERT INTO skill_invocations (skill_name, duration_ms, success, created_at)
+                     VALUES ('s', NULL, NULL, NULL);
+                 INSERT INTO validation_runs (skill_name, checks_passed, checks_failed, created_at)
+                     VALUES ('v', NULL, NULL, NULL);
+                 INSERT INTO sync_events (operation, files_count, status, created_at)
+                     VALUES ('push', NULL, NULL, NULL);",
+            )
+            .unwrap();
+        }
+        let events = collector.get_recent_events(10).unwrap();
+        assert_eq!(events.len(), 3, "{events:?}");
     }
 }

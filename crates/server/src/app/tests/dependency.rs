@@ -5,13 +5,11 @@ use skrills_discovery::SkillRoot;
 use std::time::Duration;
 use tempfile::tempdir;
 
-#[test]
-fn test_dependency_graph_integration() {
-    // Initialize tracing for test
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("skrills::deps=debug")
-        .try_init();
-
+/// Builds skill-a -> {skill-b, skill-c} -> skill-d in a temp root.
+///
+/// The `TempDir` is returned alongside the service because dropping it would
+/// delete the skills the service is about to scan.
+fn service_with_dependency_chain() -> (tempfile::TempDir, SkillService) {
     let temp = tempdir().expect("create temp directory");
     let skills_dir = temp.path().join("skills");
     fs::create_dir_all(&skills_dir).expect("create skills directory");
@@ -86,6 +84,17 @@ Base skill with no dependencies.
 
     // Force refresh to build the graph
     service.invalidate_cache().expect("invalidate cache");
+    (temp, service)
+}
+
+#[test]
+fn test_dependency_graph_integration() {
+    // Initialize tracing for test
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("skrills::deps=debug")
+        .try_init();
+
+    let (_temp, service) = service_with_dependency_chain();
     let skills = service.current_skills_with_dups().expect("get skills").0;
 
     // Verify skills were discovered
@@ -137,6 +146,41 @@ Base skill with no dependencies.
     assert!(trans_deps.contains(&"skill://skrills/extra0/skill-a/SKILL.md".to_string()));
     assert!(trans_deps.contains(&"skill://skrills/extra0/skill-b/SKILL.md".to_string()));
     assert!(trans_deps.contains(&"skill://skrills/extra0/skill-c/SKILL.md".to_string()));
+}
+
+/// GIVEN skill-a depends on skill-b, which depends on skill-d
+/// WHEN get_direct_dependencies is called for skill-a
+/// THEN only skill-b and skill-c come back, not the transitive skill-d
+#[test]
+fn get_direct_dependencies_excludes_transitive_edges() {
+    let (_temp, service) = service_with_dependency_chain();
+
+    let direct = service
+        .get_direct_dependencies("skill://skrills/extra0/skill-a/SKILL.md")
+        .expect("direct dependencies of skill-a");
+
+    assert_eq!(
+        direct,
+        vec![
+            "skill://skrills/extra0/skill-b/SKILL.md".to_string(),
+            "skill://skrills/extra0/skill-c/SKILL.md".to_string(),
+        ]
+    );
+}
+
+/// GIVEN a service with a known skill set
+/// WHEN has_skill is asked about a known and an unknown URI
+/// THEN it answers true then false without exposing the cache
+#[test]
+fn has_skill_distinguishes_known_from_unknown_uris() {
+    let (_temp, service) = service_with_dependency_chain();
+
+    assert!(service
+        .has_skill("skill://skrills/extra0/skill-a/SKILL.md")
+        .expect("known skill"));
+    assert!(!service
+        .has_skill("skill://skrills/extra0/does-not-exist/SKILL.md")
+        .expect("unknown skill"));
 }
 
 #[test]

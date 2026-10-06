@@ -31,34 +31,9 @@ pub fn read_preferences(root: &Path) -> Result<Preferences> {
 }
 
 /// Writes preferences to the config.json file.
+///
+/// Only `model` is set; every other key (`trusted_folders`, `allowed_urls`,
+/// `denied_urls`, ...) is preserved.
 pub fn write_preferences(root: &Path, prefs: &Preferences) -> Result<WriteReport> {
-    let path = config_path(root);
-
-    // CRITICAL: Read existing config to preserve security fields
-    // (trusted_folders, allowed_urls, denied_urls)
-    let mut config: serde_json::Value = if path.exists() {
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read preferences: {}", path.display()))?;
-        serde_json::from_str(&content)
-            .with_context(|| format!("Failed to parse preferences as JSON: {}", path.display()))?
-    } else {
-        serde_json::json!({})
-    };
-
-    let mut report = WriteReport::default();
-
-    // Only update the model field - leave all other fields untouched
-    if let Some(model) = &prefs.model {
-        config["model"] = serde_json::json!(model);
-        report.written += 1;
-    }
-
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create config directory: {}", parent.display()))?;
-    }
-    fs::write(&path, serde_json::to_string_pretty(&config)?)
-        .with_context(|| format!("Failed to write preferences: {}", path.display()))?;
-
-    Ok(report)
+    crate::adapters::json_config::write_model(&config_path(root), prefs.model.as_deref())
 }

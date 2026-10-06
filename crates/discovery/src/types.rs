@@ -334,8 +334,9 @@ impl std::fmt::Display for AgentModel {
 /// - Security issues
 /// ```
 ///
-/// The `tools` and `skills` fields accept comma-separated strings in the
-/// YAML frontmatter, which are parsed into `Vec<String>` in `AgentConfig`.
+/// The `tools` and `skills` fields accept a comma-separated string or a YAML
+/// list (`tools: [Read, Grep]`), and are parsed into `Vec<String>` in
+/// `AgentConfig`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     /// Agent name.
@@ -364,45 +365,36 @@ struct RawAgentFrontmatter {
     name: Option<String>,
     /// Agent description.
     description: Option<String>,
-    /// Tools as comma-separated string (Claude Code format).
-    tools: Option<String>,
+    /// Tools as a comma-separated string (Claude Code format) or a YAML list.
+    tools: Option<StringOrList>,
     /// Model to use.
     model: Option<String>,
     /// Permission mode (camelCase in YAML).
     #[serde(rename = "permissionMode")]
     permission_mode: Option<String>,
-    /// Skills as comma-separated string.
-    skills: Option<String>,
+    /// Skills as a comma-separated string or a YAML list.
+    skills: Option<StringOrList>,
 }
 
-/// Split content into frontmatter YAML and body content.
-///
-/// Returns (frontmatter_yaml, body_content).
-fn split_agent_frontmatter(content: &str) -> (Option<String>, String) {
-    let trimmed = content.trim_start();
+/// A frontmatter field written either as `a, b` or as `[a, b]`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum StringOrList {
+    Comma(String),
+    List(Vec<String>),
+}
 
-    if !trimmed.starts_with("---") {
-        return (None, content.to_string());
-    }
-
-    // Find content after opening ---
-    let after_open = &trimmed[3..];
-    let after_open = after_open.trim_start_matches(['\r', '\n']);
-
-    // Find closing ---
-    if let Some(end_pos) = after_open.find("\n---") {
-        let yaml = &after_open[..end_pos];
-        let rest = &after_open[end_pos + 4..];
-        let rest = rest.trim_start_matches(['\r', '\n']);
-        (Some(yaml.to_string()), rest.to_string())
-    } else if let Some(end_pos) = after_open.find("\r\n---") {
-        let yaml = &after_open[..end_pos];
-        let rest = &after_open[end_pos + 5..];
-        let rest = rest.trim_start_matches(['\r', '\n']);
-        (Some(yaml.to_string()), rest.to_string())
-    } else {
-        // No closing ---, treat entire content as body
-        (None, content.to_string())
+impl StringOrList {
+    /// Trimmed, non-empty entries, whichever form was written.
+    fn into_items(self) -> Vec<String> {
+        match self {
+            Self::Comma(s) => parse_comma_list(&s),
+            Self::List(items) => items
+                .into_iter()
+                .map(|item| item.trim().to_string())
+                .filter(|item| !item.is_empty())
+                .collect(),
+        }
     }
 }
 
@@ -418,7 +410,7 @@ fn parse_comma_list(s: &str) -> Vec<String> {
 ///
 /// Extracts YAML frontmatter and converts it to `AgentConfig`.
 pub fn parse_agent_config(content: &str, fallback_name: &str) -> Result<AgentConfig> {
-    let (yaml_opt, body) = split_agent_frontmatter(content);
+    let (yaml_opt, body, _line) = skrills_validate::frontmatter::split_frontmatter(content);
 
     let raw = if let Some(yaml) = yaml_opt {
         serde_yaml::from_str::<RawAgentFrontmatter>(&yaml).map_err(crate::DiscoveryError::from)?
@@ -426,11 +418,8 @@ pub fn parse_agent_config(content: &str, fallback_name: &str) -> Result<AgentCon
         RawAgentFrontmatter::default()
     };
 
-    // Convert tools from comma-separated string to Vec
-    let tools = raw.tools.map(|t| parse_comma_list(&t));
-
-    // Convert skills from comma-separated string to Vec
-    let skills = raw.skills.map(|s| parse_comma_list(&s));
+    let tools = raw.tools.map(StringOrList::into_items);
+    let skills = raw.skills.map(StringOrList::into_items);
 
     // Parse model string into AgentModel enum
     let model = raw.model.map(|m| match m.to_lowercase().as_str() {
@@ -510,6 +499,24 @@ pub struct Diagnostics {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn parse_agent_config_accepts_list_form_tools_and_skills() {
+        let content = "---\nname: lister\ntools: [Read, Write, Bash]\nskills:\n  - a:one\n  - b:two\n---\nBody\n";
+        let config = parse_agent_config(content, "fallback").unwrap();
+        assert_eq!(
+            config.tools,
+            Some(vec!["Read".into(), "Write".into(), "Bash".into()])
+        );
+        assert_eq!(config.skills, Some(vec!["a:one".into(), "b:two".into()]));
+    }
+
+    #[test]
+    fn parse_agent_config_list_form_drops_blank_entries_like_the_string_form() {
+        let content = "---\nname: lister\ntools: [\" Read \", \"\"]\n---\nBody\n";
+        let config = parse_agent_config(content, "fallback").unwrap();
+        assert_eq!(config.tools, Some(vec!["Read".into()]));
+    }
 
     // ============================================================
     // AgentConfig parsing tests
@@ -699,34 +706,6 @@ Content."#
             let config = parse_agent_config(&content, "fallback").unwrap();
             assert_eq!(config.permission_mode, Some(mode.to_string()));
         }
-    }
-
-    #[test]
-    fn test_split_agent_frontmatter_basic() {
-        let content = "---\nname: test\n---\nBody content";
-        let (yaml, body) = split_agent_frontmatter(content);
-
-        assert!(yaml.is_some());
-        assert_eq!(yaml.unwrap(), "name: test");
-        assert_eq!(body, "Body content");
-    }
-
-    #[test]
-    fn test_split_agent_frontmatter_no_frontmatter() {
-        let content = "# Just markdown";
-        let (yaml, body) = split_agent_frontmatter(content);
-
-        assert!(yaml.is_none());
-        assert_eq!(body, content);
-    }
-
-    #[test]
-    fn test_split_agent_frontmatter_leading_whitespace() {
-        let content = "  \n  ---\nname: test\n---\nBody";
-        let (yaml, _body) = split_agent_frontmatter(content);
-
-        assert!(yaml.is_some());
-        assert_eq!(yaml.unwrap(), "name: test");
     }
 
     #[test]

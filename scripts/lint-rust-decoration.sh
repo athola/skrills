@@ -24,11 +24,22 @@ RG_ARGS=(
   -e '//\s*─{20,}'
 )
 
-if rg "${RG_ARGS[@]}" .; then
-  echo "" >&2
-  echo "ERROR: decorative separator comments (// ─...) detected." >&2
-  echo "Replace with a blank line + Rustdoc section comment, or remove." >&2
-  exit 1
-fi
+# See lint-prose-slop.sh: an `if rg ...` treats ripgrep's exit 2 (error) as
+# "no match", so the gate reported clean instead of failing.
+rg_rc=0
+rg "${RG_ARGS[@]}" . || rg_rc=$?
+case "${rg_rc}" in
+  0)
+    echo "" >&2
+    echo "ERROR: decorative separator comments (// ─...) detected." >&2
+    echo "Replace with a blank line + Rustdoc section comment, or remove." >&2
+    exit 1
+    ;;
+  1) ;;
+  *)
+    echo "ERROR: ripgrep failed (exit ${rg_rc}); decoration lint did not run." >&2
+    exit 2
+    ;;
+esac
 
 echo "rust-decoration lint clean (no // ─{20,} separator blocks)"

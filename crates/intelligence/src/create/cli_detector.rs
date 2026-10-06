@@ -62,21 +62,46 @@ pub fn detect_cli_environment() -> CliEnvironment {
         }
     }
 
-    // Try to detect from parent process (Linux)
+    // Try to detect from the parent process (Linux)
     #[cfg(target_os = "linux")]
     {
-        if let Ok(cmdline) = std::fs::read_to_string("/proc/self/cmdline") {
-            let cmdline_lower = cmdline.to_lowercase();
-            if cmdline_lower.contains("claude") {
-                return CliEnvironment::ClaudeCode;
-            }
-            if cmdline_lower.contains("codex") {
-                return CliEnvironment::CodexCli;
-            }
+        if let Some(cmdline) = parent_cmdline() {
+            return classify_parent_cmdline(&cmdline);
         }
     }
 
     CliEnvironment::Unknown
+}
+
+/// The parent process's raw `/proc/<ppid>/cmdline` (NUL-separated argv).
+#[cfg(target_os = "linux")]
+fn parent_cmdline() -> Option<String> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let ppid = status
+        .lines()
+        .find_map(|line| line.strip_prefix("PPid:"))?
+        .trim();
+    std::fs::read_to_string(format!("/proc/{ppid}/cmdline")).ok()
+}
+
+/// Classify a parent process by the basename of its argv[0].
+///
+/// Substring matching on our own command line misfired: `skrills sync --from
+/// codex` read as Codex, and any binary under `/home/claude/` read as Claude.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn classify_parent_cmdline(cmdline: &str) -> CliEnvironment {
+    let argv0 = cmdline.split('\0').next().unwrap_or_default();
+    let name = std::path::Path::new(argv0)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    if name.eq_ignore_ascii_case("claude") {
+        CliEnvironment::ClaudeCode
+    } else if name.eq_ignore_ascii_case("codex") {
+        CliEnvironment::CodexCli
+    } else {
+        CliEnvironment::Unknown
+    }
 }
 
 /// Get the appropriate CLI binary for the environment.
@@ -110,35 +135,54 @@ pub fn is_cli_available(binary: &str) -> bool {
 
 /// Get the best available CLI binary.
 pub fn get_available_cli() -> Option<&'static str> {
-    let env = detect_cli_environment();
-    let preferred = get_cli_binary(env);
+    pick_available_cli(get_cli_binary(detect_cli_environment()), is_cli_available)
+}
 
-    if is_cli_available(preferred) {
-        return Some(preferred);
-    }
-
-    // Try alternatives
-    if is_cli_available("claude") {
-        return Some("claude");
-    }
-    if is_cli_available("codex") {
-        return Some("codex");
-    }
-
-    None
+/// The preferred binary when available, else the first available alternative.
+fn pick_available_cli(
+    preferred: &'static str,
+    is_available: impl Fn(&str) -> bool,
+) -> Option<&'static str> {
+    [preferred, "claude", "codex"]
+        .into_iter()
+        .find(|binary| is_available(binary))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    use crate::test_support::{env_guard, set_env_var};
+
     #[test]
     fn test_default_environment() {
-        // In test environment, should be Unknown
-        // unless specific env vars are set
-        let env = detect_cli_environment();
-        // Just ensure it doesn't panic
-        let _ = env.to_string();
+        let _g = env_guard();
+        let _client = set_env_var("SKRILLS_CLIENT", Some("codex"));
+        assert_eq!(detect_cli_environment(), CliEnvironment::CodexCli);
+        assert_eq!(detect_cli_environment().to_string(), "codex");
+
+        let _client = set_env_var("SKRILLS_CLIENT", Some("CLAUDE"));
+        assert_eq!(detect_cli_environment(), CliEnvironment::ClaudeCode);
+    }
+
+    /// IN-24: only argv[0]'s basename decides; arguments and directories that
+    /// merely contain the words do not.
+    #[test]
+    fn classify_parent_cmdline_uses_argv0_basename() {
+        assert_eq!(
+            classify_parent_cmdline("/usr/bin/skrills\0sync\0--from\0codex\0"),
+            CliEnvironment::Unknown
+        );
+        assert_eq!(
+            classify_parent_cmdline("/home/claude/bin/skrills\0serve\0"),
+            CliEnvironment::Unknown
+        );
+        assert_eq!(
+            classify_parent_cmdline("/usr/local/bin/claude\0--resume\0"),
+            CliEnvironment::ClaudeCode
+        );
+        assert_eq!(classify_parent_cmdline("codex\0"), CliEnvironment::CodexCli);
+        assert_eq!(classify_parent_cmdline(""), CliEnvironment::Unknown);
     }
 
     #[test]
@@ -165,8 +209,18 @@ mod tests {
 
     #[test]
     fn test_get_available_cli() {
-        // This test just verifies the function works without panicking
-        // The result depends on what's installed on the system
+        let only_codex = |b: &str| b == "codex";
+        // Preferred binary present.
+        assert_eq!(pick_available_cli("codex", only_codex), Some("codex"));
+        // Preferred binary missing: falls back to the one that exists.
+        assert_eq!(pick_available_cli("claude", only_codex), Some("codex"));
+        assert_eq!(
+            pick_available_cli("codex", |b| b == "claude"),
+            Some("claude")
+        );
+        // Neither present.
+        assert_eq!(pick_available_cli("claude", |_| false), None);
+        // The public entry point runs without panicking whatever is installed.
         let _ = get_available_cli();
     }
 }

@@ -56,6 +56,17 @@ async fn body_string(body: Body) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
+/// The dashboard script as served at `/static/dashboard.js`.
+async fn dashboard_script() -> String {
+    let req = Request::builder()
+        .uri("/static/dashboard.js")
+        .body(Body::empty())
+        .unwrap();
+    let response = dashboard_routes().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    body_string(response.into_body()).await
+}
+
 // ── Dashboard HTML Tests ──
 
 #[tokio::test]
@@ -107,12 +118,17 @@ async fn dashboard_html_includes_css_link() {
 
 #[tokio::test]
 async fn dashboard_html_includes_javascript() {
-    let app = dashboard_routes();
+    let page = dashboard_routes()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let html = body_string(page.into_body()).await;
+    assert!(
+        html.contains(r#"<script src="/static/dashboard.js""#),
+        "Dashboard HTML should load its script by URL (no inline script under the CSP)"
+    );
 
-    let req = Request::builder().uri("/").body(Body::empty()).unwrap();
-
-    let response = app.oneshot(req).await.unwrap();
-    let body = body_string(response.into_body()).await;
+    let body = dashboard_script().await;
 
     assert!(
         body.contains("fetch('/api/skills"),
@@ -1021,12 +1037,7 @@ async fn dashboard_html_includes_mcp_panel() {
 
 #[tokio::test]
 async fn dashboard_js_fetches_mcp_servers() {
-    let app = dashboard_routes();
-
-    let req = Request::builder().uri("/").body(Body::empty()).unwrap();
-
-    let response = app.oneshot(req).await.unwrap();
-    let body = body_string(response.into_body()).await;
+    let body = dashboard_script().await;
 
     assert!(
         body.contains("fetch('/api/mcp-servers')"),

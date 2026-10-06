@@ -40,6 +40,10 @@ pub enum ResolveError {
     },
 
     /// Multiple skills require incompatible versions.
+    #[deprecated(
+        since = "0.9.0",
+        note = "the resolver never reports version conflicts; unused, will be removed in a future release"
+    )]
     #[error("Version conflict for '{name}': {conflicts}")]
     VersionConflict {
         /// The dependency with conflicting requirements.
@@ -113,6 +117,10 @@ pub struct ResolutionResult {
     /// Warnings (e.g., skipped optional dependencies).
     pub warnings: Vec<String>,
     /// Whether resolution was fully successful.
+    #[deprecated(
+        since = "0.9.0",
+        note = "always true: a failed resolution returns Err, and skipped optional dependencies are listed in `warnings`; will be removed in a future release"
+    )]
     pub success: bool,
 }
 

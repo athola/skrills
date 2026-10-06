@@ -48,6 +48,16 @@ pub enum RunState {
     Canceled,
 }
 
+impl RunState {
+    /// Whether the run has finished. A finished run never changes state again.
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            RunState::Succeeded | RunState::Failed | RunState::Canceled
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RunStatus {
     pub state: RunState,
@@ -102,6 +112,86 @@ pub trait RunStore: Send + Sync {
     async fn stop(&self, run_id: RunId) -> Result<bool>;
 }
 
+/// Applies `status` unless the run already finished.
+///
+/// A run that was stopped (`Canceled`) must not flip to `Succeeded` when its
+/// still-running task completes a moment later, so a terminal state is final.
+/// Returns whether the status changed.
+fn apply_status(record: &mut RunRecord, status: RunStatus) -> bool {
+    if record.status.state.is_terminal() {
+        tracing::debug!(
+            run_id = %record.id,
+            current = ?record.status.state,
+            ignored = ?status.state,
+            "ignoring status change for a finished run"
+        );
+        return false;
+    }
+    record.updated_at = status.updated_at;
+    record.status = status;
+    true
+}
+
+/// `kind` of the event that stands in for events dropped at the per-run cap.
+/// Its `data` is `{"count": n}`: the run's first `n` events are gone.
+pub(crate) const EVENTS_DROPPED_KIND: &str = "events_dropped";
+
+/// How many of the run's events were dropped at the cap: the count carried
+/// by a leading `events_dropped` marker, or 0 when there is none.
+pub(crate) fn dropped_event_count(events: &[RunEvent]) -> usize {
+    events
+        .first()
+        .filter(|e| e.kind == EVENTS_DROPPED_KIND)
+        .and_then(|e| e.data.as_ref()?.get("count")?.as_u64())
+        .and_then(|n| usize::try_from(n).ok())
+        .unwrap_or(0)
+}
+
+/// Appends `event`, keeping at most [`MAX_EVENTS_PER_RUN`] events. Past the
+/// cap the oldest events are replaced by one `events_dropped` marker counting
+/// every event dropped so far, so an event's position in the run never
+/// changes: event `n` stays event `n` (RT-31).
+fn push_event(record: &mut RunRecord, event: RunEvent) {
+    record.updated_at = event.ts;
+    record.events.push(event);
+    if record.events.len() <= MAX_EVENTS_PER_RUN {
+        return;
+    }
+    let already_dropped = dropped_event_count(&record.events);
+    let marker_slots = usize::from(already_dropped > 0);
+    // Keep room for the marker itself.
+    let excess = record.events.len() - (MAX_EVENTS_PER_RUN - 1);
+    let dropping = excess - marker_slots;
+    let last_dropped_ts = record.events[excess - 1].ts;
+    record.events.drain(..excess);
+    record.events.insert(
+        0,
+        RunEvent {
+            ts: last_dropped_ts,
+            kind: EVENTS_DROPPED_KIND.to_string(),
+            data: Some(serde_json::json!({ "count": already_dropped + dropping })),
+        },
+    );
+}
+
+/// Drops the oldest finished runs once more than [`MAX_RUNS`] are held.
+/// Unfinished runs are never dropped.
+fn prune_runs(runs: &mut HashMap<RunId, RunRecord>) {
+    if runs.len() <= MAX_RUNS {
+        return;
+    }
+    let mut finished: Vec<(OffsetDateTime, RunId)> = runs
+        .values()
+        .filter(|r| r.status.state.is_terminal())
+        .map(|r| (r.created_at, r.id))
+        .collect();
+    finished.sort_by_key(|(created_at, _)| *created_at);
+    let excess = runs.len() - MAX_RUNS;
+    for (_, id) in finished.into_iter().take(excess) {
+        runs.remove(&id);
+    }
+}
+
 /// In-memory store for tests and ephemeral runs.
 pub struct MemRunStore {
     inner: Arc<Mutex<HashMap<RunId, RunRecord>>>,
@@ -140,6 +230,7 @@ impl RunStore for MemRunStore {
         };
         let mut guard = self.inner.lock().await;
         guard.insert(id, record);
+        prune_runs(&mut guard);
         Ok(id)
     }
 
@@ -148,8 +239,7 @@ impl RunStore for MemRunStore {
         let record = guard
             .get_mut(&run_id)
             .ok_or(SubagentError::NotFound(run_id))?;
-        record.status = status.clone();
-        record.updated_at = status.updated_at;
+        apply_status(record, status);
         Ok(())
     }
 
@@ -158,13 +248,7 @@ impl RunStore for MemRunStore {
         let record = guard
             .get_mut(&run_id)
             .ok_or(SubagentError::NotFound(run_id))?;
-        record.updated_at = event.ts;
-        record.events.push(event);
-        if record.events.len() > MAX_EVENTS_PER_RUN {
-            record
-                .events
-                .drain(..record.events.len() - MAX_EVENTS_PER_RUN);
-        }
+        push_event(record, event);
         Ok(())
     }
 
@@ -211,29 +295,73 @@ impl RunStore for MemRunStore {
 /// Maximum events kept per run to bound memory usage for long-running subagents.
 const MAX_EVENTS_PER_RUN: usize = 10_000;
 
+/// Maximum runs kept; the oldest finished runs are dropped beyond this.
+const MAX_RUNS: usize = 500;
+
+/// Message given to runs found unfinished when the store is opened.
+const INTERRUPTED_MESSAGE: &str = "interrupted: the server stopped before the run finished";
+
 /// Disk-backed store using the shared state directory.
 pub struct StateRunStore {
     path: PathBuf,
     inner: Arc<Mutex<HashMap<RunId, RunRecord>>>,
+    /// Held across snapshot and write so concurrent persists land in order.
+    persist_lock: Mutex<()>,
 }
 
 impl StateRunStore {
+    /// Opens the store at `path`.
+    ///
+    /// Runs left unfinished by an earlier process are marked `Failed`, since
+    /// nothing is left to finish them. A file that does not parse is moved
+    /// aside as `<name>.corrupt-<unix time>` and the store starts empty, so
+    /// one truncated write does not disable the subagent service.
     pub fn new(path: PathBuf) -> Result<Self> {
-        let records = read_records(&path)
-            .with_context(|| format!("failed to initialize store from: {}", path.display()))?;
+        let records = match read_records(&path) {
+            Ok(records) => records,
+            Err(ReadError::Io(e)) => {
+                return Err(e).with_context(|| {
+                    format!("failed to initialize store from: {}", path.display())
+                })
+            }
+            Err(ReadError::Parse(e)) => {
+                let aside = quarantine(&path)?;
+                tracing::warn!(
+                    path = %path.display(),
+                    moved_to = %aside.display(),
+                    error = %e,
+                    "subagent run store did not parse; moved it aside and started empty"
+                );
+                Vec::new()
+            }
+        };
+        let now = OffsetDateTime::now_utc();
         let mut runs = HashMap::new();
-        for record in records {
+        for mut record in records {
+            apply_status(
+                &mut record,
+                RunStatus {
+                    state: RunState::Failed,
+                    message: Some(INTERRUPTED_MESSAGE.into()),
+                    updated_at: now,
+                },
+            );
             runs.insert(record.id, record);
         }
         Ok(Self {
             path,
             inner: Arc::new(Mutex::new(runs)),
+            persist_lock: Mutex::new(()),
         })
     }
 
     /// Reload the in-memory store from disk, waiting for the lock.
     pub async fn load_from_disk(&self) -> Result<()> {
-        let records = read_records(&self.path)
+        let path = self.path.clone();
+        let records = tokio::task::spawn_blocking(move || read_records(&path))
+            .await
+            .context("store reload task panicked")?
+            .map_err(ReadError::into_anyhow)
             .with_context(|| format!("failed to reload store from: {}", self.path.display()))?;
         let mut guard = self.inner.lock().await;
         guard.clear();
@@ -244,6 +372,9 @@ impl StateRunStore {
     }
 
     async fn persist(&self) -> Result<()> {
+        // Snapshot and write under one lock: two persists that snapshot in one
+        // order and rename in the other would leave the older state on disk.
+        let _persisting = self.persist_lock.lock().await;
         let runs: Vec<RunRecord> = {
             let guard = self.inner.lock().await;
             let mut runs: Vec<_> = guard.values().cloned().collect();
@@ -256,24 +387,47 @@ impl StateRunStore {
         // Move filesystem I/O to the blocking threadpool to avoid starving
         // the tokio async runtime under load.
         let path = self.path.clone();
-        tokio::task::spawn_blocking(move || {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).with_context(|| {
-                    format!("failed to create store directory: {}", parent.display())
-                })?;
-            }
-
-            // Atomic write: write to temp file then rename to avoid partial writes on crash.
-            let temp_path = path.with_extension("tmp");
-            fs::write(&temp_path, &data)
-                .with_context(|| format!("failed to write temp file: {}", temp_path.display()))?;
-            fs::rename(&temp_path, &path)
-                .with_context(|| format!("failed to rename temp file to: {}", path.display()))?;
-            Ok(())
-        })
-        .await
-        .context("persist task panicked")?
+        tokio::task::spawn_blocking(move || write_private_atomic(&path, data.as_bytes()))
+            .await
+            .context("persist task panicked")?
     }
+}
+
+/// Writes `data` to `path` through a uniquely named temp file in the same
+/// directory, then renames it into place. The temp file is created owner-only
+/// (0600 on unix), so prompts and outputs are not readable by other users.
+fn write_private_atomic(path: &Path, data: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create store directory: {}", parent.display()))?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("failed to create temp file in: {}", parent.display()))?;
+    temp.write_all(data)
+        .with_context(|| format!("failed to write temp file: {}", temp.path().display()))?;
+    temp.persist(path)
+        .map_err(|e| e.error)
+        .with_context(|| format!("failed to rename temp file to: {}", path.display()))?;
+    Ok(())
+}
+
+/// Moves an unreadable store file aside and returns where it went.
+fn quarantine(path: &Path) -> Result<PathBuf> {
+    let stamp = OffsetDateTime::now_utc().unix_timestamp();
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".corrupt-{stamp}"));
+    let aside = path.with_file_name(name);
+    fs::rename(path, &aside).with_context(|| {
+        format!(
+            "failed to move unreadable store {} aside to {}",
+            path.display(),
+            aside.display()
+        )
+    })?;
+    Ok(aside)
 }
 
 /// Default on-disk path for persisted runs.
@@ -281,16 +435,29 @@ pub fn default_store_path() -> Result<PathBuf> {
     Ok(home_dir()?.join(".codex/subagents/runs.json"))
 }
 
-fn read_records(path: &Path) -> Result<Vec<RunRecord>> {
-    if path.exists() {
-        let text = fs::read_to_string(path)
-            .with_context(|| format!("failed to read store file: {}", path.display()))?;
-        let records: Vec<RunRecord> = serde_json::from_str(&text)
-            .with_context(|| format!("failed to parse store file: {}", path.display()))?;
-        Ok(records)
-    } else {
-        Ok(Vec::new())
+enum ReadError {
+    Io(anyhow::Error),
+    Parse(anyhow::Error),
+}
+
+impl ReadError {
+    fn into_anyhow(self) -> anyhow::Error {
+        match self {
+            ReadError::Io(e) | ReadError::Parse(e) => e,
+        }
     }
+}
+
+fn read_records(path: &Path) -> std::result::Result<Vec<RunRecord>, ReadError> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("failed to read store file: {}", path.display()))
+        .map_err(ReadError::Io)?;
+    serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse store file: {}", path.display()))
+        .map_err(ReadError::Parse)
 }
 
 #[async_trait]
@@ -313,39 +480,41 @@ impl RunStore for StateRunStore {
         {
             let mut guard = self.inner.lock().await;
             guard.insert(id, record);
+            prune_runs(&mut guard);
         }
         self.persist().await?;
         Ok(id)
     }
 
     async fn update_status(&self, run_id: RunId, status: RunStatus) -> Result<()> {
-        {
+        let changed = {
             let mut guard = self.inner.lock().await;
             let record = guard
                 .get_mut(&run_id)
                 .ok_or(SubagentError::NotFound(run_id))?;
-            record.status = status.clone();
-            record.updated_at = status.updated_at;
+            apply_status(record, status)
+        };
+        if changed {
+            self.persist().await?;
         }
-        self.persist().await?;
         Ok(())
     }
 
     async fn append_event(&self, run_id: RunId, event: RunEvent) -> Result<()> {
+        // Streamed tokens and lines are kept in memory and written with the
+        // next status change or non-stream event: persisting each one rewrote
+        // every run once per token.
+        let persist = event.kind != "stream";
         {
             let mut guard = self.inner.lock().await;
             let record = guard
                 .get_mut(&run_id)
                 .ok_or(SubagentError::NotFound(run_id))?;
-            record.updated_at = event.ts;
-            record.events.push(event);
-            if record.events.len() > MAX_EVENTS_PER_RUN {
-                record
-                    .events
-                    .drain(..record.events.len() - MAX_EVENTS_PER_RUN);
-            }
+            push_event(record, event);
         }
-        self.persist().await?;
+        if persist {
+            self.persist().await?;
+        }
         Ok(())
     }
 
@@ -529,14 +698,12 @@ mod store_tests {
         };
         store.update_status(run_id, status.clone()).await.unwrap();
 
+        // Stop should persist a canceled status.
+        let stopped = store.stop(run_id).await.unwrap();
+        assert!(stopped);
+
         // Reopen store to ensure persistence was written.
         let reopened = StateRunStore::new(path.clone()).unwrap();
-        let got = reopened.status(run_id).await.unwrap().unwrap();
-        assert_eq!(got.state, status.state);
-
-        // Stop should persist a canceled status.
-        let stopped = reopened.stop(run_id).await.unwrap();
-        assert!(stopped);
         let got = reopened.status(run_id).await.unwrap().unwrap();
         assert_eq!(got.state, RunState::Canceled);
 
@@ -699,22 +866,174 @@ mod store_tests {
         );
     }
 
+    /// RT-16: a store file that does not parse is moved aside, not fatal.
     #[tokio::test]
-    async fn test_state_store_corrupted_file_returns_error() {
+    async fn test_state_store_corrupted_file_is_moved_aside() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("runs.json");
         fs::write(&path, "{ corrupted json }").unwrap();
 
-        let result = StateRunStore::new(path);
-        assert!(result.is_err());
-        let err = result.err().unwrap();
-        assert!(
-            err.to_string().contains("failed to")
-                || err.to_string().contains("parse")
-                || err.to_string().contains("invalid"),
-            "expected parse/initialization error, got: {}",
-            err
+        let store = StateRunStore::new(path.clone()).expect("a corrupt file must not be fatal");
+        assert!(store.history(10).await.unwrap().is_empty());
+        assert!(!path.exists());
+        let aside: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("runs.json.corrupt-"))
+            .collect();
+        assert_eq!(aside.len(), 1, "the bad file should be kept for inspection");
+        assert_eq!(
+            fs::read_to_string(dir.path().join(&aside[0])).unwrap(),
+            "{ corrupted json }"
         );
+    }
+
+    /// RT-7: a finished run never changes state again.
+    #[tokio::test]
+    async fn test_canceled_run_is_not_flipped_to_succeeded() {
+        let dir = tempfile::tempdir().unwrap();
+        for store in [
+            Arc::new(MemRunStore::new()) as Arc<dyn RunStore>,
+            Arc::new(StateRunStore::new(dir.path().join("runs.json")).unwrap()),
+        ] {
+            let run_id = store.create_run(sample_request()).await.unwrap();
+            assert!(store.stop(run_id).await.unwrap());
+            store
+                .update_status(
+                    run_id,
+                    RunStatus {
+                        state: RunState::Succeeded,
+                        message: Some("completed".into()),
+                        updated_at: OffsetDateTime::now_utc(),
+                    },
+                )
+                .await
+                .unwrap();
+            let status = store.status(run_id).await.unwrap().unwrap();
+            assert_eq!(status.state, RunState::Canceled);
+        }
+    }
+
+    /// RT-15: runs left unfinished on disk are failed on load.
+    #[tokio::test]
+    async fn test_unfinished_runs_are_failed_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runs.json");
+        let store = StateRunStore::new(path.clone()).unwrap();
+        let running = store.create_run(sample_request()).await.unwrap();
+        store
+            .update_status(
+                running,
+                RunStatus {
+                    state: RunState::Running,
+                    message: None,
+                    updated_at: OffsetDateTime::now_utc(),
+                },
+            )
+            .await
+            .unwrap();
+        let done = store.create_run(sample_request()).await.unwrap();
+        store.stop(done).await.unwrap();
+
+        let reopened = StateRunStore::new(path).unwrap();
+        let status = reopened.status(running).await.unwrap().unwrap();
+        assert_eq!(status.state, RunState::Failed);
+        assert_eq!(status.message.as_deref(), Some(INTERRUPTED_MESSAGE));
+        let status = reopened.status(done).await.unwrap().unwrap();
+        assert_eq!(status.state, RunState::Canceled);
+    }
+
+    /// RT-14: concurrent writes all land on disk.
+    #[tokio::test]
+    async fn test_concurrent_creates_all_persist() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runs.json");
+        let store = Arc::new(StateRunStore::new(path.clone()).unwrap());
+        let mut tasks = Vec::new();
+        for _ in 0..40 {
+            let store = store.clone();
+            tasks.push(tokio::spawn(async move {
+                store.create_run(sample_request()).await
+            }));
+        }
+        for task in tasks {
+            task.await.unwrap().expect("concurrent persist failed");
+        }
+        let reopened = StateRunStore::new(path).unwrap();
+        assert_eq!(reopened.history(100).await.unwrap().len(), 40);
+        let leftovers = fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(leftovers, 1, "temp files must not be left behind");
+    }
+
+    /// RT-13: streamed events are not written one by one.
+    #[tokio::test]
+    async fn test_stream_events_are_persisted_with_the_next_status_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runs.json");
+        let store = StateRunStore::new(path.clone()).unwrap();
+        let run_id = store.create_run(sample_request()).await.unwrap();
+        let stream = |n: usize| RunEvent {
+            ts: OffsetDateTime::now_utc(),
+            kind: "stream".into(),
+            data: Some(Value::from(n)),
+        };
+        store.append_event(run_id, stream(1)).await.unwrap();
+        store.append_event(run_id, stream(2)).await.unwrap();
+        assert!(
+            !fs::read_to_string(&path).unwrap().contains("\"stream\""),
+            "stream events should not trigger a write"
+        );
+
+        store
+            .update_status(
+                run_id,
+                RunStatus {
+                    state: RunState::Succeeded,
+                    message: None,
+                    updated_at: OffsetDateTime::now_utc(),
+                },
+            )
+            .await
+            .unwrap();
+        let on_disk = fs::read_to_string(&path).unwrap();
+        assert_eq!(on_disk.matches("\"stream\"").count(), 2);
+        // In memory the events were there all along.
+        assert_eq!(store.run(run_id).await.unwrap().unwrap().events.len(), 2);
+    }
+
+    /// RT-33: the oldest finished runs are pruned past the cap.
+    #[tokio::test]
+    async fn test_runs_are_capped() {
+        let store = MemRunStore::new();
+        let first = store.create_run(sample_request()).await.unwrap();
+        store.stop(first).await.unwrap();
+        let unfinished = store.create_run(sample_request()).await.unwrap();
+        for _ in 0..MAX_RUNS {
+            let id = store.create_run(sample_request()).await.unwrap();
+            store.stop(id).await.unwrap();
+        }
+        assert_eq!(store.history(usize::MAX).await.unwrap().len(), MAX_RUNS);
+        assert!(
+            store.run(first).await.unwrap().is_none(),
+            "oldest finished run dropped"
+        );
+        assert!(
+            store.run(unfinished).await.unwrap().is_some(),
+            "unfinished run kept"
+        );
+    }
+
+    /// RT-34: the store file is owner-only.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_store_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runs.json");
+        let store = StateRunStore::new(path.clone()).unwrap();
+        store.create_run(sample_request()).await.unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[tokio::test]

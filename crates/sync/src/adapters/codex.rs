@@ -7,15 +7,19 @@
 //! with an "agent-" prefix (e.g., "my-agent" becomes skill "agent-my-agent").
 //! This allows agent functionality to be preserved until Codex adds official support.
 
+use super::codex_toml;
 use super::traits::{AgentAdapter, FieldSupport};
-use super::utils::{collect_module_files, hash_content, is_hidden_path, sanitize_name};
+use super::utils::{
+    collect_module_files, hash_content, inside_skill_dir, is_hidden_path, sanitize_name,
+    sanitize_name_segments,
+};
 use crate::common::{Command, ContentFormat, McpServer, McpTransport, Preferences};
-use crate::report::{SkipReason, WriteReport};
+use crate::report::WriteReport;
 use crate::Result;
 use anyhow::Context;
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use walkdir::WalkDir;
 
@@ -60,8 +64,9 @@ impl CodexAdapter {
         self.root.join("skills")
     }
 
-    fn settings_path(&self) -> PathBuf {
-        // Codex uses config.json, not settings.json
+    /// Legacy `config.json`, read only as a fallback for MCP servers and the
+    /// model when `config.toml` has none.
+    fn legacy_json_path(&self) -> PathBuf {
         self.root.join("config.json")
     }
 
@@ -74,100 +79,145 @@ impl CodexAdapter {
     /// Codex loads skills only when `[features] skills = true` is set.
     fn ensure_skills_feature_flag_enabled(&self) -> Result<bool> {
         let path = self.config_toml_path();
-        let content = if path.exists() {
-            fs::read_to_string(&path)?
-        } else {
-            String::new()
+        let content = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(e.into()),
         };
 
-        fn strip_comment(s: &str) -> &str {
-            s.split_once('#').map(|(a, _)| a).unwrap_or(s)
-        }
-
-        fn is_header_line(line: &str) -> bool {
-            let trimmed = strip_comment(line).trim();
-            trimmed.starts_with('[') && trimmed.ends_with(']') && !trimmed.starts_with("[[")
-        }
-
-        fn header_name(line: &str) -> &str {
-            let trimmed = strip_comment(line).trim();
-            &trimmed[1..trimmed.len().saturating_sub(1)]
-        }
-
-        let mut out: Vec<String> = Vec::new();
-        let mut in_features = false;
-        let mut found_features = false;
-        let mut skills_set = false;
-        let mut changed = false;
-
-        for line in content.lines() {
-            if is_header_line(line) {
-                if in_features && !skills_set {
-                    out.push("skills = true".to_string());
-                    skills_set = true;
-                    changed = true;
-                }
-
-                let name = header_name(line);
-                in_features = name == "features";
-                if in_features {
-                    found_features = true;
-                }
-
-                out.push(line.to_string());
-                continue;
+        match enable_skills_flag(&content) {
+            Some(updated) => {
+                super::utils::write_config(&path, updated.as_bytes(), false)?;
+                Ok(true)
             }
+            None => Ok(false),
+        }
+    }
+}
 
-            if in_features {
-                let trimmed = strip_comment(line).trim_start();
-                if trimmed.starts_with("skills") && trimmed.contains('=') {
-                    // Overwrite the value unconditionally to avoid false/invalid values.
-                    if strip_comment(trimmed)
-                        .split_once('=')
-                        .map(|(_, v)| v.trim())
-                        != Some("true")
-                    {
-                        out.push("skills = true".to_string());
-                        changed = true;
-                    } else {
-                        out.push(line.to_string());
-                    }
-                    skills_set = true;
+/// Returns `content` with `skills = true` under `[features]`, or `None` when
+/// it is already set.
+///
+/// A line scanner that predates the `toml_edit` dependency (MCP servers and
+/// the model go through [`codex_toml`]). It matches the key exactly (a
+/// `skills_beta` key used to be overwritten), ignores `#` inside quoted strings
+/// when finding table headers, and honours a top-level dotted
+/// `features.skills` key instead of appending a second `[features]` table,
+/// which TOML rejects as a redefinition.
+fn enable_skills_flag(content: &str) -> Option<String> {
+    /// Text before the first `#` that is not inside a quoted string.
+    fn strip_comment(line: &str) -> &str {
+        let mut quote: Option<char> = None;
+        let mut escaped = false;
+        for (i, c) in line.char_indices() {
+            match quote {
+                Some('"') if escaped => escaped = false,
+                Some('"') if c == '\\' => escaped = true,
+                Some(q) if c == q => quote = None,
+                Some(_) => {}
+                None if c == '"' || c == '\'' => quote = Some(c),
+                None if c == '#' => return &line[..i],
+                None => {}
+            }
+        }
+        line
+    }
+
+    /// The table a header line opens, or `None` for any other line.
+    fn header_name(line: &str) -> Option<String> {
+        let trimmed = strip_comment(line).trim();
+        if trimmed.starts_with("[[") || !trimmed.starts_with('[') || !trimmed.ends_with(']') {
+            return None;
+        }
+        Some(
+            trimmed[1..trimmed.len() - 1]
+                .split('.')
+                .map(|part| part.trim().trim_matches('"'))
+                .collect::<Vec<_>>()
+                .join("."),
+        )
+    }
+
+    /// Splits `key = value` into a normalised dotted key and its value.
+    fn key_value(line: &str) -> Option<(String, &str)> {
+        let (key, value) = strip_comment(line).split_once('=')?;
+        let key = key
+            .split('.')
+            .map(|part| part.trim().trim_matches('"').trim_matches('\''))
+            .collect::<Vec<_>>()
+            .join(".");
+        Some((key, value.trim()))
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    // `None` before the first header: the root table.
+    let mut table: Option<String> = None;
+    let mut features_header_at: Option<usize> = None;
+    let mut skills_set = false;
+    let mut changed = false;
+
+    for line in content.lines() {
+        if let Some(name) = header_name(line) {
+            if name == "features" {
+                features_header_at = Some(out.len());
+            }
+            table = Some(name);
+            out.push(line.to_string());
+            continue;
+        }
+
+        let target_key = match table.as_deref() {
+            None => Some("features.skills"),
+            Some("features") => Some("skills"),
+            _ => None,
+        };
+        if let (Some(target_key), Some((key, value))) = (target_key, key_value(line)) {
+            if key == target_key {
+                skills_set = true;
+                if value != "true" {
+                    out.push(format!("{target_key} = true"));
+                    changed = true;
                     continue;
                 }
             }
-
-            out.push(line.to_string());
         }
-
-        if in_features && !skills_set {
-            out.push("skills = true".to_string());
-            changed = true;
-        }
-
-        if !found_features {
-            if !out.is_empty() && !out.last().unwrap().trim().is_empty() {
-                out.push(String::new());
-            }
-            out.push("[features]".to_string());
-            out.push("skills = true".to_string());
-            changed = true;
-        }
-
-        if changed {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::write(&path, out.join("\n") + "\n")?;
-        }
-
-        Ok(changed)
+        out.push(line.to_string());
     }
+
+    if !skills_set {
+        match features_header_at {
+            Some(at) => out.insert(at + 1, "skills = true".to_string()),
+            None => {
+                if out.last().is_some_and(|l| !l.trim().is_empty()) {
+                    out.push(String::new());
+                }
+                out.push("[features]".to_string());
+                out.push("skills = true".to_string());
+            }
+        }
+        changed = true;
+    }
+
+    changed.then(|| out.join("\n") + "\n")
 }
 
 // Note: We intentionally do not implement Default for CodexAdapter because
 // construction requires home directory resolution which can fail. Use
 // CodexAdapter::new() or CodexAdapter::with_root() instead.
+
+/// Hidden file `write_agents` leaves in each skill directory it made from an
+/// agent. The `agent-` prefix alone also matched a user's own skill.
+const AGENT_MARKER: &str = ".skrills-agent";
+const AGENT_MARKER_BODY: &str =
+    "This skill was converted from a Claude agent by skrills sync. Delete this file to keep it as a plain skill.\n";
+
+fn is_converted_agent(skill_dir: &Path) -> bool {
+    skill_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("agent-"))
+        && skill_dir.join(AGENT_MARKER).is_file()
+}
 
 impl AgentAdapter for CodexAdapter {
     fn name(&self) -> &str {
@@ -178,16 +228,26 @@ impl AgentAdapter for CodexAdapter {
         self.root.clone()
     }
 
-    fn supported_fields(&self) -> FieldSupport {
+    fn read_support(&self) -> FieldSupport {
         FieldSupport {
             commands: true,
             mcp_servers: true,
             preferences: true,
             skills: true,
             hooks: false,         // Codex doesn't support hooks
-            agents: false,        // Codex doesn't read agents, but write_agents converts to skills
+            agents: false,        // Codex has no agents directory to read
             instructions: false,  // Codex doesn't support instructions
             plugin_assets: false, // Codex doesn't support plugin assets
+        }
+    }
+
+    /// Asymmetric: `write_agents` converts each agent into an `agent-`-prefixed
+    /// skill, so Codex accepts agents as a target even though it has none to
+    /// read.
+    fn write_support(&self) -> FieldSupport {
+        FieldSupport {
+            agents: true,
+            ..self.read_support()
         }
     }
 
@@ -231,7 +291,11 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn read_mcp_servers(&self) -> Result<HashMap<String, McpServer>> {
-        let path = self.settings_path();
+        let servers = codex_toml::read_servers(&codex_toml::load(&self.config_toml_path())?)?;
+        if !servers.is_empty() {
+            return Ok(servers);
+        }
+        let path = self.legacy_json_path();
         if !path.exists() {
             return Ok(HashMap::new());
         }
@@ -245,7 +309,7 @@ impl AgentAdapter for CodexAdapter {
             for (name, config) in mcp {
                 let server = McpServer {
                     name: name.clone(),
-                    transport: McpTransport::Stdio, // Codex only supports stdio
+                    transport: McpTransport::Stdio, // the legacy config.json held stdio servers only
                     command: config
                         .get("command")
                         .and_then(|v| v.as_str())
@@ -269,8 +333,8 @@ impl AgentAdapter for CodexAdapter {
                                 .collect()
                         })
                         .unwrap_or_default(),
-                    url: None,     // Codex doesn't support HTTP
-                    headers: None, // Codex doesn't support HTTP
+                    url: None,
+                    headers: None,
                     enabled: config
                         .get("disabled")
                         .and_then(|v| v.as_bool())
@@ -303,7 +367,13 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn read_preferences(&self) -> Result<Preferences> {
-        let path = self.settings_path();
+        if let Some(model) = codex_toml::read_model(&codex_toml::load(&self.config_toml_path())?) {
+            return Ok(Preferences {
+                model: Some(model),
+                custom: HashMap::new(),
+            });
+        }
+        let path = self.legacy_json_path();
         if !path.exists() {
             return Ok(Preferences::default());
         }
@@ -332,7 +402,13 @@ impl AgentAdapter for CodexAdapter {
             .max_depth(20)
             .follow_links(false)
         {
-            let entry = entry?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Skipping unreadable entry under the skills directory");
+                    continue;
+                }
+            };
             if entry.file_type().is_symlink() {
                 continue;
             }
@@ -350,6 +426,10 @@ impl AgentAdapter for CodexAdapter {
             let is_skill_md = path.file_name().is_some_and(|n| n == "SKILL.md");
             let is_legacy_md = path.extension().is_some_and(|e| e == "md") && !is_skill_md;
             if !is_skill_md && !is_legacy_md {
+                continue;
+            }
+            // Markdown inside a skill directory is a module of that skill.
+            if is_legacy_md && inside_skill_dir(path, &skills_dir) {
                 continue;
             }
 
@@ -370,13 +450,19 @@ impl AgentAdapter for CodexAdapter {
                     .to_string()
             };
 
-            // Skip skills with "agent-" prefix - those are read by read_agents()
-            if name.starts_with("agent-") {
+            // Agents converted by `write_agents` are read by `read_agents()`.
+            if is_skill_md && is_converted_agent(path.parent().unwrap_or(path)) {
                 continue;
             }
 
-            let content = fs::read(path)?;
-            let metadata = fs::metadata(path)?;
+            let read = fs::read(path).and_then(|c| Ok((c, fs::metadata(path)?)));
+            let (content, metadata) = match read {
+                Ok(pair) => pair,
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "Skipping unreadable skill");
+                    continue;
+                }
+            };
             let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
             let hash = hash_content(&content);
 
@@ -409,22 +495,15 @@ impl AgentAdapter for CodexAdapter {
 
         let mut report = WriteReport::default();
 
+        let mut writer = crate::adapters::utils::BatchWriter::new(&dir);
         for cmd in commands {
-            let safe_name = sanitize_name(&cmd.name);
-            let path = dir.join(format!("{}.md", safe_name));
-
-            if path.exists() {
-                let existing = fs::read(&path)?;
-                if hash_content(&existing) == cmd.hash {
-                    report.skipped.push(SkipReason::Unchanged {
-                        item: cmd.name.clone(),
-                    });
-                    continue;
-                }
-            }
-
-            fs::write(&path, &cmd.content)?;
-            report.written += 1;
+            writer.write_single(
+                &cmd.name,
+                &sanitize_name(&cmd.name),
+                ".md",
+                &cmd.content,
+                &mut report,
+            )?;
         }
 
         Ok(report)
@@ -432,79 +511,36 @@ impl AgentAdapter for CodexAdapter {
 
     fn write_mcp_servers(&self, servers: &HashMap<String, McpServer>) -> Result<WriteReport> {
         super::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
-        let path = self.settings_path();
-
-        let mut settings: serde_json::Value = if path.exists() {
-            let content = fs::read_to_string(&path)?;
-            serde_json::from_str(&content)?
-        } else {
-            serde_json::json!({})
-        };
-
-        let mut report = WriteReport::default();
-        let mut mcp_obj = serde_json::Map::new();
-
-        for (name, server) in servers {
-            let mut server_config = serde_json::Map::new();
-            server_config.insert("command".into(), serde_json::json!(server.command));
-            if !server.args.is_empty() {
-                server_config.insert("args".into(), serde_json::json!(server.args));
-            }
-            if !server.env.is_empty() {
-                server_config.insert("env".into(), serde_json::json!(server.env));
-            }
-            if !server.enabled {
-                server_config.insert("disabled".into(), serde_json::json!(true));
-            }
-            if !server.allowed_tools.is_empty() {
-                server_config.insert(
-                    "allowedTools".into(),
-                    serde_json::json!(server.allowed_tools),
-                );
-            }
-            if !server.disabled_tools.is_empty() {
-                server_config.insert(
-                    "disabledTools".into(),
-                    serde_json::json!(server.disabled_tools),
-                );
-            }
-            mcp_obj.insert(name.clone(), serde_json::Value::Object(server_config));
-            report.written += 1;
+        // Nothing to merge, so the user's config.toml is not read at all and
+        // an unreadable one cannot fail an otherwise empty phase.
+        if servers.is_empty() {
+            return Ok(WriteReport::default());
         }
-
-        settings["mcpServers"] = serde_json::Value::Object(mcp_obj);
-
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+        let path = self.config_toml_path();
+        let mut doc = codex_toml::load(&path)?;
+        let report = codex_toml::merge_servers(&mut doc, servers)?;
+        if report.written > 0 {
+            codex_toml::save(&path, &doc)?;
         }
-        fs::write(&path, serde_json::to_string_pretty(&settings)?)?;
-
         Ok(report)
     }
 
     fn write_preferences(&self, prefs: &Preferences) -> Result<WriteReport> {
         super::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
-        let path = self.settings_path();
-
-        let mut settings: serde_json::Value = if path.exists() {
-            let content = fs::read_to_string(&path)?;
-            serde_json::from_str(&content)?
-        } else {
-            serde_json::json!({})
-        };
-
         let mut report = WriteReport::default();
-
-        if let Some(model) = &prefs.model {
-            settings["model"] = serde_json::json!(model);
+        let Some(model) = prefs.model.as_deref() else {
+            return Ok(report);
+        };
+        let path = self.config_toml_path();
+        let mut doc = codex_toml::load(&path)?;
+        if codex_toml::set_model(&mut doc, model) {
+            codex_toml::save(&path, &doc)?;
             report.written += 1;
+        } else {
+            report.skipped.push(crate::report::SkipReason::Unchanged {
+                item: "model".to_string(),
+            });
         }
-
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&path, serde_json::to_string_pretty(&settings)?)?;
-
         Ok(report)
     }
 
@@ -515,65 +551,27 @@ impl AgentAdapter for CodexAdapter {
 
         let mut report = WriteReport::default();
 
+        let mut writer = super::utils::BatchWriter::new(&dir);
         for skill in skills {
-            // Codex discovers only SKILL.md files under ~/.codex/skills/**/.
-            // Write each skill into ~/.codex/skills/<skill-name>/SKILL.md by default.
-            let skill_rel_dir = if skill.name.eq_ignore_ascii_case("skill")
-                || skill.name.eq_ignore_ascii_case("skill.md")
-                || skill
-                    .name
-                    .eq_ignore_ascii_case("skill.md".trim_end_matches(".md"))
-                || skill.name.eq_ignore_ascii_case("SKILL")
-            {
-                skill
-                    .source_path
-                    .parent()
-                    .and_then(|p| p.file_name())
-                    .and_then(|s| s.to_str())
-                    .unwrap_or(&skill.name)
-                    .to_string()
-            } else {
-                skill.name.clone()
-            };
-
-            let safe_rel_dir = sanitize_name(&skill_rel_dir);
-            let path = dir.join(&safe_rel_dir).join("SKILL.md");
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-
-            if path.exists() {
-                let existing = fs::read(&path)?;
-                if hash_content(&existing) == skill.hash {
-                    report.skipped.push(SkipReason::Unchanged {
-                        item: skill.name.clone(),
-                    });
-                    continue;
-                }
-            }
-
-            fs::write(&path, &skill.content)?;
-            report.written += 1;
-
-            // Write module files (companion files) alongside SKILL.md
-            let skill_dir = dir.join(&safe_rel_dir);
-            for module in &skill.modules {
-                let module_path = skill_dir.join(&module.relative_path);
-                if !super::utils::is_path_contained(&module_path, &skill_dir) {
-                    tracing::debug!(
-                        path = %module.relative_path.display(),
-                        "Skipping module with path outside skill directory"
-                    );
-                    continue;
-                }
-                if let Some(parent) = module_path.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                fs::write(&module_path, &module.content)?;
-            }
+            // Codex discovers SKILL.md files anywhere under ~/.codex/skills/, so
+            // a nested name such as `nested/foo` keeps its directory instead of
+            // being flattened to `nestedfoo`.
+            let safe_rel_dir = sanitize_name_segments(&super::utils::skill_dir_name(skill));
+            writer.write(
+                &skill.name,
+                &safe_rel_dir,
+                "SKILL.md",
+                &skill.content,
+                &skill.modules,
+                &mut report,
+            )?;
         }
 
-        let _ = self.ensure_skills_feature_flag_enabled()?;
+        // Zero skills means nothing for Codex to load, so the user's config is
+        // left alone rather than created or edited.
+        if !skills.is_empty() {
+            let _ = self.ensure_skills_feature_flag_enabled()?;
+        }
 
         Ok(report)
     }
@@ -597,7 +595,13 @@ impl AgentAdapter for CodexAdapter {
             .max_depth(20)
             .follow_links(false)
         {
-            let entry = entry?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Skipping unreadable entry under the skills directory");
+                    continue;
+                }
+            };
             if entry.file_type().is_symlink() {
                 continue;
             }
@@ -622,14 +626,22 @@ impl AgentAdapter for CodexAdapter {
                 .filter(|s| !s.is_empty())
                 .unwrap_or("unknown");
 
-            // Only include skills with "agent-" prefix, stripping the prefix
-            if !skill_name.starts_with("agent-") {
+            // Only directories `write_agents` produced, stripping the prefix
+            let Some(agent_name) = skill_name.strip_prefix("agent-").map(str::to_owned) else {
+                continue;
+            };
+            if !is_converted_agent(path.parent().unwrap_or(path)) {
                 continue;
             }
-            let agent_name = skill_name.strip_prefix("agent-").unwrap().to_string();
 
-            let content = fs::read(path)?;
-            let metadata = fs::metadata(path)?;
+            let read = fs::read(path).and_then(|c| Ok((c, fs::metadata(path)?)));
+            let (content, metadata) = match read {
+                Ok(pair) => pair,
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "Skipping unreadable agent");
+                    continue;
+                }
+            };
             let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
             let hash = hash_content(&content);
 
@@ -671,44 +683,29 @@ impl AgentAdapter for CodexAdapter {
 
         let mut report = WriteReport::default();
 
+        let mut writer = super::utils::BatchWriter::new(&dir);
         for agent in agents {
             // Prefix agent names with "agent-" to distinguish from regular skills
             let skill_name = format!("agent-{}", agent.name);
             let safe_name = sanitize_name(&skill_name);
-            let path = dir.join(&safe_name).join("SKILL.md");
-
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-
-            if path.exists() {
-                let existing = fs::read(&path)?;
-                if hash_content(&existing) == agent.hash {
-                    report
-                        .skipped
-                        .push(SkipReason::Unchanged { item: skill_name });
-                    continue;
-                }
-            }
-
-            fs::write(&path, &agent.content)?;
-            report.written += 1;
-
-            // Write module files (companion files) alongside SKILL.md
-            let skill_dir = dir.join(&safe_name);
-            for module in &agent.modules {
-                let module_path = skill_dir.join(&module.relative_path);
-                if !super::utils::is_path_contained(&module_path, &skill_dir) {
-                    tracing::debug!(
-                        path = %module.relative_path.display(),
-                        "Skipping module with path outside skill directory"
-                    );
-                    continue;
-                }
-                if let Some(parent) = module_path.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                fs::write(&module_path, &module.content)?;
+            writer.write(
+                &skill_name,
+                &safe_name,
+                "SKILL.md",
+                &agent.content,
+                &agent.modules,
+                &mut report,
+            )?;
+            // Mark the directory only when the agent is actually there (not
+            // refused), so `read_agents` never claims a user's own skill.
+            let agent_dir = dir.join(&safe_name);
+            let marker = agent_dir.join(AGENT_MARKER);
+            if !safe_name.is_empty()
+                && agent_dir.join("SKILL.md").is_file()
+                && super::utils::symlink_below(&dir, &marker).is_none()
+                && !marker.exists()
+            {
+                super::utils::write_file(&marker, AGENT_MARKER_BODY)?;
             }
         }
 
@@ -814,7 +811,7 @@ mod tests {
     }
 
     #[test]
-    fn read_mcp_servers_from_config() {
+    fn read_mcp_servers_falls_back_to_config_json() {
         let tmp = tempdir().unwrap();
         let config_path = tmp.path().join("config.json");
         fs::write(
@@ -840,41 +837,504 @@ mod tests {
         assert!(server.enabled);
     }
 
+    fn stdio_server(name: &str, command: &str) -> McpServer {
+        McpServer {
+            name: name.to_string(),
+            transport: McpTransport::Stdio,
+            command: command.to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            url: None,
+            headers: None,
+            enabled: true,
+            allowed_tools: vec![],
+            disabled_tools: vec![],
+        }
+    }
+
+    fn one_server(server: McpServer) -> HashMap<String, McpServer> {
+        HashMap::from([(server.name.clone(), server)])
+    }
+
+    /// Strict re-parse of the written config.toml.
+    fn parsed_toml(root: &Path) -> toml_edit::DocumentMut {
+        fs::read_to_string(root.join("config.toml"))
+            .unwrap()
+            .parse::<toml_edit::DocumentMut>()
+            .expect("config.toml must stay valid TOML")
+    }
+
+    /// Codex reads MCP servers from `[mcp_servers.<name>]` in config.toml
+    /// (SY-26); they used to go to config.json, which Codex never reads.
     #[test]
-    fn write_mcp_servers_creates_config() {
+    fn write_mcp_servers_with_nothing_to_write_leaves_the_config_unread() {
         let tmp = tempdir().unwrap();
+        // A directory where config.toml belongs fails every read of it.
+        std::fs::create_dir_all(tmp.path().join("config.toml")).unwrap();
         let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
 
-        let mut servers = HashMap::new();
-        servers.insert(
-            "my-server".to_string(),
-            McpServer {
-                name: "my-server".to_string(),
-                transport: McpTransport::Stdio,
-                command: "/bin/server".to_string(),
-                args: vec!["arg1".to_string()],
-                env: HashMap::new(),
-                url: None,
-                headers: None,
-                enabled: true,
-                allowed_tools: vec![],
-                disabled_tools: vec![],
-            },
-        );
+        let report = adapter.write_mcp_servers(&HashMap::new()).unwrap();
 
-        let report = adapter.write_mcp_servers(&servers).unwrap();
-        assert_eq!(report.written, 1);
-
-        let config_path = tmp.path().join("config.json");
-        assert!(config_path.exists());
-
-        let content = fs::read_to_string(&config_path).unwrap();
-        let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert!(settings["mcpServers"]["my-server"].is_object());
+        assert_eq!(report.written, 0);
     }
 
     #[test]
-    fn read_preferences_from_config() {
+    fn write_mcp_servers_creates_config_toml_tables() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let mut server = stdio_server("my-server", "/bin/server");
+        server.args = vec!["arg1".to_string()];
+        server.env = HashMap::from([("TOKEN".to_string(), "x".to_string())]);
+
+        let report = adapter.write_mcp_servers(&one_server(server)).unwrap();
+        assert_eq!(report.written, 1);
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert!(!tmp.path().join("config.json").exists());
+
+        let text = fs::read_to_string(tmp.path().join("config.toml")).unwrap();
+        assert!(text.contains("[mcp_servers.my-server]"), "{text}");
+        assert!(
+            !text.contains("[mcp_servers]\n"),
+            "no empty parent header: {text}"
+        );
+        let doc = parsed_toml(tmp.path());
+        let entry = &doc["mcp_servers"]["my-server"];
+        assert_eq!(entry["type"].as_str(), Some("stdio"));
+        assert_eq!(entry["command"].as_str(), Some("/bin/server"));
+        assert_eq!(entry["args"][0].as_str(), Some("arg1"));
+        assert_eq!(entry["env"]["TOKEN"].as_str(), Some("x"));
+
+        let read_back = adapter.read_mcp_servers().unwrap();
+        assert_eq!(read_back["my-server"].args, vec!["arg1"]);
+        assert_eq!(read_back["my-server"].env["TOKEN"], "x");
+
+        let again = adapter.write_mcp_servers(&one_server(read_back["my-server"].clone()));
+        assert_eq!(
+            again.unwrap().written,
+            0,
+            "an identical sync writes nothing"
+        );
+    }
+
+    #[test]
+    fn write_mcp_servers_keeps_comments_order_and_other_tables() {
+        let tmp = tempdir().unwrap();
+        let original = "\
+# my codex config
+model = \"gpt-5\" # pinned
+
+[features]
+skills = true # keep me
+
+# github server
+[mcp_servers.github]
+command = \"npx\"
+startup_timeout_sec = 180
+";
+        fs::write(tmp.path().join("config.toml"), original).unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        // Re-writing the existing server unchanged is a byte-for-byte no-op.
+        let mut github = stdio_server("github", "npx");
+        let report = adapter
+            .write_mcp_servers(&one_server(github.clone()))
+            .unwrap();
+        assert_eq!(report.written, 0);
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("config.toml")).unwrap(),
+            original
+        );
+
+        github.args = vec!["-y".to_string()];
+        let report = adapter.write_mcp_servers(&one_server(github)).unwrap();
+        assert_eq!(report.written, 1);
+
+        let text = fs::read_to_string(tmp.path().join("config.toml")).unwrap();
+        for kept in [
+            "# my codex config",
+            "model = \"gpt-5\" # pinned",
+            "skills = true # keep me",
+            "# github server",
+            "startup_timeout_sec = 180",
+        ] {
+            assert!(text.contains(kept), "lost {kept:?}:\n{text}");
+        }
+        assert!(
+            text.find("[features]") < text.find("[mcp_servers.github]"),
+            "{text}"
+        );
+        assert_eq!(
+            parsed_toml(tmp.path())["mcp_servers"]["github"]["args"][0].as_str(),
+            Some("-y")
+        );
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("config.toml.skrills-bak")).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn write_mcp_servers_merges_with_an_unmanaged_server() {
+        let tmp = tempdir().unwrap();
+        fs::write(
+            tmp.path().join("config.toml"),
+            "[mcp_servers.mine]\ncommand = \"/bin/mine\"\ncwd = \"/srv\"\n",
+        )
+        .unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        let report = adapter
+            .write_mcp_servers(&one_server(stdio_server("synced", "/bin/synced")))
+            .unwrap();
+        assert_eq!(report.written, 1);
+
+        let doc = parsed_toml(tmp.path());
+        assert_eq!(
+            doc["mcp_servers"]["mine"]["command"].as_str(),
+            Some("/bin/mine")
+        );
+        assert_eq!(doc["mcp_servers"]["mine"]["cwd"].as_str(), Some("/srv"));
+        assert_eq!(
+            doc["mcp_servers"]["synced"]["command"].as_str(),
+            Some("/bin/synced")
+        );
+
+        // An empty source touches nothing.
+        let before = fs::read(tmp.path().join("config.toml")).unwrap();
+        adapter.write_mcp_servers(&HashMap::new()).unwrap();
+        assert_eq!(fs::read(tmp.path().join("config.toml")).unwrap(), before);
+    }
+
+    /// A server spelled with dotted keys or inside an inline table must be
+    /// updated where it is: appending `[mcp_servers.x]` would redefine it,
+    /// and Codex would then refuse the whole file.
+    #[test]
+    fn write_mcp_servers_updates_dotted_and_inline_entries_in_place() {
+        let cases = [
+            "mcp_servers.dotted.command = \"/old\"\n",
+            "[mcp_servers]\ndotted.command = \"/old\"\n",
+            "mcp_servers = { dotted = { command = \"/old\" } }\n",
+            "[mcp_servers]\ndotted = { command = \"/old\", cwd = \"/srv\" }\n",
+        ];
+        for original in cases {
+            let tmp = tempdir().unwrap();
+            fs::write(tmp.path().join("config.toml"), original).unwrap();
+            let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+            let mut servers = one_server(stdio_server("dotted", "/new"));
+            servers.insert("added".to_string(), stdio_server("added", "/added"));
+
+            let report = adapter.write_mcp_servers(&servers).unwrap();
+            assert_eq!(report.written, 2, "{original}");
+
+            let text = fs::read_to_string(tmp.path().join("config.toml")).unwrap();
+            // The parser rejects a table defined twice, as Codex does.
+            let strict = text
+                .parse::<toml_edit::DocumentMut>()
+                .unwrap_or_else(|e| panic!("{original:?} became invalid TOML: {e}\n{text}"));
+            let servers = &strict["mcp_servers"];
+            assert_eq!(servers.as_table_like().unwrap().len(), 2, "{text}");
+            assert_eq!(
+                servers["dotted"]["command"].as_str(),
+                Some("/new"),
+                "{text}"
+            );
+            assert_eq!(servers["dotted"]["type"].as_str(), Some("stdio"), "{text}");
+            assert_eq!(
+                servers["added"]["command"].as_str(),
+                Some("/added"),
+                "{text}"
+            );
+            if original.contains("cwd") {
+                assert_eq!(servers["dotted"]["cwd"].as_str(), Some("/srv"), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_malformed_config_toml_is_refused_not_overwritten() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        let broken = "[mcp_servers.x\ncommand = \"/bin/x\"\n";
+        fs::write(&path, broken).unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        assert!(adapter
+            .write_mcp_servers(&one_server(stdio_server("s", "/bin/s")))
+            .is_err());
+        assert!(adapter
+            .write_preferences(&Preferences {
+                model: Some("gpt-5".to_string()),
+                custom: HashMap::new(),
+            })
+            .is_err());
+        assert!(
+            adapter.read_mcp_servers().is_err(),
+            "no silent JSON fallback"
+        );
+        assert!(
+            adapter.read_preferences().is_err(),
+            "no silent JSON fallback"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), broken);
+        assert!(!tmp.path().join("config.toml.skrills-bak").exists());
+    }
+
+    #[test]
+    fn a_non_table_mcp_servers_key_is_refused() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        fs::write(&path, "mcp_servers = 3\n").unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        assert!(adapter
+            .write_mcp_servers(&one_server(stdio_server("s", "/bin/s")))
+            .is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "mcp_servers = 3\n");
+    }
+
+    /// `model` must land in the root table even when the file ends inside
+    /// another table, where a plain append would nest it.
+    #[test]
+    fn write_preferences_sets_the_top_level_model_in_config_toml() {
+        let tmp = tempdir().unwrap();
+        let original = "# top\n[features]\nskills = true\n\n[mcp_servers.a]\ncommand = \"/a\"\n";
+        fs::write(tmp.path().join("config.toml"), original).unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let prefs = Preferences {
+            model: Some("gpt-5".to_string()),
+            custom: HashMap::new(),
+        };
+
+        let report = adapter.write_preferences(&prefs).unwrap();
+        assert_eq!(report.written, 1);
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert!(!tmp.path().join("config.json").exists());
+
+        let doc = parsed_toml(tmp.path());
+        assert_eq!(doc.get("model").and_then(|m| m.as_str()), Some("gpt-5"));
+        assert!(doc["features"].get("model").is_none());
+        assert!(doc["mcp_servers"]["a"].get("model").is_none());
+        // A root key must precede every header, so it goes above the comment
+        // that belongs to `[features]`; the comment stays with its table.
+        let text = fs::read_to_string(tmp.path().join("config.toml")).unwrap();
+        assert!(text.starts_with("model = \"gpt-5\"\n"), "{text}");
+        assert!(text.contains("# top\n[features]\n"), "{text}");
+
+        assert_eq!(
+            adapter.read_preferences().unwrap().model.as_deref(),
+            Some("gpt-5")
+        );
+        assert_eq!(adapter.write_preferences(&prefs).unwrap().written, 0);
+    }
+
+    #[test]
+    fn config_toml_wins_over_config_json_when_it_has_values() {
+        let tmp = tempdir().unwrap();
+        fs::write(
+            tmp.path().join("config.json"),
+            r#"{"model": "old", "mcpServers": {"legacy": {"command": "/legacy"}}}"#,
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("config.toml"),
+            "model = \"new\"\n[mcp_servers.current]\ncommand = \"/current\"\n",
+        )
+        .unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        assert_eq!(
+            adapter.read_preferences().unwrap().model.as_deref(),
+            Some("new")
+        );
+        let servers = adapter.read_mcp_servers().unwrap();
+        assert_eq!(servers.keys().collect::<Vec<_>>(), vec!["current"]);
+    }
+
+    /// Fallback: config.toml without servers or model still reads config.json.
+    #[test]
+    fn config_json_is_read_when_config_toml_has_none() {
+        let tmp = tempdir().unwrap();
+        fs::write(
+            tmp.path().join("config.json"),
+            r#"{"model": "gpt-4o", "mcpServers": {"legacy": {"command": "/legacy"}}}"#,
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("config.toml"),
+            "[features]\nskills = true\n",
+        )
+        .unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        assert_eq!(
+            adapter.read_preferences().unwrap().model.as_deref(),
+            Some("gpt-4o")
+        );
+        assert_eq!(
+            adapter.read_mcp_servers().unwrap()["legacy"].command,
+            "/legacy"
+        );
+    }
+
+    #[test]
+    fn disabled_and_tool_filtered_servers_use_codex_keys() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let mut server = stdio_server("s", "/bin/s");
+        server.enabled = false;
+        server.allowed_tools = vec!["read".to_string()];
+        server.disabled_tools = vec!["write".to_string()];
+
+        adapter
+            .write_mcp_servers(&one_server(server.clone()))
+            .unwrap();
+
+        let doc = parsed_toml(tmp.path());
+        let entry = &doc["mcp_servers"]["s"];
+        assert_eq!(entry["enabled"].as_bool(), Some(false));
+        assert_eq!(entry["enabled_tools"][0].as_str(), Some("read"));
+        assert_eq!(entry["disabled_tools"][0].as_str(), Some("write"));
+        assert_eq!(adapter.read_mcp_servers().unwrap()["s"], server);
+    }
+
+    /// Replacing an HTTP entry with the source's stdio server must not leave
+    /// `url` beside `command`, a mix Codex cannot run.
+    #[test]
+    fn a_stdio_server_replaces_an_http_entry_cleanly() {
+        let tmp = tempdir().unwrap();
+        fs::write(
+            tmp.path().join("config.toml"),
+            "[mcp_servers.s]\ntype = \"http\"\nurl = \"http://127.0.0.1:3001/mcp\"\nbearer_token_env_var = \"TOK\"\nstartup_timeout_sec = 30\n",
+        )
+        .unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        let report = adapter
+            .write_mcp_servers(&one_server(stdio_server("s", "/bin/s")))
+            .unwrap();
+        assert_eq!(report.written, 1);
+
+        let doc = parsed_toml(tmp.path());
+        let entry = &doc["mcp_servers"]["s"];
+        assert_eq!(entry["type"].as_str(), Some("stdio"));
+        assert_eq!(entry["command"].as_str(), Some("/bin/s"));
+        assert!(entry.get("url").is_none());
+        assert!(entry.get("bearer_token_env_var").is_none());
+        assert_eq!(entry["startup_timeout_sec"].as_integer(), Some(30));
+    }
+
+    fn http_server(name: &str, headers: &[(&str, &str)]) -> McpServer {
+        let mut server = stdio_server(name, "");
+        server.transport = McpTransport::Http;
+        server.url = Some("https://example.invalid/mcp".to_string());
+        server.headers = (!headers.is_empty()).then(|| {
+            headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        });
+        server
+    }
+
+    /// Codex runs streamable-HTTP servers, but it expands no `${VAR}` in a
+    /// header value, so env references go to the keys Codex reads them from.
+    #[test]
+    fn an_http_server_is_written_with_its_headers_in_codex_form() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let server = http_server(
+            "web",
+            &[
+                ("Authorization", "Bearer ${TOK}"),
+                ("X-Key", "${KEY_VAR}"),
+                ("X-Region", "us"),
+            ],
+        );
+
+        let report = adapter
+            .write_mcp_servers(&one_server(server.clone()))
+            .unwrap();
+        assert_eq!(report.written, 1);
+
+        let doc = parsed_toml(tmp.path());
+        let entry = &doc["mcp_servers"]["web"];
+        assert_eq!(entry["type"].as_str(), Some("http"));
+        assert_eq!(entry["url"].as_str(), Some("https://example.invalid/mcp"));
+        assert_eq!(entry["bearer_token_env_var"].as_str(), Some("TOK"));
+        assert_eq!(entry["env_http_headers"]["X-Key"].as_str(), Some("KEY_VAR"));
+        assert_eq!(entry["http_headers"]["X-Region"].as_str(), Some("us"));
+        assert!(entry.get("command").is_none());
+        assert!(entry
+            .get("http_headers")
+            .unwrap()
+            .get("Authorization")
+            .is_none());
+
+        assert_eq!(adapter.read_mcp_servers().unwrap()["web"], server);
+        let again = adapter.write_mcp_servers(&one_server(server)).unwrap();
+        assert_eq!(again.written, 0, "an unchanged HTTP server is rewritten");
+    }
+
+    #[test]
+    fn an_http_server_replaces_a_stdio_entry_cleanly() {
+        let tmp = tempdir().unwrap();
+        fs::write(
+            tmp.path().join("config.toml"),
+            "[mcp_servers.web]\ncommand = \"/bin/web\"\nargs = [\"-v\"]\ncwd = \"/srv\"\nstartup_timeout_sec = 30\n\n[mcp_servers.web.env]\nA = \"1\"\n",
+        )
+        .unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        let report = adapter
+            .write_mcp_servers(&one_server(http_server("web", &[])))
+            .unwrap();
+        assert_eq!(report.written, 1);
+
+        let doc = parsed_toml(tmp.path());
+        let entry = &doc["mcp_servers"]["web"];
+        assert_eq!(entry["url"].as_str(), Some("https://example.invalid/mcp"));
+        for key in ["command", "args", "env", "cwd"] {
+            assert!(entry.get(key).is_none(), "stdio key {key} left beside url");
+        }
+        assert_eq!(entry["startup_timeout_sec"].as_integer(), Some(30));
+    }
+
+    /// `Token ${X}` cannot be spelled in config.toml: writing it literally
+    /// would send the text `${X}` to the server.
+    #[test]
+    fn an_http_header_codex_cannot_express_skips_the_server() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let server = http_server("web", &[("X-Api", "Token ${API}")]);
+
+        let report = adapter.write_mcp_servers(&one_server(server)).unwrap();
+        assert_eq!(report.written, 0);
+        assert_eq!(report.skipped.len(), 1);
+        assert!(
+            format!("{:?}", report.skipped[0]).contains("X-Api"),
+            "{:?}",
+            report.skipped
+        );
+        assert!(!tmp.path().join("config.toml").exists());
+    }
+
+    /// Without `url` the entry would have neither `url` nor `command`, which
+    /// Codex cannot parse, and it then refuses to start.
+    #[test]
+    fn an_http_server_without_a_url_is_skipped() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let mut server = http_server("web", &[]);
+        server.url = None;
+
+        let report = adapter.write_mcp_servers(&one_server(server)).unwrap();
+        assert_eq!(report.written, 0);
+        assert_eq!(report.skipped.len(), 1);
+        assert!(!tmp.path().join("config.toml").exists());
+    }
+
+    #[test]
+    fn read_preferences_falls_back_to_config_json() {
         let tmp = tempdir().unwrap();
         let config_path = tmp.path().join("config.json");
         fs::write(
@@ -935,6 +1395,125 @@ mod tests {
         let cfg = fs::read_to_string(tmp.path().join("config.toml")).unwrap();
         assert!(cfg.contains("[features]"));
         assert!(cfg.contains("skills = true"));
+    }
+
+    /// A key that merely starts with `skills` used to be replaced, losing both
+    /// its name and its value.
+    #[test]
+    fn skills_flag_leaves_a_similarly_named_key_alone() {
+        let updated = enable_skills_flag("[features]\nskills_beta = false\n").unwrap();
+        assert_eq!(updated, "[features]\nskills = true\nskills_beta = false\n");
+    }
+
+    /// A second `[features]` table is a TOML redefinition error.
+    #[test]
+    fn skills_flag_honours_a_top_level_dotted_key() {
+        assert_eq!(enable_skills_flag("features.skills = true\n"), None);
+        assert_eq!(
+            enable_skills_flag("features.skills = false\nmodel = \"o3\"\n").unwrap(),
+            "features.skills = true\nmodel = \"o3\"\n"
+        );
+    }
+
+    /// `#` inside a quoted key was read as a comment, so the header was not
+    /// recognised and the lines under it were treated as `[features]` keys.
+    #[test]
+    fn skills_flag_ignores_hash_inside_a_quoted_header() {
+        let content = "[features]\nskills = true\n[servers.\"a#b\"]\nskills = false\n";
+        assert_eq!(enable_skills_flag(content), None);
+    }
+
+    #[test]
+    fn skills_flag_is_a_no_op_when_already_true() {
+        assert_eq!(enable_skills_flag("[features]\nskills = true # on\n"), None);
+    }
+
+    #[test]
+    fn skills_flag_appends_a_features_table_when_missing() {
+        assert_eq!(
+            enable_skills_flag("model = \"o3\"\n").unwrap(),
+            "model = \"o3\"\n\n[features]\nskills = true\n"
+        );
+    }
+
+    /// With no skills there is nothing for Codex to load, so the user's
+    /// config is not created or edited.
+    #[test]
+    fn write_skills_with_no_skills_leaves_config_toml_alone() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        adapter.write_skills(&[]).unwrap();
+        assert!(!tmp.path().join("config.toml").exists());
+    }
+
+    /// A markdown file inside a skill directory is a module of that skill;
+    /// the reader also returned it as a second, legacy skill.
+    #[test]
+    fn read_skills_does_not_turn_a_skill_module_into_a_skill() {
+        let tmp = tempdir().unwrap();
+        let skills = tmp.path().join("skills");
+        fs::create_dir_all(skills.join("foo/docs")).unwrap();
+        fs::write(skills.join("foo/SKILL.md"), "foo").unwrap();
+        fs::write(skills.join("foo/docs/reference.md"), "ref").unwrap();
+        fs::write(skills.join("legacy.md"), "legacy").unwrap();
+
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let mut names: Vec<_> = adapter
+            .read_skills()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        names.sort();
+
+        assert_eq!(names, vec!["foo", "legacy"]);
+    }
+
+    /// A user's own skill named `agent-smith` was hidden from `read_skills`
+    /// and exported as an agent called `smith`.
+    #[test]
+    fn a_user_skill_with_the_agent_prefix_stays_a_skill() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("skills/agent-smith");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("SKILL.md"), "mine").unwrap();
+
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        let skills: Vec<_> = adapter
+            .read_skills()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(skills, vec!["agent-smith"]);
+        assert!(adapter.read_agents().unwrap().is_empty());
+    }
+
+    #[test]
+    fn agents_written_as_skills_read_back_as_agents_only() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let agent = Command {
+            name: "reviewer".to_string(),
+            content: b"---\nname: reviewer\n---\nbody".to_vec(),
+            source_path: PathBuf::from("/a/reviewer.md"),
+            modified: SystemTime::now(),
+            hash: String::new(),
+            modules: Vec::new(),
+            content_format: ContentFormat::default(),
+            plugin_origin: None,
+        };
+        adapter.write_agents(&[agent]).unwrap();
+
+        let agents: Vec<_> = adapter
+            .read_agents()
+            .unwrap()
+            .into_iter()
+            .map(|a| a.name)
+            .collect();
+        assert_eq!(agents, vec!["reviewer"]);
+        assert!(adapter.read_skills().unwrap().is_empty());
     }
 
     #[test]
@@ -1027,6 +1606,23 @@ mod tests {
         assert_eq!(fs::read_to_string(&nested).unwrap(), "{}");
     }
 
+    /// `write_agents` is a real implementation, so the target-side declaration
+    /// has to say so even though Codex has no agents directory to read.
+    #[test]
+    fn write_support_declares_agents_although_read_support_does_not() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        assert!(
+            !adapter.read_support().agents,
+            "Codex has no agents directory to read"
+        );
+        assert!(
+            adapter.write_support().agents,
+            "write_agents converts agents into agent-prefixed skills"
+        );
+    }
+
     #[test]
     fn write_agents_converts_to_skills_with_prefix() {
         // Codex doesn't have native agent support, so agents are converted to skills
@@ -1094,7 +1690,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let skills_dir = tmp.path().join("skills");
 
-        // Create an agent-prefixed skill
+        // An agent converted by `write_agents`, which leaves its marker
         let agent_skill_dir = skills_dir.join("agent-code-reviewer");
         fs::create_dir_all(&agent_skill_dir).unwrap();
         fs::write(
@@ -1102,6 +1698,7 @@ mod tests {
             "---\nname: code-reviewer\ndescription: Reviews code\n---\n# Agent",
         )
         .unwrap();
+        fs::write(agent_skill_dir.join(AGENT_MARKER), AGENT_MARKER_BODY).unwrap();
 
         // Create a regular skill (should NOT be returned as agent)
         let regular_skill_dir = skills_dir.join("pdf-processing");
@@ -1126,7 +1723,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let skills_dir = tmp.path().join("skills");
 
-        // Create an agent-prefixed skill
+        // An agent converted by `write_agents`, which leaves its marker
         let agent_skill_dir = skills_dir.join("agent-code-reviewer");
         fs::create_dir_all(&agent_skill_dir).unwrap();
         fs::write(
@@ -1134,6 +1731,7 @@ mod tests {
             "---\nname: code-reviewer\n---\n# Agent",
         )
         .unwrap();
+        fs::write(agent_skill_dir.join(AGENT_MARKER), AGENT_MARKER_BODY).unwrap();
 
         // Create a regular skill
         let regular_skill_dir = skills_dir.join("pdf-processing");
@@ -1203,50 +1801,6 @@ mod tests {
     }
 
     #[test]
-    fn write_mcp_servers_invalid_existing_json_returns_error() {
-        let tmp = tempdir().unwrap();
-        let config_path = tmp.path().join("config.json");
-        fs::write(&config_path, "{ corrupted json }").unwrap();
-
-        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
-        let mut servers = HashMap::new();
-        servers.insert(
-            "test-server".to_string(),
-            McpServer {
-                name: "test-server".to_string(),
-                transport: McpTransport::Stdio,
-                command: "/bin/test".to_string(),
-                args: vec![],
-                env: HashMap::new(),
-                url: None,
-                headers: None,
-                enabled: true,
-                allowed_tools: vec![],
-                disabled_tools: vec![],
-            },
-        );
-
-        let result = adapter.write_mcp_servers(&servers);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn write_preferences_invalid_existing_json_returns_error() {
-        let tmp = tempdir().unwrap();
-        let config_path = tmp.path().join("config.json");
-        fs::write(&config_path, "{ malformed: json, }").unwrap();
-
-        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
-        let prefs = Preferences {
-            model: Some("gpt-4o".to_string()),
-            custom: HashMap::new(),
-        };
-
-        let result = adapter.write_preferences(&prefs);
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn read_mcp_servers_with_tool_configs() {
         let tmp = tempdir().unwrap();
         let config_path = tmp.path().join("config.json");
@@ -1307,33 +1861,21 @@ mod tests {
     }
 
     #[test]
-    fn mcp_servers_empty_tool_configs_omitted_from_json() {
+    fn mcp_servers_empty_tool_configs_omitted_from_toml() {
         let tmp = tempdir().unwrap();
         let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
 
-        let mut servers = HashMap::new();
-        servers.insert(
-            "clean-server".to_string(),
-            McpServer {
-                name: "clean-server".to_string(),
-                transport: McpTransport::Stdio,
-                command: "/bin/server".to_string(),
-                args: vec![],
-                env: HashMap::new(),
-                url: None,
-                headers: None,
-                enabled: true,
-                allowed_tools: vec![],
-                disabled_tools: vec![],
-            },
-        );
+        adapter
+            .write_mcp_servers(&one_server(stdio_server("clean-server", "/bin/server")))
+            .unwrap();
 
-        adapter.write_mcp_servers(&servers).unwrap();
-
-        let content = fs::read_to_string(tmp.path().join("config.json")).unwrap();
-        let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
-        let server_json = &settings["mcpServers"]["clean-server"];
-        assert!(server_json.get("allowedTools").is_none());
-        assert!(server_json.get("disabledTools").is_none());
+        let doc = parsed_toml(tmp.path());
+        let entry = &doc["mcp_servers"]["clean-server"];
+        for key in ["enabled", "enabled_tools", "disabled_tools", "args", "env"] {
+            assert!(
+                entry.get(key).is_none(),
+                "{key} written for a default server"
+            );
+        }
     }
 }

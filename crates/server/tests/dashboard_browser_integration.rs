@@ -114,8 +114,21 @@ fn create_test_skills(dir: &std::path::Path) {
     }
 }
 
+/// Points HOME at one temp dir for this whole test binary before any server
+/// starts, so the metrics store the server opens (`~/.skrills/metrics.db`)
+/// is not the developer's. Set once and never changed afterwards.
+fn isolate_home() {
+    static HOME: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        let dir = tempfile::tempdir().expect("temp HOME");
+        std::env::set_var("HOME", dir.path());
+        dir
+    });
+}
+
 /// Start the HTTP server in the background and return the base URL.
 async fn start_test_server(skill_dirs: Vec<PathBuf>) -> (String, tokio::task::JoinHandle<()>) {
+    isolate_home();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("should bind to ephemeral port");

@@ -44,6 +44,10 @@ pub enum WarningKind {
     /// Failed to access directory entry during traversal.
     DirectoryEntryAccessFailed,
     /// Failed to read file contents.
+    #[deprecated(
+        since = "0.9.0",
+        note = "dependency analysis never produces this kind; unused, will be removed in a future release"
+    )]
     FileReadFailed,
 }
 
@@ -259,6 +263,13 @@ pub fn analyze_dependencies(skill_path: &Path, content: &str) -> DependencyAnaly
                 | DependencyType::Script
                 | DependencyType::Asset
         ) {
+            // Only probe paths inside the skill directory. A target
+            // that is absolute or climbs out with `..` stays unchecked
+            // (`exists: None`) so skill content cannot use the
+            // analyzer to test for arbitrary files.
+            if !is_confined(&dep.target) {
+                continue;
+            }
             let path = skill_dir.join(&dep.target);
             dep.exists = Some(path.exists());
 
@@ -314,32 +325,14 @@ fn extract_content_dependencies(
             }
         }
 
-        // Find markdown links (excluding URLs)
-        for cap in LINK_REGEX.captures_iter(line) {
-            let path = &cap[2];
-            if !path.starts_with("http://")
-                && !path.starts_with("https://")
-                && !seen_paths.contains(path)
-            {
-                seen_paths.insert(path.to_string());
-                let dep_type = classify_path(path);
-                analysis.dependencies.push(Dependency {
-                    dep_type,
-                    target: path.to_string(),
-                    line: Some(line_number),
-                    exists: None,
-                });
-            }
-        }
-
-        // Find markdown images (excluding URLs)
+        // Find markdown images first: LINK_REGEX also matches the
+        // `[alt](path)` tail of an image, and whichever pass records a
+        // path first decides its type.
         for cap in IMAGE_REGEX.captures_iter(line) {
-            let path = &cap[2];
-            if !path.starts_with("http://")
-                && !path.starts_with("https://")
-                && !seen_paths.contains(path)
-            {
-                seen_paths.insert(path.to_string());
+            let Some(path) = local_link_target(&cap[2]) else {
+                continue;
+            };
+            if seen_paths.insert(path.to_string()) {
                 analysis.dependencies.push(Dependency {
                     dep_type: DependencyType::Asset,
                     target: path.to_string(),
@@ -348,7 +341,71 @@ fn extract_content_dependencies(
                 });
             }
         }
+
+        // Find markdown links (excluding URLs and images)
+        for cap in LINK_REGEX.captures_iter(line) {
+            let start = cap.get(0).map_or(0, |m| m.start());
+            if line[..start].ends_with('!') {
+                continue;
+            }
+            let Some(path) = local_link_target(&cap[2]) else {
+                continue;
+            };
+            if seen_paths.insert(path.to_string()) {
+                analysis.dependencies.push(Dependency {
+                    dep_type: classify_path(path),
+                    target: path.to_string(),
+                    line: Some(line_number),
+                    exists: None,
+                });
+            }
+        }
     }
+}
+
+/// Reduce a markdown link destination to the local file path it names,
+/// or `None` when it names no local file.
+///
+/// Drops an optional title (`path "title"`), angle brackets, and any
+/// `#fragment` or `?query`. Returns `None` for a same-page anchor
+/// (`#usage`) and for any destination with a URI scheme (`https:`,
+/// `mailto:`, `tel:`, ...).
+fn local_link_target(raw: &str) -> Option<&str> {
+    let dest = raw.trim();
+    let dest = dest.split_whitespace().next().unwrap_or("");
+    let dest = dest
+        .strip_prefix('<')
+        .and_then(|d| d.strip_suffix('>'))
+        .unwrap_or(dest);
+    if dest.starts_with('#') || has_uri_scheme(dest) {
+        return None;
+    }
+    let path = dest.split(['#', '?']).next().unwrap_or("");
+    (!path.is_empty()).then_some(path)
+}
+
+/// RFC 3986 scheme: a letter, then letters, digits, `+`, `-` or `.`,
+/// then `:`. A single letter is treated as a Windows drive, not a
+/// scheme.
+fn has_uri_scheme(dest: &str) -> bool {
+    let Some((scheme, _)) = dest.split_once(':') else {
+        return false;
+    };
+    let mut chars = scheme.chars();
+    scheme.len() > 1
+        && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+}
+
+/// Whether `target` stays inside the skill directory when joined to
+/// it: relative, with no `..`, root or prefix component.
+fn is_confined(target: &str) -> bool {
+    Path::new(target).components().all(|c| {
+        matches!(
+            c,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    })
 }
 
 fn classify_path(path: &str) -> DependencyType {
@@ -462,6 +519,61 @@ mod tests {
             .dependencies
             .iter()
             .any(|d| d.target == "references/guide.md"));
+    }
+
+    #[test]
+    fn anchors_schemes_fragments_and_titles_are_not_missing_files() {
+        // IN-21: `[Usage](#usage)` was existence-checked as
+        // `skill_dir/#usage` and reported missing.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let skill = tmp.path().join("SKILL.md");
+        std::fs::create_dir_all(tmp.path().join("references")).unwrap();
+        std::fs::write(tmp.path().join("references/guide.md"), "g").unwrap();
+        let content = "\
+[Usage](#usage)
+[Mail](mailto:someone@example.com)
+[Section](references/guide.md#install)
+[Query](references/guide.md?raw=1)
+[Titled](references/guide.md \"The guide\")
+";
+        let analysis = analyze_dependencies(&skill, content);
+        assert!(
+            analysis.missing.is_empty(),
+            "nothing here is a missing file: {:?}",
+            analysis.missing
+        );
+        let targets: Vec<_> = analysis
+            .dependencies
+            .iter()
+            .map(|d| d.target.as_str())
+            .collect();
+        assert_eq!(targets, ["references/guide.md"]);
+    }
+
+    #[test]
+    fn link_targets_outside_the_skill_dir_are_not_probed() {
+        // IN-67: `../../etc/shadow` or `/etc/passwd` must not turn the
+        // analyzer into an existence oracle for arbitrary paths.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let skill_dir = tmp.path().join("skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(tmp.path().join("outside.md"), "x").unwrap();
+        let content = "[up](../outside.md)\n[abs](/etc/passwd)\n";
+        let analysis = analyze_dependencies(&skill_dir.join("SKILL.md"), content);
+        for dep in &analysis.dependencies {
+            assert_eq!(dep.exists, None, "{} was probed", dep.target);
+        }
+        assert!(analysis.missing.is_empty());
+    }
+
+    #[test]
+    fn image_links_are_classified_as_assets() {
+        // IN-68: the link pass matched `[d](diagram.dot)` inside the
+        // image syntax first and classified it as a Reference.
+        let mut analysis = DependencyAnalysis::default();
+        extract_content_dependencies(&mut analysis, Path::new("."), "![d](diagram.dot)");
+        assert_eq!(analysis.dependencies.len(), 1);
+        assert_eq!(analysis.dependencies[0].dep_type, DependencyType::Asset);
     }
 
     #[test]

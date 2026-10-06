@@ -102,12 +102,7 @@ pub fn human_age(cached_at_unix: u64) -> String {
 pub fn content_hash(content: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
-    let result = hasher.finalize();
-    hex_encode(&result)
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    hex::encode(hasher.finalize())
 }
 
 /// Cache schema SQL.

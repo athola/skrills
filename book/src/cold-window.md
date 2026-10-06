@@ -20,11 +20,21 @@ Both consume the same bus, so they can run together.
 
 ## Quick start
 
-Run the TUI against the engine's demo producer, right in your
-terminal:
+Run the TUI in your terminal against your own skills:
 
 ```bash
-skrills cold-window --tui
+skrills cold-window --tui --skill-dir ~/.claude/skills
+```
+
+By default the engine shows only real data: token attribution for the
+skills under `--skill-dir` (and `SKRILLS_EXTRA_SKILL_DIRS`), and plugin
+health from `./plugins/*/health.toml`. The default skill roots are not
+walked, so with neither set the token ledger stays empty. To see every
+pane populated, add `--demo`, which feeds invented token growth, hints
+and research findings that step through each alert tier:
+
+```bash
+skrills cold-window --tui --demo
 ```
 
 Quit with `q` or `Ctrl-C`. Press `?` for contextual help. Prefer
@@ -49,7 +59,8 @@ surface renders four panes:
   `*_clear` value.
 - **Hints**: ranked by `MultiSignalScorer` formula
   `(frequency × IMPACT_WEIGHT + impact × ACTIONABILITY_WEIGHT)
-  / (ease + 1) × exp(-age_days / HALF_LIFE_DAYS)`. Pinned hints sort
+  / (ease + 1) × exp(-ln 2 × age_days / HALF_LIFE_DAYS)`, so a hint one
+  half-life (14 days) old keeps half its score. Pinned hints sort
   to the top regardless of score.
 - **Research**: pull-only side panel. Findings from GitHub, Hacker
   News, Lobsters, papers, and TRIZ analogies arrive asynchronously
@@ -76,6 +87,26 @@ bottom row in every tier, with the contextual key hints for the
 focused pane right-aligned on it. `z` zooms the focused pane to the
 full body at any tier: the escape hatch when one pane needs all the
 room.
+
+### Always-on in Zellij
+
+Dedicate a [Zellij](https://zellij.dev) pane to the TUI that respawns
+if it exits. Save as `~/.config/zellij/layouts/skrills.kdl` and launch
+with `zellij --layout skrills`:
+
+```kdl
+layout {
+    tab name="cold-window" focus=true {
+        pane command="bash" {
+            // Loop respawns the TUI after a crash or reboot.
+            args "-c" "until skrills cold-window --tui --skill-dir ~/.claude/skills; do echo restarting...; sleep 2; done"
+        }
+    }
+}
+```
+
+Already inside a Zellij session? Open it in a split without a layout
+file: `zellij run -d down -- bash -c 'until skrills cold-window --tui --skill-dir ~/.claude/skills; do sleep 2; done'`.
 
 ## Keybindings
 
@@ -145,15 +176,16 @@ recorded as TR-001 through TR-006 in
 
 | Flag | Default | Effect |
 |---|---|---|
-| `--alert-budget <N>` | `100000` | Token-budget ceiling. At 80% a `Warning` alert fires; at 100% the kill-switch engages. |
+| `--alert-budget <N>` | `100000` | Token-budget ceiling, at least `2`. At 80% a `Warning` alert fires; at 100% the kill-switch engages. A ceiling at or below 50000 moves `Advisory` to 20% and `Caution` to 50% of the ceiling, so the tiers stay in order (see [Token thresholds](#token-thresholds)). |
 | `--research-rate <N>` | `10` | Tome dispatcher fetches per hour. The bucket persists across restarts at `~/.skrills/research-quota.json` and refills pro-rata by elapsed time. |
 | `--port <N>` | `8888` | Browser HTTP port (only with `--browser`). |
 | `--browser` | off | Run the HTTP browser surface. |
+| `--demo` | off | Feed the engine built-in demo data (invented token growth, hints and research findings that walk every alert tier). Without it only real data is shown. |
 | `--tui` | off | Render the live TUI in the current terminal (requires a TTY). Quit with `q` or `Ctrl-C`. |
 | `--no-bell` | off | Suppress the terminal bell the TUI rings on a newly-fired WARNING alert. |
 | `--no-adaptive` | off | Disable load-aware cadence; fix tick rate to base. |
 | `--tick-rate-ms <N>` | `2000` | Override base tick rate. |
-| `--skill-dir <DIR>` | (none) | Repeatable. Adds skill directories beyond the defaults. |
+| `--skill-dir <DIR>` | (none) | Repeatable. Skill directories walked each tick for per-skill token attribution, together with `SKRILLS_EXTRA_SKILL_DIRS`. The default skill roots are not walked. |
 | `--plugins-dir <DIR>` | `./plugins` | Plugins root whose `<plugin>/health.toml` files participate in each tick. Missing or unreadable directories yield an empty plugin set without error. |
 
 ## Architecture
@@ -205,6 +237,13 @@ Defaults are research-backed:
 - **80% of `--alert-budget`** → `Warning`.
 - **100% of `--alert-budget`** → `Warning` and kill-switch engaged
   (mutating sync operations refuse until master-acked).
+
+A learned baseline of recent token totals no longer raises the 20K
+and 50K tiers, since that hid steadily growing totals. When
+`--alert-budget` is at or below 50K, `Advisory` moves to 20% and
+`Caution` to 50% of the ceiling, so all four tiers can still fire in
+order. `--alert-budget` below 2 is refused, because 0 or 1 cannot hold
+ordered tiers.
 
 All thresholds are configurable via builder methods on
 `LayeredAlertPolicy` if you embed the engine directly.
@@ -309,7 +348,7 @@ candidate or after touching the engine, browser, or shutdown code:
 
 ```sh
 make dogfood-cold-window-headless   # engine ticks 3 s, expects clean SIGTERM
-make dogfood-cold-window-chaos      # --no-adaptive and budget=1, kill-switch path
+make dogfood-cold-window-chaos      # --demo --no-adaptive and budget=2, kill-switch path
 make dogfood-cold-window-browser    # HTML/SSE parity and 2 s shutdown budget
 make dogfood-tui                    # tui TTY-or-graceful-refusal contract
 make dogfood-dashboard              # dashboard TTY-or-graceful-refusal contract
@@ -339,8 +378,8 @@ contract: under a real terminal the process renders until the
 (CI, redirected stdio) the process exits 1 with a clear
 `requires a TTY` message rather than crashing on a termios
 syscall against `/dev/null`. Both surfaces use the same guard
-pattern (`crates/server/src/tui.rs:20-22` and
-`crates/server/src/app/dispatcher.rs:417-419`).
+pattern (`crates/cli/src/tui.rs:22-23` and
+`crates/cli/src/dispatcher.rs:471-472`).
 
 ## Hint patterns (ISA-18.2 inspired)
 
@@ -368,7 +407,8 @@ the matching signal in the snapshot:
 ## Roadmap
 
 - Production tick producer using `analyze::tokens::count_tokens_attributed`
-  against real discovery output (replaces the demo producer).
+  against real discovery output, covering MCP and conversation tokens
+  as well as `--skill-dir` skills.
 - Per-tier configurable thresholds (community evidence supports
   75 % Warning, deferred to v0.9.0).
 - Clippy-style `Applicability` axis for hints (MachineApplicable /

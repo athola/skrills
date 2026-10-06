@@ -10,7 +10,7 @@
 //!         * recency_factor
 //!         + user_pin_boost
 //!
-//! recency_factor = exp(-age_days / HALF_LIFE_DAYS)
+//! recency_factor = exp(-ln 2 * age_days / HALF_LIFE_DAYS)   (0.5 at one half-life)
 //! ```
 //!
 //! Defaults: `FREQUENCY_WEIGHT = 2.0`, `IMPACT_WEIGHT = 1.5`,
@@ -64,7 +64,7 @@ pub struct MultiSignalScorer {
 /// downstream sort. The fallible builders reject these up front.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScorerError {
-    /// Weight or half-life is `NaN`.
+    /// Weight or half-life is `NaN` or infinite.
     NaNValue,
     /// Weight or half-life is negative.
     Negative,
@@ -75,7 +75,7 @@ pub enum ScorerError {
 impl core::fmt::Display for ScorerError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::NaNValue => write!(f, "MultiSignalScorer: weight may not be NaN"),
+            Self::NaNValue => write!(f, "MultiSignalScorer: weight may not be NaN or infinite"),
             Self::Negative => write!(f, "MultiSignalScorer: weight may not be negative"),
             Self::ZeroHalfLife => write!(f, "MultiSignalScorer: half_life_days must be > 0"),
         }
@@ -84,12 +84,29 @@ impl core::fmt::Display for ScorerError {
 
 impl std::error::Error for ScorerError {}
 
+/// Upper end of the documented `Hint::ease_score` range.
+const MAX_EASE_SCORE: f64 = 10.0;
+
+/// `value` if it is finite and non-negative, else the nearest valid value
+/// (NaN and negatives become 0, +inf becomes `f64::MAX`).
+fn finite_non_negative(value: f64) -> f64 {
+    if value.is_nan() {
+        0.0
+    } else {
+        value.clamp(0.0, f64::MAX)
+    }
+}
+
 fn validate_weight(value: f64) -> Result<f64, ScorerError> {
     if value.is_nan() {
         return Err(ScorerError::NaNValue);
     }
     if value < 0.0 {
         return Err(ScorerError::Negative);
+    }
+    // +inf passes the checks above but turns `0 * weight` into NaN.
+    if !value.is_finite() {
+        return Err(ScorerError::NaNValue);
     }
     Ok(value)
 }
@@ -173,11 +190,20 @@ impl MultiSignalScorer {
     /// Pin status is intentionally not part of the numeric score,
     /// pinned hints sort ahead of unpinned in [`Self::rank_with_pins`]
     /// regardless of how high the unpinned hint scores.
+    ///
+    /// Inputs are clamped to their documented ranges first (`ease_score` to
+    /// 0-10, `impact` and `age_days` to non-negative, NaN to 0), so a malformed
+    /// hint cannot score infinite or NaN and pin itself to either end.
     pub fn score_one(&self, hint: &Hint) -> f64 {
+        let impact = finite_non_negative(hint.impact);
+        let ease = finite_non_negative(hint.ease_score).min(MAX_EASE_SCORE);
+        let age_days = finite_non_negative(hint.age_days);
         let numerator =
-            (hint.frequency as f64) * self.frequency_weight + hint.impact * self.impact_weight;
-        let denominator = hint.ease_score + 1.0;
-        let recency = (-hint.age_days / self.half_life_days.max(f64::MIN_POSITIVE)).exp();
+            (hint.frequency as f64) * self.frequency_weight + impact * self.impact_weight;
+        let denominator = ease + 1.0;
+        // A true half-life: the factor is 0.5 when `age_days == half_life_days`.
+        let recency =
+            (-std::f64::consts::LN_2 * age_days / self.half_life_days.max(f64::MIN_POSITIVE)).exp();
         (numerator / denominator) * recency
     }
 
@@ -218,11 +244,9 @@ impl MultiSignalScorer {
         scored.sort_by(|a, b| {
             // Primary: pinned (true) before unpinned (false).
             // Secondary: score descending.
-            b.pinned.cmp(&a.pinned).then_with(|| {
-                b.score
-                    .partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+            b.pinned
+                .cmp(&a.pinned)
+                .then_with(|| b.score.total_cmp(&a.score))
         });
         scored
     }
@@ -452,9 +476,51 @@ mod tests {
         let h_one_halflife = hint("h1", 5, 5.0, 5.0, 14.0);
         let s_now = s.score_one(&h_now);
         let s_decayed = s.score_one(&h_one_halflife);
-        // After one half-life, score is approximately s_now / e (≈0.368).
+        // IN-27: after one half-life the score is exactly half, not 1/e.
         let ratio = s_decayed / s_now;
-        assert!((ratio - (-1.0_f64).exp()).abs() < 1e-9);
+        assert!((ratio - 0.5).abs() < 1e-9, "ratio was {ratio}");
+    }
+
+    /// IN-9: out-of-range inputs are clamped, so no hint scores inf or NaN.
+    #[test]
+    fn malformed_hint_inputs_cannot_produce_non_finite_scores() {
+        let s = MultiSignalScorer::new();
+        for h in [
+            hint("neg-ease", 5, 5.0, -1.0, 0.0),
+            hint("nan-ease", 5, 5.0, f64::NAN, 0.0),
+            hint("neg-age", 5, 5.0, 1.0, -1000.0),
+            hint("nan-age", 5, 5.0, 1.0, f64::NAN),
+            hint("nan-impact", 5, f64::NAN, 1.0, 0.0),
+            hint("inf-ease", 5, 5.0, f64::INFINITY, 0.0),
+        ] {
+            let score = s.score_one(&h);
+            assert!(score.is_finite(), "{} scored {score}", h.uri);
+        }
+        // ease = -1 used to divide by zero and pin the hint to the top; it now
+        // scores like ease = 0.
+        assert_eq!(
+            s.score_one(&hint("a", 5, 5.0, -1.0, 0.0)),
+            s.score_one(&hint("b", 5, 5.0, 0.0, 0.0))
+        );
+        // ease above the documented 0-10 range scores like ease = 10.
+        assert_eq!(
+            s.score_one(&hint("a", 5, 5.0, 1000.0, 0.0)),
+            s.score_one(&hint("b", 5, 5.0, 10.0, 0.0))
+        );
+    }
+
+    /// IN-28: +inf is rejected like NaN, since `0 * inf` is NaN.
+    #[test]
+    fn try_with_weight_rejects_infinity() {
+        assert_eq!(
+            MultiSignalScorer::new()
+                .try_with_impact_weight(f64::INFINITY)
+                .unwrap_err(),
+            ScorerError::NaNValue
+        );
+        assert!(MultiSignalScorer::new()
+            .try_with_half_life_days(f64::INFINITY)
+            .is_err());
     }
 
     #[test]

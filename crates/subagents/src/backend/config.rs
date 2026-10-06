@@ -33,10 +33,11 @@ impl AdapterConfig {
         let model = std::env::var(&model_var).unwrap_or_else(|_| default_model.to_string());
 
         let timeout_var = format!("SKRILLS_{}_TIMEOUT_MS", prefix);
-        let timeout_ms = std::env::var(&timeout_var)
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(default_timeout_ms);
+        let timeout_ms = parse_timeout_ms(
+            &timeout_var,
+            std::env::var(&timeout_var).ok(),
+            default_timeout_ms,
+        );
 
         Ok(Self {
             api_key,
@@ -44,6 +45,84 @@ impl AdapterConfig {
             model,
             timeout: Duration::from_millis(timeout_ms),
         })
+    }
+}
+
+/// Reads a millisecond timeout, warning when a set value does not parse so a
+/// setting such as `30s` is not ignored without a trace.
+pub(crate) fn parse_timeout_ms(var: &str, raw: Option<String>, default_ms: u64) -> u64 {
+    match raw {
+        None => default_ms,
+        Some(raw) => raw.trim().parse::<u64>().unwrap_or_else(|_| {
+            tracing::warn!(
+                variable = var,
+                value = %raw,
+                default_ms,
+                "invalid timeout (expected whole milliseconds); using the default"
+            );
+            default_ms
+        }),
+    }
+}
+
+/// Joins `path` onto `base`, treating `base` as a directory.
+///
+/// `Url::join` replaces the last path segment of a base without a trailing
+/// slash, so `https://api.openai.com/v1` joined with `chat/completions` would
+/// lose `v1`. The base is given a trailing slash first, and a failed join is
+/// an error rather than a silent fall back to the bare base.
+pub(crate) fn endpoint(base: &Url, path: &str) -> Result<Url> {
+    let mut base = base.clone();
+    if !base.path().ends_with('/') {
+        let with_slash = format!("{}/", base.path());
+        base.set_path(&with_slash);
+    }
+    base.join(path)
+        .with_context(|| format!("cannot join {path:?} onto API base {base}"))
+}
+
+#[cfg(test)]
+mod endpoint_tests {
+    use super::*;
+
+    #[test]
+    fn endpoint_keeps_a_version_segment_without_trailing_slash() {
+        let base = Url::parse("https://api.openai.com/v1").unwrap();
+        assert_eq!(
+            endpoint(&base, "chat/completions").unwrap().as_str(),
+            "https://api.openai.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn endpoint_accepts_a_base_with_trailing_slash() {
+        let base = Url::parse("https://api.anthropic.com/v1/").unwrap();
+        assert_eq!(
+            endpoint(&base, "messages").unwrap().as_str(),
+            "https://api.anthropic.com/v1/messages"
+        );
+    }
+
+    #[test]
+    fn endpoint_on_a_bare_host() {
+        let base = Url::parse("https://proxy.local").unwrap();
+        assert_eq!(
+            endpoint(&base, "messages").unwrap().as_str(),
+            "https://proxy.local/messages"
+        );
+    }
+
+    #[test]
+    fn endpoint_fails_on_a_base_that_cannot_hold_a_path() {
+        let base = Url::parse("mailto:someone@example.com").unwrap();
+        assert!(endpoint(&base, "messages").is_err());
+    }
+
+    #[test]
+    fn unparseable_timeout_falls_back_to_the_default() {
+        assert_eq!(parse_timeout_ms("X", Some("30s".into()), 500), 500);
+        assert_eq!(parse_timeout_ms("X", Some("250".into()), 500), 250);
+        assert_eq!(parse_timeout_ms("X", None, 500), 500);
     }
 }
 

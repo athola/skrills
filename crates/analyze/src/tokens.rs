@@ -52,14 +52,23 @@ pub fn count_tokens(content: &str) -> TokenBreakdown {
     let mut code_chars = 0usize;
     let mut prose_chars = 0usize;
 
+    // Frontmatter can only open on the first non-empty line. After
+    // that, a `---` line is a markdown horizontal rule.
     let mut frontmatter_started = false;
+    let mut seen_content = false;
 
     for line in content.lines() {
-        let line_len = line.len() + 1; // +1 for newline
+        // The ratios are characters per token, so count characters,
+        // not UTF-8 bytes. +1 for the newline.
+        let line_len = line.chars().count() + 1;
+        let opens_document = !seen_content;
+        if !line.trim().is_empty() {
+            seen_content = true;
+        }
 
         // Handle frontmatter delimiters
         if line.trim() == "---" {
-            if !frontmatter_started {
+            if !frontmatter_started && opens_document {
                 frontmatter_started = true;
                 in_frontmatter = true;
                 frontmatter_chars += line_len;
@@ -236,6 +245,31 @@ mod tests {
 
         assert!(breakdown.frontmatter > 0);
         assert!(breakdown.prose > 0);
+    }
+
+    #[test]
+    fn horizontal_rule_after_content_is_not_a_frontmatter_opener() {
+        // IN-17: a `---` rule in the body of a skill with no
+        // frontmatter must stay prose, and code after it stays code.
+        let content = "# Title\n\nIntro.\n\n---\n\n```rust\nfn main() {}\n```\n";
+        let breakdown = count_tokens(content);
+        assert_eq!(breakdown.frontmatter, 0);
+        assert!(breakdown.code > 0);
+    }
+
+    #[test]
+    fn frontmatter_opener_may_follow_leading_blank_lines() {
+        let breakdown = count_tokens("\n---\nname: x\n---\nBody.");
+        assert!(breakdown.frontmatter > 0);
+    }
+
+    #[test]
+    fn non_ascii_text_is_counted_in_characters_not_bytes() {
+        // IN-59: the ratios are chars-per-token. 40 CJK characters are
+        // 120 UTF-8 bytes; 40 chars plus the newline gives 41 / 4.0.
+        let line = "漢".repeat(40);
+        let breakdown = count_tokens(&line);
+        assert_eq!(breakdown.prose, 11);
     }
 
     #[test]

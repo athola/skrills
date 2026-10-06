@@ -134,6 +134,11 @@ impl ResearchCache {
             .ok_or_else(|| {
                 TomeError::Other("cannot determine cache directory: HOME is unset".into())
             })?;
+        Self::cache_dir_in(&base)
+    }
+
+    /// `cache_dir` below an explicit base, so tests need not touch HOME.
+    fn cache_dir_in(base: &std::path::Path) -> TomeResult<PathBuf> {
         let dir = base.join("skrills-tome");
         std::fs::create_dir_all(&dir)?;
         Ok(dir)
@@ -176,27 +181,17 @@ mod tests {
         assert_eq!(cache.get("key1").unwrap(), Some("v2".to_string()));
     }
 
-    /// GIVEN a valid HOME directory
-    /// WHEN ResearchCache::cache_dir() is called
-    /// THEN it returns a path ending in "skrills-tome" and creates the directory
+    /// GIVEN a base cache directory
+    /// WHEN the cache directory is resolved below it
+    /// THEN it ends in "skrills-tome" and is created
+    ///
+    /// IN-80: the old version set HOME process-wide, raced other tests and
+    /// ignored XDG_CACHE_HOME, so it could write to the real cache dir.
     #[test]
     fn cache_dir_creates_directory() {
         let temp = tempfile::tempdir().unwrap();
-        let prev = std::env::var("HOME").ok();
-
-        // Run inside catch_unwind so HOME is always restored even on panic
-        let result = std::panic::catch_unwind(|| {
-            std::env::set_var("HOME", temp.path());
-            ResearchCache::cache_dir()
-        });
-
-        match prev {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
-
-        let dir = result.expect("test panicked").unwrap();
-        assert!(dir.ends_with("skrills-tome"));
-        assert!(dir.exists(), "cache_dir should create the directory");
+        let dir = ResearchCache::cache_dir_in(temp.path()).unwrap();
+        assert_eq!(dir, temp.path().join("skrills-tome"));
+        assert!(dir.is_dir(), "cache_dir should create the directory");
     }
 }

@@ -17,8 +17,13 @@
 //!   `~/.skrills/research-quota.json` on every successful dispatch
 //!   and on graceful shutdown. On startup the bucket restores and
 //!   refills pro-rata by elapsed wall-clock since the last save.
-//!   This closes the "restart to reset quota" exploit raised in
-//!   the war-room (RT-8).
+//!   This mitigates the "restart to reset quota" exploit raised in
+//!   the war-room (RT-8) for a plain restart. It is best-effort, not
+//!   an enforcement boundary: the file is owned by the user, so
+//!   deleting it (a missing file loads as a full bucket) or editing
+//!   it (for example `last_refill_ms: 0`, which refills to capacity)
+//!   still resets the quota. The budget protects the user from
+//!   runaway churn, not from themselves.
 //!
 //! ## Concurrency invariants
 //!
@@ -220,6 +225,25 @@ struct DispatchEntry {
     channels_seen: HashSet<ResearchChannel>,
 }
 
+impl DispatchEntry {
+    /// Whether this entry's TTL window is still open at `now`.
+    fn is_live(&self, now: Instant, ttl: Duration) -> bool {
+        now.duration_since(self.last_dispatched) < ttl
+    }
+}
+
+/// Every research channel, for the "could any channel fire?" probe.
+/// `channel_confidence` matches exhaustively, so a new
+/// `ResearchChannel` variant breaks the build there before it can be
+/// missing here unnoticed.
+const ALL_CHANNELS: [ResearchChannel; 5] = [
+    ResearchChannel::GitHub,
+    ResearchChannel::Paper,
+    ResearchChannel::HackerNews,
+    ResearchChannel::Lobsters,
+    ResearchChannel::Triz,
+];
+
 /// State protected by a single mutex so that the
 /// dedup-then-token-bucket sequence in `try_dispatch` is atomic.
 /// Splitting these maps admits a TOCTOU
@@ -265,10 +289,11 @@ impl BucketedBudget {
     ///
     /// Pro-rata refill: the loaded bucket has its tokens topped up
     /// according to elapsed wall-clock since the saved
-    /// `last_refill_ms`. This is what closes the restart-exploit:
+    /// `last_refill_ms`. This is what mitigates the restart exploit:
     /// if the user kills the daemon and immediately restarts, the
     /// tokens that have accrued in the (zero) elapsed time are
-    /// (zero), quota does not reset.
+    /// (zero), quota does not reset. Deleting or editing the file
+    /// does reset it; see the module docs.
     ///
     /// **Recovery.** If the persistence file is corrupt
     /// (half-written from a SIGKILL) or contains an unrecoverable
@@ -283,34 +308,32 @@ impl BucketedBudget {
         let now_ms_opt = (clock)();
         let now_ms = bootstrap_ms(now_ms_opt);
         let mut bucket = if path.exists() {
-            match std::fs::read(&path) {
-                Ok(bytes) => match serde_json::from_slice::<PersistedBucket>(&bytes) {
-                    Ok(loaded) => match loaded.validated(rate_per_hour) {
-                        Some(b) => b,
-                        None => {
-                            tracing::warn!(
-                                path = %path.display(),
-                                tier = "CAUTION",
-                                "research quota file held unrecoverable values \
-                                 (NaN/Inf in `available`); recovering with fresh \
-                                 full bucket",
-                            );
-                            PersistedBucket::full(rate_per_hour, now_ms)
-                        }
-                    },
-                    Err(err) => {
+            let bytes = std::fs::read(&path)?;
+            match serde_json::from_slice::<PersistedBucket>(&bytes) {
+                Ok(loaded) => match loaded.validated(rate_per_hour) {
+                    Some(b) => b,
+                    None => {
                         tracing::warn!(
                             path = %path.display(),
-                            error = %err,
                             tier = "CAUTION",
-                            "research quota file is corrupt (likely a \
-                             half-written SIGKILL artifact); recovering with \
-                             fresh full bucket",
+                            "research quota file held unrecoverable values \
+                             (NaN/Inf in `available`); recovering with fresh \
+                             full bucket",
                         );
                         PersistedBucket::full(rate_per_hour, now_ms)
                     }
                 },
-                Err(io_err) => return Err(io_err.into()),
+                Err(err) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %err,
+                        tier = "CAUTION",
+                        "research quota file is corrupt (likely a \
+                         half-written SIGKILL artifact); recovering with \
+                         fresh full bucket",
+                    );
+                    PersistedBucket::full(rate_per_hour, now_ms)
+                }
             }
         } else {
             PersistedBucket::full(rate_per_hour, now_ms)
@@ -351,68 +374,94 @@ impl BucketedBudget {
     /// the module docs for why splitting the
     /// critical sections is unsafe.
     pub fn try_dispatch(&self, fingerprint: &str, channel: ResearchChannel) -> DispatchVerdict {
-        let now = Instant::now();
+        self.try_dispatch_at(fingerprint, channel, Instant::now())
+    }
+
+    /// [`Self::try_dispatch`] with an injected monotonic `now`, so
+    /// tests can step past the fingerprint TTL without sleeping.
+    fn try_dispatch_at(
+        &self,
+        fingerprint: &str,
+        channel: ResearchChannel,
+        now: Instant,
+    ) -> DispatchVerdict {
         let now_ms_opt = (self.clock)();
 
-        let to_persist = {
-            let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock();
 
-            // Group / dedup: collapse identical-fingerprint requests
-            // arriving within the TTL window.
-            if let Some(entry) = inner.in_flight.get(fingerprint) {
-                let age = now.duration_since(entry.last_dispatched);
-                if age < self.fingerprint_ttl {
-                    if entry.channels_seen.contains(&channel) {
-                        return DispatchVerdict::DuplicateInWindow;
-                    }
-                    // Inhibit: GitHub already gave us a finding for
-                    // this fingerprint; HN/Lobsters etc are inhibited
-                    // for the remainder of the TTL.
-                    if Self::is_higher_confidence_present(&entry.channels_seen, channel) {
-                        return DispatchVerdict::InhibitedByHigherConfidence;
-                    }
-                }
-            }
+        // Group / dedup / inhibit against the channels already seen
+        // for this fingerprint in the current TTL window.
+        if let Some(verdict) = self.window_verdict(inner.in_flight.get(fingerprint), channel, now) {
+            return verdict;
+        }
 
-            // Token bucket: refill pro-rata (skip refill if the clock
-            // refused to give us a usable timestamp), then try-consume.
-            if let Some(now_ms) = now_ms_opt {
-                inner.bucket.refill(now_ms);
-            } else {
-                tracing::warn!(
-                    "system clock precedes UNIX_EPOCH; skipping refill tick \
-                     to preserve R10 (saturation guard)"
-                );
-            }
-            if !inner.bucket.try_consume() {
-                return DispatchVerdict::QuotaExhausted;
-            }
+        // Token bucket: refill pro-rata (skip refill if the clock
+        // refused to give us a usable timestamp), then try-consume.
+        if let Some(now_ms) = now_ms_opt {
+            inner.bucket.refill(now_ms);
+        } else {
+            tracing::warn!(
+                "system clock precedes UNIX_EPOCH; skipping refill tick \
+                 to preserve R10 (saturation guard)"
+            );
+        }
+        if !inner.bucket.try_consume() {
+            return DispatchVerdict::QuotaExhausted;
+        }
 
-            // Record the dispatch, same critical section as the
-            // dedup check and the bucket consume.
-            let entry = inner
-                .in_flight
-                .entry(fingerprint.to_string())
-                .or_insert_with(|| DispatchEntry {
-                    last_dispatched: now,
-                    channels_seen: HashSet::new(),
-                });
-            entry.last_dispatched = now;
-            entry.channels_seen.insert(channel);
+        // Record the dispatch, same critical section as the
+        // dedup check and the bucket consume.
+        let ttl = self.fingerprint_ttl;
+        let entry = inner
+            .in_flight
+            .entry(fingerprint.to_string())
+            .or_insert_with(|| DispatchEntry {
+                last_dispatched: now,
+                channels_seen: HashSet::new(),
+            });
+        if !entry.is_live(now, ttl) {
+            // The previous window has lapsed: its channels must not
+            // dedup or inhibit anything in the window starting now.
+            entry.channels_seen.clear();
+        }
+        entry.last_dispatched = now;
+        entry.channels_seen.insert(channel);
 
-            inner.bucket.clone()
-        };
-
-        // Persist the bucket if a path is configured. Failure to
-        // persist must not block dispatch (best-effort), but is
-        // surfaced via tracing.
+        // Persist while still holding the lock, so concurrent
+        // dispatches write their snapshots in the order they took
+        // tokens. Writing after release let an older snapshot land
+        // last and hand a token back on restart. Failure to persist
+        // must not block dispatch (best-effort), but is surfaced via
+        // tracing.
         if let Some(path) = &self.persistence_path {
-            if let Err(e) = persist_bucket(path, &to_persist) {
+            if let Err(e) = persist_bucket(path, &inner.bucket) {
                 tracing::warn!(error = %e, "failed to persist research quota");
             }
         }
 
         DispatchVerdict::Allowed
+    }
+
+    /// Dedup and inhibit verdict for `channel` given the fingerprint's
+    /// entry. `None` means the TTL window does not block the channel;
+    /// the token bucket still has the final say.
+    fn window_verdict(
+        &self,
+        entry: Option<&DispatchEntry>,
+        channel: ResearchChannel,
+        now: Instant,
+    ) -> Option<DispatchVerdict> {
+        let entry = entry.filter(|e| e.is_live(now, self.fingerprint_ttl))?;
+        if entry.channels_seen.contains(&channel) {
+            return Some(DispatchVerdict::DuplicateInWindow);
+        }
+        // Inhibit: GitHub already gave us a finding for this
+        // fingerprint; HN/Lobsters etc are inhibited for the
+        // remainder of the TTL.
+        if Self::is_higher_confidence_present(&entry.channels_seen, channel) {
+            return Some(DispatchVerdict::InhibitedByHigherConfidence);
+        }
+        None
     }
 
     /// Channel hierarchy for inhibit logic. Higher-confidence
@@ -439,8 +488,10 @@ impl BucketedBudget {
     /// shutdown.
     pub fn flush_persistence(&self) -> TomeResult<()> {
         if let Some(path) = &self.persistence_path {
-            let bucket = self.inner.lock().bucket.clone();
-            persist_bucket(path, &bucket)?;
+            // Hold the lock across the write, as `try_dispatch` does,
+            // so this snapshot cannot overwrite a newer one.
+            let inner = self.inner.lock();
+            persist_bucket(path, &inner.bucket)?;
         }
         Ok(())
     }
@@ -475,9 +526,9 @@ impl ResearchBudget for BucketedBudget {
     /// cold-window engine can poll it.
     ///
     /// The trait's per-channel ignorance (no channel argument) is
-    /// resolved by treating it as a "is any channel allowed?" probe.
-    /// We default to the lowest-confidence channel so that a `true`
-    /// here means "at least one channel could fire."
+    /// resolved by treating it as a "is any channel allowed?" probe:
+    /// `true` means at least one channel would pass the same dedup and
+    /// inhibit checks `try_dispatch` applies, and a token is available.
     fn should_query(
         &self,
         _snapshot: &WindowSnapshot,
@@ -487,10 +538,12 @@ impl ResearchBudget for BucketedBudget {
         let now = Instant::now();
         let now_ms_opt = (self.clock)();
         let mut inner = self.inner.lock();
-        if let Some(entry) = inner.in_flight.get(topic_fingerprint) {
-            if now.duration_since(entry.last_dispatched) < self.fingerprint_ttl {
-                return false;
-            }
+        let entry = inner.in_flight.get(topic_fingerprint);
+        let any_channel_open = ALL_CHANNELS
+            .iter()
+            .any(|c| self.window_verdict(entry, *c, now).is_none());
+        if !any_channel_open {
+            return false;
         }
         if let Some(now_ms) = now_ms_opt {
             inner.bucket.refill(now_ms);
@@ -779,6 +832,55 @@ mod tests {
             assert!(budget.should_query(&snap, "novel-fp", None));
         }
         assert!((budget.current_state().available - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn expired_fingerprint_forgets_channels_from_the_previous_window() {
+        // IN-8: once the TTL lapses, the channels seen in the old
+        // window must not dedup or inhibit requests in the new one.
+        let budget = BucketedBudget::in_memory(100);
+        let ttl = DEFAULT_FINGERPRINT_TTL;
+        let t0 = Instant::now();
+        assert_eq!(
+            budget.try_dispatch_at("fp", ResearchChannel::GitHub, t0),
+            DispatchVerdict::Allowed
+        );
+        let t1 = t0 + ttl + Duration::from_secs(60);
+        assert_eq!(
+            budget.try_dispatch_at("fp", ResearchChannel::Triz, t1),
+            DispatchVerdict::Allowed
+        );
+        let t2 = t1 + Duration::from_secs(60);
+        assert_eq!(
+            budget.try_dispatch_at("fp", ResearchChannel::HackerNews, t2),
+            DispatchVerdict::Allowed,
+            "GitHub ran in the previous window and must not inhibit HN now"
+        );
+        assert_eq!(
+            budget.try_dispatch_at("fp", ResearchChannel::GitHub, t2),
+            DispatchVerdict::Allowed,
+            "GitHub has not run in this window"
+        );
+    }
+
+    #[test]
+    fn should_query_is_true_while_a_higher_confidence_channel_can_still_fire() {
+        // IN-57: after a Triz dispatch, GitHub would still be allowed,
+        // so the "can any channel fire?" probe must say yes.
+        let budget = BucketedBudget::in_memory(100);
+        let snap = empty_snapshot();
+        assert_eq!(
+            budget.try_dispatch("fp", ResearchChannel::Triz),
+            DispatchVerdict::Allowed
+        );
+        assert!(budget.should_query(&snap, "fp", None));
+        assert_eq!(
+            budget.try_dispatch("fp", ResearchChannel::GitHub),
+            DispatchVerdict::Allowed
+        );
+        // GitHub is the top channel: every other channel is now
+        // inhibited and GitHub itself is a duplicate.
+        assert!(!budget.should_query(&snap, "fp", None));
     }
 
     #[test]

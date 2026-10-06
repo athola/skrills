@@ -33,44 +33,6 @@ pub(crate) fn ensure_not_engaged(switch: Option<&KillSwitch>) -> Result<()> {
     Ok(())
 }
 
-/// Splits content into raw frontmatter string and body.
-///
-/// Frontmatter is delimited by `---` on its own line at the start of the file.
-/// Returns `(Some(raw_frontmatter), body)` if frontmatter is found,
-/// or `(None, full_content)` if not.
-///
-/// This is the single source of truth for frontmatter delimiter scanning.
-pub fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
-    let trimmed = content.trim_start();
-    if !trimmed.starts_with("---") {
-        return (None, content);
-    }
-
-    // Find the closing `---`
-    // Strip the line ending after the opening `---` (handles both \n and \r\n)
-    let after_open = &trimmed[3..];
-    let after_open = after_open
-        .strip_prefix("\r\n")
-        .or_else(|| after_open.strip_prefix('\n'))
-        .unwrap_or(after_open);
-
-    if let Some(close_pos) = after_open.find("\n---") {
-        let frontmatter_str = &after_open[..close_pos];
-        // Trim trailing \r from frontmatter (last line before \n---)
-        let frontmatter_str = frontmatter_str
-            .strip_suffix('\r')
-            .unwrap_or(frontmatter_str);
-        let body_start = close_pos + 4; // skip "\n---"
-        let body = &after_open[body_start..];
-        let body = body.trim_start_matches(['\n', '\r']);
-
-        (Some(frontmatter_str), body)
-    } else {
-        // No closing delimiter, treat entire content as body
-        (None, content)
-    }
-}
-
 /// Returns true if the name starts with a dot (hidden file/directory).
 pub fn is_hidden_component(name: &str) -> bool {
     name.starts_with('.')
@@ -140,7 +102,7 @@ pub fn is_path_contained(target_path: &Path, base_dir: &Path) -> bool {
 pub fn hash_content(content: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content);
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 /// Sanitizes a name by filtering to safe characters: alphanumeric, hyphens, and underscores.
@@ -171,7 +133,16 @@ pub fn sanitize_name_segments(name: &str) -> String {
         .join("/")
 }
 
+/// Largest companion or plugin asset file sync will read. Every file is held
+/// in memory for the whole sync, so an unbounded read of a stray model
+/// checkpoint or log inside a skill directory could exhaust memory.
+pub(crate) const MAX_MODULE_FILE_BYTES: u64 = 16 * 1024 * 1024;
+
 /// Collects companion files from a skill directory (files other than SKILL.md).
+///
+/// Symlinks are not followed: a link inside a skill can point anywhere, and
+/// following it copied its target into every other tool's directory. Files
+/// over [`MAX_MODULE_FILE_BYTES`] are skipped with a warning.
 pub fn collect_module_files(skill_dir: &Path) -> Vec<ModuleFile> {
     let mut modules = Vec::new();
 
@@ -194,7 +165,8 @@ pub fn collect_module_files(skill_dir: &Path) -> Vec<ModuleFile> {
 
         let path = entry.path();
 
-        if !path.is_file() {
+        // `entry.file_type()` does not follow links, unlike `path.is_file()`.
+        if !entry.file_type().is_file() {
             continue;
         }
 
@@ -207,6 +179,17 @@ pub fn collect_module_files(skill_dir: &Path) -> Vec<ModuleFile> {
                 continue;
             }
 
+            if let Ok(meta) = entry.metadata() {
+                if meta.len() > MAX_MODULE_FILE_BYTES {
+                    warn!(
+                        path = %path.display(),
+                        bytes = meta.len(),
+                        limit = MAX_MODULE_FILE_BYTES,
+                        "Skipping module file over the size limit"
+                    );
+                    continue;
+                }
+            }
             let content = match std::fs::read(path) {
                 Ok(c) => c,
                 Err(e) => {
@@ -263,6 +246,332 @@ pub fn sanitize_name_kebab(name: &str) -> String {
     result.trim_matches('-').to_string()
 }
 
+/// Suffix of the one-generation backup [`write_config`] keeps beside a user
+/// config file it is about to change.
+pub(crate) const BACKUP_SUFFIX: &str = ".skrills-bak";
+
+/// Distinguishes temp files made by concurrent writes in one process.
+static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Replaces `path` with `bytes` so a reader sees either the old file or the
+/// new one, never a truncated or interleaved mix.
+///
+/// The bytes go to a hidden sibling temp file that is synced and then renamed
+/// over the destination. A destination that is a symlink (a dotfiles checkout,
+/// say) is resolved first so the link survives and its target is replaced. An
+/// existing file keeps its permission bits; a new one gets `0o600` when
+/// `private` is set and the umask default otherwise.
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let dest = match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+        }
+        _ => path.to_path_buf(),
+    };
+    let parent = match dest.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    };
+    std::fs::create_dir_all(&parent)?;
+
+    let file_name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = parent.join(format!(
+        ".{file_name}.skrills-tmp-{}-{}",
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+
+    let existing_perms = std::fs::metadata(&dest).ok().map(|m| m.permissions());
+
+    let result = (|| {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(if private { 0o600 } else { 0o666 });
+        }
+        #[cfg(not(unix))]
+        let _ = private;
+        let mut file = options.open(&tmp)?;
+        file.write_all(bytes)?;
+        if let Some(perms) = existing_perms {
+            file.set_permissions(perms)?;
+        }
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&tmp, &dest)
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return result;
+    }
+
+    // Persist the rename itself; failure here does not undo the write.
+    #[cfg(unix)]
+    if let Ok(dir) = std::fs::File::open(&parent) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
+/// [`atomic_write`] with the call shape of `std::fs::write`, for generated
+/// files (skills, commands, agents, rules) that need no backup.
+pub(crate) fn write_file(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
+    atomic_write(path.as_ref(), bytes.as_ref(), false)
+}
+
+/// Writes a user-owned config file (`settings.json`, `CLAUDE.md`, `mcp.json`,
+/// `config.toml`, ...): no-op when the content is unchanged, otherwise keeps a
+/// one-generation copy of the previous content at `<path>.skrills-bak` and
+/// replaces the file atomically.
+///
+/// Returns whether the file was written. Backups are only kept for config
+/// files: a `.skrills-bak` beside a skill would be picked up as one of its
+/// module files on the next sync.
+pub(crate) fn write_config(path: &Path, bytes: &[u8], private: bool) -> std::io::Result<bool> {
+    match std::fs::read(path) {
+        Ok(existing) if existing == bytes => return Ok(false),
+        Ok(existing) => {
+            let mut backup = path.as_os_str().to_owned();
+            backup.push(BACKUP_SUFFIX);
+            // The backup holds the same secrets as the original, so it is
+            // always private.
+            atomic_write(Path::new(&backup), &existing, true)?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    atomic_write(path, bytes, private)?;
+    Ok(true)
+}
+
+/// Returns the first symlink on the way from `root` (exclusive) down to
+/// `path` (inclusive), if any.
+///
+/// `~/.claude/skills/foo` is often a symlink into a git checkout. Writing
+/// through it overwrote the user's working tree with another tool's copy.
+pub(crate) fn symlink_below(root: &Path, path: &Path) -> Option<std::path::PathBuf> {
+    let relative = path.strip_prefix(root).ok()?;
+    let mut walked = root.to_path_buf();
+    for component in relative.components() {
+        walked.push(component);
+        match std::fs::symlink_metadata(&walked) {
+            Ok(meta) if meta.file_type().is_symlink() => return Some(walked),
+            Ok(_) => continue,
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+/// The directory name a skill is written under: its name, or for a skill whose
+/// name is just `SKILL`/`skill.md`, the name of the directory it came from.
+pub(crate) fn skill_dir_name(skill: &crate::common::Command) -> String {
+    let generic = ["skill", "skill.md"]
+        .iter()
+        .any(|g| skill.name.eq_ignore_ascii_case(g));
+    if generic {
+        skill
+            .source_path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|s| s.to_str())
+            .unwrap_or(&skill.name)
+            .to_string()
+    } else {
+        skill.name.clone()
+    }
+}
+
+/// Writes skill-shaped directories (`<root>/<rel_dir>/<main_file>` plus
+/// companion modules) for one batch, with the checks every adapter needs.
+///
+/// Each adapter used to carry its own copy of this loop, and the copies had
+/// drifted: none refused an empty sanitized name or a symlinked destination,
+/// two distinct names that sanitized to one directory silently overwrote each
+/// other, and three of them skipped the module files whenever `SKILL.md` was
+/// unchanged, so an edited companion script never reached the target.
+pub(crate) struct BatchWriter {
+    root: std::path::PathBuf,
+    /// Destination directory to the item that claimed it in this batch.
+    claimed: std::collections::HashMap<std::path::PathBuf, String>,
+}
+
+impl BatchWriter {
+    pub(crate) fn new(root: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            root: root.into(),
+            claimed: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Writes a single-file item (a command, agent, rule) to
+    /// `<root>/<stem><suffix>` with the same refusals as [`Self::write`].
+    ///
+    /// `stem` must already be sanitized by the caller.
+    pub(crate) fn write_single(
+        &mut self,
+        item: &str,
+        stem: &str,
+        suffix: &str,
+        content: &[u8],
+        report: &mut crate::report::WriteReport,
+    ) -> std::io::Result<()> {
+        use crate::report::SkipReason;
+
+        if stem.is_empty() {
+            report.skipped.push(SkipReason::Refused {
+                item: item.to_string(),
+                reason: "the name sanitizes to an empty file name".to_string(),
+            });
+            return Ok(());
+        }
+        let path = self.root.join(format!("{stem}{suffix}"));
+        if let Some(first) = self.claimed.get(&path) {
+            report.skipped.push(SkipReason::Refused {
+                item: item.to_string(),
+                reason: format!(
+                    "it maps to the same file as `{first}` ({}); the first one was kept",
+                    path.display()
+                ),
+            });
+            return Ok(());
+        }
+        self.claimed.insert(path.clone(), item.to_string());
+
+        if let Some(link) = symlink_below(&self.root, &path) {
+            report.skipped.push(SkipReason::Refused {
+                item: item.to_string(),
+                reason: format!(
+                    "{} is a symlink; writing through it would change the file it points to",
+                    link.display()
+                ),
+            });
+            return Ok(());
+        }
+        if std::fs::read(&path).ok().as_deref() == Some(content) {
+            report.skipped.push(SkipReason::Unchanged {
+                item: item.to_string(),
+            });
+            return Ok(());
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        write_file(&path, content)?;
+        report.written += 1;
+        Ok(())
+    }
+
+    /// Writes one item; refusals and unchanged items land in `report`.
+    ///
+    /// `rel_dir` must already be sanitized by the caller.
+    pub(crate) fn write(
+        &mut self,
+        item: &str,
+        rel_dir: &str,
+        main_file: &str,
+        main: &[u8],
+        modules: &[ModuleFile],
+        report: &mut crate::report::WriteReport,
+    ) -> std::io::Result<()> {
+        use crate::report::SkipReason;
+
+        if rel_dir.is_empty() {
+            report.skipped.push(SkipReason::Refused {
+                item: item.to_string(),
+                reason: "the name sanitizes to an empty directory name".to_string(),
+            });
+            return Ok(());
+        }
+
+        let dir = self.root.join(rel_dir);
+        if let Some(first) = self.claimed.get(&dir) {
+            report.skipped.push(SkipReason::Refused {
+                item: item.to_string(),
+                reason: format!(
+                    "it maps to the same directory as `{first}` ({}); the first one was kept",
+                    dir.display()
+                ),
+            });
+            return Ok(());
+        }
+        self.claimed.insert(dir.clone(), item.to_string());
+
+        let main_path = dir.join(main_file);
+        if let Some(link) = symlink_below(&self.root, &main_path) {
+            report.skipped.push(SkipReason::Refused {
+                item: item.to_string(),
+                reason: format!(
+                    "{} is a symlink; writing through it would change the file it points to",
+                    link.display()
+                ),
+            });
+            return Ok(());
+        }
+
+        let mut changed = false;
+        if std::fs::read(&main_path).ok().as_deref() != Some(main) {
+            std::fs::create_dir_all(&dir)?;
+            write_file(&main_path, main)?;
+            changed = true;
+        }
+
+        for module in modules {
+            let module_path = dir.join(&module.relative_path);
+            if !is_path_contained(&module_path, &dir) {
+                debug!(
+                    path = %module.relative_path.display(),
+                    "Skipping module with path outside skill directory"
+                );
+                continue;
+            }
+            if let Some(link) = symlink_below(&dir, &module_path) {
+                report.warnings.push(format!(
+                    "Skipped module {} of {item}: {} is a symlink",
+                    module.relative_path.display(),
+                    link.display()
+                ));
+                continue;
+            }
+            if std::fs::read(&module_path).ok().as_deref() == Some(module.content.as_slice()) {
+                continue;
+            }
+            if let Some(parent) = module_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            write_file(&module_path, &module.content)?;
+            changed = true;
+        }
+
+        if changed {
+            report.written += 1;
+        } else {
+            report.skipped.push(SkipReason::Unchanged {
+                item: item.to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Whether `file` sits inside a skill directory below `root`: some directory
+/// between them (excluding `root`) holds a `SKILL.md`. Such a markdown file is
+/// one of that skill's modules, not a legacy single-file skill.
+pub(crate) fn inside_skill_dir(file: &Path, root: &Path) -> bool {
+    file.ancestors()
+        .skip(1)
+        .take_while(|dir| *dir != root && dir.starts_with(root))
+        .any(|dir| dir.join("SKILL.md").is_file())
+}
+
 /// Test helper functions for adapter tests.
 #[cfg(test)]
 pub(crate) mod test_helpers {
@@ -288,43 +597,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn split_frontmatter_with_content() {
-        let content = "---\nname: test\ndescription: A test\n---\n\n# Body\n\nContent here.\n";
-        let (raw, body) = split_frontmatter(content);
-        assert!(raw.is_some());
-        let fm = raw.unwrap();
-        assert!(fm.contains("name: test"));
-        assert!(fm.contains("description: A test"));
-        assert!(body.starts_with("# Body"));
-    }
-
-    #[test]
-    fn split_frontmatter_no_frontmatter() {
-        let content = "# Just a markdown file\n\nNo frontmatter.\n";
-        let (raw, body) = split_frontmatter(content);
-        assert!(raw.is_none());
-        assert_eq!(body, content);
-    }
-
-    #[test]
-    fn split_frontmatter_crlf_line_endings() {
-        let content = "---\r\nname: test\r\n---\r\n\r\n# Body\r\n";
-        let (raw, body) = split_frontmatter(content);
-        assert!(raw.is_some(), "Should find frontmatter with CRLF endings");
-        let fm = raw.unwrap();
-        assert!(fm.contains("name: test"));
-        assert!(body.starts_with("# Body"));
-    }
-
-    #[test]
-    fn split_frontmatter_no_closing_delimiter() {
-        let content = "---\nname: test\nno closing delimiter";
-        let (raw, body) = split_frontmatter(content);
-        assert!(raw.is_none());
-        assert_eq!(body, content);
-    }
-
-    #[test]
     fn test_is_hidden_component() {
         assert!(is_hidden_component(".git"));
         assert!(is_hidden_component(".hidden"));
@@ -345,6 +617,17 @@ mod tests {
         let hash = hash_content(b"hello");
         assert_eq!(hash.len(), 64); // SHA-256 produces 64 hex chars
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    /// Sync compares these strings to decide a file is unchanged, so the
+    /// encoding has to survive a `sha2`/`digest` upgrade: lowercase, two
+    /// digits per byte, FIPS 180-2 vector for "abc".
+    #[test]
+    fn hash_content_matches_known_sha256_vector() {
+        assert_eq!(
+            hash_content(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 
     #[test]
@@ -387,6 +670,106 @@ mod tests {
     }
 
     #[test]
+    fn atomic_write_replaces_content_and_leaves_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, b"old").unwrap();
+
+        atomic_write(&path, b"new", false).unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["settings.json".to_string()]);
+    }
+
+    /// A crash between truncate and write used to leave the user's config
+    /// empty. The rename means the destination is never opened for writing,
+    /// so a write that fails part way leaves the old content in place.
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_failure_leaves_the_original_intact() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, b"original").unwrap();
+        // A read-only directory refuses the temp file, so the write fails.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        let result = atomic_write(&path, b"replacement", false);
+
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        if result.is_ok() {
+            // Running as root ignores directory permissions; nothing to assert.
+            return;
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_keeps_a_symlinked_destination_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("dotfiles-settings.json");
+        let link = dir.path().join("settings.json");
+        std::fs::write(&real, b"old").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        atomic_write(&link, b"new", false).unwrap();
+
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read(&real).unwrap(), b"new");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_keeps_existing_mode_and_makes_new_private_files_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().join("settings.json");
+        std::fs::write(&existing, b"{}").unwrap();
+        std::fs::set_permissions(&existing, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+        atomic_write(&existing, b"{\"a\":1}", true).unwrap();
+        let fresh = dir.path().join("mcp.json");
+        atomic_write(&fresh, b"{}", true).unwrap();
+
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&existing), 0o640);
+        assert_eq!(mode(&fresh), 0o600);
+    }
+
+    #[test]
+    fn write_config_backs_up_the_previous_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("CLAUDE.md");
+        std::fs::write(&path, b"mine").unwrap();
+
+        assert!(write_config(&path, b"synced", false).unwrap());
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"synced");
+        assert_eq!(
+            std::fs::read(dir.path().join("CLAUDE.md.skrills-bak")).unwrap(),
+            b"mine"
+        );
+    }
+
+    #[test]
+    fn write_config_skips_unchanged_content_and_takes_no_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, b"same").unwrap();
+
+        assert!(!write_config(&path, b"same", false).unwrap());
+        assert!(!dir.path().join("settings.json.skrills-bak").exists());
+    }
+
+    #[test]
     fn collect_module_files_from_empty_dir() {
         let dir = tempfile::tempdir().unwrap();
         let modules = collect_module_files(dir.path());
@@ -404,6 +787,50 @@ mod tests {
             modules[0].relative_path,
             std::path::PathBuf::from("helper.py")
         );
+    }
+
+    #[test]
+    fn inside_skill_dir_stops_at_the_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("skills");
+        std::fs::create_dir_all(root.join("foo/docs")).unwrap();
+        std::fs::write(root.join("foo/SKILL.md"), "x").unwrap();
+        std::fs::write(root.join("SKILL.md"), "stray").unwrap();
+
+        assert!(inside_skill_dir(&root.join("foo/docs/ref.md"), &root));
+        assert!(!inside_skill_dir(&root.join("legacy.md"), &root));
+    }
+
+    /// A symlink inside a skill points anywhere (`~/.ssh/id_ed25519`, say);
+    /// following it copied the target into every other tool's directory.
+    #[cfg(unix)]
+    #[test]
+    fn collect_module_files_does_not_follow_file_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret"), "key").unwrap();
+        std::os::unix::fs::symlink(outside.path().join("secret"), dir.path().join("linked"))
+            .unwrap();
+        std::fs::write(dir.path().join("plain.py"), "x").unwrap();
+
+        let modules = collect_module_files(dir.path());
+
+        let names: Vec<_> = modules.iter().map(|m| m.relative_path.clone()).collect();
+        assert_eq!(names, vec![std::path::PathBuf::from("plain.py")]);
+    }
+
+    /// Every companion file was read whole into memory with no cap.
+    #[test]
+    fn collect_module_files_skips_files_over_the_size_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = std::fs::File::create(dir.path().join("big.bin")).unwrap();
+        big.set_len(MAX_MODULE_FILE_BYTES + 1).unwrap();
+        std::fs::write(dir.path().join("small.py"), "x").unwrap();
+
+        let modules = collect_module_files(dir.path());
+
+        let names: Vec<_> = modules.iter().map(|m| m.relative_path.clone()).collect();
+        assert_eq!(names, vec![std::path::PathBuf::from("small.py")]);
     }
 
     mod proptests {

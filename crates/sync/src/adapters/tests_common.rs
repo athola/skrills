@@ -13,10 +13,7 @@
 //! abstraction (each adapter has different on-disk layout for
 //! commands/skills/instructions) and is left as follow-up.
 
-#![cfg(test)]
-
 use crate::adapters::AgentAdapter;
-use std::path::PathBuf;
 
 /// Asserts the trio of adapter-basics checks that every implementor
 /// honors: name string, config root reflection, and a caller-supplied
@@ -25,12 +22,12 @@ use std::path::PathBuf;
 pub(crate) fn assert_adapter_basics<A: AgentAdapter>(
     adapter: &A,
     expected_name: &str,
-    expected_root: &PathBuf,
+    expected_root: &std::path::Path,
     field_assertions: impl FnOnce(&crate::adapters::FieldSupport),
 ) {
     assert_eq!(adapter.name(), expected_name);
-    assert_eq!(&adapter.config_root(), expected_root);
-    field_assertions(&adapter.supported_fields());
+    assert_eq!(adapter.config_root(), expected_root);
+    field_assertions(&adapter.read_support());
 }
 
 /// Asserts that `read_commands(false)` returns an empty list when

@@ -7,6 +7,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// Statistics about tool usage for context optimization.
+#[deprecated(
+    since = "0.9.0",
+    note = "per-tool counts are kept in ContextStats; ToolUsageStats is unused and will be removed in a future release"
+)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolUsageStats {
     /// Number of times each tool has been invoked.
