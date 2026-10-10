@@ -21,7 +21,7 @@ jobs:
     name: Skill validation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Strict mode (default): fails the check if any errors are found.
       - name: Validate skills (all targets)
