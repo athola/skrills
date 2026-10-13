@@ -51,9 +51,9 @@ jobs:
       sync: ${{ steps.filter.outputs.sync }}
       all: ${{ steps.filter.outputs.all }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: filter
-        uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           filters: |
             server:
@@ -71,12 +71,12 @@ jobs:
     needs: integration-test-filter
     if: needs.integration-test-filter.outputs.all == 'true' || needs.integration-test-filter.outputs.server == 'true' || needs.integration-test-filter.outputs.subagents == 'true' || needs.integration-test-filter.outputs.sync == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Cache cargo registry and index
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index
@@ -88,7 +88,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Cache target directory
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: target
           key: ${{ runner.os }}-integration-test-target-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
@@ -106,7 +106,7 @@ jobs:
             openssl
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, resolved 2026-10-02
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, resolved 2026-10-02
         with:
           toolchain: stable
           components: clippy, rustfmt
@@ -120,10 +120,10 @@ jobs:
     if: (needs.integration-test-filter.outputs.all == 'true' || needs.integration-test-filter.outputs.server == 'true' || github.event.inputs.test_type == 'server' || github.event.inputs.test_type == 'all') && (needs.prepare-integration-test-environment.result == 'success')
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache cargo registry and index
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index
@@ -135,7 +135,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Cache target directory
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: target
           key: ${{ runner.os }}-integration-test-target-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
@@ -144,7 +144,7 @@ jobs:
             ${{ runner.os }}-test-target-
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, resolved 2026-10-02
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, resolved 2026-10-02
         with:
           toolchain: stable
           components: clippy, rustfmt
@@ -161,10 +161,10 @@ jobs:
     if: (needs.integration-test-filter.outputs.all == 'true' || needs.integration-test-filter.outputs.subagents == 'true' || github.event.inputs.test_type == 'subagents' || github.event.inputs.test_type == 'all') && (needs.prepare-integration-test-environment.result == 'success')
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache cargo registry and index
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index
@@ -176,7 +176,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Cache target directory
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: target
           key: ${{ runner.os }}-integration-test-target-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
@@ -185,7 +185,7 @@ jobs:
             ${{ runner.os }}-test-target-
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, resolved 2026-10-02
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, resolved 2026-10-02
         with:
           toolchain: stable
           components: clippy, rustfmt
@@ -202,10 +202,10 @@ jobs:
     if: (needs.integration-test-filter.outputs.all == 'true' || needs.integration-test-filter.outputs.sync == 'true' || github.event.inputs.test_type == 'sync' || github.event.inputs.test_type == 'all') && (needs.prepare-integration-test-environment.result == 'success')
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache cargo registry and index
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index
@@ -217,7 +217,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Cache target directory
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: target
           key: ${{ runner.os }}-integration-test-target-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
@@ -226,7 +226,7 @@ jobs:
             ${{ runner.os }}-test-target-
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, resolved 2026-10-02
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, resolved 2026-10-02
         with:
           toolchain: stable
           components: clippy, rustfmt
@@ -282,7 +282,7 @@ jobs:
     needs: integration-test-filter
     if: (needs.integration-test-filter.outputs.all == 'true' || github.event.inputs.test_type == 'all') && github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
@@ -301,7 +301,7 @@ jobs:
             --nocapture
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4.6.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           files: lcov.info
           flags: integration-tests

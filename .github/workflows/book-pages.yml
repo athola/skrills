@@ -20,13 +20,13 @@ jobs:
     outputs:
       book: ${{ steps.set.outputs.book }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: github.event_name != 'workflow_dispatch'
         with:
           fetch-depth: 0
       - id: filter
         if: github.event_name != 'workflow_dispatch'
-        uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           filters: |
             book:
@@ -45,7 +45,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.book == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install mdbook
         run: |
@@ -56,7 +56,7 @@ jobs:
           mdbook build book
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: book/book
 
@@ -70,4 +70,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
