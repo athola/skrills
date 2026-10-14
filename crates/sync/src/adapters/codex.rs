@@ -11,7 +11,6 @@ use super::codex_toml;
 use super::traits::{AgentAdapter, FieldSupport};
 use super::utils::{
     collect_module_files, hash_content, inside_skill_dir, is_hidden_path, sanitize_name,
-    sanitize_name_segments,
 };
 use crate::common::{Command, ContentFormat, McpServer, McpTransport, Preferences};
 use crate::report::WriteReport;
@@ -26,6 +25,8 @@ use walkdir::WalkDir;
 /// Adapter for Codex CLI configuration.
 pub struct CodexAdapter {
     root: PathBuf,
+    /// `~/.agents/skills`, where Codex loads user skills from.
+    shared_skills: PathBuf,
     kill_switch: Option<skrills_snapshot::KillSwitch>,
 }
 
@@ -35,13 +36,16 @@ impl CodexAdapter {
         let home = dirs::home_dir().context("Could not determine home directory")?;
         Ok(Self {
             root: home.join(".codex"),
+            shared_skills: super::shared_skills::shared_skills_dir(&home),
             kill_switch: None,
         })
     }
 
-    /// Creates a CodexAdapter with a custom root (for testing).
+    /// Creates a CodexAdapter with a custom root (for testing). The shared
+    /// skills directory goes under the root too, so nothing lands in `~`.
     pub fn with_root(root: PathBuf) -> Self {
         Self {
+            shared_skills: super::shared_skills::shared_skills_dir(&root),
             root,
             kill_switch: None,
         }
@@ -60,6 +64,9 @@ impl CodexAdapter {
         self.root.join("prompts")
     }
 
+    /// `~/.codex/skills`, which current Codex no longer lists as a skills
+    /// location. Read for skills written there before, and still where
+    /// `write_agents` puts agents.
     fn skills_dir(&self) -> PathBuf {
         self.root.join("skills")
     }
@@ -210,6 +217,103 @@ fn enable_skills_flag(content: &str) -> Option<String> {
 const AGENT_MARKER: &str = ".skrills-agent";
 const AGENT_MARKER_BODY: &str =
     "This skill was converted from a Claude agent by skrills sync. Delete this file to keep it as a plain skill.\n";
+
+/// Skills under `skills_dir`: `**/SKILL.md` directories plus legacy flat
+/// `*.md` files, leaving out agents that `write_agents` stored as skills.
+fn read_skills_under(skills_dir: &Path) -> Vec<Command> {
+    if !skills_dir.exists() {
+        return Vec::new();
+    }
+    let mut skills = Vec::new();
+    for entry in WalkDir::new(skills_dir)
+        .min_depth(1)
+        .max_depth(20)
+        .follow_links(false)
+    {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                tracing::warn!(error = %e, "Skipping unreadable entry under the skills directory");
+                continue;
+            }
+        };
+        if entry.file_type().is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if is_hidden_path(path.strip_prefix(skills_dir).unwrap_or(path)) {
+            continue;
+        }
+        if !entry.file_type().is_file() {
+            continue;
+        }
+
+        // Skills are `**/SKILL.md`. Flat *.md files are an older layout, still
+        // read for backwards compatibility.
+        let is_skill_md = path.file_name().is_some_and(|n| n == "SKILL.md");
+        let is_legacy_md = path.extension().is_some_and(|e| e == "md") && !is_skill_md;
+        if !is_skill_md && !is_legacy_md {
+            continue;
+        }
+        // Markdown inside a skill directory is a module of that skill.
+        if is_legacy_md && inside_skill_dir(path, skills_dir) {
+            continue;
+        }
+
+        let name = if is_skill_md {
+            // Use the parent directory path relative to skills_dir as the skill identifier.
+            // Example: ~/.codex/skills/pdf-processing/SKILL.md -> "pdf-processing"
+            // Example: ~/.codex/skills/nested/foo/SKILL.md -> "nested/foo"
+            path.parent()
+                .and_then(|p| p.strip_prefix(skills_dir).ok())
+                .and_then(|p| p.to_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("unknown")
+                .to_string()
+        } else {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string()
+        };
+
+        // Agents converted by `write_agents` are read by `read_agents()`.
+        if is_skill_md && is_converted_agent(path.parent().unwrap_or(path)) {
+            continue;
+        }
+
+        let read = fs::read(path).and_then(|c| Ok((c, fs::metadata(path)?)));
+        let (content, metadata) = match read {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "Skipping unreadable skill");
+                continue;
+            }
+        };
+        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let hash = hash_content(&content);
+
+        // Collect module files for SKILL.md based skills
+        let modules = if is_skill_md {
+            let skill_dir = path.parent().unwrap_or(path);
+            collect_module_files(skill_dir)
+        } else {
+            Vec::new()
+        };
+
+        skills.push(Command {
+            name,
+            content,
+            source_path: path.to_path_buf(),
+            modified,
+            hash,
+            modules,
+            content_format: ContentFormat::default(),
+            plugin_origin: None,
+        });
+    }
+    skills
+}
 
 fn is_converted_agent(skill_dir: &Path) -> bool {
     skill_dir
@@ -391,100 +495,8 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn read_skills(&self) -> Result<Vec<Command>> {
-        let skills_dir = self.skills_dir();
-        if !skills_dir.exists() {
-            return Ok(Vec::new());
-        }
-
-        let mut skills = Vec::new();
-        for entry in WalkDir::new(&skills_dir)
-            .min_depth(1)
-            .max_depth(20)
-            .follow_links(false)
-        {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(e) => {
-                    tracing::warn!(error = %e, "Skipping unreadable entry under the skills directory");
-                    continue;
-                }
-            };
-            if entry.file_type().is_symlink() {
-                continue;
-            }
-            let path = entry.path();
-            if is_hidden_path(path.strip_prefix(&skills_dir).unwrap_or(path)) {
-                continue;
-            }
-            if !entry.file_type().is_file() {
-                continue;
-            }
-
-            // Codex skills are discovered via ~/.codex/skills/**/SKILL.md.
-            // Keep legacy support for flat *.md in ~/.codex/skills for backwards compatibility,
-            // but prefer the SKILL.md convention when present.
-            let is_skill_md = path.file_name().is_some_and(|n| n == "SKILL.md");
-            let is_legacy_md = path.extension().is_some_and(|e| e == "md") && !is_skill_md;
-            if !is_skill_md && !is_legacy_md {
-                continue;
-            }
-            // Markdown inside a skill directory is a module of that skill.
-            if is_legacy_md && inside_skill_dir(path, &skills_dir) {
-                continue;
-            }
-
-            let name = if is_skill_md {
-                // Use the parent directory path relative to skills_dir as the skill identifier.
-                // Example: ~/.codex/skills/pdf-processing/SKILL.md -> "pdf-processing"
-                // Example: ~/.codex/skills/nested/foo/SKILL.md -> "nested/foo"
-                path.parent()
-                    .and_then(|p| p.strip_prefix(&skills_dir).ok())
-                    .and_then(|p| p.to_str())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("unknown")
-                    .to_string()
-            } else {
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("unknown")
-                    .to_string()
-            };
-
-            // Agents converted by `write_agents` are read by `read_agents()`.
-            if is_skill_md && is_converted_agent(path.parent().unwrap_or(path)) {
-                continue;
-            }
-
-            let read = fs::read(path).and_then(|c| Ok((c, fs::metadata(path)?)));
-            let (content, metadata) = match read {
-                Ok(pair) => pair,
-                Err(e) => {
-                    tracing::warn!(path = %path.display(), error = %e, "Skipping unreadable skill");
-                    continue;
-                }
-            };
-            let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-            let hash = hash_content(&content);
-
-            // Collect module files for SKILL.md based skills
-            let modules = if is_skill_md {
-                let skill_dir = path.parent().unwrap_or(path);
-                collect_module_files(skill_dir)
-            } else {
-                Vec::new()
-            };
-
-            skills.push(Command {
-                name,
-                content,
-                source_path: path.to_path_buf(),
-                modified,
-                hash,
-                modules,
-                content_format: ContentFormat::default(),
-                plugin_origin: None,
-            });
-        }
+        let mut skills = read_skills_under(&self.shared_skills);
+        skills.extend(read_skills_under(&self.skills_dir()));
         Ok(skills)
     }
 
@@ -546,26 +558,7 @@ impl AgentAdapter for CodexAdapter {
 
     fn write_skills(&self, skills: &[Command]) -> Result<WriteReport> {
         super::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
-        let dir = self.skills_dir();
-        fs::create_dir_all(&dir)?;
-
-        let mut report = WriteReport::default();
-
-        let mut writer = super::utils::BatchWriter::new(&dir);
-        for skill in skills {
-            // Codex discovers SKILL.md files anywhere under ~/.codex/skills/, so
-            // a nested name such as `nested/foo` keeps its directory instead of
-            // being flattened to `nestedfoo`.
-            let safe_rel_dir = sanitize_name_segments(&super::utils::skill_dir_name(skill));
-            writer.write(
-                &skill.name,
-                &safe_rel_dir,
-                "SKILL.md",
-                &skill.content,
-                &skill.modules,
-                &mut report,
-            )?;
-        }
+        let report = super::shared_skills::write_shared_skills(&self.shared_skills, skills)?;
 
         // Zero skills means nothing for Codex to load, so the user's config is
         // left alone rather than created or edited.
@@ -1370,7 +1363,60 @@ startup_timeout_sec = 180
 
         let report = adapter.write_skills(&[skill]).unwrap();
         assert_eq!(report.written, 1);
-        assert!(tmp.path().join("skills/alpha/SKILL.md").exists());
+        assert!(tmp.path().join(".agents/skills/alpha/SKILL.md").exists());
+        assert!(!tmp.path().join("skills/alpha").exists());
+    }
+
+    /// Codex loads user skills from `~/.agents/skills` only
+    /// (learn.chatgpt.com/docs/build-skills lists no `~/.codex/skills`), and
+    /// requires `name` and `description`.
+    #[test]
+    fn write_skills_puts_a_nested_skill_in_the_shared_dir_named_after_its_folder() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let skill = Command {
+            name: "synced/abc/morning".to_string(),
+            content: b"---\nname: Morning\ndescription: brief\n---\n# Body\n".to_vec(),
+            source_path: PathBuf::from("/tmp/synced/abc/morning/SKILL.md"),
+            modified: SystemTime::now(),
+            hash: "hash".to_string(),
+            modules: Vec::new(),
+            content_format: ContentFormat::default(),
+            plugin_origin: None,
+        };
+
+        adapter.write_skills(&[skill]).unwrap();
+
+        let written =
+            fs::read_to_string(tmp.path().join(".agents/skills/morning/SKILL.md")).unwrap();
+        assert_eq!(
+            written,
+            "---\nname: morning\ndescription: brief\n---\n# Body\n"
+        );
+    }
+
+    #[test]
+    fn read_skills_reads_the_shared_dir_and_the_legacy_codex_dir() {
+        let tmp = tempdir().unwrap();
+        for dir in [".agents/skills/shared-one", "skills/legacy-one"] {
+            let skill_dir = tmp.path().join(dir);
+            fs::create_dir_all(&skill_dir).unwrap();
+            fs::write(
+                skill_dir.join("SKILL.md"),
+                "---\nname: x\ndescription: d\n---\n",
+            )
+            .unwrap();
+        }
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+
+        let mut names: Vec<String> = adapter
+            .read_skills()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        names.sort();
+        assert_eq!(names, ["legacy-one", "shared-one"]);
     }
 
     #[test]
@@ -1594,14 +1640,19 @@ startup_timeout_sec = 180
         assert_eq!(report.written, 1);
 
         // Verify SKILL.md was written
-        assert!(tmp.path().join("skills/test-skill/SKILL.md").exists());
+        assert!(tmp
+            .path()
+            .join(".agents/skills/test-skill/SKILL.md")
+            .exists());
 
         // Verify module files were written
-        let helper = tmp.path().join("skills/test-skill/helper.py");
+        let helper = tmp.path().join(".agents/skills/test-skill/helper.py");
         assert!(helper.exists());
         assert_eq!(fs::read_to_string(&helper).unwrap(), "# Helper");
 
-        let nested = tmp.path().join("skills/test-skill/nested/data.json");
+        let nested = tmp
+            .path()
+            .join(".agents/skills/test-skill/nested/data.json");
         assert!(nested.exists());
         assert_eq!(fs::read_to_string(&nested).unwrap(), "{}");
     }

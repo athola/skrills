@@ -33,7 +33,7 @@ fn adapters(root: &Path) -> Vec<(Box<dyn AgentAdapter>, PathBuf)> {
         ),
         (
             Box::new(CodexAdapter::with_root(root.join("codex"))),
-            root.join("codex/skills"),
+            root.join("codex/.agents/skills"),
         ),
         (
             Box::new(CopilotAdapter::with_root(root.join("copilot"))),
@@ -114,8 +114,8 @@ fn a_symlinked_skill_directory_is_not_written_through() {
 fn two_names_that_sanitize_alike_do_not_overwrite_each_other() {
     let tmp = TempDir::new().unwrap();
     for (adapter, skills_dir) in adapters(tmp.path()) {
-        if adapter.name() == "cursor" {
-            // Cursor kebab-cases: `my.skill` becomes `my-skill`, a distinct name.
+        if matches!(adapter.name(), "cursor" | "codex") {
+            // These kebab-case: `my.skill` becomes `my-skill`, a distinct name.
             continue;
         }
         let report = adapter
@@ -144,11 +144,14 @@ fn a_name_that_sanitizes_to_nothing_is_refused() {
     }
 }
 
-/// Codex finds SKILL.md at any depth, so a nested name keeps its directory.
+/// Codex loads `~/.agents/skills/<name>/SKILL.md`, the directory Cursor and
+/// Copilot also read, and Cursor needs the folder to equal the skill name, so
+/// a nested name lands one level deep under its last segment.
 #[test]
-fn codex_keeps_nested_skill_directories() {
+fn codex_writes_a_nested_skill_one_level_deep_in_the_shared_dir() {
     let tmp = TempDir::new().unwrap();
     let codex = CodexAdapter::with_root(tmp.path().to_path_buf());
     codex.write_skills(&[skill("nested/foo", "x")]).unwrap();
-    assert!(tmp.path().join("skills/nested/foo/SKILL.md").exists());
+    assert!(tmp.path().join(".agents/skills/foo/SKILL.md").exists());
+    assert!(!tmp.path().join("skills").exists());
 }

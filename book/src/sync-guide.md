@@ -29,7 +29,7 @@ skrills sync-all --from cursor --to claude
 
 Skills are copied between skill directories:
 - **Claude**: `~/.claude/skills/`
-- **Codex**: `~/.codex/skills/` (discovery root, skills must be `**/SKILL.md`)
+- **Codex**: `~/.agents/skills/{name}/SKILL.md`, the user skills directory Codex loads (frontmatter `name` set to the folder name, `description` required). Skills under the old `~/.codex/skills/` are still read as a source.
 - **Copilot**: `~/.copilot/skills/` (same SKILL.md format as Codex)
 - **Cursor**: `~/.cursor/skills/{name}/SKILL.md` (frontmatter cut to `name` and `description`, which Cursor requires)
 
