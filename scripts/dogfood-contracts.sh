@@ -15,6 +15,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT" || exit 2
 
 BIN_PATH="${BIN_PATH:-target/release/skrills}"
+# Make relative paths repo-relative once, so an absolute BIN_PATH (make passes
+# one when CARGO_TARGET_DIR is set) is used as given rather than prefixed.
+case "$BIN_PATH" in
+  /*) ;;
+  *) BIN_PATH="$REPO_ROOT/$BIN_PATH" ;;
+esac
 ENTRYPOINT=".github/actions/validate-skills/entrypoint.sh"
 SKILL_DIR="skills"
 
@@ -41,7 +47,7 @@ command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 required for these 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 BIND="$WORK/bin"; mkdir -p "$BIND"
-ln -sf "$REPO_ROOT/$BIN_PATH" "$BIND/skrills"
+ln -sf "$BIN_PATH" "$BIND/skrills"
 
 # run_entrypoint <home> <input_path> -> populates $RT for inspection, sets $EXIT
 run_entrypoint() {
@@ -96,7 +102,7 @@ scenario "A configured runner (no banner) still yields parseable JSON"
 # Given a HOME where skrills IS configured (no first-run banner path)
 CONF="$WORK/conf-home"; mkdir -p "$CONF/.codex/bin"
 printf '[mcp_servers.skrills]\ncommand = "skrills"\n' >"$CONF/.codex/config.toml"
-ln -sf "$REPO_ROOT/$BIN_PATH" "$CONF/.codex/bin/skrills"
+ln -sf "$BIN_PATH" "$CONF/.codex/bin/skrills"
 # When the entrypoint runs
 run_entrypoint "$CONF" "$SKILL_DIR/"
 # Then JSON is still clean (proves recovery is not coupled to the banner).

@@ -25,6 +25,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 BIN_PATH="${BIN_PATH:-target/release/skrills}"
+# Make relative paths repo-relative once, so an absolute BIN_PATH (make passes
+# one when CARGO_TARGET_DIR is set) is used as given rather than prefixed.
+case "$BIN_PATH" in
+  /*) ;;
+  *) BIN_PATH="$REPO_ROOT/$BIN_PATH" ;;
+esac
 COLS=120; ROWS=40
 SOCKET="skrills_df_$$"
 TM="tmux -L $SOCKET"
@@ -69,7 +75,7 @@ if command -v tmux >/dev/null 2>&1; then
 
   unset TMUX  # never nest inside an existing tmux server
   $TM new-session -d -s "$SESS" -x "$COLS" -y "$ROWS" \
-    "env HOME='$HOME_DIR' RUST_LOG=off '$REPO_ROOT/$BIN_PATH' cold-window --tui \
+    "env HOME='$HOME_DIR' RUST_LOG=off '$BIN_PATH' cold-window --tui \
        --skill-dir skills --tick-rate-ms 100 --alert-budget 100000; echo \$? > '$RCFILE'"
 
   scenario "the dashboard reaches first paint (panes + hint bar visible)"

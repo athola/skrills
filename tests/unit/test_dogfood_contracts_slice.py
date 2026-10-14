@@ -127,3 +127,46 @@ class TestInstallSliceGuards:
         result = _run(tmp_path, INSTALL_SCRIPT.read_text())
         assert result.returncode != 2, result.stderr
         assert "marker" not in result.stderr
+
+
+class TestBinPath:
+    """
+    Feature: dogfood-contracts runs the binary BIN_PATH names
+
+    As a maintainer with CARGO_TARGET_DIR set, so `make` passes an absolute
+    BIN_PATH, I want the action entrypoint to reach that binary, not whatever
+    `skrills` is first on PATH.
+    """
+
+    @pytest.mark.unit
+    def test_absolute_bin_path_is_what_the_entrypoint_runs(self, tmp_path):
+        copied = _scratch_repo(tmp_path, INSTALL_SCRIPT.read_text())
+        marker = tmp_path / "ran-the-build"
+        built = tmp_path / "elsewhere" / "skrills"
+        built.parent.mkdir()
+        # The script also runs BIN_PATH directly, so only the entrypoint's
+        # call, tagged by its argument, counts.
+        built.write_text(
+            f'#!/bin/sh\n[ "$1" = from-entrypoint ] && touch "{marker}"\nexit 0\n'
+        )
+        built.chmod(0o755)
+        # The entrypoint resolves `skrills` from PATH, as the real action does.
+        (tmp_path / ENTRYPOINT_REL).write_text(
+            "#!/bin/sh\nskrills from-entrypoint >/dev/null 2>&1\nexit 0\n"
+        )
+        env = {
+            **os.environ,
+            "BIN_PATH": str(built),
+            "SKRILLS_BIN_DIR": str(tmp_path / "would-be-install"),
+            "SKRILLS_NO_HOOK": "1",
+            "SKRILLS_SKIP_PATH_MESSAGE": "1",
+        }
+        subprocess.run(
+            ["bash", str(copied)],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert marker.exists(), "the entrypoint never reached the BIN_PATH binary"

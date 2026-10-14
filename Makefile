@@ -9,7 +9,9 @@ CARGO ?= cargo
 CARGO_HOME ?= .cargo
 HOME_DIR ?= $(CURDIR)/.home-tmp
 BIN ?= skrills
-BIN_PATH ?= target/release/$(BIN)
+# Follow CARGO_TARGET_DIR so the paths below match where cargo builds.
+TARGET_DIR ?= $(or $(CARGO_TARGET_DIR),target)
+BIN_PATH ?= $(TARGET_DIR)/release/$(BIN)
 MDBOOK ?= mdbook
 # Test thread count: defaults to 1 for isolation (tests share filesystem state).
 # Override with TEST_THREADS=4 for faster parallel runs if tests are independent.
@@ -266,13 +268,12 @@ test-scripts:
 	fi
 
 test-coverage:
-	@if command -v cargo-llvm-cov >/dev/null 2>&1; then \
-		$(CARGO_CMD) llvm-cov --workspace --all-features --html; \
-		$(call open_file,$(CURDIR)/target/llvm-cov/html/index.html); \
-	else \
+	@if ! command -v cargo-llvm-cov >/dev/null 2>&1; then \
 		echo "cargo-llvm-cov not installed. Run: cargo install cargo-llvm-cov"; \
 		exit 1; \
 	fi
+	$(CARGO_CMD) llvm-cov --workspace --all-features --html
+	$(call open_file,$(abspath $(TARGET_DIR))/llvm-cov/html/index.html)
 
 build:
 	$(CARGO_CMD) build --workspace --all-features --release
@@ -331,7 +332,7 @@ dogfood-readme: build demo-fixtures
 
 docs:
 	RUSTDOCFLAGS="-D warnings" $(CARGO_CMD) doc --workspace --all-features --no-deps
-	$(call open_file,$(CURDIR)/target/doc/skrills/index.html)
+	$(call open_file,$(abspath $(TARGET_DIR))/doc/skrills/index.html)
 
 book:
 	$(call ensure_mdbook)
@@ -412,7 +413,7 @@ demo-fixtures:
 	@echo '{"mcpServers":{"skrills":{"type":"stdio","command":"$(HOME_DIR)/.codex/bin/skrills","args":["serve"]}}}' > $(HOME_DIR)/.codex/mcp_servers.json
 	@printf '[mcp_servers.skrills]\ntype = "stdio"\ncommand = "$(HOME_DIR)/.codex/bin/skrills"\nargs = ["serve"]\n' > $(HOME_DIR)/.codex/config.toml
 	@# Create symlink to release binary for doctor validation
-	@ln -sf $(CURDIR)/target/release/skrills $(HOME_DIR)/.codex/bin/skrills 2>/dev/null || cp $(CURDIR)/target/release/skrills $(HOME_DIR)/.codex/bin/skrills 2>/dev/null || true
+	@ln -sf $(abspath $(BIN_PATH)) $(HOME_DIR)/.codex/bin/skrills 2>/dev/null || cp $(abspath $(BIN_PATH)) $(HOME_DIR)/.codex/bin/skrills 2>/dev/null || true
 	@# Create mock Claude session data for empirical demo
 	@mkdir -p $(HOME_DIR)/.claude/projects/demo-project
 	@for i in 01 02 03 04 05 06 07 08 09 10 11 12; do \
