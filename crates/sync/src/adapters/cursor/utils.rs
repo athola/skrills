@@ -108,7 +108,7 @@ pub fn parse_frontmatter(content: &str) -> (HashMap<String, String>, String) {
 
 /// Strips YAML frontmatter from content, returning only the body.
 ///
-/// Used when writing Claude skills to Cursor (Cursor skills have no frontmatter).
+/// Used when writing Claude commands to Cursor.
 pub fn strip_frontmatter(content: &str) -> String {
     let (_fields, body) = parse_frontmatter(content);
     body
@@ -154,7 +154,9 @@ pub fn take_stash(content: &str) -> Option<(&str, &str)> {
 pub fn restore_skill(content: &str) -> Option<String> {
     let (body, yaml) = take_stash(content)?;
     let (fields, _) = parse_frontmatter(&format!("---\n{yaml}\n---\n"));
-    let mut rest = body;
+    // The Cursor frontmatter (`name`, `description`) gives way to the stash.
+    let (_, without_cursor_frontmatter, _) = skrills_validate::frontmatter::split_frontmatter(body);
+    let mut rest = without_cursor_frontmatter.as_str();
     if let Some(desc) = fields.get("description").map(|d| strip_yaml_quotes(d)) {
         if let Some(r) = rest
             .strip_prefix(desc.as_str())

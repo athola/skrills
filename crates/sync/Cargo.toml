@@ -30,6 +30,7 @@ skrills-validate = { path = "../validate", version = "0.9.0" }
 
 [dev-dependencies]
 tempfile.workspace = true
+serde_yaml.workspace = true
 mockall = "0.15"
 tokio = { version = "1", features = ["full"] }
 proptest = "1.4"

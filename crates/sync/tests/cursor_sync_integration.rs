@@ -189,7 +189,7 @@ impl CursorSyncTestSetup {
 // Claude → Cursor sync tests
 
 #[test]
-fn claude_to_cursor_syncs_skills_with_frontmatter_stripping() {
+fn claude_to_cursor_syncs_skills_with_cursor_frontmatter() {
     let setup = CursorSyncTestSetup::new().unwrap();
     setup.setup_claude_config();
 
@@ -212,11 +212,15 @@ fn claude_to_cursor_syncs_skills_with_frontmatter_stripping() {
     assert!(report.success);
     assert!(report.skills.written >= 2);
 
-    // Verify frontmatter was stripped
+    // Cursor keeps only the `name` and `description` it loads skills by
     let skill_path = setup.cursor_dir.path().join("skills/code-review/SKILL.md");
     assert!(skill_path.exists(), "Skill directory should be created");
     let content = fs::read_to_string(&skill_path).unwrap();
-    assert!(!content.contains("---"), "Frontmatter should be stripped");
+    assert!(
+        content
+            .starts_with("---\nname: code-review\ndescription: \"Reviews code thoroughly\"\n---\n"),
+        "Cursor frontmatter missing:\n{content}"
+    );
     assert!(
         content.contains("# Code Review"),
         "Body should be preserved"

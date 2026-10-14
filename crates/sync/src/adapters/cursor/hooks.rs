@@ -256,6 +256,101 @@ pub fn write_hooks(root: &Path, hooks: &[Command]) -> Result<WriteReport> {
     Ok(report)
 }
 
+/// Rewrites a plugin's `hooks/hooks.json` from Claude's layout
+/// (`{"PostToolUse": [{"matcher", "hooks": [entry]}]}`) to Cursor's flat
+/// camelCase one (`{"postToolUse": [entry + matcher]}`).
+///
+/// `${CLAUDE_PLUGIN_ROOT}` in a command becomes `plugin_root`, the mirror's
+/// absolute path: Cursor documents plugin-root expansion for `mcp.json` only.
+/// An event already in camelCase is taken as Cursor's and kept; a Claude event
+/// with no Cursor equivalent is dropped and named in the returned warnings.
+/// `Err` when the file is not a JSON object with a `hooks` object.
+pub(super) fn plugin_hooks_for_cursor(
+    content: &[u8],
+    plugin_root: &Path,
+) -> std::result::Result<(Vec<u8>, Vec<String>), String> {
+    use serde_json::Value;
+
+    let mut config: Value = serde_json::from_slice(content).map_err(|e| e.to_string())?;
+    let root_obj = config
+        .as_object_mut()
+        .ok_or("the top level is not an object")?;
+    let events = root_obj
+        .get("hooks")
+        .and_then(Value::as_object)
+        .ok_or("it has no `hooks` object")?;
+
+    let root = plugin_root.display().to_string();
+    let point_at_mirror = |entry: &mut Value| {
+        if let Some(command) = entry.get_mut("command") {
+            if let Some(text) = command.as_str() {
+                *command = Value::from(
+                    text.replace("${CLAUDE_PLUGIN_ROOT}", &root)
+                        .replace("$CLAUDE_PLUGIN_ROOT", &root),
+                );
+            }
+        }
+    };
+
+    let mut cursor_events = serde_json::Map::new();
+    let mut dropped = Vec::new();
+    for (event, groups) in events {
+        let cursor_event = match claude_to_cursor_event(event) {
+            Some(mapped) => mapped.to_string(),
+            None if event.starts_with(|c: char| c.is_ascii_lowercase()) => event.clone(),
+            None => {
+                dropped.push(event.clone());
+                continue;
+            }
+        };
+        let groups = groups
+            .as_array()
+            .ok_or_else(|| format!("`hooks.{event}` is not an array"))?;
+        let mut entries = Vec::new();
+        for group in groups {
+            match group.get("hooks").and_then(Value::as_array) {
+                Some(nested) => {
+                    let matcher = group.get("matcher").filter(|m| m.as_str() != Some(""));
+                    for entry in nested {
+                        let mut entry = entry.clone();
+                        if let (Some(matcher), Some(fields)) = (matcher, entry.as_object_mut()) {
+                            fields.entry("matcher").or_insert_with(|| matcher.clone());
+                        }
+                        point_at_mirror(&mut entry);
+                        entries.push(entry);
+                    }
+                }
+                None => {
+                    let mut entry = group.clone();
+                    point_at_mirror(&mut entry);
+                    entries.push(entry);
+                }
+            }
+        }
+        cursor_events
+            .entry(cursor_event)
+            .or_insert_with(|| Value::Array(Vec::new()))
+            .as_array_mut()
+            .expect("inserted as an array")
+            .extend(entries);
+    }
+
+    root_obj.insert("hooks".to_string(), Value::Object(cursor_events));
+    root_obj.entry("version").or_insert_with(|| Value::from(1));
+
+    let mut json = serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?;
+    json.push(b'\n');
+    let warnings = if dropped.is_empty() {
+        Vec::new()
+    } else {
+        vec![format!(
+            "hooks.json events with no Cursor equivalent were dropped: {}",
+            dropped.join(", ")
+        )]
+    };
+    Ok((json, warnings))
+}
+
 /// What makes two hook entries the same hook: the command it runs and the
 /// tool matcher it runs for.
 fn entry_identity(entry: &serde_json::Value) -> (Option<&str>, Option<&str>) {

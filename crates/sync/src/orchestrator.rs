@@ -599,8 +599,19 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
             })?;
         }
 
-        // Sync hooks (lifecycle events)
-        if params.sync_hooks
+        // Sync hooks (lifecycle events). Cursor reads Claude's own hooks from
+        // ~/.claude/settings.json and runs every match from both files, so a
+        // copy would run each hook twice.
+        if params.sync_hooks && source_name == "claude" && target_name == "cursor" {
+            report.hooks.skipped.push(SkipReason::AgentSpecificFeature {
+                item: "hooks".to_string(),
+                feature: "Cursor loads Claude Code hooks from ~/.claude/settings.json itself"
+                    .to_string(),
+                suggestion: "Keep them in ~/.claude/settings.json; a copy in \
+                             ~/.cursor/hooks.json would run each hook twice"
+                    .to_string(),
+            });
+        } else if params.sync_hooks
             && target_writes(
                 target_support.hooks,
                 "hooks",
@@ -1202,6 +1213,49 @@ mod tests {
             })
             .unwrap();
         assert_eq!(preview.skills.written, 1);
+    }
+
+    /// Cursor loads Claude Code hooks from `~/.claude/settings.json` itself
+    /// (cursor.com/docs/reference/third-party-hooks) and runs every match from
+    /// both files, so a copy in `~/.cursor/hooks.json` ran each hook twice.
+    #[test]
+    fn claude_to_cursor_skips_hooks_cursor_loads_natively() {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        fs::create_dir_all(src_dir.path().join("hooks")).unwrap();
+        fs::write(
+            src_dir.path().join("hooks/PreToolUse.md"),
+            r#"[{"command": "echo hi"}]"#,
+        )
+        .unwrap();
+
+        let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
+        let target = crate::adapters::CursorAdapter::with_root(tgt_dir.path().to_path_buf());
+        let report = SyncOrchestrator::new(source, target)
+            .sync(&SyncParams {
+                sync_commands: false,
+                sync_mcp_servers: false,
+                sync_preferences: false,
+                sync_skills: false,
+                sync_agents: false,
+                sync_hooks: true,
+                sync_instructions: false,
+                sync_plugin_assets: false,
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(report.hooks.written, 0, "{:?}", report.hooks);
+        assert!(
+            matches!(
+                report.hooks.skipped.as_slice(),
+                [SkipReason::AgentSpecificFeature { feature, .. }] if feature.contains("settings.json")
+            ),
+            "{:?}",
+            report.hooks.skipped
+        );
+        assert!(!tgt_dir.path().join("hooks.json").exists());
+        assert!(report.success);
     }
 
     /// SY-37: Codex declares it cannot write hooks and its writer is a no-op,

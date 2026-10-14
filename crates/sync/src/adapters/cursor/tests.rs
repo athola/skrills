@@ -179,8 +179,25 @@ fn commands_empty_directory() {
 
 // --- Skills ---
 
+/// The frontmatter fields of a written Cursor skill, parsed as YAML, plus the
+/// body that follows them.
+fn cursor_skill_frontmatter(content: &str) -> (serde_yaml::Mapping, String) {
+    let (yaml, body, _) = skrills_validate::frontmatter::split_frontmatter(content);
+    let yaml = yaml.unwrap_or_else(|| panic!("Cursor skill has no frontmatter:\n{content}"));
+    let fields: serde_yaml::Mapping = serde_yaml::from_str(&yaml)
+        .unwrap_or_else(|e| panic!("frontmatter is not valid YAML ({e}):\n{content}"));
+    (fields, body.to_string())
+}
+
+fn yaml_str<'a>(fields: &'a serde_yaml::Mapping, key: &str) -> Option<&'a str> {
+    fields.get(key).and_then(|v| v.as_str())
+}
+
+/// Cursor loads a skill only when SKILL.md has `name` and `description`
+/// frontmatter (cursor.com/docs/context/skills); 0.9.0 stripped it, so every
+/// flat-synced skill was written in a form Cursor does not load.
 #[test]
-fn skills_strip_frontmatter_on_write() {
+fn write_skills_keeps_name_and_description_frontmatter() {
     let tmp = TempDir::new().unwrap();
     let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
 
@@ -188,23 +205,109 @@ fn skills_strip_frontmatter_on_write() {
     let report = adapter.write_skills(&skills).unwrap();
     assert_eq!(report.written, 1);
 
-    // Read back and verify frontmatter was stripped but description preserved
     let read_back = as_written(adapter.read_skills().unwrap());
     assert_eq!(read_back.len(), 1);
     let content = String::from_utf8_lossy(&read_back[0].content);
-    assert!(!content.contains("---"), "Frontmatter should be stripped");
-    assert!(
-        content.starts_with("A test skill\n"),
-        "Description should be preserved as plain text first line"
+    let (fields, body) = cursor_skill_frontmatter(&content);
+    assert_eq!(yaml_str(&fields, "name"), Some("test-skill"), "{content}");
+    assert_eq!(
+        yaml_str(&fields, "description"),
+        Some("A test skill"),
+        "{content}"
     );
-    assert!(
-        content.contains("# test-skill Skill"),
-        "Body should be preserved"
+    assert!(body.contains("# test-skill Skill"), "{content}");
+    assert_eq!(content.matches("A test skill").count(), 1, "{content}");
+}
+
+/// Cursor requires `name` to equal the skill's folder name.
+#[test]
+fn write_skills_sets_name_to_the_folder_name() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let content = "---\nname: Deep Work Helper\ndescription: Focus\n---\n\n# Body\n";
+    adapter
+        .write_skills(&[make_command("Deep_Work", content)])
+        .unwrap();
+
+    let on_disk = std::fs::read_to_string(tmp.path().join("skills/deep-work/SKILL.md")).unwrap();
+    let (fields, _) = cursor_skill_frontmatter(&on_disk);
+    assert_eq!(yaml_str(&fields, "name"), Some("deep-work"), "{on_disk}");
+}
+
+#[test]
+fn write_skills_keeps_disable_model_invocation() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let content =
+        "---\nname: manual\ndescription: Run by hand\ndisable-model-invocation: true\n---\n\n# Body\n";
+    adapter
+        .write_skills(&[make_command("manual", content)])
+        .unwrap();
+
+    let on_disk = std::fs::read_to_string(tmp.path().join("skills/manual/SKILL.md")).unwrap();
+    let (fields, _) = cursor_skill_frontmatter(&on_disk);
+    assert_eq!(
+        fields
+            .get("disable-model-invocation")
+            .and_then(|v| v.as_bool()),
+        Some(true),
+        "{on_disk}"
+    );
+}
+
+/// A description YAML would read as a flow sequence, alias or mapping must
+/// still come back as the same string.
+#[test]
+fn write_skills_quotes_a_description_yaml_would_misread() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let description = "[draft] *Use when*: the \"plan\" is #1";
+    let content = format!(
+        "---\nname: tricky\ndescription: '{}'\n---\n\n# Body\n",
+        description.replace('\'', "''")
+    );
+    adapter
+        .write_skills(&[make_command("tricky", &content)])
+        .unwrap();
+
+    let on_disk = std::fs::read_to_string(tmp.path().join("skills/tricky/SKILL.md")).unwrap();
+    let (fields, _) = cursor_skill_frontmatter(&on_disk);
+    assert_eq!(
+        yaml_str(&fields, "description"),
+        Some(description),
+        "{on_disk}"
     );
 }
 
 #[test]
-fn skills_description_before_model_hint() {
+fn write_skills_without_a_description_warns_cursor_will_not_load_it() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let content = "---\nname: bare\n---\n\n# Body\n";
+    let report = adapter
+        .write_skills(&[make_command("bare", content)])
+        .unwrap();
+
+    assert_eq!(report.written, 1);
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("bare") && w.contains("description")),
+        "{:?}",
+        report.warnings
+    );
+    let on_disk = std::fs::read_to_string(tmp.path().join("skills/bare/SKILL.md")).unwrap();
+    let (fields, _) = cursor_skill_frontmatter(&on_disk);
+    assert_eq!(yaml_str(&fields, "name"), Some("bare"), "{on_disk}");
+}
+
+#[test]
+fn skills_model_hint_follows_the_frontmatter() {
     let tmp = TempDir::new().unwrap();
     let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
 
@@ -215,24 +318,16 @@ fn skills_description_before_model_hint() {
     assert_eq!(report.written, 1);
 
     let read_back = as_written(adapter.read_skills().unwrap());
-    let body = String::from_utf8_lossy(&read_back[0].content);
-
-    assert!(
-        body.starts_with("Compare architecture patterns\n"),
-        "Description should be plain text first line, got: {}",
-        body
+    let content = String::from_utf8_lossy(&read_back[0].content);
+    let (fields, body) = cursor_skill_frontmatter(&content);
+    assert_eq!(
+        yaml_str(&fields, "description"),
+        Some("Compare architecture patterns")
     );
     assert!(
-        body.contains("<!-- model_hint: standard -->"),
-        "Model hint should be in output"
-    );
-
-    // Description must come before model_hint
-    let desc_pos = body.find("Compare architecture patterns").unwrap();
-    let hint_pos = body.find("<!-- model_hint:").unwrap();
-    assert!(
-        desc_pos < hint_pos,
-        "Description should appear before model_hint so Cursor shows it as the subtitle"
+        body.trim_start()
+            .starts_with("<!-- model_hint: standard -->\n"),
+        "Model hint should open the body, got: {content}"
     );
 }
 
@@ -247,11 +342,12 @@ fn skills_description_strips_yaml_quotes() {
 
     adapter.write_skills(&skills).unwrap();
     let read_back = as_written(adapter.read_skills().unwrap());
-    let body = String::from_utf8_lossy(&read_back[0].content);
-    assert!(
-        body.starts_with("A quoted description\n"),
-        "Quotes should be stripped from description, got: {}",
-        body
+    let content = String::from_utf8_lossy(&read_back[0].content);
+    let (fields, _) = cursor_skill_frontmatter(&content);
+    assert_eq!(
+        yaml_str(&fields, "description"),
+        Some("A quoted description"),
+        "{content}"
     );
 }
 
@@ -265,11 +361,12 @@ fn skills_block_scalar_description() {
 
     adapter.write_skills(&skills).unwrap();
     let read_back = as_written(adapter.read_skills().unwrap());
-    let body = String::from_utf8_lossy(&read_back[0].content);
-    assert!(
-        body.starts_with("Search GitHub for implementations. Use when the user wants code.\n"),
-        "Block scalar description should be flattened to plain text, got: {}",
-        body
+    let content = String::from_utf8_lossy(&read_back[0].content);
+    let (fields, _) = cursor_skill_frontmatter(&content);
+    assert_eq!(
+        yaml_str(&fields, "description"),
+        Some("Search GitHub for implementations. Use when the user wants code."),
+        "{content}"
     );
 }
 
@@ -284,11 +381,12 @@ fn skills_single_quoted_description() {
 
     adapter.write_skills(&skills).unwrap();
     let read_back = as_written(adapter.read_skills().unwrap());
-    let body = String::from_utf8_lossy(&read_back[0].content);
-    assert!(
-        body.starts_with("A single-quoted desc\n"),
-        "Single quotes should be stripped, got: {}",
-        body
+    let content = String::from_utf8_lossy(&read_back[0].content);
+    let (fields, _) = cursor_skill_frontmatter(&content);
+    assert_eq!(
+        yaml_str(&fields, "description"),
+        Some("A single-quoted desc"),
+        "{content}"
     );
 }
 
@@ -303,19 +401,15 @@ fn skills_description_only_no_model_hint() {
 
     adapter.write_skills(&skills).unwrap();
     let read_back = as_written(adapter.read_skills().unwrap());
-    let body = String::from_utf8_lossy(&read_back[0].content);
+    let content = String::from_utf8_lossy(&read_back[0].content);
+    let (_, body) = cursor_skill_frontmatter(&content);
     assert!(
-        body.starts_with("Just a description\n"),
-        "Description should be first line, got: {}",
-        body
-    );
-    assert!(
-        !body.contains("model_hint"),
+        !content.contains("model_hint"),
         "No model_hint comment when field is absent"
     );
     assert!(
-        body.contains("# Content"),
-        "Body should follow the description"
+        body.trim_start().starts_with("# Content"),
+        "Body should follow the frontmatter, got: {content}"
     );
 }
 
@@ -329,11 +423,11 @@ fn skills_model_hint_only_no_description() {
 
     adapter.write_skills(&skills).unwrap();
     let read_back = as_written(adapter.read_skills().unwrap());
-    let body = String::from_utf8_lossy(&read_back[0].content);
+    let content = String::from_utf8_lossy(&read_back[0].content);
+    let (_, body) = cursor_skill_frontmatter(&content);
     assert!(
-        body.starts_with("<!-- model_hint: fast -->\n"),
-        "Model hint should be first line when no description, got: {}",
-        body
+        body.trim_start().starts_with("<!-- model_hint: fast -->\n"),
+        "Model hint should open the body when no description, got: {content}"
     );
 }
 
@@ -347,11 +441,12 @@ fn skills_multiline_quoted_description() {
 
     adapter.write_skills(&skills).unwrap();
     let read_back = as_written(adapter.read_skills().unwrap());
-    let body = String::from_utf8_lossy(&read_back[0].content);
-    assert!(
-        body.starts_with("Single deployable with enforced module boundaries for team autonomy.\n"),
-        "Multi-line quoted description should be flattened and unquoted, got: {}",
-        body
+    let content = String::from_utf8_lossy(&read_back[0].content);
+    let (fields, _) = cursor_skill_frontmatter(&content);
+    assert_eq!(
+        yaml_str(&fields, "description"),
+        Some("Single deployable with enforced module boundaries for team autonomy."),
+        "{content}"
     );
 }
 
@@ -404,8 +499,10 @@ fn agents_translate_frontmatter_on_write() {
     );
 }
 
-/// Cursor agents have no tool list, so a Claude agent limited to `Read`
-/// became unrestricted without a word in the report.
+/// Cursor agents have no tool list, so a Claude agent limited to `Read` and
+/// `Bash` became unrestricted without a word in the report. (One with no
+/// write tool becomes `readonly` instead; see
+/// `agent_without_write_tools_is_written_readonly`.)
 #[test]
 fn dropping_a_tool_restriction_is_reported() {
     let tmp = TempDir::new().unwrap();
@@ -413,7 +510,7 @@ fn dropping_a_tool_restriction_is_reported() {
     let agents = vec![
         make_command(
             "reader",
-            "---\nname: reader\ntools: Read\n---\nRead only.\n",
+            "---\nname: reader\ntools: Read, Bash\n---\nRead and run.\n",
         ),
         make_command("free", "---\nname: free\n---\nAnything.\n"),
     ];
@@ -543,12 +640,12 @@ fn skills_frontmatter_only_content_preserves_description() {
 
     let read_back = as_written(adapter.read_skills().unwrap());
     assert_eq!(read_back.len(), 1);
-    let body = String::from_utf8_lossy(&read_back[0].content);
-    assert!(!body.contains("---"), "Frontmatter should be stripped");
-    assert!(
-        body.contains("Has no body"),
-        "Description should be preserved as plain text, got: {}",
-        body
+    let content = String::from_utf8_lossy(&read_back[0].content);
+    let (fields, _) = cursor_skill_frontmatter(&content);
+    assert_eq!(
+        yaml_str(&fields, "description"),
+        Some("Has no body"),
+        "{content}"
     );
 }
 
@@ -2285,4 +2382,248 @@ fn invalid_utf8_is_skipped_not_mangled() {
             report.skipped
         );
     }
+}
+
+// --- Plugin hooks/hooks.json ---
+
+/// A plugin's `hooks/hooks.json` asset with the given body.
+fn plugin_hooks_asset(plugin: &str, body: &str) -> crate::common::PluginAsset {
+    crate::common::PluginAsset::new(
+        plugin.to_string(),
+        "market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from("hooks/hooks.json"),
+        body.as_bytes().to_vec(),
+        false,
+    )
+}
+
+/// Mirrors `body` as the plugin's hooks file and returns what Cursor gets.
+fn mirrored_plugin_hooks(tmp: &TempDir, body: &str) -> (serde_json::Value, WriteReport) {
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let report = adapter
+        .write_plugin_assets(&[
+            plugin_manifest("hooked"),
+            plugin_hooks_asset("hooked", body),
+        ])
+        .unwrap();
+    let path = tmp.path().join("plugins/local/hooked/hooks/hooks.json");
+    let on_disk = std::fs::read_to_string(path).unwrap();
+    let json = serde_json::from_str(&on_disk)
+        .unwrap_or_else(|e| panic!("mirrored hooks.json is not JSON ({e}):\n{on_disk}"));
+    (json, report)
+}
+
+const CLAUDE_PLUGIN_HOOKS: &str = r#"{
+  "hooks": {
+    "PostToolUse": [
+      { "matcher": "Skill", "hooks": [
+        { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/watch.py", "timeout": 2 }
+      ] }
+    ],
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "$CLAUDE_PLUGIN_ROOT/hooks/start.sh" } ] }
+    ]
+  }
+}"#;
+
+/// Cursor plugin hooks are flat camelCase entries
+/// (cursor.com/docs/reference/plugins); the Claude nested PascalCase file was
+/// copied verbatim, so no plugin hook ever ran in Cursor.
+#[test]
+fn plugin_hooks_json_is_translated_to_cursor_events() {
+    let tmp = TempDir::new().unwrap();
+    let (hooks, _) = mirrored_plugin_hooks(&tmp, CLAUDE_PLUGIN_HOOKS);
+
+    assert_eq!(hooks["version"], 1, "{hooks:#}");
+    let post = hooks["hooks"]["postToolUse"].as_array().unwrap();
+    assert_eq!(post.len(), 1, "{hooks:#}");
+    assert_eq!(post[0]["matcher"], "Skill", "{hooks:#}");
+    assert_eq!(post[0]["type"], "command", "{hooks:#}");
+    assert_eq!(post[0]["timeout"], 2, "{hooks:#}");
+    assert!(post[0].get("hooks").is_none(), "{hooks:#}");
+    assert!(hooks["hooks"]["sessionStart"].is_array(), "{hooks:#}");
+    assert!(hooks["hooks"].get("PostToolUse").is_none(), "{hooks:#}");
+}
+
+/// Cursor documents plugin-root expansion only for `mcp.json`, so hook
+/// commands get the mirror's absolute path.
+#[test]
+fn plugin_hooks_json_points_commands_at_the_mirrored_plugin() {
+    let tmp = TempDir::new().unwrap();
+    let (hooks, _) = mirrored_plugin_hooks(&tmp, CLAUDE_PLUGIN_HOOKS);
+
+    let root = tmp.path().join("plugins/local/hooked");
+    assert_eq!(
+        hooks["hooks"]["postToolUse"][0]["command"],
+        format!("{}/hooks/watch.py", root.display()),
+        "{hooks:#}"
+    );
+    assert_eq!(
+        hooks["hooks"]["sessionStart"][0]["command"],
+        format!("{}/hooks/start.sh", root.display()),
+        "{hooks:#}"
+    );
+}
+
+#[test]
+fn plugin_hooks_json_drops_events_cursor_lacks() {
+    let tmp = TempDir::new().unwrap();
+    let body = r#"{ "hooks": {
+        "Notification": [ { "hooks": [ { "type": "command", "command": "notify" } ] } ],
+        "Stop": [ { "hooks": [ { "type": "command", "command": "done" } ] } ]
+    } }"#;
+    let (hooks, report) = mirrored_plugin_hooks(&tmp, body);
+
+    assert!(hooks["hooks"].get("Notification").is_none(), "{hooks:#}");
+    assert!(hooks["hooks"].get("notification").is_none(), "{hooks:#}");
+    assert_eq!(hooks["hooks"]["stop"][0]["command"], "done", "{hooks:#}");
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("hooked") && w.contains("Notification")),
+        "{:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn plugin_hooks_json_already_in_cursor_form_is_kept() {
+    let tmp = TempDir::new().unwrap();
+    let body = r#"{ "version": 1, "hooks": {
+        "afterFileEdit": [ { "command": "./scripts/format.sh", "matcher": "Write" } ]
+    } }"#;
+    let (hooks, report) = mirrored_plugin_hooks(&tmp, body);
+
+    assert_eq!(
+        hooks["hooks"]["afterFileEdit"],
+        serde_json::json!([{ "command": "./scripts/format.sh", "matcher": "Write" }]),
+        "{hooks:#}"
+    );
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+}
+
+#[test]
+fn plugin_hooks_json_that_does_not_parse_is_copied_unchanged() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let body = "{ \"hooks\": { ,,, } }";
+    let report = adapter
+        .write_plugin_assets(&[
+            plugin_manifest("hooked"),
+            plugin_hooks_asset("hooked", body),
+        ])
+        .unwrap();
+
+    let on_disk =
+        std::fs::read_to_string(tmp.path().join("plugins/local/hooked/hooks/hooks.json")).unwrap();
+    assert_eq!(on_disk, body);
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("hooked") && w.contains("hooks.json")),
+        "{:?}",
+        report.warnings
+    );
+}
+
+/// The unchanged check must compare against the translated file, or every
+/// sync rewrites it.
+#[test]
+fn plugin_hooks_json_is_unchanged_on_a_second_sync() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let assets = [
+        plugin_manifest("hooked"),
+        plugin_hooks_asset("hooked", CLAUDE_PLUGIN_HOOKS),
+    ];
+    adapter.write_plugin_assets(&assets).unwrap();
+
+    let again = adapter.write_plugin_assets(&assets).unwrap();
+    assert_eq!(again.written, 0, "{again:?}");
+}
+
+// --- Agent tool restrictions ---
+
+fn written_agent(tmp: &TempDir, name: &str, frontmatter: &str) -> (String, WriteReport) {
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let content = format!("---\nname: {name}\n{frontmatter}---\n\nDo the work.\n");
+    let report = adapter
+        .write_agents(&[make_command(name, &content)])
+        .unwrap();
+    let on_disk = std::fs::read_to_string(tmp.path().join(format!("agents/{name}.md"))).unwrap();
+    (on_disk, report)
+}
+
+/// Cursor agents have no tool list; `readonly` is the only restriction
+/// (cursor.com/docs/context/subagents). An agent Claude kept from writing got
+/// full write access in Cursor.
+#[test]
+fn agent_without_write_tools_is_written_readonly() {
+    let tmp = TempDir::new().unwrap();
+    let (on_disk, report) = written_agent(&tmp, "auditor", "tools: Read, Grep, Glob, WebFetch\n");
+
+    let (fields, _) = cursor_skill_frontmatter(&on_disk);
+    assert_eq!(
+        fields.get("readonly").and_then(|v| v.as_bool()),
+        Some(true),
+        "{on_disk}"
+    );
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+}
+
+#[test]
+fn agent_with_a_block_list_of_read_tools_is_written_readonly() {
+    let tmp = TempDir::new().unwrap();
+    let (on_disk, _) = written_agent(&tmp, "reader", "tools:\n  - Read\n  - Grep\n");
+
+    let (fields, _) = cursor_skill_frontmatter(&on_disk);
+    assert_eq!(
+        fields.get("readonly").and_then(|v| v.as_bool()),
+        Some(true),
+        "{on_disk}"
+    );
+}
+
+#[test]
+fn agent_with_a_write_tool_is_not_readonly() {
+    let tmp = TempDir::new().unwrap();
+    let (on_disk, report) = written_agent(&tmp, "committer", "tools: [Read, Bash(git:*)]\n");
+
+    let (fields, _) = cursor_skill_frontmatter(&on_disk);
+    assert!(fields.get("readonly").is_none(), "{on_disk}");
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("committer") && w.contains("tool")),
+        "{:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn agent_without_a_tools_list_is_not_readonly() {
+    let tmp = TempDir::new().unwrap();
+    let (on_disk, report) = written_agent(&tmp, "generalist", "model: opus\n");
+
+    let (fields, _) = cursor_skill_frontmatter(&on_disk);
+    assert!(fields.get("readonly").is_none(), "{on_disk}");
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+}
+
+/// The `readonly` added for Cursor stands in for `tools`; a sync back to
+/// Claude restores `tools` and must not also carry `readonly`.
+#[test]
+fn agent_readonly_added_for_cursor_does_not_reach_claude() {
+    let tmp = TempDir::new().unwrap();
+    written_agent(&tmp, "auditor", "tools: Read, Grep\n");
+
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let back = adapter.read_agents().unwrap();
+    let back = String::from_utf8(back[0].content.clone()).unwrap();
+    assert!(back.contains("tools: Read, Grep"), "{back}");
+    assert!(!back.contains("readonly"), "{back}");
 }

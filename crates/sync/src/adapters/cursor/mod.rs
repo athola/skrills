@@ -12,10 +12,9 @@
 //!   `alwaysApply`) in `.cursor/rules/`. No other adapter writes this format.
 //! - **Hooks**: Cursor supports 18+ lifecycle events (camelCase) vs Claude's 8
 //!   (PascalCase). Event name mapping is handled in the hooks module.
-//! - **Skills**: Cursor skills have no YAML frontmatter, Claude frontmatter is stripped
-//!   on write, but `description` is preserved as a plain-text first line and `model_hint`
-//!   as an HTML comment. **Partially lossy**: a Claude→Cursor→Claude roundtrip loses
-//!   most frontmatter metadata (name, dependencies, version, tags).
+//! - **Skills**: Cursor reads `name` and `description` frontmatter; the other Claude
+//!   fields ride in a trailing comment the reader restores, and `model_hint` becomes an
+//!   HTML comment. Trimmed body sections are not restored on a roundtrip.
 //! - **Agents**: Field translation: `background` ↔ `is_background`, model name
 //!   mapping, `tools`/`isolation` dropped (Cursor-only: `readonly`).
 //! - **Commands**: Near-identical to Claude format (`.cursor/commands/*.md`).
@@ -195,7 +194,8 @@ impl AgentAdapter for CursorAdapter {
     /// `plugins/local/<p>/` without one.
     ///
     /// Claude's `.claude-plugin/` manifest directory is renamed to the
-    /// `.cursor-plugin/` name Cursor reads.
+    /// `.cursor-plugin/` name Cursor reads, and `hooks/hooks.json` is rewritten
+    /// to Cursor's hook layout.
     fn write_plugin_assets(&self, assets: &[PluginAsset]) -> Result<WriteReport> {
         crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         use std::collections::HashSet;
@@ -497,6 +497,29 @@ fn write_one_asset(
         return None;
     }
 
+    // Cursor reads plugin hooks in its own layout, not Claude's.
+    let translated;
+    let content: &[u8] = if relative == std::path::Path::new("hooks/hooks.json") {
+        match hooks::plugin_hooks_for_cursor(&asset.content, plugin_dir) {
+            Ok((bytes, warnings)) => {
+                report
+                    .warnings
+                    .extend(warnings.into_iter().map(|w| format!("{dir_name}: {w}")));
+                translated = bytes;
+                &translated
+            }
+            Err(e) => {
+                report.warnings.push(format!(
+                    "{dir_name}: hooks/hooks.json could not be translated for Cursor ({e}), \
+                     so it was copied unchanged and its hooks may not run"
+                ));
+                &asset.content
+            }
+        }
+    } else {
+        &asset.content
+    };
+
     let existing = if dest.exists() {
         match fs::read(&dest) {
             Ok(bytes) => Some(bytes),
@@ -514,7 +537,7 @@ fn write_one_asset(
     };
     let content_matches = existing
         .as_deref()
-        .is_some_and(|bytes| hash_content(bytes) == hash_content(&asset.content));
+        .is_some_and(|bytes| hash_content(bytes) == hash_content(content));
 
     // The content hash says nothing about the mode, so an asset whose bytes are
     // unchanged but whose executable bit moved upstream must not take the
@@ -538,7 +561,7 @@ fn write_one_asset(
                 return None;
             }
         }
-        if let Err(e) = crate::adapters::utils::write_file(&dest, &asset.content) {
+        if let Err(e) = crate::adapters::utils::write_file(&dest, content) {
             tracing::warn!(plugin = %dir_name, error = %e, "Could not write plugin asset");
             report.warnings.push(format!(
                 "Skipped plugin asset {}/{}: {e}",

@@ -1,16 +1,16 @@
 //! Skills reading and writing for Cursor adapter.
 //!
 //! Cursor skills are directories containing `SKILL.md` plus optional
-//! companion files, located in `.cursor/skills/`. Unlike Claude skills,
-//! Cursor skills have **no YAML frontmatter**, the content is pure markdown.
+//! companion files, located in `.cursor/skills/`. Cursor loads a skill only
+//! when its frontmatter has `name` (equal to the folder name) and
+//! `description` (cursor.com/docs/context/skills).
 //!
-//! When writing Claude skills to Cursor, YAML frontmatter is stripped.
-//! The `description` field is preserved as a plain-text first line (Cursor
-//! shows it as the skill subtitle), and `model_hint` is kept as an HTML
-//! comment for routing. The original frontmatter is kept in a trailing
-//! `<!-- skrills:frontmatter ... -->` comment, and reading the skill back
-//! from Cursor restores it, so a Claude -> Cursor -> Codex sync still gives
-//! Codex a `SKILL.md` with `name:` and `description:`.
+//! When writing Claude skills to Cursor, the frontmatter is cut down to
+//! `name`, `description` and `disable-model-invocation`, and `model_hint` is
+//! kept as an HTML comment for routing. The original frontmatter is kept in a
+//! trailing `<!-- skrills:frontmatter ... -->` comment, and reading the skill
+//! back from Cursor restores it, so a Claude -> Cursor -> Codex sync gives
+//! Codex the source's fields rather than Cursor's subset.
 //!
 //! ## Lossy roundtrip warning
 //!
@@ -145,6 +145,26 @@ fn minimal_cursor_manifest(origin: &PluginOrigin) -> String {
     .to_string()
 }
 
+/// The frontmatter Cursor reads from a `SKILL.md`. `name` must equal the
+/// folder name. The description is written as a JSON string, which YAML reads
+/// back unchanged whatever it starts with (`[`, `*`, `-`, a quote).
+fn cursor_frontmatter(
+    name: &str,
+    description: Option<&str>,
+    disable_model_invocation: bool,
+) -> String {
+    let mut yaml = format!("---\nname: {name}\n");
+    if let Some(desc) = description {
+        let quoted = serde_json::to_string(desc).expect("a string serializes to JSON");
+        yaml.push_str(&format!("description: {quoted}\n"));
+    }
+    if disable_model_invocation {
+        yaml.push_str("disable-model-invocation: true\n");
+    }
+    yaml.push_str("---\n");
+    yaml
+}
+
 /// Reads all skills from `.cursor/skills/`.
 pub fn read_skills(root: &Path) -> Result<Vec<Command>> {
     let dir = skills_dir(root);
@@ -212,7 +232,7 @@ pub fn read_skills(root: &Path) -> Result<Vec<Command>> {
 /// a [`PluginOrigin`], to `.cursor/plugins/local/{plugin}/skills/{name}/SKILL.md`
 /// so that Cursor's plugin system discovers them as installed plugins.
 ///
-/// Strips YAML frontmatter from content (Cursor skills don't use frontmatter).
+/// Replaces the frontmatter with the fields Cursor reads (see the module docs).
 pub fn write_skills(root: &Path, skills: &[Command]) -> Result<WriteReport> {
     let flat_dir = skills_dir(root);
     let local_plugins_dir = root.join("plugins").join("local");
@@ -254,23 +274,30 @@ pub fn write_skills(root: &Path, skills: &[Command]) -> Result<WriteReport> {
         // Trim non-essential sections from the body
         let trimmed = trim_skill_body(&raw_body);
 
-        // Inject description as plain text (Cursor shows the first line as
-        // the skill subtitle) and model_hint as an HTML comment for routing.
-        let mut header = String::new();
-        if let Some(desc) = &description {
-            header.push_str(desc);
-            header.push('\n');
-        }
-        if let Some(hint) = &model_hint {
-            header.push_str(&format!("<!-- model_hint: {hint} -->\n"));
-        }
-        let body = if header.is_empty() {
-            trimmed
-        } else {
-            format!("{header}\n{trimmed}")
+        let body = match &model_hint {
+            Some(hint) => format!("<!-- model_hint: {hint} -->\n\n{trimmed}"),
+            None => trimmed,
         };
-        // Cursor skills have no frontmatter; keep the original in a trailing
-        // comment so a sync out of Cursor can restore `name:` and the rest.
+        // A source with no frontmatter is already a plain Cursor skill.
+        let body = if raw_yaml.is_some() {
+            if description.is_none() {
+                report.warnings.push(format!(
+                    "Skill {}: no `description`, which Cursor requires to load a skill",
+                    skill.name
+                ));
+            }
+            let disable_model_invocation = fields
+                .get("disable-model-invocation")
+                .is_some_and(|v| strip_yaml_quotes(v) == "true");
+            format!(
+                "{}\n{body}",
+                cursor_frontmatter(&name, description.as_deref(), disable_model_invocation)
+            )
+        } else {
+            body
+        };
+        // Cursor has no place for the other Claude fields; keep the original
+        // in a trailing comment so a sync out of Cursor can restore them.
         let body = match raw_yaml.as_deref() {
             None => body,
             Some(yaml) => stash_frontmatter(&body, yaml).unwrap_or_else(|| {
