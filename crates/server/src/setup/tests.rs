@@ -889,13 +889,14 @@ mod sync_universal_tests {
         };
         sync_universal(&config)?;
 
-        let agent_skills = temp.path().join(".agent/skills");
-        assert_eq!(
-            fs::read_to_string(agent_skills.join("skills/demo/SKILL.md"))?,
-            "demo"
-        );
+        // `~/.agents/skills` is the directory Codex, Cursor and Copilot CLI
+        // load; each skill sits one level deep, named after its folder.
+        let agent_skills = temp.path().join(".agents/skills");
+        let demo = fs::read_to_string(agent_skills.join("demo/SKILL.md"))?;
+        assert!(demo.contains("name: demo"), "{demo}");
+        assert!(!temp.path().join(".agent").exists());
         assert!(!agent_skills.join(".credentials.json").exists());
-        assert!(!agent_skills.join("projects/p/session.jsonl").exists());
+        assert!(!agent_skills.join("projects").exists());
         Ok(())
     }
 }

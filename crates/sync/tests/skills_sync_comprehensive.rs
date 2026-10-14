@@ -246,6 +246,9 @@ mod basic_sync_tests {
         // THEN: Skills should be transferred to Codex
         assert_eq!(report.skills.written, 2, "Should write both skills");
         assert!(report.skills.skipped.is_empty(), "Should skip none");
+        let shared = ctx.codex_root.join(".agents/skills");
+        assert!(shared.join("code-review/SKILL.md").exists());
+        assert!(shared.join("test-gen/SKILL.md").exists());
     }
 
     #[tokio::test]
@@ -470,15 +473,12 @@ mod basic_sync_tests {
         // THEN: Report shows what would be written but target remains empty
         assert_eq!(report.skills.written, 2, "Should report 2 skills to write");
 
-        // Verify target directory is still empty
-        let target_skills_dir = ctx.codex_root.join("skills");
-        if target_skills_dir.exists() {
-            let entries: Vec<_> = fs::read_dir(&target_skills_dir)
-                .unwrap()
-                .filter_map(|e| e.ok())
-                .collect();
-            assert!(entries.is_empty(), "Target should remain empty in dry run");
-        }
+        // Codex skills go to `<root>/.agents/skills` for a `with_root` adapter;
+        // a dry run must not create it.
+        assert!(
+            !ctx.codex_root.join(".agents/skills").exists(),
+            "Target should remain empty in dry run"
+        );
     }
 }
 

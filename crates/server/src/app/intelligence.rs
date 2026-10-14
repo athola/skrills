@@ -1144,7 +1144,8 @@ pub(crate) fn select_default_skill_root(
     if claude_setup || !codex_setup {
         home.join(".claude/skills")
     } else {
-        home.join(".codex/skills")
+        // Codex loads user skills from ~/.agents/skills.
+        home.join(".agents/skills")
     }
 }
 

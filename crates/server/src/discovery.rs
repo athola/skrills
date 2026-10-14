@@ -235,7 +235,7 @@ pub fn skill_roots(extra_dirs: &[PathBuf]) -> Result<Vec<SkillRoot>> {
                 home.join(".claude/plugins/cache")
             }
             SkillSource::Mirror => home.join(".codex/skills-mirror"),
-            SkillSource::Agent => home.join(".agent/skills"),
+            SkillSource::Agent => home.join(".agents/skills"),
             SkillSource::Extra(_) => continue,
             _ => continue, // Handle future variants
         };

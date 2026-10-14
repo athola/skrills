@@ -34,11 +34,17 @@ impl CodexAdapter {
     /// Creates a new CodexAdapter with the default root (~/.codex).
     pub fn new() -> Result<Self> {
         let home = dirs::home_dir().context("Could not determine home directory")?;
-        Ok(Self {
+        Ok(Self::with_home(&home))
+    }
+
+    /// Creates a CodexAdapter for the Codex install under `home`: config in
+    /// `home/.codex`, skills in `home/.agents/skills`.
+    pub fn with_home(home: &Path) -> Self {
+        Self {
             root: home.join(".codex"),
-            shared_skills: super::shared_skills::shared_skills_dir(&home),
+            shared_skills: super::shared_skills::shared_skills_dir(home),
             kill_switch: None,
-        })
+        }
     }
 
     /// Creates a CodexAdapter with a custom root (for testing). The shared
@@ -558,12 +564,17 @@ impl AgentAdapter for CodexAdapter {
 
     fn write_skills(&self, skills: &[Command]) -> Result<WriteReport> {
         super::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
-        let report = super::shared_skills::write_shared_skills(&self.shared_skills, skills)?;
+        let mut report = super::shared_skills::write_shared_skills(&self.shared_skills, skills)?;
 
         // Zero skills means nothing for Codex to load, so the user's config is
         // left alone rather than created or edited.
         if !skills.is_empty() {
-            let _ = self.ensure_skills_feature_flag_enabled()?;
+            if let Err(e) = self.ensure_skills_feature_flag_enabled() {
+                report.warnings.push(format!(
+                    "could not enable the codex skills feature in {}: {e:#}",
+                    self.config_toml_path().display()
+                ));
+            }
         }
 
         Ok(report)
@@ -776,6 +787,38 @@ mod tests {
 
         let written = fs::read(tmp.path().join("prompts/hello.md")).unwrap();
         assert_eq!(written, b"# Hello World");
+    }
+
+    /// The skills are on disk even when the feature flag cannot be written,
+    /// so the failure is a warning on a successful write, not a lost phase.
+    #[test]
+    fn unwritable_config_leaves_skills_written_with_a_warning() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_home(tmp.path());
+        fs::create_dir_all(tmp.path().join(".codex/config.toml")).unwrap();
+        let skill = Command {
+            name: "demo".to_string(),
+            content: b"---\nname: demo\ndescription: d\n---\nbody".to_vec(),
+            source_path: PathBuf::from("/tmp/demo/SKILL.md"),
+            modified: SystemTime::now(),
+            hash: "h".to_string(),
+            modules: Vec::new(),
+            content_format: ContentFormat::default(),
+            plugin_origin: None,
+        };
+
+        let report = adapter.write_skills(&[skill]).unwrap();
+
+        assert_eq!(report.written, 1);
+        assert!(tmp.path().join(".agents/skills/demo/SKILL.md").exists());
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("codex skills feature")),
+            "{:?}",
+            report.warnings
+        );
     }
 
     #[test]

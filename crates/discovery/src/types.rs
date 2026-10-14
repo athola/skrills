@@ -22,7 +22,7 @@ pub enum SkillSource {
     Mirror,
     /// Cursor IDE rules directory (`.cursor/rules`).
     Cursor,
-    /// Universal agent skills (`~/.agent/skills`).
+    /// Universal agent skills (`~/.agents/skills`).
     Agent,
     /// Extra user-specified directories (indexed).
     Extra(u32),

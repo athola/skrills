@@ -174,7 +174,8 @@ fn probe_skill_content() -> String {
 fn client_skill_dir(home: &Path, client: ClientTarget) -> Option<PathBuf> {
     match client {
         ClientTarget::Claude => Some(home.join(".claude/skills")),
-        ClientTarget::Codex => Some(home.join(".codex/skills")),
+        // Codex loads user skills from ~/.agents/skills.
+        ClientTarget::Codex => Some(home.join(".agents/skills")),
         ClientTarget::Both => None,
     }
 }
@@ -204,16 +205,16 @@ fn roots_for_target(
                 );
             }
             if opts.include_agent {
-                push_root(&mut roots, "agent", home.join(".agent/skills"));
+                push_root(&mut roots, "agent", home.join(".agents/skills"));
             }
         }
         ClientTarget::Codex => {
+            // ~/.agents/skills is where Codex loads skills; ~/.codex/skills
+            // holds skills synced before Codex moved there.
+            push_root(&mut roots, "codex", home.join(".agents/skills"));
             push_root(&mut roots, "codex", home.join(".codex/skills"));
             if opts.include_mirror {
                 push_root(&mut roots, "mirror", home.join(".codex/skills-mirror"));
-            }
-            if opts.include_agent {
-                push_root(&mut roots, "agent", home.join(".agent/skills"));
             }
         }
         ClientTarget::Both => {
@@ -644,53 +645,15 @@ pub fn status(
         .map(|(label, path)| format!("{label}:{}", path.display()))
         .collect::<Vec<_>>();
 
-    let trace_installed = match target {
-        ClientTarget::Claude => home
-            .join(".claude/skills")
-            .join(TRACE_SKILL_DIR)
-            .join("SKILL.md")
-            .exists(),
-        ClientTarget::Codex => home
-            .join(".codex/skills")
-            .join(TRACE_SKILL_DIR)
-            .join("SKILL.md")
-            .exists(),
-        ClientTarget::Both => {
-            home.join(".claude/skills")
-                .join(TRACE_SKILL_DIR)
-                .join("SKILL.md")
-                .exists()
-                || home
-                    .join(".codex/skills")
-                    .join(TRACE_SKILL_DIR)
-                    .join("SKILL.md")
-                    .exists()
-        }
+    let installed = |skill_dir: &str| {
+        [ClientTarget::Claude, ClientTarget::Codex]
+            .into_iter()
+            .filter(|client| target == ClientTarget::Both || *client == target)
+            .filter_map(|client| client_skill_dir(home, client))
+            .any(|dir| dir.join(skill_dir).join("SKILL.md").exists())
     };
-
-    let probe_installed = match target {
-        ClientTarget::Claude => home
-            .join(".claude/skills")
-            .join(PROBE_SKILL_DIR)
-            .join("SKILL.md")
-            .exists(),
-        ClientTarget::Codex => home
-            .join(".codex/skills")
-            .join(PROBE_SKILL_DIR)
-            .join("SKILL.md")
-            .exists(),
-        ClientTarget::Both => {
-            home.join(".claude/skills")
-                .join(PROBE_SKILL_DIR)
-                .join("SKILL.md")
-                .exists()
-                || home
-                    .join(".codex/skills")
-                    .join(PROBE_SKILL_DIR)
-                    .join("SKILL.md")
-                    .exists()
-        }
-    };
+    let trace_installed = installed(TRACE_SKILL_DIR);
+    let probe_installed = installed(PROBE_SKILL_DIR);
 
     let mut skill_files_found = 0usize;
     let mut markers_found = 0usize;
@@ -764,6 +727,30 @@ mod tests {
         let path = root.join(rel_dir).join("SKILL.md");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, content).unwrap();
+    }
+
+    /// A probe Codex never loads makes the self-test report a healthy skrills
+    /// while the Codex session cannot answer it.
+    #[test]
+    fn codex_probe_goes_where_codex_loads_skills() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path();
+        let opts = TraceInstallOptions {
+            instrument: false,
+            backup: false,
+            dry_run: false,
+            include_mirror: false,
+            include_agent: false,
+            include_cache: false,
+            include_marketplace: false,
+        };
+
+        enable_trace(home, ClientTarget::Codex, opts).unwrap();
+
+        let shared = home.join(".agents/skills");
+        assert!(shared.join(PROBE_SKILL_DIR).join("SKILL.md").exists());
+        assert!(shared.join(TRACE_SKILL_DIR).join("SKILL.md").exists());
+        assert!(!home.join(".codex/skills").join(PROBE_SKILL_DIR).exists());
     }
 
     #[test]

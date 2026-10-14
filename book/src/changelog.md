@@ -3,7 +3,7 @@
 ## 0.9.1 (Unreleased)
 
 - **Cursor**: skills synced to Cursor keep the `name` and `description` frontmatter Cursor needs to load them. A mirrored plugin's `hooks/hooks.json` is rewritten to Cursor's hook layout. Top-level Claude hooks are no longer copied, because Cursor already loads them from `~/.claude/settings.json`. Agents with no write tool become `readonly`.
-- **Codex**: skills go to `~/.agents/skills`, the only user skills directory Codex documents, instead of `~/.codex/skills`.
+- **Codex**: skills go to `~/.agents/skills`, the only user skills directory Codex documents, instead of `~/.codex/skills`. This covers `sync`, `mirror`, `sync-all`, the TUI, the `sync-from-claude` and `sync-all` MCP tools, and `create-skill` for a Codex-only install. Discovery and `skrills setup --universal` use `~/.agents/skills` in place of `~/.agent/skills`, which no tool loads. `sync-from-claude` now reports `warnings` instead of the `synced` name list.
 - **Copilot**: on macOS, sync and `skrills setup` write to `~/.copilot` (or `COPILOT_HOME`), where Copilot CLI reads, instead of `~/Library/Application Support/copilot`.
 
 ## 0.9.0 (Unreleased)

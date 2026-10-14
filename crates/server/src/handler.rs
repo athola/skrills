@@ -336,45 +336,29 @@ impl ServerHandler for SkillService {
                             .unwrap_or(false);
                         let home = home_dir()?;
                         let claude_root = mirror_source_root(&home);
-                        let codex_skills_root = home.join(".codex/skills");
-                        let report = crate::sync::sync_skills_only_from_claude(
+                        let report = crate::sync::sync_skills_from_claude_to_codex(
                             &claude_root,
-                            &codex_skills_root,
+                            &home,
                             include_marketplace,
+                            false,
                         )?;
-                        let mut text = if report.copied_names.is_empty() {
-                            format!("copied: {}, skipped: {}", report.copied, report.skipped)
-                        } else {
-                            format!(
-                                "copied: {}, skipped: {}\nsynced: {}",
-                                report.copied,
-                                report.skipped,
-                                report.copied_names.join(", ")
-                            )
-                        };
-                        if let Err(err) = crate::setup::ensure_codex_skills_feature_enabled(
-                            &home.join(".codex/config.toml"),
-                        ) {
-                            // Surface filesystem errors (read-only home, disk full,
-                            // malformed TOML) so the caller learns why Codex loads
-                            // nothing despite the skills landing on disk.
-                            tracing::warn!(
-                                error = %err,
-                                "could not ensure codex skills feature flag"
-                            );
-                            text.push_str(&format!(
-                                "\nwarning: could not enable the codex skills feature in \
-                                 ~/.codex/config.toml: {err}"
-                            ));
+                        let skills = &report.skills;
+                        let mut text = format!(
+                            "copied: {}, skipped: {}",
+                            skills.written,
+                            skills.skipped.len()
+                        );
+                        for warning in &skills.warnings {
+                            text.push_str(&format!("\nwarning: {warning}"));
                         }
                         let (priority, rank_map) = priority_labels_and_rank_map();
                         Ok(tool_ok(
                             vec![ContentBlock::text(text)],
                             Some(json!({
                                 "report": {
-                                    "copied": report.copied,
-                                    "skipped": report.skipped,
-                                    "synced": report.copied_names
+                                    "copied": skills.written,
+                                    "skipped": skills.skipped.len(),
+                                    "warnings": skills.warnings
                                 },
                                 "_meta": {
                                     "priority": priority,
@@ -1113,6 +1097,10 @@ mod tests {
         // of it fail, which is the shape of a read-only or corrupted home.
         std::fs::create_dir_all(temp.path().join(".codex/config.toml"))
             .expect("create config.toml as a directory");
+        // The flag is only set when there is a skill for Codex to load.
+        let claude_skill = temp.path().join(".claude/skills/demo");
+        std::fs::create_dir_all(&claude_skill).expect("create claude skill");
+        std::fs::write(claude_skill.join("SKILL.md"), "demo skill").expect("write skill");
 
         let service = build_service(&temp);
         let result = run_async(async move {

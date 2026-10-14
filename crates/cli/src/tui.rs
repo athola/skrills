@@ -10,7 +10,7 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use skrills_server::sync::{
-    mirror_source_root, sync_agents_only_from_claude, sync_skills_only_from_claude,
+    mirror_source_root, sync_agents_only_from_claude, sync_skills_from_claude_to_codex,
 };
 use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
 
@@ -46,16 +46,13 @@ pub(crate) fn tui_flow(_extra_dirs: &[PathBuf]) -> Result<()> {
         &home.join(".codex/agents"),
         include_marketplace,
     )?;
-    let codex_report = sync_skills_only_from_claude(
+    let codex_report = sync_skills_from_claude_to_codex(
         &mirror_source_root(&home),
-        &home.join(".codex/skills"),
+        &home,
         include_marketplace,
+        false,
     )?;
-    if let Some(warning) =
-        crate::commands::codex_skills_feature_warning(&home.join(".codex/config.toml"))
-    {
-        eprintln!("{warning}");
-    }
+    crate::commands::print_skill_warnings(&codex_report);
 
     // Mirror commands/prefs/MCP
     let source = ClaudeAdapter::new()?;
@@ -76,8 +73,8 @@ pub(crate) fn tui_flow(_extra_dirs: &[PathBuf]) -> Result<()> {
         "Sync complete:\n  Agents: copied {}, skipped {}\n  Skills (codex): copied {}, skipped {}\n  Commands: written {}, skipped {}{}\n  Prefs: {}  MCP: {}",
         agent_report.copied,
         agent_report.skipped,
-        codex_report.copied,
-        codex_report.skipped,
+        codex_report.skills.written,
+        codex_report.skills.skipped.len(),
         sync_report.commands.written,
         sync_report.commands.skipped.len(),
         if skip_existing_commands && !sync_report.commands.skipped.is_empty() {

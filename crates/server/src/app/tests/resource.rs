@@ -714,14 +714,13 @@ async fn sync_all_tool_syncs_skills_into_codex_skills_root() {
         )
         .unwrap();
 
-    // `sync_skills_only_from_claude` preserves paths relative to ~/.claude.
-    let expected = temp
-        .path()
-        .join(".codex/skills/skills/example-skill/SKILL.md");
+    // Codex loads user skills from ~/.agents/skills, one level deep.
+    let expected = temp.path().join(".agents/skills/example-skill/SKILL.md");
     assert!(
         expected.exists(),
-        "expected skill copied into ~/.codex/skills"
+        "expected skill copied into ~/.agents/skills"
     );
+    assert!(!temp.path().join(".codex/skills").exists());
 
     let unexpected = temp
         .path()

@@ -557,7 +557,6 @@ impl SkillService {
     /// A `CallToolResult` with sync summary text and structured report including
     /// commands, skills, MCP servers, and preferences copied.
     pub(crate) fn sync_all_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
-        use crate::sync::mirror_source_root;
         use skrills_sync::{default_target_for, sync_between, SyncParams};
 
         let from = args
@@ -576,36 +575,6 @@ impl SkillService {
             .get("include_marketplace")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-
-        let is_claude_to_codex = from == "claude" && to == "codex";
-
-        // Sync skills first (Codex discovery root) for Claude→Codex only.
-        let mut feature_flag_warning = String::new();
-        let skill_report = if is_claude_to_codex && !dry_run {
-            let home = home_dir()?;
-            let claude_root = mirror_source_root(&home);
-            let codex_skills_root = home.join(".codex/skills");
-            let report = crate::sync::sync_skills_only_from_claude(
-                &claude_root,
-                &codex_skills_root,
-                include_marketplace,
-            )?;
-            if let Err(err) =
-                crate::setup::ensure_codex_skills_feature_enabled(&home.join(".codex/config.toml"))
-            {
-                // Surface filesystem errors (read-only home, disk full, malformed
-                // TOML) so the caller learns why Codex loads nothing despite the
-                // skills landing on disk.
-                tracing::warn!(error = %err, "could not ensure codex skills feature flag");
-                feature_flag_warning = format!(
-                    "\nwarning: could not enable the codex skills feature in \
-                     ~/.codex/config.toml: {err}"
-                );
-            }
-            report
-        } else {
-            crate::sync::MirrorReport::default()
-        };
 
         let skip_existing_commands = args
             .get("skip_existing_commands")
@@ -631,15 +600,21 @@ impl SkillService {
         let report = sync_between(from, to, &params)?;
 
         let succeeded = report.success;
-        let content = vec![ContentBlock::text(format!(
-            "{}\nSkills: {} copied, {} skipped{}",
-            report.summary, skill_report.copied, skill_report.skipped, feature_flag_warning
-        ))];
+        let mut text = format!(
+            "{}\nSkills: {} copied, {} skipped",
+            report.summary,
+            report.skills.written,
+            report.skills.skipped.len()
+        );
+        for warning in &report.skills.warnings {
+            text.push_str(&format!("\nwarning: {warning}"));
+        }
+        let content = vec![ContentBlock::text(text)];
         let structured = Some(json!({
             "report": report,
             "skill_report": {
-                "copied": skill_report.copied,
-                "skipped": skill_report.skipped
+                "copied": report.skills.written,
+                "skipped": report.skills.skipped.len()
             },
             "dry_run": dry_run,
             "skip_existing_commands": skip_existing_commands

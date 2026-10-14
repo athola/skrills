@@ -1,7 +1,7 @@
 //! Skill synchronization and AGENTS.md management.
 //!
 //! This module handles:
-//! - Synchronizing skills from `~/.claude` to `~/.codex/skills` (Codex discovery root).
+//! - Synchronizing skills from `~/.claude` to `~/.agents/skills`, where Codex loads them.
 //! - Generating and updating `AGENTS.md` with available skills.
 
 use anyhow::Result;
@@ -296,7 +296,8 @@ pub fn mirror_source_root(home: &Path) -> PathBuf {
         .unwrap_or_else(|_| home.join(".claude"))
 }
 
-/// Synchronizes only SKILL.md-based skills into a Codex skills root (e.g., `~/.codex/skills`).
+/// Copies the SKILL.md trees under `claude_root` into `codex_skills_root`, keeping
+/// their relative paths (used for the skills mirror).
 ///
 /// - copies only `SKILL.md` files, their adjacent supporting files and the
 ///   files they link to under `claude_root`
@@ -398,6 +399,38 @@ pub fn sync_skills_only_from_claude(
         )?;
     }
     Ok(report)
+}
+
+/// Syncs the skills under `claude_root` into `home/.agents/skills`, the
+/// directory Codex loads user skills from.
+///
+/// Goes through the same adapters as `sync-all`, so every caller writes one
+/// flat `<name>/SKILL.md` per skill with its frontmatter `name` matching the
+/// folder; [`sync_skills_only_from_claude`] copies the source tree as-is and
+/// is kept for the skills mirror only.
+pub fn sync_skills_from_claude_to_codex(
+    claude_root: &Path,
+    home: &Path,
+    include_marketplace: bool,
+    dry_run: bool,
+) -> Result<skrills_sync::SyncReport> {
+    let source = skrills_sync::ClaudeAdapter::with_root(claude_root.to_path_buf());
+    let target = skrills_sync::CodexAdapter::with_home(home);
+    let params = skrills_sync::SyncParams {
+        from: Some("claude".to_string()),
+        dry_run,
+        sync_skills: true,
+        sync_commands: false,
+        sync_mcp_servers: false,
+        sync_preferences: false,
+        sync_agents: false,
+        sync_hooks: false,
+        sync_instructions: false,
+        sync_plugin_assets: false,
+        include_marketplace,
+        ..Default::default()
+    };
+    skrills_sync::SyncOrchestrator::new(source, target).sync(&params)
 }
 
 /// Renders a lightweight skills reference for AGENTS.md.
@@ -558,8 +591,8 @@ fn replace_marked_section(
 
 /// Synchronizes agent markdown files from Claude into the Codex agents root (e.g. `~/.codex/agents`).
 ///
-/// This intentionally does **not** write to `~/.codex/skills-mirror`: skills are materialized
-/// into `~/.codex/skills` via `sync_skills_only_from_claude`.
+/// This intentionally does **not** write to `~/.codex/skills-mirror`: skills go to
+/// `~/.agents/skills` via [`sync_skills_from_claude_to_codex`].
 pub fn sync_agents_only_from_claude(
     claude_root: &Path,
     codex_agents_root: &Path,
@@ -743,6 +776,72 @@ mod tests {
         let agent_dest = agents_root.join("plugins/cache/tool/agents/helper.md");
         assert!(agent_dest.exists());
         assert_eq!(fs::read_to_string(agent_dest)?, "agent content");
+        Ok(())
+    }
+
+    fn write_claude_skill(claude_root: &Path, name: &str) -> Result<()> {
+        let dir = claude_root.join("skills").join(name);
+        fs::create_dir_all(&dir)?;
+        fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: test skill\n---\nbody\n"),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn claude_skills_land_in_the_shared_dir_codex_loads() -> Result<()> {
+        let tmp = tempdir()?;
+        let home = tmp.path();
+        let claude_root = home.join(".claude");
+        write_claude_skill(&claude_root, "demo")?;
+
+        let report = sync_skills_from_claude_to_codex(&claude_root, home, false, false)?;
+
+        assert_eq!(report.skills.written, 1);
+        assert!(home.join(".agents/skills/demo/SKILL.md").exists());
+        assert!(!home.join(".codex/skills/demo").exists());
+        Ok(())
+    }
+
+    /// Codex loads nothing without `[features] skills = true`, so a config
+    /// the flag cannot be written to must be reported, not swallowed.
+    #[test]
+    fn unwritable_codex_config_is_reported_as_a_skill_warning() -> Result<()> {
+        let tmp = tempdir()?;
+        let home = tmp.path();
+        let claude_root = home.join(".claude");
+        write_claude_skill(&claude_root, "demo")?;
+        // A directory where the file belongs makes every read of it fail.
+        fs::create_dir_all(home.join(".codex/config.toml"))?;
+
+        let report = sync_skills_from_claude_to_codex(&claude_root, home, false, false)?;
+
+        assert!(home.join(".agents/skills/demo/SKILL.md").exists());
+        assert!(
+            report
+                .skills
+                .warnings
+                .iter()
+                .any(|w| w.contains("codex skills feature")),
+            "{:?}",
+            report.skills.warnings
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn claude_to_codex_skill_dry_run_writes_nothing() -> Result<()> {
+        let tmp = tempdir()?;
+        let home = tmp.path();
+        let claude_root = home.join(".claude");
+        write_claude_skill(&claude_root, "demo")?;
+
+        let report = sync_skills_from_claude_to_codex(&claude_root, home, false, true)?;
+
+        assert!(report.success);
+        assert!(!home.join(".agents").exists());
+        assert!(!home.join(".codex").exists());
         Ok(())
     }
 

@@ -405,7 +405,7 @@ skrills setup --client claude             # Configure for Claude
 skrills setup --client both               # Configure for both
 skrills setup --reinstall                 # Reconfigure from scratch
 skrills setup --uninstall                 # Remove configuration
-skrills setup --universal                 # Also sync to ~/.agent/skills
+skrills setup --universal                 # Also sync to ~/.agents/skills
 ```
 
 **Options:**
@@ -416,7 +416,7 @@ skrills setup --universal                 # Also sync to ~/.agent/skills
 | `--bin-dir` | Override install location |
 | `--reinstall` / `--uninstall` / `--add` | Control lifecycle |
 | `--yes` | Skip confirmation prompts |
-| `--universal` | Also mirror skills to `~/.agent/skills` |
+| `--universal` | Also sync skills to `~/.agents/skills` |
 | `--mirror-source` | Override source directory for mirroring (default: `~/.claude`) |
 
 ### tui

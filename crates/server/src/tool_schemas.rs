@@ -59,15 +59,15 @@ fn sync_from_claude_output_schema() -> Arc<JsonMap<String, serde_json::Value>> {
             "report": {
                 "type": "object",
                 "properties": {
-                    "copied": { "type": "integer", "description": "SKILL.md files copied or updated" },
-                    "skipped": { "type": "integer", "description": "SKILL.md files already up to date" },
-                    "synced": {
+                    "copied": { "type": "integer", "description": "Skills written to ~/.agents/skills" },
+                    "skipped": { "type": "integer", "description": "Skills already up to date or not written" },
+                    "warnings": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Skills that were copied"
+                        "description": "Problems that may stop Codex loading the skills"
                     }
                 },
-                "required": ["copied", "skipped", "synced"]
+                "required": ["copied", "skipped", "warnings"]
             },
             "_meta": {
                 "type": "object",
@@ -152,7 +152,7 @@ pub(crate) fn sync_tools() -> Vec<Tool> {
         tool(
             "sync-from-claude",
             "Copy ~/.claude skills into ~/.codex",
-            "Copy SKILL.md files from ~/.claude into ~/.codex/skills (Codex discovery root)",
+            "Copy ~/.claude skills into ~/.agents/skills, where Codex loads user skills",
             sync_from_claude_input_schema(),
         )
         .with_raw_output_schema(sync_from_claude_output_schema()),
@@ -448,7 +448,7 @@ pub(crate) fn trace_tools() -> Vec<Tool> {
                     json!({
                         "target": { "type": "string", "description": "Target client: claude, codex, or both", "default": "both" },
                         "include_mirror": { "type": "boolean", "default": true, "description": "Include ~/.codex/skills-mirror when target includes codex" },
-                        "include_agent": { "type": "boolean", "default": true, "description": "Include ~/.agent/skills" },
+                        "include_agent": { "type": "boolean", "default": true, "description": "Include ~/.agents/skills" },
                         "include_cache": { "type": "boolean", "default": false, "description": "Include ~/.claude/plugins/cache when target includes claude" },
                         "include_marketplace": { "type": "boolean", "default": false, "description": "Include ~/.claude/plugins/marketplaces when target includes claude" }
                     }),
@@ -473,7 +473,7 @@ pub(crate) fn trace_tools() -> Vec<Tool> {
                         "backup": { "type": "boolean", "default": true, "description": "Create .md.bak backups before modifying SKILL.md files" },
                         "dry_run": { "type": "boolean", "default": false, "description": "Preview without writing files" },
                         "include_mirror": { "type": "boolean", "default": true, "description": "Include ~/.codex/skills-mirror when instrumenting codex" },
-                        "include_agent": { "type": "boolean", "default": true, "description": "Include ~/.agent/skills when instrumenting" },
+                        "include_agent": { "type": "boolean", "default": true, "description": "Include ~/.agents/skills when instrumenting" },
                         "include_cache": { "type": "boolean", "default": false, "description": "Include ~/.claude/plugins/cache when instrumenting claude" },
                         "include_marketplace": { "type": "boolean", "default": false, "description": "Include ~/.claude/plugins/marketplaces when instrumenting claude" }
                     }),

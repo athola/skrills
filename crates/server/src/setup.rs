@@ -2,7 +2,7 @@
 //!
 //! Handles first-run detection, interactive setup, reinstallation, and uninstallation
 //! for Claude Code, Codex, and GitHub Copilot clients, and supports a universal
-//! `~/.agent/skills` directory.
+//! `~/.agents/skills` directory.
 
 use anyhow::{anyhow, Context, Result};
 use inquire::{Confirm, Select, Text};
@@ -203,7 +203,7 @@ pub fn interactive_setup(
 
     // Prompt for universal sync if not specified
     let universal = if !yes && !universal {
-        Confirm::new("Sync skills to universal ~/.agent/skills directory?")
+        Confirm::new("Sync skills to universal ~/.agents/skills directory?")
             .with_default(false)
             .prompt()?
     } else {
@@ -892,14 +892,14 @@ fn copy_to_cargo_bin(source_bin: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Syncs skills to universal ~/.agent/skills directory.
+/// Syncs skills to the universal `~/.agents/skills` directory.
 ///
-/// Runs the same in-process skill mirror as `skrills sync`, so only
-/// `SKILL.md` trees (minus hidden files and symlinks) are copied, never the
-/// rest of the mirror source such as credentials or session transcripts.
+/// Runs the same skill sync as `skrills sync`, so only skills are copied,
+/// never the rest of the mirror source such as credentials or session
+/// transcripts.
 fn sync_universal(config: &SetupConfig) -> Result<()> {
     let home = dirs::home_dir().ok_or_else(|| anyhow!("Cannot determine home directory"))?;
-    let agent_skills = home.join(".agent/skills");
+    let agent_skills = home.join(".agents/skills");
 
     // Determine mirror source (default: ~/.claude)
     let mirror_source = config
@@ -922,11 +922,15 @@ fn sync_universal(config: &SetupConfig) -> Result<()> {
     );
     println!("Source: {}", mirror_source.display());
 
-    fs::create_dir_all(&agent_skills)?;
-    let report = crate::sync::sync_skills_only_from_claude(&mirror_source, &agent_skills, false)?;
+    let report =
+        crate::sync::sync_skills_from_claude_to_codex(&mirror_source, &home, false, false)?;
+    for warning in &report.skills.warnings {
+        println!("  Warning: {warning}");
+    }
     println!(
         "  Sync complete: {} copied, {} unchanged",
-        report.copied, report.skipped
+        report.skills.written,
+        report.skills.skipped.len()
     );
 
     Ok(())
@@ -988,7 +992,7 @@ fn run_uninstall(config: &SetupConfig) -> Result<()> {
     println!("Note: The skrills binary was not removed. To remove it:");
     println!("  rm $(which skrills)");
     println!("\nTo also remove universal skills:");
-    println!("  rm -rf ~/.agent/skills");
+    println!("  rm -rf ~/.agents/skills");
 
     Ok(())
 }
@@ -1182,7 +1186,7 @@ fn print_next_steps(config: &SetupConfig) -> Result<()> {
 
     if config.universal {
         println!("\n  Universal Skills:");
-        println!("    - Skills synced to ~/.agent/skills");
+        println!("    - Skills synced to ~/.agents/skills");
         println!("    - Run 'skrills sync' to update mirrored skills");
     }
 

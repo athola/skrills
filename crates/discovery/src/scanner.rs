@@ -652,7 +652,7 @@ pub fn default_roots(home: &Path) -> Vec<SkillRoot> {
             source: SkillSource::Cache,
         },
         SkillRoot {
-            root: home.join(".agent/skills"),
+            root: home.join(".agents/skills"),
             source: SkillSource::Agent,
         },
     ]);
@@ -878,6 +878,17 @@ mod tests {
                 "agent"
             ]
         );
+    }
+
+    /// `~/.agents/skills` is where sync writes skills for Codex (and where
+    /// Cursor, Copilot CLI and others load them); `~/.agent/skills` is read by
+    /// no tool.
+    #[test]
+    fn default_roots_scan_the_shared_agents_skills_dir() {
+        let home = Path::new("/home/user");
+        let roots: Vec<_> = default_roots(home).into_iter().map(|r| r.root).collect();
+        assert!(roots.contains(&home.join(".agents/skills")), "{roots:?}");
+        assert!(!roots.contains(&home.join(".agent/skills")), "{roots:?}");
     }
 
     #[test]

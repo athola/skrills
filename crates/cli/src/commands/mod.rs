@@ -44,9 +44,9 @@ pub(crate) use skill::{
     handle_sync_pull_command,
 };
 pub(crate) use sync::{
-    codex_skills_feature_warning, handle_mirror_command, handle_sync_agents_command,
-    handle_sync_all_command, handle_sync_command, handle_sync_status_command,
-    run_sync_with_adapters, skipped_commands_note, SyncAllArgs,
+    handle_mirror_command, handle_sync_agents_command, handle_sync_all_command,
+    handle_sync_command, handle_sync_status_command, print_skill_warnings, run_sync_with_adapters,
+    skipped_commands_note, SyncAllArgs,
 };
 pub(crate) use validate::handle_validate_command;
 

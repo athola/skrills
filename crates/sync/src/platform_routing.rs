@@ -33,10 +33,6 @@ pub struct SkillDelivery {
 /// Skills with no plugin origin are absent from the mirror, so the flat sync
 /// stays on for every target.
 ///
-/// Claude to Codex is the one direction that skips the orchestrator's skill
-/// sync: `sync_skills_only_from_claude` has already copied those skills into
-/// Codex's own discovery root.
-///
 /// ```
 /// use skrills_sync::platform_routing::skill_delivery;
 ///
@@ -45,13 +41,13 @@ pub struct SkillDelivery {
 /// assert!(cursor.full_plugin_mirror);
 ///
 /// let codex = skill_delivery("claude", "codex");
-/// assert!(!codex.sync_skills);
+/// assert!(codex.sync_skills);
 /// assert!(!codex.full_plugin_mirror);
 /// ```
 #[must_use]
-pub fn skill_delivery(from: &str, to: &str) -> SkillDelivery {
+pub fn skill_delivery(_from: &str, to: &str) -> SkillDelivery {
     SkillDelivery {
-        sync_skills: !(from == "claude" && to == "codex"),
+        sync_skills: true,
         full_plugin_mirror: to == "cursor",
     }
 }
@@ -78,10 +74,13 @@ mod tests {
         }
     }
 
+    /// The dedicated copier this direction used to rely on wrote
+    /// `~/.codex/skills`, which current Codex does not load; only the
+    /// orchestrator's skill phase reaches `~/.agents/skills`.
     #[test]
-    fn skill_delivery_leaves_claude_to_codex_skills_to_the_dedicated_copier() {
+    fn skill_delivery_runs_the_skill_phase_for_claude_to_codex() {
         let delivery = skill_delivery("claude", "codex");
-        assert!(!delivery.sync_skills);
+        assert!(delivery.sync_skills);
         // Codex reads no plugin tree, so there is nothing to mirror.
         assert!(!delivery.full_plugin_mirror);
     }

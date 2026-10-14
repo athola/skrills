@@ -16,7 +16,8 @@ fn default_skill_root_uses_codex_when_only_codex_installed() {
     let home = PathBuf::from("/home/test");
     let path = select_default_skill_root(&home, false, true);
 
-    assert_eq!(path, home.join(".codex/skills"));
+    // Codex loads user skills from ~/.agents/skills, not ~/.codex/skills.
+    assert_eq!(path, home.join(".agents/skills"));
 }
 
 #[test]

@@ -64,7 +64,7 @@ Skrills can generate a self-contained HTML portal on demand via the `html-portal
 ## Key Concepts
 
 ### Skills
-Skills are `SKILL.md` files containing instructions and metadata. Skrills scans for these files in `~/.claude/skills`, `~/.codex/skills`, `~/.copilot/skills`, `~/.cursor/rules/`, and the universal `~/.agent/skills` directory.
+Skills are `SKILL.md` files containing instructions and metadata. Skrills scans for these files in `~/.claude/skills`, `~/.codex/skills`, `~/.copilot/skills`, `~/.cursor/rules/`, and the shared `~/.agents/skills` directory that Codex, Cursor and Copilot CLI load.
 
 ### MCP (Model Context Protocol)
 Skrills implements the Model Context Protocol, allowing assistants to invoke its tools (validation, analysis, sync) directly during a session.
