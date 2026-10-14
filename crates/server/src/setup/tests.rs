@@ -83,6 +83,23 @@ mod client_tests {
         Ok(())
     }
 
+    /// Setup kept its own Copilot lookup, which on macOS picked
+    /// `~/Library/Application Support/copilot` when `~/.copilot` was missing,
+    /// a directory Copilot CLI never reads and sync no longer writes.
+    #[test]
+    fn copilot_base_dir_matches_the_sync_adapter() -> Result<()> {
+        use skrills_sync::adapters::traits::AgentAdapter;
+        let _guard = env_guard();
+        let temp = create_test_home()?;
+        let _home = set_test_home(&temp);
+
+        assert_eq!(
+            Client::Copilot.base_dir()?,
+            skrills_sync::CopilotAdapter::new()?.config_root()
+        );
+        Ok(())
+    }
+
     #[test]
     fn test_client_base_dir_copilot() -> Result<()> {
         let _guard = env_guard();

@@ -849,6 +849,48 @@ fn resolve_config_root_prefers_xdg_if_exists() {
     );
 }
 
+/// Copilot CLI reads `COPILOT_HOME`, else `~/.copilot`
+/// (docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference).
+/// On macOS `dirs::config_dir()` is `~/Library/Application Support`, so
+/// skrills wrote a directory Copilot never reads.
+#[test]
+fn copilot_home_overrides_every_other_location() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let xdg = tmp.path().join("xdg/copilot");
+    std::fs::create_dir_all(&xdg).unwrap();
+    let custom = tmp.path().join("custom");
+
+    let root = super::paths::choose_config_root(Some(custom.clone()), Some(xdg), tmp.path());
+    assert_eq!(root, custom);
+}
+
+#[test]
+fn an_existing_xdg_copilot_dir_is_kept() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let xdg = tmp.path().join("xdg/copilot");
+    std::fs::create_dir_all(&xdg).unwrap();
+
+    let root = super::paths::choose_config_root(None, Some(xdg.clone()), tmp.path());
+    assert_eq!(root, xdg);
+}
+
+#[test]
+fn copilot_defaults_to_dot_copilot_when_no_xdg_dir_exists() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let xdg = tmp.path().join("xdg/copilot");
+
+    let root = super::paths::choose_config_root(None, Some(xdg), tmp.path());
+    assert_eq!(root, tmp.path().join(".copilot"));
+}
+
+#[test]
+fn copilot_defaults_to_dot_copilot_without_an_xdg_candidate() {
+    let tmp = tempfile::TempDir::new().unwrap();
+
+    let root = super::paths::choose_config_root(None, None, tmp.path());
+    assert_eq!(root, tmp.path().join(".copilot"));
+}
+
 #[test]
 fn new_adapter_uses_xdg_resolution() {
     // Verify that new() calls resolve_config_root internally

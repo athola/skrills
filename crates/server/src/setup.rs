@@ -23,24 +23,16 @@ pub enum Client {
 impl Client {
     /// Returns the default base directory for this client.
     ///
-    /// For Copilot, follows XDG Base Directory Specification:
-    /// 1. If `~/.copilot` exists → use it (legacy compatibility)
-    /// 2. Otherwise → `$XDG_CONFIG_HOME/copilot` or `~/.config/copilot`
+    /// For Copilot, the directory the sync adapter resolves, so setup and
+    /// sync write to the same place Copilot CLI reads.
     pub fn base_dir(&self) -> Result<PathBuf> {
         let home = dirs::home_dir().ok_or_else(|| anyhow!("Cannot determine home directory"))?;
         Ok(match self {
             Client::Claude => home.join(".claude"),
             Client::Codex => home.join(".codex"),
             Client::Copilot => {
-                // XDG-compliant path resolution for Copilot
-                let legacy_path = home.join(".copilot");
-                if legacy_path.exists() {
-                    legacy_path
-                } else if let Some(config_dir) = dirs::config_dir() {
-                    config_dir.join("copilot")
-                } else {
-                    legacy_path // Fallback to legacy if XDG unavailable
-                }
+                use skrills_sync::adapters::traits::AgentAdapter;
+                skrills_sync::CopilotAdapter::new()?.config_root()
             }
             Client::Cursor => home.join(".cursor"),
         })

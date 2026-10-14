@@ -88,7 +88,7 @@ The installer runs `skrills setup`, which registers Skrills as an MCP server so 
 
 - **Codex**: a `[mcp_servers.skrills]` table in `~/.codex/config.toml`. Setup does not write `~/.codex/mcp_servers.json`; `skrills doctor` checks `config.toml` and inspects a legacy `mcp_servers.json` only if one exists.
 - **Claude Code**: `claude mcp add --scope user`, which records the server in `~/.claude.json`. If the `claude` command is missing or fails, setup writes `~/.claude/.mcp.json` instead.
-- **Copilot**: `mcp_servers.json` in `~/.copilot`, or in the platform config directory (`~/.config/copilot` on Linux) when `~/.copilot` does not exist.
+- **Copilot**: `mcp_servers.json` in `COPILOT_HOME` when set, else in an existing `$XDG_CONFIG_HOME/copilot` (or `~/.config/copilot` on Linux), else in `~/.copilot`.
 - **Cursor**: `~/.cursor/mcp.json`.
 
 Set `SKRILLS_NO_HOOK=1` to skip this step.
