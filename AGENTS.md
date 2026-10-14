@@ -58,7 +58,7 @@ Every commit must:
 Run this before committing:
 
 ```bash
-make fmt lint test --quiet build
+make fmt precommit
 ```
 
 ### Effective Prompting
@@ -224,8 +224,8 @@ Excessive output floods the context window. Avoid commands that generate large a
 
 ### Essential Commands
 ```bash
-# To format, lint, and test the code:
-make fmt lint test --quiet
+# To format, then run every check the pre-commit hook runs:
+make fmt precommit
 
 # To execute different test suites:
 make test-coverage --quiet
@@ -281,10 +281,13 @@ skrills doctor
 
 Skills are automatically discovered from these locations (in priority order):
 
-1. **Codex skills**: `~/.codex/skills/`
+1. **Codex skills (pre-0.9.1 sync)**: `~/.codex/skills/`
 2. **Mirror skills**: `~/.codex/skills-mirror/`
 3. **Claude skills**: `~/.claude/skills/` (when `--include-claude` is enabled)
-4. **Marketplace cache**: `~/.codex/plugins/cache/`
+4. **Copilot skills**: `$XDG_CONFIG_HOME/copilot/skills/` (or `~/.config/copilot/skills/`), then `~/.copilot/skills/`
+5. **Claude plugin marketplaces**: `~/.claude/plugins/marketplaces/`
+6. **Claude plugin cache**: `~/.claude/plugins/cache/`
+7. **Shared skills**: `~/.agents/skills/` (where sync writes skills for Codex)
 
 #### Skill Naming Caveat
 
