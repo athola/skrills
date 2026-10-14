@@ -1,5 +1,10 @@
 # Changelog Highlights
 
+## 0.9.1 (Unreleased)
+
+- **Cursor**: skills synced to Cursor keep the `name` and `description` frontmatter Cursor needs to load them. A mirrored plugin's `hooks/hooks.json` is rewritten to Cursor's hook layout. Top-level Claude hooks are no longer copied, because Cursor already loads them from `~/.claude/settings.json`. Agents with no write tool become `readonly`.
+- **Copilot**: on macOS, sync and `skrills setup` write to `~/.copilot` (or `COPILOT_HOME`), where Copilot CLI reads, instead of `~/Library/Application Support/copilot`.
+
 ## 0.9.0 (Unreleased)
 
 - **Security**: `Host` is validated on every HTTP route, not only `/mcp`. `setup --universal` syncs skill directories only, instead of copying all of `~/.claude` (credentials and transcripts included) into `~/.agent`. `serve --http` reads `auth_token` from the config file itself, subagent CLI children no longer inherit server secrets, and skill generation sends the GitHub token only to GitHub. `fetch-pdf`, the tome clients and MCP `create-skill` are bounded. Third-party GitHub Actions are pinned to commit SHAs, and rustls, h2, quinn-proto and crossbeam-epoch advisories are closed.
