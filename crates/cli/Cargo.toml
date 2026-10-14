@@ -43,7 +43,6 @@ toml.workspace = true
 time.workspace = true
 sha2.workspace = true
 rmcp.workspace = true
-regex = "1"
 hex = "0.4.3"
 indexmap = "2.13.0"
 skrills-snapshot = { path = "../snapshot", version = "0.9.1" }
