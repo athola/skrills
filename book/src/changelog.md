@@ -12,6 +12,13 @@
 - **CLI**: `skrills doctor` exits non-zero when it finds problems. `--include-description`, `--include-quality` and `--suggestions` turn off with `=false`. `cold-window --alert-budget` must be at least 3.
 - **Validation**: autofix keeps every frontmatter field, writes YAML that parses, and no longer panics on long descriptions with multibyte characters.
 - **API**: `SyncError` has a new `KillSwitchEngaged` variant, which breaks exhaustive matches outside this workspace.
+- **Codex agents run sandboxed**: `skrills agent` and `multi-cli-agent` run `codex exec --sandbox workspace-write`; `--dangerously-bypass-sandbox` restores the old unsandboxed run.
+- **Kill switch across processes**: while cold-window's kill switch is engaged, syncs in every other process refuse to write.
+- **Skill roots**: CLI commands, the dashboard and `/api/skills` scan `~/.claude` only with `SKRILLS_INCLUDE_CLAUDE=1`, as the MCP server does.
+- **Sync**: each skill gets one folder name in every target, skrills-written skill folders carry a `.skrills-synced` marker, JSON config rewrites keep key order, and marketplace skills sync when `--include-marketplace` is given.
+- **TUIs**: `Esc` backs out of what is open, then quits, in both TUIs; cold-window master-ack holds until the alert resolves.
+- **Build**: MSRV 1.89, YAML via `serde_norway`, tests run in parallel, and every shell script follows one style checked by `scripts/shellcheck.sh` (shellcheck plus shfmt).
+- **API**: `skrills_sync::Platform` replaces platform strings, and skrills-server drops its deprecated items. Both break callers outside this workspace.
 
 ## 0.9.0 (Unreleased)
 
