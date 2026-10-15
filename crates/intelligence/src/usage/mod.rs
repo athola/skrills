@@ -5,6 +5,7 @@ pub mod behavioral;
 mod claude_parser;
 mod codex_parser;
 
+pub(crate) use analytics::skill_key;
 pub use analytics::{build_analytics, get_cooccurring_skills, recency_score};
 pub use behavioral::{
     build_behavioral_patterns, detect_session_outcome, extract_common_ngrams,

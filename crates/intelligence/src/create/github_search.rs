@@ -389,15 +389,17 @@ pub async fn search_skills_advanced(
         query_parts.push(format!("language:{}", lang));
     }
 
-    // Add star filter (trusted input, not from user)
-    if let Some(stars) = min_stars {
-        query_parts.push(format!("stars:>={}", stars));
-    }
-
     let query = query_parts.join(" ");
     // Use raw search since we've already sanitized user input and
     // added trusted operators
-    search_github_raw(&query, limit).await
+    let mut results = search_github_raw(&query, limit).await?;
+
+    // Code search has no `stars:` qualifier (it belongs to repository search),
+    // so the floor is applied to each result's repository instead.
+    if let Some(stars) = min_stars {
+        results.retain(|r| r.stars >= stars);
+    }
+    Ok(results)
 }
 
 #[cfg(test)]
@@ -1246,33 +1248,34 @@ This is a test skill."#;
         );
     }
 
+    /// `stars:` is a repository-search qualifier that legacy code search does
+    /// not support (docs.github.com/en/search-github/searching-on-github/searching-code),
+    /// so the star floor is applied to the results instead of the query.
     #[tokio::test]
     #[serial]
-    async fn test_search_skills_advanced_with_stars_filter() {
+    async fn search_skills_advanced_filters_by_stars_client_side() {
         let server = MockServer::start().await;
 
         let _api_guard = set_env_var("GITHUB_API_BASE_URL", Some(&server.uri()));
         let _token_guard = set_env_var("GITHUB_TOKEN", None);
 
-        let mock_response = json!({
-            "items": [
-                {
-                    "path": "SKILL.md",
-                    "html_url": "https://github.com/popular/repo/blob/main/SKILL.md",
-                    "repository": {
-                        "full_name": "popular/repo",
-                        "html_url": "https://github.com/popular/repo",
-                        "stargazers_count": 1500,
-                        "updated_at": "2024-08-01T00:00:00Z",
-                        "description": "Popular repo"
-                    }
+        let item = |name: &str, stars: u64| {
+            json!({
+                "path": "SKILL.md",
+                "html_url": format!("https://github.com/{name}/blob/main/SKILL.md"),
+                "repository": {
+                    "full_name": name,
+                    "html_url": format!("https://github.com/{name}"),
+                    "stargazers_count": stars,
+                    "updated_at": "2024-08-01T00:00:00Z",
+                    "description": null
                 }
-            ]
-        });
+            })
+        };
+        let mock_response = json!({ "items": [item("popular/repo", 1500), item("small/repo", 5)] });
 
         Mock::given(method("GET"))
             .and(path("/search/code"))
-            .and(query_param_contains("q", "stars:>=100"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&mock_response))
             .mount(&server)
             .await;
@@ -1284,6 +1287,9 @@ This is a test skill."#;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].stars, 1500);
+        let requests = server.received_requests().await.unwrap();
+        let query = requests[0].url.query().unwrap_or_default().to_string();
+        assert!(!query.contains("stars"), "query: {query}");
     }
 
     #[tokio::test]

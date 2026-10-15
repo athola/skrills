@@ -20,7 +20,7 @@ pub enum SkillSource {
     Cache,
     /// Codex mirror directory (`~/.codex/skills-mirror`).
     Mirror,
-    /// Cursor IDE rules directory (`.cursor/rules`).
+    /// Cursor skills (`~/.cursor/skills`) or a project rules directory (`.cursor/rules`).
     Cursor,
     /// Universal agent skills (`~/.agents/skills`).
     Agent,

@@ -1,11 +1,12 @@
 //! Parse Codex CLI session and history files from ~/.codex/
 
+use super::claude_parser::{for_each_session_line, MAX_SESSION_FILES, MAX_SESSION_FILE_BYTES};
 use super::{CommandEntry, SkillUsageEvent};
 use anyhow::Result;
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Parse Codex CLI skills-history.json
 pub fn parse_codex_skills_history(path: &Path) -> Result<Vec<SkillUsageEvent>> {
@@ -131,7 +132,18 @@ pub fn parse_codex_command_history(history_path: &Path) -> Result<Vec<CommandEnt
 }
 
 /// Parse Codex session files from ~/.codex/sessions/
+///
+/// Uses the same caps as the Claude parser: at most `MAX_SESSION_FILES`
+/// files, each at most `MAX_SESSION_FILE_BYTES`, streamed line by line.
 pub fn parse_codex_sessions(sessions_dir: &Path) -> Result<Vec<SkillUsageEvent>> {
+    parse_codex_sessions_with_limits(sessions_dir, MAX_SESSION_FILES, MAX_SESSION_FILE_BYTES)
+}
+
+fn parse_codex_sessions_with_limits(
+    sessions_dir: &Path,
+    max_files: usize,
+    max_file_bytes: u64,
+) -> Result<Vec<SkillUsageEvent>> {
     let mut events = Vec::new();
 
     if !sessions_dir.exists() {
@@ -143,16 +155,30 @@ pub fn parse_codex_sessions(sessions_dir: &Path) -> Result<Vec<SkillUsageEvent>>
     }
 
     // Walk through year/month/day structure
-    for entry in walkdir::WalkDir::new(sessions_dir)
-        .max_depth(5)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
+    let mut files_scanned = 0usize;
+    for entry in walkdir::WalkDir::new(sessions_dir).max_depth(5) {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                warn!(dir = %sessions_dir.display(), error = %e, "Skipping unreadable Codex session entry");
+                continue;
+            }
+        };
         let path = entry.path();
         if path.extension().map(|e| e == "jsonl").unwrap_or(false) {
-            match parse_codex_session_file(path) {
+            if files_scanned >= max_files {
+                warn!(
+                    limit = max_files,
+                    "Session file limit reached; remaining Codex sessions not analyzed"
+                );
+                break;
+            }
+            files_scanned += 1;
+            match parse_codex_session_file(path, max_file_bytes) {
                 Ok(session_events) => events.extend(session_events),
-                Err(e) => debug!("Failed to parse Codex session file {:?}: {}", path, e),
+                Err(e) => {
+                    warn!(path = %path.display(), error = %e, "Skipping unreadable Codex session file")
+                }
             }
         }
     }
@@ -160,9 +186,8 @@ pub fn parse_codex_sessions(sessions_dir: &Path) -> Result<Vec<SkillUsageEvent>>
     Ok(events)
 }
 
-fn parse_codex_session_file(path: &Path) -> Result<Vec<SkillUsageEvent>> {
+fn parse_codex_session_file(path: &Path, max_bytes: u64) -> Result<Vec<SkillUsageEvent>> {
     let mut events = Vec::new();
-    let content = fs::read_to_string(path)?;
 
     let session_id = path
         .file_stem()
@@ -170,10 +195,7 @@ fn parse_codex_session_file(path: &Path) -> Result<Vec<SkillUsageEvent>> {
         .unwrap_or("unknown")
         .to_string();
 
-    for line in content.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
+    for_each_session_line(path, max_bytes, |line| {
         if let Ok(entry) = serde_json::from_str::<Value>(line) {
             // Look for skill-related entries in payload
             if let Some(payload) = entry.get("payload") {
@@ -213,7 +235,7 @@ fn parse_codex_session_file(path: &Path) -> Result<Vec<SkillUsageEvent>> {
                 }
             }
         }
-    }
+    })?;
 
     Ok(events)
 }
@@ -834,6 +856,38 @@ mod tests {
     fn test_parse_skills_history_entry_empty() {
         let entry = serde_json::json!({});
         let events = parse_skills_history_entry(&entry);
+        assert!(events.is_empty());
+    }
+
+    const SKILL_LINE: &str = r#"{"timestamp":"2024-01-01T12:00:00Z","payload":{"tools":[{"name":"load_skill","arguments":{"skill":"my-skill"}}]}}"#;
+
+    #[test]
+    fn codex_session_with_an_invalid_utf8_line_keeps_its_other_lines() {
+        let tmp = tempdir().unwrap();
+        let mut content = b"{\"text\":\"\xff\xfe broken\"}\n".to_vec();
+        content.extend_from_slice(SKILL_LINE.as_bytes());
+        fs::write(tmp.path().join("session.jsonl"), content).unwrap();
+
+        let events = parse_codex_sessions(tmp.path()).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].skill_path, "my-skill");
+    }
+
+    #[test]
+    fn codex_sessions_stop_at_the_file_limit() {
+        let tmp = tempdir().unwrap();
+        for name in ["a.jsonl", "b.jsonl", "c.jsonl"] {
+            fs::write(tmp.path().join(name), SKILL_LINE).unwrap();
+        }
+        let events = parse_codex_sessions_with_limits(tmp.path(), 2, u64::MAX).unwrap();
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn codex_sessions_skip_a_file_over_the_size_limit() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("big.jsonl"), SKILL_LINE).unwrap();
+        let events = parse_codex_sessions_with_limits(tmp.path(), usize::MAX, 10).unwrap();
         assert!(events.is_empty());
     }
 }

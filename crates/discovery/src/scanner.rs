@@ -151,18 +151,40 @@ fn is_cursor_rule_file(entry: &walkdir::DirEntry) -> bool {
     ext == "mdc" || ext == "md"
 }
 
-/// Checks if a `DirEntry` is an agent file (any markdown under an `agents` directory).
-fn is_agent_file(entry: &walkdir::DirEntry) -> bool {
+/// Checks if a `DirEntry` is an agent file (any markdown under an `agents`
+/// directory that is `root` itself or lies below it).
+///
+/// Components above `root` do not count: a root that lives under some
+/// `~/code/agents/` would otherwise list every README as an agent.
+fn is_agent_file(entry: &walkdir::DirEntry, root: &Path) -> bool {
     if !entry.file_type().is_file() {
         return false;
     }
     if entry.path().extension().is_none_or(|ext| ext != "md") {
         return false;
     }
-    entry
-        .path()
+    if root.file_name().is_some_and(|n| n == "agents") {
+        return true;
+    }
+    let relative = entry.path().strip_prefix(root).unwrap_or(entry.path());
+    relative
         .ancestors()
         .any(|p| p.file_name().is_some_and(|n| n == "agents"))
+}
+
+/// True for a Cursor rules root (`.cursor/rules`). Other Cursor roots, such
+/// as `~/.cursor/skills`, hold `SKILL.md` files like every other root.
+fn is_cursor_rules_root(root_cfg: &SkillRoot) -> bool {
+    root_cfg.source == SkillSource::Cursor
+        && root_cfg.root.file_name().is_some_and(|n| n == "rules")
+}
+
+/// Whether the walk descends into directory `entry` named `name`.
+///
+/// Heavy build and dependency dirs are skipped, unless the dir directly holds
+/// a `SKILL.md`: a skill may well be called `build` or `vendor`.
+fn descend_into_dir(entry: &walkdir::DirEntry, name: &str) -> bool {
+    !IGNORE_DIRS.contains(&name) || entry.path().join("SKILL.md").is_file()
 }
 
 type Blake2b256 = Blake2b<U32>;
@@ -328,6 +350,7 @@ fn collect_skills_with_hasher(
         if !root.exists() {
             continue;
         }
+        let rules_root = is_cursor_rules_root(root_cfg);
         let entries: Vec<_> = WalkDir::new(root)
             .min_depth(1)
             .max_depth(max_depth)
@@ -348,7 +371,7 @@ fn collect_skills_with_hasher(
                     return false;
                 }
                 if e.file_type().is_dir() {
-                    return !IGNORE_DIRS.iter().any(|d| name == *d);
+                    return descend_into_dir(e, &name);
                 }
                 true
             })
@@ -367,7 +390,7 @@ fn collect_skills_with_hasher(
                 }
             })
             .filter(|e| {
-                if root_cfg.source == SkillSource::Cursor {
+                if rules_root {
                     is_cursor_rule_file(e)
                 } else {
                     is_skill_file(e)
@@ -379,18 +402,17 @@ fn collect_skills_with_hasher(
             .par_iter()
             .map(|entry| {
                 let path = entry.path().to_path_buf();
-                let raw_name = diff_paths(&path, root)
+                // A rule is named by its root-relative path without the
+                // extension, so `a/x.mdc` and `b/x.mdc` stay distinct.
+                let relative = diff_paths(&path, root);
+                let relative = if rules_root {
+                    relative.map(|p| p.with_extension(""))
+                } else {
+                    relative
+                };
+                let name = relative
                     .and_then(|p| p.to_str().map(|s| s.to_owned()))
                     .unwrap_or_else(|| path.to_string_lossy().into_owned());
-                // For Cursor .mdc files, use the file stem as the name
-                let name = if root_cfg.source == SkillSource::Cursor {
-                    path.file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or(&raw_name)
-                        .to_string()
-                } else {
-                    raw_name
-                };
                 let Some(hash) = hash_unless_vanished(&path, hash_fn)? else {
                     return Ok(None);
                 };
@@ -485,8 +507,10 @@ fn collect_skills_with_hasher(
 /// Discovers skill metadata from the provided roots.
 ///
 /// Logs duplicate skill information if `dup_log` is provided. Duplicates happen
-/// when a skill with the same name exists in multiple roots; only the highest priority
-/// one is kept.
+/// when a skill with the same name exists in multiple roots; the copy from the
+/// root that comes first in `roots` is kept. Discovery does not reorder the
+/// roots, so callers pass them in priority order (see [`default_priority`] and
+/// [`load_priority_override`]).
 ///
 /// Uses [`DEFAULT_MAX_DEPTH`] for directory traversal depth.
 pub fn discover_skills(
@@ -499,8 +523,10 @@ pub fn discover_skills(
 /// Discovers skill metadata from the provided roots with a custom depth limit.
 ///
 /// Logs duplicate skill information if `dup_log` is provided. Duplicates happen
-/// when a skill with the same name exists in multiple roots; only the highest priority
-/// one is kept.
+/// when a skill with the same name exists in multiple roots; the copy from the
+/// root that comes first in `roots` is kept. Discovery does not reorder the
+/// roots, so callers pass them in priority order (see [`default_priority`] and
+/// [`load_priority_override`]).
 ///
 /// The `max_depth` parameter controls how deep the scanner will traverse into subdirectories.
 pub fn discover_skills_with_depth(
@@ -549,7 +575,7 @@ fn collect_agents_with_hasher(
                     return false;
                 }
                 if e.file_type().is_dir() {
-                    return !IGNORE_DIRS.iter().any(|d| name == *d);
+                    return descend_into_dir(e, &name);
                 }
                 true
             })
@@ -566,7 +592,7 @@ fn collect_agents_with_hasher(
                 }
             })
         {
-            if !is_agent_file(&entry) {
+            if !is_agent_file(&entry, root) {
                 continue;
             }
             let path = entry.into_path();
@@ -643,6 +669,10 @@ pub fn default_roots(home: &Path) -> Vec<SkillRoot> {
     });
 
     roots.extend([
+        SkillRoot {
+            root: home.join(".cursor/skills"),
+            source: SkillSource::Cursor,
+        },
         SkillRoot {
             root: home.join(".claude/plugins/marketplaces"),
             source: SkillSource::Marketplace,
@@ -873,6 +903,7 @@ mod tests {
                 "claude",
                 "copilot", // XDG path
                 "copilot", // Legacy path
+                "cursor",
                 "marketplace",
                 "cache",
                 "agent"
@@ -903,6 +934,7 @@ mod tests {
         assert!(matches!(roots[1].source, SkillSource::Extra(1)));
     }
 
+    #[cfg(unix)]
     #[test]
     fn discover_skills_lists_a_file_whose_contents_cannot_be_read() {
         use std::os::unix::fs::PermissionsExt;
@@ -911,10 +943,16 @@ mod tests {
         let root = tmp.path().join("codex");
         fs::create_dir_all(&root).unwrap();
         let skill = root.join("SKILL.md");
-        fs::write(&skill, "secret").unwrap();
+        // Valid frontmatter, so a missing description below can only mean the
+        // read failed.
+        fs::write(&skill, "---\nname: secret\ndescription: hidden\n---\nbody").unwrap();
         let mut perms = fs::metadata(&skill).unwrap().permissions();
         perms.set_mode(0o000);
         fs::set_permissions(&skill, perms).unwrap();
+        if fs::read_to_string(&skill).is_ok() {
+            // root ignores mode 000; nothing to test.
+            return;
+        }
 
         let roots = vec![SkillRoot {
             root: root.clone(),
@@ -2163,5 +2201,126 @@ Content
     fn infer_category_unknown_falls_back_to_other() {
         let cat = infer_category_from_name("custom-hook");
         assert_eq!(cat, RuleCategory::Other("custom-hook".to_string()));
+    }
+
+    fn skill_names(roots: &[SkillRoot]) -> Vec<String> {
+        let mut names: Vec<String> = discover_skills(roots, None)
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn cursor_skills_root_lists_each_skill_md_under_its_own_name() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join(".cursor/skills");
+        for dir in ["one", "two"] {
+            fs::create_dir_all(root.join(dir).join("references")).unwrap();
+            fs::write(root.join(dir).join("SKILL.md"), "# skill").unwrap();
+            fs::write(root.join(dir).join("README.md"), "# readme").unwrap();
+            fs::write(root.join(dir).join("references/notes.md"), "notes").unwrap();
+        }
+        let roots = vec![SkillRoot {
+            root,
+            source: SkillSource::Cursor,
+        }];
+        assert_eq!(skill_names(&roots), vec!["one/SKILL.md", "two/SKILL.md"]);
+    }
+
+    #[test]
+    fn cursor_rules_root_names_rules_by_relative_path_without_extension() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join(".cursor/rules");
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::create_dir_all(root.join("b")).unwrap();
+        fs::write(root.join("a/x.mdc"), "a").unwrap();
+        fs::write(root.join("b/x.mdc"), "b").unwrap();
+        fs::write(root.join("top.md"), "top").unwrap();
+        let roots = vec![SkillRoot {
+            root,
+            source: SkillSource::Cursor,
+        }];
+        assert_eq!(skill_names(&roots), vec!["a/x", "b/x", "top"]);
+    }
+
+    #[test]
+    fn discover_skills_keeps_a_skill_dir_named_like_a_build_dir() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("skills");
+        for dir in ["build", "dist", "target", "vendor"] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+            fs::write(root.join(dir).join("SKILL.md"), "x").unwrap();
+        }
+        // A heavy dir that holds no SKILL.md directly is still skipped.
+        fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        fs::write(root.join("node_modules/pkg/SKILL.md"), "x").unwrap();
+        let roots = vec![SkillRoot {
+            root,
+            source: SkillSource::Codex,
+        }];
+        assert_eq!(
+            skill_names(&roots),
+            vec![
+                "build/SKILL.md",
+                "dist/SKILL.md",
+                "target/SKILL.md",
+                "vendor/SKILL.md"
+            ]
+        );
+    }
+
+    #[test]
+    fn discover_agents_ignores_an_agents_dir_above_the_root() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("agents/project");
+        fs::create_dir_all(root.join("agents")).unwrap();
+        fs::write(root.join("README.md"), "readme").unwrap();
+        fs::write(root.join("agents/rev.md"), "agent").unwrap();
+        let roots = vec![SkillRoot {
+            root,
+            source: SkillSource::Claude,
+        }];
+        let names: Vec<_> = discover_agents(&roots)
+            .unwrap()
+            .into_iter()
+            .map(|a| a.name)
+            .collect();
+        assert_eq!(names, vec!["agents/rev.md"]);
+    }
+
+    #[test]
+    fn discover_agents_lists_markdown_in_a_root_that_is_an_agents_dir() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join(".claude/agents");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("rev.md"), "agent").unwrap();
+        let roots = vec![SkillRoot {
+            root,
+            source: SkillSource::Claude,
+        }];
+        let names: Vec<_> = discover_agents(&roots)
+            .unwrap()
+            .into_iter()
+            .map(|a| a.name)
+            .collect();
+        assert_eq!(names, vec!["rev.md"]);
+    }
+
+    #[test]
+    fn default_roots_follow_default_priority_and_include_cursor_skills() {
+        let home = Path::new("/home/user");
+        let roots = default_roots(home);
+        assert!(
+            roots
+                .iter()
+                .any(|r| r.root == home.join(".cursor/skills") && r.source == SkillSource::Cursor),
+            "{roots:?}"
+        );
+        let mut sources: Vec<SkillSource> = roots.into_iter().map(|r| r.source).collect();
+        sources.dedup();
+        assert_eq!(sources, default_priority());
     }
 }

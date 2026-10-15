@@ -9,9 +9,44 @@ use std::path::Path;
 use tracing::{debug, warn};
 
 /// Session files larger than this are skipped rather than scanned.
-const MAX_SESSION_FILE_BYTES: u64 = 256 * 1024 * 1024;
+pub(super) const MAX_SESSION_FILE_BYTES: u64 = 256 * 1024 * 1024;
 /// At most this many session files are scanned per build.
-const MAX_SESSION_FILES: usize = 20_000;
+pub(super) const MAX_SESSION_FILES: usize = 20_000;
+
+/// Calls `on_line` with each non-blank line of the JSONL file at `path`.
+///
+/// Session logs can run to hundreds of megabytes, so the file is streamed,
+/// and one invalid UTF-8 byte costs one line (decoded lossily), not the whole
+/// file. A file larger than `max_bytes` is skipped with a warning.
+pub(super) fn for_each_session_line(
+    path: &Path,
+    max_bytes: u64,
+    mut on_line: impl FnMut(&str),
+) -> Result<()> {
+    let size = fs::metadata(path)?.len();
+    if size > max_bytes {
+        warn!(
+            path = %path.display(),
+            size,
+            limit = max_bytes,
+            "Skipping oversized session file"
+        );
+        return Ok(());
+    }
+    let mut reader = BufReader::new(fs::File::open(path)?);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        if reader.read_until(b'\n', &mut buf)? == 0 {
+            break;
+        }
+        let line = String::from_utf8_lossy(&buf);
+        if !line.trim().is_empty() {
+            on_line(&line);
+        }
+    }
+    Ok(())
+}
 
 /// Parse Claude Code session files from ~/.claude/projects/
 ///
@@ -127,17 +162,6 @@ pub fn parse_claude_command_history(history_path: &Path) -> Result<Vec<CommandEn
 fn parse_claude_session_file(path: &Path) -> Result<Vec<SkillUsageEvent>> {
     let mut events = Vec::new();
 
-    let size = fs::metadata(path)?.len();
-    if size > MAX_SESSION_FILE_BYTES {
-        warn!(
-            path = %path.display(),
-            size,
-            limit = MAX_SESSION_FILE_BYTES,
-            "Skipping oversized session file"
-        );
-        return Ok(events);
-    }
-
     let session_id = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -146,24 +170,12 @@ fn parse_claude_session_file(path: &Path) -> Result<Vec<SkillUsageEvent>> {
 
     let mut last_user_prompt: Option<String> = None;
 
-    // Stream line by line: session logs can run to hundreds of megabytes, and
-    // one invalid UTF-8 byte should cost one line, not the whole file.
-    let mut reader = BufReader::new(fs::File::open(path)?);
-    let mut buf = Vec::new();
-    loop {
-        buf.clear();
-        if reader.read_until(b'\n', &mut buf)? == 0 {
-            break;
-        }
-        let line = String::from_utf8_lossy(&buf);
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(entry) = serde_json::from_str::<Value>(&line) else {
-            continue;
+    for_each_session_line(path, MAX_SESSION_FILE_BYTES, |line| {
+        let Ok(entry) = serde_json::from_str::<Value>(line) else {
+            return;
         };
         let Some(message) = entry.get("message") else {
-            continue;
+            return;
         };
 
         // Track user prompts for context. Typed prompts are written as a
@@ -188,7 +200,7 @@ fn parse_claude_session_file(path: &Path) -> Result<Vec<SkillUsageEvent>> {
 
         // Look for tool_use content blocks
         let Some(contents) = message.get("content").and_then(|c| c.as_array()) else {
-            continue;
+            return;
         };
         for content_block in contents {
             if content_block.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
@@ -223,7 +235,7 @@ fn parse_claude_session_file(path: &Path) -> Result<Vec<SkillUsageEvent>> {
                 });
             }
         }
-    }
+    })?;
 
     Ok(events)
 }
