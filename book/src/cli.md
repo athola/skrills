@@ -223,7 +223,7 @@ Skrills can generate a self-contained HTML portal (`skrills-portal.html`) via th
 
 ### agent
 
-Launch a saved agent by name:
+Run a discovered agent by name with Codex:
 
 ```bash
 skrills agent codex-dev                   # Run the codex-dev agent
@@ -231,9 +231,25 @@ skrills agent my-agent --dry-run          # Preview without running
 skrills agent my-agent --skill-dir ~/.custom/skills  # Include custom skills
 ```
 
-**Execution mode configuration:**
+The agent runs as `codex exec --sandbox workspace-write "<prompt>"`: it can
+write only inside the current directory, and Codex refuses to start outside
+a git repository or trusted directory. Agent files can come from third-party
+plugin caches, so the sandbox stays on unless you pass
+`--dangerously-bypass-sandbox`, which runs Codex with
+`--dangerously-bypass-approvals-and-sandbox` (no sandbox, no approvals). Use
+it only for agent files you trust, in an environment that is sandboxed
+already.
 
-Subagent behavior comes from multiple sources (in priority order):
+| Option | Purpose |
+|--------|---------|
+| `--skill-dir <DIR>` | Additional agent directory (repeatable) |
+| `--dry-run` | Print the resolved command without running it |
+| `--dangerously-bypass-sandbox` | Run Codex with no sandbox and no approvals |
+
+**Execution mode configuration (`run-subagent` MCP tool):**
+
+The settings below apply to subagents run through the MCP server, not to
+`skrills agent`. Subagent behavior comes from multiple sources (in priority order):
 1. `SKRILLS_SUBAGENTS_EXECUTION_MODE` environment variable
 2. `execution_mode` in `~/.claude/subagents.toml` or `~/.codex/subagents.toml`
 3. Default: `cli`
@@ -265,6 +281,10 @@ skrills multi-cli-agent my-agent --dry-run          # Print the resolved command
 | `--backend <BACKEND>` | `auto`, `claude`, or `codex` (default: `auto`) |
 | `--skill-dir <DIR>` | Additional skill directory (repeatable) |
 | `--dry-run` | Print the resolved command without running it |
+| `--dangerously-bypass-sandbox` | Codex backend only: run with no sandbox and no approvals (refused when Claude is selected) |
+
+Codex runs with the same sandboxed command as `skrills agent`; Claude runs
+as `claude --print "<prompt>"`.
 
 ### sync-agents
 

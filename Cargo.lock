@@ -4374,6 +4374,7 @@ dependencies = [
  "skrills-server",
  "skrills-snapshot",
  "skrills-state",
+ "skrills-subagents",
  "skrills-test-utils",
  "skrills-tome",
  "skrills-validate",

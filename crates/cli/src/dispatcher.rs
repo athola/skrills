@@ -146,13 +146,21 @@ pub fn run() -> Result<()> {
             agent,
             skill_dirs,
             dry_run,
-        } => handle_agent_command(agent, skill_dirs, dry_run),
+            dangerously_bypass_sandbox,
+        } => handle_agent_command(agent, skill_dirs, dry_run, dangerously_bypass_sandbox),
         Commands::MultiCliAgent {
             agent,
             backend,
             skill_dirs,
             dry_run,
-        } => handle_multi_cli_agent_command(agent, backend, skill_dirs, dry_run),
+            dangerously_bypass_sandbox,
+        } => handle_multi_cli_agent_command(
+            agent,
+            backend,
+            skill_dirs,
+            dry_run,
+            dangerously_bypass_sandbox,
+        ),
         Commands::SyncAgents { path, skill_dirs } => handle_sync_agents_command(path, skill_dirs),
         Commands::Sync {
             include_marketplace,

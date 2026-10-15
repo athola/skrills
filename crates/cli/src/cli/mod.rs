@@ -130,7 +130,8 @@ pub enum Commands {
         #[arg(long, env = "SKRILLS_INCLUDE_MARKETPLACE", default_value_t = false)]
         include_marketplace: bool,
     },
-    /// Launches a discovered agent by name using the stored run template.
+    /// Runs a discovered agent by name with `codex exec`, sandboxed to the
+    /// working directory (`--sandbox workspace-write`).
     Agent {
         /// Agent name or unique substring to launch.
         #[arg(required = true)]
@@ -141,6 +142,11 @@ pub enum Commands {
         /// Only print the resolved command without executing it.
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+        /// Run Codex with no sandbox and no approvals
+        /// (`--dangerously-bypass-approvals-and-sandbox`). Only for agent
+        /// files you trust, in an environment that is sandboxed already.
+        #[arg(long, default_value_t = false)]
+        dangerously_bypass_sandbox: bool,
     },
     /// Launches an agent with multi-CLI backend routing.
     ///
@@ -159,6 +165,11 @@ pub enum Commands {
         /// Only print the resolved command without executing it.
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+        /// Codex backend only: run with no sandbox and no approvals
+        /// (`--dangerously-bypass-approvals-and-sandbox`). Refused when the
+        /// Claude backend is selected.
+        #[arg(long, default_value_t = false)]
+        dangerously_bypass_sandbox: bool,
     },
     /// Generates `<available_skills>` section in AGENTS.md for non-MCP agents.
     SyncAgents {
@@ -1279,6 +1290,7 @@ mod tests {
 
         match cli.command {
             Some(Commands::Agent {
+                dangerously_bypass_sandbox: false,
                 agent,
                 skill_dirs,
                 dry_run,
@@ -1802,6 +1814,7 @@ mod tests {
 
         match cli.command {
             Some(Commands::MultiCliAgent {
+                dangerously_bypass_sandbox: false,
                 agent,
                 backend,
                 skill_dirs,
@@ -1832,6 +1845,7 @@ mod tests {
 
         match cli.command {
             Some(Commands::MultiCliAgent {
+                dangerously_bypass_sandbox: false,
                 agent,
                 backend,
                 skill_dirs,
@@ -1844,6 +1858,38 @@ mod tests {
             }
             _ => unreachable!("expected MultiCliAgent command"),
         }
+    }
+
+    #[test]
+    fn agent_commands_accept_the_bypass_opt_in() {
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "agent",
+            "my-agent",
+            "--dangerously-bypass-sandbox",
+        ])
+        .expect("agent --dangerously-bypass-sandbox should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Agent {
+                dangerously_bypass_sandbox: true,
+                ..
+            })
+        ));
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "multi-cli-agent",
+            "my-agent",
+            "--dangerously-bypass-sandbox",
+        ])
+        .expect("multi-cli-agent --dangerously-bypass-sandbox should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::MultiCliAgent {
+                dangerously_bypass_sandbox: true,
+                ..
+            })
+        ));
     }
 
     #[test]

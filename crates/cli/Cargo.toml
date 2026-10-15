@@ -54,6 +54,9 @@ skrills-validate = { path = "../validate", version = "0.9.1", features = ["clap"
 skrills-analyze = { path = "../analyze", version = "0.9.1" }
 skrills-intelligence = { path = "../intelligence", version = "0.9.1" }
 skrills-tome = { path = "../tome", version = "0.9.1" }
+# The Codex/Claude argv builder `agent` and `multi-cli-agent` share with the
+# server; those commands are not behind the `subagents` feature.
+skrills-subagents = { path = "../subagents", version = "0.9.1" }
 skrills-dashboard = { path = "../dashboard", version = "0.9.1", optional = true }
 rcgen = { version = "0.14", optional = true }
 x509-parser = { version = "0.18", optional = true }

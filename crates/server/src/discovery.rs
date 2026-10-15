@@ -20,8 +20,10 @@ pub const AGENTS_DESCRIPTION: &str = "AI Agent Development Guidelines";
 pub const AGENTS_TEXT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/AGENTS.md"));
 /// Environment variable to control exposure of AGENTS.md.
 pub const ENV_EXPOSE_AGENTS: &str = "SKRILLS_EXPOSE_AGENTS";
-/// Command template used to launch an agent specification.
-pub const DEFAULT_AGENT_RUN_TEMPLATE: &str = r#"codex --yolo exec --timeout_ms 1800000 "Load agent spec at {} and execute its instructions""#;
+/// Command template used to launch an agent specification: the command
+/// `skrills agent` runs, with `{}` for the agent file path. Built by
+/// `skrills_subagents::launch`; a test keeps the two equal.
+pub const DEFAULT_AGENT_RUN_TEMPLATE: &str = r#"codex exec --sandbox workspace-write "Load the agent spec file at the path \"{}\" and execute its instructions""#;
 /// Start marker for the available skills section in AGENTS.md.
 pub const AGENTS_SECTION_START: &str = "<!-- available_skills:start -->";
 /// End marker for the available skills section in AGENTS.md.

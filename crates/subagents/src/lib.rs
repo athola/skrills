@@ -7,6 +7,7 @@
 
 pub mod backend;
 mod cli_detection;
+pub mod launch;
 pub mod registry;
 pub mod service;
 pub mod settings;
