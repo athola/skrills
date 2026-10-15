@@ -554,6 +554,11 @@ mod tests {
         let status = Command::new("git")
             .args(args)
             .current_dir(root)
+            // A git hook's GIT_DIR/GIT_INDEX_FILE would point this at the
+            // enclosing repository instead of the temp one.
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_WORK_TREE")
             .env("GIT_AUTHOR_NAME", "Test User")
             .env("GIT_AUTHOR_EMAIL", "test@example.com")
             .env("GIT_COMMITTER_NAME", "Test User")

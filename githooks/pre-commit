@@ -10,5 +10,9 @@ if ! command -v make >/dev/null 2>&1; then
   exit 1
 fi
 
+# Git exports these to hooks (absolute paths in a linked worktree). Tests that
+# run git in temp dirs would inherit them and act on this repository instead.
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE
+
 echo "pre-commit: running make precommit"
 make precommit

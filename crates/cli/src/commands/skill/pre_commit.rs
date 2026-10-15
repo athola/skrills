@@ -156,6 +156,11 @@ mod tests {
             ])
             .args(args)
             .current_dir(repo)
+            // A git hook's GIT_DIR/GIT_INDEX_FILE would point this at the
+            // enclosing repository instead of the temp one.
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_WORK_TREE")
             .status()
             .expect("spawn git");
         assert!(status.success(), "git {args:?}");
