@@ -401,7 +401,7 @@ demo-multi-cli-agent: demo-fixtures build
 	@echo "--- multi-cli-agent dry-run (agent not found expected)"
 	$(DEMO_RUN) multi-cli-agent test-agent --dry-run 2>&1 | grep -q "not found" || true
 	@echo "--- multi-cli-agent unit tests"
-	$(CARGO_CMD) test --package skrills-server --lib multi_cli_agent --all-features -- --test-threads=1
+	$(CARGO_CMD) test --package skrills --lib multi_cli_agent --all-features -- --test-threads=1
 	@echo "==> Multi-CLI agent demo complete"
 
 demo-fixtures:
@@ -588,7 +588,7 @@ clean-demo:
 	@rm -rf $(HOME_DIR)
 	@echo "Removed demo HOME $(HOME_DIR)"
 
-ci: fmt lint lint-hygiene test
+ci: fmt-check lint lint-md lint-hygiene test test-scripts test-install
 
 # verify_publish_order.sh needs associative arrays, so it needs bash 4+.
 # Stock macOS /bin/bash is 3.2, so probe the usual Homebrew locations before
@@ -661,6 +661,12 @@ deps-update:
 # `make dogfood-cold-window-browser` (18888) side-by-side.
 DOGFOOD_PORT ?= 18888
 DOGFOOD_TMP  := /tmp/skrills-dogfood-$$$$
+# GNU `timeout`; Homebrew coreutils installs it as `gtimeout` on macOS.
+TIMEOUT ?= $(shell command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null)
+
+define _require_timeout
+	@test -n "$(TIMEOUT)" || { echo "FAIL: GNU timeout not found (brew install coreutils, or set TIMEOUT=)"; exit 1; }
+endef
 
 # 124 = `timeout` fired (clean), 143 = 128+SIGTERM (clean). Anything else fails.
 # Note: callers MUST run the prior command under `set +e` so $$? is observable.
@@ -669,15 +675,17 @@ define _assert_clean_exit
 endef
 
 dogfood-cold-window-headless: build
+	$(_require_timeout)
 	@echo "==> [headless] engine ticks 3s @ 200ms cadence; expects graceful SIGTERM exit"
-	@set +e; HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) timeout --signal=TERM 3 \
+	@set +e; HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(TIMEOUT) --signal=TERM 3 \
 	  $(BIN_PATH) cold-window --tick-rate-ms 200 --alert-budget 100000 >/dev/null 2>&1 ; \
 	$(_assert_clean_exit)
 	@echo "==> [headless] OK"
 
 dogfood-cold-window-chaos: build
+	$(_require_timeout)
 	@echo "==> [chaos] --demo --no-adaptive + alert-budget=2 (the minimum) forces kill-switch path"
-	@set +e; HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) timeout --signal=TERM 3 \
+	@set +e; HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(TIMEOUT) --signal=TERM 3 \
 	  $(BIN_PATH) cold-window --demo --no-adaptive --tick-rate-ms 200 --alert-budget 3 >/dev/null 2>&1 ; \
 	$(_assert_clean_exit)
 	@echo "==> [chaos] OK"
@@ -732,9 +740,10 @@ dogfood-cold-window-browser: build
 # Without a TTY (CI, redirected stdio), exit cleanly with a "requires a TTY"
 # message, that graceful refusal is itself a contract worth testing.
 dogfood-tui: build demo-fixtures
+	$(_require_timeout)
 	@echo "==> [tui] TTY-or-graceful-refusal contract (skrills tui)"
 	@TMP=$(DOGFOOD_TMP).tui.err ; \
-	set +e; HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) timeout --signal=TERM 3 \
+	set +e; HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(TIMEOUT) --signal=TERM 3 \
 	  $(BIN_PATH) tui --skill-dir $(HOME_DIR)/.codex/skills </dev/null >/dev/null 2>$$TMP ; \
 	rc=$$? ; \
 	case $$rc in \
@@ -746,9 +755,10 @@ dogfood-tui: build demo-fixtures
 	esac
 
 dogfood-dashboard: build demo-fixtures
+	$(_require_timeout)
 	@echo "==> [dashboard] TTY-or-graceful-refusal contract (skrills dashboard)"
 	@TMP=$(DOGFOOD_TMP).dash.err ; \
-	set +e; HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) timeout --signal=TERM 3 \
+	set +e; HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(TIMEOUT) --signal=TERM 3 \
 	  $(BIN_PATH) dashboard --skill-dir $(HOME_DIR)/.codex/skills </dev/null >/dev/null 2>$$TMP ; \
 	rc=$$? ; \
 	case $$rc in \

@@ -273,10 +273,17 @@ ensure_path_hint()
 }
 
 # --- main ------------------------------------------------------------------
-bin_name="$(BIN_NAME)"
-bin_dir="${SKRILLS_BIN_DIR:-$HOME/.skrills/bin}"
-asset_url=$(SELECT_ASSET_URL)
-[ -n "$asset_url" ] || fail "no release asset found matching target $(TARGET); check releases or specify SKRILLS_TARGET/SKRILLS_GH_REPO"
-DOWNLOAD_AND_EXTRACT "$asset_url" "$bin_dir" "$bin_name"
-ensure_path_hint "$bin_dir"
-install_hook_and_mcp
+# Everything runs from main, called on the last line, so a `curl | sh` cut off
+# mid-transfer defines functions and exits instead of running part of an install.
+main()
+{
+  bin_name="$(BIN_NAME)"
+  bin_dir="${SKRILLS_BIN_DIR:-$HOME/.skrills/bin}"
+  asset_url=$(SELECT_ASSET_URL)
+  [ -n "$asset_url" ] || fail "no release asset found matching target $(TARGET); check releases or specify SKRILLS_TARGET/SKRILLS_GH_REPO"
+  DOWNLOAD_AND_EXTRACT "$asset_url" "$bin_dir" "$bin_name"
+  ensure_path_hint "$bin_dir"
+  install_hook_and_mcp
+}
+
+main "$@"

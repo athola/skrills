@@ -20,7 +20,7 @@ skrills validate --format json --errors-only  # Machine-readable output
 | Option | Purpose |
 |--------|---------|
 | `--skill-dir <DIR>` | Check a specific directory (default: all discovered skills) |
-| `--target <TARGET>` | `claude`, `codex`, or `both` (default: `both`) |
+| `--target <TARGET>` | `claude`, `codex`, `copilot`, `all`, or `both` (Claude and Codex; default: `both`) |
 | `--autofix` | Add missing frontmatter automatically |
 | `--backup` | Create backups before autofix |
 | `--format <FORMAT>` | `text` or `json` (default: `text`) |
@@ -92,9 +92,12 @@ skrills sync-all --from claude --autofix --dry-run    # Check what autofix would
 
 | Option | Purpose |
 |--------|---------|
-| `--from` | Source side: `claude` or `codex` (default: `claude`) |
+| `--from` | Source CLI: `claude`, `codex`, `copilot`, or `cursor` (default: `claude`) |
+| `--to` | Target CLI, same values; omitted, syncs to every other CLI |
 | `--dry-run` | Preview changes without writing |
 | `--skip-existing-commands` | Keep existing commands on target side |
+| `--include-marketplace` | Include marketplace content from uninstalled plugins (`SKRILLS_INCLUDE_MARKETPLACE`) |
+| `--exclude-plugins <NAMES>` | Comma-separated plugin names whose skills and assets are not synced (`SKRILLS_EXCLUDE_PLUGINS`, default `github`) |
 | `--validate` | Validate the source skills before any target is written |
 | `--autofix` | Add missing frontmatter to the source skills, then validate as `--validate` does |
 
@@ -166,6 +169,11 @@ skrills serve --skill-dir ~/.custom/skills  # Custom skill directory
 | `--skill-dir <DIR>` | Additional skill directory to include |
 | `--cache-ttl-ms <N>` | Discovery cache TTL in milliseconds |
 | `--watch` | Enable live filesystem invalidation (stdio only; refused with `--http`, so restart an HTTP server to pick up skill changes) |
+| `--auth-token <TOKEN>` | Require `Authorization: Bearer <TOKEN>` on HTTP requests (`SKRILLS_AUTH_TOKEN`); unset, no auth |
+| `--tls-cert <PATH>` / `--tls-key <PATH>` | Serve HTTPS with this PEM certificate and key; each requires the other (`SKRILLS_TLS_CERT`, `SKRILLS_TLS_KEY`) |
+| `--cors-origins <ORIGINS>` | Comma-separated allowed CORS origins (`SKRILLS_CORS_ORIGINS`); unset, no CORS |
+| `--list-tools` | Print the available MCP tools and exit |
+| `--trace-wire` | Dump raw MCP initialize traffic as hex and UTF-8 for debugging (`SKRILLS_TRACE_WIRE`) |
 
 The MCP transport validates the inbound `Host` header and accepts only
 `localhost`, `127.0.0.1` and `::1` unless told otherwise. That is what stops a
@@ -229,6 +237,23 @@ When `execution_mode=api` and no backend is specified, skrills checks:
 3. Default: `codex`
 
 In `cli` mode, skrills uses `cli_binary` (or `SKRILLS_CLI_BINARY`), auto-detecting the current client via CLI env or server path (fallback: `claude`).
+
+### multi-cli-agent
+
+Launch an agent through Claude Code or Codex, falling back to the other
+when the first choice is not installed:
+
+```bash
+skrills multi-cli-agent my-agent                    # Auto-detect the backend
+skrills multi-cli-agent my-agent --backend codex    # Prefer Codex
+skrills multi-cli-agent my-agent --dry-run          # Print the resolved command only
+```
+
+| Option | Purpose |
+|--------|---------|
+| `--backend <BACKEND>` | `auto`, `claude`, or `codex` (default: `auto`) |
+| `--skill-dir <DIR>` | Additional skill directory (repeatable) |
+| `--dry-run` | Print the resolved command without running it |
 
 ### sync-agents
 
@@ -383,6 +408,157 @@ skrills analyze-project-context --include-git true --commit-limit 100
 
 Returns languages, frameworks, and keywords detected in your project.
 
+### search-skills
+
+Fuzzy-search installed skills by name, and optionally by description:
+
+```bash
+skrills search-skills commit
+skrills search-skills review --include-description --threshold 0.2 --limit 5
+```
+
+| Option | Purpose |
+|--------|---------|
+| `-t`, `--threshold <N>` | Similarity threshold from 0.0 to 1.0; lower returns more (default: `0.3`) |
+| `-l`, `--limit <N>` | Maximum results (default: `10`) |
+| `--include-description` | Also match descriptions |
+| `--skill-dir <DIR>` | Search this directory instead of all discovered skills |
+| `--format <FORMAT>` | `text` or `json` |
+
+## Managing Skill Lifecycle
+
+These commands share `--format text|json` and, where they read skills,
+`--skill-dir <DIR>` to limit them to one directory.
+
+### skill-diff
+
+Compare one skill across Claude, Codex, Copilot, and Cursor:
+
+```bash
+skrills skill-diff commit
+skrills skill-diff commit --format json -C 5
+```
+
+`-C`, `--context <N>` sets the context lines around each difference (default: `3`).
+
+### skill-catalog
+
+Browse every available skill:
+
+```bash
+skrills skill-catalog --search git --source codex --limit 20
+```
+
+Filters: `--search <TEXT>`, `--source claude|codex|copilot|cursor`,
+`--category <TAG>`, and `--limit <N>` (default: `50`).
+
+### skill-import
+
+Import a skill from a URL, git repository, or local path:
+
+```bash
+skrills skill-import https://github.com/org/skills.git --target codex --dry-run
+skrills skill-import ./my-skill --force
+```
+
+`--target` is `claude`, `codex`, `copilot`, or `cursor` (default: `claude`).
+`--force` overwrites an existing skill; `--dry-run` writes nothing.
+
+### sync-pull
+
+Pull skill updates from a remote source:
+
+```bash
+skrills sync-pull --source https://github.com/org/skills.git --skill commit --dry-run
+```
+
+`--source` is a git repository, HTTP endpoint, or registry; `--skill`
+limits the pull to one skill; `--target` takes the same values as
+`skill-import` (default: `claude`).
+
+### skill-deprecate
+
+Mark a skill as deprecated:
+
+```bash
+skrills skill-deprecate old-skill --message "Merged into new-skill" --replacement new-skill
+```
+
+### skill-rollback
+
+Revert a skill to an earlier version:
+
+```bash
+skrills skill-rollback commit                  # List available versions
+skrills skill-rollback commit --version abc123 # Roll back to that version hash
+```
+
+### skill-score
+
+Score skills on validation, completeness, and metrics:
+
+```bash
+skrills skill-score                            # Score every discovered skill
+skrills skill-score commit
+skrills skill-score --below-threshold 60       # Only skills scoring under 60
+```
+
+### skill-profile
+
+Show execution statistics for one skill, or overall when no name is given:
+
+```bash
+skrills skill-profile commit --period 7
+```
+
+`--period <DAYS>` sets the window (default: `30`).
+
+### skill-usage-report
+
+Generate a usage report:
+
+```bash
+skrills skill-usage-report --period 7 --format json --output usage.json
+```
+
+`--format` is `text` or `json`; `--output` writes to a file instead of
+stdout; `--period <DAYS>` defaults to `30`.
+
+### pre-commit-validate
+
+Validate skill files from a git pre-commit hook:
+
+```bash
+skrills pre-commit-validate --staged
+skrills pre-commit-validate --target codex --skill-dir skills/
+```
+
+`--staged` checks only staged files. `--target` is `claude`, `codex`,
+`copilot`, `all`, or `both` (default: `all`).
+
+## Usage Analytics
+
+### export-analytics
+
+Write usage analytics to a file:
+
+```bash
+skrills export-analytics                         # ~/.skrills/analytics_cache.json
+skrills export-analytics --output backup.json --force-rebuild
+```
+
+`--force-rebuild` rebuilds from session data even when a cache exists.
+
+### import-analytics
+
+Load analytics from an earlier export:
+
+```bash
+skrills import-analytics backup.json --overwrite
+```
+
+`--overwrite` replaces an existing cache file.
+
 ## Setup and Diagnostics
 
 ### doctor
@@ -402,7 +578,8 @@ Configure skrills for a specific client:
 ```bash
 skrills setup --client codex              # Configure for Codex
 skrills setup --client claude             # Configure for Claude
-skrills setup --client both               # Configure for both
+skrills setup --client both               # Configure for Claude and Codex
+skrills setup --client all                # Configure every supported client
 skrills setup --reinstall                 # Reconfigure from scratch
 skrills setup --uninstall                 # Remove configuration
 skrills setup --universal                 # Also sync to ~/.agents/skills
@@ -412,7 +589,7 @@ skrills setup --universal                 # Also sync to ~/.agents/skills
 
 | Option | Purpose |
 |--------|---------|
-| `--client` | `claude`, `codex`, or `both` |
+| `--client` | `claude`, `codex`, `copilot`, `cursor`, `both` (Claude and Codex), or `all`. Prompts when omitted |
 | `--bin-dir` | Override install location |
 | `--reinstall` / `--uninstall` / `--add` | Control lifecycle |
 | `--yes` | Skip confirmation prompts |
@@ -430,6 +607,30 @@ skrills tui --skill-dir ~/.custom/skills
 
 Provides a visual interface for sync management.
 
+### dashboard
+
+Real-time terminal dashboard for skill monitoring. Requires a TTY:
+
+```bash
+skrills dashboard --skill-dir ~/.custom/skills
+```
+
+### cold-window
+
+Run the cold-window real-time analysis surface, as a TUI, a browser
+dashboard, or both:
+
+```bash
+skrills cold-window --tui
+skrills cold-window --browser --port 8888
+skrills cold-window --browser --demo        # Built-in demo data
+```
+
+Options include `--alert-budget <N>` (default `100000`, minimum 2),
+`--research-rate <N>`, `--tick-rate-ms <MILLIS>`, `--no-adaptive`,
+`--no-bell`, `--skill-dir <DIR>`, and `--plugins-dir <DIR>`. See
+[Cold-Window Real-Time Analysis](cold-window.md) for the full reference.
+
 ### cert
 
 Manage TLS certificates for HTTPS transport:
@@ -437,7 +638,7 @@ Manage TLS certificates for HTTPS transport:
 ```bash
 skrills cert status                       # Show certificate validity and expiry
 skrills cert renew                        # Regenerate self-signed certificate
-skrills cert install --cert my.pem --key my-key.pem  # Install custom certificate
+skrills cert install my.pem --key my-key.pem        # Install custom certificate
 ```
 
 **Subcommands:**
@@ -574,16 +775,12 @@ skrills sync-all --from claude
 
 ### Debug skill loading
 
-```bash
-# Check status
-skrills skill-loading-status
+These are MCP tools, not CLI subcommands. Ask the assistant to call them
+from a Claude Code or Codex session connected to `skrills serve`:
 
-# Enable tracing
-skrills enable-skill-trace
-
-# Restart session, then validate
-skrills skill-loading-selftest
-```
+1. Call `skill-loading-status` to check which roots were scanned.
+2. Call `enable-skill-trace` to install the trace and probe skills.
+3. Restart the session, then call `skill-loading-selftest`.
 
 ### CI-friendly validation
 

@@ -1,7 +1,19 @@
 # ADR 0004: Intelligence Crate Independent Versioning
 
-- Status: Accepted
+- Status: Superseded (lock-step versioning)
 - Date: 2025-12-23
+
+## Superseded
+
+The workspace no longer versions `skrills-intelligence` on its own. Every
+crate shares one version: `make release-consistency`
+(`crates/test-utils/tests/release_consistency.rs`) fails unless all
+`crates/*/Cargo.toml` versions agree, and the dependents (`server`, `cli`,
+`analyze`) declare `skrills-intelligence` with a caret requirement on that
+shared version, not an exact pin. No separate intelligence changelog exists;
+changes are recorded in `docs/CHANGELOG.md`.
+
+The text below is kept as the record of the original decision.
 
 ## Context
 

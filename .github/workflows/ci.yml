@@ -95,6 +95,11 @@ jobs:
           python -m pip install --upgrade pytest
       - name: Hygiene lints
         run: make lint-hygiene
+      # The pre-commit hook runs markdownlint; without this step a PR from a
+      # contributor without the hook merges failures that block everyone else.
+      # ubuntu-latest ships Node, so npx is on PATH.
+      - name: Markdown lint
+        run: make lint-md
       - name: Script test suite
         run: make test-scripts
 

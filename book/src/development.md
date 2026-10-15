@@ -46,12 +46,18 @@ To run all tests, use:
 cargo test --workspace --all-features
 ```
 
-This command is aliased by `make test` and is part of the Continuous Integration (CI) pipeline, managed by `make ci`.
+`make test` runs this command. `make ci` runs, locally, the checks the CI
+workflow (`.github/workflows/ci.yml`) gates on: `fmt-check`, `lint`,
+`lint-md`, `lint-hygiene`, `test`, `test-scripts` and `test-install`. CI
+itself calls cargo and the scripts directly, so keep the two in step.
+`make precommit` adds the dogfood contracts and `verify-publish`.
 
 ### Release-Consistency Checks
 
 Before tagging a release, run `make release-consistency` to verify
-five parity invariants across the workspace:
+five parity invariants across the workspace. Crates are versioned in
+lock-step; [ADR 0004](https://github.com/athola/skrills/blob/master/docs/adr/0004-intelligence-crate-versioning.md)
+(independent intelligence versioning) is superseded.
 
 1. All `crates/*/Cargo.toml` versions agree.
 2. `plugins/skrills/.claude-plugin/plugin.json` version matches the
