@@ -223,3 +223,37 @@ def test_lint_hygiene_runs_shellcheck() -> None:
 def test_shell_scripts_have_no_shellcheck_warnings() -> None:
     completed = subprocess.run(["make", "lint-shell"], cwd=REPO_ROOT, capture_output=True, text=True)
     assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_setup_demo_accepts_the_user_scope_claude_registration() -> None:
+    """With the `claude` CLI installed, setup registers through
+    `claude mcp add --scope user` (~/.claude.json) and writes no
+    .claude/.mcp.json, so a check for that file alone failed every run."""
+    recipe = _dry_run("demo-setup-claude").split("setup --client claude", 1)[1]
+    assert ".claude.json" in recipe
+
+
+def test_uninstall_demo_checks_both_claude_registration_files() -> None:
+    recipe = _dry_run("demo-setup-uninstall").split("setup --uninstall", 1)[1]
+    assert ".claude.json" in recipe
+    assert ".mcpServers.skrills" in recipe
+
+
+def test_universal_demo_checks_the_shared_agents_skills_dir() -> None:
+    recipe = _dry_run("demo-setup-universal").split("--universal", 1)[1]
+    assert ".agents/skills" in recipe
+
+
+def test_cli_demo_keeps_sync_agents_inside_the_demo_home() -> None:
+    """`sync-agents` defaults to ./AGENTS.md, so the demo overwrote the
+    repository's own AGENTS.md."""
+    recipe = _dry_run("demo-cli")
+    line = next(l for l in recipe.splitlines() if "sync-agents" in l and "skrills" in l)
+    assert "--path" in line and ".home-tmp" in line
+
+
+def test_demo_fixture_skill_validates_for_every_target() -> None:
+    """A frontmatter-less fixture made `validate` (exit 1 on errors) stop
+    `make demo-cli` before most of its checks ran."""
+    recipe = _dry_run("demo-fixtures")
+    assert "name: demo" in recipe and "description:" in recipe

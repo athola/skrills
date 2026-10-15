@@ -53,11 +53,21 @@ define assert_exec
 	@test -x "$(1)" || (echo "ERROR: $(2)" && exit 1)
 endef
 
+# setup registers Claude through `claude mcp add --scope user` (~/.claude.json)
+# when the claude CLI is installed, else in ~/.claude/.mcp.json.
+CLAUDE_MCP_FILES = $(HOME_DIR)/.claude/.mcp.json $(HOME_DIR)/.claude.json
+
+define assert_claude_registered
+	@for f in $(CLAUDE_MCP_FILES); do \
+	  [ -f "$$f" ] && jq -e '.mcpServers.skrills' "$$f" >/dev/null 2>&1 && exit 0; \
+	done; echo "ERROR: Claude MCP registration not found"; exit 1
+endef
+
 # Unified verification macro: $(1)=label, $(2)=checks (space-separated: mcp claude codex)
 # Examples: $(call verify_setup,Claude,mcp claude), $(call verify_setup,Codex,codex)
 define verify_setup
 	@echo "==> Verifying $(1) setup..."
-	$(if $(findstring mcp,$(2)),$(call assert_file,$(HOME_DIR)/.claude/.mcp.json,Claude MCP config not created))
+	$(if $(findstring mcp,$(2)),$(call assert_claude_registered))
 	$(if $(findstring claude,$(2)),$(call assert_exec,$(HOME_DIR)/.claude/bin/skrills,Claude binary not installed))
 	$(if $(findstring codex,$(2)),$(call assert_exec,$(HOME_DIR)/.codex/bin/skrills,Codex binary not installed))
 	@echo "==> $(1) setup verified successfully"
@@ -427,7 +437,7 @@ demo-multi-cli-agent: demo-fixtures build
 demo-fixtures:
 	@mkdir -p $(HOME_DIR)/.codex/skills/demo
 	@mkdir -p $(HOME_DIR)/.codex/bin
-	@echo "demo skill content" > $(HOME_DIR)/.codex/skills/demo/SKILL.md
+	@printf -- '---\nname: demo\ndescription: Demo skill for the make demos\n---\ndemo skill content\n' > $(HOME_DIR)/.codex/skills/demo/SKILL.md
 	@echo "# Agents" > $(HOME_DIR)/.codex/AGENTS.md
 	@# Create MCP config files for doctor demo
 	@echo '{"mcpServers":{"skrills":{"type":"stdio","command":"$(HOME_DIR)/.codex/bin/skrills","args":["serve"]}}}' > $(HOME_DIR)/.codex/mcp_servers.json
@@ -479,7 +489,7 @@ demo-cli: demo-fixtures build
 	@echo "--- agent (no agents expected)"
 	out=$$($(DEMO_RUN) agent test-agent --dry-run 2>&1); echo "$$out" | grep -qi "not found" || { echo "ERROR: expected 'not found'"; echo "$$out"; exit 1; }
 	@echo "--- sync-agents"
-	$(DEMO_RUN) sync-agents
+	$(DEMO_RUN) sync-agents --path $(HOME_DIR)/AGENTS.md
 	@echo "--- sync"
 	$(DEMO_RUN) sync
 	@echo "--- sync-commands"
@@ -535,7 +545,7 @@ demo-all: demo-fixtures build demo-doctor demo-empirical demo-cli demo-setup-all
 
 demo-setup-claude: demo-fixtures build
 	@echo "==> Demo: Setup for Claude Code (non-interactive)"
-	@rm -rf $(HOME_DIR)/.claude
+	@rm -rf $(HOME_DIR)/.claude $(HOME_DIR)/.claude.json
 	$(DEMO_RUN) setup --client claude --bin-dir $(HOME_DIR)/.claude/bin --yes
 	$(call verify_setup,Claude,mcp claude)
 
@@ -547,7 +557,7 @@ demo-setup-codex: demo-fixtures build
 
 demo-setup-both: demo-fixtures build
 	@echo "==> Demo: Setup for both Claude Code and Codex"
-	@rm -rf $(HOME_DIR)/.claude $(HOME_DIR)/.codex
+	@rm -rf $(HOME_DIR)/.claude $(HOME_DIR)/.claude.json $(HOME_DIR)/.codex
 	$(DEMO_RUN) setup --client both --bin-dir $(HOME_DIR)/.claude/bin --yes
 	$(call verify_setup,Both clients,mcp claude)
 	@grep -qF '[mcp_servers.skrills]' $(HOME_DIR)/.codex/config.toml || (echo "ERROR: Codex MCP registration not written" && exit 1)
@@ -557,7 +567,9 @@ demo-setup-uninstall: demo-setup-claude
 	@echo "==> Demo: Uninstall Claude setup"
 	$(DEMO_RUN) setup --uninstall --client claude --yes
 	@echo "==> Verifying uninstall..."
-	@! grep -qs '"skrills"' $(HOME_DIR)/.claude/.mcp.json || (echo "ERROR: skrills still registered in .claude/.mcp.json" && exit 1)
+	@for f in $(CLAUDE_MCP_FILES); do \
+	  [ -f "$$f" ] && jq -e '.mcpServers.skrills' "$$f" >/dev/null 2>&1 && { echo "ERROR: skrills still registered in $$f"; exit 1; }; \
+	done; true
 	@echo "==> Uninstall verified successfully"
 
 demo-setup-reinstall: demo-setup-claude
@@ -567,17 +579,17 @@ demo-setup-reinstall: demo-setup-claude
 
 demo-setup-universal: demo-fixtures build
 	@echo "==> Demo: Setup with universal sync"
-	@rm -rf $(HOME_DIR)/.claude $(HOME_DIR)/.agent
+	@rm -rf $(HOME_DIR)/.claude $(HOME_DIR)/.claude.json $(HOME_DIR)/.agents
 	@mkdir -p $(HOME_DIR)/.claude/skills
 	@echo "test skill" > $(HOME_DIR)/.claude/skills/test.md
 	$(DEMO_RUN) setup --client claude --bin-dir $(HOME_DIR)/.claude/bin --universal --yes
 	$(call verify_setup,Universal,mcp claude)
-	@test -d $(HOME_DIR)/.agent/skills || (echo "ERROR: Universal skills dir not created" && exit 1)
+	@test -d $(HOME_DIR)/.agents/skills || (echo "ERROR: Universal skills dir not created" && exit 1)
 	@echo "==> Universal skills directory verified"
 
 demo-setup-first-run: demo-fixtures build
 	@echo "==> Demo: First-run detection (simulated with doctor command)"
-	@rm -rf $(HOME_DIR)/.claude $(HOME_DIR)/.codex
+	@rm -rf $(HOME_DIR)/.claude $(HOME_DIR)/.claude.json $(HOME_DIR)/.codex
 	@echo "==> Running doctor command on fresh install (should NOT prompt for setup as it's not served by first-run logic)"
 	$(DEMO_RUN) doctor 2>&1 || true
 	@echo "==> First-run detection demo complete"
