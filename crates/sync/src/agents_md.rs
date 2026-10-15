@@ -1,8 +1,8 @@
-//! Skill synchronization and AGENTS.md management.
+//! AGENTS.md management and the Claude to Codex agent copy.
 //!
 //! This module handles:
 //! - Copying Claude agents into the Codex agents root. Skills go through
-//!   [`skrills_sync::sync_claude_skills_to_codex`] instead.
+//!   [`crate::sync_claude_skills_to_codex`] instead.
 //! - Generating and updating `AGENTS.md` with available skills.
 
 use anyhow::Result;
@@ -14,10 +14,19 @@ use walkdir::WalkDir;
 
 use std::io::{BufReader, Read};
 
-use crate::discovery::{
-    collect_agents, collect_skills, relative_path, AGENTS_AGENT_SECTION_END,
-    AGENTS_AGENT_SECTION_START, AGENTS_SECTION_END, AGENTS_SECTION_START, AGENTS_TEXT,
-};
+use skrills_discovery::{collect_agents, collect_skills, relative_path};
+
+/// Default AGENTS.md written when the file does not exist yet; the MCP
+/// server also serves it as the `doc://agents` resource.
+pub const AGENTS_TEXT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/AGENTS.md"));
+/// Start marker for the available skills section in AGENTS.md.
+pub const AGENTS_SECTION_START: &str = "<!-- available_skills:start -->";
+/// End marker for the available skills section in AGENTS.md.
+pub const AGENTS_SECTION_END: &str = "<!-- available_skills:end -->";
+/// Start marker for available agents.
+pub const AGENTS_AGENT_SECTION_START: &str = "<!-- available_agents:start -->";
+/// End marker for available agents.
+pub const AGENTS_AGENT_SECTION_END: &str = "<!-- available_agents:end -->";
 
 fn is_hidden_rel_path(rel: &Path) -> bool {
     rel.components().any(|c| match c {
@@ -68,7 +77,7 @@ fn should_copy_by_content(src: &Path, dest: &Path) -> Result<bool> {
 
 /// Reports the outcome of mirroring agents into a Codex root.
 ///
-/// Named apart from [`skrills_sync::SyncReport`], which the same call sites
+/// Named apart from [`crate::SyncReport`], which the same call sites
 /// also handle and which covers commands, MCP servers and preferences.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct MirrorReport {
@@ -244,7 +253,7 @@ fn replace_marked_section(
 /// Synchronizes agent markdown files from Claude into the Codex agents root (e.g. `~/.codex/agents`).
 ///
 /// This intentionally does **not** write to `~/.codex/skills-mirror`: skills go to
-/// `~/.agents/skills` via [`skrills_sync::sync_claude_skills_to_codex`].
+/// `~/.agents/skills` via [`crate::sync_claude_skills_to_codex`].
 pub fn sync_agents_only_from_claude(
     claude_root: &Path,
     codex_agents_root: &Path,

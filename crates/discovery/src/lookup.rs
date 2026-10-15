@@ -1,54 +1,23 @@
+use crate::scanner::{default_priority, discover_agents, discover_skills, RootSettings};
+use crate::types::{AgentMeta, SkillMeta, SkillRoot, SkillSource};
 use anyhow::{anyhow, Result};
 use pathdiff::diff_paths;
-use skrills_discovery::{
-    default_priority, discover_agents, discover_skills, priority_labels as disc_priority_labels,
-    priority_labels_and_rank_map as disc_priority_labels_and_rank_map, AgentMeta, RootSettings,
-    SkillMeta, SkillRoot, SkillSource,
-};
 use skrills_state::{env_include_claude, env_include_marketplace, extra_dirs_from_env, home_dir};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// URI for the AGENTS.md document.
-pub const AGENTS_URI: &str = "doc://agents";
-/// Name of the AGENTS.md document.
-pub const AGENTS_NAME: &str = "AGENTS.md";
-/// Description of the AGENTS.md document.
-pub const AGENTS_DESCRIPTION: &str = "AI Agent Development Guidelines";
-/// Content of the AGENTS.md document.
-pub const AGENTS_TEXT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/AGENTS.md"));
-/// Environment variable to control exposure of AGENTS.md.
-pub const ENV_EXPOSE_AGENTS: &str = "SKRILLS_EXPOSE_AGENTS";
 /// Command template used to launch an agent specification: the command
 /// `skrills agent` runs, with `{}` for the agent file path. Built by
 /// `skrills_subagents::launch`; a test keeps the two equal.
 pub const DEFAULT_AGENT_RUN_TEMPLATE: &str = r#"codex exec --sandbox workspace-write "Load the agent spec file at the path \"{}\" and execute its instructions""#;
-/// Start marker for the available skills section in AGENTS.md.
-pub const AGENTS_SECTION_START: &str = "<!-- available_skills:start -->";
-/// End marker for the available skills section in AGENTS.md.
-pub const AGENTS_SECTION_END: &str = "<!-- available_skills:end -->";
-/// Start marker for available agents.
-pub const AGENTS_AGENT_SECTION_START: &str = "<!-- available_agents:start -->";
-/// End marker for available agents.
-pub const AGENTS_AGENT_SECTION_END: &str = "<!-- available_agents:end -->";
 /// Default bytes for embedding preview.
 pub const DEFAULT_EMBED_PREVIEW_BYTES: usize = 4096;
 /// Default embedding threshold.
 pub const DEFAULT_EMBED_THRESHOLD: f32 = 0.18;
-/// Returns priority labels for skill sources.
-pub fn priority_labels() -> Vec<String> {
-    disc_priority_labels()
-}
-
-/// Returns priority labels and their corresponding rank map for skill sources.
-pub fn priority_labels_and_rank_map() -> (Vec<String>, serde_json::Map<String, serde_json::Value>) {
-    disc_priority_labels_and_rank_map()
-}
-
 /// Determines the skill root directories based on configuration and environment.
-pub fn skill_roots(extra_dirs: &[PathBuf]) -> Result<Vec<SkillRoot>> {
-    Ok(skrills_discovery::skill_roots(
+pub fn skill_roots_from_env(extra_dirs: &[PathBuf]) -> Result<Vec<SkillRoot>> {
+    Ok(crate::scanner::skill_roots(
         &home_dir()?,
         &RootSettings::from_env()?,
         extra_dirs,
@@ -122,7 +91,7 @@ pub fn agents_manifest() -> Result<Option<PathBuf>> {
 
 /// Collects skills from configured directories.
 pub fn collect_skills(extra_dirs: &[PathBuf]) -> Result<Vec<SkillMeta>> {
-    discover_skills(&skill_roots(extra_dirs)?, None)
+    discover_skills(&skill_roots_from_env(extra_dirs)?, None)
 }
 
 /// Collects agents from configured directories.
@@ -233,10 +202,6 @@ pub fn resolve_agent<'a>(spec: &str, agents: &'a [AgentMeta]) -> Result<&'a Agen
         )),
     }
 }
-
-/// Checks if a directory entry is a skill file (`SKILL.md`): the rule
-/// discovery itself uses, re-exported so callers here cannot drift from it.
-pub use skrills_discovery::is_skill_file;
 
 /// Tokenizes a prompt into a set of lowercase alphanumeric words.
 pub fn tokenize_prompt(prompt: &str) -> HashSet<String> {
@@ -421,7 +386,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        crate::test_support::env_guard()
+        skrills_test_utils::env_guard()
     }
 
     #[test]
@@ -511,7 +476,7 @@ mod tests {
 
     #[test]
     fn test_priority_labels() {
-        let labels = priority_labels();
+        let labels = crate::priority_labels();
         assert_eq!(
             labels,
             vec![
@@ -530,8 +495,8 @@ mod tests {
     #[test]
     fn skill_roots_excludes_claude_when_env_disabled() {
         let _guard = env_guard();
-        let _include = crate::test_support::set_env_var("SKRILLS_INCLUDE_CLAUDE", Some("0"));
-        let roots = skill_roots(&[]).unwrap();
+        let _include = skrills_test_utils::set_env_var("SKRILLS_INCLUDE_CLAUDE", Some("0"));
+        let roots = skill_roots_from_env(&[]).unwrap();
         let labels: Vec<_> = roots.iter().map(|r| r.source.label()).collect();
         assert!(
             !labels.contains(&"claude".to_string())
@@ -547,8 +512,8 @@ mod tests {
     fn skill_roots_include_both_copilot_paths() {
         let _guard = env_guard();
         let temp = tempfile::tempdir().unwrap();
-        let _home = crate::test_support::set_env_var("HOME", temp.path().to_str());
-        let roots = skill_roots(&[]).unwrap();
+        let _home = skrills_test_utils::set_env_var("HOME", temp.path().to_str());
+        let roots = skill_roots_from_env(&[]).unwrap();
         let copilot: Vec<_> = roots
             .iter()
             .filter(|r| r.source == SkillSource::Copilot)
@@ -572,8 +537,8 @@ mod tests {
     fn skill_roots_include_the_cursor_skills_dir() {
         let _guard = env_guard();
         let temp = tempfile::tempdir().unwrap();
-        let _home = crate::test_support::set_env_var("HOME", temp.path().to_str());
-        let roots = skill_roots(&[]).unwrap();
+        let _home = skrills_test_utils::set_env_var("HOME", temp.path().to_str());
+        let roots = skill_roots_from_env(&[]).unwrap();
         assert!(
             roots
                 .iter()
@@ -600,7 +565,7 @@ mod tests {
 
     #[test]
     fn test_priority_labels_and_rank_map() {
-        let (labels, rank_map) = priority_labels_and_rank_map();
+        let (labels, rank_map) = crate::priority_labels_and_rank_map();
 
         assert_eq!(labels.len(), 8);
         assert_eq!(rank_map.len(), 8);

@@ -1073,7 +1073,7 @@ pub(crate) fn remove_marked_section(
 
 /// Uninstalls Codex configuration.
 fn uninstall_codex() -> Result<()> {
-    use crate::discovery::{
+    use skrills_sync::{
         AGENTS_AGENT_SECTION_END, AGENTS_AGENT_SECTION_START, AGENTS_SECTION_END,
         AGENTS_SECTION_START,
     };

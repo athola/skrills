@@ -1,10 +1,10 @@
 use super::validate::{run_validation, Autofix};
 use crate::cli::Platform;
 use anyhow::{anyhow, bail, Result};
+use skrills_discovery::merge_extra_dirs;
 use skrills_discovery::{SkillRoot, SkillSource};
-use skrills_server::discovery::merge_extra_dirs;
-use skrills_server::sync::{mirror_source_root, sync_agents, sync_agents_only_from_claude};
 use skrills_state::home_dir;
+use skrills_sync::{mirror_source_root, sync_agents, sync_agents_only_from_claude};
 use skrills_validate::ValidationTarget as VT;
 use std::path::{Path, PathBuf};
 
@@ -60,7 +60,7 @@ pub(crate) fn handle_mirror_command(
     // Mirror agents into ~/.codex/agents. The agent copier has no preview
     // mode, so a dry run skips it rather than writing.
     let agent_report = if dry_run {
-        skrills_server::sync::MirrorReport::default()
+        skrills_sync::MirrorReport::default()
     } else {
         sync_agents_only_from_claude(
             &claude_root,
@@ -406,7 +406,7 @@ pub(crate) fn handle_sync_status_command(from: Platform, to: Option<Platform>) -
         {
             match entry {
                 Ok(e) => {
-                    if skrills_server::discovery::is_skill_file(&e) {
+                    if skrills_discovery::is_skill_file(&e) {
                         skill_count += 1;
                     }
                 }

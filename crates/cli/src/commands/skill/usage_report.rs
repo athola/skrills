@@ -19,7 +19,7 @@ pub(crate) fn handle_skill_usage_report_command(
     // RFC 3339 rather than raw epoch seconds, which "Generated:" printed.
     let now = now_secs();
     let generated_at = rfc3339(now).unwrap_or_else(|| now.to_string());
-    let dirs = skrills_server::discovery::merge_extra_dirs(&skill_dirs);
+    let dirs = skrills_discovery::merge_extra_dirs(&skill_dirs);
 
     let report_text = match load_usage_analytics()? {
         None => {

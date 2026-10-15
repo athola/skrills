@@ -9,6 +9,7 @@
 
 #![deny(unsafe_code)]
 
+mod agents_doc;
 #[cfg_attr(test, allow(dead_code))]
 pub mod app;
 pub(crate) mod cache;
@@ -19,7 +20,6 @@ mod mcp_result;
 pub(crate) mod metrics_types;
 pub mod setup;
 mod skill_trace;
-pub mod sync;
 #[cfg(test)]
 mod test_support;
 pub mod tool_schemas;
@@ -41,6 +41,5 @@ pub mod ui;
 pub mod tls_auto;
 
 /// Skill discovery mechanism.
-pub mod discovery;
 /// Tracing and logging configuration.
 pub mod trace;

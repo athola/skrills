@@ -32,7 +32,7 @@ use crate::doctor::doctor_report;
 use crate::tui::tui_flow;
 use anyhow::Result;
 use clap::Parser;
-use skrills_server::discovery::merge_extra_dirs;
+use skrills_discovery::merge_extra_dirs;
 
 /// Whether stdin and stdout are both a terminal.
 fn is_interactive_terminal() -> bool {

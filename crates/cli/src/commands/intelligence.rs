@@ -2,8 +2,8 @@ use crate::cli::{CreateSkillMethod, OutputFormat};
 use anyhow::Result;
 use rmcp::model::CallToolResult;
 use serde_json::{json, Map as JsonMap, Value};
+use skrills_discovery::merge_extra_dirs;
 use skrills_server::app::SkillService;
-use skrills_server::discovery::merge_extra_dirs;
 use skrills_state::{cache_ttl, load_manifest_settings};
 use std::path::PathBuf;
 

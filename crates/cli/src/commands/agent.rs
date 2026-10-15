@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use skrills_server::discovery::{collect_agents, merge_extra_dirs, resolve_agent};
+use skrills_discovery::{collect_agents, merge_extra_dirs, resolve_agent};
 use skrills_subagents::launch::{agent_prompt, codex_exec_args, display_command, CodexSandbox};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -143,7 +143,7 @@ mod tests {
         }
         assert_eq!(
             codex_command(&path, codex_sandbox(false)),
-            skrills_server::discovery::DEFAULT_AGENT_RUN_TEMPLATE.replace("{}", path.as_str())
+            skrills_discovery::DEFAULT_AGENT_RUN_TEMPLATE.replace("{}", path.as_str())
         );
     }
 

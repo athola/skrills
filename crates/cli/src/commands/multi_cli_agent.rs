@@ -7,7 +7,7 @@ use super::agent::{codex_args, codex_sandbox, run_with_codex, AgentPath};
 use crate::cli::AgentBackend;
 use anyhow::{anyhow, Result};
 use indexmap::IndexMap;
-use skrills_server::discovery::{collect_agents, merge_extra_dirs, resolve_agent};
+use skrills_discovery::{collect_agents, merge_extra_dirs, resolve_agent};
 use skrills_subagents::launch::{claude_print_args, display_command, CodexSandbox};
 use std::path::PathBuf;
 use std::process::Command;

@@ -134,6 +134,7 @@ pub type Error = anyhow::Error;
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub mod adapters;
+pub mod agents_md;
 pub mod common;
 pub mod error;
 pub mod kill_switch_marker;
@@ -144,6 +145,11 @@ pub mod platform_routing;
 pub mod report;
 pub mod validation;
 
+pub use agents_md::{
+    mirror_source_root, sync_agents, sync_agents_only_from_claude, MirrorReport,
+    AGENTS_AGENT_SECTION_END, AGENTS_AGENT_SECTION_START, AGENTS_SECTION_END, AGENTS_SECTION_START,
+    AGENTS_TEXT,
+};
 pub use error::SyncError;
 pub use skrills_snapshot::KillSwitch;
 

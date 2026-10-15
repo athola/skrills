@@ -62,7 +62,7 @@ use std::path::PathBuf;
 /// when neither was set.
 pub(crate) fn skill_roots_for(skill_dirs: &[PathBuf]) -> anyhow::Result<Vec<SkillRoot>> {
     Ok(skill_roots_or_default(
-        &skrills_server::discovery::merge_extra_dirs(skill_dirs),
+        &skrills_discovery::merge_extra_dirs(skill_dirs),
         &RootSettings::from_env()?,
     ))
 }

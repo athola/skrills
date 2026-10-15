@@ -6,10 +6,10 @@
 
 use anyhow::{anyhow, Result};
 use rmcp::service::serve_server;
+use skrills_discovery::merge_extra_dirs;
 #[cfg(feature = "watch")]
 use skrills_server::app::start_fs_watcher;
 use skrills_server::app::SkillService;
-use skrills_server::discovery::merge_extra_dirs;
 use skrills_server::tool_schemas::all_tools;
 use skrills_server::trace::stdio_with_optional_trace;
 use skrills_state::{cache_ttl, load_manifest_settings};

@@ -9,7 +9,7 @@ use skrills_state::home_dir;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
-use skrills_server::sync::{mirror_source_root, sync_agents_only_from_claude};
+use skrills_sync::{mirror_source_root, sync_agents_only_from_claude};
 use skrills_sync::{ClaudeAdapter, CodexAdapter, SyncOrchestrator, SyncParams};
 
 /// Runs an interactive TUI for sync management.

@@ -21,9 +21,7 @@
 //! incoming names to support both conventions for compatibility.
 
 use crate::app::SkillService;
-use crate::discovery::priority_labels_and_rank_map;
 use crate::mcp_result::tool_ok;
-use crate::sync::mirror_source_root;
 use crate::tool_schemas;
 use anyhow::Result;
 use rmcp::model::{
@@ -33,7 +31,9 @@ use rmcp::model::{
 };
 use rmcp::ServerHandler;
 use serde_json::json;
+use skrills_discovery::priority_labels_and_rank_map;
 use skrills_state::home_dir;
+use skrills_sync::mirror_source_root;
 use skrills_sync::Platform;
 use std::borrow::Cow;
 use std::fs;
@@ -954,7 +954,7 @@ impl ServerHandler for SkillService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::discovery::{AGENTS_DESCRIPTION, AGENTS_URI};
+    use crate::agents_doc::{AGENTS_DESCRIPTION, AGENTS_URI};
     use crate::test_support;
     use rmcp::model::{
         ClientCapabilities, Implementation, InitializeRequestParams, ProtocolVersion, RequestId,

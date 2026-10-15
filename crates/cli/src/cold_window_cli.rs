@@ -41,8 +41,8 @@ use skrills_sync::kill_switch_marker::EngagedMarker;
 use skrills_tome::dispatcher::{current_ms_checked, BucketedBudget};
 use tokio::sync::watch;
 
+use skrills_discovery::merge_extra_dirs;
 use skrills_server::api::{cold_window_routes, ColdWindowDashboardState};
-use skrills_server::discovery::merge_extra_dirs;
 
 /// Floor on the adaptive tick delay (ms). Prevents the engine from
 /// busy-looping if the snapshot's `next_tick_ms` is reported as 0

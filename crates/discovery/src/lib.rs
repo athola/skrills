@@ -51,11 +51,21 @@ pub type Error = anyhow::Error;
 /// Result type for discovery operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Skill and agent lookup driven by `HOME` and the `SKRILLS_*` switches,
+/// name resolution, and trigram similarity.
+pub mod lookup;
 /// Skill discovery and scanning functionality.
 pub mod scanner;
 /// Types for skill metadata and sources.
 pub mod types;
 
+pub use lookup::{
+    agent_roots, agents_manifest, collect_agents, collect_skills, cosine_similarity,
+    merge_extra_dirs, read_prefix, read_skill, relative_path, resolve_agent, resolve_skill,
+    skill_roots_from_env, tokenize_prompt, trigram_counts, trigram_similarity,
+    trigram_similarity_checked, DEFAULT_AGENT_RUN_TEMPLATE, DEFAULT_EMBED_PREVIEW_BYTES,
+    DEFAULT_EMBED_THRESHOLD,
+};
 pub use scanner::{
     default_priority, default_roots, default_roots_auto, discover_agents, discover_rules,
     discover_skills, discover_skills_with_depth, extra_skill_roots, extract_refs_from_agents,

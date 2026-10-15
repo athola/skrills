@@ -30,12 +30,11 @@ pub(crate) use intelligence::{
     cached_usage_events, resolve_project_dir, select_default_skill_root, MAX_USAGE_EVENTS,
 };
 
+use crate::agents_doc::{AGENTS_DESCRIPTION, AGENTS_NAME, AGENTS_URI, ENV_EXPOSE_AGENTS};
 use crate::cache::SkillCache;
-use crate::discovery::{
-    priority_labels, read_skill, skill_roots, AGENTS_DESCRIPTION, AGENTS_NAME, AGENTS_TEXT,
-    AGENTS_URI, ENV_EXPOSE_AGENTS,
-};
 use crate::handler::{invalid_params, resource_not_found};
+use skrills_discovery::{priority_labels, read_skill, skill_roots_from_env};
+use skrills_sync::AGENTS_TEXT;
 // Note: skill_trace imports moved to tools.rs
 use crate::mcp_gateway::{ContextStats, McpToolRegistry};
 use anyhow::Result;
@@ -145,7 +144,7 @@ impl SkillService {
     /// Creates a new `SkillService` with a custom cache TTL.
     pub fn new_with_ttl(extra_dirs: Vec<PathBuf>, ttl: Duration) -> Result<Self> {
         let build_started = Instant::now();
-        let roots = skill_roots(&extra_dirs)?;
+        let roots = skill_roots_from_env(&extra_dirs)?;
 
         // Build MCP registry with all available tools
         let mcp_registry = Arc::new(Mutex::new(build_mcp_registry()));
