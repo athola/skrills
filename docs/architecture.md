@@ -105,4 +105,5 @@ Command handlers are in `crates/cli/src/commands/`, one submodule per command gr
 - [ADR 0003: CLI Parity for Intelligence Tools](adr/0003-cli-parity-intelligence-tools.md)
 - [ADR 0004: Intelligence Crate Versioning](adr/0004-intelligence-crate-versioning.md)
 - [ADR 0007: Cold-Window Architecture](adr/0007-cold-window-architecture.md)
+- [ADR 0010: Token Analysis Without the Intelligence Crate](adr/0010-analyze-independent-of-intelligence.md)
 - [Book: Overview](../book/src/overview.md)

@@ -72,6 +72,7 @@ jobs:
           cargo clippy --workspace --all-targets --all-features -- -D warnings
           cargo clippy --workspace --all-targets -- -D warnings
           cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+          cargo clippy -p skrills-analyze --all-targets --no-default-features -- -D warnings
 
       - name: Tests (all features)
         run: cargo test --workspace --all-features

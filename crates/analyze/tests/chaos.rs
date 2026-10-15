@@ -23,8 +23,7 @@
 use skrills_analyze::cold_window::alert::LayeredAlertPolicy;
 use skrills_analyze::cold_window::cadence::LoadAwareCadence;
 use skrills_analyze::cold_window::diff::FieldwiseDiff;
-use skrills_analyze::cold_window::engine::{ColdWindowEngine, DefaultHintScorer, TickInput};
-use skrills_intelligence::cold_window_hints::MultiSignalScorer;
+use skrills_analyze::cold_window::engine::{default_hint_scorer, ColdWindowEngine, TickInput};
 use skrills_snapshot::{LoadSample, TokenEntry, TokenLedger, WindowSnapshot};
 use skrills_test_utils::cold_window_fixtures::chaos_sequence;
 
@@ -70,7 +69,7 @@ fn monotonic_ramp_emits_at_most_one_alert_per_tier() {
     let engine = ColdWindowEngine::with_strategies(
         Box::new(LoadAwareCadence::new()),
         Box::new(LayeredAlertPolicy::new(80_000).with_min_dwell(2)),
-        Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+        default_hint_scorer(),
         Box::new(FieldwiseDiff::new()),
     );
 
@@ -140,7 +139,7 @@ fn transitions_for(stream: Vec<WindowSnapshot>) -> std::collections::HashMap<Str
     let engine = ColdWindowEngine::with_strategies(
         Box::new(LoadAwareCadence::new()),
         Box::new(LayeredAlertPolicy::new(80_000).with_min_dwell(2)),
-        Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+        default_hint_scorer(),
         Box::new(FieldwiseDiff::new()),
     );
     let mut transitions: std::collections::HashMap<String, usize> = Default::default();
@@ -192,7 +191,7 @@ fn chaos_stream_eventually_fires_at_least_one_alert() {
     let engine = ColdWindowEngine::with_strategies(
         Box::new(LoadAwareCadence::new()),
         Box::new(LayeredAlertPolicy::new(80_000).with_min_dwell(2)),
-        Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+        default_hint_scorer(),
         Box::new(FieldwiseDiff::new()),
     );
 
@@ -225,7 +224,7 @@ fn alert_severities_progress_monotonically_in_chaos_stream() {
         // min_dwell 1 to keep the test fast; SC7 still holds because
         // hysteresis bands remain in effect.
         Box::new(LayeredAlertPolicy::new(80_000).with_min_dwell(1)),
-        Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+        default_hint_scorer(),
         Box::new(FieldwiseDiff::new()),
     );
 

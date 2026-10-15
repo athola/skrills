@@ -211,10 +211,13 @@ fmt-check:
 # Three passes, because a warning can exist under one feature set only: an
 # import used solely behind `#[cfg(feature = "watch")]` is clean with
 # --all-features and a hard error in the default build CI and releases use.
+# The fourth pass is package-scoped: workspace feature unification re-enables
+# skrills-analyze's intelligence scorer, so only `-p` sees it off (ADR 0010).
 lint:
 	$(CARGO_CMD) clippy --workspace --all-targets --all-features -- -D warnings
 	$(CARGO_CMD) clippy --workspace --all-targets -- -D warnings
 	$(CARGO_CMD) clippy --workspace --all-targets --no-default-features -- -D warnings
+	$(CARGO_CMD) clippy -p skrills-analyze --all-targets --no-default-features -- -D warnings
 
 lint-md:
 	./scripts/lint-markdown.sh

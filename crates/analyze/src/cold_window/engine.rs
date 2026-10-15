@@ -27,6 +27,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
+#[cfg(feature = "intelligence-scorer")]
 use skrills_intelligence::cold_window_hints::MultiSignalScorer;
 use skrills_snapshot::{
     Alert, AlertBand, Hint, KillSwitch, LoadSample, PluginHealth, ResearchFinding, ScoredHint,
@@ -161,12 +162,40 @@ impl TickInput {
 ///
 /// The intelligence crate cannot depend on analyze (would create a
 /// cycle), so the trait shape is duplicated there and bridged here.
+#[cfg(feature = "intelligence-scorer")]
 pub struct DefaultHintScorer(pub MultiSignalScorer);
 
+#[cfg(feature = "intelligence-scorer")]
 impl HintScorer for DefaultHintScorer {
     fn rank(&self, hints: Vec<Hint>) -> Vec<ScoredHint> {
         self.0.rank(hints)
     }
+}
+
+/// Scorer for builds without the `intelligence-scorer` feature: hints keep
+/// the order their collector produced, so token-counting users need not
+/// compile `skrills-intelligence` (ADR 0010).
+pub struct KeepOrderScorer;
+
+impl HintScorer for KeepOrderScorer {
+    fn rank(&self, hints: Vec<Hint>) -> Vec<ScoredHint> {
+        hints
+            .into_iter()
+            .map(|hint| ScoredHint {
+                hint,
+                score: 0.0,
+                pinned: false,
+            })
+            .collect()
+    }
+}
+
+/// The scorer [`ColdWindowEngine::with_defaults`] wires in.
+pub fn default_hint_scorer() -> Box<dyn HintScorer> {
+    #[cfg(feature = "intelligence-scorer")]
+    return Box::new(DefaultHintScorer(MultiSignalScorer::new()));
+    #[cfg(not(feature = "intelligence-scorer"))]
+    return Box::new(KeepOrderScorer);
 }
 
 /// Per-tick state carried across calls to [`ColdWindowEngine::tick`].
@@ -246,7 +275,7 @@ impl ColdWindowEngine {
         Self::with_strategies(
             Box::new(LoadAwareCadence::new()),
             Box::new(LayeredAlertPolicy::for_budget(budget_ceiling)),
-            Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+            default_hint_scorer(),
             Box::new(FieldwiseDiff::new()),
         )
         .with_budget_ceiling(budget_ceiling)
@@ -570,7 +599,7 @@ mod tests {
         let engine = ColdWindowEngine::with_strategies(
             Box::new(LoadAwareCadence::new().with_cores(4)),
             Box::new(LayeredAlertPolicy::new(100_000)),
-            Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+            default_hint_scorer(),
             Box::new(FieldwiseDiff::new()),
         );
         let input = TickInput::empty().with_load_sample(high_load_sample());
@@ -579,6 +608,7 @@ mod tests {
         assert_eq!(snap.next_tick_ms, 8_000);
     }
 
+    #[cfg(feature = "intelligence-scorer")]
     #[test]
     fn hints_are_scored_and_ranked() {
         let engine = ColdWindowEngine::with_defaults(100_000);
@@ -604,7 +634,7 @@ mod tests {
         let engine = ColdWindowEngine::with_strategies(
             Box::new(LoadAwareCadence::new()),
             Box::new(LayeredAlertPolicy::new(80_000).with_min_dwell(1)),
-            Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+            default_hint_scorer(),
             Box::new(FieldwiseDiff::new()),
         );
         let mut warning_fired = false;
@@ -629,7 +659,7 @@ mod tests {
         let engine = ColdWindowEngine::with_strategies(
             Box::new(LoadAwareCadence::new()),
             Box::new(LayeredAlertPolicy::new(100_000).with_min_dwell(2)),
-            Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+            default_hint_scorer(),
             Box::new(FieldwiseDiff::new()),
         );
 
@@ -686,6 +716,18 @@ mod tests {
         assert_eq!(last.version, 1);
     }
 
+    #[test]
+    fn keep_order_scorer_keeps_the_input_order() {
+        let ranked = KeepOrderScorer.rank(vec![
+            sample_hint("a", HintCategory::Token, 1, 1.0, 5.0, 0.0),
+            sample_hint("b", HintCategory::Token, 10, 9.0, 1.0, 0.0),
+        ]);
+        let uris: Vec<&str> = ranked.iter().map(|s| s.hint.uri.as_str()).collect();
+        assert_eq!(uris, ["a", "b"]);
+        assert!(ranked.iter().all(|s| !s.pinned));
+    }
+
+    #[cfg(feature = "intelligence-scorer")]
     #[test]
     fn default_hint_scorer_adapts_intelligence_scorer() {
         // Compile-time and behavioral guard: DefaultHintScorer impls
@@ -834,7 +876,7 @@ mod tests {
         let engine = ColdWindowEngine::with_strategies(
             Box::new(LoadAwareCadence::new()),
             Box::new(LayeredAlertPolicy::new(100_000)),
-            Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+            default_hint_scorer(),
             Box::new(CountingDiff(Arc::clone(&calls))),
         );
         let first = engine.tick(TickInput::empty());
@@ -879,7 +921,7 @@ mod tests {
             Box::new(SlowPolicy {
                 sleep: Duration::from_millis(5),
             }),
-            Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+            default_hint_scorer(),
             Box::new(FieldwiseDiff::new()),
         )
         .with_tick_budget(Duration::from_millis(1));
@@ -903,7 +945,7 @@ mod tests {
             Box::new(SlowPolicy {
                 sleep: Duration::from_millis(3),
             }),
-            Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+            default_hint_scorer(),
             Box::new(FieldwiseDiff::new()),
         )
         .with_tick_budget(Duration::from_millis(1));
@@ -961,7 +1003,7 @@ mod tests {
         let engine = ColdWindowEngine::with_strategies(
             Box::new(LoadAwareCadence::new()),
             Box::new(LayeredAlertPolicy::new(80_000)),
-            Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+            default_hint_scorer(),
             Box::new(FieldwiseDiff::new()),
         );
         let switch = engine.kill_switch();

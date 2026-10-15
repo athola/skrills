@@ -257,3 +257,9 @@ def test_demo_fixture_skill_validates_for_every_target() -> None:
     `make demo-cli` before most of its checks ran."""
     recipe = _dry_run("demo-fixtures")
     assert "name: demo" in recipe and "description:" in recipe
+
+
+def test_lint_checks_analyze_without_the_intelligence_scorer() -> None:
+    """Workspace feature unification turns the scorer back on, so only a
+    package-scoped pass sees a featureless skrills-analyze (ADR 0010)."""
+    assert "-p skrills-analyze --all-targets --no-default-features" in _dry_run("lint")
