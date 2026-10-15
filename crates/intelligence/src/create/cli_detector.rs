@@ -34,6 +34,11 @@ pub fn detect_cli_environment() -> CliEnvironment {
         if client.eq_ignore_ascii_case("codex") {
             return CliEnvironment::CodexCli;
         }
+        // Other clients (cursor, copilot) have no skill-generation CLI here.
+        tracing::debug!(
+            client,
+            "SKRILLS_CLIENT names no CLI with skill generation; detecting from the environment"
+        );
     }
 
     // Check Claude Code environment variables
@@ -45,11 +50,10 @@ pub fn detect_cli_environment() -> CliEnvironment {
         return CliEnvironment::ClaudeCode;
     }
 
-    // Check Codex CLI environment variables
-    if env::var("CODEX_CLI").is_ok()
-        || env::var("CODEX_SESSION_ID").is_ok()
-        || env::var("CODEX_HOME").is_ok()
-    {
+    // Check Codex CLI environment variables. CODEX_HOME is not one: users
+    // export it from their shell profile, so it says nothing about what is
+    // running now.
+    if env::var("CODEX_CLI").is_ok() || env::var("CODEX_SESSION_ID").is_ok() {
         return CliEnvironment::CodexCli;
     }
 
@@ -114,23 +118,39 @@ pub fn get_cli_binary(env: CliEnvironment) -> &'static str {
 }
 
 /// Check if a CLI binary is available in PATH.
+///
+/// PATH is searched directly rather than through `which`, which is missing
+/// from some minimal images and then reported every binary as absent.
 pub fn is_cli_available(binary: &str) -> bool {
-    #[cfg(unix)]
-    {
-        std::process::Command::new("which")
-            .arg(binary)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    }
-    #[cfg(windows)]
-    {
-        std::process::Command::new("where")
-            .arg(binary)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    }
+    cli_on_path(binary, env::var_os("PATH").as_deref())
+}
+
+/// True when an executable file named `binary` is in one of `path`'s dirs.
+fn cli_on_path(binary: &str, path: Option<&std::ffi::OsStr>) -> bool {
+    let Some(path) = path else {
+        return false;
+    };
+    env::split_paths(path).any(|dir| {
+        let candidate = dir.join(binary);
+        #[cfg(windows)]
+        let candidate = if candidate.extension().is_none() {
+            candidate.with_extension("exe")
+        } else {
+            candidate
+        };
+        is_executable(&candidate)
+    })
+}
+
+#[cfg(unix)]
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &std::path::Path) -> bool {
+    path.is_file()
 }
 
 /// Get the best available CLI binary.
@@ -222,5 +242,40 @@ mod tests {
         assert_eq!(pick_available_cli("claude", |_| false), None);
         // The public entry point runs without panicking whatever is installed.
         let _ = get_available_cli();
+    }
+
+    #[test]
+    fn codex_home_alone_does_not_mean_codex_is_running() {
+        let _g = env_guard();
+        let _client = set_env_var("SKRILLS_CLIENT", None);
+        let _vars: Vec<_> = [
+            "CLAUDE_CODE_SESSION",
+            "CLAUDE_CLI",
+            "__CLAUDE_MCP_SERVER",
+            "CLAUDE_CODE_ENTRYPOINT",
+            "CODEX_CLI",
+            "CODEX_SESSION_ID",
+            "SKRILLS_SUBAGENTS_DEFAULT_BACKEND",
+        ]
+        .into_iter()
+        .map(|k| set_env_var(k, None))
+        .collect();
+        let _home = set_env_var("CODEX_HOME", Some("/home/u/.codex"));
+        assert_ne!(detect_cli_environment(), CliEnvironment::CodexCli);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn is_cli_available_searches_path_directly() {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = tempfile::tempdir().unwrap();
+        let exe = bin.path().join("fake-cli-xyz");
+        std::fs::write(&exe, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(bin.path().join("not-exec-xyz"), "").unwrap();
+        let path = std::ffi::OsString::from(bin.path());
+        assert!(cli_on_path("fake-cli-xyz", Some(&path)));
+        assert!(!cli_on_path("not-exec-xyz", Some(&path)));
+        assert!(!cli_on_path("missing-xyz", Some(&path)));
     }
 }

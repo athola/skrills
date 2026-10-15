@@ -168,7 +168,7 @@ fn extract_keywords(prompt: &str) -> Vec<String> {
     prompt
         .to_lowercase()
         .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
-        .filter(|s| s.len() >= MIN_KEYWORD_LENGTH)
+        .filter(|s| s.chars().count() >= MIN_KEYWORD_LENGTH)
         .filter(|s| !is_stop_word(s))
         .map(|s| s.to_string())
         .collect()
@@ -197,7 +197,8 @@ pub fn get_cooccurring_skills(
         .or_else(|| analytics.cooccurrence.get(skill_key(skill)))
         .map(|coocs| {
             let mut pairs: Vec<_> = coocs.iter().map(|(k, v)| (k.clone(), *v)).collect();
-            pairs.sort_by_key(|b| std::cmp::Reverse(b.1));
+            // Ties are ordered by name, so the cut-off is the same every run.
+            pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
             pairs.truncate(limit);
             pairs
         })
@@ -210,19 +211,21 @@ pub fn recency_score(analytics: &UsageAnalytics, skill: &str, now: u64) -> f64 {
         .recency
         .get(skill)
         .or_else(|| analytics.recency.get(skill_key(skill)));
-    if let Some(&last_used) = last_used {
-        if last_used == 0 || now == 0 {
-            return 0.0;
-        }
-        // Score decays with a 30-day e-folding time (score ≈ 0.37 at 30 days).
-        // True half-life is ~20.8 days (30 * ln(2)).
-        let age_seconds = now.saturating_sub(last_used);
-        let age_days = age_seconds as f64 / 86400.0;
-        let decay_factor = 30.0;
-        (-(age_days / decay_factor)).exp()
-    } else {
-        0.0
+    last_used.map_or(0.0, |&last_used| recency_decay(last_used, now))
+}
+
+/// e-folding time, in days, of every recency signal.
+const RECENCY_DECAY_DAYS: f64 = 30.0;
+
+/// Fraction of a recency signal left `now - last_used` seconds after use:
+/// 1.0 when just used, about 0.37 after 30 days (a half-life of ~20.8 days).
+/// Unknown times (0) score 0.
+pub(crate) fn recency_decay(last_used: u64, now: u64) -> f64 {
+    if last_used == 0 || now == 0 {
+        return 0.0;
     }
+    let age_days = now.saturating_sub(last_used) as f64 / 86_400.0;
+    (-age_days / RECENCY_DECAY_DAYS).exp()
 }
 
 #[cfg(test)]
@@ -409,5 +412,23 @@ mod tests {
         ]);
         assert_eq!(analytics.frequency.len(), 1, "{:?}", analytics.frequency);
         assert_eq!(analytics.frequency.get("foo"), Some(&4));
+    }
+
+    #[test]
+    fn cooccurring_skills_with_equal_counts_are_ordered_by_name() {
+        let mut analytics = UsageAnalytics::default();
+        let coocs = analytics.cooccurrence.entry("a".to_string()).or_default();
+        for name in ["zeta", "beta", "mid", "alpha"] {
+            coocs.insert(name.to_string(), 1);
+        }
+        let pairs = get_cooccurring_skills(&analytics, "a", 3);
+        let names: Vec<_> = pairs.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "beta", "mid"]);
+    }
+
+    #[test]
+    fn keyword_length_counts_characters_not_bytes() {
+        let keywords = extract_keywords("日本 rust");
+        assert_eq!(keywords, vec!["rust".to_string()]);
     }
 }

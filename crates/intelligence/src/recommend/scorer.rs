@@ -2,7 +2,7 @@
 
 use super::{explainer, RecommendationSignal, ScoreBreakdown, SmartRecommendation};
 use crate::context::ProjectProfile;
-use crate::usage::{skill_key, UsageAnalytics};
+use crate::usage::{recency_decay, skill_key, UsageAnalytics};
 use std::collections::HashMap;
 
 /// Weights for different recommendation signals.
@@ -163,8 +163,20 @@ impl RecommendationScorer {
 
 impl Scorer for RecommendationScorer {
     fn score(&self, uri: &str, signals: Vec<RecommendationSignal>) -> SmartRecommendation {
+        self.score_at(uri, signals, unix_now())
+    }
+}
+
+impl RecommendationScorer {
+    /// [`Scorer::score`] with the current time given, so recency is
+    /// reproducible.
+    pub(crate) fn score_at(
+        &self,
+        uri: &str,
+        signals: Vec<RecommendationSignal>,
+        now: u64,
+    ) -> SmartRecommendation {
         let mut breakdown = ScoreBreakdown::default();
-        let now = unix_now();
 
         for signal in &signals {
             match signal {
@@ -181,7 +193,8 @@ impl Scorer for RecommendationScorer {
                     // Logarithmic scaling for co-occurrence
                     // log2(count + 1): count=1 → 1.0, count=3 → 2.0, count=7 → 3.0
                     if *count > 0 {
-                        breakdown.usage_score += COUSED_WEIGHT * ((*count + 1) as f64).log2();
+                        breakdown.usage_score +=
+                            COUSED_WEIGHT * (count.saturating_add(1) as f64).log2();
                     }
                 }
                 RecommendationSignal::ProjectMatch { matched } => {
@@ -193,14 +206,17 @@ impl Scorer for RecommendationScorer {
                         CONTEXT_MATCH_WEIGHT * (unique.len() as f64).min(MAX_PROJECT_MATCHES);
                 }
                 RecommendationSignal::RecentlyUsed { last_used } => {
-                    breakdown.usage_score += RECENCY_WEIGHT * recency_factor(*last_used, now);
+                    breakdown.usage_score += RECENCY_WEIGHT * recency_decay(*last_used, now);
                 }
                 RecommendationSignal::PromptMatch { keywords } => {
                     breakdown.context_score +=
                         PROMPT_MATCH_WEIGHT * (keywords.len() as f64).min(3.0);
                 }
                 RecommendationSignal::HighQuality { score } => {
-                    breakdown.quality_score += QUALITY_WEIGHT * score;
+                    // A quality score is 0-1, and a skill has one: repeated
+                    // signals keep the best, they do not add up.
+                    let quality = QUALITY_WEIGHT * clamp_unit(*score);
+                    breakdown.quality_score = breakdown.quality_score.max(quality);
                 }
                 RecommendationSignal::SimilarityMatch { similarity, .. } => {
                     // Similarity is 0.0-1.0, scale by weight
@@ -216,7 +232,7 @@ impl Scorer for RecommendationScorer {
             .any(|s| matches!(s, RecommendationSignal::HighQuality { .. }));
         if !has_quality_signal {
             if let Some(&quality) = self.quality_scores.get(uri) {
-                breakdown.quality_score = quality * QUALITY_WEIGHT;
+                breakdown.quality_score = clamp_unit(quality) * QUALITY_WEIGHT;
             }
         }
 
@@ -250,17 +266,13 @@ impl Scorer for RecommendationScorer {
 /// Most project matches counted towards the score, as for prompt matches.
 const MAX_PROJECT_MATCHES: f64 = 3.0;
 
-/// e-folding time, in days, of the recently-used bonus (as in
-/// `usage::analytics::recency_score`).
-const RECENCY_DECAY_DAYS: f64 = 30.0;
-
-/// Fraction of the recently-used bonus left `now - last_used` seconds later.
-fn recency_factor(last_used: u64, now: u64) -> f64 {
-    if last_used == 0 || now == 0 {
-        return 0.0;
+/// `value` clamped to 0-1, with NaN as 0.
+fn clamp_unit(value: f64) -> f64 {
+    if value.is_nan() {
+        0.0
+    } else {
+        value.clamp(0.0, 1.0)
     }
-    let age_days = now.saturating_sub(last_used) as f64 / 86_400.0;
-    (-age_days / RECENCY_DECAY_DAYS).exp()
 }
 
 fn unix_now() -> u64 {
@@ -1303,5 +1315,67 @@ mod tests {
             ),
             1
         );
+    }
+
+    #[test]
+    fn quality_signal_counts_once_and_stays_within_zero_to_one() {
+        let scorer = RecommendationScorer::new();
+        let rec = scorer.score(
+            "skill://test/skill",
+            vec![
+                RecommendationSignal::HighQuality { score: 5.0 },
+                RecommendationSignal::HighQuality { score: 0.9 },
+            ],
+        );
+        assert_eq!(rec.score_breakdown.quality_score, QUALITY_WEIGHT);
+        let rec = scorer.score(
+            "skill://test/skill",
+            vec![RecommendationSignal::HighQuality { score: -3.0 }],
+        );
+        assert_eq!(rec.score_breakdown.quality_score, 0.0);
+    }
+
+    #[test]
+    fn coused_count_at_the_u64_limit_does_not_overflow() {
+        let scorer = RecommendationScorer::new();
+        let rec = scorer.score(
+            "skill://test/skill",
+            vec![RecommendationSignal::CoUsed { count: u64::MAX }],
+        );
+        assert_eq!(rec.score_breakdown.usage_score, MAX_USAGE_SCORE);
+    }
+
+    #[test]
+    fn recency_bonus_halves_with_age_at_a_fixed_now() {
+        let now = 1_700_000_000;
+        let scorer = RecommendationScorer::new();
+        let fresh = scorer.score_at(
+            "skill://test/skill",
+            vec![RecommendationSignal::RecentlyUsed { last_used: now }],
+            now,
+        );
+        assert_eq!(fresh.score, RECENCY_WEIGHT);
+        let month = scorer.score_at(
+            "skill://test/skill",
+            vec![RecommendationSignal::RecentlyUsed {
+                last_used: now - 30 * 86_400,
+            }],
+            now,
+        );
+        assert!((month.score - RECENCY_WEIGHT * (-1.0f64).exp()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn combined_signals_score_exactly() {
+        let scorer = RecommendationScorer::new();
+        let rec = scorer.score(
+            "skill://test/skill",
+            vec![
+                RecommendationSignal::Dependency,
+                RecommendationSignal::CoUsed { count: 3 },
+            ],
+        );
+        // 3.0 + 2.5 * log2(4)
+        assert_eq!(rec.score, 8.0);
     }
 }

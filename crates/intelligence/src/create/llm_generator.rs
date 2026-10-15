@@ -99,10 +99,7 @@ pub async fn generate_skill_with_llm(request: &CreateSkillRequest) -> Result<Cre
         String::new()
     };
 
-    let prompt = SKILL_GENERATION_PROMPT
-        .replace("{name}", &request.name)
-        .replace("{description}", &request.description)
-        .replace("{context_section}", &context_section);
+    let prompt = build_prompt(&request.name, &request.description, &context_section);
 
     debug!("Generation prompt:\n{}", prompt);
 
@@ -141,6 +138,30 @@ pub async fn generate_skill_with_llm(request: &CreateSkillRequest) -> Result<Cre
             format!("Failed to run CLI: {}", e),
         )),
     }
+}
+
+/// Fill the prompt template in one pass, so a `{description}` inside the
+/// name (or a `{context_section}` inside the description) stays literal.
+fn build_prompt(name: &str, description: &str, context_section: &str) -> String {
+    let mut prompt = String::with_capacity(SKILL_GENERATION_PROMPT.len());
+    let mut rest = SKILL_GENERATION_PROMPT;
+    while let Some(start) = rest.find('{') {
+        prompt.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        let (value, len) = if tail.starts_with("{name}") {
+            (name, "{name}".len())
+        } else if tail.starts_with("{description}") {
+            (description, "{description}".len())
+        } else if tail.starts_with("{context_section}") {
+            (context_section, "{context_section}".len())
+        } else {
+            ("{", 1)
+        };
+        prompt.push_str(value);
+        rest = &tail[len..];
+    }
+    prompt.push_str(rest);
+    prompt
 }
 
 /// How long a skill-generation CLI may run before it is killed.
@@ -305,7 +326,15 @@ fn is_valid_skill_md(content: &str) -> bool {
 }
 
 /// Generate a skill synchronously (blocking).
+///
+/// Builds its own runtime, so it fails (rather than panicking) when called
+/// from inside a tokio runtime; async callers use [`generate_skill_with_llm`].
 pub fn generate_skill_sync(request: &CreateSkillRequest) -> Result<CreateSkillResult> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        anyhow::bail!(
+            "generate_skill_sync called inside a tokio runtime; use generate_skill_with_llm"
+        );
+    }
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -987,5 +1016,22 @@ description: Code block never closed
             .block_on(generate_skill_with_llm(&request))
             .unwrap();
         assert!(!result.success, "refusal accepted: {:?}", result.content);
+    }
+
+    #[tokio::test]
+    async fn generate_skill_sync_refuses_to_run_inside_a_runtime() {
+        let request = CreateSkillRequest::new("x", "y");
+        assert!(generate_skill_sync(&request).is_err());
+    }
+
+    #[test]
+    fn prompt_placeholders_inside_values_are_not_expanded() {
+        let prompt = build_prompt("{description}", "uses {context_section} literally", "CTX");
+        assert!(prompt.contains("Name: {description}"), "{prompt}");
+        assert!(
+            prompt.contains("Description: uses {context_section} literally"),
+            "{prompt}"
+        );
+        assert_eq!(prompt.matches("CTX").count(), 1, "{prompt}");
     }
 }

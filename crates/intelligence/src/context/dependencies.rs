@@ -17,13 +17,17 @@ pub fn parse_cargo_toml(path: &Path) -> Result<Vec<DependencyInfo>> {
     let doc: toml::Value = toml::from_str(&content)?;
     let mut deps: Vec<DependencyInfo> = Vec::new();
 
-    let mut add_table = |table: Option<&toml::Value>, dev: bool| {
+    // `dev` is `None` for `[workspace.dependencies]`: that table declares
+    // versions for members and says nothing about how a crate is used.
+    let mut add_table = |table: Option<&toml::Value>, dev: Option<bool>| {
         let Some(table) = table.and_then(|t| t.as_table()) else {
             return;
         };
         for (name, value) in table {
             if let Some(existing) = deps.iter_mut().find(|d| &d.name == name) {
-                existing.dev &= dev;
+                if let Some(dev) = dev {
+                    existing.dev &= dev;
+                }
                 if existing.version.is_none() {
                     existing.version = extract_cargo_version(value);
                 }
@@ -32,7 +36,7 @@ pub fn parse_cargo_toml(path: &Path) -> Result<Vec<DependencyInfo>> {
             deps.push(DependencyInfo {
                 name: name.clone(),
                 version: extract_cargo_version(value),
-                dev,
+                dev: dev.unwrap_or(false),
             });
         }
     };
@@ -44,18 +48,18 @@ pub fn parse_cargo_toml(path: &Path) -> Result<Vec<DependencyInfo>> {
         ("build-dependencies", true),
     ];
     for (section, dev) in sections {
-        add_table(doc.get(section), dev);
+        add_table(doc.get(section), Some(dev));
     }
     if let Some(targets) = doc.get("target").and_then(|t| t.as_table()) {
         for target in targets.values() {
             for (section, dev) in sections {
-                add_table(target.get(section), dev);
+                add_table(target.get(section), Some(dev));
             }
         }
     }
     add_table(
         doc.get("workspace").and_then(|w| w.get("dependencies")),
-        false,
+        None,
     );
 
     Ok(deps)
@@ -100,14 +104,20 @@ pub fn parse_package_json(path: &Path) -> Result<Vec<DependencyInfo>> {
         }
     }
 
-    // Parse peerDependencies (treat as non-dev)
-    if let Some(peer_deps) = doc.get("peerDependencies").and_then(|d| d.as_object()) {
-        for (name, version) in peer_deps {
-            deps.push(DependencyInfo {
-                name: name.clone(),
-                version: version.as_str().map(|s| s.to_string()),
-                dev: false,
-            });
+    // Parse peerDependencies and optionalDependencies (treat as non-dev).
+    // A name already listed is not repeated.
+    for section in ["peerDependencies", "optionalDependencies"] {
+        if let Some(extra) = doc.get(section).and_then(|d| d.as_object()) {
+            for (name, version) in extra {
+                if deps.iter().any(|d: &DependencyInfo| &d.name == name) {
+                    continue;
+                }
+                deps.push(DependencyInfo {
+                    name: name.clone(),
+                    version: version.as_str().map(|s| s.to_string()),
+                    dev: false,
+                });
+            }
         }
     }
 
@@ -224,6 +234,25 @@ pub fn parse_pyproject_toml(path: &Path) -> Result<Vec<DependencyInfo>> {
         }
     }
 
+    // Parse [dependency-groups] (PEP 735), treated as dev like the other
+    // optional groups.
+    if let Some(groups) = doc.get("dependency-groups").and_then(|g| g.as_table()) {
+        for group in groups.values() {
+            for dep in group.as_array().into_iter().flatten() {
+                if let Some(dep_str) = dep.as_str() {
+                    let (name, version) = parse_python_dep_string(dep_str);
+                    deps.push(DependencyInfo {
+                        name,
+                        version,
+                        dev: true,
+                    });
+                }
+            }
+        }
+    }
+
+    // An empty or whitespace entry names nothing.
+    deps.retain(|d| !d.name.is_empty());
     Ok(deps)
 }
 
@@ -246,6 +275,9 @@ pub(super) fn parse_python_dep_string(dep: &str) -> (String, Option<String>) {
     let dep = dep.split('#').next().unwrap_or_default();
     let dep = dep.split(';').next().unwrap_or_default();
     let dep = dep.split(" @ ").next().unwrap_or_default();
+    // A requirements-file option such as `--hash=sha256:...` is not part of
+    // the version.
+    let dep = dep.split(" --").next().unwrap_or_default();
     let dep = dep.trim();
 
     // Find version specifier start
@@ -862,8 +894,61 @@ serde = "1"
         assert_eq!(find("tokio").unwrap().version.as_deref(), Some("1"));
         assert!(!find("libc").unwrap().dev);
         assert!(find("winapi").unwrap().dev);
-        // Listed as dev and as a workspace dependency: reported once, normal.
+        // Listed as dev and as a workspace dependency: reported once, still
+        // dev (the workspace table says nothing about how a crate is used).
         assert_eq!(deps.iter().filter(|d| d.name == "serde").count(), 1);
-        assert!(!find("serde").unwrap().dev);
+        assert!(find("serde").unwrap().dev);
+    }
+
+    #[test]
+    fn workspace_dependencies_do_not_turn_a_dev_dependency_into_a_normal_one() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("Cargo.toml");
+        fs::write(
+            &path,
+            "[dev-dependencies]\ntempfile = \"3\"\n\n[workspace.dependencies]\ntempfile = \"3\"\nserde = \"1\"\n",
+        )
+        .unwrap();
+        let deps = parse_cargo_toml(&path).unwrap();
+        let tempfile = deps.iter().find(|d| d.name == "tempfile").unwrap();
+        assert!(tempfile.dev);
+        assert!(deps.iter().any(|d| d.name == "serde"));
+    }
+
+    #[test]
+    fn pyproject_reads_dependency_groups_and_skips_empty_names() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("pyproject.toml");
+        fs::write(
+            &path,
+            "[project]\ndependencies = [\"\", \"requests\"]\n\n[dependency-groups]\ntest = [\"pytest>=8\"]\n",
+        )
+        .unwrap();
+        let deps = parse_pyproject_toml(&path).unwrap();
+        let names: Vec<_> = deps.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, vec!["requests", "pytest"]);
+        assert!(deps[1].dev);
+    }
+
+    #[test]
+    fn package_json_reads_optional_dependencies_and_lists_each_name_once() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("package.json");
+        fs::write(
+            &path,
+            r#"{"dependencies":{"react":"^18"},"peerDependencies":{"react":"^18"},"optionalDependencies":{"fsevents":"^2"}}"#,
+        )
+        .unwrap();
+        let deps = parse_package_json(&path).unwrap();
+        let mut names: Vec<_> = deps.iter().map(|d| d.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["fsevents", "react"]);
+    }
+
+    #[test]
+    fn requirement_hash_options_are_not_part_of_the_version() {
+        let (name, version) = parse_python_dep_string("flask==3.0.0 --hash=sha256:abc");
+        assert_eq!(name, "flask");
+        assert_eq!(version.as_deref(), Some("==3.0.0"));
     }
 }

@@ -1,6 +1,8 @@
 //! Parse Codex CLI session and history files from ~/.codex/
 
-use super::claude_parser::{for_each_session_line, MAX_SESSION_FILES, MAX_SESSION_FILE_BYTES};
+use super::claude_parser::{
+    for_each_session_line, MAX_HISTORY_FILE_BYTES, MAX_SESSION_FILES, MAX_SESSION_FILE_BYTES,
+};
 use super::{CommandEntry, SkillUsageEvent};
 use anyhow::Result;
 use serde_json::Value;
@@ -19,16 +21,18 @@ pub fn parse_codex_skills_history(path: &Path) -> Result<Vec<SkillUsageEvent>> {
 
     let content = fs::read_to_string(path)?;
 
-    // Try to parse as array first, then as object with entries
+    // Try to parse as array first, then as object with entries. An entry
+    // with no session id is its own session (`codex-<ts>-<index>`): sharing
+    // `codex-<ts>` made every id-less pair in the file look co-used.
     if let Ok(entries) = serde_json::from_str::<Vec<Value>>(&content) {
-        for entry in entries {
-            events.extend(parse_skills_history_entry(&entry));
+        for (index, entry) in entries.iter().enumerate() {
+            events.extend(parse_skills_history_entry(entry, index));
         }
     } else if let Ok(obj) = serde_json::from_str::<Value>(&content) {
         // Handle object format with nested arrays
         if let Some(entries) = obj.get("entries").and_then(|e| e.as_array()) {
-            for entry in entries {
-                events.extend(parse_skills_history_entry(entry));
+            for (index, entry) in entries.iter().enumerate() {
+                events.extend(parse_skills_history_entry(entry, index));
             }
         }
         // Also check for direct skills array
@@ -50,7 +54,7 @@ pub fn parse_codex_skills_history(path: &Path) -> Result<Vec<SkillUsageEvent>> {
     Ok(events)
 }
 
-fn parse_skills_history_entry(entry: &Value) -> Vec<SkillUsageEvent> {
+fn parse_skills_history_entry(entry: &Value, index: usize) -> Vec<SkillUsageEvent> {
     let mut events = Vec::new();
 
     let timestamp = entry.get("ts").and_then(|t| t.as_u64()).unwrap_or(0);
@@ -58,7 +62,7 @@ fn parse_skills_history_entry(entry: &Value) -> Vec<SkillUsageEvent> {
         .get("session_id")
         .and_then(|s| s.as_str())
         .map(|s| s.to_string())
-        .unwrap_or_else(|| format!("codex-{}", timestamp));
+        .unwrap_or_else(|| format!("codex-{timestamp}-{index}"));
 
     // Check for skills array
     if let Some(skills) = entry.get("skills").and_then(|s| s.as_array()) {
@@ -96,12 +100,9 @@ pub fn parse_codex_command_history(history_path: &Path) -> Result<Vec<CommandEnt
         return Ok(entries);
     }
 
-    let content = fs::read_to_string(history_path)?;
-
-    for line in content.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
+    // Streamed like the session logs: one truncated multibyte paste costs one
+    // line, not the whole history.
+    for_each_session_line(history_path, MAX_HISTORY_FILE_BYTES, |line| {
         if let Ok(entry) = serde_json::from_str::<Value>(line) {
             let text = entry
                 .get("text")
@@ -126,7 +127,7 @@ pub fn parse_codex_command_history(history_path: &Path) -> Result<Vec<CommandEnt
                 });
             }
         }
-    }
+    })?;
 
     Ok(entries)
 }
@@ -266,8 +267,9 @@ fn extract_skill_from_args(args: &Value) -> Option<String> {
 
 fn parse_codex_timestamp(s: &str) -> Option<u64> {
     // Try ISO 8601 format first
+    // A pre-1970 time is unknown rather than wrapped to near u64::MAX.
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
-        return Some(dt.timestamp() as u64);
+        return u64::try_from(dt.timestamp()).ok();
     }
     // Try parsing as Unix timestamp
     s.parse::<u64>().ok()
@@ -807,7 +809,7 @@ mod tests {
             "session_id": "session-123"
         });
 
-        let events = parse_skills_history_entry(&entry);
+        let events = parse_skills_history_entry(&entry, 0);
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].skill_path, "skill-a");
         assert_eq!(events[0].timestamp, 1703001000);
@@ -821,7 +823,7 @@ mod tests {
             "skill": "single-skill"
         });
 
-        let events = parse_skills_history_entry(&entry);
+        let events = parse_skills_history_entry(&entry, 0);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].skill_path, "single-skill");
     }
@@ -834,7 +836,7 @@ mod tests {
             "skill": "single-skill"
         });
 
-        let events = parse_skills_history_entry(&entry);
+        let events = parse_skills_history_entry(&entry, 0);
         // Should capture both
         assert_eq!(events.len(), 2);
     }
@@ -846,7 +848,7 @@ mod tests {
             "skill": "test"
         });
 
-        let events = parse_skills_history_entry(&entry);
+        let events = parse_skills_history_entry(&entry, 0);
         assert_eq!(events.len(), 1);
         // Should generate session ID from timestamp
         assert!(events[0].session_id.contains("codex-1703001000"));
@@ -855,7 +857,7 @@ mod tests {
     #[test]
     fn test_parse_skills_history_entry_empty() {
         let entry = serde_json::json!({});
-        let events = parse_skills_history_entry(&entry);
+        let events = parse_skills_history_entry(&entry, 0);
         assert!(events.is_empty());
     }
 
@@ -889,5 +891,35 @@ mod tests {
         fs::write(tmp.path().join("big.jsonl"), SKILL_LINE).unwrap();
         let events = parse_codex_sessions_with_limits(tmp.path(), usize::MAX, 10).unwrap();
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn codex_timestamp_before_1970_is_unknown() {
+        assert_eq!(parse_codex_timestamp("1960-01-01T00:00:00Z"), None);
+    }
+
+    #[test]
+    fn codex_command_history_with_an_invalid_utf8_line_keeps_its_other_lines() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("history.jsonl");
+        let mut content = b"{\"text\":\"\xff broken\"}\n".to_vec();
+        content.extend_from_slice(br#"{"text":"kept","ts":1000,"session_id":"s"}"#);
+        fs::write(&path, content).unwrap();
+        let entries = parse_codex_command_history(&path).unwrap();
+        assert!(entries.iter().any(|e| e.text == "kept"), "{entries:?}");
+    }
+
+    #[test]
+    fn skills_history_entries_without_ids_are_separate_sessions() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("skills-history.json");
+        fs::write(
+            &path,
+            r#"[{"ts": 0, "skill": "a"}, {"ts": 0, "skill": "b"}]"#,
+        )
+        .unwrap();
+        let events = parse_codex_skills_history(&path).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_ne!(events[0].session_id, events[1].session_id);
     }
 }

@@ -97,21 +97,34 @@ pub fn parse_source_key(key: &str) -> Option<SkillSource> {
     } else if key.eq_ignore_ascii_case("agent") {
         Some(SkillSource::Agent)
     } else {
-        None
+        // `extra<N>`, the label `SkillSource::Extra(N)` renders as.
+        key.get(..5)
+            .filter(|prefix| prefix.eq_ignore_ascii_case("extra"))
+            .and_then(|_| key[5..].parse::<u32>().ok())
+            .filter(|_| key[5..].bytes().all(|b| b.is_ascii_digit()))
+            .map(SkillSource::Extra)
     }
 }
 
 /// Category of a hookify rule.
+///
+/// Serialized as the kebab-case manifest identifier (`"pre-commit"`), the
+/// same string [`RuleCategory::as_str`] returns; the lowercase forms written
+/// before (`"precommit"`) still deserialize.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "kebab-case")]
 pub enum RuleCategory {
     /// Pre-commit hook rules.
+    #[serde(alias = "precommit")]
     PreCommit,
     /// Post-commit hook rules.
+    #[serde(alias = "postcommit")]
     PostCommit,
     /// Pre-push hook rules.
+    #[serde(alias = "prepush")]
     PrePush,
     /// User-prompt-submit hook rules.
+    #[serde(alias = "promptsubmit")]
     PromptSubmit,
     /// Notification hook rules.
     Notification,
@@ -256,20 +269,30 @@ impl AgentMeta {
     /// Load and parse the agent configuration from the markdown file.
     ///
     /// Parses YAML frontmatter and extracts the system prompt content.
+    ///
+    /// An agent with no `name` in its frontmatter is named after its file
+    /// stem (`agents/rev.md` is `rev`). A read failure is a
+    /// [`DiscoveryError::Io`](crate::DiscoveryError::Io).
     pub fn load_config(&self) -> Result<AgentConfig> {
-        let content = fs::read_to_string(&self.path)?;
-        parse_agent_config(&content, &self.name)
+        let content = fs::read_to_string(&self.path).map_err(crate::DiscoveryError::from)?;
+        let fallback_name = self
+            .path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&self.name);
+        parse_agent_config(&content, fallback_name)
     }
 
     /// Check if this agent requires local tool access.
     ///
-    /// Returns `true` if the agent's tools field is non-empty (needs tool access).
-    /// Returns `false` if tools is None (inherit all) or empty (no tools).
+    /// Returns `true` if the agent lists tools or has no `tools` key (which
+    /// inherits every tool). Returns `false` only for an explicitly empty
+    /// list (no tools).
     ///
     /// Note: This reads and parses the file; consider caching the result.
     pub fn requires_tools(&self) -> Result<bool> {
         let config = self.load_config()?;
-        Ok(config.tools.as_ref().is_some_and(|t| !t.is_empty()))
+        Ok(config.tools.as_ref().is_none_or(|t| !t.is_empty()))
     }
 }
 
@@ -784,7 +807,7 @@ Content."#,
     }
 
     #[test]
-    fn test_agent_meta_requires_tools_false_none() {
+    fn agent_without_a_tools_key_requires_tools() {
         let tmp = tempdir().unwrap();
         let agent_path = tmp.path().join("agent.md");
         fs::write(
@@ -806,8 +829,8 @@ Content."#,
             hash: "abc".to_string(),
         };
 
-        // None means inherit, which is not "requires specific tools"
-        assert!(!meta.requires_tools().unwrap());
+        // No `tools:` key inherits every tool, so the agent needs tool access.
+        assert!(meta.requires_tools().unwrap());
     }
 
     #[test]
@@ -985,5 +1008,67 @@ Content."#,
         assert!(!deserialized.enabled);
         assert!(deserialized.description.is_none());
         assert!(deserialized.command.is_none());
+    }
+
+    #[test]
+    fn extra_source_label_round_trips() {
+        assert_eq!(parse_source_key("extra0"), Some(SkillSource::Extra(0)));
+        assert_eq!(parse_source_key("extra12"), Some(SkillSource::Extra(12)));
+        assert_eq!(
+            parse_source_key(&SkillSource::Extra(3).label()),
+            Some(SkillSource::Extra(3))
+        );
+        assert_eq!(parse_source_key("extra"), None);
+        assert_eq!(parse_source_key("extrax"), None);
+    }
+
+    #[test]
+    fn agent_without_a_name_falls_back_to_its_file_stem() {
+        let tmp = tempdir().unwrap();
+        let agent_path = tmp.path().join("agents/rev.md");
+        fs::create_dir_all(agent_path.parent().unwrap()).unwrap();
+        fs::write(&agent_path, "---\ndescription: d\n---\nbody").unwrap();
+        let meta = AgentMeta {
+            name: "agents/rev.md".to_string(),
+            path: agent_path,
+            source: SkillSource::Claude,
+            root: tmp.path().to_path_buf(),
+            hash: "h".to_string(),
+        };
+        assert_eq!(meta.load_config().unwrap().name, "rev");
+    }
+
+    #[test]
+    fn rule_category_serializes_as_its_manifest_identifier() {
+        assert_eq!(
+            serde_json::to_string(&RuleCategory::PreCommit).unwrap(),
+            "\"pre-commit\""
+        );
+        assert_eq!(
+            serde_json::to_string(&RuleCategory::PromptSubmit).unwrap(),
+            "\"prompt-submit\""
+        );
+        // Data written before the rename still reads.
+        let old: RuleCategory = serde_json::from_str("\"precommit\"").unwrap();
+        assert_eq!(old, RuleCategory::PreCommit);
+    }
+
+    #[test]
+    fn agent_load_failure_is_a_discovery_io_error() {
+        let meta = AgentMeta {
+            name: "missing".to_string(),
+            path: PathBuf::from("/nonexistent/path/agent.md"),
+            source: SkillSource::Codex,
+            root: PathBuf::from("/nonexistent"),
+            hash: "abc".to_string(),
+        };
+        let err = meta.load_config().unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<crate::DiscoveryError>(),
+                Some(crate::DiscoveryError::Io(_))
+            ),
+            "{err:?}"
+        );
     }
 }

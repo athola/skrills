@@ -41,11 +41,12 @@ pub use error::DiscoveryError;
 
 /// Error type for discovery operations.
 ///
-/// Currently aliased to `anyhow::Error` for callers that propagate
-/// errors via `?` into `anyhow::Result` contexts (the workspace-wide
-/// convention). Internal call sites that surface
-/// structured failure modes return [`DiscoveryError`] directly; the
-/// `?` operator converts into `anyhow::Error`.
+/// Aliased to `anyhow::Error` for callers that propagate errors via `?`
+/// into `anyhow::Result` contexts (the workspace-wide convention). Every
+/// public function returns this alias. Where a failure has a structured
+/// form ([`AgentMeta::load_config`] reading or parsing an agent file) the
+/// error wraps a [`DiscoveryError`], which callers can recover with
+/// `downcast_ref`.
 pub type Error = anyhow::Error;
 /// Result type for discovery operations.
 pub type Result<T> = std::result::Result<T, Error>;

@@ -21,16 +21,24 @@ use crate::context::ProjectProfile;
 use serde::{Deserialize, Serialize};
 
 /// Method for creating a new skill.
+///
+/// Serialized under the same names `Display` prints and `FromStr` reads
+/// (`github`, `llm`, `empirical`, `both`); the variant names written before
+/// (`GitHubSearch`) still deserialize.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub enum CreationMethod {
     /// Search GitHub for existing skills.
+    #[serde(rename = "github", alias = "GitHubSearch")]
     GitHubSearch,
     /// Generate using LLM.
+    #[serde(rename = "llm", alias = "LLMGenerate")]
     LLMGenerate,
     /// Generate from empirical session patterns.
+    #[serde(rename = "empirical", alias = "Empirical")]
     Empirical,
     /// Default: both GitHub search and LLM in sequence.
     #[default]
+    #[serde(rename = "both", alias = "Both")]
     Both,
 }
 
@@ -476,6 +484,31 @@ mod tests {
 
             let debug = format!("{:?}", result);
             assert!(debug.contains("test error"));
+        }
+    }
+
+    #[cfg(test)]
+    mod creation_method_serde {
+        use super::CreationMethod;
+
+        #[test]
+        fn creation_method_serde_uses_the_display_names() {
+            for (method, name) in [
+                (CreationMethod::GitHubSearch, "github"),
+                (CreationMethod::LLMGenerate, "llm"),
+                (CreationMethod::Empirical, "empirical"),
+                (CreationMethod::Both, "both"),
+            ] {
+                assert_eq!(
+                    serde_json::to_string(&method).unwrap(),
+                    format!("\"{name}\"")
+                );
+                let parsed: CreationMethod = serde_json::from_str(&format!("\"{name}\"")).unwrap();
+                assert_eq!(parsed, method);
+            }
+            // Names written before the rename still read.
+            let old: CreationMethod = serde_json::from_str("\"GitHubSearch\"").unwrap();
+            assert_eq!(old, CreationMethod::GitHubSearch);
         }
     }
 }

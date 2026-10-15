@@ -15,6 +15,16 @@ use walkdir::WalkDir;
 /// Default maximum depth for skill discovery.
 pub const DEFAULT_MAX_DEPTH: usize = 20;
 
+/// Skill files larger than this are hashed from their stat alone, and only
+/// their first `FRONTMATTER_PREFIX_BYTES` are read for frontmatter. Discovery
+/// runs on every rescan across rayon threads, so a huge file in a plugin
+/// cache would otherwise cost its size once per thread, twice.
+const MAX_SKILL_FILE_BYTES: u64 = 1024 * 1024;
+/// How much of a skill file is read to find its frontmatter.
+const FRONTMATTER_PREFIX_BYTES: u64 = 64 * 1024;
+/// Rule files larger than this are skipped.
+const MAX_RULE_FILE_BYTES: u64 = 1024 * 1024;
+
 // Common heavy directories to skip during discovery to reduce first-run latency.
 const IGNORE_DIRS: &[&str] = &[
     "node_modules",
@@ -203,30 +213,67 @@ fn file_hash(path: &Path) -> Result<String> {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    // Size and mtime come from the stat, and the whole content follows. Hashing
-    // only a prefix missed an edit past it when the size and mtime were kept
-    // (`cp -p`, rsync, a checkout), so a changed skill looked unchanged. Skill
-    // files are small, and discovery reads each one for its frontmatter anyway.
-    let mut hasher = Blake2b256::new();
-    hasher.update(size.to_le_bytes());
-    hasher.update(mtime.to_le_bytes());
-    if size > 0 {
-        use std::io::Read;
-        // Best-effort: an unreadable file still gets a stat-only hash, so it is
-        // listed rather than failing the scan.
-        if let Ok(mut file) = fs::File::open(path) {
-            let mut buf = [0u8; 8192];
-            loop {
-                match file.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => hasher.update(&buf[..n]),
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(_) => break,
-                }
-            }
+    // This is a change-detection hash over the stat and the content, not a
+    // content hash: size and mtime come first, and the whole content follows.
+    // Hashing only a prefix missed an edit past it when the size and mtime
+    // were kept (`cp -p`, rsync, a checkout), so a changed skill looked
+    // unchanged.
+    let stat_hasher = || {
+        let mut hasher = Blake2b256::new();
+        hasher.update(size.to_le_bytes());
+        hasher.update(mtime.to_le_bytes());
+        hasher
+    };
+    if size == 0 || size > MAX_SKILL_FILE_BYTES {
+        if size > MAX_SKILL_FILE_BYTES {
+            tracing::warn!(
+                path = %path.display(),
+                size,
+                limit = MAX_SKILL_FILE_BYTES,
+                "skill file over the size limit; change detection uses its stat only"
+            );
+        }
+        return Ok(hex::encode(stat_hasher().finalize()));
+    }
+    // Best-effort: an unreadable file still gets a stat-only hash, so it is
+    // listed rather than failing the scan. A read that fails part way also
+    // falls back to the stat, never to a hash of the bytes read so far.
+    let mut hasher = stat_hasher();
+    match hash_content(path, &mut hasher) {
+        Ok(()) => Ok(hex::encode(hasher.finalize())),
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "could not read file to hash it; change detection uses its stat only"
+            );
+            Ok(hex::encode(stat_hasher().finalize()))
         }
     }
-    Ok(hex::encode(hasher.finalize()))
+}
+
+/// Feeds the whole content of `path` to `hasher`.
+fn hash_content(path: &Path, hasher: &mut Blake2b256) -> std::io::Result<()> {
+    use std::io::Read;
+    let mut file = fs::File::open(path)?;
+    let mut buf = [0u8; 8192];
+    loop {
+        match file.read(&mut buf) {
+            Ok(0) => return Ok(()),
+            Ok(n) => hasher.update(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Reads at most `limit` bytes from the start of `path`, decoding them
+/// lossily (a cut may split a multibyte character).
+fn read_prefix(path: &Path, limit: u64) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    fs::File::open(path)?.take(limit).read_to_end(&mut bytes)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// Extracts identity fields (name and description) from a skill file's YAML frontmatter.
@@ -351,16 +398,19 @@ fn collect_skills_with_hasher(
             continue;
         }
         let rules_root = is_cursor_rules_root(root_cfg);
+        // Sorted, so dedup winners and output order are the same on every
+        // filesystem.
         let entries: Vec<_> = WalkDir::new(root)
             .min_depth(1)
             .max_depth(max_depth)
+            .sort_by_file_name()
             .into_iter()
             .filter_entry(|e| {
-                // SAFETY: Known TOCTOU limitation - a file could become a symlink between
-                // this check and subsequent fs::read(). Mitigated by:
-                // 1. WalkDir's follow_links(false) default behavior
-                // 2. Skills directories are typically user-controlled, not attacker-writable
-                // 3. The sanitize_name() function prevents path traversal in output paths
+                // NOTE (TOCTOU, #135): a file could become a symlink between this
+                // check and the later read. Mitigated by WalkDir's
+                // follow_links(false) default and by skill directories being
+                // user-controlled. Output paths are sanitized by the callers that
+                // write them, not here.
                 // See: https://github.com/athola/skrills/issues/135
                 if e.file_type().is_symlink() {
                     log_skipped_symlink(e.path());
@@ -417,19 +467,20 @@ fn collect_skills_with_hasher(
                     return Ok(None);
                 };
                 // Extract frontmatter identity (best-effort, log errors)
-                let (frontmatter_name, description) = match fs::read_to_string(&path) {
-                    Ok(content) => extract_frontmatter_identity(&content),
-                    Err(e) => {
-                        // The skill is still listed, but without its name and
-                        // description, so say so at a level an operator sees.
-                        tracing::warn!(
-                            path = %path.display(),
-                            error = %e,
-                            "could not read skill file; listed without its frontmatter"
-                        );
-                        (None, None)
-                    }
-                };
+                let (frontmatter_name, description) =
+                    match read_prefix(&path, FRONTMATTER_PREFIX_BYTES) {
+                        Ok(content) => extract_frontmatter_identity(&content),
+                        Err(e) => {
+                            // The skill is still listed, but without its name and
+                            // description, so say so at a level an operator sees.
+                            tracing::warn!(
+                                path = %path.display(),
+                                error = %e,
+                                "could not read skill file; listed without its frontmatter"
+                            );
+                            (None, None)
+                        }
+                    };
                 Ok(Some((name, path, hash, frontmatter_name, description)))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -558,13 +609,14 @@ fn collect_agents_with_hasher(
         for entry in WalkDir::new(root)
             .min_depth(1)
             .max_depth(DEFAULT_MAX_DEPTH)
+            .sort_by_file_name()
             .into_iter()
             .filter_entry(|e| {
-                // SAFETY: Known TOCTOU limitation - a file could become a symlink between
-                // this check and subsequent fs::read(). Mitigated by:
-                // 1. WalkDir's follow_links(false) default behavior
-                // 2. Skills directories are typically user-controlled, not attacker-writable
-                // 3. The sanitize_name() function prevents path traversal in output paths
+                // NOTE (TOCTOU, #135): a file could become a symlink between this
+                // check and the later read. Mitigated by WalkDir's
+                // follow_links(false) default and by skill directories being
+                // user-controlled. Output paths are sanitized by the callers that
+                // write them, not here.
                 // See: https://github.com/athola/skrills/issues/135
                 if e.file_type().is_symlink() {
                     log_skipped_symlink(e.path());
@@ -623,7 +675,7 @@ pub fn extract_refs_from_agents(md: &str) -> std::collections::HashSet<String> {
     for line in md.lines() {
         for token in line.split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_') {
             let t = token.trim();
-            if t.is_empty() {
+            if t.chars().count() < 3 {
                 continue;
             }
             if t.eq_ignore_ascii_case("skills") || t.eq_ignore_ascii_case("rules") {
@@ -697,7 +749,7 @@ pub fn extra_skill_roots(extra: &[PathBuf]) -> Vec<SkillRoot> {
         .enumerate()
         .map(|(i, p)| SkillRoot {
             root: p.clone(),
-            source: SkillSource::Extra(i as u32),
+            source: SkillSource::Extra(u32::try_from(i).unwrap_or(u32::MAX)),
         })
         .collect()
 }
@@ -713,10 +765,16 @@ pub fn default_roots_auto() -> Vec<SkillRoot> {
 
 /// Returns skill roots from custom directories, or defaults if empty.
 ///
-/// Custom directories are assigned `SkillSource` based on path component matching:
-/// - Path containing a `.claude` component → `SkillSource::Claude`
-/// - Path containing a `.codex` component → `SkillSource::Codex`
-/// - Path containing a `.copilot` or `copilot` component → `SkillSource::Copilot`
+/// Custom directories are assigned `SkillSource` based on path component
+/// matching, most specific first:
+/// - `skills-mirror` component → `SkillSource::Mirror`
+/// - `plugins/cache` → `SkillSource::Cache`
+/// - `plugins/marketplaces` → `SkillSource::Marketplace`
+/// - `.agents` component → `SkillSource::Agent`
+/// - `.claude` component → `SkillSource::Claude`
+/// - `.codex` component → `SkillSource::Codex`
+/// - `.copilot` or `copilot` component → `SkillSource::Copilot`
+/// - `.cursor` component → `SkillSource::Cursor`
 /// - Otherwise → `SkillSource::Extra(index)`
 pub fn skill_roots_or_default(custom: &[PathBuf]) -> Vec<SkillRoot> {
     if custom.is_empty() {
@@ -735,7 +793,24 @@ pub fn skill_roots_or_default(custom: &[PathBuf]) -> Vec<SkillRoot> {
                             .is_some_and(|s| s.eq_ignore_ascii_case(name))
                     })
                 };
-                let source = if has_component(".claude") {
+                let has_pair = |first: &str, second: &str| {
+                    let names: Vec<_> = p
+                        .components()
+                        .filter_map(|c| c.as_os_str().to_str())
+                        .collect();
+                    names.windows(2).any(|w| {
+                        w[0].eq_ignore_ascii_case(first) && w[1].eq_ignore_ascii_case(second)
+                    })
+                };
+                let source = if has_component("skills-mirror") {
+                    SkillSource::Mirror
+                } else if has_pair("plugins", "cache") {
+                    SkillSource::Cache
+                } else if has_pair("plugins", "marketplaces") {
+                    SkillSource::Marketplace
+                } else if has_component(".agents") {
+                    SkillSource::Agent
+                } else if has_component(".claude") {
                     SkillSource::Claude
                 } else if has_component(".codex") {
                     SkillSource::Codex
@@ -810,23 +885,45 @@ pub fn discover_rules(home: &Path, project_dir: Option<&Path>) -> Vec<RuleMeta> 
 
 /// Scan a directory for hook/rule configuration files.
 fn scan_hooks_dir(dir: &Path, source: &str, rules: &mut Vec<RuleMeta>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            tracing::warn!(dir = %dir.display(), error = %e, "could not list rule directory");
+            return;
+        }
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path
+    // Sorted, so rules come out in the same order on every filesystem.
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        if !path
             .extension()
             .is_some_and(|e| e == "json" || e == "yaml" || e == "yml" || e == "toml")
         {
-            // Try to parse as a hook/rule definition
-            if let Ok(contents) = fs::read_to_string(&path) {
+            continue;
+        }
+        match read_rule_file(&path) {
+            Ok(contents) => {
                 if let Some(rule) = parse_rule_file(&path, &contents, source) {
                     rules.push(rule);
                 }
             }
+            Err(e) => tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "rule file skipped: could not read it"
+            ),
         }
     }
+}
+
+/// Reads a rule file, refusing one over `MAX_RULE_FILE_BYTES`.
+fn read_rule_file(path: &Path) -> Result<String> {
+    let size = fs::metadata(path)?.len();
+    if size > MAX_RULE_FILE_BYTES {
+        anyhow::bail!("{size} bytes exceeds the {MAX_RULE_FILE_BYTES}-byte limit");
+    }
+    Ok(fs::read_to_string(path)?)
 }
 
 /// Attempt to parse a rule configuration file into `RuleMeta`.
@@ -834,27 +931,69 @@ fn parse_rule_file(path: &Path, contents: &str, source: &str) -> Option<RuleMeta
     let name = path.file_stem()?.to_str()?.to_string();
     let category = infer_category_from_name(&name);
 
-    // Try to extract description from file content
-    let description = contents
-        .lines()
-        .find(|l| l.contains("description") || l.contains("# "))
-        .map(|l| l.trim().trim_start_matches('#').trim().to_string());
-
-    // Try to extract command
-    let command = contents
-        .lines()
-        .find(|l| l.contains("command") || l.contains("run"))
-        .map(|l| l.trim().to_string());
+    // JSON is a subset of YAML, so one parser reads both. TOML has no parser
+    // in this crate; its top-level `key = "value"` lines are read directly.
+    let is_toml = path.extension().is_some_and(|e| e == "toml");
+    let fields = if is_toml {
+        toml_top_level_strings(contents)
+    } else {
+        yaml_top_level_fields(contents)
+    };
+    let string = |key: &str| {
+        fields
+            .iter()
+            .find(|(k, _)| k == key)
+            .and_then(|(_, v)| v.as_str().map(str::to_string))
+            .filter(|v| !v.trim().is_empty())
+    };
+    let enabled = fields
+        .iter()
+        .find(|(k, _)| k == "enabled")
+        .and_then(|(_, v)| v.as_bool())
+        .unwrap_or(true);
 
     Some(RuleMeta {
         name,
         path: path.to_path_buf(),
         source: source.to_string(),
         category,
-        enabled: true, // Default to enabled
-        description,
-        command,
+        enabled,
+        description: string("description"),
+        command: string("command"),
     })
+}
+
+/// Top-level keys of a YAML (or JSON) mapping; empty when it is not one.
+fn yaml_top_level_fields(contents: &str) -> Vec<(String, serde_json::Value)> {
+    match serde_yaml::from_str::<serde_json::Map<String, serde_json::Value>>(contents) {
+        Ok(map) => map.into_iter().collect(),
+        Err(e) => {
+            tracing::debug!(error = %e, "rule file is not a mapping");
+            Vec::new()
+        }
+    }
+}
+
+/// Top-level `key = "string"` and `key = true|false` lines of a TOML file,
+/// up to its first table header.
+fn toml_top_level_strings(contents: &str) -> Vec<(String, serde_json::Value)> {
+    contents
+        .lines()
+        .map(str::trim)
+        .take_while(|line| !line.starts_with('['))
+        .filter_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            let value = value.trim();
+            let parsed = match value {
+                "true" => serde_json::Value::Bool(true),
+                "false" => serde_json::Value::Bool(false),
+                _ => serde_json::Value::String(
+                    value.strip_prefix('"')?.strip_suffix('"')?.to_string(),
+                ),
+            };
+            Some((key.trim().to_string(), parsed))
+        })
+        .collect()
 }
 
 /// Infer a `RuleCategory` from a rule file name.
@@ -2322,5 +2461,156 @@ Content
         let mut sources: Vec<SkillSource> = roots.into_iter().map(|r| r.source).collect();
         sources.dedup();
         assert_eq!(sources, default_priority());
+    }
+
+    #[test]
+    fn discover_skills_reads_frontmatter_from_a_skill_past_the_size_cap() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("skills");
+        fs::create_dir_all(root.join("big")).unwrap();
+        let mut content = "---\nname: big\ndescription: large skill\n---\n".to_string();
+        content.push_str(&"x".repeat(MAX_SKILL_FILE_BYTES as usize + 1));
+        fs::write(root.join("big/SKILL.md"), content).unwrap();
+        let roots = vec![SkillRoot {
+            root,
+            source: SkillSource::Codex,
+        }];
+        let skills = discover_skills(&roots, None).unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].description.as_deref(), Some("large skill"));
+    }
+
+    #[test]
+    fn read_prefix_stops_at_the_limit() {
+        let tmp = tempdir().unwrap();
+        let file = tmp.path().join("f");
+        fs::write(&file, "abcdef").unwrap();
+        assert_eq!(read_prefix(&file, 3).unwrap(), "abc");
+        assert_eq!(read_prefix(&file, 100).unwrap(), "abcdef");
+    }
+
+    #[test]
+    fn discover_rules_lists_rules_in_name_order() {
+        let tmp = tempdir().unwrap();
+        let hooks = tmp.path().join(".claude/hooks");
+        fs::create_dir_all(&hooks).unwrap();
+        for name in ["zeta", "alpha", "mid"] {
+            fs::write(hooks.join(format!("{name}.json")), "{}").unwrap();
+        }
+        let names: Vec<_> = discover_rules(tmp.path(), None)
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert_eq!(names, vec!["alpha", "mid", "zeta"]);
+    }
+
+    #[test]
+    fn discover_skills_walks_each_root_in_name_order() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("skills");
+        for name in ["zeta", "alpha", "mid"] {
+            fs::create_dir_all(root.join(name)).unwrap();
+            fs::write(root.join(name).join("SKILL.md"), "x").unwrap();
+        }
+        let roots = vec![SkillRoot {
+            root,
+            source: SkillSource::Codex,
+        }];
+        let names: Vec<_> = discover_skills(&roots, None)
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(
+            names,
+            vec!["alpha/SKILL.md", "mid/SKILL.md", "zeta/SKILL.md"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_rules_warns_about_a_rule_file_it_cannot_read() {
+        let tmp = tempdir().unwrap();
+        let hooks = tmp.path().join(".claude/hooks");
+        fs::create_dir_all(&hooks).unwrap();
+        fs::write(hooks.join("bad.json"), b"\xff\xfe").unwrap();
+        let messages = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let subscriber = MessageCapture {
+            level: tracing::Level::WARN,
+            messages: messages.clone(),
+        };
+        let rules =
+            tracing::subscriber::with_default(subscriber, || discover_rules(tmp.path(), None));
+        assert!(rules.is_empty());
+        let messages = messages.lock().unwrap();
+        assert!(
+            messages.iter().any(|m| m.contains("rule file")),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
+    fn rule_metadata_comes_from_the_json_keys() {
+        let tmp = tempdir().unwrap();
+        let hooks = tmp.path().join(".claude/hooks");
+        fs::create_dir_all(&hooks).unwrap();
+        fs::write(
+            hooks.join("lint.json"),
+            "{\n  \"runtime\": \"node\",\n  \"description\": \"Run linter\",\n  \"command\": \"cargo clippy\",\n  \"enabled\": false\n}",
+        )
+        .unwrap();
+        let rules = discover_rules(tmp.path(), None);
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].description.as_deref(), Some("Run linter"));
+        assert_eq!(rules[0].command.as_deref(), Some("cargo clippy"));
+        assert!(!rules[0].enabled);
+    }
+
+    #[test]
+    fn rule_metadata_comes_from_the_yaml_keys() {
+        let tmp = tempdir().unwrap();
+        let hooks = tmp.path().join(".claude/hooks");
+        fs::create_dir_all(&hooks).unwrap();
+        fs::write(
+            hooks.join("lint.yaml"),
+            "truncate: 3\ndescription: Run linter\ncommand: cargo clippy\n",
+        )
+        .unwrap();
+        let rules = discover_rules(tmp.path(), None);
+        assert_eq!(rules[0].description.as_deref(), Some("Run linter"));
+        assert_eq!(rules[0].command.as_deref(), Some("cargo clippy"));
+        assert!(rules[0].enabled);
+    }
+
+    #[test]
+    fn extract_refs_from_agents_drops_tokens_shorter_than_three_chars() {
+        let refs = extract_refs_from_agents("a bb ccc");
+        assert!(!refs.contains("a"));
+        assert!(!refs.contains("bb"));
+        assert!(refs.contains("ccc"));
+    }
+
+    #[test]
+    fn skill_roots_or_default_classifies_mirror_and_plugin_dirs() {
+        let roots = skill_roots_or_default(&[
+            PathBuf::from("/h/.claude/plugins/cache"),
+            PathBuf::from("/h/.claude/plugins/marketplaces"),
+            PathBuf::from("/h/.codex/skills-mirror"),
+            PathBuf::from("/h/.agents/skills"),
+            PathBuf::from("/h/.claude/skills"),
+            PathBuf::from("/h/.cursor/skills"),
+        ]);
+        let sources: Vec<_> = roots.into_iter().map(|r| r.source).collect();
+        assert_eq!(
+            sources,
+            vec![
+                SkillSource::Cache,
+                SkillSource::Marketplace,
+                SkillSource::Mirror,
+                SkillSource::Agent,
+                SkillSource::Claude,
+                SkillSource::Cursor,
+            ]
+        );
     }
 }
