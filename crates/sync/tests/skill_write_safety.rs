@@ -108,41 +108,35 @@ fn a_symlinked_skill_directory_is_not_written_through() {
     }
 }
 
-/// `my.skill` and `myskill` sanitize to one directory; the second silently
+/// `my.skill` and `my-skill` sanitize to one directory; the second silently
 /// overwrote the first and both were reported written.
 #[test]
 fn two_names_that_sanitize_alike_do_not_overwrite_each_other() {
     let tmp = TempDir::new().unwrap();
     for (adapter, skills_dir) in adapters(tmp.path()) {
-        if matches!(adapter.name(), "cursor" | "codex") {
-            // These kebab-case: `my.skill` becomes `my-skill`, a distinct name.
-            continue;
-        }
         let report = adapter
-            .write_skills(&[skill("my.skill", "first"), skill("myskill", "second")])
+            .write_skills(&[skill("my.skill", "first"), skill("my-skill", "second")])
             .unwrap();
 
         assert_eq!(report.written, 1, "{}", adapter.name());
-        let text = std::fs::read_to_string(skills_dir.join("myskill/SKILL.md")).unwrap();
+        let text = std::fs::read_to_string(skills_dir.join("my-skill/SKILL.md")).unwrap();
         assert!(text.contains("first"), "{}: {text}", adapter.name());
     }
 }
 
-/// Pairs that land in one directory for each adapter: kebab-case folding for
-/// Cursor and Codex, a case-only difference everywhere (one directory on APFS
-/// and NTFS), and for Codex two nested names that share a leaf folder.
+/// Pairs that land in one directory for every adapter: kebab-case folding, a
+/// case-only difference (one directory on APFS and NTFS), and two nested
+/// names that share a leaf folder.
 #[test]
 fn names_that_collide_for_each_adapter_do_not_overwrite_each_other() {
     let tmp = TempDir::new().unwrap();
     for (adapter, skills_dir) in adapters(tmp.path()) {
-        let mut pairs = vec![("Case", "case", "Case")];
-        if matches!(adapter.name(), "cursor" | "codex") {
-            pairs.push(("My Skill", "my-skill", "my-skill"));
-            pairs.push(("a.b", "a-b", "a-b"));
-        }
-        if adapter.name() == "codex" {
-            pairs.push(("one/shared", "two/shared", "shared"));
-        }
+        let pairs = [
+            ("Case", "case", "case"),
+            ("My Skill", "my-skill", "my-skill"),
+            ("a.b", "a-b", "a-b"),
+            ("one/shared", "two/shared", "shared"),
+        ];
         for (first, second, dir) in pairs {
             let report = adapter
                 .write_skills(&[skill(first, "first"), skill(second, "second")])

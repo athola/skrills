@@ -414,6 +414,24 @@ pub(crate) fn skill_dir_name(skill: &crate::common::Command) -> String {
     }
 }
 
+/// The folder a skill is written to in every target: the last segment of its
+/// name, kebab-cased, so `synced/<id>/morning` lands in `morning/` whichever
+/// tool receives it, and `a/b` and `ab` stay apart.
+///
+/// One segment because Cursor and OpenCode load a skill only when its
+/// frontmatter `name` matches its folder, and the shared `~/.agents/skills`
+/// is read one level deep.
+pub(crate) fn skill_folder_name(skill: &crate::common::Command) -> String {
+    let dir = skill_dir_name(skill);
+    let leaf = dir.rsplit(['/', '\\']).next().unwrap_or(&dir);
+    sanitize_name_kebab(leaf)
+}
+
+/// File placed in every skill directory skrills writes, so a later cleanup
+/// can tell its copies from skills the user made. Hidden, so no reader
+/// collects it as a module.
+pub(crate) const SYNCED_MARKER: &str = ".skrills-synced";
+
 /// Writes skill-shaped directories (`<root>/<rel_dir>/<main_file>` plus
 /// companion modules) for one batch, with the checks every adapter needs.
 ///
@@ -608,6 +626,16 @@ impl BatchWriter {
                 continue;
             }
             changed = true;
+        }
+
+        let marker = dir.join(SYNCED_MARKER);
+        if !marker.exists() {
+            if let Err(e) = write_file(&marker, b"written by skrills sync\n") {
+                report.warnings.push(format!(
+                    "Could not mark {} as a skrills copy: {e}",
+                    dir.display()
+                ));
+            }
         }
 
         if changed {

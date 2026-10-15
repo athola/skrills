@@ -3,9 +3,7 @@ use crate::cli::SyncSource;
 use anyhow::{anyhow, bail, Result};
 use skrills_discovery::{SkillRoot, SkillSource};
 use skrills_server::discovery::merge_extra_dirs;
-use skrills_server::sync::{
-    mirror_source_root, sync_agents, sync_agents_only_from_claude, sync_skills_from_claude_to_codex,
-};
+use skrills_server::sync::{mirror_source_root, sync_agents, sync_agents_only_from_claude};
 use skrills_state::home_dir;
 use skrills_validate::ValidationTarget as VT;
 use std::path::{Path, PathBuf};
@@ -32,7 +30,7 @@ pub(crate) fn handle_sync_agents_command(
 /// Handle the `sync` command.
 pub(crate) fn handle_sync_command(include_marketplace: bool) -> Result<()> {
     let home = home_dir()?;
-    let report = sync_skills_from_claude_to_codex(
+    let report = skrills_sync::sync_claude_skills_to_codex(
         &mirror_source_root(&home),
         &home,
         include_marketplace,
@@ -71,8 +69,12 @@ pub(crate) fn handle_mirror_command(
         )?
     };
     // Skills go to ~/.agents/skills, where Codex loads them.
-    let codex_report =
-        sync_skills_from_claude_to_codex(&claude_root, &home, include_marketplace, dry_run)?;
+    let codex_report = skrills_sync::sync_claude_skills_to_codex(
+        &claude_root,
+        &home,
+        include_marketplace,
+        dry_run,
+    )?;
     print_skill_warnings(&codex_report);
     // Mirror commands/mcp/prefs
     let source = skrills_sync::ClaudeAdapter::new()?;

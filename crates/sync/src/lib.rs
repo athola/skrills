@@ -153,7 +153,8 @@ pub use common::{
 };
 pub use models::transform_model;
 pub use orchestrator::{
-    create_adapter, is_valid_platform, sync_between, SyncOrchestrator, SyncParams,
+    create_adapter, is_valid_platform, sync_between, sync_claude_skills_to_codex, SyncOrchestrator,
+    SyncParams,
 };
 pub use platform_routing::{default_target_for, skill_delivery, SkillDelivery};
 pub use report::{SkipReason, SyncReport, WriteReport};

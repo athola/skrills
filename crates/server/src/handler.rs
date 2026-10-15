@@ -391,7 +391,7 @@ impl ServerHandler for SkillService {
                             .unwrap_or(false);
                         let home = home_dir()?;
                         let claude_root = mirror_source_root(&home);
-                        let report = crate::sync::sync_skills_from_claude_to_codex(
+                        let report = skrills_sync::sync_claude_skills_to_codex(
                             &claude_root,
                             &home,
                             include_marketplace,

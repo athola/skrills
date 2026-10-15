@@ -1,9 +1,7 @@
 //! Skills reading and writing for Copilot adapter.
 
 use super::paths::skills_dir;
-use crate::adapters::utils::{
-    collect_module_files, hash_content, is_hidden_path, sanitize_name_segments,
-};
+use crate::adapters::utils::{collect_module_files, hash_content, is_hidden_path};
 use crate::common::{Command, ContentFormat};
 use crate::report::WriteReport;
 use crate::Result;
@@ -99,7 +97,7 @@ pub fn write_skills(root: &Path, skills: &[Command]) -> Result<WriteReport> {
     let mut writer = crate::adapters::utils::BatchWriter::new(&dir);
     for skill in skills {
         // Write each skill into ~/.copilot/skills/<skill-name>/SKILL.md
-        let safe_rel_dir = sanitize_name_segments(&crate::adapters::utils::skill_dir_name(skill));
+        let safe_rel_dir = crate::adapters::utils::skill_folder_name(skill);
         writer
             .write(
                 &skill.name,

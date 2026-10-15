@@ -726,8 +726,8 @@ mod copilot_security_tests {
         let skills_dir = tmp.path().join("skills");
         assert!(skills_dir.exists(), "Skills directory should exist");
 
-        // The sanitized name should be "etc/passwd" (dots and slashes stripped from leading segments)
-        let safe_path = skills_dir.join("etc/passwd").join("SKILL.md");
+        // Only the last segment names the folder, so no `..` can survive
+        let safe_path = skills_dir.join("passwd").join("SKILL.md");
         assert!(
             safe_path.exists(),
             "Skill should be at safe path {:?}, not at system /etc/passwd",
@@ -743,11 +743,12 @@ mod copilot_security_tests {
     }
 
     #[test]
-    fn test_nested_skill_paths_preserved() {
+    fn test_nested_skill_lands_in_its_leaf_folder() {
         /*
-        GIVEN a skill with a legitimate nested path (category/skill-name)
+        GIVEN a skill with a nested path (category/skill-name)
         WHEN syncing to Copilot
-        THEN the nested path structure should be preserved
+        THEN it is written one level deep, under its last segment, like
+        every other adapter writes it
         */
         let tmp = TempDir::new().unwrap();
         let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
@@ -767,8 +768,7 @@ mod copilot_security_tests {
         let result = adapter.write_skills(&[nested_skill]);
         let _ = result.expect("Write should succeed");
 
-        // Verify nested structure is preserved
-        let nested_path = tmp.path().join("skills/category/my-skill/SKILL.md");
+        let nested_path = tmp.path().join("skills/my-skill/SKILL.md");
         assert!(
             nested_path.exists(),
             "Nested skill should be at {:?}",
@@ -781,7 +781,7 @@ mod copilot_security_tests {
         /*
         GIVEN a skill with mixed traversal attempts and legitimate nesting
         WHEN syncing to Copilot
-        THEN traversal segments should be removed but legitimate paths preserved
+        THEN only the last segment names the folder
         */
         let tmp = TempDir::new().unwrap();
         let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
@@ -801,8 +801,7 @@ mod copilot_security_tests {
         let result = adapter.write_skills(&[mixed_skill]);
         let _ = result.expect("Write should succeed");
 
-        // The sanitized path should be "category/other/skill" (traversal removed)
-        let safe_path = tmp.path().join("skills/category/other/skill/SKILL.md");
+        let safe_path = tmp.path().join("skills/skill/SKILL.md");
         assert!(
             safe_path.exists(),
             "Mixed path skill should be at safe location {:?}",

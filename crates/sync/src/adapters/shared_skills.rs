@@ -17,7 +17,7 @@
 //! is kept as written.
 
 use super::cursor::utils::parse_frontmatter;
-use super::utils::{sanitize_name_kebab, skill_dir_name, BatchWriter};
+use super::utils::{skill_folder_name, BatchWriter};
 use crate::common::Command;
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
@@ -26,14 +26,6 @@ use std::path::{Path, PathBuf};
 /// `~/.agents/skills` under `home`.
 pub(crate) fn shared_skills_dir(home: &Path) -> PathBuf {
     home.join(".agents").join("skills")
-}
-
-/// The folder a skill is written to: the last segment of its name, so
-/// `synced/<id>/morning` lands in `morning/`.
-fn folder_name(skill: &Command) -> String {
-    let dir = skill_dir_name(skill);
-    let leaf = dir.rsplit(['/', '\\']).next().unwrap_or(&dir);
-    sanitize_name_kebab(leaf)
 }
 
 /// `content` with its frontmatter `name` set to `folder`, plus a warning when
@@ -107,7 +99,7 @@ pub(crate) fn write_shared_skills(dir: &Path, skills: &[Command]) -> Result<Writ
                 continue;
             }
         };
-        let folder = folder_name(skill);
+        let folder = skill_folder_name(skill);
         let (body, warning) = with_folder_name(content, &folder);
         report.warnings.extend(warning);
         writer.write(
@@ -135,7 +127,7 @@ pub(crate) fn preview_shared_skills(dir: &Path, skills: &[Command]) -> WriteRepo
             });
             continue;
         };
-        let folder = folder_name(skill);
+        let folder = skill_folder_name(skill);
         let (body, _) = with_folder_name(content, &folder);
         let skill_dir = dir.join(&folder);
         let same = |path: PathBuf, bytes: &[u8]| std::fs::read(path).is_ok_and(|b| b == bytes);

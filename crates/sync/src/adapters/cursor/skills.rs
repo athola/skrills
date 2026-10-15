@@ -23,7 +23,6 @@ use super::paths::skills_dir;
 use super::utils::{
     parse_frontmatter, restore_skill, stash_frontmatter, strip_yaml_quotes, trim_skill_body,
 };
-use crate::adapters::utils::sanitize_name_kebab;
 use crate::adapters::utils::{collect_module_files, hash_content};
 use crate::common::{Command, ContentFormat, PluginOrigin};
 use crate::report::{SkipReason, WriteReport};
@@ -280,7 +279,7 @@ pub fn write_skills(root: &Path, skills: &[Command]) -> Result<WriteReport> {
     let mut plugin_writer = crate::adapters::utils::BatchWriter::new(&local_plugins_dir);
 
     for skill in skills {
-        let name = sanitize_name_kebab(&skill.name);
+        let name = crate::adapters::utils::skill_folder_name(skill);
 
         // A lossy decode wrote U+FFFD into the copy; skip instead.
         let content_str = match std::str::from_utf8(&skill.content) {

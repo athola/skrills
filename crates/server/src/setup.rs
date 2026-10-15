@@ -922,8 +922,7 @@ fn sync_universal(config: &SetupConfig) -> Result<()> {
     );
     println!("Source: {}", mirror_source.display());
 
-    let report =
-        crate::sync::sync_skills_from_claude_to_codex(&mirror_source, &home, false, false)?;
+    let report = skrills_sync::sync_claude_skills_to_codex(&mirror_source, &home, false, false)?;
     for warning in &report.skills.warnings {
         println!("  Warning: {warning}");
     }

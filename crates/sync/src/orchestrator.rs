@@ -774,6 +774,38 @@ pub fn sync_between(from: &str, to: &str, params: &SyncParams) -> Result<SyncRep
     SyncOrchestrator::new(source, target).sync(params)
 }
 
+/// Syncs the skills under `claude_root` into `home/.agents/skills`, the
+/// directory Codex loads user skills from, with `include_marketplace` adding
+/// skills of marketplace plugins that are not installed.
+///
+/// Commands, MCP servers and the rest are left to [`sync_between`]; this is
+/// the skills-only direction `sync`, `mirror` and `setup` run.
+pub fn sync_claude_skills_to_codex(
+    claude_root: &std::path::Path,
+    home: &std::path::Path,
+    include_marketplace: bool,
+    dry_run: bool,
+) -> Result<SyncReport> {
+    let source = crate::adapters::ClaudeAdapter::with_root(claude_root.to_path_buf())
+        .with_marketplace_skills(include_marketplace);
+    let target = crate::adapters::CodexAdapter::with_home(home);
+    let params = SyncParams {
+        from: Some("claude".to_string()),
+        dry_run,
+        sync_skills: true,
+        sync_commands: false,
+        sync_mcp_servers: false,
+        sync_preferences: false,
+        sync_agents: false,
+        sync_hooks: false,
+        sync_instructions: false,
+        sync_plugin_assets: false,
+        include_marketplace,
+        ..Default::default()
+    };
+    SyncOrchestrator::new(source, target).sync(&params)
+}
+
 /// Validates that a platform name is recognized.
 ///
 /// ```

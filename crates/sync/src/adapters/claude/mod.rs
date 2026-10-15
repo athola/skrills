@@ -29,6 +29,7 @@ mod skills;
 pub struct ClaudeAdapter {
     root: PathBuf,
     kill_switch: Option<skrills_snapshot::KillSwitch>,
+    marketplace_skills: bool,
 }
 
 impl ClaudeAdapter {
@@ -38,6 +39,7 @@ impl ClaudeAdapter {
         Ok(Self {
             root: home.join(".claude"),
             kill_switch: None,
+            marketplace_skills: false,
         })
     }
 
@@ -46,6 +48,7 @@ impl ClaudeAdapter {
         Self {
             root,
             kill_switch: None,
+            marketplace_skills: false,
         }
     }
 
@@ -55,6 +58,15 @@ impl ClaudeAdapter {
     #[must_use]
     pub fn with_kill_switch(mut self, switch: skrills_snapshot::KillSwitch) -> Self {
         self.kill_switch = Some(switch);
+        self
+    }
+
+    /// Also read the skills of marketplace plugins that are not installed
+    /// (`plugins/marketplaces`). A skill of the same name in `skills/` or the
+    /// plugin cache wins.
+    #[must_use]
+    pub fn with_marketplace_skills(mut self, include: bool) -> Self {
+        self.marketplace_skills = include;
         self
     }
 

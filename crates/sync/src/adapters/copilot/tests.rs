@@ -1113,8 +1113,9 @@ fn write_skills_sanitizes_path_traversal_in_names() {
         "written outside the skills dir: {outside:?}"
     );
 
-    // Verify it was written to the sanitized path instead
-    let safe_path = skills_dir.join("etc/passwd/SKILL.md");
+    // Written one level deep, under the name's last segment, as every
+    // adapter does.
+    let safe_path = skills_dir.join("passwd/SKILL.md");
     assert!(safe_path.exists(), "Skill should be at sanitized path");
 }
 
@@ -1140,8 +1141,8 @@ fn write_skills_sanitizes_absolute_paths() {
 
     // Should be sanitized to relative path
     let skills_dir = tmp.path().join("skills");
-    // Leading slash removed, segments preserved
-    let expected = skills_dir.join("absolute/path/skill/SKILL.md");
+    // Only the last segment survives: one folder per skill in every target.
+    let expected = skills_dir.join("skill/SKILL.md");
     assert!(
         expected.exists(),
         "Skill should exist at sanitized path: {:?}",
