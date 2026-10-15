@@ -14,6 +14,11 @@ pub(crate) struct FenceTracker {
 }
 
 impl FenceTracker {
+    /// Whether a code block is open after the lines fed so far.
+    pub(crate) fn in_block(&self) -> bool {
+        self.open.is_some()
+    }
+
     /// Feeds the next line and reports whether it belongs to a code block,
     /// counting the opening and closing fence lines themselves.
     pub(crate) fn is_code(&mut self, line: &str) -> bool {

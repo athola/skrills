@@ -8,10 +8,7 @@ use serde_json::{json, Map as JsonMap, Value};
 use crate::backend::{abort_run_task, BackendAdapter};
 use crate::backend::{
     claude::ClaudeAdapter,
-    cli::{
-        cancel_cli_process, CliConfig, CliProcessMap, CodexCliAdapter, KnownCli,
-        MAX_CONCURRENT_CLI_RUNS,
-    },
+    cli::{cancel_cli_process, CliConfig, CliProcessMap, CodexCliAdapter, MAX_CONCURRENT_CLI_RUNS},
     codex::CodexAdapter,
 };
 use crate::cli_detection::{
@@ -53,6 +50,15 @@ const DEFAULT_CLAUDE_API_MODEL: &str = "claude-opus-5-5";
 /// Model an API-mode Codex run asks for. The adapter calls
 /// `chat/completions`, which `gpt-5-codex` does not serve (Responses only).
 const DEFAULT_CODEX_API_MODEL: &str = "gpt-6-astra";
+
+/// Runs `get-run-history` returns when no `limit` is given.
+const DEFAULT_HISTORY_LIMIT: usize = 20;
+
+/// Largest `get-run-history` limit; matches the tool schema.
+const MAX_HISTORY_LIMIT: usize = 50;
+
+/// Most events one `get-run-events` call returns; matches the tool schema.
+const MAX_EVENTS_PAGE: usize = 1_000;
 
 /// Largest `timeout_ms` a caller may ask for; matches the tool schema.
 const MAX_TIMEOUT_MS: u64 = 300_000;
@@ -275,8 +281,14 @@ impl SubagentService {
     /// path here would let a prompt-injected model run any program.
     fn checked_cli_binary(&self, requested: &str) -> Result<String> {
         let requested = requested.trim();
-        let bare_known =
-            !requested.contains(['/', '\\']) && KnownCli::from_binary(requested).is_some();
+        // Exact names only: matching the file stem let `claude.sh` or
+        // `CODEX.bat` through, which resolve to other programs on PATH.
+        let known_names: &[&str] = if cfg!(windows) {
+            &["claude", "codex", "claude.exe", "codex.exe"]
+        } else {
+            &["claude", "codex"]
+        };
+        let bare_known = known_names.contains(&requested);
         let operator_configured = normalize_cli_binary(std::env::var("SKRILLS_CLI_BINARY").ok())
             .into_iter()
             .chain(self.cli_binary.clone())
@@ -624,25 +636,21 @@ impl SubagentService {
     }
 
     /// The backend an agent's model name belongs to, if it names one.
+    ///
+    /// Case-insensitive and by known prefix or alias: substring matching
+    /// sent `GPT-4` and `Claude-3-Opus` to the default backend and matched
+    /// `o1`/`o3` inside unrelated ids. `inherit` names no backend.
     fn backend_for_model(model: Option<&str>) -> Option<BackendKind> {
-        match model {
-            Some(m)
-                if m.contains("claude")
-                    || m.contains("sonnet")
-                    || m.contains("opus")
-                    || m.contains("haiku") =>
-            {
-                Some(BackendKind::Claude)
-            }
-            Some(m)
-                if m.contains("gpt")
-                    || m.contains("codex")
-                    || m.contains("o1")
-                    || m.contains("o3") =>
-            {
-                Some(BackendKind::Codex)
-            }
-            _ => None,
+        let model = model?.trim().to_ascii_lowercase();
+        let openai_reasoning = model
+            .strip_prefix('o')
+            .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()));
+        if model.starts_with("claude") || ["opus", "sonnet", "haiku"].contains(&model.as_str()) {
+            Some(BackendKind::Claude)
+        } else if model.starts_with("gpt") || model.starts_with("codex") || openai_reasoning {
+            Some(BackendKind::Codex)
+        } else {
+            None
         }
     }
 
@@ -691,11 +699,17 @@ impl SubagentService {
         &self,
         args: Option<&JsonMap<String, Value>>,
     ) -> Result<CallToolResult> {
-        let limit = args
-            .and_then(|m| m.get("limit"))
-            .and_then(|v| v.as_u64())
-            .map(|v| usize::try_from(v).unwrap_or(usize::MAX))
-            .unwrap_or(20);
+        let limit = match args.and_then(|m| m.get("limit")) {
+            None | Some(Value::Null) => DEFAULT_HISTORY_LIMIT,
+            Some(v) => match v.as_u64() {
+                Some(n) if (1..=MAX_HISTORY_LIMIT as u64).contains(&n) => n as usize,
+                _ => {
+                    return Err(anyhow!(
+                        "limit must be an integer from 1 to {MAX_HISTORY_LIMIT}"
+                    ))
+                }
+            },
+        };
         let runs = self.store.history(limit).await?;
         Ok(tool_ok(
             vec![ContentBlock::text("history")],
@@ -718,6 +732,17 @@ impl SubagentService {
             .get("since_index")
             .and_then(|v| v.as_u64())
             .map(|v| usize::try_from(v).unwrap_or(usize::MAX));
+        let limit = match args.get("limit") {
+            None | Some(Value::Null) => MAX_EVENTS_PAGE,
+            Some(v) => match v.as_u64() {
+                Some(n) if (1..=MAX_EVENTS_PAGE as u64).contains(&n) => n as usize,
+                _ => {
+                    return Err(anyhow!(
+                        "limit must be an integer from 1 to {MAX_EVENTS_PAGE}"
+                    ))
+                }
+            },
+        };
 
         // Fetch the run record
         let Some(record) = self.store.run(run_id).await? else {
@@ -749,9 +774,12 @@ impl SubagentService {
             }
         };
 
+        // One page; the rest is fetched with `since_index`.
+        let has_more = events_to_return.len() > limit;
         // Format events with their indices
         let events_json: Vec<Value> = events_to_return
             .iter()
+            .take(limit)
             .enumerate()
             .map(|(i, event)| {
                 json!({
@@ -773,14 +801,15 @@ impl SubagentService {
                 "run_id": run_id.to_string(),
                 "events": events_json,
                 "total_count": total_count,
-                "has_more": false
+                "has_more": has_more
             })),
         ))
     }
 
-    /// Reported as a tool-level error, not a success: the tool is advertised in
-    /// the list, so a caller that branches on `is_error` would otherwise treat
-    /// "not implemented" as a transcript it can read.
+    /// Reported as a tool-level error, not a success: the tool is no longer
+    /// advertised, but older callers may still name it, and one that
+    /// branches on `is_error` would otherwise treat "not implemented" as a
+    /// transcript it can read.
     async fn handle_transcript(&self) -> Result<CallToolResult> {
         Ok(tool_err(
             vec![ContentBlock::text(
@@ -804,6 +833,20 @@ mod tests {
         let agents_dir = dir.join("agents");
         fs::create_dir_all(&agents_dir).unwrap();
         fs::write(agents_dir.join(name), content).unwrap();
+    }
+
+    /// A service built without reading the developer's HOME: an empty agent
+    /// registry and no subagents config file (M322).
+    fn hermetic_service(
+        store: Arc<dyn RunStore>,
+        default_backend: BackendKind,
+    ) -> Result<SubagentService> {
+        SubagentService::with_store_and_registry_with_config(
+            store,
+            default_backend,
+            Arc::new(AgentRegistry::discover_from_roots(&[]).unwrap()),
+            SubagentsFileConfig::default(),
+        )
     }
 
     #[test]
@@ -974,19 +1017,18 @@ mod tests {
 
     #[tokio::test]
     async fn tools_include_core_and_extended() {
-        let service =
-            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        let service = hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
         let tools = service.tools();
         let names: Vec<_> = tools.iter().map(|t| t.name.as_ref()).collect();
         assert!(names.contains(&"run-subagent"));
         assert!(names.contains(&"run-subagent-async"));
-        assert!(names.contains(&"download-transcript-secure"));
+        // M320: unimplemented, so not advertised.
+        assert!(!names.contains(&"download-transcript-secure"));
     }
 
     #[tokio::test]
     async fn tools_include_list_agents() {
-        let service =
-            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        let service = hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
         let tools = service.tools();
         let names: Vec<_> = tools.iter().map(|t| t.name.as_ref()).collect();
         assert!(names.contains(&"list-agents"));
@@ -1188,8 +1230,7 @@ Content."#,
     fn run_and_status_round_trip() {
         with_harmless_env(|| async {
             let service =
-                SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex)
-                    .unwrap();
+                hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
             let args = json!({"prompt": "hi", "backend": "codex", "execution_mode": "api"})
                 .as_object()
                 .cloned();
@@ -1220,8 +1261,7 @@ Content."#,
     fn snake_case_aliases_are_supported() {
         with_harmless_env(|| async {
             let service =
-                SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex)
-                    .unwrap();
+                hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
             let args = json!({"prompt": "hello", "backend": "codex"})
                 .as_object()
                 .cloned();
@@ -1239,8 +1279,7 @@ Content."#,
 
     #[tokio::test]
     async fn run_subagent_tool_schema_includes_agent_id() {
-        let service =
-            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        let service = hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
         let tools = service.tools();
 
         // Check run-subagent
@@ -1301,8 +1340,7 @@ Content."#,
         let _codex_cli = set_env_var("CODEX_CLI", None);
         let _codex_home = set_env_var("CODEX_HOME", None);
 
-        let service =
-            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        let service = hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
         assert_eq!(service.default_cli_binary(), "codex");
     }
 
@@ -1321,8 +1359,7 @@ Content."#,
         let _codex_cli = set_env_var("CODEX_CLI", None);
         let _codex_home = set_env_var("CODEX_HOME", None);
 
-        let service =
-            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        let service = hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
         assert_eq!(service.default_cli_binary(), "claude");
     }
 
@@ -1339,8 +1376,7 @@ Content."#,
         let _claude_mcp = set_env_var("__CLAUDE_MCP_SERVER", None);
         let _claude_entry = set_env_var("CLAUDE_CODE_ENTRYPOINT", None);
 
-        let service =
-            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        let service = hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
         assert_eq!(service.default_cli_binary(), "codex");
     }
 
@@ -1356,8 +1392,7 @@ Content."#,
         let _codex_cli = set_env_var("CODEX_CLI", None);
         let _codex_home = set_env_var("CODEX_HOME", None);
 
-        let service =
-            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        let service = hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
         assert_eq!(service.default_cli_binary(), "claude");
     }
 
@@ -1378,8 +1413,7 @@ Content."#,
             let _codex_home = set_env_var("CODEX_HOME", None);
 
             let service =
-                SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex)
-                    .unwrap();
+                hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
             service.cli_adapter_for(None, Some(BackendKind::Codex), None)
         };
 
@@ -1409,8 +1443,7 @@ Content."#,
         let _codex_cli = set_env_var("CODEX_CLI", None);
         let _codex_home = set_env_var("CODEX_HOME", None);
 
-        let service =
-            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        let service = hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
 
         // When backend hint is Codex, CLI binary should be "codex"
         let codex_adapter = service.cli_adapter_for(None, Some(BackendKind::Codex), None);
@@ -1452,8 +1485,7 @@ Content."#,
     fn run_without_agent_id_defaults_to_cli_mode() {
         with_harmless_env(|| async {
             let service =
-                SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex)
-                    .unwrap();
+                hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
             let args = json!({"prompt": "hi"}).as_object().cloned();
             let result = service.handle_run(false, args.as_ref()).await.unwrap();
 
@@ -1470,8 +1502,7 @@ Content."#,
     fn run_with_execution_mode_api_uses_api_adapter() {
         with_harmless_env(|| async {
             let service =
-                SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex)
-                    .unwrap();
+                hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
             let args = json!({"prompt": "hi", "execution_mode": "api", "backend": "codex"})
                 .as_object()
                 .cloned();
@@ -1737,6 +1768,33 @@ You are a CLI agent."#,
         });
     }
 
+    /// M316: model names are matched case-insensitively by known prefix,
+    /// not by substring.
+    #[test]
+    fn backend_for_model_matches_known_prefixes_case_insensitively() {
+        use BackendKind::{Claude, Codex};
+        for (model, expected) in [
+            ("GPT-4", Some(Codex)),
+            ("gpt-6-astra", Some(Codex)),
+            ("o1-preview", Some(Codex)),
+            ("o4-mini", Some(Codex)),
+            ("codex-mini", Some(Codex)),
+            ("Claude-3-Opus", Some(Claude)),
+            ("claude-opus-5-5", Some(Claude)),
+            ("Sonnet", Some(Claude)),
+            ("haiku", Some(Claude)),
+            ("neo1-chat", None),
+            ("pro3-model", None),
+            ("inherit", None),
+        ] {
+            assert_eq!(
+                SubagentService::backend_for_model(Some(model)),
+                expected,
+                "{model}"
+            );
+        }
+    }
+
     #[test]
     fn claude_code_model_aliases_are_not_sent_as_api_model_ids() {
         for alias in ["opus", "Sonnet", "haiku", "inherit"] {
@@ -1791,8 +1849,7 @@ Content."#,
 
     #[tokio::test]
     async fn handle_call_with_unknown_tool_returns_error() {
-        let service =
-            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        let service = hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
 
         let result = service.handle_call("nonexistent-tool", None).await;
         assert!(result.is_err());
@@ -1807,8 +1864,7 @@ Content."#,
 
     #[tokio::test]
     async fn handle_call_with_invalid_tool_name_returns_error() {
-        let service =
-            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        let service = hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
 
         // Test various invalid tool names
         for invalid_name in [
@@ -1832,8 +1888,7 @@ Content."#,
 
     #[tokio::test]
     async fn tools_include_get_run_events() {
-        let service =
-            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        let service = hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
         let tools = service.tools();
         let names: Vec<_> = tools.iter().map(|t| t.name.as_ref()).collect();
         assert!(
@@ -1874,7 +1929,7 @@ Content."#,
                 .unwrap();
         }
 
-        let service = SubagentService::with_store(store, BackendKind::Codex).unwrap();
+        let service = hermetic_service(store, BackendKind::Codex).unwrap();
         let fetch = |since: Option<u64>| {
             let mut args = json!({"run_id": run_id.0.to_string()});
             if let Some(since) = since {
@@ -1940,7 +1995,7 @@ Content."#,
                 .unwrap();
         }
 
-        let service = SubagentService::with_store(store, BackendKind::Codex).unwrap();
+        let service = hermetic_service(store, BackendKind::Codex).unwrap();
         let args = json!({"run_id": run_id.0.to_string()}).as_object().cloned();
         let result = service
             .handle_call("get-run-events", args.as_ref())
@@ -1996,7 +2051,7 @@ Content."#,
                 .unwrap();
         }
 
-        let service = SubagentService::with_store(store, BackendKind::Codex).unwrap();
+        let service = hermetic_service(store, BackendKind::Codex).unwrap();
 
         // Get events after index 2 (should return events at indices 3 and 4)
         let args = json!({"run_id": run_id.0.to_string(), "since_index": 2})
@@ -2040,7 +2095,7 @@ Content."#,
             .await
             .unwrap();
 
-        let service = SubagentService::with_store(store, BackendKind::Codex).unwrap();
+        let service = hermetic_service(store, BackendKind::Codex).unwrap();
         let args = json!({"run_id": run_id.0.to_string()}).as_object().cloned();
         let result = service
             .handle_call("get-run-events", args.as_ref())
@@ -2060,8 +2115,7 @@ Content."#,
 
     #[tokio::test]
     async fn get_run_events_with_invalid_run_id_returns_error() {
-        let service =
-            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        let service = hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
 
         let args = json!({"run_id": "00000000-0000-0000-0000-000000000000"})
             .as_object()
@@ -2106,7 +2160,7 @@ Content."#,
                 .unwrap();
         }
 
-        let service = SubagentService::with_store(store, BackendKind::Codex).unwrap();
+        let service = hermetic_service(store, BackendKind::Codex).unwrap();
 
         // Request events after index 10 (beyond the 3 events we have)
         let args = json!({"run_id": run_id.0.to_string(), "since_index": 10})
@@ -2151,7 +2205,7 @@ Content."#,
             .await
             .unwrap();
 
-        let service = SubagentService::with_store(store, BackendKind::Codex).unwrap();
+        let service = hermetic_service(store, BackendKind::Codex).unwrap();
         let args = json!({"run_id": run_id.0.to_string()}).as_object().cloned();
 
         // Should work with both naming conventions
@@ -2183,9 +2237,19 @@ Content."#,
     fn run_rejects_an_arbitrary_cli_binary() {
         with_harmless_env(|| async {
             let store = Arc::new(MemRunStore::new());
-            let service = SubagentService::with_store(store.clone(), BackendKind::Codex).unwrap();
+            let service = hermetic_service(store.clone(), BackendKind::Codex).unwrap();
 
-            for payload in ["/tmp/payload.sh", "/tmp/claude", "./codex", "sh"] {
+            for payload in [
+                "/tmp/payload.sh",
+                "/tmp/claude",
+                "./codex",
+                "sh",
+                // M288: a known stem with another extension or case is a
+                // different program found on PATH.
+                "claude.sh",
+                "CODEX.bat",
+                "Claude",
+            ] {
                 let args = json!({"prompt": "hi", "cli_binary": payload})
                     .as_object()
                     .cloned();
@@ -2217,7 +2281,7 @@ Content."#,
             let script = dir.path().join("hang.sh");
             fs::write(&script, "exec sleep 30\n").unwrap();
             let store = Arc::new(MemRunStore::new());
-            let service = SubagentService::with_store(store.clone(), BackendKind::Codex).unwrap();
+            let service = hermetic_service(store.clone(), BackendKind::Codex).unwrap();
 
             let args = json!({"prompt": script.to_str().unwrap()})
                 .as_object()
@@ -2282,8 +2346,7 @@ Content."#,
             let script = dir.path().join("hang.sh");
             fs::write(&script, "exec sleep 30\n").unwrap();
             let service =
-                SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex)
-                    .unwrap();
+                hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
 
             let started = std::time::Instant::now();
             let args = json!({"prompt": script.to_str().unwrap(), "timeout_ms": 300})
@@ -2316,8 +2379,7 @@ Content."#,
     fn api_run_rejects_timeout_ms() {
         with_harmless_env(|| async {
             let service =
-                SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex)
-                    .unwrap();
+                hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
             let args = json!({"prompt": "hi", "execution_mode": "api", "timeout_ms": 1000})
                 .as_object()
                 .cloned();
@@ -2335,8 +2397,7 @@ Content."#,
     fn cli_run_rejects_output_schema() {
         with_harmless_env(|| async {
             let service =
-                SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex)
-                    .unwrap();
+                hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
             let args = json!({"prompt": "hi", "output_schema": {"type": "object"}})
                 .as_object()
                 .cloned();
@@ -2353,8 +2414,7 @@ Content."#,
     fn run_rejects_an_unknown_template_id() {
         with_harmless_env(|| async {
             let service =
-                SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex)
-                    .unwrap();
+                hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
             let args = json!({"prompt": "hi", "template_id": "no-such-template"})
                 .as_object()
                 .cloned();
@@ -2377,8 +2437,7 @@ Content."#,
     /// M265: every run-addressed tool reports an unknown run the same way.
     #[tokio::test]
     async fn unknown_run_is_the_same_tool_error_for_status_events_and_stop() {
-        let service =
-            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        let service = hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
         let id = "11111111-1111-1111-1111-111111111111";
         let args = json!({"run_id": id}).as_object().cloned();
         for tool in ["get-run-status", "get-run-events", "stop-run"] {
@@ -2432,8 +2491,7 @@ Content."#,
                 let _model_c = set_env_var("SKRILLS_CLAUDE_MODEL", None);
                 let _model_o = set_env_var("SKRILLS_CODEX_MODEL", None);
                 let service =
-                    SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex)
-                        .unwrap();
+                    hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
                 let args = json!({"prompt": "hi", "execution_mode": "api", "backend": backend})
                     .as_object()
                     .cloned();
@@ -2445,6 +2503,79 @@ Content."#,
                 );
             });
         }
+    }
+
+    /// M280: `limit` follows the schema (1 to 50); other values are errors.
+    #[tokio::test]
+    async fn history_limit_outside_the_schema_range_is_an_error() {
+        let service = hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        for bad in [json!(0), json!(51), json!(1_000_000), json!("ten")] {
+            let args = json!({ "limit": bad }).as_object().cloned();
+            assert!(
+                service
+                    .handle_call("get-run-history", args.as_ref())
+                    .await
+                    .is_err(),
+                "{bad}"
+            );
+        }
+        for good in [json!({}), json!({"limit": 1}), json!({"limit": 50})] {
+            let args = good.as_object().cloned();
+            service
+                .handle_call("get-run-history", args.as_ref())
+                .await
+                .unwrap_or_else(|e| panic!("{good}: {e}"));
+        }
+    }
+
+    /// M281: get-run-events pages with `limit` and reports `has_more`.
+    #[tokio::test]
+    async fn get_run_events_pages_with_limit_and_has_more() {
+        let store = Arc::new(MemRunStore::new());
+        let run_id = store
+            .create_run(RunRequest {
+                backend: BackendKind::Codex,
+                prompt: "p".into(),
+                template_id: None,
+                output_schema: None,
+                async_mode: false,
+                tracing: false,
+                model: None,
+            })
+            .await
+            .unwrap();
+        for n in 0..5 {
+            store
+                .append_event(
+                    run_id,
+                    RunEvent {
+                        ts: OffsetDateTime::now_utc(),
+                        kind: "tick".into(),
+                        data: Some(json!({ "n": n })),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let service = hermetic_service(store, BackendKind::Codex).unwrap();
+        let page = |args: Value| {
+            let service = &service;
+            async move {
+                service
+                    .handle_call("get-run-events", args.as_object())
+                    .await
+                    .unwrap()
+                    .structured_content
+                    .unwrap()
+            }
+        };
+        let first = page(json!({"run_id": run_id.to_string(), "limit": 2})).await;
+        assert_eq!(first["events"].as_array().unwrap().len(), 2);
+        assert_eq!(first["has_more"], true);
+        let last = page(json!({"run_id": run_id.to_string(), "since_index": 2, "limit": 2})).await;
+        assert_eq!(last["events"].as_array().unwrap().len(), 2);
+        assert_eq!(last["events"][1]["index"], 4);
+        assert_eq!(last["has_more"], false);
     }
 
     /// RT-18: a named agent's instructions reach the run.

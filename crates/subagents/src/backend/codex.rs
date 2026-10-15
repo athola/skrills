@@ -1,16 +1,12 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::backend::{
     config::{endpoint, AdapterConfig},
     run_http_adapter, spawn_run, AdapterCapabilities, BackendAdapter, HttpProvider,
 };
-use crate::store::{
-    BackendKind, RunId, RunRecord, RunRequest, RunStatus, RunStore, SubagentTemplate,
-};
+use crate::store::{BackendKind, RunId, RunRequest, RunStore, SubagentTemplate};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use reqwest::Url;
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -22,25 +18,21 @@ const API_KEY_ERROR: &str = "Codex API key not set. Set SKRILLS_CODEX_API_KEY en
 pub struct CodexAdapter {
     config: AdapterConfig,
     client: reqwest::Client,
+    /// A setting that could not be read (such as a malformed base URL);
+    /// every run fails with it rather than calling a default endpoint.
+    config_error: Option<String>,
 }
 
 impl CodexAdapter {
     pub fn new(model: String) -> Result<Self> {
-        let config =
-            match AdapterConfig::from_env("CODEX", &model, DEFAULT_BASE, DEFAULT_TIMEOUT_MS) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!(error = %e, "adapter config unavailable; API calls will fail");
-                    AdapterConfig {
-                        api_key: String::new(),
-                        base_url: Url::parse(DEFAULT_BASE)
-                            .expect("DEFAULT_BASE constant must be a valid URL"),
-                        model,
-                        timeout: Duration::from_millis(DEFAULT_TIMEOUT_MS),
-                    }
-                }
-            };
-        Self::with_config(config)
+        let (config, config_error) =
+            AdapterConfig::from_env_or_default("CODEX", &model, DEFAULT_BASE, DEFAULT_TIMEOUT_MS);
+        if let Some(ref e) = config_error {
+            tracing::warn!(error = %e, "adapter config invalid; API calls will fail");
+        }
+        let mut adapter = Self::with_config(config)?;
+        adapter.config_error = config_error;
+        Ok(adapter)
     }
 
     pub fn with_config(config: AdapterConfig) -> Result<Self> {
@@ -48,7 +40,11 @@ impl CodexAdapter {
             .timeout(config.timeout)
             .build()
             .context("failed to build HTTP client")?;
-        Ok(Self { config, client })
+        Ok(Self {
+            config,
+            client,
+            config_error: None,
+        })
     }
 
     async fn execute_run(
@@ -57,6 +53,9 @@ impl CodexAdapter {
         request: RunRequest,
         store: Arc<dyn RunStore>,
     ) -> Result<()> {
+        if let Some(ref e) = self.config_error {
+            return Err(anyhow::anyhow!("{e}"));
+        }
         let body = build_openai_body(
             request.model.as_deref().unwrap_or(&self.config.model),
             &request,
@@ -183,7 +182,7 @@ impl BackendAdapter for CodexAdapter {
             supports_schema: true,
             supports_async: true,
             supports_tracing: true,
-            // `download-transcript-secure` is a stub that returns an error.
+            // `download-transcript-secure` is not implemented (and not listed).
             supports_secure_transcript: false,
         }
     }
@@ -212,25 +211,14 @@ impl BackendAdapter for CodexAdapter {
         )
         .await
     }
-
-    async fn status(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<Option<RunStatus>> {
-        store.status(run_id).await
-    }
-
-    async fn stop(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<bool> {
-        store.stop(run_id).await
-    }
-
-    async fn history(&self, limit: usize, store: Arc<dyn RunStore>) -> Result<Vec<RunStatus>> {
-        let runs: Vec<RunRecord> = store.history(limit).await?;
-        Ok(runs.into_iter().map(|r| r.status).collect())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reqwest::Url;
     use serial_test::serial;
+    use std::time::Duration;
 
     #[test]
     #[serial]

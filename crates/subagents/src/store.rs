@@ -191,6 +191,31 @@ fn push_event(record: &mut RunRecord, event: RunEvent) {
     );
 }
 
+/// Marks an unfinished run canceled; shared by both stores so they cannot
+/// drift. Returns whether it changed.
+fn stop_record(record: &mut RunRecord) -> bool {
+    if record.status.state.is_terminal() {
+        return false;
+    }
+    let now = OffsetDateTime::now_utc();
+    record.status = RunStatus {
+        state: RunState::Canceled,
+        message: Some("stopped by user".into()),
+        updated_at: now,
+    };
+    record.updated_at = now;
+    true
+}
+
+/// The `limit` newest runs, newest first. Ordered by reference and cloned
+/// only after truncating, so a small limit does not copy every run.
+fn newest_runs(runs: &HashMap<RunId, RunRecord>, limit: usize) -> Vec<RunRecord> {
+    let mut newest: Vec<&RunRecord> = runs.values().collect();
+    newest.sort_by_key(|r| std::cmp::Reverse(r.created_at));
+    newest.truncate(limit);
+    newest.into_iter().cloned().collect()
+}
+
 /// Drops the oldest finished runs once more than [`MAX_RUNS`] are held.
 /// Unfinished runs are never dropped.
 fn prune_runs(runs: &mut HashMap<RunId, RunRecord>) {
@@ -281,11 +306,7 @@ impl RunStore for MemRunStore {
 
     async fn history(&self, limit: usize) -> Result<Vec<RunRecord>> {
         let guard = self.inner.lock().await;
-        let mut runs: Vec<_> = guard.values().cloned().collect();
-        runs.sort_by_key(|r| r.created_at);
-        runs.reverse();
-        runs.truncate(limit);
-        Ok(runs)
+        Ok(newest_runs(&guard, limit))
     }
 
     async fn stop(&self, run_id: RunId) -> Result<bool> {
@@ -293,19 +314,7 @@ impl RunStore for MemRunStore {
         let record = guard
             .get_mut(&run_id)
             .ok_or(SubagentError::NotFound(run_id))?;
-        match record.status.state {
-            RunState::Succeeded | RunState::Failed | RunState::Canceled => Ok(false),
-            _ => {
-                let now = OffsetDateTime::now_utc();
-                record.status = RunStatus {
-                    state: RunState::Canceled,
-                    message: Some("stopped by user".into()),
-                    updated_at: now,
-                };
-                record.updated_at = now;
-                Ok(true)
-            }
-        }
+        Ok(stop_record(record))
     }
 }
 
@@ -376,7 +385,13 @@ impl StateRunStore {
     }
 
     /// Reload the in-memory store from disk, waiting for the lock.
+    ///
+    /// Holds the persist lock throughout, so a persist cannot land between
+    /// the read and the swap and be overwritten by the older file. Events
+    /// held only in memory (unpersisted stream lines) are replaced by
+    /// what is on disk.
     pub async fn load_from_disk(&self) -> Result<()> {
+        let _persisting = self.persist_lock.lock().await;
         let path = self.path.clone();
         let records = tokio::task::spawn_blocking(move || read_records(&path))
             .await
@@ -561,11 +576,7 @@ impl RunStore for StateRunStore {
 
     async fn history(&self, limit: usize) -> Result<Vec<RunRecord>> {
         let guard = self.inner.lock().await;
-        let mut runs: Vec<_> = guard.values().cloned().collect();
-        runs.sort_by_key(|r| r.created_at);
-        runs.reverse();
-        runs.truncate(limit);
-        Ok(runs)
+        Ok(newest_runs(&guard, limit))
     }
 
     async fn stop(&self, run_id: RunId) -> Result<bool> {
@@ -574,17 +585,8 @@ impl RunStore for StateRunStore {
             let record = guard
                 .get_mut(&run_id)
                 .ok_or(SubagentError::NotFound(run_id))?;
-            match record.status.state {
-                RunState::Succeeded | RunState::Failed | RunState::Canceled => return Ok(false),
-                _ => {
-                    let now = OffsetDateTime::now_utc();
-                    record.status = RunStatus {
-                        state: RunState::Canceled,
-                        message: Some("stopped by user".into()),
-                        updated_at: now,
-                    };
-                    record.updated_at = now;
-                }
+            if !stop_record(record) {
+                return Ok(false);
             }
         }
         self.persist().await?;
@@ -649,8 +651,6 @@ mod tests {
             })
             .await
             .unwrap();
-        // ensure distinct timestamps for deterministic ordering
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         let second = store
             .create_run(RunRequest {
                 backend: BackendKind::Claude,
@@ -664,6 +664,13 @@ mod tests {
             .await
             .unwrap();
 
+        // Explicit timestamps instead of sleeping between the two creates.
+        {
+            let mut runs = store.inner.lock().await;
+            let base = OffsetDateTime::now_utc();
+            runs.get_mut(&first).unwrap().created_at = base - time::Duration::seconds(1);
+            runs.get_mut(&second).unwrap().created_at = base;
+        }
         let history = store.history(10).await.unwrap();
         assert_eq!(history.len(), 2);
         assert_eq!(history.first().unwrap().id, second);

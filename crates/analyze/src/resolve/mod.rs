@@ -595,16 +595,70 @@ mod tests {
         assert_eq!(dup.uri, "skill://first/dup");
     }
 
+    /// M307: one skill's missing dependency fails resolution of that
+    /// skill (and of skills needing it), not the whole graph.
     #[test]
-    fn test_graph_missing_at_build() {
-        let result = DependencyGraph::builder()
+    fn missing_dependency_fails_only_the_skills_that_reach_it() {
+        let graph = DependencyGraph::builder()
             .add_skill(make_skill(
                 "orphan",
                 vec![DeclaredDependency::Simple("nonexistent".to_string())],
             ))
-            .build();
+            .add_skill(make_skill(
+                "needs-orphan",
+                vec![DeclaredDependency::Simple("orphan".to_string())],
+            ))
+            .add_skill(make_skill("healthy", vec![]))
+            .build()
+            .expect("one broken skill must not fail the build");
 
-        assert!(matches!(result, Err(ResolveError::NotFound { .. })));
+        assert!(matches!(
+            graph.resolve("orphan"),
+            Err(ResolveError::NotFound { .. })
+        ));
+        assert!(matches!(
+            graph.resolve("needs-orphan"),
+            Err(ResolveError::NotFound { .. })
+        ));
+        assert_eq!(graph.resolve("healthy").unwrap().resolved.len(), 1);
+    }
+
+    /// M307: the in-memory registry lists names in sorted order.
+    #[test]
+    fn in_memory_registry_lists_skills_sorted() {
+        let mut registry = InMemoryRegistry::new();
+        for name in ["zeta", "alpha", "mid"] {
+            registry.add(make_skill(name, vec![]));
+        }
+        assert_eq!(registry.list_skills(), ["alpha", "mid", "zeta"]);
+    }
+
+    /// M306: the trait resolver keys visits by skill, so `user:a` and
+    /// `a` naming one skill resolve it once.
+    #[test]
+    fn same_skill_reached_by_scoped_and_bare_name_is_resolved_once() {
+        let a = make_skill("a", vec![]);
+        let label = a.source.label();
+        let root = make_skill(
+            "root",
+            vec![
+                DeclaredDependency::Simple("a".into()),
+                DeclaredDependency::Structured {
+                    name: "a".into(),
+                    version: None,
+                    source: Some(label.to_string()),
+                    optional: false,
+                },
+            ],
+        );
+        let mut registry = InMemoryRegistry::new();
+        registry.add(a);
+        registry.add(root);
+        let result = DependencyResolver::new(&registry, ResolveOptions::default())
+            .resolve("root")
+            .unwrap();
+        let names: Vec<&str> = result.resolved.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["a", "root"]);
     }
 
     #[test]

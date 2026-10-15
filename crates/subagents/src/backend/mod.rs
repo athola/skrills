@@ -31,9 +31,19 @@ pub trait BackendAdapter: Send + Sync {
     fn capabilities(&self) -> AdapterCapabilities;
     async fn list_templates(&self) -> Result<Vec<SubagentTemplate>>;
     async fn run(&self, request: RunRequest, store: Arc<dyn RunStore>) -> Result<RunId>;
-    async fn status(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<Option<RunStatus>>;
-    async fn stop(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<bool>;
-    async fn history(&self, limit: usize, store: Arc<dyn RunStore>) -> Result<Vec<RunStatus>>;
+    /// The run's status. The store answers; adapters need not override.
+    async fn status(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<Option<RunStatus>> {
+        store.status(run_id).await
+    }
+    /// Marks the run canceled. Adapters with something to kill override it.
+    async fn stop(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<bool> {
+        store.stop(run_id).await
+    }
+    /// Statuses of the newest `limit` runs.
+    async fn history(&self, limit: usize, store: Arc<dyn RunStore>) -> Result<Vec<RunStatus>> {
+        let runs = store.history(limit).await?;
+        Ok(runs.into_iter().map(|r| r.status).collect())
+    }
 }
 
 /// Abort handles of live run tasks, so `stop-run` can end an HTTP request in
@@ -91,7 +101,7 @@ where
     Fut: std::future::Future<Output = Result<()>> + Send + 'static,
 {
     let run_id = store.create_run(request.clone()).await?;
-    store
+    if let Err(err) = store
         .update_status(
             run_id,
             RunStatus {
@@ -100,7 +110,26 @@ where
                 updated_at: OffsetDateTime::now_utc(),
             },
         )
-        .await?;
+        .await
+    {
+        // No task will run, so the run must not stay unfinished (and
+        // unprunable). A store that fails to persist still applies the
+        // change in memory, so this marks it Failed there at least.
+        if let Err(e) = store
+            .update_status(
+                run_id,
+                RunStatus {
+                    state: RunState::Failed,
+                    message: Some(format!("could not start: {err}")),
+                    updated_at: OffsetDateTime::now_utc(),
+                },
+            )
+            .await
+        {
+            tracing::warn!(error = %e, %run_id, "failed to mark unstarted run as failed");
+        }
+        return Err(err);
+    }
 
     let task_store = store.clone();
     // Registered before the task can finish, so its entry is always removed.
@@ -146,7 +175,7 @@ where
                 return;
             }
             tracing::error!(%run_id, error = %join_err, "{label} backend task panicked");
-            let _ = store
+            if let Err(e) = store
                 .update_status(
                     run_id,
                     RunStatus {
@@ -155,11 +184,35 @@ where
                         updated_at: OffsetDateTime::now_utc(),
                     },
                 )
-                .await;
+                .await
+            {
+                tracing::warn!(error = %e, %run_id, "failed to mark panicked run as failed");
+            }
         }
     });
 
     Ok(run_id)
+}
+
+/// Most bytes of an API response body read; a misbehaving endpoint or proxy
+/// cannot make the server buffer (and persist) more.
+pub(crate) const MAX_HTTP_BODY_BYTES: usize = 4 * 1024 * 1024;
+
+/// Reads at most `cap` bytes of a response body, decoded lossily. Returns
+/// the text and whether the body was longer.
+async fn read_body_capped(mut resp: reqwest::Response, cap: usize) -> Result<(String, bool)> {
+    let mut body = Vec::new();
+    let mut truncated = false;
+    while let Some(chunk) = resp.chunk().await.context("reading API response body")? {
+        let room = cap - body.len();
+        if chunk.len() > room {
+            body.extend_from_slice(&chunk[..room]);
+            truncated = true;
+            break;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok((String::from_utf8_lossy(&body).into_owned(), truncated))
 }
 
 /// What differs between the HTTP providers apart from the request itself.
@@ -219,7 +272,7 @@ pub(crate) async fn run_http_adapter(
         .with_context(|| format!("calling {} API", error_label))?;
 
     let status = resp.status();
-    let text = resp.text().await?;
+    let (text, body_truncated) = read_body_capped(resp, MAX_HTTP_BODY_BYTES).await?;
     let parsed: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({ "raw": text }));
 
     if !status.is_success() {
@@ -256,7 +309,7 @@ pub(crate) async fn run_http_adapter(
     let stop_reason = extract_stop_reason(&parsed);
     // A reply cut off at the output cap still succeeds, but says so instead of
     // passing for a complete answer.
-    let truncated = stop_reason.as_deref() == Some(truncated_reason);
+    let truncated = body_truncated || stop_reason.as_deref() == Some(truncated_reason);
     // The body arrives whole; the completion event carries it as sent.
     store
         .append_event(
@@ -278,7 +331,9 @@ pub(crate) async fn run_http_adapter(
             run_id,
             RunStatus {
                 state: RunState::Succeeded,
-                message: Some(if truncated {
+                message: Some(if body_truncated {
+                    format!("completed (truncated: response body over {MAX_HTTP_BODY_BYTES} bytes)")
+                } else if truncated {
                     format!("completed (truncated: {truncated_reason})")
                 } else {
                     "completed".into()
@@ -528,6 +583,168 @@ mod tests {
             run.events
         );
         assert_eq!(completion(&run)["text"], "a  b\nc");
+    }
+
+    /// M314: with a malformed base URL the run fails naming the setting,
+    /// for both adapters, instead of reporting a missing key.
+    #[tokio::test]
+    async fn malformed_base_url_fails_runs_with_the_url_error() {
+        // Adapters read the environment when built; the env lock is not
+        // held across the runs' awaits.
+        let adapters: Vec<(&str, Box<dyn BackendAdapter>)> = {
+            let _lock = skrills_test_utils::env_guard();
+            let mut built: Vec<(&str, Box<dyn BackendAdapter>)> = Vec::new();
+            for prefix in ["CODEX", "CLAUDE"] {
+                let _key = skrills_test_utils::set_env_var(
+                    if prefix == "CODEX" {
+                        "SKRILLS_CODEX_API_KEY"
+                    } else {
+                        "SKRILLS_CLAUDE_API_KEY"
+                    },
+                    Some("k"),
+                );
+                let _base = skrills_test_utils::set_env_var(
+                    if prefix == "CODEX" {
+                        "SKRILLS_CODEX_BASE_URL"
+                    } else {
+                        "SKRILLS_CLAUDE_BASE_URL"
+                    },
+                    Some("not a url"),
+                );
+                let adapter: Box<dyn BackendAdapter> = if prefix == "CODEX" {
+                    Box::new(CodexAdapter::new("m".into()).unwrap())
+                } else {
+                    Box::new(ClaudeAdapter::new("m".into()).unwrap())
+                };
+                built.push((prefix, adapter));
+            }
+            built
+        };
+        for (prefix, adapter) in adapters {
+            let store: Arc<dyn RunStore> = Arc::new(MemRunStore::new());
+            let run_id = adapter
+                .run(request(BackendKind::Codex), store.clone())
+                .await
+                .unwrap();
+            let run = wait_done(&store, run_id).await;
+            assert_eq!(run.status.state, RunState::Failed);
+            let message = run.status.message.unwrap_or_default();
+            assert!(
+                message.contains(&format!("SKRILLS_{prefix}_BASE_URL")),
+                "{prefix}: {message}"
+            );
+        }
+    }
+
+    /// M312: an HTTP failure is recorded once.
+    #[tokio::test]
+    async fn http_failure_records_one_error_event() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(400)
+                    .set_body_json(json!({"error": {"message": "bad request body"}})),
+            )
+            .mount(&server)
+            .await;
+        let adapter = CodexAdapter::with_config(mock_config(server.uri(), "gpt-test")).unwrap();
+        let store: Arc<dyn RunStore> = Arc::new(MemRunStore::new());
+        let run_id = adapter
+            .run(request(BackendKind::Codex), store.clone())
+            .await
+            .unwrap();
+        let run = wait_done(&store, run_id).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let run_after = store.run(run_id).await.unwrap().unwrap();
+        assert_eq!(run.status.message.as_deref(), Some("bad request body"));
+        let errors = run_after
+            .events
+            .iter()
+            .filter(|e| e.kind == "error")
+            .count();
+        assert_eq!(errors, 1, "{:?}", run_after.events);
+    }
+
+    /// M283: an oversized response body is read only up to the cap.
+    #[tokio::test]
+    async fn oversized_http_body_is_capped() {
+        let server = MockServer::start().await;
+        let body = "x".repeat(MAX_HTTP_BODY_BYTES + 1024);
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+        let adapter = CodexAdapter::with_config(mock_config(server.uri(), "gpt-test")).unwrap();
+        let store: Arc<dyn RunStore> = Arc::new(MemRunStore::new());
+        let run_id = adapter
+            .run(request(BackendKind::Codex), store.clone())
+            .await
+            .unwrap();
+        let run = wait_done(&store, run_id).await;
+        let text = completion(&run)["text"].as_str().unwrap().len();
+        assert!(text <= MAX_HTTP_BODY_BYTES, "{text}");
+        assert_eq!(completion(&run)["truncated"], true);
+    }
+
+    /// M282: when marking a new run Running fails, the run is not left
+    /// unfinished with no task to finish it.
+    #[tokio::test]
+    async fn failed_running_update_leaves_the_run_failed() {
+        use async_trait::async_trait;
+        struct FailsFirstUpdate {
+            inner: MemRunStore,
+            failed: std::sync::atomic::AtomicBool,
+        }
+        #[async_trait]
+        impl RunStore for FailsFirstUpdate {
+            async fn create_run(&self, request: RunRequest) -> Result<RunId> {
+                self.inner.create_run(request).await
+            }
+            async fn update_status(&self, run_id: RunId, status: RunStatus) -> Result<()> {
+                self.inner.update_status(run_id, status).await?;
+                if !self.failed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    return Err(anyhow!("disk full"));
+                }
+                Ok(())
+            }
+            async fn append_event(&self, run_id: RunId, event: RunEvent) -> Result<()> {
+                self.inner.append_event(run_id, event).await
+            }
+            async fn run(&self, run_id: RunId) -> Result<Option<RunRecord>> {
+                self.inner.run(run_id).await
+            }
+            async fn status(&self, run_id: RunId) -> Result<Option<RunStatus>> {
+                self.inner.status(run_id).await
+            }
+            async fn history(&self, limit: usize) -> Result<Vec<RunRecord>> {
+                self.inner.history(limit).await
+            }
+            async fn stop(&self, run_id: RunId) -> Result<bool> {
+                self.inner.stop(run_id).await
+            }
+        }
+        let store = Arc::new(FailsFirstUpdate {
+            inner: MemRunStore::new(),
+            failed: Default::default(),
+        });
+        let dyn_store: Arc<dyn RunStore> = store.clone();
+        let err = spawn_run(
+            request(BackendKind::Codex),
+            dyn_store,
+            "running",
+            "Test",
+            |_, _, _| async { Ok(()) },
+        )
+        .await
+        .expect_err("the failed update is reported");
+        assert!(err.to_string().contains("disk full"));
+        let runs = store.inner.history(1).await.unwrap();
+        assert_eq!(
+            runs[0].status.state,
+            RunState::Failed,
+            "{:?}",
+            runs[0].status
+        );
     }
 
     #[tokio::test]

@@ -1086,7 +1086,7 @@ mod error_handling_tests {
     #[tokio::test]
     async fn test_download_transcript_secure_reports_unimplemented_as_tool_error() {
         /*
-        GIVEN download-transcript-secure is advertised in the tool list
+        GIVEN download-transcript-secure is still dispatched though no longer advertised
         WHEN a caller invokes it
         THEN the result is a tool-level error carrying status "unimplemented",
              so a caller branching on is_error never mistakes it for a transcript
@@ -1369,7 +1369,12 @@ mod cli_adapter_integration_tests {
             .get("text")
             .and_then(|v| v.as_str())
             .expect("completion should have text");
-        assert!(!text.is_empty(), "text should not be empty");
+        // The child inherits this process's working directory.
+        let cwd = std::env::current_dir().expect("cwd");
+        assert_eq!(
+            std::fs::canonicalize(text).expect("pwd printed a path"),
+            std::fs::canonicalize(cwd).expect("cwd resolves")
+        );
     }
 
     #[tokio::test]

@@ -2,11 +2,13 @@ use std::ffi::OsStr;
 
 pub(crate) const DEFAULT_CLI_BINARY: &str = "claude";
 
+/// Trims a configured binary name; empty and `auto` mean "detect".
 pub(crate) fn normalize_cli_binary(value: Option<String>) -> Option<String> {
-    match value.as_deref() {
-        Some(raw) if raw.trim().is_empty() => None,
-        Some(raw) if raw.eq_ignore_ascii_case("auto") => None,
-        _ => value,
+    let trimmed = value?.trim().to_string();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
+        None
+    } else {
+        Some(trimmed)
     }
 }
 
@@ -124,6 +126,16 @@ mod tests {
             normalize_cli_binary(Some("codex".to_string())),
             Some("codex".to_string())
         );
+    }
+
+    /// M319: surrounding whitespace is not part of a binary name.
+    #[test]
+    fn normalize_cli_binary_trims() {
+        assert_eq!(
+            normalize_cli_binary(Some(" claude ".to_string())),
+            Some("claude".to_string())
+        );
+        assert_eq!(normalize_cli_binary(Some(" auto ".to_string())), None);
     }
 
     #[test]

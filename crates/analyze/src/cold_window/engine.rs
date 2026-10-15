@@ -9,8 +9,10 @@
 //!
 //! State carried across ticks:
 //!
-//! - **Last snapshot**, used as `prev` by [`SnapshotDiff`] and
-//!   [`AlertPolicy`].
+//! - **Last snapshot**, used as `prev` by [`AlertPolicy`] (and by
+//!   [`ColdWindowEngine::diff_snapshots`] for callers that ask). The
+//!   [`SnapshotDiff`] strategy does not gate alert evaluation: every
+//!   tick runs the policy, so dwell counters advance on unchanged ticks.
 //! - **Alert history**, per-fingerprint dwell counters that drive
 //!   the min-dwell timer in `LayeredAlertPolicy`.
 //! - **Snapshot version**, monotonic, increments per tick.
@@ -355,8 +357,9 @@ impl ColdWindowEngine {
     }
 
     /// Run a single tick: produce a `WindowSnapshot` from the input,
-    /// run alert policy, hint scorer, and diff against the carried
-    /// state, broadcast, and return the new snapshot.
+    /// run the alert policy and hint scorer against the carried state,
+    /// broadcast, and return the new snapshot. No snapshot diff is
+    /// computed here.
     pub fn tick(&self, input: TickInput) -> Arc<WindowSnapshot> {
         let tick_start = Instant::now();
         let TickInput {
@@ -531,15 +534,22 @@ mod tests {
     #[test]
     fn tick_under_typical_input_completes_under_50ms() {
         // Median tick budget per spec SC1. This is a smoke test on
-        // the integration path, not the full benchmark.
+        // the integration path, not the full benchmark. The median of
+        // several ticks, so one scheduler hiccup cannot fail it.
         let engine = ColdWindowEngine::with_defaults(100_000);
-        let input = input_from_snapshot(&standard_snapshot());
-        let start = std::time::Instant::now();
-        let _ = engine.tick(input);
-        let elapsed = start.elapsed();
+        let mut samples: Vec<std::time::Duration> = (0..21)
+            .map(|_| {
+                let input = input_from_snapshot(&standard_snapshot());
+                let start = std::time::Instant::now();
+                let _ = engine.tick(input);
+                start.elapsed()
+            })
+            .collect();
+        samples.sort();
+        let median = samples[samples.len() / 2];
         assert!(
-            elapsed < std::time::Duration::from_millis(50),
-            "tick took {elapsed:?}, expected <50ms"
+            median < std::time::Duration::from_millis(50),
+            "median tick took {median:?}, expected <50ms"
         );
     }
 

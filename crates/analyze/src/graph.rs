@@ -106,7 +106,8 @@ impl RelationshipGraph {
     /// Handles cycles gracefully by visiting each node only once.
     #[must_use]
     pub fn resolve(&self, uri: &str) -> Vec<String> {
-        let mut visited = HashSet::new();
+        // The root is never its own dependency, even through a cycle.
+        let mut visited = HashSet::from([uri.to_string()]);
         let mut result = Vec::new();
         let mut queue = VecDeque::new();
 
@@ -207,36 +208,29 @@ impl RelationshipGraph {
         self.edges.is_empty()
     }
 
-    /// Detect if there's a cycle involving the given skill.
+    /// Detect if there's a cycle involving the given skill: whether it
+    /// can reach itself. A cycle elsewhere in its dependencies does not
+    /// count. Iterative, so a long chain from a deserialized graph cannot
+    /// overflow the stack.
     #[must_use]
     pub fn has_cycle(&self, uri: &str) -> bool {
-        let mut visited = HashSet::new();
-        let mut rec_stack = HashSet::new();
-        self.has_cycle_util(uri, &mut visited, &mut rec_stack)
-    }
-
-    fn has_cycle_util(
-        &self,
-        uri: &str,
-        visited: &mut HashSet<String>,
-        rec_stack: &mut HashSet<String>,
-    ) -> bool {
-        visited.insert(uri.to_string());
-        rec_stack.insert(uri.to_string());
-
-        if let Some(deps) = self.edges.get(uri) {
-            for dep in deps {
-                if !visited.contains(dep) {
-                    if self.has_cycle_util(dep, visited, rec_stack) {
-                        return true;
-                    }
-                } else if rec_stack.contains(dep) {
-                    return true;
-                }
+        let mut visited: HashSet<&str> = HashSet::new();
+        let mut stack: Vec<&str> = self
+            .edges
+            .get(uri)
+            .map(|deps| deps.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+        while let Some(current) = stack.pop() {
+            if current == uri {
+                return true;
+            }
+            if !visited.insert(current) {
+                continue;
+            }
+            if let Some(deps) = self.edges.get(current) {
+                stack.extend(deps.iter().map(String::as_str));
             }
         }
-
-        rec_stack.remove(uri);
         false
     }
 }
@@ -362,10 +356,35 @@ mod tests {
         graph.add_dependency("skill://skrills/user/c", "skill://skrills/user/a");
 
         let resolved = graph.resolve("skill://skrills/user/a");
-        // Should handle gracefully without infinite loop
-        assert!(resolved.len() <= 3);
-        assert!(resolved.contains(&"skill://skrills/user/b".to_string()));
-        assert!(resolved.contains(&"skill://skrills/user/c".to_string()));
+        // Terminates, and the root is not listed as its own dependency.
+        assert_eq!(
+            resolved,
+            ["skill://skrills/user/b", "skill://skrills/user/c"]
+        );
+    }
+
+    /// M285: a skill is never its own dependency, a cycle elsewhere in
+    /// its closure does not count as one involving it, and a long chain
+    /// does not overflow the stack.
+    #[test]
+    fn resolve_and_has_cycle_are_about_the_root_itself() {
+        let mut graph = RelationshipGraph::new();
+        graph.add_dependency("a", "b");
+        graph.add_dependency("b", "a");
+        assert_eq!(graph.resolve("a"), ["b"]);
+
+        let mut graph = RelationshipGraph::new();
+        graph.add_dependency("a", "b");
+        graph.add_dependency("b", "c");
+        graph.add_dependency("c", "b");
+        assert!(!graph.has_cycle("a"));
+        assert!(graph.has_cycle("b"));
+
+        let mut chain = RelationshipGraph::new();
+        for i in 0..200_000 {
+            chain.add_dependency(format!("n{i}"), format!("n{}", i + 1));
+        }
+        assert!(!chain.has_cycle("n0"));
     }
 
     #[test]

@@ -19,31 +19,22 @@ use skrills_test_utils::cold_window_fixtures::standard_snapshot;
 
 /// Compute the attributed-to-source fraction of a token ledger.
 ///
-/// Returns `total_attributed / total` clamped to `[0.0, 1.0]`.
+/// Plugins are sums of their skills, so `per_plugin` is not added again:
+/// that double-counted every skill. The ratio is not clamped, so an
+/// over-attribution (> 1.0) shows up instead of passing as perfect.
 /// `total = 0` returns `1.0` (vacuously perfect attribution).
 fn attribution_ratio(snap: &WindowSnapshot) -> f64 {
     let attributed: u64 = snap
         .token_ledger
         .per_skill
         .iter()
+        .chain(snap.token_ledger.per_mcp.iter())
         .map(|e| e.tokens)
-        .sum::<u64>()
-        + snap
-            .token_ledger
-            .per_plugin
-            .iter()
-            .map(|e| e.tokens)
-            .sum::<u64>()
-        + snap
-            .token_ledger
-            .per_mcp
-            .iter()
-            .map(|e| e.tokens)
-            .sum::<u64>();
+        .sum();
     if snap.token_ledger.total == 0 {
         return 1.0;
     }
-    (attributed as f64 / snap.token_ledger.total as f64).min(1.0)
+    attributed as f64 / snap.token_ledger.total as f64
 }
 
 #[test]
@@ -52,9 +43,39 @@ fn standard_fixture_meets_sc5_threshold() {
     let snap = standard_snapshot();
     let ratio = attribution_ratio(&snap);
     assert!(
-        ratio >= 0.95,
-        "attribution ratio {ratio:.4} below SC5 floor 0.95"
+        (0.95..=1.0).contains(&ratio),
+        "attribution ratio {ratio:.4} outside [0.95, 1.0]"
     );
+}
+
+/// M310: the per-skill ledger the collector produces attributes exactly
+/// the tokens of the skill files it read.
+#[test]
+fn skill_collector_entries_sum_to_the_skills_token_total() {
+    use skrills_analyze::cold_window::skill_collector::SkillCollector;
+    use skrills_analyze::count_tokens;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let bodies = [
+        ("alpha", "# Alpha\n\nSome prose.\n"),
+        ("beta", "---\nname: beta\n---\n```sh\necho hi\n```\n"),
+    ];
+    for (name, body) in bodies {
+        std::fs::create_dir_all(tmp.path().join(name)).unwrap();
+        std::fs::write(tmp.path().join(name).join("SKILL.md"), body).unwrap();
+    }
+    let output = SkillCollector::new(vec![tmp.path().to_path_buf()]).collect();
+    let expected: u64 = bodies
+        .iter()
+        .map(|(_, body)| count_tokens(body).total as u64)
+        .sum();
+
+    let mut snap = standard_snapshot();
+    snap.token_ledger.per_skill = output.entries;
+    snap.token_ledger.per_plugin.clear();
+    snap.token_ledger.per_mcp.clear();
+    snap.token_ledger.total = expected;
+    assert_eq!(snap.token_ledger.per_skill.len(), 2);
+    assert_eq!(attribution_ratio(&snap), 1.0);
 }
 
 #[test]

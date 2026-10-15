@@ -109,10 +109,17 @@ impl std::error::Error for PolicyError {}
 /// value of a linear ramp sits about 1.73σ above the window mean), so
 /// the static thresholds now always gate. The type stays public for
 /// a future spike detector that adds alerts rather than hiding them.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct BaselineWindow {
     samples: VecDeque<u64>,
     capacity: usize,
+}
+
+impl Default for BaselineWindow {
+    /// Same as [`BaselineWindow::new`]: a derived default had capacity 0.
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl BaselineWindow {
@@ -222,9 +229,10 @@ impl LayeredAlertPolicy {
     /// builder fail. When `budget_ceiling` is at or below the caution
     /// threshold, Advisory moves to 20% and Caution to 50% of the
     /// ceiling (the default ratios against a 100K budget), which
-    /// satisfies [`Self::validate`] for any ceiling of 2 or more.
-    /// Ceilings of 0 or 1 cannot hold ordered tiers; the caller should
-    /// reject them.
+    /// satisfies [`Self::validate`] for any ceiling of 3 or more; on a
+    /// tiny ceiling Advisory is at least 1 token and Caution at least one
+    /// above it. Ceilings of 0 to 2 cannot hold ordered tiers; the caller
+    /// should reject them.
     pub fn new(budget_ceiling: u64) -> Self {
         let mut policy = Self {
             budget_ceiling,
@@ -233,8 +241,8 @@ impl LayeredAlertPolicy {
             caution_threshold: TOKEN_CAUTION_THRESHOLD,
         };
         if budget_ceiling <= policy.caution_threshold {
-            policy.advisory_threshold = budget_ceiling / 5;
-            policy.caution_threshold = budget_ceiling / 2;
+            policy.advisory_threshold = (budget_ceiling / 5).max(1);
+            policy.caution_threshold = (budget_ceiling / 2).max(policy.advisory_threshold + 1);
         }
         policy
     }
@@ -506,6 +514,13 @@ impl AlertPolicy for LayeredAlertPolicy {
             entry.last_high_clear = Some(band.high_clear());
             let dwell_ticks = entry.dwell_ticks;
 
+            // The first firing since a true clear (dwell resets only
+            // then) records when the alert started.
+            if dwell_ticks == self.min_dwell_ticks {
+                entry.fired_at_ms = curr.timestamp_ms;
+            }
+            let fired_at_ms = entry.fired_at_ms;
+
             // Min-dwell: condition must persist before firing.
             if dwell_ticks >= self.min_dwell_ticks {
                 alerts.push(Alert {
@@ -520,7 +535,7 @@ impl AlertPolicy for LayeredAlertPolicy {
                         self.caution_threshold,
                     ),
                     band: Some(band),
-                    fired_at_ms: curr.timestamp_ms,
+                    fired_at_ms,
                     dwell_ticks,
                 });
             }
@@ -910,7 +925,7 @@ mod tests {
         assert_eq!(p.advisory_threshold(), TOKEN_ADVISORY_THRESHOLD);
         assert_eq!(p.caution_threshold(), TOKEN_CAUTION_THRESHOLD);
 
-        for budget in [2, 3, 10, 10_000, TOKEN_CAUTION_THRESHOLD] {
+        for budget in [3, 4, 10, 10_000, TOKEN_CAUTION_THRESHOLD] {
             let p = LayeredAlertPolicy::for_budget(budget);
             assert!(
                 p.clone().validate().is_ok(),
@@ -1021,6 +1036,49 @@ mod tests {
             .try_with_advisory_threshold(60_000) // above default caution 50K
             .expect_err("advisory > caution must fail");
         assert_eq!(err, PolicyError::MisorderedTiers);
+    }
+
+    /// M289: the default window holds the spec default capacity.
+    #[test]
+    fn baseline_window_default_has_the_spec_capacity() {
+        let mut w = BaselineWindow::default();
+        for n in 0..5 {
+            w.push(n);
+        }
+        assert_eq!(w.samples.len(), 5);
+        assert_eq!(w.capacity, MAX_BASELINE_SAMPLES);
+    }
+
+    /// M290: a tiny ceiling never puts the advisory threshold at 0.
+    #[test]
+    fn tiny_ceilings_keep_advisory_above_zero_and_tiers_ordered() {
+        for ceiling in [3, 4, 5] {
+            let p = LayeredAlertPolicy::new(ceiling);
+            assert!(p.advisory_threshold() >= 1, "{ceiling}");
+            assert!(p.clone().validate().is_ok(), "{ceiling}: {p:?}");
+        }
+        let alerts = LayeredAlertPolicy::new(4).with_min_dwell(1).evaluate(
+            &snapshot_with_tokens(0),
+            &snapshot_with_tokens(0),
+            &mut AlertHistory::new(),
+        );
+        assert!(alerts.is_empty(), "{alerts:?}");
+    }
+
+    /// M291: `fired_at_ms` is when the alert first fired, not the
+    /// current tick.
+    #[test]
+    fn fired_at_ms_is_the_first_fire_time() {
+        let policy = LayeredAlertPolicy::new(100_000).with_min_dwell(1);
+        let mut history = AlertHistory::new();
+        let at = |ms: u64| WindowSnapshot {
+            timestamp_ms: ms,
+            ..snapshot_with_tokens(22_000)
+        };
+        let first = policy.evaluate(&at(0), &at(1_000), &mut history);
+        let later = policy.evaluate(&at(1_000), &at(9_000), &mut history);
+        assert_eq!(first[0].fired_at_ms, 1_000);
+        assert_eq!(later[0].fired_at_ms, 1_000);
     }
 
     #[test]

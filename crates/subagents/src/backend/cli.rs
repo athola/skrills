@@ -22,8 +22,7 @@ use tokio::sync::{oneshot, Mutex, Semaphore};
 use crate::backend::{spawn_run, AdapterCapabilities, BackendAdapter};
 use crate::cli_detection::{default_cli_binary, normalize_cli_binary};
 use crate::store::{
-    BackendKind, RunEvent, RunId, RunRecord, RunRequest, RunState, RunStatus, RunStore,
-    SubagentTemplate,
+    BackendKind, RunEvent, RunId, RunRequest, RunState, RunStatus, RunStore, SubagentTemplate,
 };
 
 /// Errors that can occur during CLI subprocess execution.
@@ -105,20 +104,11 @@ impl CliConfig {
         let working_dir = std::env::var("SKRILLS_CLI_WORKING_DIR")
             .ok()
             .map(PathBuf::from);
-        let timeout_ms = match std::env::var("SKRILLS_CLI_TIMEOUT_MS") {
-            Ok(v) => match v.parse::<u64>() {
-                Ok(ms) => ms,
-                Err(_) => {
-                    tracing::warn!(
-                        value = %v,
-                        default = DEFAULT_TIMEOUT_MS,
-                        "Invalid SKRILLS_CLI_TIMEOUT_MS value, using default"
-                    );
-                    DEFAULT_TIMEOUT_MS
-                }
-            },
-            Err(_) => DEFAULT_TIMEOUT_MS,
-        };
+        let timeout_ms = crate::backend::config::parse_timeout_ms(
+            "SKRILLS_CLI_TIMEOUT_MS",
+            std::env::var("SKRILLS_CLI_TIMEOUT_MS").ok(),
+            DEFAULT_TIMEOUT_MS,
+        );
 
         Self {
             binary,
@@ -209,7 +199,24 @@ const INHERITED_ENV: &[&str] = &[
     "CLAUDE_CONFIG_DIR",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_BASE_URL",
+    // Other Claude Code sign-ins and providers (code.claude.com/docs/en/env-vars,
+    // amazon-bedrock, google-vertex-ai).
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "AWS_PROFILE",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "ANTHROPIC_VERTEX_PROJECT_ID",
+    "CLOUD_ML_REGION",
     "CODEX_HOME",
+    // Codex CLI API-key sign-in (learn.chatgpt.com/docs/auth).
+    "CODEX_API_KEY",
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
     // Windows needs these to start most programs at all.
@@ -554,8 +561,10 @@ impl CodexCliAdapter {
 
         // Whatever happened, the child must not outlive this function.
         self.processes.lock().await.remove(&run_id);
-        let (output, error_output, status) = match outcome {
-            (Outcome::Exited(Ok(status)), output, error_output) => (output, error_output, status),
+        let (output, error_output, status, output_truncated) = match outcome {
+            (Outcome::Exited(Ok(status)), output, error_output, truncated) => {
+                (output, error_output, status, truncated)
+            }
             (Outcome::Exited(Err(e)), ..) => return Err(CliError::WaitFailed(e).into()),
             (Outcome::StreamFailed(e), ..) => {
                 Self::kill(run_id, &mut child).await;
@@ -606,7 +615,7 @@ impl CodexCliAdapter {
                     RunEvent {
                         ts: OffsetDateTime::now_utc(),
                         kind: "completion".into(),
-                        data: Some(json!({ "text": output.trim() })),
+                        data: Some(json!({ "text": output.trim(), "truncated": output_truncated })),
                     },
                 )
                 .await?;
@@ -616,7 +625,13 @@ impl CodexCliAdapter {
                     run_id,
                     RunStatus {
                         state: RunState::Succeeded,
-                        message: Some("completed".into()),
+                        message: Some(if output_truncated {
+                            format!(
+                                "completed (truncated: output over {MAX_CAPTURED_STDOUT} bytes)"
+                            )
+                        } else {
+                            "completed".into()
+                        }),
                         updated_at: OffsetDateTime::now_utc(),
                     },
                 )
@@ -676,7 +691,7 @@ impl CodexCliAdapter {
         child: &mut Child,
         cancel_rx: oneshot::Receiver<()>,
         store: Arc<dyn RunStore>,
-    ) -> (Outcome, String, String) {
+    ) -> (Outcome, String, String, bool) {
         store
             .append_event(
                 run_id,
@@ -704,12 +719,13 @@ impl CodexCliAdapter {
             .map(|stderr| tokio::spawn(drain_capped(stderr, MAX_CAPTURED_STDERR)));
 
         let mut output = String::new();
+        // Whether stdout went past MAX_CAPTURED_STDOUT and was cut.
+        let mut truncated = false;
         // Streams stdout to EOF; returns the failure that should end the run.
         let read_stdout = async {
             if let Some(stdout) = stdout {
                 let mut reader = BufReader::new(stdout);
                 let mut buf = Vec::new();
-                let mut truncated = false;
                 loop {
                     let line_cut =
                         match read_line_capped(&mut reader, &mut buf, MAX_STREAM_LINE).await {
@@ -777,12 +793,21 @@ impl CodexCliAdapter {
         let error_output = match stderr_task {
             // Bounded: a grandchild that inherited stderr can hold it open
             // after the child itself has exited.
-            Some(task) if matches!(outcome, Outcome::Exited(_)) => {
-                tokio::time::timeout(OUTPUT_DRAIN_GRACE, task)
-                    .await
-                    .ok()
-                    .and_then(|joined| joined.ok())
-                    .unwrap_or_default()
+            // On timeout the drain is aborted: dropping its handle would
+            // detach it, leaking a task and the pipe for as long as the
+            // grandchild lives.
+            Some(mut task) if matches!(outcome, Outcome::Exited(_)) => {
+                match tokio::time::timeout(OUTPUT_DRAIN_GRACE, &mut task).await {
+                    Ok(Ok(stderr)) => stderr,
+                    Ok(Err(e)) => {
+                        tracing::warn!(error = %e, %run_id, "CLI stderr drain task failed");
+                        String::new()
+                    }
+                    Err(_) => {
+                        task.abort();
+                        String::new()
+                    }
+                }
             }
             Some(task) => {
                 task.abort();
@@ -790,7 +815,7 @@ impl CodexCliAdapter {
             }
             None => String::new(),
         };
-        (outcome, output, error_output)
+        (outcome, output, error_output, truncated)
     }
 
     /// Kills the child and, on unix, every process in its group: `claude`
@@ -897,19 +922,10 @@ impl BackendAdapter for CodexCliAdapter {
         .await
     }
 
-    async fn status(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<Option<RunStatus>> {
-        store.status(run_id).await
-    }
-
     async fn stop(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<bool> {
         let stopped = store.stop(run_id).await?;
         cancel_cli_process(&self.processes, run_id).await;
         Ok(stopped)
-    }
-
-    async fn history(&self, limit: usize, store: Arc<dyn RunStore>) -> Result<Vec<RunStatus>> {
-        let runs: Vec<RunRecord> = store.history(limit).await?;
-        Ok(runs.into_iter().map(|r| r.status).collect())
     }
 }
 
@@ -917,6 +933,7 @@ impl BackendAdapter for CodexCliAdapter {
 mod tests {
     use super::*;
     use crate::store::MemRunStore;
+    use crate::store::RunRecord;
     use std::sync::LazyLock;
     use tokio::sync::Mutex;
 
@@ -1022,6 +1039,17 @@ mod tests {
         let _env_guards = set_cli_env(Some("codex"), None);
         let adapter = CodexCliAdapter::new();
         assert_eq!(adapter.config.binary, "codex");
+    }
+
+    /// M319: `SKRILLS_CLI_TIMEOUT_MS=0` falls back to the default.
+    #[test]
+    fn cli_timeout_env_zero_uses_the_default() {
+        let _guard = env_guard_blocking();
+        let _t = set_env_var("SKRILLS_CLI_TIMEOUT_MS", Some("0"));
+        assert_eq!(
+            CliConfig::from_env().timeout,
+            Duration::from_millis(DEFAULT_TIMEOUT_MS)
+        );
     }
 
     #[test]
@@ -1399,10 +1427,24 @@ mod tests {
             .expect("run should have a status");
         assert_eq!(status.state, RunState::Succeeded);
 
-        // Check that we have events
+        // `echo` with no arguments prints one empty line: one stream event
+        // carrying it, and an empty completion text.
         let run = store.run(run_id).await.unwrap().unwrap();
         assert!(run.events.iter().any(|e| e.kind == "start"));
-        assert!(run.events.iter().any(|e| e.kind == "completion"));
+        let lines: Vec<&serde_json::Value> = run
+            .events
+            .iter()
+            .filter(|e| e.kind == "stream")
+            .filter_map(|e| e.data.as_ref())
+            .collect();
+        assert_eq!(lines, [&serde_json::json!({ "line": "" })]);
+        let completion = run
+            .events
+            .iter()
+            .find(|e| e.kind == "completion")
+            .and_then(|e| e.data.as_ref())
+            .expect("completion event");
+        assert_eq!(completion["text"], "");
     }
 
     /// Child-process tests. Each one runs a throwaway `/bin/sh` script, never a
@@ -1565,6 +1607,39 @@ mod tests {
             let last = streams.last().unwrap();
             assert_eq!(last["line"], "done");
             assert!(last.get("truncated").is_none());
+        }
+
+        /// M313: output past the capture cap is reported as truncated.
+        #[tokio::test]
+        async fn completion_over_the_capture_cap_is_marked_truncated() {
+            let store: Arc<dyn RunStore> = Arc::new(MemRunStore::new());
+            let (script, config) = script_config("yes aaaaaaa | head -c 1200000");
+            let adapter =
+                CodexCliAdapter::with_config(config.with_timeout(Duration::from_secs(30)));
+            let run_id = adapter
+                .run(request_for(&script), store.clone())
+                .await
+                .unwrap();
+            let status = wait_for_completion(&store, run_id, Duration::from_secs(35))
+                .await
+                .unwrap();
+            assert_eq!(status.state, RunState::Succeeded, "{status:?}");
+            assert!(
+                status
+                    .message
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("truncated"),
+                "{status:?}"
+            );
+            let run = store.run(run_id).await.unwrap().unwrap();
+            let completion = run
+                .events
+                .iter()
+                .find(|e| e.kind == "completion")
+                .and_then(|e| e.data.clone())
+                .unwrap();
+            assert_eq!(completion["truncated"], true);
         }
 
         /// M253: a background process that inherits stdout must not turn a
@@ -1824,6 +1899,28 @@ mod tests {
             wait_for_completion(&store, run_id, Duration::from_secs(10)).await;
             let run = store.run(run_id).await.unwrap().unwrap();
             assert_eq!(completion_text(&run), "key=unset path=set");
+        }
+
+        /// M324: credentials the `claude` and `codex` CLIs document reach
+        /// the child.
+        #[tokio::test]
+        async fn cli_auth_variables_are_inherited() {
+            let _guard = env_guard().await;
+            let _oauth = skrills_test_utils::set_env_var("CLAUDE_CODE_OAUTH_TOKEN", Some("oauth"));
+            let _bedrock = skrills_test_utils::set_env_var("CLAUDE_CODE_USE_BEDROCK", Some("1"));
+            let _codex = skrills_test_utils::set_env_var("CODEX_API_KEY", Some("ck"));
+            let store: Arc<dyn RunStore> = Arc::new(MemRunStore::new());
+            let (script, config) = script_config(
+                "echo \"${CLAUDE_CODE_OAUTH_TOKEN:-unset} ${CLAUDE_CODE_USE_BEDROCK:-unset} ${CODEX_API_KEY:-unset}\"",
+            );
+            let adapter = CodexCliAdapter::with_config(config);
+            let run_id = adapter
+                .run(request_for(&script), store.clone())
+                .await
+                .unwrap();
+            wait_for_completion(&store, run_id, Duration::from_secs(10)).await;
+            let run = store.run(run_id).await.unwrap().unwrap();
+            assert_eq!(completion_text(&run), "oauth 1 ck");
         }
 
         /// A store whose `stream` writes fail, to drive the error path.

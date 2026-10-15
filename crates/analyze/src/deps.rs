@@ -45,6 +45,8 @@ pub enum WarningKind {
     /// Failed to access directory entry during traversal.
     DirectoryEntryAccessFailed,
     /// Failed to read file contents.
+    /// A walk stopped at its depth or entry limit.
+    WalkLimitReached,
     #[deprecated(
         since = "0.9.0",
         note = "dependency analysis never produces this kind; unused, will be removed in a future release"
@@ -57,6 +59,7 @@ impl fmt::Display for WarningKind {
         match self {
             Self::MetadataAccessFailed => write!(f, "metadata_access_failed"),
             Self::DirectoryEntryAccessFailed => write!(f, "directory_entry_access_failed"),
+            Self::WalkLimitReached => write!(f, "walk_limit_reached"),
             Self::FileReadFailed => write!(f, "file_read_failed"),
         }
     }
@@ -194,61 +197,7 @@ pub fn analyze_dependencies(skill_path: &Path, content: &str) -> DependencyAnaly
         if dir_path.exists() && dir_path.is_dir() {
             analysis.directories.push(subdir.to_string());
 
-            // Calculate total size
-            for entry in WalkDir::new(&dir_path).into_iter() {
-                match entry {
-                    Ok(entry) => {
-                        if entry.path().is_file() {
-                            match entry.metadata() {
-                                Ok(meta) => {
-                                    analysis.total_dep_size += meta.len();
-                                }
-                                Err(e) => {
-                                    let msg = format!(
-                                        "Could not read metadata for {}: {}",
-                                        entry.path().display(),
-                                        e
-                                    );
-                                    tracing::warn!(
-                                        path = %entry.path().display(),
-                                        error = %e,
-                                        kind = "metadata_access_failed",
-                                        "{}",
-                                        msg
-                                    );
-                                    analysis.warnings.push(
-                                        Warning::new(
-                                            WarningLevel::Warning,
-                                            WarningKind::MetadataAccessFailed,
-                                            msg,
-                                        )
-                                        .with_context(entry.path()),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        let msg =
-                            format!("failed to access entry in {}: {}", dir_path.display(), e);
-                        tracing::warn!(
-                            dir = %dir_path.display(),
-                            error = %e,
-                            kind = "directory_entry_access_failed",
-                            "{}",
-                            msg
-                        );
-                        analysis.warnings.push(
-                            Warning::new(
-                                WarningLevel::Warning,
-                                WarningKind::DirectoryEntryAccessFailed,
-                                msg,
-                            )
-                            .with_context(&dir_path),
-                        );
-                    }
-                }
-            }
+            add_directory_size(&mut analysis, &dir_path, MAX_DEPENDENCY_WALK_ENTRIES);
         }
     }
 
@@ -257,13 +206,7 @@ pub fn analyze_dependencies(skill_path: &Path, content: &str) -> DependencyAnaly
 
     // Check which dependencies exist
     for dep in &mut analysis.dependencies {
-        if matches!(
-            dep.dep_type,
-            DependencyType::Module
-                | DependencyType::Reference
-                | DependencyType::Script
-                | DependencyType::Asset
-        ) {
+        if dep.dep_type != DependencyType::ExternalUrl {
             // Only probe paths inside the skill directory. A target
             // that is absolute or climbs out with `..` stays unchecked
             // (`exists: None`) so skill content cannot use the
@@ -281,6 +224,87 @@ pub fn analyze_dependencies(skill_path: &Path, content: &str) -> DependencyAnaly
     }
 
     analysis
+}
+
+/// Deepest level under a dependency directory the size walk descends.
+const MAX_DEPENDENCY_WALK_DEPTH: usize = 8;
+
+/// Most entries the size walk visits per dependency directory; a vendored
+/// `node_modules` under `scripts/` would otherwise be statted in full.
+const MAX_DEPENDENCY_WALK_ENTRIES: usize = 10_000;
+
+/// Adds the size of the files under `dir_path` to `analysis`, within the
+/// walk limits, recording a warning when a limit cuts the walk short.
+fn add_directory_size(analysis: &mut DependencyAnalysis, dir_path: &Path, max_entries: usize) {
+    for (seen, entry) in WalkDir::new(dir_path)
+        .max_depth(MAX_DEPENDENCY_WALK_DEPTH)
+        .into_iter()
+        .enumerate()
+    {
+        if seen >= max_entries {
+            let msg = format!(
+                "stopped sizing {} after {max_entries} entries; the size is a lower bound",
+                dir_path.display()
+            );
+            tracing::warn!(dir = %dir_path.display(), kind = "walk_limit_reached", "{}", msg);
+            analysis.warnings.push(
+                Warning::new(WarningLevel::Warning, WarningKind::WalkLimitReached, msg)
+                    .with_context(dir_path),
+            );
+            break;
+        }
+        match entry {
+            Ok(entry) => {
+                if entry.path().is_file() {
+                    match entry.metadata() {
+                        Ok(meta) => {
+                            analysis.total_dep_size += meta.len();
+                        }
+                        Err(e) => {
+                            let msg = format!(
+                                "Could not read metadata for {}: {}",
+                                entry.path().display(),
+                                e
+                            );
+                            tracing::warn!(
+                                path = %entry.path().display(),
+                                error = %e,
+                                kind = "metadata_access_failed",
+                                "{}",
+                                msg
+                            );
+                            analysis.warnings.push(
+                                Warning::new(
+                                    WarningLevel::Warning,
+                                    WarningKind::MetadataAccessFailed,
+                                    msg,
+                                )
+                                .with_context(entry.path()),
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                let msg = format!("failed to access entry in {}: {}", dir_path.display(), e);
+                tracing::warn!(
+                    dir = %dir_path.display(),
+                    error = %e,
+                    kind = "directory_entry_access_failed",
+                    "{}",
+                    msg
+                );
+                analysis.warnings.push(
+                    Warning::new(
+                        WarningLevel::Warning,
+                        WarningKind::DirectoryEntryAccessFailed,
+                        msg,
+                    )
+                    .with_context(dir_path),
+                );
+            }
+        }
+    }
 }
 
 // RATIONALE: These regex patterns are compile-time string literals that have been verified
@@ -430,7 +454,12 @@ fn classify_path(path: &str) -> DependencyType {
         || is_asset_extension(path)
     {
         DependencyType::Asset
-    } else if path_lower.ends_with(".md") || path_lower.contains("skill") {
+    } else if Path::new(path)
+        .file_name()
+        .is_some_and(|n| n.eq_ignore_ascii_case("SKILL.md"))
+    {
+        // Only a link to another skill's SKILL.md is a skill dependency;
+        // a plain `.md` or a path that merely mentions "skill" is not.
         DependencyType::Skill
     } else {
         DependencyType::Reference
@@ -469,7 +498,11 @@ pub fn list_dependency_files(skill_path: &Path) -> DependencyFileList {
     for subdir in &["modules", "references", "scripts", "assets"] {
         let dir_path = skill_dir.join(subdir);
         if dir_path.exists() {
-            for entry in WalkDir::new(&dir_path).into_iter() {
+            // Same depth bound as the size walk.
+            for entry in WalkDir::new(&dir_path)
+                .max_depth(MAX_DEPENDENCY_WALK_DEPTH)
+                .into_iter()
+            {
                 match entry {
                     Ok(entry) => {
                         if entry.path().is_file() {
@@ -515,6 +548,69 @@ mod tests {
 
         assert_eq!(analysis.count_by_type(DependencyType::ExternalUrl), 1);
         assert!(analysis.dependencies[0].target.contains("example.com"));
+    }
+
+    /// M287: the dependency-size walk stops at a depth and entry limit
+    /// and says so.
+    #[test]
+    fn dependency_size_walk_is_bounded_and_reports_the_limit() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let scripts = tmp.path().join("scripts");
+        for i in 0..5 {
+            std::fs::create_dir_all(&scripts).unwrap();
+            std::fs::write(scripts.join(format!("f{i}")), "12345").unwrap();
+        }
+        let mut analysis = DependencyAnalysis::default();
+        add_directory_size(&mut analysis, &scripts, 3);
+        assert!(analysis.total_dep_size < 25, "{}", analysis.total_dep_size);
+        assert_eq!(
+            analysis
+                .warnings_by_kind(WarningKind::WalkLimitReached)
+                .len(),
+            1
+        );
+
+        let deep = tmp.path().join("assets");
+        let mut dir = deep.clone();
+        for i in 0..(MAX_DEPENDENCY_WALK_DEPTH + 2) {
+            dir = dir.join(format!("d{i}"));
+        }
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("buried"), "123").unwrap();
+        let mut analysis = DependencyAnalysis::default();
+        add_directory_size(&mut analysis, &deep, MAX_DEPENDENCY_WALK_ENTRIES);
+        assert_eq!(analysis.total_dep_size, 0);
+    }
+
+    /// M311: `list_dependency_files` returns the files of every standard
+    /// dependency directory, and only those.
+    #[test]
+    fn list_dependency_files_finds_files_in_standard_dirs_only() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let skill = tmp.path().join("SKILL.md");
+        for rel in [
+            "scripts/run.sh",
+            "references/sub/api.md",
+            "other/ignored.txt",
+        ] {
+            let path = tmp.path().join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "x").unwrap();
+        }
+        let listed = list_dependency_files(&skill);
+        let mut rel: Vec<String> = listed
+            .files
+            .iter()
+            .map(|f| {
+                f.strip_prefix(tmp.path())
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        rel.sort();
+        assert_eq!(rel, ["references/sub/api.md", "scripts/run.sh"]);
+        assert!(listed.warnings.is_empty());
     }
 
     #[test]
@@ -614,6 +710,25 @@ mod tests {
         extract_content_dependencies(&mut analysis, Path::new("."), "![d](diagram.dot)");
         assert_eq!(analysis.dependencies.len(), 1);
         assert_eq!(analysis.dependencies[0].dep_type, DependencyType::Asset);
+    }
+
+    /// M298: only a SKILL.md link is a Skill, and every local link,
+    /// skills included, is existence-checked.
+    #[test]
+    fn plain_markdown_links_are_references_and_all_local_links_are_checked() {
+        assert_eq!(classify_path("guide.md"), DependencyType::Reference);
+        assert_eq!(
+            classify_path("docs/skillset.txt"),
+            DependencyType::Reference
+        );
+        assert_eq!(classify_path("other/SKILL.md"), DependencyType::Skill);
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let skill = tmp.path().join("SKILL.md");
+        let analysis =
+            analyze_dependencies(&skill, "[guide](guide.md) and [sibling](sub/SKILL.md)");
+        let missing: Vec<&str> = analysis.missing.iter().map(|d| d.target.as_str()).collect();
+        assert_eq!(missing, ["guide.md", "sub/SKILL.md"]);
     }
 
     #[test]
@@ -731,7 +846,10 @@ Nested brackets should not confuse: ![text with [brackets]](file.png)
             WarningKind::DirectoryEntryAccessFailed.to_string(),
             "directory_entry_access_failed"
         );
-        assert_eq!(WarningKind::FileReadFailed.to_string(), "file_read_failed");
+        assert_eq!(
+            WarningKind::WalkLimitReached.to_string(),
+            "walk_limit_reached"
+        );
     }
 
     #[test]
@@ -752,7 +870,7 @@ Nested brackets should not confuse: ![text with [brackets]](file.png)
     fn test_warning_with_context() {
         let w = Warning::new(
             WarningLevel::Error,
-            WarningKind::FileReadFailed,
+            WarningKind::WalkLimitReached,
             "Read failed",
         )
         .with_context("/some/path");
@@ -785,7 +903,7 @@ Nested brackets should not confuse: ![text with [brackets]](file.png)
         ));
         analysis.warnings.push(Warning::new(
             WarningLevel::Error,
-            WarningKind::FileReadFailed,
+            WarningKind::WalkLimitReached,
             "msg2",
         ));
         let messages = analysis.warning_messages();
@@ -807,7 +925,7 @@ Nested brackets should not confuse: ![text with [brackets]](file.png)
         ));
         analysis.warnings.push(Warning::new(
             WarningLevel::Error,
-            WarningKind::FileReadFailed,
+            WarningKind::WalkLimitReached,
             "error msg",
         ));
 
@@ -831,7 +949,7 @@ Nested brackets should not confuse: ![text with [brackets]](file.png)
         ));
         analysis.warnings.push(Warning::new(
             WarningLevel::Error,
-            WarningKind::FileReadFailed,
+            WarningKind::WalkLimitReached,
             "read",
         ));
 
@@ -842,7 +960,9 @@ Nested brackets should not confuse: ![text with [brackets]](file.png)
             2
         );
         assert_eq!(
-            analysis.warnings_by_kind(WarningKind::FileReadFailed).len(),
+            analysis
+                .warnings_by_kind(WarningKind::WalkLimitReached)
+                .len(),
             1
         );
         assert_eq!(
