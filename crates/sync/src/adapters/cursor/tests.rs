@@ -1979,6 +1979,115 @@ fn plugin_assets_removes_files_the_plugin_no_longer_ships() {
     );
 }
 
+fn plugin_skill(plugin: &str, skill: &str) -> crate::common::PluginAsset {
+    crate::common::PluginAsset::new(
+        plugin.to_string(),
+        "market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from(format!("skills/{skill}/SKILL.md")),
+        format!("---\nname: {skill}\ndescription: d\n---\n# {skill}\n").into_bytes(),
+        false,
+    )
+}
+
+/// M21: a skill directory inside a mirrored plugin carries the same marker as
+/// a flat skill copy, so cleanup can tell it from a skill the user made.
+#[test]
+fn plugin_assets_mark_each_mirrored_skill_directory() {
+    use crate::adapters::utils::SYNCED_MARKER;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let plugin_dir = tmp.path().join("plugins/local/my-plugin");
+
+    let report = adapter
+        .write_plugin_assets(&[
+            plugin_manifest("my-plugin"),
+            plugin_skill("my-plugin", "alpha"),
+        ])
+        .unwrap();
+
+    assert!(plugin_dir
+        .join("skills/alpha")
+        .join(SYNCED_MARKER)
+        .is_file());
+    assert!(
+        !plugin_dir
+            .join(".cursor-plugin")
+            .join(SYNCED_MARKER)
+            .exists(),
+        "only skill directories are marked"
+    );
+    assert_eq!(report.written, 2, "the marker is not counted as an asset");
+}
+
+#[test]
+fn plugin_assets_remirror_keeps_the_skill_marker_and_reports_unchanged() {
+    use crate::adapters::utils::SYNCED_MARKER;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let plugin_dir = tmp.path().join("plugins/local/my-plugin");
+    let batch = [
+        plugin_manifest("my-plugin"),
+        plugin_skill("my-plugin", "alpha"),
+    ];
+
+    adapter.write_plugin_assets(&batch).unwrap();
+    let report = adapter.write_plugin_assets(&batch).unwrap();
+
+    assert!(plugin_dir
+        .join("skills/alpha")
+        .join(SYNCED_MARKER)
+        .is_file());
+    assert_eq!(report.written, 0);
+    assert_eq!(report.skipped.len(), 2, "{:?}", report.skipped);
+    assert!(
+        !report.warnings.iter().any(|w| w.contains("Removed")),
+        "the marker was swept: {:?}",
+        report.warnings
+    );
+
+    let preview = adapter.preview_plugin_assets(&batch).unwrap();
+    assert_eq!(preview.written, 2, "a preview counts assets, not markers");
+}
+
+#[test]
+fn plugin_assets_remove_a_dropped_skill_directory_with_its_marker() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let plugin_dir = tmp.path().join("plugins/local/my-plugin");
+
+    adapter
+        .write_plugin_assets(&[
+            plugin_manifest("my-plugin"),
+            plugin_skill("my-plugin", "alpha"),
+            plugin_skill("my-plugin", "beta"),
+        ])
+        .unwrap();
+    let report = adapter
+        .write_plugin_assets(&[
+            plugin_manifest("my-plugin"),
+            plugin_skill("my-plugin", "alpha"),
+        ])
+        .unwrap();
+
+    assert!(
+        !plugin_dir.join("skills/beta").exists(),
+        "{:?}",
+        report.warnings
+    );
+    assert!(plugin_dir.join("skills/alpha/SKILL.md").is_file());
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("Removed 1 file(s)")),
+        "only the dropped SKILL.md counts as removed: {:?}",
+        report.warnings
+    );
+}
+
 /// A partial batch (the `sync-skills` tool sends one) does not describe the
 /// whole plugin, so it must not read an absent file as "upstream dropped it".
 #[test]

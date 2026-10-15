@@ -246,6 +246,7 @@ impl AgentAdapter for CursorAdapter {
                     kept.insert(dest);
                 }
             }
+            mark_skill_dirs(&plugin_dir, dir_name, &mut kept, &mut report);
 
             // Only a batch carrying the plugin's own manifest describes the whole
             // plugin, so only then can an absent file be read as "upstream
@@ -621,6 +622,44 @@ fn write_one_asset(
     Some(dest)
 }
 
+/// Stamps [`SYNCED_MARKER`](crate::adapters::utils::SYNCED_MARKER) into each
+/// mirrored skill directory (one whose `SKILL.md` is in `kept`), as flat skill
+/// copies get, and adds the marker to `kept` so the sweep leaves it.
+fn mark_skill_dirs(
+    plugin_dir: &std::path::Path,
+    dir_name: &str,
+    kept: &mut std::collections::HashSet<std::path::PathBuf>,
+    report: &mut WriteReport,
+) {
+    use crate::adapters::utils::{symlink_below, write_file, SYNCED_MARKER};
+
+    let markers: Vec<std::path::PathBuf> = kept
+        .iter()
+        .filter(|dest| dest.file_name() == Some(std::ffi::OsStr::new("SKILL.md")))
+        .filter_map(|skill| skill.parent().map(|dir| dir.join(SYNCED_MARKER)))
+        .collect();
+    for marker in markers {
+        if symlink_below(plugin_dir, &marker).is_some() {
+            report.warnings.push(format!(
+                "{} is a symlink, so the skill directory in plugins/local/{dir_name} was not \
+                 marked as a skrills copy",
+                marker.display()
+            ));
+            continue;
+        }
+        if !marker.exists() {
+            if let Err(e) = write_file(&marker, b"written by skrills sync\n") {
+                report.warnings.push(format!(
+                    "Could not mark {} as a skrills copy: {e}",
+                    marker.parent().unwrap_or(plugin_dir).display()
+                ));
+                continue;
+            }
+        }
+        kept.insert(marker);
+    }
+}
+
 /// Removes whatever sits where an asset now has to go.
 ///
 /// A plugin version can turn `scripts/helper` from a file into a directory or
@@ -755,6 +794,8 @@ fn sweep_unreferenced(
             continue;
         }
         match fs::remove_file(path) {
+            // A dropped skill's marker is not a file the plugin shipped.
+            Ok(()) if entry.file_name() == crate::adapters::utils::SYNCED_MARKER => {}
             Ok(()) => removed += 1,
             Err(e) => {
                 tracing::warn!(
