@@ -2,14 +2,14 @@ use anyhow::{bail, Result};
 use skrills_discovery::{discover_skills, SkillMeta};
 use std::path::PathBuf;
 
-use crate::cli::{OutputFormat, SyncSource};
+use crate::cli::{OutputFormat, Platform};
 
 use super::{CatalogEntry, CatalogResult};
 
 /// Handle the skill-catalog command.
 pub(crate) fn handle_skill_catalog_command(
     search: Option<String>,
-    source: Option<SyncSource>,
+    source: Option<Platform>,
     category: Option<String>,
     limit: usize,
     skill_dirs: Vec<PathBuf>,
@@ -66,7 +66,7 @@ pub(crate) fn handle_skill_catalog_command(
 fn build_catalog(
     skills: &[SkillMeta],
     search: Option<&str>,
-    source: Option<SyncSource>,
+    source: Option<Platform>,
     limit: usize,
 ) -> CatalogResult {
     let query = search.map(str::to_lowercase);
@@ -103,10 +103,10 @@ fn build_catalog(
 
 /// Whether a skill discovered under `found` belongs to the CLI `wanted`.
 /// Claude's plugin cache and marketplaces hold Claude skills.
-fn source_matches(found: &skrills_discovery::SkillSource, wanted: SyncSource) -> bool {
+fn source_matches(found: &skrills_discovery::SkillSource, wanted: Platform) -> bool {
     use skrills_discovery::SkillSource as S;
     match (found, wanted) {
-        (S::Cache | S::Marketplace, SyncSource::Claude) => true,
+        (S::Cache | S::Marketplace, Platform::Claude) => true,
         _ => found.label() == wanted.as_str(),
     }
 }
@@ -182,7 +182,7 @@ mod tests {
         )
         .unwrap();
 
-        let catalog = build_catalog(&skills, None, Some(SyncSource::Claude), 50);
+        let catalog = build_catalog(&skills, None, Some(Platform::Claude), 50);
 
         let names: Vec<_> = catalog.skills.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["plugged/SKILL.md"]);
@@ -226,9 +226,9 @@ mod tests {
         let found = build_catalog(&skills, Some("MATCHING"), None, 100);
         assert_eq!(found.total_skills, 1);
 
-        let none = build_catalog(&skills, None, Some(SyncSource::Codex), 100);
+        let none = build_catalog(&skills, None, Some(Platform::Codex), 100);
         assert_eq!(none.total_skills, 0);
-        let all = build_catalog(&skills, None, Some(SyncSource::Claude), 100);
+        let all = build_catalog(&skills, None, Some(Platform::Claude), 100);
         assert_eq!(all.total_skills, 2);
     }
 

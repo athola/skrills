@@ -1,5 +1,5 @@
 use super::validate::{run_validation, Autofix};
-use crate::cli::SyncSource;
+use crate::cli::Platform;
 use anyhow::{anyhow, bail, Result};
 use skrills_discovery::{SkillRoot, SkillSource};
 use skrills_server::discovery::merge_extra_dirs;
@@ -126,8 +126,8 @@ pub(crate) fn handle_mirror_command(
 
 /// Runs one adapter sync from `from` to `to`.
 pub(crate) fn run_sync_with_adapters(
-    from: SyncSource,
-    to: SyncSource,
+    from: Platform,
+    to: Platform,
     params: &skrills_sync::SyncParams,
 ) -> Result<skrills_sync::SyncReport> {
     if from == to {
@@ -137,19 +137,19 @@ pub(crate) fn run_sync_with_adapters(
         ));
     }
     // sync_between handles adapter creation for every platform.
-    skrills_sync::orchestrator::sync_between(from.as_str(), to.as_str(), params)
+    skrills_sync::orchestrator::sync_between(from, to, params)
 }
 
 /// The directory a CLI keeps its skills in, as `sync-status` counts them.
-pub(crate) fn source_skill_root(from: SyncSource, home: &Path) -> PathBuf {
+pub(crate) fn source_skill_root(from: Platform, home: &Path) -> PathBuf {
     use skrills_sync::adapters::traits::AgentAdapter;
     match from {
-        SyncSource::Claude => mirror_source_root(home),
-        SyncSource::Codex => home.join(".codex/skills"),
-        SyncSource::Copilot => skrills_sync::CopilotAdapter::new()
+        Platform::Claude => mirror_source_root(home),
+        Platform::Codex => home.join(".codex/skills"),
+        Platform::Copilot => skrills_sync::CopilotAdapter::new()
             .map(|a| a.config_root().join("skills"))
             .unwrap_or_else(|_| home.join(".copilot/skills")),
-        SyncSource::Cursor => skrills_sync::CursorAdapter::new()
+        Platform::Cursor => skrills_sync::CursorAdapter::new()
             .map(|a| a.config_root().join("skills"))
             .unwrap_or_else(|_| home.join(".cursor/skills")),
     }
@@ -162,13 +162,13 @@ pub(crate) fn source_skill_root(from: SyncSource, home: &Path) -> PathBuf {
 /// trees the skill sync walks. The rest of `~/.claude` (sessions, settings)
 /// holds no skills.
 fn source_validation_roots(
-    from: SyncSource,
+    from: Platform,
     home: &Path,
     include_marketplace: bool,
 ) -> Vec<SkillRoot> {
     let root = source_skill_root(from, home);
     let mut dirs = match from {
-        SyncSource::Claude => vec![root.join("skills"), root.join("plugins/cache")],
+        Platform::Claude => vec![root.join("skills"), root.join("plugins/cache")],
         _ => vec![root.clone()],
     };
     if from.is_claude() && include_marketplace {
@@ -184,9 +184,9 @@ fn source_validation_roots(
 }
 
 /// The strictest validation target any of `targets` needs.
-fn validation_target_for(targets: &[SyncSource]) -> VT {
-    let codex = targets.contains(&SyncSource::Codex);
-    let copilot = targets.contains(&SyncSource::Copilot);
+fn validation_target_for(targets: &[Platform]) -> VT {
+    let codex = targets.contains(&Platform::Codex);
+    let copilot = targets.contains(&Platform::Copilot);
     match (codex, copilot) {
         (true, true) => VT::All,
         (true, false) => VT::Codex,
@@ -199,8 +199,8 @@ fn validation_target_for(targets: &[SyncSource]) -> VT {
 /// Options for `sync-all`, one field per flag.
 #[derive(Debug, Clone)]
 pub(crate) struct SyncAllArgs {
-    pub from: SyncSource,
-    pub to: Option<SyncSource>,
+    pub from: Platform,
+    pub to: Option<Platform>,
     pub dry_run: bool,
     pub skip_existing_commands: bool,
     pub include_marketplace: bool,
@@ -212,7 +212,7 @@ pub(crate) struct SyncAllArgs {
 /// Validates (and with `--autofix`, repairs) the source skills before any
 /// target is touched. Returns an error, and so writes nothing, when an error
 /// remains.
-fn validate_sync_source(args: &SyncAllArgs, targets: &[SyncSource], home: &Path) -> Result<()> {
+fn validate_sync_source(args: &SyncAllArgs, targets: &[Platform], home: &Path) -> Result<()> {
     let roots = source_validation_roots(args.from, home, args.include_marketplace);
     let target = validation_target_for(targets);
     let mode = match (args.autofix, args.dry_run) {
@@ -265,7 +265,7 @@ fn validate_sync_source(args: &SyncAllArgs, targets: &[SyncSource], home: &Path)
 /// `--autofix` repairs the source first (or, under `--dry-run`, checks what
 /// the repair would leave) and then validates as `--validate` does.
 pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
-    let targets: Vec<SyncSource> = match args.to {
+    let targets: Vec<Platform> = match args.to {
         Some(t) => vec![t],
         None => args.from.other_targets(),
     };
@@ -286,7 +286,7 @@ pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
             );
         }
 
-        let delivery = skrills_sync::skill_delivery(from.as_str(), target.as_str());
+        let delivery = skrills_sync::skill_delivery(from, target);
         let params = skrills_sync::SyncParams {
             from: Some(from.as_str().to_string()),
             dry_run: args.dry_run,
@@ -321,10 +321,10 @@ pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
 /// error naming which targets succeeded and which failed. Stopping at the
 /// first failure left later targets unsynced with no word on the earlier ones.
 fn sync_each_target(
-    targets: &[SyncSource],
-    mut sync: impl FnMut(SyncSource) -> Result<()>,
+    targets: &[Platform],
+    mut sync: impl FnMut(Platform) -> Result<()>,
 ) -> Result<()> {
-    let outcomes: Vec<(SyncSource, Result<()>)> = targets.iter().map(|&t| (t, sync(t))).collect();
+    let outcomes: Vec<(Platform, Result<()>)> = targets.iter().map(|&t| (t, sync(t))).collect();
     if outcomes.iter().all(|(_, r)| r.is_ok()) {
         return Ok(());
     }
@@ -363,10 +363,10 @@ pub(crate) fn skipped_commands_note(
 }
 
 /// Handle the `sync-status` command.
-pub(crate) fn handle_sync_status_command(from: SyncSource, to: Option<SyncSource>) -> Result<()> {
+pub(crate) fn handle_sync_status_command(from: Platform, to: Option<Platform>) -> Result<()> {
     let target = to.unwrap_or_else(|| from.default_target());
     // Same rule as sync-all, so the preview matches the run.
-    let delivery = skrills_sync::skill_delivery(from.as_str(), target.as_str());
+    let delivery = skrills_sync::skill_delivery(from, target);
 
     let params = skrills_sync::SyncParams {
         from: Some(from.as_str().to_string()),
@@ -465,10 +465,10 @@ mod tests {
         let mut attempted = Vec::new();
 
         let err = sync_each_target(
-            &[SyncSource::Codex, SyncSource::Copilot, SyncSource::Cursor],
+            &[Platform::Codex, Platform::Copilot, Platform::Cursor],
             |target| {
                 attempted.push(target);
-                if target == SyncSource::Copilot {
+                if target == Platform::Copilot {
                     bail!("copilot dir is not writable")
                 }
                 Ok(())
@@ -479,7 +479,7 @@ mod tests {
 
         assert_eq!(
             attempted,
-            vec![SyncSource::Codex, SyncSource::Copilot, SyncSource::Cursor]
+            vec![Platform::Codex, Platform::Copilot, Platform::Cursor]
         );
         assert!(err.contains("codex: ok"), "{err}");
         assert!(

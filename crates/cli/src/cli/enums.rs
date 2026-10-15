@@ -10,99 +10,12 @@ use clap::{Subcommand, ValueEnum};
 use indexmap::IndexMap;
 use std::path::PathBuf;
 
-/// Validation target for skills.
-#[derive(Debug, Clone, Copy, ValueEnum, Default)]
-pub enum ValidationTarget {
-    /// Validate for Claude Code (permissive).
-    Claude,
-    /// Validate for Codex CLI (strict).
-    Codex,
-    /// Validate for GitHub Copilot CLI (strict).
-    Copilot,
-    /// Validate for all targets (Claude, Codex, and Copilot).
-    #[default]
-    All,
-    /// Validate for Claude and Codex (legacy, use 'all' for new code).
-    Both,
-}
-
-impl From<ValidationTarget> for skrills_validate::ValidationTarget {
-    fn from(target: ValidationTarget) -> Self {
-        match target {
-            ValidationTarget::Claude => Self::Claude,
-            ValidationTarget::Codex => Self::Codex,
-            ValidationTarget::Copilot => Self::Copilot,
-            ValidationTarget::All => Self::All,
-            ValidationTarget::Both => Self::Both,
-        }
-    }
-}
-
-/// Source/target for sync operations.
-#[derive(Debug, Clone, Copy, ValueEnum, Default, PartialEq, Eq)]
-pub enum SyncSource {
-    /// Claude Code CLI.
-    #[default]
-    Claude,
-    /// OpenAI Codex CLI.
-    Codex,
-    /// GitHub Copilot CLI.
-    Copilot,
-    /// Cursor IDE.
-    Cursor,
-}
-
-impl SyncSource {
-    /// Returns the default target for a given source.
-    /// Claude → Codex, Codex/Copilot/Cursor → Claude.
-    pub fn default_target(self) -> Self {
-        match self {
-            Self::Claude => Self::Codex,
-            Self::Codex | Self::Copilot | Self::Cursor => Self::Claude,
-        }
-    }
-
-    /// Returns true if this source is Claude.
-    pub fn is_claude(self) -> bool {
-        matches!(self, Self::Claude)
-    }
-
-    /// Returns true if this source is Codex.
-    pub fn is_codex(self) -> bool {
-        matches!(self, Self::Codex)
-    }
-
-    /// Returns true if this source is Copilot.
-    pub fn is_copilot(self) -> bool {
-        matches!(self, Self::Copilot)
-    }
-
-    /// Returns true if this source is Cursor.
-    pub fn is_cursor(self) -> bool {
-        matches!(self, Self::Cursor)
-    }
-
-    /// Returns the string name for this source.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-            Self::Copilot => "copilot",
-            Self::Cursor => "cursor",
-        }
-    }
-
-    /// Returns all other targets (CLIs other than this one).
-    /// Used when `--to` is not specified to sync to all other CLIs.
-    pub fn other_targets(self) -> Vec<Self> {
-        match self {
-            Self::Claude => vec![Self::Codex, Self::Copilot, Self::Cursor],
-            Self::Codex => vec![Self::Claude, Self::Copilot, Self::Cursor],
-            Self::Copilot => vec![Self::Claude, Self::Codex, Self::Cursor],
-            Self::Cursor => vec![Self::Claude, Self::Codex, Self::Copilot],
-        }
-    }
-}
+/// Platforms for sync commands; the CLI parses it through the `clap`
+/// feature of skrills_sync.
+pub use skrills_sync::Platform;
+/// Validation target for skills; parsed through the `clap` feature of
+/// skrills-validate.
+pub use skrills_validate::ValidationTarget;
 
 /// Dependency traversal direction.
 #[derive(Debug, Clone, Copy, ValueEnum)]

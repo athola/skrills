@@ -791,7 +791,11 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
 ///
 /// This avoids the combinatorial match arm explosion that occurs when each
 /// (from, to) pair is constructed explicitly.
-pub fn sync_between(from: &str, to: &str, params: &SyncParams) -> Result<SyncReport> {
+pub fn sync_between(
+    from: crate::Platform,
+    to: crate::Platform,
+    params: &SyncParams,
+) -> Result<SyncReport> {
     let source = create_adapter(from)?;
     let target = create_adapter(to)?;
     SyncOrchestrator::new(source, target).sync(params)
@@ -829,36 +833,17 @@ pub fn sync_claude_skills_to_codex(
     SyncOrchestrator::new(source, target).sync(&params)
 }
 
-/// Validates that a platform name is recognized.
-///
-/// ```
-/// use skrills_sync::orchestrator::is_valid_platform;
-///
-/// assert!(is_valid_platform("claude"));
-/// assert!(is_valid_platform("cursor"));
-/// assert!(!is_valid_platform("vscode"));
-/// ```
-pub fn is_valid_platform(name: &str) -> bool {
-    matches!(
-        name.to_lowercase().as_str(),
-        "claude" | "codex" | "copilot" | "cursor"
-    )
-}
-
 /// Creates an adapter for the given platform name.
 ///
 /// Returns a boxed `AgentAdapter` for the specified platform.
-pub fn create_adapter(platform: &str) -> Result<Box<dyn AgentAdapter>> {
-    match platform.to_lowercase().as_str() {
-        "claude" => Ok(Box::new(crate::adapters::ClaudeAdapter::new()?)),
-        "codex" => Ok(Box::new(crate::adapters::CodexAdapter::new()?)),
-        "copilot" => Ok(Box::new(crate::adapters::CopilotAdapter::new()?)),
-        "cursor" => Ok(Box::new(crate::adapters::CursorAdapter::new()?)),
-        _ => bail!(
-            "Unknown platform '{}'. Use 'claude', 'codex', 'copilot', or 'cursor'",
-            platform
-        ),
-    }
+pub fn create_adapter(platform: crate::Platform) -> Result<Box<dyn AgentAdapter>> {
+    use crate::Platform;
+    Ok(match platform {
+        Platform::Claude => Box::new(crate::adapters::ClaudeAdapter::new()?),
+        Platform::Codex => Box::new(crate::adapters::CodexAdapter::new()?),
+        Platform::Copilot => Box::new(crate::adapters::CopilotAdapter::new()?),
+        Platform::Cursor => Box::new(crate::adapters::CursorAdapter::new()?),
+    })
 }
 
 #[cfg(test)]
@@ -2114,10 +2099,8 @@ mod tests {
     fn create_adapter_all_platforms() {
         // These only verify the adapter constructs; the actual root may not exist
         // on the test machine, but with_root tests cover that path.
-        assert_eq!(create_adapter("claude").unwrap().name(), "claude");
-        assert_eq!(create_adapter("codex").unwrap().name(), "codex");
-        assert_eq!(create_adapter("copilot").unwrap().name(), "copilot");
-        assert_eq!(create_adapter("cursor").unwrap().name(), "cursor");
-        assert!(create_adapter("vscode").is_err());
+        for platform in crate::Platform::ALL {
+            assert_eq!(create_adapter(platform).unwrap().name(), platform.as_str());
+        }
     }
 }

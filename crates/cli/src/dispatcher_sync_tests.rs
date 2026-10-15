@@ -1,7 +1,7 @@
 //! Sync tests - sync error paths and parameter handling
 
 use super::*;
-use crate::cli::SyncSource;
+use crate::cli::Platform;
 use skrills_server::app::SkillService;
 use std::time::Duration;
 
@@ -17,7 +17,7 @@ fn run_sync_with_adapters_same_source_returns_error() {
         ..Default::default()
     };
 
-    let result = run_sync_with_adapters(SyncSource::Claude, SyncSource::Claude, &params);
+    let result = run_sync_with_adapters(Platform::Claude, Platform::Claude, &params);
     assert!(result.is_err(), "Expected error when from == to");
     let msg = result.unwrap_err().to_string();
     assert!(
@@ -26,7 +26,7 @@ fn run_sync_with_adapters_same_source_returns_error() {
     );
 }
 
-/// T1 additional: verify the same-source error for all SyncSource variants.
+/// T1 additional: verify the same-source error for all Platform variants.
 #[test]
 fn run_sync_with_adapters_same_source_all_variants() {
     let params = skrills_sync::SyncParams {
@@ -35,10 +35,10 @@ fn run_sync_with_adapters_same_source_all_variants() {
     };
 
     for source in [
-        SyncSource::Claude,
-        SyncSource::Codex,
-        SyncSource::Copilot,
-        SyncSource::Cursor,
+        Platform::Claude,
+        Platform::Codex,
+        Platform::Copilot,
+        Platform::Cursor,
     ] {
         let result = run_sync_with_adapters(source, source, &params);
         assert!(
@@ -101,7 +101,7 @@ fn sync_skills_tool_uses_default_target_when_to_omitted() {
     let mut args = serde_json::Map::new();
     args.insert("from".into(), serde_json::json!("claude"));
     args.insert("dry_run".into(), serde_json::json!(true));
-    // No "to" parameter, should default to "codex" per default_target_for("claude")
+    // No "to" parameter, should default to "codex" per Platform::default_target
 
     let result = service.sync_skills_tool(args);
     // Should NOT error with "cannot be the same" since default target differs from source

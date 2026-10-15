@@ -34,6 +34,7 @@ use rmcp::model::{
 use rmcp::ServerHandler;
 use serde_json::json;
 use skrills_state::home_dir;
+use skrills_sync::Platform;
 use std::borrow::Cow;
 use std::fs;
 
@@ -87,27 +88,37 @@ pub(crate) fn invalid_params(message: impl Into<String>) -> anyhow::Error {
     InvalidParams(message.into()).into()
 }
 
-/// Agents a sync tool can read from or write to.
-const SYNC_PLATFORMS: [&str; 4] = ["claude", "codex", "copilot", "cursor"];
-
-/// Refuses an unknown platform or a sync from a platform to itself, which
-/// would read a tool's configuration and write it back through its own
-/// lossy writer.
-pub(crate) fn check_sync_pair(from: &str, to: &str) -> Result<()> {
-    for (field, value) in [("from", from), ("to", to)] {
-        if !SYNC_PLATFORMS.contains(&value) {
-            return Err(invalid_params(format!(
+/// Parses one platform argument of a sync tool. Names are matched exactly,
+/// as the tools document them.
+pub(crate) fn parse_sync_platform(field: &str, value: &str) -> Result<Platform> {
+    Platform::ALL
+        .into_iter()
+        .find(|p| p.as_str() == value)
+        .ok_or_else(|| {
+            let names: Vec<&str> = Platform::ALL.iter().map(|p| p.as_str()).collect();
+            invalid_params(format!(
                 "Invalid '{field}' value '{value}': expected one of {}",
-                SYNC_PLATFORMS.join(", ")
-            )));
-        }
-    }
-    if from.eq_ignore_ascii_case(to) {
+                names.join(", ")
+            ))
+        })
+}
+
+/// Parses a sync tool's `from` and optional `to` (defaulting to
+/// [`Platform::default_target`]), refusing a sync from a platform to itself,
+/// which would read a tool's configuration and write it back through its own
+/// lossy writer.
+pub(crate) fn sync_pair(from: &str, to: Option<&str>) -> Result<(Platform, Platform)> {
+    let from = parse_sync_platform("from", from)?;
+    let to = match to {
+        Some(to) => parse_sync_platform("to", to)?,
+        None => from.default_target(),
+    };
+    if from == to {
         return Err(invalid_params(format!(
             "Source and target cannot be the same: {from}"
         )));
     }
-    Ok(())
+    Ok((from, to))
 }
 
 /// A resource URI that names nothing (a deleted skill, a hidden document).
@@ -446,16 +457,17 @@ impl ServerHandler for SkillService {
                         self.sync_skills_tool(args)
                     }
                     "sync-commands" => {
-                        use skrills_sync::{default_target_for, sync_between, SyncParams};
+                        use skrills_sync::{sync_between, SyncParams};
 
                         let args = SyncToolArgs::from_request(&request);
-                        let to = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("to"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_else(|| default_target_for(&args.from));
-                        check_sync_pair(&args.from, to)?;
+                        let (from, to) = sync_pair(
+                            &args.from,
+                            request
+                                .arguments
+                                .as_ref()
+                                .and_then(|obj| obj.get("to"))
+                                .and_then(|v| v.as_str()),
+                        )?;
 
                         let params = SyncParams {
                             from: Some(args.from.clone()),
@@ -471,13 +483,13 @@ impl ServerHandler for SkillService {
                             ..Default::default()
                         };
 
-                        let report = sync_between(&args.from, to, &params)?;
+                        let report = sync_between(from, to, &params)?;
 
                         Ok(tool_ok(
                             vec![ContentBlock::text(report.summary.clone())],
                             Some(json!({
                                 "from": args.from,
-                                "to": to,
+                                "to": to.as_str(),
                                 "report": report,
                                 "dry_run": args.dry_run,
                                 "skip_existing_commands": args.skip_existing_commands
@@ -485,16 +497,17 @@ impl ServerHandler for SkillService {
                         ))
                     }
                     "sync-mcp-servers" => {
-                        use skrills_sync::{default_target_for, sync_between, SyncParams};
+                        use skrills_sync::{sync_between, SyncParams};
 
                         let args = SyncToolArgs::from_request(&request);
-                        let to = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("to"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_else(|| default_target_for(&args.from));
-                        check_sync_pair(&args.from, to)?;
+                        let (from, to) = sync_pair(
+                            &args.from,
+                            request
+                                .arguments
+                                .as_ref()
+                                .and_then(|obj| obj.get("to"))
+                                .and_then(|v| v.as_str()),
+                        )?;
 
                         let params = SyncParams {
                             from: Some(args.from.clone()),
@@ -508,29 +521,30 @@ impl ServerHandler for SkillService {
                             ..Default::default()
                         };
 
-                        let report = sync_between(&args.from, to, &params)?;
+                        let report = sync_between(from, to, &params)?;
 
                         Ok(tool_ok(
                             vec![ContentBlock::text(report.summary.clone())],
                             Some(json!({
                                 "from": args.from,
-                                "to": to,
+                                "to": to.as_str(),
                                 "report": report,
                                 "dry_run": args.dry_run
                             })),
                         ))
                     }
                     "sync-preferences" => {
-                        use skrills_sync::{default_target_for, sync_between, SyncParams};
+                        use skrills_sync::{sync_between, SyncParams};
 
                         let args = SyncToolArgs::from_request(&request);
-                        let to = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("to"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_else(|| default_target_for(&args.from));
-                        check_sync_pair(&args.from, to)?;
+                        let (from, to) = sync_pair(
+                            &args.from,
+                            request
+                                .arguments
+                                .as_ref()
+                                .and_then(|obj| obj.get("to"))
+                                .and_then(|v| v.as_str()),
+                        )?;
 
                         let params = SyncParams {
                             from: Some(args.from.clone()),
@@ -544,13 +558,13 @@ impl ServerHandler for SkillService {
                             ..Default::default()
                         };
 
-                        let report = sync_between(&args.from, to, &params)?;
+                        let report = sync_between(from, to, &params)?;
 
                         Ok(tool_ok(
                             vec![ContentBlock::text(report.summary.clone())],
                             Some(json!({
                                 "from": args.from,
-                                "to": to,
+                                "to": to.as_str(),
                                 "report": report,
                                 "dry_run": args.dry_run
                             })),
@@ -561,17 +575,18 @@ impl ServerHandler for SkillService {
                         self.sync_all_tool(args)
                     }
                     "sync-status" => {
-                        use skrills_sync::{default_target_for, sync_between, SyncParams};
+                        use skrills_sync::{sync_between, SyncParams};
 
                         let args = SyncToolArgs::from_request(&request);
 
-                        let to = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("to"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_else(|| default_target_for(&args.from));
-                        check_sync_pair(&args.from, to)?;
+                        let (from, to) = sync_pair(
+                            &args.from,
+                            request
+                                .arguments
+                                .as_ref()
+                                .and_then(|obj| obj.get("to"))
+                                .and_then(|v| v.as_str()),
+                        )?;
 
                         let params = SyncParams {
                             from: Some(args.from.clone()),
@@ -585,7 +600,7 @@ impl ServerHandler for SkillService {
                             ..Default::default()
                         };
 
-                        let report = sync_between(&args.from, to, &params)?;
+                        let report = sync_between(from, to, &params)?;
 
                         Ok(tool_ok(
                             vec![ContentBlock::text(format!(
@@ -595,7 +610,7 @@ impl ServerHandler for SkillService {
                             Some(json!({
                                 "preview": true,
                                 "from": args.from,
-                                "to": to,
+                                "to": to.as_str(),
                                 "report": report
                             })),
                         ))

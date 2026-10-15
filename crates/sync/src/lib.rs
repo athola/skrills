@@ -139,6 +139,7 @@ pub mod error;
 pub mod kill_switch_marker;
 pub mod models;
 pub mod orchestrator;
+pub mod platform;
 pub mod platform_routing;
 pub mod report;
 pub mod validation;
@@ -154,10 +155,10 @@ pub use common::{
 };
 pub use models::transform_model;
 pub use orchestrator::{
-    create_adapter, is_valid_platform, sync_between, sync_claude_skills_to_codex, SyncOrchestrator,
-    SyncParams,
+    create_adapter, sync_between, sync_claude_skills_to_codex, SyncOrchestrator, SyncParams,
 };
-pub use platform_routing::{default_target_for, skill_delivery, SkillDelivery};
+pub use platform::{Platform, UnknownPlatform};
+pub use platform_routing::{skill_delivery, SkillDelivery};
 pub use report::{SkipReason, SyncReport, WriteReport};
 pub use validation::{
     apply_autofix_to_skill, skill_is_codex_compatible, skill_is_copilot_compatible,

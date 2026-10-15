@@ -29,7 +29,7 @@ pub(crate) fn handle_pre_commit_validate_command(
         return Ok(());
     }
 
-    let outcome = validate_files(&skill_files, target.into());
+    let outcome = validate_files(&skill_files, target);
     for line in &outcome.failures {
         eprintln!("{line}");
     }

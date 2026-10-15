@@ -4,7 +4,7 @@ use std::path::PathBuf;
 mod enums;
 
 pub use enums::{
-    AgentBackend, CertAction, CreateSkillMethod, DependencyDirection, OutputFormat, SyncSource,
+    AgentBackend, CertAction, CreateSkillMethod, DependencyDirection, OutputFormat, Platform,
     ValidationTarget,
 };
 
@@ -179,11 +179,11 @@ pub enum Commands {
     /// Syncs slash commands between AI CLI tools (Claude, Codex, Copilot, Cursor).
     SyncCommands {
         /// Source CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
-        from: SyncSource,
+        #[arg(long, value_enum, default_value_t = Platform::Claude)]
+        from: Platform,
         /// Target CLI: claude, codex, copilot, or cursor. If not specified, defaults to codex (for claude source) or claude (for others).
         #[arg(long, value_enum)]
-        to: Option<SyncSource>,
+        to: Option<Platform>,
         /// Preview changes without writing.
         #[arg(long)]
         dry_run: bool,
@@ -197,11 +197,11 @@ pub enum Commands {
     /// Syncs MCP server configurations between AI CLI tools.
     SyncMcpServers {
         /// Source CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
-        from: SyncSource,
+        #[arg(long, value_enum, default_value_t = Platform::Claude)]
+        from: Platform,
         /// Target CLI: claude, codex, copilot, or cursor.
         #[arg(long, value_enum)]
-        to: Option<SyncSource>,
+        to: Option<Platform>,
         /// Preview changes without writing.
         #[arg(long)]
         dry_run: bool,
@@ -209,11 +209,11 @@ pub enum Commands {
     /// Syncs preferences between AI CLI tools.
     SyncPreferences {
         /// Source CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
-        from: SyncSource,
+        #[arg(long, value_enum, default_value_t = Platform::Claude)]
+        from: Platform,
         /// Target CLI: claude, codex, copilot, or cursor.
         #[arg(long, value_enum)]
-        to: Option<SyncSource>,
+        to: Option<Platform>,
         /// Preview changes without writing.
         #[arg(long)]
         dry_run: bool,
@@ -221,11 +221,11 @@ pub enum Commands {
     /// Syncs all configurations (commands, MCP servers, preferences, skills).
     SyncAll {
         /// Source CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
-        from: SyncSource,
+        #[arg(long, value_enum, default_value_t = Platform::Claude)]
+        from: Platform,
         /// Target CLI: claude, codex, copilot, or cursor. If omitted, syncs to ALL other CLIs.
         #[arg(long, value_enum)]
-        to: Option<SyncSource>,
+        to: Option<Platform>,
         /// Preview changes without writing.
         #[arg(long)]
         dry_run: bool,
@@ -251,11 +251,11 @@ pub enum Commands {
     /// Shows sync status and configuration differences.
     SyncStatus {
         /// Source CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
-        from: SyncSource,
+        #[arg(long, value_enum, default_value_t = Platform::Claude)]
+        from: Platform,
         /// Target CLI: claude, codex, copilot, or cursor.
         #[arg(long, value_enum)]
-        to: Option<SyncSource>,
+        to: Option<Platform>,
     },
     /// Diagnoses Codex MCP configuration for this server.
     Doctor,
@@ -586,8 +586,8 @@ pub enum Commands {
         #[arg(long)]
         skill: Option<String>,
         /// Target CLI to pull skills into.
-        #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
-        target: SyncSource,
+        #[arg(long, value_enum, default_value_t = Platform::Claude)]
+        target: Platform,
         /// Preview changes without applying.
         #[arg(long)]
         dry_run: bool,
@@ -613,7 +613,7 @@ pub enum Commands {
         search: Option<String>,
         /// Filter by source CLI.
         #[arg(long, value_enum)]
-        source: Option<SyncSource>,
+        source: Option<Platform>,
         /// Not implemented: skills carry no category, so passing it is an error.
         #[arg(long)]
         category: Option<String>,
@@ -645,8 +645,8 @@ pub enum Commands {
         #[arg(required = true)]
         source: String,
         /// Target CLI to import skill into.
-        #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
-        target: SyncSource,
+        #[arg(long, value_enum, default_value_t = Platform::Claude)]
+        target: Platform,
         /// Force overwrite if skill already exists.
         #[arg(long)]
         force: bool,
@@ -1322,8 +1322,8 @@ mod tests {
                 validate,
                 autofix,
             }) => {
-                assert!(matches!(from, SyncSource::Codex));
-                assert_eq!(to, Some(SyncSource::Copilot));
+                assert!(matches!(from, Platform::Codex));
+                assert_eq!(to, Some(Platform::Copilot));
                 assert!(dry_run);
                 assert!(skip_existing_commands);
                 assert!(!include_marketplace);
@@ -1344,7 +1344,7 @@ mod tests {
             Some(Commands::SyncCommands {
                 from, to, dry_run, ..
             }) => {
-                assert!(matches!(from, SyncSource::Claude));
+                assert!(matches!(from, Platform::Claude));
                 assert!(to.is_none());
                 assert!(!dry_run);
             }
@@ -1556,7 +1556,7 @@ mod tests {
                 format,
             }) => {
                 assert_eq!(source, "https://github.com/example/skill.git");
-                assert!(matches!(target, SyncSource::Codex));
+                assert!(matches!(target, Platform::Codex));
                 assert!(force);
                 assert!(dry_run);
                 assert_eq!(format, OutputFormat::Json);
@@ -1891,66 +1891,112 @@ mod tests {
             Some(Commands::SyncAll {
                 from, to, dry_run, ..
             }) => {
-                assert!(matches!(from, SyncSource::Claude));
-                assert_eq!(to, Some(SyncSource::Cursor));
+                assert!(matches!(from, Platform::Claude));
+                assert_eq!(to, Some(Platform::Cursor));
                 assert!(dry_run);
             }
             _ => unreachable!("expected SyncAll command"),
         }
     }
 
-    // --- SyncSource enum method tests ---
+    /// The platform and validation-target enums now come from skrills_sync and
+    /// skrills-validate; every flag value the CLI accepted before still parses
+    /// to the same variant.
+    #[test]
+    fn platform_and_validation_target_flags_keep_their_spellings() {
+        for (name, platform) in [
+            ("claude", Platform::Claude),
+            ("codex", Platform::Codex),
+            ("copilot", Platform::Copilot),
+            ("cursor", Platform::Cursor),
+        ] {
+            let other = if name == "claude" { "codex" } else { "claude" };
+            let cli = Cli::try_parse_from(["skrills", "sync-all", "--from", name, "--to", other])
+                .unwrap_or_else(|e| panic!("--from {name}: {e}"));
+            match cli.command {
+                Some(Commands::SyncAll { from, .. }) => assert_eq!(from, platform),
+                _ => unreachable!("expected SyncAll command"),
+            }
+        }
+        assert!(Cli::try_parse_from(["skrills", "sync-all", "--from", "vscode"]).is_err());
+
+        for (name, expected) in [
+            ("claude", ValidationTarget::Claude),
+            ("codex", ValidationTarget::Codex),
+            ("copilot", ValidationTarget::Copilot),
+            ("all", ValidationTarget::All),
+            ("both", ValidationTarget::Both),
+        ] {
+            let cli = Cli::try_parse_from(["skrills", "validate", "--target", name])
+                .unwrap_or_else(|e| panic!("--target {name}: {e}"));
+            match cli.command {
+                Some(Commands::Validate { target, .. }) => assert_eq!(target, expected),
+                _ => unreachable!("expected Validate command"),
+            }
+        }
+        // The defaults the help text promises.
+        match Cli::try_parse_from(["skrills", "validate"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Validate { target, .. }) => assert_eq!(target, ValidationTarget::Both),
+            _ => unreachable!("expected Validate command"),
+        }
+        match Cli::try_parse_from(["skrills", "sync-all"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::SyncAll { from, .. }) => assert_eq!(from, Platform::Claude),
+            _ => unreachable!("expected SyncAll command"),
+        }
+    }
+
+    // --- Platform enum method tests ---
 
     #[test]
     fn sync_source_as_str_returns_expected_names() {
-        assert_eq!(SyncSource::Claude.as_str(), "claude");
-        assert_eq!(SyncSource::Codex.as_str(), "codex");
-        assert_eq!(SyncSource::Copilot.as_str(), "copilot");
-        assert_eq!(SyncSource::Cursor.as_str(), "cursor");
+        assert_eq!(Platform::Claude.as_str(), "claude");
+        assert_eq!(Platform::Codex.as_str(), "codex");
+        assert_eq!(Platform::Copilot.as_str(), "copilot");
+        assert_eq!(Platform::Cursor.as_str(), "cursor");
     }
 
     #[test]
     fn sync_source_is_predicates() {
-        assert!(SyncSource::Claude.is_claude());
-        assert!(!SyncSource::Claude.is_codex());
+        assert!(Platform::Claude.is_claude());
+        assert!(!Platform::Claude.is_codex());
 
-        assert!(SyncSource::Codex.is_codex());
-        assert!(!SyncSource::Codex.is_claude());
+        assert!(Platform::Codex.is_codex());
+        assert!(!Platform::Codex.is_claude());
 
-        assert!(SyncSource::Copilot.is_copilot());
-        assert!(!SyncSource::Copilot.is_cursor());
+        assert!(Platform::Copilot.is_copilot());
+        assert!(!Platform::Copilot.is_cursor());
 
-        assert!(SyncSource::Cursor.is_cursor());
-        assert!(!SyncSource::Cursor.is_copilot());
+        assert!(Platform::Cursor.is_cursor());
+        assert!(!Platform::Cursor.is_copilot());
     }
 
     #[test]
     fn sync_source_default_target() {
+        assert!(matches!(Platform::Claude.default_target(), Platform::Codex));
+        assert!(matches!(Platform::Codex.default_target(), Platform::Claude));
         assert!(matches!(
-            SyncSource::Claude.default_target(),
-            SyncSource::Codex
+            Platform::Copilot.default_target(),
+            Platform::Claude
         ));
         assert!(matches!(
-            SyncSource::Codex.default_target(),
-            SyncSource::Claude
-        ));
-        assert!(matches!(
-            SyncSource::Copilot.default_target(),
-            SyncSource::Claude
-        ));
-        assert!(matches!(
-            SyncSource::Cursor.default_target(),
-            SyncSource::Claude
+            Platform::Cursor.default_target(),
+            Platform::Claude
         ));
     }
 
     #[test]
     fn sync_source_other_targets_excludes_self() {
         for source in [
-            SyncSource::Claude,
-            SyncSource::Codex,
-            SyncSource::Copilot,
-            SyncSource::Cursor,
+            Platform::Claude,
+            Platform::Codex,
+            Platform::Copilot,
+            Platform::Cursor,
         ] {
             let targets = source.other_targets();
             assert_eq!(targets.len(), 3, "{:?} should have 3 other targets", source);

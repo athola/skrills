@@ -146,21 +146,15 @@ mod tests {
     use super::*;
 
     #[test]
-    #[serial_test::serial]
     fn marker_lives_under_the_skrills_dir_of_home() {
-        let home = tempfile::tempdir().unwrap();
-        let saved = std::env::var_os("HOME");
-        std::env::set_var("HOME", home.path());
+        let _lock = skrills_test_utils::env_guard();
+        let fixture = skrills_test_utils::TestFixture::new().unwrap();
+        let _home = fixture.home_guard();
 
-        let path = marker_path();
+        let path = marker_path().unwrap();
 
-        match saved {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
+        assert!(path.ends_with(".skrills/kill-switch.pid"), "{path:?}");
         #[cfg(unix)]
-        assert_eq!(path, Some(home.path().join(".skrills/kill-switch.pid")));
-        #[cfg(not(unix))]
-        assert!(path.is_some_and(|p| p.ends_with(".skrills/kill-switch.pid")));
+        assert!(path.starts_with(fixture.home_path()), "{path:?}");
     }
 }

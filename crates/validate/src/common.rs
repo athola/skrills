@@ -17,6 +17,7 @@ pub enum Severity {
 
 /// Target CLI for validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 pub enum ValidationTarget {
     /// Claude Code validation (permissive).
     Claude,

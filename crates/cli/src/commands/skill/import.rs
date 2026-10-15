@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
-use crate::cli::{OutputFormat, SyncSource};
+use crate::cli::{OutputFormat, Platform};
 
 use super::ImportResult;
 
@@ -11,9 +11,9 @@ use super::ImportResult;
 /// Cursor resolve through their sync adapters, as `sync-status` does, so a
 /// Copilot import lands in the XDG directory when that is where Copilot
 /// lives rather than in a hard-coded `~/.copilot/skills`.
-fn import_target_dir(target: SyncSource, home: &Path) -> PathBuf {
+fn import_target_dir(target: Platform, home: &Path) -> PathBuf {
     match target {
-        SyncSource::Claude => home.join(".claude/skills"),
+        Platform::Claude => home.join(".claude/skills"),
         other => crate::commands::sync::source_skill_root(other, home),
     }
 }
@@ -123,7 +123,7 @@ fn frontmatter_with_name(content: &str, name: &str) -> String {
 /// command.
 pub(crate) fn handle_skill_import_command(
     source: String,
-    target: SyncSource,
+    target: Platform,
     force: bool,
     dry_run: bool,
     format: OutputFormat,
@@ -224,7 +224,7 @@ mod tests {
 
         let result = handle_skill_import_command(
             source_path.to_string_lossy().to_string(),
-            SyncSource::Claude,
+            Platform::Claude,
             false,
             false,
             OutputFormat::Json,
@@ -263,7 +263,7 @@ mod tests {
 
         let result = handle_skill_import_command(
             source_path.to_string_lossy().to_string(),
-            SyncSource::Claude,
+            Platform::Claude,
             false,
             true,
             OutputFormat::Json,
@@ -291,7 +291,7 @@ mod tests {
 
         let result = handle_skill_import_command(
             source_path.to_string_lossy().to_string(),
-            SyncSource::Claude,
+            Platform::Claude,
             true,
             false,
             OutputFormat::Json,
@@ -319,7 +319,7 @@ mod tests {
 
         let result = handle_skill_import_command(
             source_path.to_string_lossy().to_string(),
-            SyncSource::Claude,
+            Platform::Claude,
             false,
             false,
             OutputFormat::Json,
@@ -340,7 +340,7 @@ mod tests {
 
         let result = handle_skill_import_command(
             "/nonexistent/path/skill.md".to_string(),
-            SyncSource::Claude,
+            Platform::Claude,
             false,
             false,
             OutputFormat::Json,
@@ -378,7 +378,7 @@ mod tests {
 
         handle_skill_import_command(
             skill.to_string_lossy().to_string(),
-            SyncSource::Claude,
+            Platform::Claude,
             false,
             false,
             OutputFormat::Json,
@@ -478,12 +478,9 @@ mod tests {
                 .join("skills")
         };
         assert!(expected.starts_with(&xdg), "{expected:?}");
+        assert_eq!(import_target_dir(Platform::Copilot, home.path()), expected);
         assert_eq!(
-            import_target_dir(SyncSource::Copilot, home.path()),
-            expected
-        );
-        assert_eq!(
-            import_target_dir(SyncSource::Claude, home.path()),
+            import_target_dir(Platform::Claude, home.path()),
             home.path().join(".claude/skills")
         );
     }

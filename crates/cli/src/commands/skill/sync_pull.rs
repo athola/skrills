@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 
-use crate::cli::{OutputFormat, SyncSource};
+use crate::cli::{OutputFormat, Platform};
 
 use super::SyncPullResult;
 
@@ -24,7 +24,7 @@ const ALTERNATIVES: [(&str, &str); 3] = [
 pub(crate) fn handle_sync_pull_command(
     source: Option<String>,
     skill: Option<String>,
-    target: SyncSource,
+    target: Platform,
     dry_run: bool,
     format: OutputFormat,
 ) -> Result<()> {
@@ -74,7 +74,7 @@ mod tests {
     #[test]
     fn sync_pull_without_a_source_explains_and_succeeds() {
         let result =
-            handle_sync_pull_command(None, None, SyncSource::Claude, false, OutputFormat::Json);
+            handle_sync_pull_command(None, None, Platform::Claude, false, OutputFormat::Json);
 
         result.expect("sync-pull without --source only prints guidance");
     }
@@ -84,7 +84,7 @@ mod tests {
         let err = handle_sync_pull_command(
             Some("https://example.com/registry".into()),
             None,
-            SyncSource::Claude,
+            Platform::Claude,
             false,
             OutputFormat::Json,
         )

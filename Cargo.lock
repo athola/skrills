@@ -4630,6 +4630,7 @@ name = "skrills-validate"
 version = "0.9.1"
 dependencies = [
  "anyhow",
+ "clap",
  "libc",
  "notify",
  "proptest",
@@ -4648,6 +4649,7 @@ name = "skrills_sync"
 version = "0.9.1"
 dependencies = [
  "anyhow",
+ "clap",
  "dirs 7.0.0",
  "hex",
  "mockall",
@@ -4656,7 +4658,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_norway",
- "serial_test",
  "sha2 0.11.0",
  "skrills-snapshot",
  "skrills-test-utils",

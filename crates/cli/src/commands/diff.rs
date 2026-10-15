@@ -255,7 +255,7 @@ fn estimate_token_diff(a: &str, b: &str) -> i64 {
 fn diff_roots(home: &std::path::Path, cwd: &std::path::Path) -> Vec<SkillRoot> {
     let mut roots = default_roots(home);
     let cursor_skills =
-        crate::commands::sync::source_skill_root(crate::cli::SyncSource::Cursor, home);
+        crate::commands::sync::source_skill_root(crate::cli::Platform::Cursor, home);
     if !roots.iter().any(|r| r.root == cursor_skills) {
         roots.push(SkillRoot {
             root: cursor_skills,
@@ -399,7 +399,7 @@ mod tests {
         let roots = diff_roots(home.path(), cwd.path());
 
         let cursor =
-            crate::commands::sync::source_skill_root(crate::cli::SyncSource::Cursor, home.path());
+            crate::commands::sync::source_skill_root(crate::cli::Platform::Cursor, home.path());
         assert!(
             roots
                 .iter()

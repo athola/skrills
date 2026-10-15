@@ -22,10 +22,13 @@ semver = { workspace = true }
 tracing = { workspace = true }
 notify = { version = "8", optional = true }
 libc = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
 
 [features]
 default = []
 watch = ["notify", "libc"]
+# `clap::ValueEnum` for `ValidationTarget`, so the CLI parses it directly.
+clap = ["dep:clap"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
