@@ -36,8 +36,9 @@ const MANAGED_KEYS: &[&str] = &[
 pub(crate) enum Dialect {
     /// Claude: `type`/`url`/`headers` for HTTP, `disabled: true`.
     Claude,
-    /// Copilot: stdio only, `disabled: true`.
-    StdioOnly,
+    /// Copilot CLI: `type: "local"` or `"http"`, a `tools` list (`["*"]`
+    /// unless the user set one), `disabled: true`.
+    Copilot,
     /// Cursor: `url`/`headers` without `type`, `enabled: false`.
     Cursor,
 }
@@ -113,16 +114,12 @@ fn json_kind(value: &Value) -> &'static str {
     }
 }
 
-/// Encodes one server in `dialect`, or `None` when the target cannot express
-/// it (an HTTP server for a stdio-only tool).
-pub(crate) fn encode_server(server: &McpServer, dialect: Dialect) -> Option<Map<String, Value>> {
+/// Encodes one server in `dialect`.
+pub(crate) fn encode_server(server: &McpServer, dialect: Dialect) -> Map<String, Value> {
     let mut entry = Map::new();
     match server.transport {
         McpTransport::Http => {
-            if dialect == Dialect::StdioOnly {
-                return None;
-            }
-            if dialect == Dialect::Claude {
+            if dialect != Dialect::Cursor {
                 entry.insert("type".into(), Value::from("http"));
             }
             if let Some(url) = &server.url {
@@ -133,6 +130,9 @@ pub(crate) fn encode_server(server: &McpServer, dialect: Dialect) -> Option<Map<
             }
         }
         McpTransport::Stdio => {
+            if dialect == Dialect::Copilot {
+                entry.insert("type".into(), Value::from("local"));
+            }
             entry.insert("command".into(), Value::from(server.command.as_str()));
             if !server.args.is_empty() {
                 entry.insert("args".into(), Value::from(server.args.clone()));
@@ -160,7 +160,7 @@ pub(crate) fn encode_server(server: &McpServer, dialect: Dialect) -> Option<Map<
             Value::from(server.disabled_tools.clone()),
         );
     }
-    Some(entry)
+    entry
 }
 
 fn string_map(map: &HashMap<String, String>) -> Value {
@@ -178,8 +178,8 @@ fn string_map(map: &HashMap<String, String>) -> Value {
 ///
 /// Source servers are inserted or updated; servers only the target has are
 /// kept, and so are unknown keys inside an updated entry. A server the target
-/// cannot express is recorded as skipped. Returns the report; `config` is
-/// changed in place and the caller decides whether to write it.
+/// Returns the report; `config` is changed in place and the caller decides
+/// whether to write it.
 pub(crate) fn merge_servers(
     config: &mut Value,
     servers: &HashMap<String, McpServer>,
@@ -205,16 +205,7 @@ pub(crate) fn merge_servers(
     names.sort();
     for name in names {
         let server = &servers[name];
-        let Some(encoded) = encode_server(server, dialect) else {
-            report.skipped.push(SkipReason::AgentSpecificFeature {
-                item: name.clone(),
-                feature: "HTTP MCP transport".to_string(),
-                suggestion: format!(
-                    "{target_name} only runs stdio MCP servers; add this server there by hand"
-                ),
-            });
-            continue;
-        };
+        let encoded = encode_server(server, dialect);
         let mut merged = match map.get(name) {
             Some(Value::Object(current)) => current.clone(),
             _ => Map::new(),
@@ -223,6 +214,13 @@ pub(crate) fn merge_servers(
             merged.remove(*key);
         }
         merged.extend(encoded);
+        if dialect == Dialect::Copilot {
+            // The user's own tool list wins; `*` is what Copilot's form
+            // defaults to.
+            merged
+                .entry("tools")
+                .or_insert_with(|| Value::from(vec!["*"]));
+        }
         let merged = Value::Object(merged);
         if map.get(name) == Some(&merged) {
             report
@@ -279,26 +277,22 @@ mod tests {
     fn merge_with_no_source_servers_changes_nothing() {
         let mut config = serde_json::json!({"mcpServers": {"a": {"command": "a"}}});
         let before = config.clone();
-        merge_servers(&mut config, &HashMap::new(), Dialect::StdioOnly, "codex").unwrap();
+        merge_servers(&mut config, &HashMap::new(), Dialect::Copilot, "copilot").unwrap();
         assert_eq!(config, before);
     }
 
+    /// An HTTP server used to be encoded with an empty command for targets
+    /// that left out `type`; each dialect now spells it with a `url`.
     #[test]
-    fn stdio_only_target_skips_http_servers_instead_of_writing_an_empty_command() {
+    fn http_servers_are_encoded_with_their_url_in_every_dialect() {
         let mut http = stdio("remote", "");
         http.transport = McpTransport::Http;
         http.url = Some("https://x/mcp".to_string());
-        let mut config = serde_json::json!({});
-        let servers = HashMap::from([("remote".to_string(), http)]);
-
-        let report = merge_servers(&mut config, &servers, Dialect::StdioOnly, "codex").unwrap();
-
-        assert_eq!(report.written, 0);
-        assert!(config["mcpServers"].get("remote").is_none());
-        assert!(matches!(
-            report.skipped[0],
-            SkipReason::AgentSpecificFeature { .. }
-        ));
+        for dialect in [Dialect::Claude, Dialect::Copilot, Dialect::Cursor] {
+            let entry = encode_server(&http, dialect);
+            assert_eq!(entry["url"], "https://x/mcp");
+            assert!(entry.get("command").is_none());
+        }
     }
 
     #[test]

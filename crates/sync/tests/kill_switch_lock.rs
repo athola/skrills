@@ -1,7 +1,7 @@
 //! Integration tests for the operational kill-switch.
 //!
 //! When the cold-window kill-switch is engaged, every adapter's mutating
-//! `write_*` method must refuse with [`SyncError::TokenBudgetExceeded`].
+//! `write_*` method must refuse with [`SyncError::KillSwitchEngaged`].
 //! These tests fail today (no caller exists) and pass once each adapter
 //! consults the switch at the top of every write entry-point.
 //!
@@ -44,10 +44,9 @@ fn assert_token_budget_exceeded(err: anyhow::Error) {
     let downcast = err
         .downcast_ref::<SyncError>()
         .unwrap_or_else(|| panic!("expected SyncError, got: {err:?}"));
-    assert!(
-        matches!(downcast, SyncError::TokenBudgetExceeded { .. }),
-        "expected TokenBudgetExceeded, got: {downcast:?}"
-    );
+    assert_eq!(downcast, &SyncError::KillSwitchEngaged);
+    // The adapter has no token numbers, so the message must not invent any.
+    assert!(!err.to_string().contains("exceeded ceiling 0"), "{err}");
 }
 
 // ---------- Claude ----------
@@ -339,7 +338,7 @@ fn every_adapter_write_refuses_when_engaged() {
                 Err(err)
                     if err
                         .downcast_ref::<SyncError>()
-                        .is_some_and(|e| matches!(e, SyncError::TokenBudgetExceeded { .. })) => {}
+                        .is_some_and(|e| matches!(e, SyncError::KillSwitchEngaged)) => {}
                 other => missing.push(format!("{}::{method} -> {other:?}", adapter.name())),
             }
         }
@@ -402,6 +401,8 @@ fn orchestrator_sync_stops_and_writes_nothing_when_the_switch_is_engaged() {
         .into_iter()
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_file())
+        // The orchestrator's run lock is not synced content.
+        .filter(|e| e.file_name() != ".skrills-sync.lock")
         .map(|e| e.path().display().to_string())
         .collect();
     assert!(

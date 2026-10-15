@@ -16,7 +16,7 @@ use crate::common::{Command, ContentFormat, ModuleFile};
 use crate::report::WriteReport;
 use crate::Result;
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs;
 use std::time::SystemTime;
 
@@ -26,11 +26,11 @@ use super::ClaudeAdapter;
 
 pub(super) fn read_skills_impl(adapter: &ClaudeAdapter) -> Result<Vec<Command>> {
     // Track skills by name, keeping the most recently modified version
-    let mut skills_map: HashMap<String, Command> = HashMap::new();
+    let mut skills_map: BTreeMap<String, Command> = BTreeMap::new();
 
     // Helper to process a skill and update the map if it's newer
     let process_skill =
-        |skills_map: &mut HashMap<String, Command>,
+        |skills_map: &mut BTreeMap<String, Command>,
          name: String,
          path: &std::path::Path,
          modules: Vec<ModuleFile>,

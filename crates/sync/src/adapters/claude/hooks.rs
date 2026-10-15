@@ -3,12 +3,12 @@
 //! Walks `~/.claude/hooks/` and the plugins cache, keeping the most
 //! recently modified version per hook name.
 
-use crate::adapters::utils::{hash_content, is_hidden_path, sanitize_name};
+use crate::adapters::utils::{hash_content, is_hidden_path};
 use crate::common::{Command, ContentFormat};
 use crate::report::WriteReport;
 use crate::Result;
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs;
 use std::time::SystemTime;
 
@@ -19,7 +19,7 @@ use super::ClaudeAdapter;
 
 pub(super) fn read_hooks_impl(adapter: &ClaudeAdapter) -> Result<Vec<Command>> {
     // Track hooks by name, keeping the most recently modified version
-    let mut hooks_map: HashMap<String, Command> = HashMap::new();
+    let mut hooks_map: BTreeMap<String, Command> = BTreeMap::new();
 
     // Helper to process a hook and update the map if it's newer
     let mut process_hook =
@@ -109,36 +109,23 @@ pub(super) fn read_hooks_impl(adapter: &ClaudeAdapter) -> Result<Vec<Command>> {
     Ok(hooks_map.into_values().collect())
 }
 
-pub(super) fn write_hooks_impl(adapter: &ClaudeAdapter, hooks: &[Command]) -> Result<WriteReport> {
-    let dir = adapter.hooks_dir();
-    fs::create_dir_all(&dir)?;
-
+/// Claude Code loads hooks only from the `hooks` key of its settings files,
+/// plugin `hooks/hooks.json` and skill/agent frontmatter
+/// (code.claude.com/docs/en/hooks). A file in `~/.claude/hooks/` is never
+/// run, so no hook is written there; each one is reported for the user to add
+/// to settings.json.
+pub(super) fn write_hooks_impl(_adapter: &ClaudeAdapter, hooks: &[Command]) -> Result<WriteReport> {
     let mut report = WriteReport::default();
-
-    let mut writer = crate::adapters::utils::BatchWriter::new(&dir);
     for hook in hooks {
-        if hook.content_format == ContentFormat::Json {
-            // Claude Code takes hooks from the `hooks` key of settings.json;
-            // a JSON entry list parked in hooks/<Event>.md is never loaded.
-            report
-                .skipped
-                .push(crate::report::SkipReason::AgentSpecificFeature {
-                    item: hook.name.clone(),
-                    feature: "JSON hook entries (Cursor hooks.json)".to_string(),
-                    suggestion:
-                        "Add the hook to the `hooks` section of ~/.claude/settings.json by hand"
-                            .to_string(),
-                });
-            continue;
-        }
-        writer.write_single(
-            &hook.name,
-            &sanitize_name(&hook.name),
-            ".md",
-            &hook.content,
-            &mut report,
-        )?;
+        report
+            .skipped
+            .push(crate::report::SkipReason::AgentSpecificFeature {
+                item: hook.name.clone(),
+                feature: "hooks outside settings.json, which Claude Code does not load".to_string(),
+                suggestion:
+                    "Add the hook to the `hooks` section of ~/.claude/settings.json by hand"
+                        .to_string(),
+            });
     }
-
     Ok(report)
 }

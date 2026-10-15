@@ -60,7 +60,7 @@ impl CopilotAdapter {
     }
 
     /// Attach a [`KillSwitch`](skrills_snapshot::KillSwitch) so that mutating
-    /// operations refuse with [`SyncError::TokenBudgetExceeded`](crate::SyncError)
+    /// operations refuse with [`SyncError::KillSwitchEngaged`](crate::SyncError)
     /// when the cold-window engine has engaged it (FR12).
     #[must_use]
     pub fn with_kill_switch(mut self, switch: skrills_snapshot::KillSwitch) -> Self {

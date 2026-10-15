@@ -277,14 +277,25 @@ pub(super) fn plugin_hooks_for_cursor(
         .and_then(Value::as_object)
         .ok_or("it has no `hooks` object")?;
 
-    let root = plugin_root.display().to_string();
-    let point_at_mirror = |entry: &mut Value| {
+    // The root is pasted into a shell command unquoted (it often sits inside
+    // the command's own quotes), so only a path with no shell syntax in it is
+    // substituted; any other leaves the variable for the user to set.
+    let root = plugin_root.to_str().filter(|root| {
+        root.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-+@%:,~".contains(c))
+    });
+    let mut root_left_unset = false;
+    let mut point_at_mirror = |entry: &mut Value| {
         if let Some(command) = entry.get_mut("command") {
             if let Some(text) = command.as_str() {
-                *command = Value::from(
-                    text.replace("${CLAUDE_PLUGIN_ROOT}", &root)
-                        .replace("$CLAUDE_PLUGIN_ROOT", &root),
-                );
+                if !text.contains("$CLAUDE_PLUGIN_ROOT") && !text.contains("${CLAUDE_PLUGIN_ROOT}")
+                {
+                    return;
+                }
+                match root {
+                    Some(root) => *command = Value::from(replace_plugin_root(text, root)),
+                    None => root_left_unset = true,
+                }
             }
         }
     };
@@ -337,15 +348,42 @@ pub(super) fn plugin_hooks_for_cursor(
 
     let mut json = serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?;
     json.push(b'\n');
-    let warnings = if dropped.is_empty() {
-        Vec::new()
-    } else {
-        vec![format!(
+    let mut warnings = Vec::new();
+    if !dropped.is_empty() {
+        warnings.push(format!(
             "hooks.json events with no Cursor equivalent were dropped: {}",
             dropped.join(", ")
-        )]
-    };
+        ));
+    }
+    if root_left_unset {
+        warnings.push(format!(
+            "{} contains characters a shell would interpret, so ${{CLAUDE_PLUGIN_ROOT}} was \
+             left in the hook commands; set it in Cursor's environment for them to run",
+            plugin_root.display()
+        ));
+    }
     Ok((json, warnings))
+}
+
+/// `text` with `${CLAUDE_PLUGIN_ROOT}`, and `$CLAUDE_PLUGIN_ROOT` not followed
+/// by another name character, replaced by `root`.
+fn replace_plugin_root(text: &str, root: &str) -> String {
+    const NAME: &str = "$CLAUDE_PLUGIN_ROOT";
+    let text = text.replace("${CLAUDE_PLUGIN_ROOT}", root);
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find(NAME) {
+        let after = &rest[at + NAME.len()..];
+        out.push_str(&rest[..at]);
+        if after.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+            out.push_str(NAME);
+        } else {
+            out.push_str(root);
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// What makes two hook entries the same hook: the command it runs and the
@@ -516,6 +554,44 @@ mod tests {
         let report = write_hooks(tmp.path(), &[hook]).unwrap();
 
         assert_eq!(report.written, 1, "skipped: {:?}", report.skipped);
+    }
+
+    fn translated_command(hooks_json: &str, root: &Path) -> (String, Vec<String>) {
+        let (bytes, warnings) = plugin_hooks_for_cursor(hooks_json.as_bytes(), root).unwrap();
+        let config: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let command = config["hooks"]["stop"][0]["command"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        (command, warnings)
+    }
+
+    /// `$CLAUDE_PLUGIN_ROOT_DIR` is another variable; replacing its prefix
+    /// produced `<root>_DIR`.
+    #[test]
+    fn plugin_root_is_replaced_only_as_a_whole_variable() {
+        let (command, _) = translated_command(
+            r#"{"hooks": {"Stop": [{"hooks": [{"command": "$CLAUDE_PLUGIN_ROOT/run.sh $CLAUDE_PLUGIN_ROOT_DIR"}]}]}}"#,
+            Path::new("/home/u/.cursor/plugins/local/p"),
+        );
+        assert_eq!(
+            command,
+            "/home/u/.cursor/plugins/local/p/run.sh $CLAUDE_PLUGIN_ROOT_DIR"
+        );
+    }
+
+    /// A root with shell syntax in it would change the command Cursor runs.
+    #[test]
+    fn a_plugin_root_with_shell_syntax_is_not_pasted_into_commands() {
+        let (command, warnings) = translated_command(
+            r#"{"hooks": {"Stop": [{"hooks": [{"command": "${CLAUDE_PLUGIN_ROOT}/run.sh"}]}]}}"#,
+            Path::new("/home/u;rm -rf ~/.cursor/plugins/local/p"),
+        );
+        assert_eq!(command, "${CLAUDE_PLUGIN_ROOT}/run.sh");
+        assert!(
+            warnings.iter().any(|w| w.contains("CLAUDE_PLUGIN_ROOT")),
+            "{warnings:?}"
+        );
     }
 
     #[test]

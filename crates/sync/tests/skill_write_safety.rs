@@ -128,6 +128,43 @@ fn two_names_that_sanitize_alike_do_not_overwrite_each_other() {
     }
 }
 
+/// Pairs that land in one directory for each adapter: kebab-case folding for
+/// Cursor and Codex, a case-only difference everywhere (one directory on APFS
+/// and NTFS), and for Codex two nested names that share a leaf folder.
+#[test]
+fn names_that_collide_for_each_adapter_do_not_overwrite_each_other() {
+    let tmp = TempDir::new().unwrap();
+    for (adapter, skills_dir) in adapters(tmp.path()) {
+        let mut pairs = vec![("Case", "case", "Case")];
+        if matches!(adapter.name(), "cursor" | "codex") {
+            pairs.push(("My Skill", "my-skill", "my-skill"));
+            pairs.push(("a.b", "a-b", "a-b"));
+        }
+        if adapter.name() == "codex" {
+            pairs.push(("one/shared", "two/shared", "shared"));
+        }
+        for (first, second, dir) in pairs {
+            let report = adapter
+                .write_skills(&[skill(first, "first"), skill(second, "second")])
+                .unwrap();
+
+            let label = format!("{}: {first} / {second}", adapter.name());
+            assert_eq!(report.written, 1, "{label}: {report:?}");
+            let entries: Vec<String> = std::fs::read_dir(&skills_dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(entries.len(), 1, "{label}: {entries:?}");
+            assert!(entries[0].eq_ignore_ascii_case(dir), "{label}: {entries:?}");
+            let text =
+                std::fs::read_to_string(skills_dir.join(&entries[0]).join("SKILL.md")).unwrap();
+            assert!(text.contains("first"), "{label}: {text}");
+            std::fs::remove_dir_all(&skills_dir).unwrap();
+        }
+    }
+}
+
 /// A name that sanitizes to nothing wrote `SKILL.md` straight into the skills
 /// root.
 #[test]

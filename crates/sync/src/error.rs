@@ -3,9 +3,10 @@
 //! The crate's public surface still uses `anyhow::Error` for ergonomic
 //! propagation (`crate::Error` / `crate::Result`); typed variants are
 //! defined here so callers can pattern-match on specific failure modes
-//! after downcasting. Currently the only such variant is
-//! [`SyncError::TokenBudgetExceeded`], emitted when the cold-window
-//! kill-switch is engaged at the start of a mutating sync call (FR12).
+//! after downcasting. Adapters refuse a mutating sync call with
+//! [`SyncError::KillSwitchEngaged`] when the cold-window kill-switch is
+//! engaged (FR12); [`SyncError::TokenBudgetExceeded`] carries the numbers
+//! when the caller has them.
 
 use thiserror::Error;
 
@@ -29,6 +30,14 @@ pub enum SyncError {
         /// Configured `--alert-budget` ceiling.
         ceiling: u64,
     },
+    /// The kill-switch is engaged and the caller does not know the token
+    /// numbers behind it. Adapters refuse with this: reporting
+    /// `TokenBudgetExceeded { tokens: 0, ceiling: 0 }` read as "usage 0
+    /// exceeded ceiling 0".
+    #[error(
+        "cold-window kill-switch engaged; sync writes refuse until the operator releases the switch"
+    )]
+    KillSwitchEngaged,
 }
 
 #[cfg(test)]

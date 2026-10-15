@@ -22,7 +22,6 @@ use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use std::fs;
 use std::path::Path;
-use std::time::SystemTime;
 
 /// Reads all agents from `.cursor/agents/*.md`.
 pub fn read_agents(root: &Path) -> Result<Vec<Command>> {
@@ -34,7 +33,13 @@ pub fn read_agents(root: &Path) -> Result<Vec<Command>> {
     let mut agents = Vec::new();
 
     for entry in fs::read_dir(&dir)? {
-        let entry = entry?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                tracing::warn!(error = %e, "Skipping unreadable directory entry");
+                continue;
+            }
+        };
         let path = entry.path();
 
         // `file_type` does not follow links: a linked file could be any file
@@ -60,16 +65,15 @@ pub fn read_agents(root: &Path) -> Result<Vec<Command>> {
             .unwrap_or("unknown")
             .to_string();
 
-        let content = fs::read(&path)?;
+        let Some((content, modified)) = crate::adapters::utils::read_item_file(&path) else {
+            continue;
+        };
         // A copy this crate wrote gets its Claude-only lines back.
         let content = match std::str::from_utf8(&content).ok().and_then(restore_agent) {
             Some(restored) => restored.into_bytes(),
             None => content,
         };
         let hash = hash_content(&content);
-        let modified = fs::metadata(&path)
-            .and_then(|m| m.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
 
         agents.push(Command {
             name,

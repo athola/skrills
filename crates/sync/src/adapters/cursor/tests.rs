@@ -2831,3 +2831,117 @@ fn plugin_assets_takes_over_a_plugin_dir_that_write_skills_created() {
     );
     assert!(plugin_dir.join(super::MIRROR_MARKER).exists());
 }
+
+/// `atomic_write` resolves a symlink and replaces its target, so a link
+/// planted at `.skrills-mirror` had the file it points to overwritten with
+/// the marker on every sync.
+#[cfg(unix)]
+#[test]
+fn plugin_assets_does_not_write_the_marker_through_a_symlink() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let outside = tmp.path().join("outside.txt");
+    std::fs::write(&outside, b"precious").unwrap();
+    let plugin_dir = tmp.path().join("plugins/local/linked");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    std::os::unix::fs::symlink(&outside, plugin_dir.join(super::MIRROR_MARKER)).unwrap();
+
+    let report = adapter
+        .write_plugin_assets(&[plugin_manifest("linked")])
+        .unwrap();
+
+    assert_eq!(
+        std::fs::read(&outside).unwrap(),
+        b"precious",
+        "warnings were {:?}",
+        report.warnings
+    );
+}
+
+/// A symlinked `plugins/local` entry (a dev checkout) is the user's, even
+/// when its target carries a marker from an earlier mirror.
+#[cfg(unix)]
+#[test]
+fn plugin_assets_never_prunes_a_symlinked_plugin_entry() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let checkout = tmp.path().join("checkout");
+    mark_as_mirrored(&checkout);
+    let local_dir = tmp.path().join("plugins/local");
+    std::fs::create_dir_all(&local_dir).unwrap();
+    std::os::unix::fs::symlink(&checkout, local_dir.join("dev")).unwrap();
+
+    let report = adapter
+        .write_plugin_assets(&[plugin_manifest("other")])
+        .unwrap();
+
+    assert!(
+        std::fs::symlink_metadata(local_dir.join("dev")).is_ok(),
+        "the link was pruned, warnings were {:?}",
+        report.warnings
+    );
+}
+
+/// A plugin skill in a Claude cache under `root`, with its manifest.
+fn cached_plugin_skill(claude_root: &std::path::Path, version: &str) -> Command {
+    let version_dir = claude_root.join(format!("plugins/cache/market/my-plugin/{version}"));
+    std::fs::create_dir_all(version_dir.join(".claude-plugin")).unwrap();
+    std::fs::write(
+        version_dir.join(".claude-plugin/plugin.json"),
+        format!("{{\"name\": \"my-plugin\", \"version\": \"{version}\"}}"),
+    )
+    .unwrap();
+    let mut skill = make_skill_with_frontmatter("deep-work");
+    skill.source_path = version_dir.join("skills/deep-work/SKILL.md");
+    skill.plugin_origin = Some(crate::common::PluginOrigin {
+        plugin_name: "my-plugin".to_string(),
+        publisher: "market".to_string(),
+        version: version.to_string(),
+    });
+    skill
+}
+
+/// The manifest was looked up in the real `~/.claude`, whatever the source
+/// root was, and written once and never updated after a version bump.
+#[test]
+fn write_skills_takes_the_plugin_manifest_from_the_skills_own_cache_and_refreshes_it() {
+    let tmp = TempDir::new().unwrap();
+    let claude = tmp.path().join("claude");
+    let cursor = tmp.path().join("cursor");
+    let manifest = cursor.join("plugins/local/my-plugin/.cursor-plugin/plugin.json");
+
+    super::skills::write_skills(&cursor, &[cached_plugin_skill(&claude, "1.0.0")]).unwrap();
+    assert!(std::fs::read_to_string(&manifest)
+        .unwrap()
+        .contains("1.0.0"));
+
+    super::skills::write_skills(&cursor, &[cached_plugin_skill(&claude, "2.0.0")]).unwrap();
+    assert!(
+        std::fs::read_to_string(&manifest)
+            .unwrap()
+            .contains("2.0.0"),
+        "{}",
+        std::fs::read_to_string(&manifest).unwrap()
+    );
+}
+
+/// A symlinked plugin directory (a dev checkout) got the manifest written into
+/// its target before the skill writer refused the link.
+#[cfg(unix)]
+#[test]
+fn write_skills_writes_no_manifest_through_a_symlinked_plugin_dir() {
+    let tmp = TempDir::new().unwrap();
+    let cursor = tmp.path().join("cursor");
+    let checkout = tmp.path().join("checkout");
+    std::fs::create_dir_all(&checkout).unwrap();
+    std::fs::create_dir_all(cursor.join("plugins/local")).unwrap();
+    std::os::unix::fs::symlink(&checkout, cursor.join("plugins/local/my-plugin")).unwrap();
+
+    super::skills::write_skills(
+        &cursor,
+        &[cached_plugin_skill(&tmp.path().join("claude"), "1.0.0")],
+    )
+    .unwrap();
+
+    assert!(!checkout.join(".cursor-plugin").exists());
+}

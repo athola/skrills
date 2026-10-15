@@ -65,7 +65,7 @@ impl CursorAdapter {
     }
 
     /// Attach a [`KillSwitch`](skrills_snapshot::KillSwitch) so that mutating
-    /// operations refuse with [`SyncError::TokenBudgetExceeded`](crate::SyncError)
+    /// operations refuse with [`SyncError::KillSwitchEngaged`](crate::SyncError)
     /// when the cold-window engine has engaged it (FR12).
     #[must_use]
     pub fn with_kill_switch(mut self, switch: skrills_snapshot::KillSwitch) -> Self {
@@ -223,7 +223,7 @@ impl AgentAdapter for CursorAdapter {
             }
             // Read before this run writes anything: only a directory skrills
             // already owned may have files swept out of it.
-            let already_marked = plugin_dir.join(MIRROR_MARKER).exists();
+            let already_marked = has_mirror_marker(&plugin_dir);
 
             // Ownership is settled before the first write. An unmarked
             // directory that holds files this plugin does not ship belongs to
@@ -254,10 +254,16 @@ impl AgentAdapter for CursorAdapter {
                 if already_marked {
                     sweep_unreferenced(&plugin_dir, dir_name, &kept, &mut report);
                 }
-                if let Err(e) = crate::adapters::utils::write_file(
-                    plugin_dir.join(MIRROR_MARKER),
-                    MIRROR_MARKER_BODY,
-                ) {
+                let marker = plugin_dir.join(MIRROR_MARKER);
+                if crate::adapters::utils::symlink_below(&plugin_dir, &marker).is_some() {
+                    // Writing through it would replace the file it points to.
+                    report.warnings.push(format!(
+                        "plugins/local/{dir_name}/{MIRROR_MARKER} is a symlink, so the directory \
+                         was not marked as skrills-managed"
+                    ));
+                } else if let Err(e) =
+                    crate::adapters::utils::write_file(&marker, MIRROR_MARKER_BODY)
+                {
                     tracing::warn!(plugin = %dir_name, error = %e, "Could not stamp mirror marker");
                     report.warnings.push(format!(
                         "Could not mark plugins/local/{dir_name} as skrills-managed, so it will \
@@ -310,6 +316,12 @@ impl AgentAdapter for CursorAdapter {
 /// a build that predates the marker is therefore never deleted; it gains one on
 /// the next completed mirror of that plugin and is prunable from then on.
 pub(crate) const MIRROR_MARKER: &str = ".skrills-mirror";
+
+/// Whether `dir` carries [`MIRROR_MARKER`] as a regular file. A symlink there
+/// proves nothing about who made the directory.
+fn has_mirror_marker(dir: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(dir.join(MIRROR_MARKER)).is_ok_and(|meta| meta.is_file())
+}
 
 /// Body of [`MIRROR_MARKER`], so whoever finds the file knows what wrote it.
 const MIRROR_MARKER_BODY: &[u8] =
@@ -846,7 +858,9 @@ fn marked_mirror_dirs(local_dir: &std::path::Path) -> (Vec<String>, Vec<String>)
             }
         };
         let path = entry.path();
-        if !path.is_dir() {
+        // `file_type` does not follow links: a symlinked entry (a dev
+        // checkout) is never a mirror, whatever its target holds.
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
             continue;
         }
         let name = match entry.file_name().into_string() {
@@ -861,7 +875,7 @@ fn marked_mirror_dirs(local_dir: &std::path::Path) -> (Vec<String>, Vec<String>)
         };
         // An unmarked directory is either a plugin the user installed by hand or
         // a mirror from a build that predates the marker. Never delete it.
-        if path.join(MIRROR_MARKER).exists() {
+        if has_mirror_marker(&path) {
             marked.push(name);
         }
     }

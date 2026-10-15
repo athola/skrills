@@ -5,7 +5,7 @@ use crate::common::Command;
 use crate::models::transform_model;
 use crate::report::{SkipReason, SyncReport, WriteReport};
 use crate::Result;
-use anyhow::bail;
+use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -310,7 +310,10 @@ fn run_phase(
     };
     if matches!(
         e.downcast_ref::<crate::error::SyncError>(),
-        Some(crate::error::SyncError::TokenBudgetExceeded { .. })
+        Some(
+            crate::error::SyncError::TokenBudgetExceeded { .. }
+                | crate::error::SyncError::KillSwitchEngaged
+        )
     ) {
         return Err(e);
     }
@@ -339,13 +342,6 @@ fn without_excluded_plugins(
         .collect()
 }
 
-/// Whether two tools take model ids from the same vendor, so an id with no
-/// mapping can still be carried over unchanged.
-fn same_model_vendor(source: &str, target: &str) -> bool {
-    let openai = |name: &str| matches!(name, "codex" | "copilot");
-    source == target || (openai(source) && openai(target))
-}
-
 /// The form of a name that survives every adapter's sanitizer: writers strip
 /// `.`, spaces and `/` or kebab-case, so `my.cmd`, `my-cmd` and `mycmd` can all
 /// land in one file. Comparing these keys errs towards "already exists", which
@@ -361,6 +357,26 @@ fn existing_key(name: &str) -> String {
     } else {
         key
     }
+}
+
+/// Lock file in a target's config root that serializes syncs into it.
+const SYNC_LOCK_FILE: &str = ".skrills-sync.lock";
+
+/// Waits for and takes the advisory lock on `root`'s [`SYNC_LOCK_FILE`]. The
+/// lock is released when the returned file is dropped.
+fn lock_target(root: &std::path::Path) -> Result<std::fs::File> {
+    std::fs::create_dir_all(root)
+        .with_context(|| format!("Failed to create {}", root.display()))?;
+    let path = root.join(SYNC_LOCK_FILE);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("Failed to open {}", path.display()))?;
+    file.lock()
+        .with_context(|| format!("Failed to lock {}", path.display()))?;
+    Ok(file)
 }
 
 /// Orchestrates sync operations between agents.
@@ -387,6 +403,15 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
             // flag promises; running anyway would write without asking.
             bail!("interactive sync is not implemented; preview with dry_run instead");
         }
+
+        // Held for the whole run: the phases read, merge and rewrite shared
+        // config files, and a second sync into the same target in between
+        // would lose one of the updates. A dry run writes nothing.
+        let _lock = if params.dry_run {
+            None
+        } else {
+            Some(lock_target(&self.target.config_root())?)
+        };
 
         let mut report = SyncReport::new();
         let target_support = self.target.write_support();
@@ -426,13 +451,19 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                     |c| c.name.clone(),
                     |c| c.source_path.display().to_string(),
                 );
-                let include_marketplace = params.include_marketplace;
                 *slot = sync_items(
                     commands,
                     params.force,
                     params.dry_run,
                     params.skip_existing_commands,
-                    || self.target.read_commands(include_marketplace),
+                    // Only the writer's own directory: plugin-cache and
+                    // marketplace commands are never overwritten, so they
+                    // cannot make a command "already exist".
+                    || {
+                        let mut existing = self.target.read_commands(false)?;
+                        existing.retain(|c| c.plugin_origin.is_none());
+                        Ok(existing)
+                    },
                     |items| self.target.write_commands(items),
                 )?;
                 slot.duplicates = cmd_dups;
@@ -511,7 +542,8 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                     if !params.dry_run {
                         *slot = self.target.write_mcp_servers(&servers)?;
                     } else {
-                        let target = self.target.read_mcp_servers().unwrap_or_default();
+                        // A target the real run would refuse fails the preview too.
+                        let target = self.target.read_mcp_servers()?;
                         *slot = preview_servers(&servers, &target);
                     }
                     Ok(())
@@ -542,7 +574,6 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                         let (source, target) = (self.source.name(), self.target.name());
                         match transform_model(&model, source, target) {
                             Some(transformed) => prefs.model = Some(transformed),
-                            None if same_model_vendor(source, target) => prefs.model = Some(model),
                             None => {
                                 // Another vendor's tool rejects an id it does not
                                 // know, so the target keeps the model it has.
@@ -811,6 +842,121 @@ mod tests {
         let tgt_file = tgt_dir.path().join("prompts/hello.md");
         assert!(tgt_file.exists());
         assert_eq!(fs::read_to_string(&tgt_file).unwrap(), "# Hello");
+    }
+
+    /// Skip-existing compared against plugin-cache commands too, which the
+    /// Claude writer never overwrites, so a new command was skipped because a
+    /// plugin happened to ship one with the same name.
+    #[test]
+    fn skip_existing_ignores_plugin_commands_the_writer_would_not_touch() {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        fs::create_dir_all(src_dir.path().join("prompts")).unwrap();
+        fs::write(src_dir.path().join("prompts/deploy.md"), "# Deploy").unwrap();
+        let plugin_cmds = tgt_dir
+            .path()
+            .join("plugins/cache/market/plug/1.0.0/commands");
+        fs::create_dir_all(&plugin_cmds).unwrap();
+        fs::write(plugin_cmds.join("deploy.md"), "# Plugin deploy").unwrap();
+
+        let report = SyncOrchestrator::new(
+            CodexAdapter::with_root(src_dir.path().to_path_buf()),
+            ClaudeAdapter::with_root(tgt_dir.path().to_path_buf()),
+        )
+        .sync(&SyncParams {
+            sync_commands: true,
+            skip_existing_commands: true,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_skills: false,
+            sync_agents: false,
+            sync_hooks: false,
+            sync_instructions: false,
+            sync_plugin_assets: false,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(report.commands.written, 1, "{:?}", report.commands);
+        assert!(tgt_dir.path().join("commands/deploy.md").exists());
+    }
+
+    /// A target config that does not parse makes the real run refuse to
+    /// write; the dry run reported every server as "would write".
+    #[test]
+    fn dry_run_reports_an_unreadable_mcp_target_like_the_real_run() {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        fs::write(
+            src_dir.path().join(".claude.json"),
+            r#"{"mcpServers": {"s": {"command": "/bin/s"}}}"#,
+        )
+        .unwrap();
+        fs::write(tgt_dir.path().join("config.toml"), "[unclosed\n").unwrap();
+
+        let report = SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+            CodexAdapter::with_root(tgt_dir.path().to_path_buf()),
+        )
+        .sync(&SyncParams {
+            dry_run: true,
+            sync_commands: false,
+            sync_mcp_servers: true,
+            sync_preferences: false,
+            sync_skills: false,
+            sync_agents: false,
+            sync_hooks: false,
+            sync_instructions: false,
+            sync_plugin_assets: false,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(report.mcp_servers.written, 0, "{:?}", report.mcp_servers);
+        assert!(!report.success);
+    }
+
+    /// Two syncs into one target read, merge and write the same config files;
+    /// without a lock one of them loses its update. A second sync waits for
+    /// the lock on the target root.
+    #[test]
+    fn a_sync_waits_while_another_holds_the_target_lock() {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        fs::create_dir_all(src_dir.path().join("commands")).unwrap();
+        fs::write(src_dir.path().join("commands/hello.md"), "# Hello").unwrap();
+        let held = fs::File::create(tgt_dir.path().join(SYNC_LOCK_FILE)).unwrap();
+        held.lock().unwrap();
+
+        let (done, finished) = std::sync::mpsc::channel();
+        let (src, tgt) = (src_dir.path().to_path_buf(), tgt_dir.path().to_path_buf());
+        let worker = std::thread::spawn(move || {
+            let report =
+                SyncOrchestrator::new(ClaudeAdapter::with_root(src), CodexAdapter::with_root(tgt))
+                    .sync(&SyncParams {
+                        sync_commands: true,
+                        sync_mcp_servers: false,
+                        sync_preferences: false,
+                        sync_skills: false,
+                        sync_agents: false,
+                        sync_hooks: false,
+                        sync_instructions: false,
+                        sync_plugin_assets: false,
+                        ..Default::default()
+                    })
+                    .map(|r| r.commands.written);
+            done.send(report).unwrap();
+        });
+
+        assert!(
+            finished
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "the sync ran while the lock was held"
+        );
+        held.unlock().unwrap();
+        assert_eq!(finished.recv().unwrap().unwrap(), 1);
+        worker.join().unwrap();
     }
 
     #[test]

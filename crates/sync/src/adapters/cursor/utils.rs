@@ -49,6 +49,9 @@ pub fn parse_frontmatter(content: &str) -> (HashMap<String, String>, String) {
     let mut current_key: Option<String> = None;
     let mut current_value = String::new();
     let mut multiline = false;
+    // Block and quoted values lose their quotes when flushed; a plain scalar
+    // is kept as written.
+    let mut strip_quotes = true;
 
     for line in frontmatter_str.lines() {
         // Indented line: continuation of a multi-line value, a list item, or
@@ -66,9 +69,15 @@ pub fn parse_frontmatter(content: &str) -> (HashMap<String, String>, String) {
         // Flush previous multi-line key, strip quotes from assembled value
         // since YAML quotes span the full multi-line string.
         if let Some(key) = current_key.take() {
-            fields.insert(key, strip_yaml_quotes(&current_value));
+            let value = if strip_quotes {
+                strip_yaml_quotes(&current_value)
+            } else {
+                current_value.clone()
+            };
+            fields.insert(key, value);
             current_value.clear();
             multiline = false;
+            strip_quotes = true;
         }
 
         let trimmed = line.trim();
@@ -89,8 +98,14 @@ pub fn parse_frontmatter(content: &str) -> (HashMap<String, String>, String) {
                 current_key = Some(key);
                 current_value = value.to_string();
                 multiline = true;
+            } else if !value.is_empty() && !value.starts_with(['"', '\'', '[', '{']) {
+                // A plain scalar, which YAML lets continue on indented lines.
+                current_key = Some(key);
+                current_value = value.to_string();
+                multiline = true;
+                strip_quotes = false;
             } else {
-                // Single-line values preserve quotes as-is (needed for
+                // Quoted single-line values keep their quotes (needed for
                 // globs like "**/*.ts" in rules). Callers that need
                 // unquoted values use strip_yaml_quotes themselves.
                 fields.insert(key, value.to_string());
@@ -100,7 +115,12 @@ pub fn parse_frontmatter(content: &str) -> (HashMap<String, String>, String) {
 
     // Flush final key if any
     if let Some(key) = current_key {
-        fields.insert(key, strip_yaml_quotes(&current_value));
+        let value = if strip_quotes {
+            strip_yaml_quotes(&current_value)
+        } else {
+            current_value
+        };
+        fields.insert(key, value);
     }
 
     (fields, body)
@@ -302,6 +322,21 @@ pub fn trim_skill_body(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A plain scalar may continue on indented lines; only its first line
+    /// was kept, so Cursor loaded a truncated description.
+    #[test]
+    fn parse_frontmatter_joins_continuation_lines_of_a_plain_scalar() {
+        let (fields, _) = parse_frontmatter(
+            "---\nname: x\ndescription: first line\n  second line\nglobs: \"**/*.ts\"\n---\nbody\n",
+        );
+        assert_eq!(
+            fields.get("description").map(String::as_str),
+            Some("first line second line")
+        );
+        assert_eq!(fields.get("name").map(String::as_str), Some("x"));
+        assert_eq!(fields.get("globs").map(String::as_str), Some("\"**/*.ts\""));
+    }
 
     /// `name` nested under `metadata:` was read as the skill's own `name`, so
     /// the folder-name fix-up and the missing-description warning were skipped.

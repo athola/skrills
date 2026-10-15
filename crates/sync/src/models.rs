@@ -103,6 +103,8 @@ pub fn transform_model(model: &str, source: &str, target: &str) -> Option<String
         // target's model as it is.
         ("claude", "codex") | ("claude", "copilot") => None,
         ("codex", "claude") | ("copilot", "claude") => None,
+        // Both take OpenAI model ids.
+        ("codex", "copilot") | ("copilot", "codex") => Some(model.to_string()),
         // Cursor accepts Claude model IDs directly, pass through
         ("claude", "cursor") => Some(model.to_string()),
         // Cursor special values: "inherit" = use parent model, "fast" = lightweight model
@@ -207,6 +209,20 @@ mod tests {
             assert_eq!(transform_model(model, "cursor", "codex"), None, "{model}");
             assert_eq!(transform_model(model, "cursor", "copilot"), None, "{model}");
         }
+    }
+
+    /// Codex and Copilot both take OpenAI ids; only the orchestrator knew
+    /// that, so other callers got `None`.
+    #[test]
+    fn codex_and_copilot_pass_models_through_to_each_other() {
+        assert_eq!(
+            transform_model("gpt-5.3-codex", "codex", "copilot"),
+            Some("gpt-5.3-codex".to_string())
+        );
+        assert_eq!(
+            transform_model("gpt-5.3-codex", "copilot", "codex"),
+            Some("gpt-5.3-codex".to_string())
+        );
     }
 
     #[test]

@@ -50,7 +50,7 @@ impl ClaudeAdapter {
     }
 
     /// Attach a [`KillSwitch`](skrills_snapshot::KillSwitch) so that mutating
-    /// operations refuse with [`SyncError::TokenBudgetExceeded`](crate::SyncError)
+    /// operations refuse with [`SyncError::KillSwitchEngaged`](crate::SyncError)
     /// when the cold-window engine has engaged it (FR12).
     #[must_use]
     pub fn with_kill_switch(mut self, switch: skrills_snapshot::KillSwitch) -> Self {
@@ -850,6 +850,35 @@ mod tests {
         );
     }
 
+    /// Claude Code loads hooks only from the `hooks` key of its settings
+    /// files, plugin `hooks/hooks.json` and skill/agent frontmatter
+    /// (code.claude.com/docs/en/hooks), so a Markdown hook written to
+    /// `~/.claude/hooks/*.md` did nothing while reported as synced.
+    #[test]
+    fn write_hooks_writes_no_markdown_hook_files_claude_never_loads() {
+        let tmp = tempdir().unwrap();
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let hook = Command {
+            name: "PreToolUse".to_string(),
+            content: b"# Check before tools\n".to_vec(),
+            source_path: PathBuf::from("/c/hooks/PreToolUse.md"),
+            modified: SystemTime::now(),
+            hash: String::new(),
+            modules: Vec::new(),
+            content_format: ContentFormat::Markdown,
+            plugin_origin: None,
+        };
+
+        let report = adapter.write_hooks(&[hook]).unwrap();
+
+        assert_eq!(report.written, 0);
+        assert!(!tmp.path().join("hooks").exists());
+        assert!(matches!(
+            report.skipped.as_slice(),
+            [crate::report::SkipReason::AgentSpecificFeature { .. }]
+        ));
+    }
+
     /// Cursor hooks are JSON entry lists; Claude reads hooks from
     /// `settings.json`, not `~/.claude/hooks/*.md`, so writing them there
     /// produced files Claude never loads while reporting them as synced.
@@ -931,6 +960,51 @@ mod tests {
 
         assert_eq!(skill.content, b"new");
         assert_eq!(command.content, b"new");
+    }
+
+    /// The readers returned `HashMap` order, so which of two colliding items a
+    /// writer kept, and the report order, changed between runs.
+    #[test]
+    fn skills_agents_and_hooks_come_back_sorted_by_name() {
+        let tmp = tempdir().unwrap();
+        let names: Vec<String> = (0..16).map(|i| format!("item-{:02}", 15 - i)).collect();
+        for name in &names {
+            write_at(
+                &tmp.path().join(format!("skills/{name}/SKILL.md")),
+                "s",
+                1_000,
+            );
+            write_at(&tmp.path().join(format!("agents/{name}.md")), "a", 1_000);
+            write_at(&tmp.path().join(format!("hooks/{name}.md")), "h", 1_000);
+        }
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let mut sorted = names.clone();
+        sorted.sort();
+
+        for (kind, items) in [
+            ("skills", adapter.read_skills().unwrap()),
+            ("agents", adapter.read_agents().unwrap()),
+            ("hooks", adapter.read_hooks().unwrap()),
+        ] {
+            let got: Vec<String> = items.into_iter().map(|c| c.name).collect();
+            assert_eq!(got, sorted, "{kind}");
+        }
+    }
+
+    /// `commands/git/commit.md` and `commands/commit.md` are both `commit`;
+    /// the one kept depended on readdir order. The top-level file wins.
+    #[test]
+    fn a_top_level_command_wins_over_a_nested_one_of_the_same_name() {
+        let tmp = tempdir().unwrap();
+        write_at(&tmp.path().join("commands/a/commit.md"), "nested a", 1_000);
+        write_at(&tmp.path().join("commands/commit.md"), "top", 1_000);
+        write_at(&tmp.path().join("commands/z/commit.md"), "nested z", 1_000);
+
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let commands = adapter.read_commands(false).unwrap();
+
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].content, b"top");
     }
 
     /// `commands`/`agents` used to match anywhere in a plugin, so a README in
@@ -1127,6 +1201,34 @@ mod tests {
         assert_eq!(
             assets[0].relative_path,
             std::path::PathBuf::from("scripts/new.py")
+        );
+    }
+
+    /// Every asset of every plugin was held in memory with only a per-file
+    /// cap. Past the total budget the read stops, and the batch carries no
+    /// manifest so the mirror does not prune what it did not get to.
+    #[test]
+    fn read_plugin_assets_stops_at_the_total_budget_without_an_authoritative_batch() {
+        let tmp = tempdir().unwrap();
+        for plugin in ["a", "b", "c"] {
+            let root = tmp
+                .path()
+                .join(format!("plugins/cache/market/{plugin}/1.0.0"));
+            fs::create_dir_all(root.join(".claude-plugin")).unwrap();
+            fs::write(root.join(".claude-plugin/plugin.json"), b"{}").unwrap();
+            fs::create_dir_all(root.join("bin")).unwrap();
+            fs::write(root.join("bin/tool"), vec![b'x'; 100]).unwrap();
+        }
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+
+        let assets = plugin_assets::read_plugin_assets_capped(&adapter, true, 150).unwrap();
+
+        let total: usize = assets.iter().map(|a| a.content.len()).sum();
+        assert!(total <= 150, "read {total} bytes");
+        assert!(
+            manifests_in(&assets).is_empty(),
+            "{:?}",
+            manifests_in(&assets)
         );
     }
 

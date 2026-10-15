@@ -111,3 +111,36 @@ fn readers_skip_symlinked_files_and_hidden_paths() {
         assert_eq!(names, vec!["real".to_string()], "{label}");
     }
 }
+
+/// One unreadable file, or a directory whose name ends in `.md`, failed the
+/// whole phase on every run; the Claude readers already warned and moved on.
+#[cfg(unix)]
+#[test]
+fn readers_skip_unreadable_files_and_md_named_directories() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new().unwrap();
+    for (label, adapter, dir, suffix, read) in readers(tmp.path()) {
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("real{suffix}")), "real\n").unwrap();
+        let locked = dir.join(format!("locked{suffix}"));
+        std::fs::write(&locked, "locked\n").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        std::fs::create_dir_all(dir.join(format!("folder{suffix}"))).unwrap();
+        if std::fs::read(&locked).is_ok() {
+            return; // running as root: permissions do not apply
+        }
+
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read(adapter.as_ref())));
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let names: Vec<String> = result
+            .unwrap_or_else(|_| panic!("{label}: the reader failed"))
+            .into_iter()
+            .map(|item| item.name)
+            .collect();
+
+        assert_eq!(names, vec!["real".to_string()], "{label}");
+    }
+}

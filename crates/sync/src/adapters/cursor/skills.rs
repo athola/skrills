@@ -30,23 +30,30 @@ use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use std::fs;
 use std::path::Path;
-use std::time::SystemTime;
 use tracing::debug;
 
-/// Creates `.cursor-plugin/plugin.json` in `plugins/local/<plugin>/` if it
-/// doesn't already exist (write-once). Reads the Claude manifest from the
-/// cache if available, otherwise generates a minimal one.
+/// Writes `.cursor-plugin/plugin.json` in `plugins/local/<plugin>/` from the
+/// Claude manifest in the skill's own plugin cache, or a minimal one.
 ///
-/// This is deliberately write-once: if the manifest exists it is never updated.
-/// The `write_plugin_assets` path handles manifest updates via hash comparison.
-fn ensure_cursor_plugin_manifest(root: &Path, origin: &PluginOrigin) {
+/// The manifest is looked up beside `source_path` (the cache the skill was
+/// read from), not in the real `~/.claude`. A directory skrills marked is
+/// refreshed when the manifest changed (a plugin version bump); a manifest
+/// in an unmarked directory is the user's and is left alone. Nothing is
+/// written through a symlinked plugin directory.
+fn ensure_cursor_plugin_manifest(root: &Path, origin: &PluginOrigin, source_path: &Path) {
     use crate::adapters::utils::sanitize_name;
 
     let safe_name = sanitize_name(&origin.plugin_name);
 
-    let local_plugin = root.join("plugins").join("local").join(&safe_name);
+    let local_dir = root.join("plugins").join("local");
+    let local_plugin = local_dir.join(&safe_name);
     let cursor_manifest = local_plugin.join(".cursor-plugin").join("plugin.json");
-    if cursor_manifest.exists() {
+    if crate::adapters::utils::symlink_below(&local_dir, &cursor_manifest).is_some() {
+        debug!(plugin = %safe_name, "Plugin directory is a symlink; leaving its manifest alone");
+        return;
+    }
+    let exists = cursor_manifest.exists();
+    if exists && !super::has_mirror_marker(&local_plugin) {
         return;
     }
     // A directory this call creates is skrills' own, so it gets the mirror
@@ -54,42 +61,39 @@ fn ensure_cursor_plugin_manifest(root: &Path, origin: &PluginOrigin) {
     // refusing it as one the user made.
     let created_dir = !local_plugin.exists();
 
-    // Try to read the Claude manifest from the Claude plugin cache (~/.claude/).
-    let claude_home = match dirs::home_dir() {
-        Some(h) => h.join(".claude"),
-        None => {
-            debug!("HOME not set; using synthetic manifest for {}", safe_name);
-            let json = minimal_cursor_manifest(origin);
-            if write_manifest_file(&cursor_manifest, &json, &safe_name) && created_dir {
-                mark_as_mirror(&local_plugin, &safe_name);
-            }
-            return;
-        }
-    };
-    let claude_manifest_path = claude_cache_manifest_path(&claude_home, origin);
-
-    let manifest_json = if let Some(claude_manifest_path) =
-        claude_manifest_path.as_deref().filter(|p| p.exists())
-    {
-        match fs::read_to_string(claude_manifest_path) {
+    let manifest_json = match cache_manifest_for(source_path, origin) {
+        Some(path) => match fs::read_to_string(&path) {
             Ok(content) => content,
             Err(e) => {
                 tracing::warn!(
                     plugin = %safe_name,
-                    path = %claude_manifest_path.display(),
+                    path = %path.display(),
                     error = %e,
                     "Claude manifest exists but is unreadable; using synthetic"
                 );
                 minimal_cursor_manifest(origin)
             }
-        }
-    } else {
-        minimal_cursor_manifest(origin)
+        },
+        None => minimal_cursor_manifest(origin),
     };
+    if exists && fs::read_to_string(&cursor_manifest).is_ok_and(|c| c == manifest_json) {
+        return;
+    }
 
     if write_manifest_file(&cursor_manifest, &manifest_json, &safe_name) && created_dir {
         mark_as_mirror(&local_plugin, &safe_name);
     }
+}
+
+/// The Claude cache manifest of the plugin version `source_path` sits in:
+/// the ancestor `<home>/plugins/cache/<publisher>/<plugin>/<version>`.
+fn cache_manifest_for(source_path: &Path, origin: &PluginOrigin) -> Option<std::path::PathBuf> {
+    source_path.ancestors().find_map(|dir| {
+        let home = dir.ancestors().nth(5)?;
+        let manifest = claude_cache_manifest_path(home, origin)?;
+        (manifest == dir.join(".claude-plugin").join("plugin.json") && manifest.is_file())
+            .then_some(manifest)
+    })
 }
 
 fn mark_as_mirror(plugin_dir: &Path, plugin_name: &str) {
@@ -195,7 +199,13 @@ pub fn read_skills(root: &Path) -> Result<Vec<Command>> {
     let mut skills = Vec::new();
 
     for entry in fs::read_dir(&dir)? {
-        let entry = entry?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                tracing::warn!(error = %e, "Skipping unreadable entry under the skills directory");
+                continue;
+            }
+        };
         let path = entry.path();
 
         if !path.is_dir() {
@@ -219,16 +229,15 @@ pub fn read_skills(root: &Path) -> Result<Vec<Command>> {
             .unwrap_or("unknown")
             .to_string();
 
-        let content = fs::read(&skill_md)?;
+        let Some((content, modified)) = crate::adapters::utils::read_item_file(&skill_md) else {
+            continue;
+        };
         // A copy this crate wrote gets its original frontmatter back.
         let content = match std::str::from_utf8(&content).ok().and_then(restore_skill) {
             Some(restored) => restored.into_bytes(),
             None => content,
         };
         let hash = hash_content(&content);
-        let modified = fs::metadata(&skill_md)
-            .and_then(|m| m.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
 
         let modules = collect_module_files(&path);
 
@@ -345,7 +354,7 @@ pub fn write_skills(root: &Path, skills: &[Command]) -> Result<WriteReport> {
             }
             // Ensure .cursor-plugin/plugin.json manifest exists (once per plugin)
             if seen_plugins.insert(origin.plugin_name.clone()) {
-                ensure_cursor_plugin_manifest(root, origin);
+                ensure_cursor_plugin_manifest(root, origin, &skill.source_path);
             }
             debug!(name = %name, plugin = %safe_plugin, "Writing Cursor plugin skill");
             plugin_writer.write(

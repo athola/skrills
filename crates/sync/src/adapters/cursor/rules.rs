@@ -26,7 +26,6 @@ use crate::report::WriteReport;
 use crate::Result;
 use std::fs;
 use std::path::Path;
-use std::time::SystemTime;
 use walkdir::WalkDir;
 
 /// Reads all rules from `.cursor/rules/` (both `.mdc` and `.md` files).
@@ -81,11 +80,10 @@ pub fn read_rules(root: &Path) -> Result<Vec<Command>> {
                     .to_string()
             });
 
-        let content = fs::read(path)?;
+        let Some((content, modified)) = crate::adapters::utils::read_item_file(path) else {
+            continue;
+        };
         let hash = hash_content(&content);
-        let modified = fs::metadata(path)
-            .and_then(|m| m.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
 
         rules.push(Command {
             name,

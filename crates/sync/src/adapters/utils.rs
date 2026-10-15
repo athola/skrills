@@ -15,22 +15,34 @@ use walkdir::WalkDir;
 /// is `None` (no engine present, e.g. unit tests of the adapter in isolation)
 /// or disengaged, the call is a near-zero-cost atomic load.
 ///
-/// On engagement, returns [`SyncError::TokenBudgetExceeded`] wrapped in
-/// `anyhow::Error`. The numeric `tokens` and `ceiling` fields are not
-/// available at the adapter (they live in the engine that engaged the
-/// switch); the adapter reports `(0, 0)` and relies on the engine's
-/// WARNING-tier alert for the operator-facing numbers.
+/// On engagement, returns [`SyncError::KillSwitchEngaged`] wrapped in
+/// `anyhow::Error`. The token numbers live in the engine that engaged the
+/// switch, which reports them in its own WARNING-tier alert.
 pub(crate) fn ensure_not_engaged(switch: Option<&KillSwitch>) -> Result<()> {
     if let Some(s) = switch {
         if s.is_engaged() {
-            return Err(SyncError::TokenBudgetExceeded {
-                tokens: 0,
-                ceiling: 0,
-            }
-            .into());
+            return Err(SyncError::KillSwitchEngaged.into());
         }
     }
     Ok(())
+}
+
+/// Reads one item file a reader found, with its modification time.
+///
+/// An unreadable file is skipped with a warning: failing the read would fail
+/// the whole phase on every run, and the Claude readers already skip.
+pub(crate) fn read_item_file(path: &Path) -> Option<(Vec<u8>, std::time::SystemTime)> {
+    let read = std::fs::read(path).and_then(|content| Ok((content, std::fs::metadata(path)?)));
+    match read {
+        Ok((content, meta)) => Some((
+            content,
+            meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+        )),
+        Err(e) => {
+            warn!(path = %path.display(), error = %e, "Skipping unreadable file");
+            None
+        }
+    }
 }
 
 /// Returns true if the name starts with a dot (hidden file/directory).
@@ -146,10 +158,14 @@ pub(crate) const MAX_MODULE_FILE_BYTES: u64 = 16 * 1024 * 1024;
 pub fn collect_module_files(skill_dir: &Path) -> Vec<ModuleFile> {
     let mut modules = Vec::new();
 
+    // A subdirectory holding its own SKILL.md is a separate skill, not a
+    // module of this one.
     for entry in WalkDir::new(skill_dir)
         .min_depth(1)
         .max_depth(10)
         .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| !(e.file_type().is_dir() && e.path().join("SKILL.md").is_file()))
     {
         let entry = match entry {
             Ok(e) => e,
@@ -170,7 +186,7 @@ pub fn collect_module_files(skill_dir: &Path) -> Vec<ModuleFile> {
             continue;
         }
 
-        if path.file_name().is_some_and(|n| n == "SKILL.md") {
+        if path == skill_dir.join("SKILL.md") {
             continue;
         }
 
@@ -265,9 +281,17 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8], private: bool) -> std::io:
     use std::io::Write;
 
     let dest = match std::fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_symlink() => {
-            std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-        }
+        Ok(meta) if meta.file_type().is_symlink() => match std::fs::canonicalize(path) {
+            Ok(resolved) => resolved,
+            // A dangling link: write where it points, so the link survives.
+            Err(_) => {
+                let target = std::fs::read_link(path)?;
+                match path.parent() {
+                    Some(parent) if target.is_relative() => parent.join(target),
+                    _ => target,
+                }
+            }
+        },
         _ => path.to_path_buf(),
     };
     let parent = match dest.parent() {
@@ -854,6 +878,35 @@ mod tests {
         assert_eq!(names, vec![std::path::PathBuf::from("plain.py")]);
     }
 
+    /// A nested directory with its own SKILL.md is a separate skill: its
+    /// SKILL.md was dropped but its other files kept, leaving a headless
+    /// `sub/` inside the parent skill.
+    #[test]
+    fn collect_module_files_leaves_out_a_nested_skill() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("SKILL.md"), "root").unwrap();
+        std::fs::write(dir.path().join("x.py"), "x").unwrap();
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/SKILL.md"), "sub").unwrap();
+        std::fs::write(dir.path().join("sub/y.py"), "y").unwrap();
+        std::fs::create_dir_all(dir.path().join("lib")).unwrap();
+        std::fs::write(dir.path().join("lib/z.py"), "z").unwrap();
+
+        let mut names: Vec<_> = collect_module_files(dir.path())
+            .into_iter()
+            .map(|m| m.relative_path)
+            .collect();
+        names.sort();
+
+        assert_eq!(
+            names,
+            vec![
+                std::path::PathBuf::from("lib/z.py"),
+                std::path::PathBuf::from("x.py")
+            ]
+        );
+    }
+
     /// Every companion file was read whole into memory with no cap.
     #[test]
     fn collect_module_files_skips_files_over_the_size_cap() {
@@ -866,6 +919,28 @@ mod tests {
 
         let names: Vec<_> = modules.iter().map(|m| m.relative_path.clone()).collect();
         assert_eq!(names, vec![std::path::PathBuf::from("small.py")]);
+    }
+
+    /// `canonicalize` fails on a link whose target does not exist yet, and the
+    /// fallback replaced the link itself with a plain file.
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_keeps_a_dangling_symlink_and_creates_its_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("settings.json");
+        std::os::unix::fs::symlink("dotfiles/settings.json", &link).unwrap();
+        std::fs::create_dir_all(dir.path().join("dotfiles")).unwrap();
+
+        atomic_write(&link, b"{}", false).unwrap();
+
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read(dir.path().join("dotfiles/settings.json")).unwrap(),
+            b"{}"
+        );
     }
 
     fn refused_items(report: &crate::report::WriteReport) -> Vec<String> {

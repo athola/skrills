@@ -30,6 +30,22 @@ pub(super) fn read_plugin_assets_impl(
     adapter: &ClaudeAdapter,
     full_mirror: bool,
 ) -> Result<Vec<PluginAsset>> {
+    read_plugin_assets_capped(adapter, full_mirror, MAX_PLUGIN_ASSET_TOTAL_BYTES)
+}
+
+/// Most bytes of plugin assets one read holds in memory. A full mirror loads
+/// every cached plugin (bundled binaries, wheels) at once, in a server that
+/// runs for a long time.
+const MAX_PLUGIN_ASSET_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
+
+/// [`read_plugin_assets_impl`] with the total budget as a parameter. Past
+/// `max_total_bytes` the read stops and, in `full_mirror` mode, the batch
+/// carries no manifest, so the mirror removes nothing it did not receive.
+pub(super) fn read_plugin_assets_capped(
+    adapter: &ClaudeAdapter,
+    full_mirror: bool,
+    max_total_bytes: u64,
+) -> Result<Vec<PluginAsset>> {
     let cache_dir = adapter.config_root_ref().join("plugins/cache");
     if !cache_dir.exists() {
         return Ok(vec![]);
@@ -63,7 +79,9 @@ pub(super) fn read_plugin_assets_impl(
 
     // One version per plugin, picked by the same rule as every other reader.
     let (versions, listing_complete) = latest_plugin_versions_listing(&cache_dir);
-    for version_dir in versions {
+    let mut total_bytes: u64 = 0;
+    let mut over_budget = false;
+    'plugins: for version_dir in versions {
         let version_path = version_dir.path;
         let crate::common::PluginOrigin {
             plugin_name,
@@ -161,8 +179,17 @@ pub(super) fn read_plugin_assets_impl(
                 continue;
             }
 
-            let content = match fs::read(path) {
-                Ok(c) => c,
+            // Bounded: a file that grew since the size check is not read whole.
+            let content = match read_bounded(path, crate::adapters::utils::MAX_MODULE_FILE_BYTES) {
+                Ok(Some(c)) => c,
+                Ok(None) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        plugin = %plugin_name,
+                        "Skipping plugin asset over the size limit"
+                    );
+                    continue;
+                }
                 Err(e) => {
                     tracing::warn!(
                         path = %path.display(),
@@ -174,6 +201,16 @@ pub(super) fn read_plugin_assets_impl(
                     continue;
                 }
             };
+
+            total_bytes += content.len() as u64;
+            if total_bytes > max_total_bytes {
+                tracing::warn!(
+                    limit = max_total_bytes,
+                    "Plugin assets exceed the total size budget; the rest are not read this run"
+                );
+                over_budget = true;
+                break 'plugins;
+            }
 
             let executable = {
                 #[cfg(unix)]
@@ -242,7 +279,7 @@ pub(super) fn read_plugin_assets_impl(
         }
     }
 
-    if full_mirror && !listing_complete {
+    if full_mirror && (!listing_complete || over_budget) {
         // A plugin cache directory that could not be listed hides plugins that
         // may still be installed; with no manifest in the batch, the mirror
         // neither sweeps nor prunes anything this run.
@@ -253,6 +290,16 @@ pub(super) fn read_plugin_assets_impl(
     }
 
     Ok(assets)
+}
+
+/// Reads at most `limit` bytes of `path`; `None` when the file is longer.
+fn read_bounded(path: &std::path::Path, limit: u64) -> std::io::Result<Option<Vec<u8>>> {
+    use std::io::Read;
+    let mut content = Vec::new();
+    fs::File::open(path)?
+        .take(limit + 1)
+        .read_to_end(&mut content)?;
+    Ok((content.len() as u64 <= limit).then_some(content))
 }
 
 /// Build a minimal `plugin.json` body for plugins that ship without one.
