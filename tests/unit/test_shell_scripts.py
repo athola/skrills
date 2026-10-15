@@ -24,7 +24,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 LOGGING = SCRIPTS_DIR / "logging.sh"
 GATE = SCRIPTS_DIR / "shellcheck.sh"
-EXECUTABLES = sorted(p for p in SCRIPTS_DIR.glob("*.sh") if p.name != "logging.sh")
+EXECUTABLES = sorted(
+    [p for p in SCRIPTS_DIR.glob("*.sh") if p.name != "logging.sh"]
+    + [REPO_ROOT / "githooks" / "pre-commit"]
+)
 IDS = [str(p.relative_to(REPO_ROOT)) for p in EXECUTABLES]
 
 needs_shfmt = pytest.mark.skipif(shutil.which("shfmt") is None, reason="shfmt not installed")
