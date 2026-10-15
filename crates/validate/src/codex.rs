@@ -92,13 +92,13 @@ fn validate_codex_frontmatter(
                     ValidationIssue::error(ValidationTarget::Codex, "'name' field cannot be empty")
                         .with_line(2),
                 );
-            } else if name.len() > MAX_NAME_LENGTH {
+            } else if name.chars().count() > MAX_NAME_LENGTH {
                 result.add_issue(
                     ValidationIssue::error(
                         ValidationTarget::Codex,
                         format!(
                             "'name' exceeds maximum length ({} > {} chars)",
-                            name.len(),
+                            name.chars().count(),
                             MAX_NAME_LENGTH
                         ),
                     )
@@ -142,13 +142,13 @@ fn validate_codex_frontmatter(
                     )
                     .with_line(3),
                 );
-            } else if desc.len() > MAX_DESCRIPTION_LENGTH {
+            } else if desc.chars().count() > MAX_DESCRIPTION_LENGTH {
                 result.add_issue(
                     ValidationIssue::error(
                         ValidationTarget::Codex,
                         format!(
                             "'description' exceeds maximum length ({} > {} chars)",
-                            desc.len(),
+                            desc.chars().count(),
                             MAX_DESCRIPTION_LENGTH
                         ),
                     )
@@ -262,5 +262,23 @@ mod tests {
         assert!(!is_codex_compatible(
             "---\ndescription: desc\n---\n# Missing name"
         ));
+    }
+
+    /// Codex and the Agent Skills spec count characters, not UTF-8 bytes.
+    #[test]
+    fn codex_counts_name_and_description_length_in_characters() {
+        let name = "и".repeat(MAX_NAME_LENGTH); // 2 bytes per char
+        let desc = "あ".repeat(MAX_DESCRIPTION_LENGTH); // 3 bytes per char
+        let content = skrills_test_utils::skill_md(&name, &desc, "# Content\nBody.");
+        let result = validate_codex(&PathBuf::from("skill.md"), &content);
+        assert!(result.codex_valid, "{:?}", result.issues);
+        assert!(is_codex_compatible(&content));
+
+        let over = skrills_test_utils::skill_md("n", &format!("{desc}あ"), "# Content\nBody.");
+        let result = validate_codex(&PathBuf::from("skill.md"), &over);
+        assert!(result
+            .issues
+            .iter()
+            .any(|i| i.message.contains("(501 > 500 chars)")));
     }
 }

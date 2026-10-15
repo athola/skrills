@@ -50,7 +50,8 @@ pub use frontmatter::{
 use std::path::Path;
 use walkdir::WalkDir;
 
-/// Merges multiple `ValidationResult`s into one, combining validity flags and deduplicating issues by message.
+/// Merges multiple `ValidationResult`s into one, combining validity flags and
+/// dropping only issues repeated for the same target, severity and message.
 fn merge_validation_results(results: Vec<ValidationResult>, path: &Path) -> ValidationResult {
     let name = results
         .iter()
@@ -66,7 +67,11 @@ fn merge_validation_results(results: Vec<ValidationResult>, path: &Path) -> Vali
         merged.copilot_valid &= result.copilot_valid;
 
         for issue in result.issues {
-            if !merged.issues.iter().any(|i| i.message == issue.message) {
+            if !merged.issues.iter().any(|i| {
+                i.target == issue.target
+                    && i.severity == issue.severity
+                    && i.message == issue.message
+            }) {
                 merged.issues.push(issue);
             }
         }
@@ -77,7 +82,7 @@ fn merge_validation_results(results: Vec<ValidationResult>, path: &Path) -> Vali
 
 /// Validates a single skill file.
 pub fn validate_skill(path: &Path, content: &str, target: ValidationTarget) -> ValidationResult {
-    match target {
+    let mut result = match target {
         ValidationTarget::Claude => claude::validate_claude(path, content),
         ValidationTarget::Codex => codex::validate_codex(path, content),
         ValidationTarget::Copilot => copilot::validate_copilot(path, content),
@@ -96,7 +101,9 @@ pub fn validate_skill(path: &Path, content: &str, target: ValidationTarget) -> V
             ],
             path,
         ),
-    }
+    };
+    result.checked = Some(target);
+    result
 }
 
 /// Validates all skills in a directory.
@@ -104,6 +111,9 @@ pub fn validate_skill(path: &Path, content: &str, target: ValidationTarget) -> V
 /// Recursively walks the directory looking for `SKILL.md` files,
 /// skipping hidden directories and symlinks to match Codex discovery behavior.
 pub fn validate_all(dir: &Path, target: ValidationTarget) -> Result<Vec<ValidationResult>> {
+    if !dir.is_dir() {
+        anyhow::bail!("skill directory not found: {}", dir.display());
+    }
     let mut results = Vec::new();
 
     let is_hidden_rel_path = |path: &Path| {
@@ -139,8 +149,21 @@ pub fn validate_all(dir: &Path, target: ValidationTarget) -> Result<Vec<Validati
         if path.is_file() {
             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             if filename == "SKILL.md" {
-                let content = std::fs::read_to_string(path)?;
-                results.push(validate_skill(path, &content, target));
+                match std::fs::read_to_string(path) {
+                    Ok(content) => results.push(validate_skill(path, &content, target)),
+                    // One unreadable file is reported as that skill's error
+                    // rather than discarding every result collected so far.
+                    Err(err) => {
+                        let name = autofix::derive_name_from_path(path);
+                        let mut unreadable = ValidationResult::new(path.to_path_buf(), name);
+                        unreadable.add_issue(ValidationIssue::error(
+                            ValidationTarget::All,
+                            format!("Cannot read skill file: {err}"),
+                        ));
+                        unreadable.checked = Some(target);
+                        results.push(unreadable);
+                    }
+                }
             }
         }
     }
@@ -170,7 +193,8 @@ pub struct ValidationSummary {
     /// Number of skills valid for GitHub Copilot CLI.
     pub copilot_valid: usize,
     /// Number of skills that pass validation for all targets simultaneously
-    /// (intersection of claude_valid, codex_valid, and copilot_valid).
+    /// (intersection of claude_valid, codex_valid, and copilot_valid, over the
+    /// targets each skill was checked against).
     pub all_valid: usize,
     /// Total number of error-level issues.
     pub error_count: usize,
@@ -187,15 +211,13 @@ impl ValidationSummary {
         };
 
         for result in results {
-            if result.claude_valid {
-                summary.claude_valid += 1;
-            }
-            if result.codex_valid {
-                summary.codex_valid += 1;
-            }
-            if result.copilot_valid {
-                summary.copilot_valid += 1;
-            }
+            let claude = result.claude_valid && result.was_checked(ValidationTarget::Claude);
+            let codex = result.codex_valid && result.was_checked(ValidationTarget::Codex);
+            let copilot = result.copilot_valid && result.was_checked(ValidationTarget::Copilot);
+            summary.claude_valid += usize::from(claude);
+            summary.codex_valid += usize::from(codex);
+            summary.copilot_valid += usize::from(copilot);
+            // A target that was not checked does not block "all valid".
             if result.claude_valid && result.codex_valid && result.copilot_valid {
                 summary.all_valid += 1;
             }
@@ -249,6 +271,7 @@ mod tests {
                 claude_valid: true,
                 codex_valid: true,
                 copilot_valid: true,
+                checked: None,
             },
             ValidationResult {
                 path: "b.md".into(),
@@ -257,6 +280,7 @@ mod tests {
                 claude_valid: true,
                 codex_valid: false,
                 copilot_valid: true,
+                checked: None,
             },
             ValidationResult {
                 path: "c.md".into(),
@@ -265,6 +289,7 @@ mod tests {
                 claude_valid: true,
                 codex_valid: true,
                 copilot_valid: false,
+                checked: None,
             },
         ];
 
@@ -274,6 +299,82 @@ mod tests {
         assert_eq!(summary.codex_valid, 2);
         assert_eq!(summary.copilot_valid, 2);
         assert_eq!(summary.all_valid, 1);
+    }
+
+    #[test]
+    fn merge_keeps_each_targets_issue_when_messages_match() {
+        // No frontmatter: Codex and Copilot both report the missing name and
+        // description; each target's issues must survive the merge.
+        let content = "---\nlicense: MIT\n---\n# Body\nText.";
+        let all = validate_skill(Path::new("SKILL.md"), content, ValidationTarget::All);
+        let codex = validate_skill(Path::new("SKILL.md"), content, ValidationTarget::Codex);
+        let copilot = validate_skill(Path::new("SKILL.md"), content, ValidationTarget::Copilot);
+        let copilot_issues = all
+            .issues
+            .iter()
+            .filter(|i| i.target == ValidationTarget::Copilot)
+            .count();
+        assert_eq!(copilot_issues, copilot.issues.len());
+        assert_eq!(
+            all.error_count(),
+            codex.error_count() + copilot.error_count()
+        );
+    }
+
+    #[test]
+    fn summary_does_not_count_copilot_valid_when_copilot_was_not_checked() {
+        let content = "---\nname: test\ndescription: A test skill\n---\n# Content\nBody.";
+        let both = validate_skill(Path::new("SKILL.md"), content, ValidationTarget::Both);
+        let summary = ValidationSummary::from_results(&[both]);
+        assert_eq!(summary.claude_valid, 1);
+        assert_eq!(summary.codex_valid, 1);
+        assert_eq!(summary.copilot_valid, 0);
+        assert_eq!(
+            summary.all_valid, 1,
+            "valid for every target it was checked against"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_all_reports_an_unreadable_skill_and_keeps_the_others() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let good = temp_dir.path().join("good");
+        let bad = temp_dir.path().join("bad");
+        std::fs::create_dir_all(&good).unwrap();
+        std::fs::create_dir_all(&bad).unwrap();
+        std::fs::write(
+            good.join("SKILL.md"),
+            "---\nname: good\ndescription: fine\n---\n# Content\nBody.",
+        )
+        .unwrap();
+        std::fs::write(bad.join("SKILL.md"), [0xff, 0xfe, 0x00, 0x80]).unwrap();
+
+        let results = validate_all(temp_dir.path(), ValidationTarget::All).unwrap();
+        assert_eq!(results.len(), 2);
+        let bad_result = results
+            .iter()
+            .find(|r| r.path.starts_with(&bad))
+            .expect("unreadable skill reported");
+        assert!(bad_result.has_errors());
+        assert!(!bad_result.claude_valid && !bad_result.codex_valid && !bad_result.copilot_valid);
+        assert!(results
+            .iter()
+            .any(|r| r.path.starts_with(&good) && r.codex_valid));
+    }
+
+    /// Nothing in the workspace calls `watch::run_watch_loop`, so its notify
+    /// and libc dependencies (and its process-wide SIGINT handler) stay opt-in.
+    #[test]
+    fn watch_feature_is_not_enabled_by_default() {
+        let manifest = include_str!("../Cargo.toml");
+        let default_line = manifest
+            .lines()
+            .find(|l| l.trim_start().starts_with("default ="))
+            .expect("Cargo.toml declares default features");
+        assert!(!default_line.contains("watch"), "{default_line}");
     }
 
     /// BDD Test: Validate all skills in a directory
@@ -548,10 +649,8 @@ fn test_validate_all_nonexistent_directory() {
         Path::new("/nonexistent/path/that/does/not/exist"),
         ValidationTarget::Both,
     );
-    // walkdir on nonexistent path returns empty or error
-    if let Ok(v) = result {
-        assert!(v.is_empty());
-    }
+    // A mistyped root must not read as "0 skills, all valid".
+    assert!(result.is_err());
 }
 
 #[test]

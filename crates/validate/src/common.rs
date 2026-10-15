@@ -116,6 +116,11 @@ pub struct ValidationResult {
     /// Use `is_copilot_valid()` for read access; modified only via `add_issue()`.
     #[doc(hidden)]
     pub copilot_valid: bool,
+    /// The target this result was validated against. A flag for a target that
+    /// was never checked stays `true`, so summaries consult this to avoid
+    /// counting it as a pass. `None` means every target.
+    #[serde(skip)]
+    pub(crate) checked: Option<ValidationTarget>,
 }
 
 impl ValidationResult {
@@ -128,6 +133,19 @@ impl ValidationResult {
             claude_valid: true,
             codex_valid: true,
             copilot_valid: true,
+            checked: None,
+        }
+    }
+
+    /// Returns whether this result covers `target` (`Claude`, `Codex` or
+    /// `Copilot`).
+    pub fn was_checked(&self, target: ValidationTarget) -> bool {
+        match self.checked {
+            None | Some(ValidationTarget::All) => true,
+            Some(ValidationTarget::Both) => {
+                matches!(target, ValidationTarget::Claude | ValidationTarget::Codex)
+            }
+            Some(checked) => checked == target,
         }
     }
 
@@ -215,7 +233,7 @@ pub(crate) fn has_bounded_identity_and_body(
     let within = |field: &Option<String>, max: usize| {
         field
             .as_ref()
-            .is_some_and(|value| !value.is_empty() && value.len() <= max)
+            .is_some_and(|value| !value.is_empty() && value.chars().count() <= max)
     };
     within(&fm.name, max_name_len)
         && within(&fm.description, max_description_len)

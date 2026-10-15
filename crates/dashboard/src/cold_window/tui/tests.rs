@@ -708,7 +708,7 @@ fn hint_bar_tracks_focus_and_overlays() {
     hints_ui.focus = FocusTarget::Hints;
     let hints = bottom_row(&hints_ui, 120, 40);
     assert!(
-        hints.contains("P pin top hint"),
+        hints.contains("P pin selected hint"),
         "hints focus shows hint keys, got: {hints}"
     );
     assert!(
@@ -1208,4 +1208,65 @@ fn shutdown_flag_change_stops_the_loop_only_when_true() {
     tx.send(true).unwrap();
     let changed = futures::executor::block_on(rx.changed());
     assert!(super::runner::shutdown_signalled(changed, &rx));
+}
+
+/// The live loop fed snapshots to the alert state only, so the
+/// collapsed research pane never counted new findings.
+#[test]
+fn snapshot_ingest_feeds_the_research_badge() {
+    let mut s = ColdWindowState::new();
+    let mut r = ResearchPaneState::default();
+    super::runner::ingest_snapshot(snapshot_with_research(), &mut s, &mut r);
+    assert_eq!(r.badge_count, 1);
+}
+
+/// The live loop built an in-memory hint state, so pins were never
+/// loaded from or saved to the pin file.
+#[test]
+fn live_pane_states_persist_hint_pins_under_home() {
+    let _env = skrills_test_utils::env_guard();
+    let fixture = skrills_test_utils::TestFixture::new().unwrap();
+    let _home = fixture.home_guard();
+    let (_, hints, _) = super::runner::initial_pane_states(super::runner::TuiOptions {
+        budget_ceiling: 0,
+        bell_enabled: false,
+    });
+    let path = hints.persistence_path.expect("pins are persisted");
+    assert!(path.ends_with(".skrills/cold-window-pins.json"), "{path:?}");
+}
+
+#[test]
+fn d_acks_the_selected_warning_not_the_top_one() {
+    let mut ui = UiState::new();
+    let mut s = ColdWindowState::new();
+    s.ingest(two_warning_snapshot());
+    let mut h = HintPaneState::new();
+    let mut r = ResearchPaneState::default();
+    let second = s.visible_alerts()[1].fingerprint.clone();
+
+    handle_key(key(KeyCode::Char('j')), &mut ui, &mut s, &mut h, &mut r);
+    handle_key(key(KeyCode::Char('d')), &mut ui, &mut s, &mut h, &mut r);
+    assert_eq!(s.acked_warnings.iter().collect::<Vec<_>>(), vec![&second]);
+}
+
+#[test]
+fn p_pins_the_selected_hint_so_two_hints_can_be_pinned() {
+    let mut snap = (*rich_snapshot()).clone();
+    let mut second = snap.hints[0].clone();
+    second.hint.uri = "skill://second".into();
+    second.score = 0.1;
+    snap.hints.push(second);
+    let mut ui = UiState::new();
+    let mut s = ColdWindowState::new();
+    s.ingest(Arc::new(snap));
+    let mut h = HintPaneState::new();
+    let mut r = ResearchPaneState::default();
+
+    ui.focus = FocusTarget::Hints;
+    handle_key(key(KeyCode::Char('j')), &mut ui, &mut s, &mut h, &mut r);
+    handle_key(key(KeyCode::Char('P')), &mut ui, &mut s, &mut h, &mut r);
+    assert!(h.pinned.contains("skill://second"), "{:?}", h.pinned);
+    // The pinned hint now sorts first, so row 1 is the other hint.
+    handle_key(key(KeyCode::Char('P')), &mut ui, &mut s, &mut h, &mut r);
+    assert_eq!(h.pinned.len(), 2, "{:?}", h.pinned);
 }

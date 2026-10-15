@@ -23,7 +23,7 @@ notify = { version = "8", optional = true }
 libc = { workspace = true, optional = true }
 
 [features]
-default = ["watch"]
+default = []
 watch = ["notify", "libc"]
 
 [dev-dependencies]

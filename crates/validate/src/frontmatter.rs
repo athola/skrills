@@ -188,8 +188,14 @@ pub struct ParsedSkill {
 
 /// Check if a skill file has frontmatter.
 pub fn has_frontmatter(content: &str) -> bool {
-    let trimmed = content.trim_start();
+    let trimmed = strip_bom(content).trim_start();
     trimmed.starts_with("---")
+}
+
+/// Editors on Windows save UTF-8 with a leading byte-order mark, which
+/// `trim_start` keeps because U+FEFF is not whitespace.
+fn strip_bom(content: &str) -> &str {
+    content.strip_prefix('\u{feff}').unwrap_or(content)
 }
 
 /// Split content into frontmatter and body sections.
@@ -201,6 +207,7 @@ pub fn has_frontmatter(content: &str) -> bool {
 /// leaving it in made callers that rebuild the block line by line emit the
 /// closing `---` on the same line as the last key.
 pub fn split_frontmatter(content: &str) -> (Option<String>, String, usize) {
+    let content = strip_bom(content);
     let trimmed = content.trim_start();
 
     if !trimmed.starts_with("---") {
@@ -297,32 +304,46 @@ pub fn parse_frontmatter(content: &str) -> Result<ParsedSkill, String> {
 
 /// Generate frontmatter YAML from a name and description.
 pub fn generate_frontmatter(name: &str, description: &str) -> String {
-    // Escape special characters in YAML strings
-    let name_escaped = if name.contains(':') || name.contains('#') {
-        format!("\"{}\"", name.replace('"', "\\\""))
-    } else {
-        name.to_string()
-    };
+    format!(
+        "---\nname: {}\ndescription: {}\n---\n",
+        yaml_scalar(name),
+        yaml_scalar(description)
+    )
+}
 
-    let desc_escaped = if description.contains('\n') || description.len() > 80 {
-        // Use YAML literal block scalar for multi-line or long descriptions
-        let line_count = description.lines().count();
-        let mut indented = String::with_capacity(description.len() + (2 * line_count) + line_count);
-        for (idx, line) in description.lines().enumerate() {
-            if idx > 0 {
-                indented.push('\n');
-            }
-            indented.push_str("  ");
-            indented.push_str(line);
+/// Renders `text` as a YAML scalar that parses back to the same string.
+///
+/// Plain style is kept only for text that cannot be read as anything else:
+/// a leading `-`, `*`, `[`, `"`, a ` #`, a `: ` or a bare `true` each change
+/// what the parser sees. Everything else is double-quoted with escapes.
+pub(crate) fn yaml_scalar(text: &str) -> String {
+    let plain_safe = text.chars().next().is_some_and(char::is_alphabetic)
+        && !text.ends_with(' ')
+        && text
+            .chars()
+            .all(|c| c.is_alphanumeric() || " _.,()/-".contains(c))
+        && !matches!(
+            text.to_ascii_lowercase().as_str(),
+            "true" | "false" | "null" | "yes" | "no" | "on" | "off" | "y" | "n"
+        );
+    if plain_safe {
+        return text.to_string();
+    }
+    let mut quoted = String::with_capacity(text.len() + 2);
+    quoted.push('"');
+    for c in text.chars() {
+        match c {
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            '\n' => quoted.push_str("\\n"),
+            '\r' => quoted.push_str("\\r"),
+            '\t' => quoted.push_str("\\t"),
+            c if c.is_control() => quoted.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c => quoted.push(c),
         }
-        format!("|\n{indented}")
-    } else if description.contains(':') || description.contains('#') {
-        format!("\"{}\"", description.replace('"', "\\\""))
-    } else {
-        description.to_string()
-    };
-
-    format!("---\nname: {name_escaped}\ndescription: {desc_escaped}\n---\n")
+    }
+    quoted.push('"');
+    quoted
 }
 
 #[cfg(test)]
@@ -461,6 +482,42 @@ mod tests {
         let fm = generate_frontmatter("skill:name", "Contains: colon");
         assert!(fm.contains("name: \"skill:name\""));
         assert!(fm.contains("description: \"Contains: colon\""));
+    }
+
+    #[test]
+    fn generate_frontmatter_roundtrips_yaml_indicator_strings() {
+        let cases = [
+            "- first bullet",
+            "**Bold** intro",
+            "\"quoted\" name",
+            "[draft] x",
+            "back\\slash: \"q\"",
+            "true",
+            "123",
+            "& anchor",
+            "a #comment",
+            "trailing space ",
+            "line one\nline two",
+            &"long text ".repeat(20),
+        ];
+        for text in cases {
+            let generated = generate_frontmatter(text, text);
+            let fm = parse_frontmatter(&generated)
+                .unwrap_or_else(|e| panic!("{text:?} -> {generated:?}: {e}"))
+                .frontmatter
+                .unwrap();
+            assert_eq!(fm.name.as_deref(), Some(text), "{generated:?}");
+            assert_eq!(fm.description.as_deref(), Some(text), "{generated:?}");
+        }
+    }
+
+    #[test]
+    fn frontmatter_after_a_utf8_bom_is_recognized() {
+        let content = "\u{feff}---\nname: a\ndescription: b\n---\n# Body";
+        assert!(has_frontmatter(content));
+        let parsed = parse_frontmatter(content).unwrap();
+        assert_eq!(parsed.frontmatter.unwrap().name.as_deref(), Some("a"));
+        assert_eq!(parsed.content, "# Body");
     }
 
     // ============================================================

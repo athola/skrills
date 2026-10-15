@@ -4,7 +4,7 @@
 //! to make skills compatible with Codex CLI, Copilot CLI, and Cursor.
 
 use crate::codex::{MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH};
-use crate::frontmatter::{generate_frontmatter, has_frontmatter, parse_frontmatter};
+use crate::frontmatter::{generate_frontmatter, has_frontmatter, parse_frontmatter, yaml_scalar};
 use std::fs;
 use std::path::Path;
 
@@ -92,11 +92,13 @@ pub fn derive_description_from_content(content: &str) -> String {
     "A skill file".to_string()
 }
 
+/// Codex and the Agent Skills spec count the limit in characters, so the cut
+/// is made on a character boundary rather than a byte offset.
 fn truncate_description(desc: &str) -> String {
-    if desc.len() <= MAX_DESCRIPTION_LENGTH {
+    if desc.chars().count() <= MAX_DESCRIPTION_LENGTH {
         desc.to_string()
     } else {
-        let mut truncated = desc[..MAX_DESCRIPTION_LENGTH - 3].to_string();
+        let mut truncated: String = desc.chars().take(MAX_DESCRIPTION_LENGTH - 3).collect();
         truncated.push_str("...");
         truncated
     }
@@ -226,10 +228,10 @@ pub fn autofix_frontmatter(
                 name
             };
 
-            let description = if description.len() > MAX_DESCRIPTION_LENGTH {
+            let description = if description.chars().count() > MAX_DESCRIPTION_LENGTH {
                 changes.push(format!(
                     "Truncated description from {} to {} chars",
-                    description.len(),
+                    description.chars().count(),
                     MAX_DESCRIPTION_LENGTH
                 ));
                 modified = true;
@@ -256,7 +258,16 @@ pub fn autofix_frontmatter(
             }
 
             if modified {
-                format!("{}{}", generate_frontmatter(&name, &description), body)
+                let other_keys = parsed
+                    .raw_frontmatter
+                    .as_deref()
+                    .map(without_identity_keys)
+                    .unwrap_or_default();
+                format!(
+                    "---\nname: {}\ndescription: {}\n{other_keys}---\n{body}",
+                    yaml_scalar(&name),
+                    yaml_scalar(&description)
+                )
             } else {
                 content.to_string()
             }
@@ -308,6 +319,30 @@ pub fn autofix_frontmatter(
     }
 
     Ok(result)
+}
+
+/// Returns the frontmatter block without its top-level `name` and
+/// `description` entries, so autofix can write fresh ones and leave every
+/// other key, and its comments, as the author wrote them. An entry runs from
+/// its key line through the indented or blank lines that continue it.
+fn without_identity_keys(raw_yaml: &str) -> String {
+    let mut kept = String::new();
+    let mut skipping = false;
+    for line in raw_yaml.lines() {
+        let continues_entry = line.trim().is_empty() || line.starts_with([' ', '\t']);
+        if skipping && continues_entry {
+            continue;
+        }
+        skipping = ["name", "description"].iter().any(|key| {
+            line.strip_prefix(key)
+                .is_some_and(|rest| rest.trim_start().starts_with(':'))
+        });
+        if !skipping {
+            kept.push_str(line);
+            kept.push('\n');
+        }
+    }
+    kept
 }
 
 /// Replaces `path` with `content` so a reader sees either the old file or the
@@ -582,5 +617,105 @@ mod tests {
             backup_content, content,
             "Backup should contain the original content"
         );
+    }
+
+    const LONG_BODY: &str =
+        "Lots of content here to avoid scaffolding. This body has enough words \
+         to pass the minimum threshold for body completeness checks, and then a few more words.";
+
+    #[test]
+    fn autofix_truncates_multibyte_description_on_a_char_boundary() {
+        // 'é' is two bytes, so byte index 497 falls inside a character.
+        let desc = "é".repeat(MAX_DESCRIPTION_LENGTH + 100);
+        let content = format!("---\nname: s\ndescription: {desc}\n---\n\n{LONG_BODY}");
+        let result = autofix_frontmatter(
+            Path::new("/t/s/SKILL.md"),
+            &content,
+            &AutofixOptions::default(),
+        )
+        .unwrap();
+        let fm = parse_frontmatter(&result.content)
+            .unwrap()
+            .frontmatter
+            .unwrap();
+        let fixed = fm.description.unwrap();
+        assert_eq!(fixed.chars().count(), MAX_DESCRIPTION_LENGTH);
+        assert!(fixed.ends_with("..."));
+    }
+
+    #[test]
+    fn autofix_leaves_a_cjk_description_within_the_char_limit_alone() {
+        let desc = "あ".repeat(400); // 1,200 bytes but 400 characters
+        let content = format!("---\nname: s\ndescription: {desc}\n---\n\n{LONG_BODY}");
+        let result = autofix_frontmatter(
+            Path::new("/t/s/SKILL.md"),
+            &content,
+            &AutofixOptions::default(),
+        )
+        .unwrap();
+        let fm = parse_frontmatter(&result.content)
+            .unwrap()
+            .frontmatter
+            .unwrap();
+        assert_eq!(fm.description.as_deref(), Some(desc.as_str()));
+        assert!(
+            !result
+                .changes
+                .iter()
+                .any(|c| c.starts_with("Truncated description")),
+            "changes: {:?}",
+            result.changes
+        );
+    }
+
+    #[test]
+    fn autofix_keeps_version_and_depends_fields() {
+        let content = format!(
+            "---\nname: My Skill\n# pinned for the release\nversion: 1.2.3\ndescription: does it\n\
+             depends:\n  - base-skill\nallowed-tools: Read\nmodel: opus\n---\n\n{LONG_BODY}"
+        );
+        let result = autofix_frontmatter(
+            Path::new("/t/s/SKILL.md"),
+            &content,
+            &AutofixOptions::default(),
+        )
+        .unwrap();
+        assert!(result.modified);
+        let fm = parse_frontmatter(&result.content)
+            .unwrap()
+            .frontmatter
+            .unwrap();
+        assert_eq!(fm.name.as_deref(), Some("my-skill"));
+        assert_eq!(fm.description.as_deref(), Some("does it"));
+        assert_eq!(fm.version.as_deref(), Some("1.2.3"));
+        assert_eq!(fm.depends.len(), 1);
+        assert!(fm.extra.contains_key("allowed-tools"));
+        assert!(fm.extra.contains_key("model"));
+        assert!(result.content.contains("# pinned for the release"));
+    }
+
+    #[test]
+    fn autofix_replaces_a_multiline_description_without_leaving_its_continuation() {
+        let long = "word ".repeat(120);
+        let content = format!(
+            "---\nname: s\ndescription: |\n  {long}\n  second line\nlicense: MIT\n---\n\n{LONG_BODY}"
+        );
+        let result = autofix_frontmatter(
+            Path::new("/t/s/SKILL.md"),
+            &content,
+            &AutofixOptions::default(),
+        )
+        .unwrap();
+        assert!(result.modified);
+        let fm = parse_frontmatter(&result.content)
+            .unwrap()
+            .frontmatter
+            .unwrap();
+        assert_eq!(
+            fm.description.unwrap().chars().count(),
+            MAX_DESCRIPTION_LENGTH
+        );
+        assert!(fm.extra.contains_key("license"));
+        assert!(!result.content.contains("second line"));
     }
 }

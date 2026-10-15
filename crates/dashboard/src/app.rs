@@ -87,6 +87,9 @@ pub struct SkillInfo {
     pub valid: Option<bool>,
     /// Total invocations.
     pub invocations: u64,
+    /// Discovery names of every location, highest priority first. Metrics
+    /// are recorded under these (`my-skill/SKILL.md`), not under `name`.
+    pub metric_names: Vec<String>,
 }
 
 /// MCP server display info for the dashboard.
@@ -535,6 +538,8 @@ struct RefreshSnapshot {
     analytics: Option<(u64, f64)>,
     validation_summary: skrills_metrics::Result<ValidationSummary>,
     mcp_servers: Vec<McpServerInfo>,
+    /// One message per agent whose MCP config could not be read.
+    mcp_errors: Vec<String>,
 }
 
 impl Dashboard {
@@ -815,6 +820,9 @@ impl Dashboard {
         app.apply_validation_summary(snapshot.validation_summary);
         self.load_selected_validation(app);
         app.mcp_servers = snapshot.mcp_servers;
+        for error in snapshot.mcp_errors {
+            app.add_activity_keyed("mcp-config-error".into(), error);
+        }
 
         // Update timestamp
         let now =
@@ -835,10 +843,17 @@ impl Dashboard {
     /// panel never shows the previous skill's result. One indexed query.
     fn load_selected_validation(&self, app: &mut App) {
         app.selected_validation = None;
-        if let Some(name) = app.skills.get(app.skill_index).map(|s| s.name.clone()) {
-            let history = self.collector.get_validation_history(&name, 1);
-            app.apply_validation_detail(&name, history);
-        }
+        let Some(skill) = app.skills.get(app.skill_index) else {
+            return;
+        };
+        let (name, metric_names) = (skill.name.clone(), skill.metric_names.clone());
+        // The newest run under the first location that has one.
+        let history = metric_names
+            .iter()
+            .map(|metric_name| self.collector.get_validation_history(metric_name, 1))
+            .find(|history| !matches!(history, Ok(runs) if runs.is_empty()))
+            .unwrap_or_else(|| Ok(Vec::new()));
+        app.apply_validation_detail(&name, history);
     }
 }
 
@@ -847,6 +862,7 @@ impl RefreshSource {
     /// configs and queries SQLite, so the loop runs it on `spawn_blocking`.
     fn collect(&self) -> RefreshSnapshot {
         let validity = self.latest_validity();
+        let (mcp_servers, mcp_errors) = self.collect_mcp_servers();
         RefreshSnapshot {
             skills: self.collect_skills(&validity),
             analytics: self
@@ -855,7 +871,8 @@ impl RefreshSource {
                 .ok()
                 .map(|summary| (summary.total_invocations, summary.success_rate)),
             validation_summary: self.collector.get_validation_summary(),
-            mcp_servers: self.collect_mcp_servers(),
+            mcp_servers,
+            mcp_errors,
         }
     }
 
@@ -924,10 +941,15 @@ impl RefreshSource {
                 })
                 .collect();
 
-            // Get stats if available
-            let stats = self.collector.get_skill_stats(&base_name).ok();
-            let invocations = stats.as_ref().map(|s| s.total_invocations()).unwrap_or(0);
-            let valid = validity.get(&base_name).copied();
+            let metric_names: Vec<String> = entries.iter().map(|s| s.name.clone()).collect();
+            let invocations = metric_names
+                .iter()
+                .filter_map(|name| self.collector.get_skill_stats(name).ok())
+                .map(|stats| stats.total_invocations())
+                .sum();
+            let valid = metric_names
+                .iter()
+                .find_map(|name| validity.get(name).copied());
 
             skills.push(SkillInfo {
                 discovery_index: idx,
@@ -937,68 +959,68 @@ impl RefreshSource {
                 locations,
                 valid,
                 invocations,
+                metric_names,
             });
         }
         Ok((total, skills))
     }
 
-    fn collect_mcp_servers(&self) -> Vec<McpServerInfo> {
+    /// The servers every agent config lists, plus one message per agent
+    /// whose adapter or config could not be read, so a broken config does
+    /// not pass for "no servers".
+    fn collect_mcp_servers(&self) -> (Vec<McpServerInfo>, Vec<String>) {
         use skrills_sync::adapters::traits::AgentAdapter;
         use skrills_sync::common::McpTransport;
 
         let mut mcp_servers = Vec::new();
+        let mut errors = Vec::new();
 
-        let adapters: Vec<(&str, Box<dyn AgentAdapter>)> = [
+        let adapters: Vec<(&str, anyhow::Result<Box<dyn AgentAdapter>>)> = vec![
             (
                 "claude",
-                skrills_sync::ClaudeAdapter::new()
-                    .ok()
-                    .map(|a| Box::new(a) as Box<dyn AgentAdapter>),
+                skrills_sync::ClaudeAdapter::new().map(|a| Box::new(a) as Box<dyn AgentAdapter>),
             ),
             (
                 "codex",
-                skrills_sync::CodexAdapter::new()
-                    .ok()
-                    .map(|a| Box::new(a) as Box<dyn AgentAdapter>),
+                skrills_sync::CodexAdapter::new().map(|a| Box::new(a) as Box<dyn AgentAdapter>),
             ),
             (
                 "copilot",
-                skrills_sync::CopilotAdapter::new()
-                    .ok()
-                    .map(|a| Box::new(a) as Box<dyn AgentAdapter>),
+                skrills_sync::CopilotAdapter::new().map(|a| Box::new(a) as Box<dyn AgentAdapter>),
             ),
             (
                 "cursor",
-                skrills_sync::CursorAdapter::new()
-                    .ok()
-                    .map(|a| Box::new(a) as Box<dyn AgentAdapter>),
+                skrills_sync::CursorAdapter::new().map(|a| Box::new(a) as Box<dyn AgentAdapter>),
             ),
-        ]
-        .into_iter()
-        .filter_map(|(name, adapter)| adapter.map(|a| (name, a)))
-        .collect();
+        ];
 
-        for (source, adapter) in &adapters {
-            if let Ok(servers) = adapter.read_mcp_servers() {
-                for (name, server) in servers {
-                    mcp_servers.push(McpServerInfo {
-                        name,
-                        source: source.to_string(),
-                        transport: match server.transport {
-                            McpTransport::Stdio => "stdio".to_string(),
-                            McpTransport::Http => "http".to_string(),
-                        },
-                        command: server.command,
-                        enabled: server.enabled,
-                        allowed_tools: server.allowed_tools,
-                        disabled_tools: server.disabled_tools,
-                    });
+        for (source, adapter) in adapters {
+            let servers = match adapter.and_then(|adapter| adapter.read_mcp_servers()) {
+                Ok(servers) => servers,
+                Err(e) => {
+                    tracing::warn!(source, error = %e, "could not read MCP server configuration");
+                    errors.push(format!("MCP config for {source} unreadable: {e:#}"));
+                    continue;
                 }
+            };
+            for (name, server) in servers {
+                mcp_servers.push(McpServerInfo {
+                    name,
+                    source: source.to_string(),
+                    transport: match server.transport {
+                        McpTransport::Stdio => "stdio".to_string(),
+                        McpTransport::Http => "http".to_string(),
+                    },
+                    command: server.command,
+                    enabled: server.enabled,
+                    allowed_tools: server.allowed_tools,
+                    disabled_tools: server.disabled_tools,
+                });
             }
         }
 
         mcp_servers.sort_by(|a, b| a.source.cmp(&b.source).then(a.name.cmp(&b.name)));
-        mcp_servers
+        (mcp_servers, errors)
     }
 }
 
@@ -1158,6 +1180,7 @@ mod tests {
                 valid: None,
 
                 invocations: 0,
+                metric_names: Vec::new(),
             },
             SkillInfo {
                 discovery_index: 1,
@@ -1171,6 +1194,7 @@ mod tests {
                 valid: None,
 
                 invocations: 0,
+                metric_names: Vec::new(),
             },
         ];
         app.skill_list_state.select(Some(0));
@@ -1293,6 +1317,7 @@ mod tests {
             locations: Vec::new(),
             valid: None,
             invocations: 0,
+            metric_names: Vec::new(),
         });
         app.total_skills = 1;
 
@@ -1397,6 +1422,7 @@ mod tests {
                 valid: None,
 
                 invocations: 0,
+                metric_names: Vec::new(),
             },
             SkillInfo {
                 discovery_index: 1,
@@ -1410,6 +1436,7 @@ mod tests {
                 valid: None,
 
                 invocations: 0,
+                metric_names: Vec::new(),
             },
             SkillInfo {
                 discovery_index: 2,
@@ -1423,6 +1450,7 @@ mod tests {
                 valid: None,
 
                 invocations: 0,
+                metric_names: Vec::new(),
             },
         ];
         app.skill_list_state.select(Some(0));
@@ -1462,6 +1490,7 @@ mod tests {
                 valid: None,
 
                 invocations: 0,
+                metric_names: Vec::new(),
             })
             .collect()
     }
@@ -1586,6 +1615,7 @@ mod tests {
             locations: Vec::new(),
             valid: None,
             invocations: 0,
+            metric_names: vec![name.into()],
         }
     }
 
@@ -1708,7 +1738,14 @@ mod tests {
         let names: Vec<_> = app.skills.iter().map(|s| s.name.clone()).collect();
         assert_eq!(app.skills.len(), 3, "discovered: {names:?}");
 
-        let name_of = |needle: &str| names.iter().find(|n| n.contains(needle)).unwrap().clone();
+        let name_of = |needle: &str| {
+            app.skills
+                .iter()
+                .find(|s| s.name.contains(needle))
+                .unwrap()
+                .metric_names[0]
+                .clone()
+        };
         collector
             .record_validation(&name_of("passing"), &["lint"], &[])
             .unwrap();
@@ -1727,5 +1764,75 @@ mod tests {
         assert_eq!(valid_of("passing"), Some(true));
         assert_eq!(valid_of("failing"), Some(false));
         assert_eq!(valid_of("unchecked"), None);
+    }
+
+    /// The server records metrics under the discovery name
+    /// (`my-skill/SKILL.md`); the dashboard displays a shortened name, and
+    /// queried by that, so every row read 0 invocations and `[--]`.
+    #[test]
+    fn refresh_reads_metrics_recorded_under_discovery_names() {
+        let _env = skrills_test_utils::env_guard();
+        let fixture = skrills_test_utils::TestFixture::new().unwrap();
+        let _home = fixture.home_guard();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("skills");
+        let dir = root.join("my-skill");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: my-skill\ndescription: test\n---\nbody\n",
+        )
+        .unwrap();
+        let discovered = skrills_discovery::discover_skills(
+            &skrills_discovery::skill_roots_or_default(std::slice::from_ref(&root)),
+            None,
+        )
+        .unwrap();
+        let recorded_name = discovered[0].name.clone();
+
+        let collector = Arc::new(MetricsCollector::in_memory().unwrap());
+        collector
+            .record_skill_invocation(&recorded_name, 5, true, None)
+            .unwrap();
+        collector
+            .record_validation(&recorded_name, &["lint"], &[])
+            .unwrap();
+        let dashboard = Dashboard::with_collector(vec![root], collector);
+        let mut app = App::new();
+        dashboard.refresh_skills(&mut app);
+
+        assert_eq!(app.skills.len(), 1);
+        assert_eq!(app.skills[0].invocations, 1, "recorded as {recorded_name}");
+        assert_eq!(app.skills[0].valid, Some(true));
+        assert_eq!(
+            app.selected_validation
+                .as_ref()
+                .map(|d| d.skill_name.as_str()),
+            Some(recorded_name.as_str())
+        );
+    }
+
+    /// A config that fails to parse showed as "no servers" with nothing
+    /// said about why.
+    #[test]
+    fn refresh_reports_an_unreadable_mcp_config() {
+        let _env = skrills_test_utils::env_guard();
+        let fixture = skrills_test_utils::TestFixture::new().unwrap();
+        let _home = fixture.home_guard();
+        let claude = dirs::home_dir().unwrap().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(claude.join("settings.json"), "{broken").unwrap();
+
+        let dashboard =
+            Dashboard::with_collector(Vec::new(), Arc::new(MetricsCollector::in_memory().unwrap()));
+        let mut app = App::new();
+        dashboard.refresh_skills(&mut app);
+        assert!(
+            app.activity
+                .iter()
+                .any(|entry| entry.message.contains("MCP") && entry.message.contains("claude")),
+            "{:?}",
+            app.activity
+        );
     }
 }

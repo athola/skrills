@@ -26,7 +26,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{List, ListItem, Paragraph};
 use skrills_snapshot::{ResearchChannel, ResearchFinding};
 
-use super::focus::{clamped_selection, pane_block, select_row, truncate_with_ellipsis};
+use super::focus::{
+    clamped_selection, pane_block, render_list, select_row, truncate_with_ellipsis,
+};
 use super::state::ColdWindowState;
 
 /// Mutable state owned by the research pane.
@@ -194,7 +196,7 @@ impl ResearchPane {
             .map(|(i, f)| select_row(Self::render_row(f, inner_width), cursor == Some(i)))
             .collect();
         let list = List::new(items).block(pane_block(title, focused));
-        frame.render_widget(list, area);
+        render_list(frame, list, area, cursor);
     }
 
     /// Build one ratatui list row for a research finding, truncating
@@ -522,5 +524,29 @@ mod tests {
         terminal
             .draw(|f| ResearchPane::render(&snap_state, &pane_state, f, f.area(), false, None))
             .unwrap();
+    }
+
+    #[test]
+    fn selected_finding_below_the_fold_is_scrolled_into_view() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 5)).unwrap();
+        let mut snap_state = ColdWindowState::new();
+        snap_state.ingest(snap(
+            (0..10)
+                .map(|i| finding(&format!("f{i}"), ResearchChannel::GitHub))
+                .collect(),
+        ));
+        let mut pane_state = ResearchPaneState::new();
+        pane_state.collapsed = false;
+        terminal
+            .draw(|f| ResearchPane::render(&snap_state, &pane_state, f, f.area(), true, Some(9)))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("title-f9"), "{text}");
     }
 }

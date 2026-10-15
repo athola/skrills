@@ -538,14 +538,12 @@ impl MetricsCollector {
         )?;
 
         let rows = stmt.query_map(rusqlite::params![skill, limit as i64], |row| {
-            let passed_json: String = row.get(2)?;
-            let failed_json: String = row.get(3)?;
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
-                passed_json,
-                failed_json,
-                row.get::<_, String>(4)?,
+                checks_json(row, 2)?,
+                checks_json(row, 3)?,
+                row.get::<_, Option<String>>(4)?.unwrap_or_default(),
             ))
         })?;
 
@@ -591,8 +589,8 @@ impl MetricsCollector {
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
+                checks_json(row, 1)?,
+                checks_json(row, 2)?,
             ))
         })?;
 
@@ -644,9 +642,9 @@ impl MetricsCollector {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
+                checks_json(row, 2)?,
+                checks_json(row, 3)?,
+                row.get::<_, Option<String>>(4)?.unwrap_or_default(),
             ))
         })?;
 
@@ -711,7 +709,7 @@ impl MetricsCollector {
                 total_invocations: row.get::<_, i64>(1)? as u64,
                 successful_invocations: row.get::<_, i64>(2)? as u64,
                 failed_invocations: row.get::<_, i64>(3)? as u64,
-                avg_duration_ms: row.get::<_, f64>(4)?,
+                avg_duration_ms: row.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
             })
         })?;
 
@@ -775,13 +773,13 @@ impl MetricsCollector {
 
         let rows = stmt.query_map([limit as i64], |row| {
             let op_str: String = row.get(1)?;
-            let status_str: String = row.get(3)?;
+            let status_str = row.get::<_, Option<String>>(3)?.unwrap_or_default();
             Ok(SyncDetail {
                 id: row.get(0)?,
                 operation: parse_sync_operation(&op_str),
-                files_count: row.get::<_, i64>(2)? as usize,
+                files_count: row.get::<_, Option<i64>>(2)?.unwrap_or(0) as usize,
                 status: parse_sync_status(&status_str),
-                created_at: row.get(4)?,
+                created_at: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
             })
         })?;
 
@@ -801,8 +799,9 @@ impl MetricsCollector {
         let mut stmt = conn.prepare(
             "SELECT
                 COUNT(*) as total,
-                COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0) as successful,
-                COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) as failed,
+                COALESCE(SUM(CASE WHEN status IN ('success', 'complete') THEN 1 ELSE 0 END), 0) as successful,
+                COALESCE(SUM(CASE WHEN status IS NULL
+                    OR status NOT IN ('success', 'complete', 'in_progress') THEN 1 ELSE 0 END), 0) as failed,
                 COALESCE(SUM(CASE WHEN operation = 'push' THEN 1 ELSE 0 END), 0) as pushes,
                 COALESCE(SUM(CASE WHEN operation = 'pull' THEN 1 ELSE 0 END), 0) as pulls,
                 COALESCE(AVG(files_count), 0.0) as avg_files
@@ -817,8 +816,12 @@ impl MetricsCollector {
             let pulls: i64 = row.get(4)?;
             let avg_files: f64 = row.get(5)?;
 
-            let success_rate = if total > 0 {
-                (successful as f64 / total as f64) * 100.0
+            // Matches `parse_sync_status`: legacy `complete` is a success and
+            // an unknown status a failure. A sync still in progress has no
+            // outcome, so it stays out of the rate.
+            let finished = successful + failed;
+            let success_rate = if finished > 0 {
+                (successful as f64 / finished as f64) * 100.0
             } else {
                 0.0
             };
@@ -896,7 +899,7 @@ impl MetricsCollector {
                 duration_ms: row.get::<_, Option<i64>>(4)?.map(|d| d as u64),
                 outcome: parse_rule_outcome(&outcome_str),
                 details: row.get(6)?,
-                created_at: row.get(7)?,
+                created_at: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
             })
         })?;
         let mut details = Vec::new();
@@ -1067,6 +1070,14 @@ impl MetricsCollector {
     pub fn apply_retention_policy(&self) -> Result<usize> {
         self.cleanup_old_data(30)
     }
+}
+
+/// Reads a nullable check-list column, treating NULL as no checks the way
+/// `get_recent_events` does, so one NULL row cannot fail a whole query.
+fn checks_json(row: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<String> {
+    Ok(row
+        .get::<_, Option<String>>(idx)?
+        .unwrap_or_else(|| "[]".into()))
 }
 
 /// Decode one `checks_passed` / `checks_failed` column of a validation run.
@@ -2189,5 +2200,59 @@ mod tests {
         }
         let events = collector.get_recent_events(10).unwrap();
         assert_eq!(events.len(), 3, "{events:?}");
+    }
+
+    #[test]
+    fn readers_tolerate_null_columns() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        {
+            let conn = collector.conn.lock();
+            conn.execute_batch(
+                "INSERT INTO skill_invocations (skill_name, duration_ms, success, created_at)
+                     VALUES ('s', NULL, 1, NULL);
+                 INSERT INTO validation_runs (skill_name, checks_passed, checks_failed, created_at)
+                     VALUES ('v', NULL, NULL, NULL);
+                 INSERT INTO sync_events (operation, files_count, status, created_at)
+                     VALUES ('push', NULL, NULL, NULL);
+                 INSERT INTO rule_triggers (rule_name, created_at) VALUES ('r', NULL);",
+            )
+            .unwrap();
+        }
+        assert_eq!(collector.get_validation_history("v", 5).unwrap().len(), 1);
+        assert_eq!(collector.get_validation_summary().unwrap().total_skills, 1);
+        collector.export_validation_report().unwrap();
+        let top = collector.get_top_skills(5).unwrap();
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].avg_duration_ms, 0.0);
+        assert_eq!(collector.get_sync_history(5).unwrap().len(), 1);
+        assert_eq!(collector.get_rule_trigger_history("r", 5).unwrap().len(), 1);
+        assert_eq!(collector.get_top_rules(5).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn sync_summary_counts_statuses_the_way_history_parses_them() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        {
+            let conn = collector.conn.lock();
+            conn.execute_batch(
+                "INSERT INTO sync_events (operation, files_count, status) VALUES
+                     ('push', 1, 'success'),
+                     ('push', 1, 'complete'),
+                     ('pull', 1, 'failed'),
+                     ('pull', 1, 'bogus'),
+                     ('pull', 1, 'in_progress');",
+            )
+            .unwrap();
+        }
+        let summary = collector.get_sync_summary().unwrap();
+        assert_eq!(summary.total_syncs, 5);
+        assert_eq!(summary.successful_syncs, 2);
+        assert_eq!(summary.failed_syncs, 2);
+        // A sync still running has no outcome yet.
+        assert!(
+            (summary.success_rate - 50.0).abs() < 0.01,
+            "{}",
+            summary.success_rate
+        );
     }
 }

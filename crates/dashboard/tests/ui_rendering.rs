@@ -31,6 +31,7 @@ fn sample_skill(name: &str, source: &str, valid: Option<bool>, invocations: u64)
         }],
         valid,
         invocations,
+        metric_names: vec![format!("{name}/SKILL.md")],
     }
 }
 

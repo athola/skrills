@@ -62,10 +62,14 @@ fn parse_arxiv_atom(xml: &str) -> Vec<Paper> {
 
         if let (Some(title), Some(id)) = (title, id) {
             let year = published.and_then(|p| p.get(..4).and_then(|y| y.parse().ok()));
-            let arxiv_id = id.rsplit('/').next().unwrap_or(&id).to_string();
+            // Old-style ids carry their archive (`hep-th/9901001`), so only
+            // the `/abs/` prefix is dropped. The version suffix is left off
+            // the id so two versions of one paper deduplicate.
+            let arxiv_id = id.split_once("/abs/").map_or(id.as_str(), |(_, rest)| rest);
+            let canonical_id = strip_arxiv_version(arxiv_id);
 
             papers.push(Paper {
-                id: arxiv_id.clone(),
+                id: canonical_id.to_string(),
                 title,
                 authors: extract_authors(entry),
                 abstract_text: summary,
@@ -86,6 +90,20 @@ fn parse_arxiv_atom(xml: &str) -> Vec<Paper> {
     }
 
     papers
+}
+
+/// `2301.00001v2` -> `2301.00001`; an id without a `vN` suffix is unchanged.
+fn strip_arxiv_version(id: &str) -> &str {
+    match id.rsplit_once('v') {
+        Some((base, version))
+            if !base.is_empty()
+                && !version.is_empty()
+                && version.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            base
+        }
+        _ => id,
+    }
 }
 
 fn extract_tag(xml: &str, tag: &str) -> Option<String> {
@@ -175,7 +193,7 @@ mod tests {
         let papers = parse_arxiv_atom(xml);
         assert_eq!(papers.len(), 1);
         assert_eq!(papers[0].title, "Test Paper Title");
-        assert_eq!(papers[0].id, "2301.00001v1");
+        assert_eq!(papers[0].id, "2301.00001");
         assert_eq!(papers[0].authors, vec!["Test Author"]);
         assert_eq!(papers[0].year, Some(2023));
     }
@@ -247,6 +265,22 @@ mod tests {
         assert_eq!(
             papers[0].pdf_url.as_deref(),
             Some("https://arxiv.org/pdf/2301.99999v2")
+        );
+    }
+
+    #[test]
+    fn old_style_arxiv_id_keeps_its_archive_and_drops_the_version() {
+        let xml = r#"<feed>
+            <entry>
+                <id>http://arxiv.org/abs/hep-th/9901001v1</id>
+                <title>Old Style</title>
+            </entry>
+        </feed>"#;
+        let papers = parse_arxiv_atom(xml);
+        assert_eq!(papers[0].id, "hep-th/9901001");
+        assert_eq!(
+            papers[0].pdf_url.as_deref(),
+            Some("https://arxiv.org/pdf/hep-th/9901001v1")
         );
     }
 }

@@ -132,7 +132,7 @@ pub fn bindings() -> &'static [Binding] {
         Binding {
             scope: BindingScope::Alerts,
             keys: "d",
-            action: "dismiss top warning",
+            action: "dismiss selected warning",
             codes: &[KeyCode::Char('d')],
             modifier: false,
         },
@@ -159,7 +159,7 @@ pub fn bindings() -> &'static [Binding] {
         Binding {
             scope: BindingScope::Hints,
             keys: "P",
-            action: "pin top hint",
+            action: "pin selected hint",
             codes: &[KeyCode::Char('P')],
             modifier: false,
         },
@@ -217,7 +217,7 @@ pub fn palette_commands() -> &'static [PaletteEntry] {
             code: KeyCode::Char('A'),
         },
         PaletteEntry {
-            label: "dismiss top warning",
+            label: "dismiss selected warning",
             code: KeyCode::Char('d'),
         },
         PaletteEntry {
@@ -245,7 +245,7 @@ pub fn palette_commands() -> &'static [PaletteEntry] {
             code: KeyCode::Char('0'),
         },
         PaletteEntry {
-            label: "pin top hint",
+            label: "pin selected hint",
             code: KeyCode::Char('P'),
         },
         PaletteEntry {
@@ -356,7 +356,7 @@ mod tests {
         );
         let pins = palette_matches("PIN");
         assert_eq!(pins.len(), 1);
-        assert_eq!(pins[0].label, "pin top hint");
+        assert_eq!(pins[0].label, "pin selected hint");
         assert!(palette_matches("no-such-command").is_empty());
     }
 

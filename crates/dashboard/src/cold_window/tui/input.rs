@@ -137,8 +137,8 @@ pub fn handle_key(
 
     // Disjoint keymaps: forwarding the same code to each handler is
     // safe because at most one will act on it.
-    let _ = AlertPane::handle_key(snap_state, key.code);
-    let _ = HintPane::handle_key(snap_state, hint_state, key.code);
+    let _ = AlertPane::handle_key(snap_state, key.code, ui.selected.alerts);
+    let _ = HintPane::handle_key(snap_state, hint_state, key.code, ui.selected.hints);
     let _ = ResearchPane::handle_key(snap_state, research_state, key.code);
     KeyOutcome::Redraw
 }
