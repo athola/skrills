@@ -300,6 +300,9 @@ mod tests {
 
     #[test]
     fn history_and_checkout_restore_an_earlier_version() {
+        // Doctor tests point PATH at a temp dir under this guard; git must
+        // not be spawned while they do.
+        let _g = skrills_test_utils::env_guard();
         if !git_available() {
             return;
         }
@@ -338,6 +341,9 @@ mod tests {
     /// next commit then picked up.
     #[test]
     fn checkout_restores_the_worktree_without_staging_it() {
+        // Doctor tests point PATH at a temp dir under this guard; git must
+        // not be spawned while they do.
+        let _g = skrills_test_utils::env_guard();
         if !git_available() {
             return;
         }
@@ -353,6 +359,9 @@ mod tests {
     /// SB-18: rollback overwrote uncommitted edits.
     #[test]
     fn checkout_refuses_a_file_with_uncommitted_changes() {
+        // Doctor tests point PATH at a temp dir under this guard; git must
+        // not be spawned while they do.
+        let _g = skrills_test_utils::env_guard();
         if !git_available() {
             return;
         }

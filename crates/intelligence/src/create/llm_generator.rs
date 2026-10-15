@@ -3,6 +3,7 @@
 use super::{cli_detector, CreateSkillRequest, CreateSkillResult, CreationMethod};
 use crate::context::ProjectProfile;
 use anyhow::Result;
+use skrills_subagents::launch::{CodexExec, CodexPrompt, CodexSandbox};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
@@ -177,13 +178,12 @@ const LLM_CLI_TIMEOUT: Duration = Duration::from_secs(300);
 /// tree.
 fn cli_args(binary: &str, prompt: &str) -> Vec<String> {
     if binary.starts_with("codex") {
-        vec![
-            "exec".to_string(),
-            "--skip-git-repo-check".to_string(),
-            "--sandbox".to_string(),
-            "read-only".to_string(),
-            prompt.to_string(),
-        ]
+        CodexExec {
+            prompt: CodexPrompt::Arg(prompt),
+            sandbox: CodexSandbox::ReadOnly,
+            skip_git_repo_check: true,
+        }
+        .args()
     } else {
         vec![
             "--tools".to_string(),
@@ -949,6 +949,21 @@ description: Code block never closed
         assert_eq!(args.last().map(String::as_str), Some("do it"));
         assert!(!args.iter().any(|a| a == "--print" || a == "-p"));
         assert!(args.iter().any(|a| a == "--skip-git-repo-check"));
+    }
+
+    /// M453: skill generation builds its Codex argv with the shared launcher,
+    /// read-only so generation cannot touch the tree.
+    #[test]
+    fn codex_cli_args_come_from_the_shared_launcher() {
+        assert_eq!(
+            cli_args("codex", "do it"),
+            CodexExec {
+                prompt: CodexPrompt::Arg("do it"),
+                sandbox: CodexSandbox::ReadOnly,
+                skip_git_repo_check: true,
+            }
+            .args()
+        );
     }
 
     /// A response that already is a skill must be returned whole, even when

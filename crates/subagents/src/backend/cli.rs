@@ -450,7 +450,12 @@ impl CodexCliAdapter {
         }
         match KnownCli::from_binary(&self.config.binary) {
             Some(KnownCli::Claude) => vec!["--print".to_string()],
-            Some(KnownCli::Codex) => vec!["exec".to_string(), "-".to_string()],
+            Some(KnownCli::Codex) => crate::launch::CodexExec {
+                prompt: crate::launch::CodexPrompt::Stdin,
+                sandbox: crate::launch::CodexSandbox::FromCodexConfig,
+                skip_git_repo_check: false,
+            }
+            .args(),
             None => vec!["--".to_string(), prompt.to_string()],
         }
     }
@@ -1104,7 +1109,17 @@ mod tests {
         let args = adapter.build_command_args("test prompt");
 
         // `codex exec -` reads the prompt from stdin (M256: argv is visible
-        // to other users and size-limited).
+        // to other users and size-limited). M453: built by the shared
+        // launcher, with no sandbox flag so the user's Codex config decides.
+        assert_eq!(
+            args,
+            crate::launch::CodexExec {
+                prompt: crate::launch::CodexPrompt::Stdin,
+                sandbox: crate::launch::CodexSandbox::FromCodexConfig,
+                skip_git_repo_check: false,
+            }
+            .args()
+        );
         assert_eq!(args, vec!["exec", "-"]);
     }
 

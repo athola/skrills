@@ -113,14 +113,14 @@ main() {
   publish_one skrills-validate
   publish_one skrills-state
   publish_one skrills-discovery
-  publish_one skrills-intelligence
   publish_one skrills-metrics
   publish_one skrills-tome
 
-  # Level 1: depend on leaf crates only (skrills-setup needs skrills_sync)
+  # Level 1: depend on crates published above, in this order
   publish_one skrills_sync
   publish_one skrills-setup
   publish_one skrills-subagents
+  publish_one skrills-intelligence
   publish_one skrills-analyze
   publish_one skrills-dashboard
 

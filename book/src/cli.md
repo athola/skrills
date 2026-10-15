@@ -245,6 +245,7 @@ already.
 | `--skill-dir <DIR>` | Additional agent directory (repeatable) |
 | `--dry-run` | Print the resolved command without running it |
 | `--dangerously-bypass-sandbox` | Run Codex with no sandbox and no approvals |
+| `--timeout <SECONDS>` | Kill the agent after this many seconds (default: 1800; `0` = no limit) |
 
 **Execution mode configuration (`run-subagent` MCP tool):**
 
@@ -282,9 +283,11 @@ skrills multi-cli-agent my-agent --dry-run          # Print the resolved command
 | `--skill-dir <DIR>` | Additional skill directory (repeatable) |
 | `--dry-run` | Print the resolved command without running it |
 | `--dangerously-bypass-sandbox` | Codex backend only: run with no sandbox and no approvals (refused when Claude is selected) |
+| `--timeout <SECONDS>` | Kill the agent after this many seconds (default: 1800; `0` = no limit) |
 
 Codex runs with the same sandboxed command as `skrills agent`; Claude runs
-as `claude --print "<prompt>"`.
+as `claude --print "<prompt>"`. On timeout the command kills the CLI it started
+(not processes that CLI spawned) and exits with an error naming the limit.
 
 ### sync-agents
 

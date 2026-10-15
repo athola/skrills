@@ -2,7 +2,8 @@ use anyhow::{anyhow, Result};
 use skrills_discovery::{collect_agents, merge_extra_dirs, resolve_agent};
 use skrills_subagents::launch::{agent_prompt, codex_exec_args, display_command, CodexSandbox};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, ExitStatus};
+use std::time::{Duration, Instant};
 
 /// An agent spec path checked for safe embedding in a prompt.
 ///
@@ -59,21 +60,71 @@ pub(super) fn codex_command(agent_path: &AgentPath, sandbox: CodexSandbox) -> St
     display_command("codex", &codex_args(agent_path, sandbox))
 }
 
-/// Runs `bin` (a Codex CLI) on the agent at `agent_path`.
-pub(super) fn run_with_codex(
-    bin: &str,
-    agent_path: &AgentPath,
-    sandbox: CodexSandbox,
+/// The run limit for `--timeout <seconds>`; `0` means none.
+pub(super) fn agent_timeout(seconds: u64) -> Option<Duration> {
+    (seconds > 0).then(|| Duration::from_secs(seconds))
+}
+
+/// Waits for `child` until `limit` passes. `None` means it is still running.
+///
+/// Polls rather than waiting on another thread: `std` has no timed wait, and
+/// the thread that waits must keep the handle to kill the child.
+fn wait_until(child: &mut Child, limit: Duration) -> std::io::Result<Option<ExitStatus>> {
+    let deadline = Instant::now() + limit;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(None);
+        }
+        std::thread::sleep((deadline - now).min(Duration::from_millis(50)));
+    }
+}
+
+/// Runs an agent CLI to completion, killing it once `timeout` passes.
+///
+/// The child keeps the terminal's process group, so Ctrl-C still reaches it;
+/// on timeout only the CLI itself is killed, not tools it started. The MCP
+/// subagent backend's group kill is async and assumes piped stdio, so it is
+/// not reused here.
+pub(super) fn run_agent_cli(
+    mut cmd: Command,
+    label: &str,
+    timeout: Option<Duration>,
 ) -> Result<()> {
-    let status = Command::new(bin)
-        .args(codex_args(agent_path, sandbox))
-        .status()
-        .map_err(|e| anyhow!("could not run {bin}: {e}"))?;
+    let program = cmd.get_program().to_string_lossy().into_owned();
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| anyhow!("could not run {program}: {e}"))?;
+    let status = match timeout {
+        None => child.wait(),
+        Some(limit) => match wait_until(&mut child, limit) {
+            Ok(Some(status)) => Ok(status),
+            Ok(None) => {
+                // The child may exit between the last poll and the kill; the
+                // wait below reaps it either way.
+                if let Err(e) = child.kill() {
+                    tracing::warn!(error = %e, "could not kill the timed-out agent CLI");
+                }
+                child
+                    .wait()
+                    .map_err(|e| anyhow!("could not reap {program}: {e}"))?;
+                return Err(anyhow!(
+                    "{label} agent timed out after {}s and was killed",
+                    limit.as_secs()
+                ));
+            }
+            Err(e) => Err(e),
+        },
+    }
+    .map_err(|e| anyhow!("could not wait for {program}: {e}"))?;
     if status.success() {
         Ok(())
     } else {
         Err(anyhow!(
-            "codex agent exited with {}",
+            "{label} agent exited with {}",
             status
                 .code()
                 .map(|c| format!("code {c}"))
@@ -82,11 +133,24 @@ pub(super) fn run_with_codex(
     }
 }
 
+/// Runs `bin` (a Codex CLI) on the agent at `agent_path`.
+pub(super) fn run_with_codex(
+    bin: &str,
+    agent_path: &AgentPath,
+    sandbox: CodexSandbox,
+    timeout: Option<Duration>,
+) -> Result<()> {
+    let mut cmd = Command::new(bin);
+    cmd.args(codex_args(agent_path, sandbox));
+    run_agent_cli(cmd, "codex", timeout)
+}
+
 pub(crate) fn handle_agent_command(
     agent_spec: String,
     skill_dirs: Vec<PathBuf>,
     dry_run: bool,
     dangerously_bypass_sandbox: bool,
+    timeout_secs: u64,
 ) -> Result<()> {
     let agents = collect_agents(&merge_extra_dirs(&skill_dirs))?;
     let agent = resolve_agent(&agent_spec, &agents)?;
@@ -102,7 +166,7 @@ pub(crate) fn handle_agent_command(
         println!("Command: {}", codex_command(&agent_path, sandbox));
         return Ok(());
     }
-    run_with_codex("codex", &agent_path, sandbox)
+    run_with_codex("codex", &agent_path, sandbox, agent_timeout(timeout_secs))
 }
 
 #[cfg(test)]
@@ -158,6 +222,56 @@ mod tests {
             &bypass[..2],
             ["exec", "--dangerously-bypass-approvals-and-sandbox"]
         );
+    }
+
+    /// A script that ignores the agent arguments appended to it.
+    #[cfg(unix)]
+    fn fake_cli(dir: &Path, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("fake-cli");
+        std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_run_is_killed_and_errors_when_the_timeout_expires() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cmd = Command::new(fake_cli(tmp.path(), "sleep 30"));
+        cmd.arg("exec");
+        let started = std::time::Instant::now();
+        let err = run_agent_cli(cmd, "codex", agent_timeout(1)).unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the child was not killed: {:?}",
+            started.elapsed()
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("timed out after 1s"), "{msg}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_run_that_finishes_inside_the_timeout_succeeds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cmd = Command::new(fake_cli(tmp.path(), "exit 0"));
+        run_agent_cli(cmd, "codex", agent_timeout(30)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_run_reports_a_failing_exit_code() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cmd = Command::new(fake_cli(tmp.path(), "exit 3"));
+        let err = run_agent_cli(cmd, "claude", None).unwrap_err();
+        assert_eq!(err.to_string(), "claude agent exited with code 3");
+    }
+
+    #[test]
+    fn agent_timeout_of_zero_means_no_limit() {
+        assert_eq!(agent_timeout(0), None);
+        assert_eq!(agent_timeout(1800), Some(Duration::from_secs(1800)));
     }
 
     #[test]

@@ -147,6 +147,9 @@ pub enum Commands {
         /// files you trust, in an environment that is sandboxed already.
         #[arg(long, default_value_t = false)]
         dangerously_bypass_sandbox: bool,
+        /// Kill the agent after this many seconds (0 = no limit).
+        #[arg(long, value_name = "SECONDS", default_value_t = 1800)]
+        timeout: u64,
     },
     /// Launches an agent with multi-CLI backend routing.
     ///
@@ -170,6 +173,9 @@ pub enum Commands {
         /// Claude backend is selected.
         #[arg(long, default_value_t = false)]
         dangerously_bypass_sandbox: bool,
+        /// Kill the agent after this many seconds (0 = no limit).
+        #[arg(long, value_name = "SECONDS", default_value_t = 1800)]
+        timeout: u64,
     },
     /// Generates `<available_skills>` section in AGENTS.md for non-MCP agents.
     SyncAgents {
@@ -1294,6 +1300,7 @@ mod tests {
         match cli.command {
             Some(Commands::Agent {
                 dangerously_bypass_sandbox: false,
+                timeout: 1800,
                 agent,
                 skill_dirs,
                 dry_run,
@@ -1833,6 +1840,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_agent_timeout_zero_means_no_limit() {
+        for sub in ["agent", "multi-cli-agent"] {
+            let cli = Cli::try_parse_from(["skrills", sub, "a", "--timeout", "0"]).unwrap();
+            assert!(
+                matches!(
+                    cli.command,
+                    Some(Commands::Agent { timeout: 0, .. })
+                        | Some(Commands::MultiCliAgent { timeout: 0, .. })
+                ),
+                "{sub}"
+            );
+        }
+    }
+
+    #[test]
     fn parse_multi_cli_agent_defaults() {
         let cli = Cli::try_parse_from(["skrills", "multi-cli-agent", "my-agent"])
             .expect("multi-cli-agent should parse");
@@ -1840,6 +1862,7 @@ mod tests {
         match cli.command {
             Some(Commands::MultiCliAgent {
                 dangerously_bypass_sandbox: false,
+                timeout: 1800,
                 agent,
                 backend,
                 skill_dirs,
@@ -1871,6 +1894,7 @@ mod tests {
         match cli.command {
             Some(Commands::MultiCliAgent {
                 dangerously_bypass_sandbox: false,
+                timeout: 1800,
                 agent,
                 backend,
                 skill_dirs,

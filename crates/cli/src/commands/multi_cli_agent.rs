@@ -3,7 +3,9 @@
 //! Routes agent execution across available CLI backends (Claude, Codex)
 //! with automatic fallback when the primary backend is unavailable.
 
-use super::agent::{codex_args, codex_sandbox, run_with_codex, AgentPath};
+use super::agent::{
+    agent_timeout, codex_args, codex_sandbox, run_agent_cli, run_with_codex, AgentPath,
+};
 use crate::cli::AgentBackend;
 use anyhow::{anyhow, Result};
 use indexmap::IndexMap;
@@ -11,6 +13,7 @@ use skrills_discovery::{collect_agents, merge_extra_dirs, resolve_agent};
 use skrills_subagents::launch::{claude_print_args, display_command, CodexSandbox};
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::Duration;
 
 /// Whether `bin` names an executable file in one of the `$PATH` directories.
 ///
@@ -74,22 +77,10 @@ fn check_bypass_backend(backend: AgentBackend, sandbox: CodexSandbox) -> Result<
 }
 
 /// Launch an agent via the Claude CLI.
-fn run_with_claude(bin: &str, agent_path: &AgentPath) -> Result<()> {
-    let status = Command::new(bin)
-        .args(claude_args(agent_path))
-        .status()
-        .map_err(|e| anyhow!("could not run {bin}: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(anyhow!(
-            "claude agent exited with {}",
-            status
-                .code()
-                .map(|c| format!("code {c}"))
-                .unwrap_or_else(|| "signal (killed)".to_string())
-        ))
-    }
+fn run_with_claude(bin: &str, agent_path: &AgentPath, timeout: Option<Duration>) -> Result<()> {
+    let mut cmd = Command::new(bin);
+    cmd.args(claude_args(agent_path));
+    run_agent_cli(cmd, "claude", timeout)
 }
 
 /// Picks the backend to run.
@@ -137,6 +128,7 @@ pub(crate) fn handle_multi_cli_agent_command(
     skill_dirs: Vec<PathBuf>,
     dry_run: bool,
     dangerously_bypass_sandbox: bool,
+    timeout_secs: u64,
 ) -> Result<()> {
     let agents = collect_agents(&merge_extra_dirs(&skill_dirs))?;
     let agent = resolve_agent(&agent_spec, &agents)?;
@@ -166,9 +158,10 @@ pub(crate) fn handle_multi_cli_agent_command(
         return Ok(());
     }
 
+    let timeout = agent_timeout(timeout_secs);
     match backend_kind {
-        AgentBackend::Claude => run_with_claude(bin, &agent_path),
-        AgentBackend::Codex => run_with_codex(bin, &agent_path, sandbox),
+        AgentBackend::Claude => run_with_claude(bin, &agent_path, timeout),
+        AgentBackend::Codex => run_with_codex(bin, &agent_path, sandbox, timeout),
         AgentBackend::Auto => unreachable!("select_backend never returns Auto as a backend"),
     }
 }

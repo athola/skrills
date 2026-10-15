@@ -4473,6 +4473,7 @@ dependencies = [
  "serde_json",
  "serial_test",
  "skrills-snapshot",
+ "skrills-subagents",
  "skrills-test-utils",
  "tempfile",
  "thiserror 2.0.20",
