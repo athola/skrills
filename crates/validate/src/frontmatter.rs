@@ -214,8 +214,15 @@ pub struct ParsedSkill {
 
 /// Check if a skill file has frontmatter.
 pub fn has_frontmatter(content: &str) -> bool {
-    let trimmed = strip_bom(content).trim_start();
-    trimmed.starts_with("---")
+    opening_fence_len(strip_bom(content).trim_start()).is_some()
+}
+
+/// Length of the opening fence line (with its line ending) when the first
+/// line of `trimmed` is exactly `---`, trailing whitespace allowed. `----` and
+/// `---foo` are not fences.
+fn opening_fence_len(trimmed: &str) -> Option<usize> {
+    let line_end = trimmed.find('\n').map_or(trimmed.len(), |i| i + 1);
+    (trimmed[..line_end].trim_end() == "---").then_some(line_end)
 }
 
 /// Editors on Windows save UTF-8 with a leading byte-order mark, which
@@ -236,9 +243,9 @@ pub fn split_frontmatter(content: &str) -> (Option<String>, String, usize) {
     let content = strip_bom(content);
     let trimmed = content.trim_start();
 
-    if !trimmed.starts_with("---") {
+    let Some(fence_len) = opening_fence_len(trimmed) else {
         return (None, content.to_string(), 1);
-    }
+    };
 
     // Count leading whitespace lines
     let leading_lines = content
@@ -246,13 +253,9 @@ pub fn split_frontmatter(content: &str) -> (Option<String>, String, usize) {
         .take_while(|line| line.trim().is_empty())
         .count();
 
-    // Drop only the opening fence's own line ending: blank lines after it
-    // belong to the block, and an immediate `---` closes an empty block.
-    let after_open = &trimmed[3..];
-    let after_open = after_open
-        .strip_prefix("\r\n")
-        .or_else(|| after_open.strip_prefix('\n'))
-        .unwrap_or(after_open);
+    // Drop only the opening fence's own line: blank lines after it belong to
+    // the block, and an immediate `---` closes an empty block.
+    let after_open = &trimmed[fence_len..];
 
     if let Some((end_pos, fence_end)) = find_closing_fence(after_open) {
         let block = &after_open[..end_pos];
@@ -419,6 +422,20 @@ pub(crate) fn yaml_scalar(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    /// `----` or `---foo` is a thematic break or text, not a fence; the sync
+    /// adapters and token counter already require a whole `---` line.
+    fn an_opener_that_is_not_exactly_three_dashes_is_not_frontmatter() {
+        for content in ["----\nname: x\n---\nbody", "---foo\nname: x\n---\nbody"] {
+            assert!(!has_frontmatter(content), "{content:?}");
+            let (raw, body, line) = split_frontmatter(content);
+            assert!(raw.is_none(), "{content:?}");
+            assert_eq!(body, content);
+            assert_eq!(line, 1);
+        }
+        assert!(has_frontmatter("---  \nname: x\n---\nbody"));
+    }
 
     #[test]
     fn test_has_frontmatter() {
