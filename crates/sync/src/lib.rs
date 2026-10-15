@@ -136,6 +136,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub mod adapters;
 pub mod common;
 pub mod error;
+pub mod kill_switch_marker;
 pub mod models;
 pub mod orchestrator;
 pub mod platform_routing;

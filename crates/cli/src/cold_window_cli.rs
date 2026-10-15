@@ -37,6 +37,7 @@ use skrills_snapshot::{
     Hint, HintCategory, KillSwitch, LoadSample, ResearchChannel, ResearchFinding, TokenEntry,
     TokenLedger,
 };
+use skrills_sync::kill_switch_marker::EngagedMarker;
 use skrills_tome::dispatcher::{current_ms_checked, BucketedBudget};
 use tokio::sync::watch;
 
@@ -170,6 +171,9 @@ pub async fn run(args: ColdWindowArgs) -> Result<()> {
     // in this run. The engine engages it on token-budget breach;
     // adapters consult it before mutating I/O.
     let kill_switch = KillSwitch::new();
+    // Syncs run in other processes; while the switch is engaged the
+    // producer keeps a pid marker here so they refuse too (FR12).
+    let kill_switch_marker = skrills_sync::kill_switch_marker::marker_path();
 
     // The floor applies to a fixed rate too: `--no-adaptive
     // --tick-rate-ms 0` otherwise spun with no delay at all.
@@ -226,6 +230,7 @@ pub async fn run(args: ColdWindowArgs) -> Result<()> {
         plugins_dir,
         merged_skill_dirs,
         shutdown_rx.clone(),
+        kill_switch_marker,
     ));
 
     // Spawn the browser server if requested.
@@ -337,6 +342,28 @@ async fn shut_down(
 /// participation is real: each tick re-walks
 /// `<plugins_dir>/*/health.toml` cold and feeds the result to the
 /// engine. Token attribution from real discovery is a follow-up.
+/// Keeps the kill-switch marker at `path` in step with the switch: created
+/// once it engages, removed when it releases.
+fn hold_marker(engaged: bool, path: &std::path::Path, held: &mut Option<EngagedMarker>) {
+    if !engaged {
+        *held = None;
+        return;
+    }
+    if held.is_some() {
+        return;
+    }
+    match EngagedMarker::create(path) {
+        Ok(marker) => *held = Some(marker),
+        Err(e) => tracing::error!(
+            path = %path.display(),
+            error = %e,
+            "kill switch engaged but its marker could not be written; syncs in other processes are not stopped"
+        ),
+    }
+}
+
+// Each argument is a separate CLI setting; the tests drive them one by one.
+#[allow(clippy::too_many_arguments)]
 async fn producer_loop(
     engine: Arc<ColdWindowEngine>,
     base_tick_ms: u64,
@@ -345,6 +372,7 @@ async fn producer_loop(
     plugins_dir: PathBuf,
     skill_dirs: Vec<PathBuf>,
     mut shutdown: watch::Receiver<bool>,
+    kill_switch_marker: Option<PathBuf>,
 ) -> Result<()> {
     let mut tick_count: u64 = 0;
     let mut next_delay_ms = base_tick_ms;
@@ -354,6 +382,9 @@ async fn producer_loop(
     // to empty; the producer keeps the synthetic demo ledger so the
     // dashboard stays interactive in that mode.
     let skill_collector = Arc::new(SkillCollector::new(skill_dirs));
+    // Dropped with this future, so shutdown, an error and an abort all
+    // remove the marker.
+    let mut held_marker: Option<EngagedMarker> = None;
     loop {
         tokio::select! {
             biased;
@@ -463,6 +494,9 @@ async fn producer_loop(
                 }
 
                 let snap = engine.tick(input);
+                if let Some(path) = kill_switch_marker.as_deref() {
+                    hold_marker(engine.kill_switch().is_engaged(), path, &mut held_marker);
+                }
                 next_delay_ms = if no_adaptive {
                     base_tick_ms
                 } else {
@@ -933,6 +967,7 @@ mod tests {
             PathBuf::from("/nonexistent-plugins-test"),
             Vec::new(),
             rx,
+            None,
         ));
         // Let the producer fire a few ticks.
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -956,6 +991,7 @@ mod tests {
             PathBuf::from("/nonexistent-plugins-test"),
             Vec::new(),
             shutdown_rx,
+            None,
         ));
 
         let mut last_version = 0;
@@ -994,6 +1030,7 @@ mod tests {
                 PathBuf::from("/nonexistent-plugins-test"),
                 vec![],
                 shutdown_rx,
+                None,
             ),
         )
         .await;
@@ -1032,6 +1069,7 @@ mod tests {
             PathBuf::from("/nonexistent-plugins-test"),
             vec![tmp.path().to_path_buf()],
             shutdown_rx,
+            None,
         ));
 
         // Walk a few snapshots until we see one that picked up the
@@ -1236,6 +1274,7 @@ mod tests {
             PathBuf::from("/nonexistent-plugins-test"),
             Vec::new(),
             shutdown_rx,
+            None,
         ));
         let snap = tokio::time::timeout(Duration::from_millis(500), rx.recv())
             .await
@@ -1246,6 +1285,41 @@ mod tests {
         assert!(snap.version >= 1);
         assert!(snap.plugin_health.is_empty());
         let _ = tx.send(true);
+    }
+
+    /// Sync runs in other processes, so an engaged switch has to leave a
+    /// marker they can see, and the marker must go when cold-window stops.
+    #[tokio::test]
+    async fn producer_loop_holds_the_kill_switch_marker_while_engaged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join(".skrills/kill-switch.pid");
+        // The demo ledger is far above a ten-token ceiling.
+        let engine = Arc::new(ColdWindowEngine::with_defaults(10));
+        let (tx, rx) = watch::channel(false);
+        let handle = tokio::spawn(producer_loop(
+            Arc::clone(&engine),
+            20,
+            true,
+            true,
+            PathBuf::from("/nonexistent-plugins-test"),
+            Vec::new(),
+            rx,
+            Some(marker.clone()),
+        ));
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !marker.exists() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(engine.kill_switch().is_engaged());
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            std::process::id().to_string()
+        );
+
+        let _ = tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        assert!(!marker.exists(), "marker must be removed on shutdown");
     }
 
     #[test]
@@ -1387,6 +1461,7 @@ mod tests {
             PathBuf::from("/nonexistent-plugins-test"),
             Vec::new(),
             shutdown_rx,
+            None,
         ));
         for _ in 0..3 {
             let snap = tokio::time::timeout(Duration::from_millis(500), rx.recv())

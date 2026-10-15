@@ -383,12 +383,29 @@ fn lock_target(root: &std::path::Path) -> Result<std::fs::File> {
 pub struct SyncOrchestrator<S: AgentAdapter, T: AgentAdapter> {
     source: S,
     target: T,
+    /// Where a `skrills cold-window` process in another process records an
+    /// engaged kill switch; see [`crate::kill_switch_marker`].
+    kill_switch_marker: Option<std::path::PathBuf>,
 }
 
 impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
-    /// Creates a new orchestrator with source and target adapters.
+    /// Creates a new orchestrator with source and target adapters. It
+    /// consults the kill-switch marker at
+    /// [`crate::kill_switch_marker::marker_path`].
     pub fn new(source: S, target: T) -> Self {
-        Self { source, target }
+        Self {
+            source,
+            target,
+            kill_switch_marker: crate::kill_switch_marker::marker_path(),
+        }
+    }
+
+    /// Consults the kill-switch marker at `path` instead of the per-user one;
+    /// `None` consults none.
+    #[must_use]
+    pub fn with_kill_switch_marker(mut self, path: Option<std::path::PathBuf>) -> Self {
+        self.kill_switch_marker = path;
+        self
     }
 
     /// Performs the sync operation.
@@ -402,6 +419,12 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
             // Nothing implements the per-file preview and confirmation this
             // flag promises; running anyway would write without asking.
             bail!("interactive sync is not implemented; preview with dry_run instead");
+        }
+
+        // A `skrills cold-window` in another process may have engaged its
+        // kill switch (FR12). A dry run writes nothing, so it still runs.
+        if !params.dry_run {
+            crate::kill_switch_marker::ensure_not_engaged(self.kill_switch_marker.as_deref())?;
         }
 
         // Held for the whole run: the phases read, merge and rewrite shared

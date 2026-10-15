@@ -238,8 +238,12 @@ Defaults are research-backed:
   [Too many Model Context Protocol servers](https://simonwillison.net/2025/Aug/22/too-many-mcps/)
   range).
 - **80% of `--alert-budget`** → `Warning`.
-- **100% of `--alert-budget`** → `Warning` and kill-switch engaged
-  (mutating sync operations refuse until master-acked).
+- **100% of `--alert-budget`** → `Warning` and kill-switch engaged.
+  While it is engaged, cold-window keeps its pid in
+  `~/.skrills/kill-switch.pid`, and every sync that writes (`sync-all`,
+  `mirror`, the MCP sync tools), in any process, refuses. The file is
+  removed when cold-window exits; a file left by a process that has
+  died is ignored and removed. Dry runs still preview.
 
 A learned baseline of recent token totals no longer raises the 20K
 and 50K tiers, since that hid steadily growing totals. When
