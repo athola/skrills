@@ -49,6 +49,10 @@ fn ensure_cursor_plugin_manifest(root: &Path, origin: &PluginOrigin) {
     if cursor_manifest.exists() {
         return;
     }
+    // A directory this call creates is skrills' own, so it gets the mirror
+    // marker: a later full plugin mirror can then manage it instead of
+    // refusing it as one the user made.
+    let created_dir = !local_plugin.exists();
 
     // Try to read the Claude manifest from the Claude plugin cache (~/.claude/).
     let claude_home = match dirs::home_dir() {
@@ -56,7 +60,9 @@ fn ensure_cursor_plugin_manifest(root: &Path, origin: &PluginOrigin) {
         None => {
             debug!("HOME not set; using synthetic manifest for {}", safe_name);
             let json = minimal_cursor_manifest(origin);
-            write_manifest_file(&cursor_manifest, &json, &safe_name);
+            if write_manifest_file(&cursor_manifest, &json, &safe_name) && created_dir {
+                mark_as_mirror(&local_plugin, &safe_name);
+            }
             return;
         }
     };
@@ -81,7 +87,18 @@ fn ensure_cursor_plugin_manifest(root: &Path, origin: &PluginOrigin) {
         minimal_cursor_manifest(origin)
     };
 
-    write_manifest_file(&cursor_manifest, &manifest_json, &safe_name);
+    if write_manifest_file(&cursor_manifest, &manifest_json, &safe_name) && created_dir {
+        mark_as_mirror(&local_plugin, &safe_name);
+    }
+}
+
+fn mark_as_mirror(plugin_dir: &Path, plugin_name: &str) {
+    if let Err(e) = crate::adapters::utils::write_file(
+        plugin_dir.join(super::MIRROR_MARKER),
+        super::MIRROR_MARKER_BODY,
+    ) {
+        tracing::warn!(plugin = %plugin_name, error = %e, "Could not stamp mirror marker");
+    }
 }
 
 /// Where the Claude cache keeps this plugin's manifest.
@@ -108,8 +125,9 @@ fn claude_cache_manifest_path(
     Some(path.join(".claude-plugin").join("plugin.json"))
 }
 
-/// Writes a manifest file, creating parent directories as needed.
-fn write_manifest_file(path: &std::path::Path, content: &str, plugin_name: &str) {
+/// Writes a manifest file, creating parent directories as needed. Returns
+/// whether it was written.
+fn write_manifest_file(path: &std::path::Path, content: &str, plugin_name: &str) -> bool {
     if let Some(parent) = path.parent() {
         if let Err(e) = fs::create_dir_all(parent) {
             tracing::warn!(
@@ -118,7 +136,7 @@ fn write_manifest_file(path: &std::path::Path, content: &str, plugin_name: &str)
                 error = %e,
                 "Could not create manifest directory"
             );
-            return;
+            return false;
         }
     }
     if let Err(e) = crate::adapters::utils::write_file(path, content) {
@@ -127,11 +145,13 @@ fn write_manifest_file(path: &std::path::Path, content: &str, plugin_name: &str)
             error = %e,
             "Could not write .cursor-plugin/plugin.json"
         );
+        false
     } else {
         debug!(
             plugin = %plugin_name,
             "Created .cursor-plugin/plugin.json for Cursor discovery"
         );
+        true
     }
 }
 
@@ -278,24 +298,21 @@ pub fn write_skills(root: &Path, skills: &[Command]) -> Result<WriteReport> {
             Some(hint) => format!("<!-- model_hint: {hint} -->\n\n{trimmed}"),
             None => trimmed,
         };
-        // A source with no frontmatter is already a plain Cursor skill.
-        let body = if raw_yaml.is_some() {
-            if description.is_none() {
-                report.warnings.push(format!(
-                    "Skill {}: no `description`, which Cursor requires to load a skill",
-                    skill.name
-                ));
-            }
-            let disable_model_invocation = fields
-                .get("disable-model-invocation")
-                .is_some_and(|v| strip_yaml_quotes(v) == "true");
-            format!(
-                "{}\n{body}",
-                cursor_frontmatter(&name, description.as_deref(), disable_model_invocation)
-            )
-        } else {
-            body
-        };
+        // Cursor loads a skill only with `name` (its folder) and a
+        // description, so a source with no frontmatter gets the name too.
+        if description.is_none() {
+            report.warnings.push(format!(
+                "Skill {}: no `description`, which Cursor requires to load a skill",
+                skill.name
+            ));
+        }
+        let disable_model_invocation = fields
+            .get("disable-model-invocation")
+            .is_some_and(|v| strip_yaml_quotes(v) == "true");
+        let body = format!(
+            "{}\n{body}",
+            cursor_frontmatter(&name, description.as_deref(), disable_model_invocation)
+        );
         // Cursor has no place for the other Claude fields; keep the original
         // in a trailing comment so a sync out of Cursor can restore them.
         let body = match raw_yaml.as_deref() {

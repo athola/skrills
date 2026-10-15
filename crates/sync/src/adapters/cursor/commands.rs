@@ -27,7 +27,9 @@ pub fn read_commands(root: &Path) -> Result<Vec<Command>> {
         let entry = entry?;
         let path = entry.path();
 
-        if !path.is_file() {
+        // `file_type` does not follow links: a linked file could be any file
+        // on disk, and it would be copied into every other tool.
+        if !entry.file_type().is_ok_and(|t| t.is_file()) {
             continue;
         }
         if path

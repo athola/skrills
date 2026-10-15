@@ -289,3 +289,123 @@ fn cursor_pruning_surfaces_warning_on_unreadable_subentry() {
         report.warnings
     );
 }
+
+// ---------- Every adapter x every write ----------
+
+type Write = fn(&dyn AgentAdapter) -> anyhow::Result<skrills_sync::WriteReport>;
+
+/// Every mutating entry point, with input that would really write.
+fn every_write() -> Vec<(&'static str, Write)> {
+    vec![
+        ("write_commands", |a| {
+            a.write_commands(&[dummy_command("c")])
+        }),
+        ("write_skills", |a| a.write_skills(&[dummy_command("s")])),
+        ("write_agents", |a| a.write_agents(&[dummy_command("a")])),
+        ("write_hooks", |a| {
+            let mut hook = dummy_command("PreToolUse");
+            hook.content = br#"[{"command": "x"}]"#.to_vec();
+            a.write_hooks(&[hook])
+        }),
+        ("write_instructions", |a| {
+            a.write_instructions(&[dummy_command("rule")])
+        }),
+        ("write_mcp_servers", |a| {
+            a.write_mcp_servers(&HashMap::<String, McpServer>::new())
+        }),
+        ("write_preferences", |a| {
+            a.write_preferences(&Preferences::default())
+        }),
+    ]
+}
+
+fn engaged_adapters(root: &std::path::Path) -> Vec<Box<dyn AgentAdapter>> {
+    let root = root.to_path_buf();
+    vec![
+        Box::new(ClaudeAdapter::with_root(root.join("claude")).with_kill_switch(engaged())),
+        Box::new(CodexAdapter::with_root(root.join("codex")).with_kill_switch(engaged())),
+        Box::new(CopilotAdapter::with_root(root.join("copilot")).with_kill_switch(engaged())),
+        Box::new(CursorAdapter::with_root(root.join("cursor")).with_kill_switch(engaged())),
+    ]
+}
+
+#[test]
+fn every_adapter_write_refuses_when_engaged() {
+    let tmp = TempDir::new().unwrap();
+    let mut missing = Vec::new();
+    for adapter in engaged_adapters(tmp.path()) {
+        for (method, write) in every_write() {
+            match write(adapter.as_ref()) {
+                Err(err)
+                    if err
+                        .downcast_ref::<SyncError>()
+                        .is_some_and(|e| matches!(e, SyncError::TokenBudgetExceeded { .. })) => {}
+                other => missing.push(format!("{}::{method} -> {other:?}", adapter.name())),
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "writes that ignored the switch: {missing:#?}"
+    );
+}
+
+#[test]
+fn cursor_write_plugin_assets_refuses_when_engaged() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf()).with_kill_switch(engaged());
+    let asset = skrills_sync::PluginAsset::new(
+        "p".to_string(),
+        "m".to_string(),
+        "1.0.0".to_string(),
+        PathBuf::from(".claude-plugin/plugin.json"),
+        b"{}".to_vec(),
+        false,
+    );
+    let err = adapter.write_plugin_assets(&[asset]).unwrap_err();
+    assert_token_budget_exceeded(err);
+}
+
+/// The orchestrator ends the run on the first refusal; no later phase may
+/// write anything into the target.
+#[test]
+fn orchestrator_sync_stops_and_writes_nothing_when_the_switch_is_engaged() {
+    use skrills_sync::{SyncOrchestrator, SyncParams};
+
+    let source = TempDir::new().unwrap();
+    std::fs::create_dir_all(source.path().join("commands")).unwrap();
+    std::fs::write(source.path().join("commands/c.md"), "# c\n").unwrap();
+    let skill = source.path().join("skills/s");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: s\ndescription: d\n---\nbody\n",
+    )
+    .unwrap();
+    std::fs::write(source.path().join("settings.json"), r#"{"model": "opus"}"#).unwrap();
+    std::fs::write(
+        source.path().join(".claude.json"),
+        r#"{"mcpServers": {"m": {"command": "x"}}}"#,
+    )
+    .unwrap();
+    let target = TempDir::new().unwrap();
+
+    let orchestrator = SyncOrchestrator::new(
+        ClaudeAdapter::with_root(source.path().to_path_buf()),
+        CursorAdapter::with_root(target.path().to_path_buf()).with_kill_switch(engaged()),
+    );
+    let err = orchestrator.sync(&SyncParams::default()).unwrap_err();
+
+    assert_token_budget_exceeded(err);
+    let written: Vec<_> = walkdir::WalkDir::new(target.path())
+        .min_depth(1)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+        .map(|e| e.path().display().to_string())
+        .collect();
+    assert!(
+        written.is_empty(),
+        "files written past the switch: {written:?}"
+    );
+}

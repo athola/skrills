@@ -22,39 +22,10 @@ use crate::adapters::utils::hash_content;
 use crate::common::{Command, ContentFormat};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
 use tracing::{debug, warn};
-
-/// Cursor hooks.json top-level structure.
-#[derive(Debug, Serialize, Deserialize, Default)]
-struct CursorHooksConfig {
-    #[serde(default)]
-    version: u32,
-    #[serde(default)]
-    hooks: BTreeMap<String, Vec<HookEntry>>,
-}
-
-/// A single hook entry within an event.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct HookEntry {
-    command: String,
-    #[serde(default = "default_command_type")]
-    r#type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    timeout: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    matcher: Option<String>,
-    #[serde(rename = "failClosed", skip_serializing_if = "Option::is_none")]
-    fail_closed: Option<bool>,
-}
-
-fn default_command_type() -> String {
-    "command".to_string()
-}
 
 /// Bidirectional event name mapping between Claude (PascalCase) and Cursor (camelCase).
 static CLAUDE_TO_CURSOR_EVENTS: &[(&str, &str)] = &[
@@ -88,6 +59,11 @@ pub fn cursor_to_claude_event(cursor_event: &str) -> Option<&'static str> {
 ///
 /// Each event group becomes a separate Command entry, with the event name
 /// as the Command name and the JSON-serialized hook entries as content.
+///
+/// Entries are kept as JSON values, as the writer handles them: Cursor entry
+/// types without a `command` (a `prompt` hook) and fields this crate does not
+/// name survive the trip. An entry that is not an object, or an event whose
+/// value is not a list, is skipped with a warning instead of failing the phase.
 pub fn read_hooks(root: &Path) -> Result<Vec<Command>> {
     let path = hooks_path(root);
     if !path.exists() {
@@ -95,15 +71,34 @@ pub fn read_hooks(root: &Path) -> Result<Vec<Command>> {
     }
 
     let content = fs::read_to_string(&path)?;
-    let config: CursorHooksConfig = serde_json::from_str(&content)?;
+    let config: serde_json::Value = serde_json::from_str(&content)?;
+    let events = match config.get("hooks") {
+        None => return Ok(vec![]),
+        Some(serde_json::Value::Object(events)) => events,
+        Some(_) => anyhow::bail!("`hooks` in {} is not an object", path.display()),
+    };
 
     let mut hooks = Vec::new();
     let modified = fs::metadata(&path)
         .and_then(|m| m.modified())
         .unwrap_or(SystemTime::UNIX_EPOCH);
 
-    for (event_name, entries) in &config.hooks {
-        let entries_json = serde_json::to_string_pretty(entries)?;
+    for (event_name, entries) in events {
+        let Some(entries) = entries.as_array() else {
+            warn!(event = %event_name, "Skipping hooks.json event whose value is not a list");
+            continue;
+        };
+        let entries: Vec<&serde_json::Value> = entries
+            .iter()
+            .filter(|entry| {
+                let keep = entry.is_object();
+                if !keep {
+                    warn!(event = %event_name, "Skipping hooks.json entry that is not an object");
+                }
+                keep
+            })
+            .collect();
+        let entries_json = serde_json::to_string_pretty(&entries)?;
         let content_bytes = entries_json.into_bytes();
         let hash = hash_content(&content_bytes);
 
@@ -198,22 +193,24 @@ pub fn write_hooks(root: &Path, hooks: &[Command]) -> Result<WriteReport> {
             continue;
         };
 
-        // Both JSON and Markdown sources must hold a JSON array of entries.
+        // Both JSON and Markdown sources must hold a JSON array of entry
+        // objects. Their fields are Cursor's to judge: a `prompt` hook has no
+        // `command`.
         let content_str = String::from_utf8_lossy(&hook.content);
-        let entries: Vec<serde_json::Value> =
-            match serde_json::from_str::<Vec<HookEntry>>(&content_str)
-                .and_then(|_| serde_json::from_str(&content_str))
-            {
-                Ok(entries) => entries,
-                Err(e) => {
-                    warn!(event = %hook.name, error = %e, "Skipping hook with non-JSON content");
-                    report.skipped.push(SkipReason::ParseError {
-                        item: hook.name.clone(),
-                        error: format!("hook content must be a JSON array of hook entries: {e}"),
-                    });
-                    continue;
-                }
-            };
+        let entries: Vec<serde_json::Value> = match serde_json::from_str::<
+            Vec<serde_json::Map<String, serde_json::Value>>,
+        >(&content_str)
+        {
+            Ok(entries) => entries.into_iter().map(serde_json::Value::Object).collect(),
+            Err(e) => {
+                warn!(event = %hook.name, error = %e, "Skipping hook with non-JSON content");
+                report.skipped.push(SkipReason::ParseError {
+                    item: hook.name.clone(),
+                    error: format!("hook content must be a JSON array of hook entries: {e}"),
+                });
+                continue;
+            }
+        };
 
         if entries.is_empty() {
             debug!(event = %cursor_event, "Skipping hook with empty entry list");
@@ -466,6 +463,59 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let hooks = read_hooks(tmp.path()).unwrap();
         assert!(hooks.is_empty());
+    }
+
+    /// A prompt-type entry has no `command`, and a fractional `timeout` is
+    /// not a `u32`; either used to fail the whole hooks phase, and fields the
+    /// struct did not name (`loop_limit`) were lost on the way through.
+    #[test]
+    fn read_hooks_keeps_entries_of_any_shape_and_skips_non_objects() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let config = serde_json::json!({
+            "version": 1,
+            "hooks": {
+                "stop": [
+                    {"type": "prompt", "prompt": "Summarise the session"},
+                    {"command": "./run.sh", "timeout": 1.5, "loop_limit": 3},
+                    "not an entry"
+                ]
+            }
+        });
+        std::fs::write(hooks_path(root), serde_json::to_string(&config).unwrap()).unwrap();
+
+        let hooks = read_hooks(root).unwrap();
+
+        assert_eq!(hooks.len(), 1);
+        let entries: Vec<serde_json::Value> = serde_json::from_slice(&hooks[0].content).unwrap();
+        assert_eq!(
+            entries,
+            vec![
+                serde_json::json!({"type": "prompt", "prompt": "Summarise the session"}),
+                serde_json::json!({"command": "./run.sh", "timeout": 1.5, "loop_limit": 3}),
+            ]
+        );
+    }
+
+    /// The same entries must survive being written back to Cursor.
+    #[test]
+    fn write_hooks_accepts_entries_without_a_command() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let hook = Command {
+            name: "Stop".to_string(),
+            content: br#"[{"type": "prompt", "prompt": "p"}, {"command": "x", "timeout": 1.5}]"#
+                .to_vec(),
+            source_path: tmp.path().join("hooks.json"),
+            modified: SystemTime::UNIX_EPOCH,
+            hash: String::new(),
+            modules: vec![],
+            content_format: ContentFormat::Json,
+            plugin_origin: None,
+        };
+
+        let report = write_hooks(tmp.path(), &[hook]).unwrap();
+
+        assert_eq!(report.written, 1, "skipped: {:?}", report.skipped);
     }
 
     #[test]

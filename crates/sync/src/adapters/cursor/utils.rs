@@ -51,15 +51,15 @@ pub fn parse_frontmatter(content: &str) -> (HashMap<String, String>, String) {
     let mut multiline = false;
 
     for line in frontmatter_str.lines() {
-        // Indented line: continuation of a multi-line value or list
-        if (line.starts_with(' ') || line.starts_with('\t')) && current_key.is_some() {
-            if multiline {
+        // Indented line: continuation of a multi-line value, a list item, or
+        // a key nested under a mapping. Never a top-level key.
+        if line.starts_with(' ') || line.starts_with('\t') {
+            if multiline && current_key.is_some() {
                 if !current_value.is_empty() {
                     current_value.push(' ');
                 }
                 current_value.push_str(line.trim());
             }
-            // Skip list continuation lines (e.g. "  - item") for non-multi-line fields
             continue;
         }
 
@@ -302,6 +302,17 @@ pub fn trim_skill_body(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `name` nested under `metadata:` was read as the skill's own `name`, so
+    /// the folder-name fix-up and the missing-description warning were skipped.
+    #[test]
+    fn parse_frontmatter_does_not_promote_nested_keys_to_the_top_level() {
+        let (fields, _) =
+            parse_frontmatter("---\nmetadata:\n  name: other\n  description: nested\n---\nbody\n");
+        assert_eq!(fields.get("name"), None);
+        assert_eq!(fields.get("description"), None);
+        assert!(fields.contains_key("metadata"));
+    }
 
     #[test]
     fn parse_frontmatter_with_fields() {

@@ -28,7 +28,11 @@ pub(super) fn collect_commands_from_dir(
         return Ok(());
     }
 
-    for entry in WalkDir::new(dir).min_depth(1).max_depth(8) {
+    for entry in WalkDir::new(dir)
+        .min_depth(1)
+        .max_depth(8)
+        .follow_links(false)
+    {
         let entry = match entry {
             Ok(entry) => entry,
             Err(e) => {
@@ -38,7 +42,9 @@ pub(super) fn collect_commands_from_dir(
         };
         let path = entry.path();
 
-        if !path.is_file() {
+        // `file_type` does not follow links: a linked command could be any
+        // file on disk, and it would be copied into every other tool.
+        if !entry.file_type().is_file() || is_hidden_path(path.strip_prefix(dir).unwrap_or(path)) {
             continue;
         }
         match path.extension() {

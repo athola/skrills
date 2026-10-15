@@ -1,9 +1,8 @@
-//! settings.json reading/writing for the Claude adapter.
+//! MCP server and preference reading/writing for the Claude adapter.
 //!
-//! Combines MCP server roundtripping (transport, auth, tool gates)
-//! and the lightweight Preferences struct (currently only `model`).
-//! Both subjects share `~/.claude/settings.json` as their backing
-//! store, which is why they live in one module.
+//! MCP servers (transport, auth, tool gates) live in the user-scope
+//! `mcpServers` of `~/.claude.json`, the only user-level place Claude Code
+//! loads them from; `~/.claude/settings.json` carries the `model`.
 
 use crate::adapters::json_config::{self, Dialect};
 use crate::common::{McpServer, McpTransport, Preferences};
@@ -16,7 +15,7 @@ use std::fs;
 use super::ClaudeAdapter;
 
 pub(super) fn read_mcp_servers_impl(adapter: &ClaudeAdapter) -> Result<HashMap<String, McpServer>> {
-    let path = adapter.settings_path();
+    let path = adapter.mcp_config_path();
     if !path.exists() {
         return Ok(HashMap::new());
     }
@@ -141,7 +140,7 @@ pub(super) fn write_mcp_servers_impl(
     adapter: &ClaudeAdapter,
     servers: &HashMap<String, McpServer>,
 ) -> Result<WriteReport> {
-    let path = adapter.settings_path();
+    let path = adapter.mcp_config_path();
     let mut settings = json_config::load_object(&path)?;
     let report = json_config::merge_servers(&mut settings, servers, Dialect::Claude, "claude")?;
     if report.written > 0 {

@@ -400,8 +400,24 @@ pub(crate) fn skill_dir_name(skill: &crate::common::Command) -> String {
 /// unchanged, so an edited companion script never reached the target.
 pub(crate) struct BatchWriter {
     root: std::path::PathBuf,
-    /// Destination directory to the item that claimed it in this batch.
-    claimed: std::collections::HashMap<std::path::PathBuf, String>,
+    /// Destination, case-folded, to the item that claimed it in this batch.
+    /// Folded because APFS and NTFS treat `Foo` and `foo` as one directory.
+    claimed: std::collections::HashMap<String, String>,
+}
+
+/// Records the failure of one item's write as a refusal so the rest of the
+/// batch is still attempted. Errors that make the whole phase pointless (the
+/// target root itself) are raised by the callers before the batch starts.
+fn refuse_unwritable(
+    item: &str,
+    path: &Path,
+    error: &std::io::Error,
+    report: &mut crate::report::WriteReport,
+) {
+    report.skipped.push(crate::report::SkipReason::Refused {
+        item: item.to_string(),
+        reason: format!("could not write {}: {error}", path.display()),
+    });
 }
 
 impl BatchWriter {
@@ -434,7 +450,8 @@ impl BatchWriter {
             return Ok(());
         }
         let path = self.root.join(format!("{stem}{suffix}"));
-        if let Some(first) = self.claimed.get(&path) {
+        let key = path.to_string_lossy().to_lowercase();
+        if let Some(first) = self.claimed.get(&key) {
             report.skipped.push(SkipReason::Refused {
                 item: item.to_string(),
                 reason: format!(
@@ -444,7 +461,7 @@ impl BatchWriter {
             });
             return Ok(());
         }
-        self.claimed.insert(path.clone(), item.to_string());
+        self.claimed.insert(key, item.to_string());
 
         if let Some(link) = symlink_below(&self.root, &path) {
             report.skipped.push(SkipReason::Refused {
@@ -462,11 +479,15 @@ impl BatchWriter {
             });
             return Ok(());
         }
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+        let written = match path.parent() {
+            Some(parent) => std::fs::create_dir_all(parent),
+            None => Ok(()),
         }
-        write_file(&path, content)?;
-        report.written += 1;
+        .and_then(|()| write_file(&path, content));
+        match written {
+            Ok(()) => report.written += 1,
+            Err(e) => refuse_unwritable(item, &path, &e, report),
+        }
         Ok(())
     }
 
@@ -493,7 +514,8 @@ impl BatchWriter {
         }
 
         let dir = self.root.join(rel_dir);
-        if let Some(first) = self.claimed.get(&dir) {
+        let key = dir.to_string_lossy().to_lowercase();
+        if let Some(first) = self.claimed.get(&key) {
             report.skipped.push(SkipReason::Refused {
                 item: item.to_string(),
                 reason: format!(
@@ -503,7 +525,7 @@ impl BatchWriter {
             });
             return Ok(());
         }
-        self.claimed.insert(dir.clone(), item.to_string());
+        self.claimed.insert(key, item.to_string());
 
         let main_path = dir.join(main_file);
         if let Some(link) = symlink_below(&self.root, &main_path) {
@@ -519,8 +541,12 @@ impl BatchWriter {
 
         let mut changed = false;
         if std::fs::read(&main_path).ok().as_deref() != Some(main) {
-            std::fs::create_dir_all(&dir)?;
-            write_file(&main_path, main)?;
+            if let Err(e) =
+                std::fs::create_dir_all(&dir).and_then(|()| write_file(&main_path, main))
+            {
+                refuse_unwritable(item, &main_path, &e, report);
+                return Ok(());
+            }
             changed = true;
         }
 
@@ -544,10 +570,19 @@ impl BatchWriter {
             if std::fs::read(&module_path).ok().as_deref() == Some(module.content.as_slice()) {
                 continue;
             }
-            if let Some(parent) = module_path.parent() {
-                std::fs::create_dir_all(parent)?;
+            let written = match module_path.parent() {
+                Some(parent) => std::fs::create_dir_all(parent),
+                None => Ok(()),
             }
-            write_file(&module_path, &module.content)?;
+            .and_then(|()| write_file(&module_path, &module.content));
+            if let Err(e) = written {
+                report.warnings.push(format!(
+                    "Skipped module {} of {item}: could not write {}: {e}",
+                    module.relative_path.display(),
+                    module_path.display()
+                ));
+                continue;
+            }
             changed = true;
         }
 
@@ -831,6 +866,91 @@ mod tests {
 
         let names: Vec<_> = modules.iter().map(|m| m.relative_path.clone()).collect();
         assert_eq!(names, vec![std::path::PathBuf::from("small.py")]);
+    }
+
+    fn refused_items(report: &crate::report::WriteReport) -> Vec<String> {
+        report
+            .skipped
+            .iter()
+            .filter_map(|skip| match skip {
+                crate::report::SkipReason::Refused { item, .. } => Some(item.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// One item that cannot be written used to abort the batch through `?`,
+    /// leaving every later item unwritten on this run and on every run after.
+    #[test]
+    fn batch_writer_refuses_an_item_it_cannot_write_and_writes_the_rest() {
+        let root = tempfile::tempdir().unwrap();
+        // A plain file where the item's directory has to go.
+        std::fs::write(root.path().join("blocked"), b"in the way").unwrap();
+        let mut writer = BatchWriter::new(root.path());
+        let mut report = crate::report::WriteReport::default();
+
+        writer
+            .write("blocked", "blocked", "SKILL.md", b"a", &[], &mut report)
+            .unwrap();
+        writer
+            .write("fine", "fine", "SKILL.md", b"b", &[], &mut report)
+            .unwrap();
+
+        assert_eq!(report.written, 1);
+        assert!(root.path().join("fine/SKILL.md").exists());
+        assert_eq!(refused_items(&report), vec!["blocked".to_string()]);
+    }
+
+    #[test]
+    fn batch_writer_single_refuses_an_item_it_cannot_write_and_writes_the_rest() {
+        let root = tempfile::tempdir().unwrap();
+        // A directory where the item's file has to go.
+        std::fs::create_dir_all(root.path().join("blocked.md/inner")).unwrap();
+        let mut writer = BatchWriter::new(root.path());
+        let mut report = crate::report::WriteReport::default();
+
+        writer
+            .write_single("blocked", "blocked", ".md", b"a", &mut report)
+            .unwrap();
+        writer
+            .write_single("fine", "fine", ".md", b"b", &mut report)
+            .unwrap();
+
+        assert_eq!(report.written, 1);
+        assert!(root.path().join("fine.md").is_file());
+        assert_eq!(refused_items(&report), vec!["blocked".to_string()]);
+    }
+
+    /// APFS and NTFS are case-insensitive by default, so `Foo` and `foo` are
+    /// one directory there and the second write replaced the first.
+    #[test]
+    fn batch_writer_refuses_a_name_that_differs_only_in_case() {
+        let root = tempfile::tempdir().unwrap();
+        let mut writer = BatchWriter::new(root.path());
+        let mut report = crate::report::WriteReport::default();
+
+        writer
+            .write("Foo", "Foo", "SKILL.md", b"first", &[], &mut report)
+            .unwrap();
+        writer
+            .write("foo", "foo", "SKILL.md", b"second", &[], &mut report)
+            .unwrap();
+        writer
+            .write_single("Bar", "Bar", ".md", b"first", &mut report)
+            .unwrap();
+        writer
+            .write_single("bar", "bar", ".md", b"second", &mut report)
+            .unwrap();
+
+        assert_eq!(report.written, 2);
+        assert_eq!(
+            std::fs::read(root.path().join("Foo/SKILL.md")).unwrap(),
+            b"first"
+        );
+        assert_eq!(
+            refused_items(&report),
+            vec!["foo".to_string(), "bar".to_string()]
+        );
     }
 
     mod proptests {

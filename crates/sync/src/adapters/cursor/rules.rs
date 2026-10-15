@@ -19,8 +19,8 @@
 
 use super::paths::rules_dir;
 use super::utils::{parse_frontmatter, render_frontmatter};
-use crate::adapters::utils::hash_content;
 use crate::adapters::utils::sanitize_name_kebab;
+use crate::adapters::utils::{hash_content, is_hidden_path};
 use crate::common::{Command, ContentFormat};
 use crate::report::WriteReport;
 use crate::Result;
@@ -55,7 +55,9 @@ pub fn read_rules(root: &Path) -> Result<Vec<Command>> {
         };
 
         let path = entry.path();
-        if !path.is_file() {
+        // `file_type` does not follow links: a linked rule could be any file
+        // on disk, and it would be copied into every other tool.
+        if !entry.file_type().is_file() || is_hidden_path(path.strip_prefix(&dir).unwrap_or(path)) {
             continue;
         }
 
@@ -187,12 +189,15 @@ fn derive_rule_mode(
         return (fields, body.to_string());
     }
 
-    // Default: agent-requested mode (description, no globs, and alwaysApply false)
+    // Default: agent-requested mode (description, no globs, and alwaysApply
+    // false). The agent picks the rule by its description, so the source's own
+    // one wins over the synthetic fallback.
     fields.insert("alwaysApply".to_string(), "false".to_string());
-    fields.insert(
-        "description".to_string(),
-        format!("Rule: {}", name.replace('-', " ")),
-    );
+    let description = existing_fields
+        .get("description")
+        .cloned()
+        .unwrap_or_else(|| format!("Rule: {}", name.replace('-', " ")));
+    fields.insert("description".to_string(), description);
 
     (fields, body.to_string())
 }
@@ -229,6 +234,19 @@ mod tests {
             fields.get("alwaysApply").unwrap(),
             "true",
             "claude-md (read-back form) should be alwaysApply"
+        );
+    }
+
+    /// An agent-requested rule is selected by its description, so replacing
+    /// the source's own one changes when the rule applies.
+    #[test]
+    fn derive_agent_requested_rule_keeps_the_source_description() {
+        let content = "---\ndescription: Use when writing React\n---\n\n# React\n";
+        let (fields, _body) = derive_rule_mode("react-rule", content);
+        assert_eq!(fields.get("alwaysApply").unwrap(), "false");
+        assert_eq!(
+            fields.get("description").map(String::as_str),
+            Some("Use when writing React")
         );
     }
 

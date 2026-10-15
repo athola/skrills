@@ -57,8 +57,31 @@ pub(super) fn read_skills_impl(adapter: &ClaudeAdapter) -> Result<Vec<Command>> 
                 plugin_origin,
             };
 
-            // Keep the most recently modified version
+            // The user's own skill always wins over a plugin skill of the same
+            // name; between two plugin skills the newer file wins.
             match skills_map.get(&name) {
+                Some(existing)
+                    if existing.plugin_origin.is_none() && skill.plugin_origin.is_some() =>
+                {
+                    tracing::warn!(
+                        skill = %name,
+                        path = %path.display(),
+                        "Plugin skill shares its name with a local skill; keeping the local one"
+                    );
+                }
+                Some(existing)
+                    if existing.plugin_origin.is_some() && skill.plugin_origin.is_some() =>
+                {
+                    tracing::warn!(
+                        skill = %name,
+                        first = %existing.source_path.display(),
+                        second = %path.display(),
+                        "Two plugins ship a skill with the same name; only the newer file is synced"
+                    );
+                    if existing.modified < modified {
+                        skills_map.insert(name, skill);
+                    }
+                }
                 Some(existing) if existing.modified >= modified => {
                     // Existing is newer or same, skip
                 }

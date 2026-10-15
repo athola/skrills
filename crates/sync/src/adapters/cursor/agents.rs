@@ -37,7 +37,9 @@ pub fn read_agents(root: &Path) -> Result<Vec<Command>> {
         let entry = entry?;
         let path = entry.path();
 
-        if !path.is_file() {
+        // `file_type` does not follow links: a linked file could be any file
+        // on disk, and it would be copied into every other tool.
+        if !entry.file_type().is_ok_and(|t| t.is_file()) {
             continue;
         }
         if path
@@ -171,7 +173,7 @@ const WRITE_TOOLS: &[&str] = &["Write", "Edit", "MultiEdit", "NotebookEdit", "Ba
 fn claude_tools(dropped: &str) -> Option<Vec<String>> {
     let mut lines = dropped.lines().skip_while(|l| !l.starts_with("tools:"));
     let first = lines.next()?.strip_prefix("tools:")?;
-    let block = lines.take_while(|l| l.starts_with([' ', '\t']));
+    let block = lines.take_while(|l| is_block_continuation(l));
     let text = std::iter::once(first)
         .chain(block)
         .collect::<Vec<_>>()
@@ -187,6 +189,12 @@ fn claude_tools(dropped: &str) -> Option<Vec<String>> {
             .filter(|t| !t.is_empty())
             .collect(),
     )
+}
+
+/// An indented line, or a `- item` that YAML lets a block list put at its
+/// key's own indent: either belongs to the key above it.
+fn is_block_continuation(line: &str) -> bool {
+    line.starts_with([' ', '\t']) || line == "-" || line.starts_with("- ")
 }
 
 /// `Bash(git:*)` grants `Bash`.
@@ -264,7 +272,7 @@ fn translate_agent_frontmatter(content: &str) -> (String, String) {
         // If we were skipping a block field, continue skipping continuation lines
         // (indented lines or list items that belong to the previous field)
         if skipping_block {
-            if line.starts_with(' ') || line.starts_with('\t') {
+            if is_block_continuation(line) {
                 dropped_lines.push(line);
                 continue;
             }
@@ -313,6 +321,22 @@ mod tests {
             );
         }
         assert!(output.contains("name: reviewer"));
+    }
+
+    /// YAML allows a block list at the key's own indent. Those `- Read` lines
+    /// used to stay behind as orphans in the Cursor frontmatter, and the tool
+    /// list came out empty, so an agent with Bash was marked read-only.
+    #[test]
+    fn translate_strips_an_unindented_block_list_and_reads_its_tools() {
+        let input = "---\nname: builder\ntools:\n- Read\n- Bash\nmodel: opus\n---\n\nBuild.\n";
+        let (output, dropped) = translate_agent_frontmatter(input);
+        assert!(!output.contains("- Read"), "{output}");
+        assert!(!output.contains("- Bash"), "{output}");
+        assert!(output.contains("model: opus"), "{output}");
+        assert_eq!(
+            claude_tools(&dropped),
+            Some(vec!["Read".to_string(), "Bash".to_string()])
+        );
     }
 
     #[test]

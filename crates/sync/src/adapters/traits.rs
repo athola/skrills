@@ -146,6 +146,18 @@ pub trait AgentAdapter: Send + Sync {
             ..WriteReport::default()
         })
     }
+
+    /// Previews [`write_skills`](Self::write_skills) for a dry run.
+    ///
+    /// The default compares each skill with what [`read_skills`](Self::read_skills)
+    /// returns under the same name. An adapter whose writer renames or rewrites
+    /// skills (Codex sets `name:` to the folder) overrides this, or a dry run
+    /// after a real sync reports changes that a sync would not make.
+    fn preview_skills(&self, skills: &[Command]) -> Result<WriteReport> {
+        Ok(crate::orchestrator::preview_items(skills, || {
+            self.read_skills()
+        }))
+    }
 }
 
 /// Blanket impl so `Box<dyn AgentAdapter>` can be used with `SyncOrchestrator`.
@@ -213,5 +225,8 @@ impl AgentAdapter for Box<dyn AgentAdapter> {
     }
     fn preview_plugin_assets(&self, assets: &[PluginAsset]) -> Result<WriteReport> {
         (**self).preview_plugin_assets(assets)
+    }
+    fn preview_skills(&self, skills: &[Command]) -> Result<WriteReport> {
+        (**self).preview_skills(skills)
     }
 }

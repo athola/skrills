@@ -89,7 +89,7 @@ impl CursorSyncTestSetup {
         )
         .unwrap();
 
-        // MCP config, Claude reads from settings.json
+        // MCP config: Claude keeps user-scope servers in ~/.claude.json
         let settings = serde_json::json!({
             "mcpServers": {
                 "skrills": {
@@ -100,7 +100,7 @@ impl CursorSyncTestSetup {
             }
         });
         fs::write(
-            root.join("settings.json"),
+            root.join(".claude.json"),
             serde_json::to_string_pretty(&settings).unwrap(),
         )
         .unwrap();

@@ -124,14 +124,21 @@ Helps debug complex issues.
         )
         .unwrap();
 
-        // Create settings.json with MCP servers
-        let settings = serde_json::json!({
+        // User-scope MCP servers live in ~/.claude.json, the model in settings.json
+        let user_config = serde_json::json!({
             "mcpServers": {
                 "claude-server": {
                     "command": "/usr/bin/claude-mcp",
                     "args": ["--verbose"]
                 }
-            },
+            }
+        });
+        fs::write(
+            root.join(".claude.json"),
+            serde_json::to_string_pretty(&user_config).unwrap(),
+        )
+        .unwrap();
+        let settings = serde_json::json!({
             "model": "claude-sonnet-4",
             "preferences": {
                 "theme": "dark"
@@ -238,7 +245,7 @@ mod copilot_to_claude_tests {
         GIVEN a Copilot configuration with MCP servers in mcp-config.json
         WHEN syncing to Claude
         THEN MCP servers should be read from mcp-config.json (not config.json)
-        AND written to Claude's settings.json
+        AND written to Claude's ~/.claude.json
         */
         let setup = CopilotSyncTestSetup::new().unwrap();
 
@@ -390,7 +397,7 @@ mod claude_to_copilot_tests {
     #[test]
     fn test_sync_claude_mcp_to_copilot_mcp_config() {
         /*
-        GIVEN a Claude configuration with MCP servers in settings.json
+        GIVEN a Claude configuration with MCP servers in ~/.claude.json
         WHEN syncing to Copilot
         THEN MCP servers should be written to mcp-config.json (not config.json)
         */
@@ -1161,8 +1168,9 @@ This is a test agent for Copilot.
             "Agents should be written to Codex as skills"
         );
 
-        // Verify agents were written as skills with "agent-" prefix
-        let skills_dir = codex_dir.path().join("skills");
+        // Verify agents were written as skills with "agent-" prefix, in the
+        // shared dir Codex loads skills from
+        let skills_dir = codex_dir.path().join(".agents/skills");
         assert!(
             skills_dir.join("agent-code-review-agent/SKILL.md").exists(),
             "Agent should be written as skill with agent- prefix"

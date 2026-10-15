@@ -40,7 +40,7 @@ fn folder_name(skill: &Command) -> String {
 /// there is no `description` for the tools that require one. Only the `name`
 /// line changes; every other byte is kept, so an already-valid skill is
 /// copied unchanged.
-fn with_folder_name(content: &str, folder: &str) -> (String, Option<String>) {
+pub(crate) fn with_folder_name(content: &str, folder: &str) -> (String, Option<String>) {
     let (fields, _) = parse_frontmatter(content);
     let has_description = fields
         .get("description")
@@ -120,6 +120,39 @@ pub(crate) fn write_shared_skills(dir: &Path, skills: &[Command]) -> Result<Writ
         )?;
     }
     Ok(report)
+}
+
+/// What [`write_shared_skills`] would do to `dir`, without writing: a skill
+/// whose transformed `SKILL.md` and modules already match the disk is
+/// `Unchanged`.
+pub(crate) fn preview_shared_skills(dir: &Path, skills: &[Command]) -> WriteReport {
+    let mut report = WriteReport::default();
+    for skill in skills {
+        let Ok(content) = std::str::from_utf8(&skill.content) else {
+            report.skipped.push(SkipReason::ParseError {
+                item: skill.name.clone(),
+                error: "not valid UTF-8".to_string(),
+            });
+            continue;
+        };
+        let folder = folder_name(skill);
+        let (body, _) = with_folder_name(content, &folder);
+        let skill_dir = dir.join(&folder);
+        let same = |path: PathBuf, bytes: &[u8]| std::fs::read(path).is_ok_and(|b| b == bytes);
+        let unchanged = same(skill_dir.join("SKILL.md"), body.as_bytes())
+            && skill
+                .modules
+                .iter()
+                .all(|m| same(skill_dir.join(&m.relative_path), &m.content));
+        if unchanged {
+            report.skipped.push(SkipReason::Unchanged {
+                item: skill.name.clone(),
+            });
+        } else {
+            report.written += 1;
+        }
+    }
+    report
 }
 
 #[cfg(test)]

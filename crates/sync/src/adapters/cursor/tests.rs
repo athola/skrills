@@ -306,6 +306,33 @@ fn write_skills_without_a_description_warns_cursor_will_not_load_it() {
     assert_eq!(yaml_str(&fields, "name"), Some("bare"), "{on_disk}");
 }
 
+/// Cursor loads a skill only when `name` matches its folder and it has a
+/// description, so a source with no frontmatter used to be written as a skill
+/// Cursor silently ignores.
+#[test]
+fn write_skills_gives_a_skill_without_frontmatter_a_name_and_warns() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+
+    let report = adapter
+        .write_skills(&[make_command("plain", "# Plain\nbody\n")])
+        .unwrap();
+
+    assert_eq!(report.written, 1);
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("plain") && w.contains("description")),
+        "{:?}",
+        report.warnings
+    );
+    let on_disk = std::fs::read_to_string(tmp.path().join("skills/plain/SKILL.md")).unwrap();
+    let (fields, body) = cursor_skill_frontmatter(&on_disk);
+    assert_eq!(yaml_str(&fields, "name"), Some("plain"), "{on_disk}");
+    assert!(body.contains("# Plain"), "{on_disk}");
+}
+
 #[test]
 fn skills_model_hint_follows_the_frontmatter() {
     let tmp = TempDir::new().unwrap();
@@ -649,12 +676,13 @@ fn skills_frontmatter_only_content_preserves_description() {
     );
 }
 
+/// A skill without frontmatter is not in Cursor format (Cursor needs `name`),
+/// so it gains a `name` line; its body is kept exactly.
 #[test]
-fn skills_no_frontmatter_preserved_verbatim() {
+fn skills_no_frontmatter_keeps_the_body_verbatim() {
     let tmp = TempDir::new().unwrap();
     let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
 
-    // Skill without frontmatter (already in Cursor format)
     let content = "# My Skill\n\nDo the thing.\n";
     let skills = vec![make_command("plain-skill", content)];
 
@@ -663,10 +691,13 @@ fn skills_no_frontmatter_preserved_verbatim() {
 
     let read_back = adapter.read_skills().unwrap();
     assert_eq!(read_back.len(), 1);
-    let body = String::from_utf8_lossy(&read_back[0].content);
+    let text = String::from_utf8_lossy(&read_back[0].content);
+    let (fields, body) = cursor_skill_frontmatter(&text);
+    assert_eq!(yaml_str(&fields, "name"), Some("plain-skill"), "{text}");
     assert_eq!(
-        body, content,
-        "Content without frontmatter should be preserved exactly"
+        body.trim_start_matches('\n'),
+        content,
+        "the body without frontmatter should be preserved exactly"
     );
 }
 
@@ -1815,6 +1846,8 @@ fn plugin_assets_replaces_a_file_where_a_directory_is_now_needed() {
     let tmp = TempDir::new().unwrap();
     let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
     let plugin_dir = tmp.path().join("plugins/local/my-plugin");
+    // A mirror an earlier run wrote, so skrills owns what is in the way.
+    mark_as_mirrored(&plugin_dir);
     std::fs::create_dir_all(plugin_dir.join("scripts")).unwrap();
     std::fs::write(plugin_dir.join("scripts/helper"), b"v1 was a file\n").unwrap();
 
@@ -1846,6 +1879,8 @@ fn plugin_assets_replaces_a_directory_where_a_file_is_now_needed() {
     let tmp = TempDir::new().unwrap();
     let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
     let plugin_dir = tmp.path().join("plugins/local/my-plugin");
+    // A mirror an earlier run wrote, so skrills owns what is in the way.
+    mark_as_mirrored(&plugin_dir);
     std::fs::create_dir_all(plugin_dir.join("scripts/helper")).unwrap();
     std::fs::write(plugin_dir.join("scripts/helper/main.py"), b"v1\n").unwrap();
 
@@ -2626,4 +2661,173 @@ fn agent_readonly_added_for_cursor_does_not_reach_claude() {
     let back = String::from_utf8(back[0].content.clone()).unwrap();
     assert!(back.contains("tools: Read, Grep"), "{back}");
     assert!(!back.contains("readonly"), "{back}");
+}
+
+/// A plugin refused this run (here: a name collision) is still installed, so
+/// its existing mirror must survive the prune that the rest of the batch runs.
+#[test]
+fn plugin_assets_does_not_prune_the_mirror_of_a_plugin_refused_this_run() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let local_dir = tmp.path().join("plugins/local");
+    mark_as_mirrored(&local_dir.join("myplugin"));
+    std::fs::write(local_dir.join("myplugin/keep.txt"), b"keep").unwrap();
+
+    let batch = [
+        plugin_manifest("my.plugin"),
+        plugin_manifest("myplugin"),
+        plugin_manifest("unaffected"),
+    ];
+    let preview = adapter.preview_plugin_assets(&batch).unwrap();
+    assert!(
+        !preview.warnings.iter().any(|w| w.contains("prune")),
+        "a dry run must not announce pruning a refused plugin: {:?}",
+        preview.warnings
+    );
+
+    let report = adapter.write_plugin_assets(&batch).unwrap();
+    assert!(
+        local_dir.join("myplugin/keep.txt").exists(),
+        "the refused plugin's mirror was pruned, warnings were {:?}",
+        report.warnings
+    );
+}
+
+/// An unmarked directory holding the user's own files is not ours. The
+/// ownership check used to run after the writes, so the user's file at a path
+/// the plugin also ships was already overwritten by then.
+#[test]
+fn plugin_assets_writes_nothing_into_an_unmarked_directory_holding_user_files() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let plugin_dir = tmp.path().join("plugins/local/mine");
+    std::fs::create_dir_all(plugin_dir.join("scripts")).unwrap();
+    std::fs::write(plugin_dir.join("scripts/helper.py"), b"# mine\n").unwrap();
+    std::fs::write(plugin_dir.join("notes.md"), b"my notes\n").unwrap();
+
+    let helper = PluginAsset::new(
+        "mine".to_string(),
+        "market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from("scripts/helper.py"),
+        b"# upstream\n".to_vec(),
+        false,
+    );
+    let report = adapter
+        .write_plugin_assets(&[plugin_manifest("mine"), helper])
+        .unwrap();
+
+    assert_eq!(
+        std::fs::read(plugin_dir.join("scripts/helper.py")).unwrap(),
+        b"# mine\n",
+        "the user's file was overwritten, warnings were {:?}",
+        report.warnings
+    );
+    assert!(!plugin_dir.join(".cursor-plugin").exists());
+    assert!(!plugin_dir.join(super::MIRROR_MARKER).exists());
+    assert_eq!(report.written, 0);
+}
+
+/// Clearing a conflicting path deletes whatever sits there. In a directory
+/// skrills does not own, that is the user's data.
+#[test]
+fn plugin_assets_never_removes_a_directory_inside_an_unmarked_plugin_dir() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let plugin_dir = tmp.path().join("plugins/local/mine");
+    std::fs::create_dir_all(plugin_dir.join(".cursor-plugin")).unwrap();
+    std::fs::write(plugin_dir.join(".cursor-plugin/plugin.json"), b"{}").unwrap();
+    std::fs::create_dir_all(plugin_dir.join("scripts/helper")).unwrap();
+    std::fs::write(plugin_dir.join("scripts/helper/data.txt"), b"mine\n").unwrap();
+
+    let helper = PluginAsset::new(
+        "mine".to_string(),
+        "market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from("scripts/helper"),
+        b"#!/bin/sh\n".to_vec(),
+        false,
+    );
+    let report = adapter.write_plugin_assets(&[helper]).unwrap();
+
+    assert!(
+        plugin_dir.join("scripts/helper/data.txt").exists(),
+        "the user's directory was removed, warnings were {:?}",
+        report.warnings
+    );
+}
+
+/// A subtree the walk cannot read may hold the user's files; counting it as
+/// empty adopted the directory, and the next run swept it.
+#[cfg(unix)]
+#[test]
+fn plugin_assets_does_not_adopt_an_unmarked_directory_it_cannot_fully_read() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let plugin_dir = tmp.path().join("plugins/local/mine");
+    let private = plugin_dir.join("private");
+    std::fs::create_dir_all(&private).unwrap();
+    std::fs::write(private.join("secret.txt"), b"mine\n").unwrap();
+    std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read_dir(&private).is_ok() {
+        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o755)).unwrap();
+        return; // running as root: permissions do not apply
+    }
+
+    let report = adapter
+        .write_plugin_assets(&[plugin_manifest("mine")])
+        .unwrap();
+    std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(
+        !plugin_dir.join(super::MIRROR_MARKER).exists(),
+        "an unreadable subtree must count as foreign, warnings were {:?}",
+        report.warnings
+    );
+}
+
+/// `write_skills` creates a plugin directory of its own for a plugin-origin
+/// skill. A later full mirror of the same plugin must be able to take it over
+/// even when the skill folder names differ, rather than refusing it as a
+/// directory the user made.
+#[test]
+fn plugin_assets_takes_over_a_plugin_dir_that_write_skills_created() {
+    use crate::common::PluginAsset;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let mut skill = make_skill_with_frontmatter("Deep_Work");
+    skill.plugin_origin = Some(crate::common::PluginOrigin {
+        plugin_name: "my-plugin".to_string(),
+        publisher: "market".to_string(),
+        version: "1.0.0".to_string(),
+    });
+    super::skills::write_skills(tmp.path(), &[skill]).unwrap();
+    let plugin_dir = tmp.path().join("plugins/local/my-plugin");
+    assert!(plugin_dir.join(".cursor-plugin/plugin.json").exists());
+
+    let shipped = PluginAsset::new(
+        "my-plugin".to_string(),
+        "market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from("skills/Deep_Work/SKILL.md"),
+        b"---\nname: Deep_Work\ndescription: d\n---\nbody\n".to_vec(),
+        false,
+    );
+    let report = adapter
+        .write_plugin_assets(&[plugin_manifest("my-plugin"), shipped])
+        .unwrap();
+
+    assert!(
+        plugin_dir.join("skills/Deep_Work/SKILL.md").exists(),
+        "the full mirror was refused, warnings were {:?}",
+        report.warnings
+    );
+    assert!(plugin_dir.join(super::MIRROR_MARKER).exists());
 }

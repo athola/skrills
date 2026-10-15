@@ -1,6 +1,6 @@
 //! Shared reading, encoding and merging of JSON MCP server maps.
 //!
-//! Claude (`settings.json`), Copilot (`mcp-config.json`) and Cursor
+//! Claude (`~/.claude.json`), Copilot (`mcp-config.json`) and Cursor
 //! (`mcp.json`) all keep MCP servers as a JSON object keyed by server name
 //! under `mcpServers`. Codex keeps them in `config.toml` (see `codex_toml`). Each writer used to build a
 //! fresh object from the source and assign it over the target's, so every

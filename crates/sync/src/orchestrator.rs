@@ -185,7 +185,7 @@ fn sync_items(
 /// a target that transforms content on write (Cursor, Copilot agents) never
 /// matches, so its preview can still over-count, never under-count. A target
 /// that cannot be read previews every item as written.
-fn preview_items(
+pub(crate) fn preview_items(
     items: &[Command],
     read_target: impl FnOnce() -> Result<Vec<Command>>,
 ) -> WriteReport {
@@ -481,7 +481,7 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 if !params.dry_run {
                     *slot = self.target.write_skills(&skills)?;
                 } else {
-                    *slot = preview_items(&skills, || self.target.read_skills());
+                    *slot = self.target.preview_skills(&skills)?;
                 }
                 slot.duplicates = skill_dups;
                 // Report excluded plugins as skipped
@@ -920,7 +920,7 @@ mod tests {
         let tgt_dir = tempdir().unwrap();
 
         // Create source MCP config
-        let settings_path = src_dir.path().join("settings.json");
+        let settings_path = src_dir.path().join(".claude.json");
         fs::write(
             &settings_path,
             r#"{
@@ -957,13 +957,18 @@ mod tests {
     }
 
     #[test]
-    fn sync_transforms_model_claude_to_codex() {
+    fn sync_keeps_the_codex_model_for_a_claude_model() {
         let src_dir = tempdir().unwrap();
         let tgt_dir = tempdir().unwrap();
 
         // Create source settings with Claude model
         let settings_path = src_dir.path().join("settings.json");
         fs::write(&settings_path, r#"{"model": "sonnet"}"#).unwrap();
+        fs::write(
+            tgt_dir.path().join("config.toml"),
+            "model = \"gpt-6.1-sol\"\n",
+        )
+        .unwrap();
 
         let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
         let target = CodexAdapter::with_root(tgt_dir.path().to_path_buf());
@@ -978,19 +983,19 @@ mod tests {
         };
 
         let report = orchestrator.sync(&params).unwrap();
-        assert_eq!(report.preferences.written, 1);
+        assert_eq!(report.preferences.written, 0);
 
-        // Verify model was transformed to OpenAI equivalent
+        // No current Claude -> Codex model table, so Codex keeps its model
         let target = CodexAdapter::with_root(tgt_dir.path().to_path_buf());
         assert_eq!(
             target.read_preferences().unwrap().model.as_deref(),
-            Some("gpt-4o-mini")
+            Some("gpt-6.1-sol")
         );
         assert!(!tgt_dir.path().join("config.json").exists());
     }
 
     #[test]
-    fn sync_transforms_model_codex_to_claude() {
+    fn sync_leaves_the_claude_model_unset_for_an_openai_model() {
         let src_dir = tempdir().unwrap();
         let tgt_dir = tempdir().unwrap();
 
@@ -1011,13 +1016,10 @@ mod tests {
         };
 
         let report = orchestrator.sync(&params).unwrap();
-        assert_eq!(report.preferences.written, 1);
+        assert_eq!(report.preferences.written, 0);
 
-        // Verify model was transformed to Claude equivalent
-        let tgt_settings = tgt_dir.path().join("settings.json");
-        let content = fs::read_to_string(&tgt_settings).unwrap();
-        let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(settings["model"], "opus");
+        // No OpenAI -> Claude model table, so Claude's settings are untouched
+        assert!(!tgt_dir.path().join("settings.json").exists());
     }
 
     /// A model id with no mapping was written verbatim into the other
@@ -1099,11 +1101,11 @@ mod tests {
         fs::create_dir_all(src_dir.path().join("commands")).unwrap();
         fs::write(src_dir.path().join("commands/hello.md"), "# Hello").unwrap();
         fs::write(
-            src_dir.path().join("settings.json"),
-            r#"{"model": "sonnet"}"#,
+            src_dir.path().join(".claude.json"),
+            r#"{"mcpServers": {"s": {"command": "/bin/s"}}}"#,
         )
         .unwrap();
-        // A malformed config.toml makes the preference writer fail.
+        // A malformed config.toml makes the MCP writer fail.
         fs::write(tgt_dir.path().join("config.toml"), "[unclosed\n").unwrap();
 
         let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
@@ -1111,8 +1113,8 @@ mod tests {
         let report = SyncOrchestrator::new(source, target)
             .sync(&SyncParams {
                 sync_commands: true,
-                sync_mcp_servers: false,
-                sync_preferences: true,
+                sync_mcp_servers: true,
+                sync_preferences: false,
                 sync_skills: false,
                 sync_agents: false,
                 sync_hooks: false,
@@ -1126,12 +1128,12 @@ mod tests {
         assert!(!report.success);
         assert!(
             report
-                .preferences
+                .mcp_servers
                 .warnings
                 .iter()
                 .any(|w| w.contains("failed")),
             "{:?}",
-            report.preferences.warnings
+            report.mcp_servers.warnings
         );
     }
 
@@ -1152,7 +1154,12 @@ mod tests {
         fs::write(src_dir.path().join("skills/alpha/notes.md"), "notes").unwrap();
         fs::write(
             src_dir.path().join("settings.json"),
-            r#"{"model": "sonnet", "mcpServers": {"s": {"command": "/bin/s", "args": ["-x"]}}}"#,
+            r#"{"model": "sonnet"}"#,
+        )
+        .unwrap();
+        fs::write(
+            src_dir.path().join(".claude.json"),
+            r#"{"mcpServers": {"s": {"command": "/bin/s", "args": ["-x"]}}}"#,
         )
         .unwrap();
 
@@ -1183,7 +1190,8 @@ mod tests {
         assert_eq!(first.commands.written, 1);
         assert_eq!(first.skills.written, 1);
         assert_eq!(first.mcp_servers.written, 1);
-        assert_eq!(first.preferences.written, 1);
+        // A Claude model has no Codex equivalent, so nothing to write there.
+        assert_eq!(first.preferences.written, 0);
 
         assert!(orch().sync(&params).unwrap().success);
 
@@ -1860,7 +1868,7 @@ mod tests {
         assert!(
             tgt_dir
                 .path()
-                .join("skills/agent-reviewer/SKILL.md")
+                .join(".agents/skills/agent-reviewer/SKILL.md")
                 .exists(),
             "write_agents should convert the agent into an agent-prefixed skill"
         );

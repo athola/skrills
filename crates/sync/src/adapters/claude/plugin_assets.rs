@@ -16,7 +16,7 @@ use std::fs;
 
 use walkdir::WalkDir;
 
-use super::plugin_cache::latest_plugin_versions;
+use super::plugin_cache::latest_plugin_versions_listing;
 use super::ClaudeAdapter;
 use crate::adapters::utils::is_hidden_path;
 
@@ -59,9 +59,11 @@ pub(super) fn read_plugin_assets_impl(
     };
 
     let mut assets = Vec::new();
+    let manifest_rel_path = std::path::Path::new(".claude-plugin").join("plugin.json");
 
     // One version per plugin, picked by the same rule as every other reader.
-    for version_dir in latest_plugin_versions(&cache_dir) {
+    let (versions, listing_complete) = latest_plugin_versions_listing(&cache_dir);
+    for version_dir in versions {
         let version_path = version_dir.path;
         let crate::common::PluginOrigin {
             plugin_name,
@@ -69,6 +71,9 @@ pub(super) fn read_plugin_assets_impl(
             version,
         } = version_dir.origin;
         let assets_before = assets.len();
+        // Set when a file of this plugin could not be read, so the batch no
+        // longer describes the whole plugin.
+        let mut incomplete = false;
 
         // Walk the version directory collecting asset files
         for entry in WalkDir::new(&version_path)
@@ -84,6 +89,7 @@ pub(super) fn read_plugin_assets_impl(
                         error = %e,
                         "Failed to read directory entry while scanning plugin assets"
                     );
+                    incomplete = true;
                     continue;
                 }
             };
@@ -164,6 +170,7 @@ pub(super) fn read_plugin_assets_impl(
                         error = %e,
                         "Failed to read plugin asset file, skipping"
                     );
+                    incomplete = true;
                     continue;
                 }
             };
@@ -192,13 +199,26 @@ pub(super) fn read_plugin_assets_impl(
             ));
         }
 
-        if full_mirror {
+        if full_mirror && incomplete {
+            // The manifest is what lets the mirror delete files the plugin no
+            // longer ships. A file that failed to read this run is not one of
+            // those, so this batch must not be taken as the whole plugin.
+            tracing::warn!(
+                plugin = %plugin_name,
+                "Some plugin files could not be read; the mirror will not remove anything from this plugin this run"
+            );
+            let plugin_assets = assets.split_off(assets_before);
+            assets.extend(
+                plugin_assets
+                    .into_iter()
+                    .filter(|a| a.relative_path != manifest_rel_path),
+            );
+        } else if full_mirror {
             // Use a structurally-built path so the comparison is correct on
             // Windows (where `strip_prefix` produces backslash separators)
             // as well as Unix. A `to_string_lossy().contains("/")` check
             // would silently miss real Windows manifests and double-emit a
             // synthetic one.
-            let manifest_rel_path = std::path::Path::new(".claude-plugin").join("plugin.json");
             let has_manifest = assets[assets_before..]
                 .iter()
                 .any(|a| a.relative_path == manifest_rel_path);
@@ -214,12 +234,22 @@ pub(super) fn read_plugin_assets_impl(
                     plugin_name.clone(),
                     publisher.clone(),
                     version.clone(),
-                    manifest_rel_path,
+                    manifest_rel_path.clone(),
                     manifest,
                     false,
                 ));
             }
         }
+    }
+
+    if full_mirror && !listing_complete {
+        // A plugin cache directory that could not be listed hides plugins that
+        // may still be installed; with no manifest in the batch, the mirror
+        // neither sweeps nor prunes anything this run.
+        tracing::warn!(
+            "Part of the plugin cache could not be listed; the mirror will not remove anything this run"
+        );
+        assets.retain(|a| a.relative_path != manifest_rel_path);
     }
 
     Ok(assets)

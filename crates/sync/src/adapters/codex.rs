@@ -11,6 +11,7 @@ use super::codex_toml;
 use super::traits::{AgentAdapter, FieldSupport};
 use super::utils::{
     collect_module_files, hash_content, inside_skill_dir, is_hidden_path, sanitize_name,
+    sanitize_name_kebab,
 };
 use crate::common::{Command, ContentFormat, McpServer, McpTransport, Preferences};
 use crate::report::WriteReport;
@@ -71,8 +72,7 @@ impl CodexAdapter {
     }
 
     /// `~/.codex/skills`, which current Codex no longer lists as a skills
-    /// location. Read for skills written there before, and still where
-    /// `write_agents` puts agents.
+    /// location. Read for skills and agents written there before.
     fn skills_dir(&self) -> PathBuf {
         self.root.join("skills")
     }
@@ -98,7 +98,7 @@ impl CodexAdapter {
             Err(e) => return Err(e.into()),
         };
 
-        match enable_skills_flag(&content) {
+        match enable_skills_flag(&content)? {
             Some(updated) => {
                 super::utils::write_config(&path, updated.as_bytes(), false)?;
                 Ok(true)
@@ -108,110 +108,37 @@ impl CodexAdapter {
     }
 }
 
-/// Returns `content` with `skills = true` under `[features]`, or `None` when
-/// it is already set.
+/// Returns `content` with `features.skills = true`, or `None` when it is
+/// already set.
 ///
-/// A line scanner that predates the `toml_edit` dependency (MCP servers and
-/// the model go through [`codex_toml`]). It matches the key exactly (a
-/// `skills_beta` key used to be overwritten), ignores `#` inside quoted strings
-/// when finding table headers, and honours a top-level dotted
-/// `features.skills` key instead of appending a second `[features]` table,
-/// which TOML rejects as a redefinition.
-fn enable_skills_flag(content: &str) -> Option<String> {
-    /// Text before the first `#` that is not inside a quoted string.
-    fn strip_comment(line: &str) -> &str {
-        let mut quote: Option<char> = None;
-        let mut escaped = false;
-        for (i, c) in line.char_indices() {
-            match quote {
-                Some('"') if escaped => escaped = false,
-                Some('"') if c == '\\' => escaped = true,
-                Some(q) if c == q => quote = None,
-                Some(_) => {}
-                None if c == '"' || c == '\'' => quote = Some(c),
-                None if c == '#' => return &line[..i],
-                None => {}
+/// Edits go through `toml_edit`, so the key lands wherever `features` is
+/// already defined (a `[features]` table, dotted `features.*` keys, or an
+/// inline table). Appending a second `[features]` table is a TOML
+/// redefinition error, and Codex then refuses to start. A file that does not
+/// parse is an error rather than something to rewrite.
+fn enable_skills_flag(content: &str) -> Result<Option<String>> {
+    let mut doc = content.parse::<toml_edit::DocumentMut>().map_err(|e| {
+        anyhow::anyhow!("config.toml is not valid TOML; refusing to change it: {e}")
+    })?;
+    let features = doc
+        .entry("features")
+        .or_insert_with(toml_edit::table)
+        .as_table_like_mut()
+        .ok_or_else(|| anyhow::anyhow!("`features` in config.toml is not a table"))?;
+    match features.get_mut("skills") {
+        Some(item) if item.as_bool() == Some(true) => return Ok(None),
+        Some(item) => {
+            let mut value = toml_edit::Value::from(true);
+            if let Some(old) = item.as_value() {
+                *value.decor_mut() = old.decor().clone();
             }
+            *item = toml_edit::Item::Value(value);
         }
-        line
-    }
-
-    /// The table a header line opens, or `None` for any other line.
-    fn header_name(line: &str) -> Option<String> {
-        let trimmed = strip_comment(line).trim();
-        if trimmed.starts_with("[[") || !trimmed.starts_with('[') || !trimmed.ends_with(']') {
-            return None;
+        None => {
+            features.insert("skills", toml_edit::value(true));
         }
-        Some(
-            trimmed[1..trimmed.len() - 1]
-                .split('.')
-                .map(|part| part.trim().trim_matches('"'))
-                .collect::<Vec<_>>()
-                .join("."),
-        )
     }
-
-    /// Splits `key = value` into a normalised dotted key and its value.
-    fn key_value(line: &str) -> Option<(String, &str)> {
-        let (key, value) = strip_comment(line).split_once('=')?;
-        let key = key
-            .split('.')
-            .map(|part| part.trim().trim_matches('"').trim_matches('\''))
-            .collect::<Vec<_>>()
-            .join(".");
-        Some((key, value.trim()))
-    }
-
-    let mut out: Vec<String> = Vec::new();
-    // `None` before the first header: the root table.
-    let mut table: Option<String> = None;
-    let mut features_header_at: Option<usize> = None;
-    let mut skills_set = false;
-    let mut changed = false;
-
-    for line in content.lines() {
-        if let Some(name) = header_name(line) {
-            if name == "features" {
-                features_header_at = Some(out.len());
-            }
-            table = Some(name);
-            out.push(line.to_string());
-            continue;
-        }
-
-        let target_key = match table.as_deref() {
-            None => Some("features.skills"),
-            Some("features") => Some("skills"),
-            _ => None,
-        };
-        if let (Some(target_key), Some((key, value))) = (target_key, key_value(line)) {
-            if key == target_key {
-                skills_set = true;
-                if value != "true" {
-                    out.push(format!("{target_key} = true"));
-                    changed = true;
-                    continue;
-                }
-            }
-        }
-        out.push(line.to_string());
-    }
-
-    if !skills_set {
-        match features_header_at {
-            Some(at) => out.insert(at + 1, "skills = true".to_string()),
-            None => {
-                if out.last().is_some_and(|l| !l.trim().is_empty()) {
-                    out.push(String::new());
-                }
-                out.push("[features]".to_string());
-                out.push("skills = true".to_string());
-            }
-        }
-        changed = true;
-    }
-
-    changed.then(|| out.join("\n") + "\n")
+    Ok(Some(doc.to_string()))
 }
 
 // Note: We intentionally do not implement Default for CodexAdapter because
@@ -321,6 +248,14 @@ fn read_skills_under(skills_dir: &Path) -> Vec<Command> {
     skills
 }
 
+/// The frontmatter `name` of `text`, unquoted.
+fn frontmatter_name(text: &str) -> Option<String> {
+    super::cursor::utils::parse_frontmatter(text)
+        .0
+        .get("name")
+        .map(|name| super::cursor::utils::strip_yaml_quotes(name))
+}
+
 fn is_converted_agent(skill_dir: &Path) -> bool {
     skill_dir
         .file_name()
@@ -368,9 +303,20 @@ impl AgentAdapter for CodexAdapter {
         }
 
         let mut commands = Vec::new();
-        for entry in WalkDir::new(&active_dir).min_depth(1).max_depth(2) {
+        for entry in WalkDir::new(&active_dir)
+            .min_depth(1)
+            .max_depth(2)
+            .follow_links(false)
+        {
             let entry = entry?;
             let path = entry.path();
+            // `file_type` does not follow links: a linked prompt could be any
+            // file on disk, and it would be copied into every other tool.
+            if !entry.file_type().is_file()
+                || is_hidden_path(path.strip_prefix(&active_dir).unwrap_or(path))
+            {
+                continue;
+            }
 
             if path.extension().is_some_and(|e| e == "md") {
                 let name = path
@@ -562,6 +508,13 @@ impl AgentAdapter for CodexAdapter {
         Ok(report)
     }
 
+    fn preview_skills(&self, skills: &[Command]) -> Result<WriteReport> {
+        Ok(super::shared_skills::preview_shared_skills(
+            &self.shared_skills,
+            skills,
+        ))
+    }
+
     fn write_skills(&self, skills: &[Command]) -> Result<WriteReport> {
         super::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         let mut report = super::shared_skills::write_shared_skills(&self.shared_skills, skills)?;
@@ -587,81 +540,93 @@ impl AgentAdapter for CodexAdapter {
 
     fn read_agents(&self) -> Result<Vec<Command>> {
         // Codex doesn't have native agent support, but we store agents as skills
-        // with an "agent-" prefix. Read those back as agents for reverse sync.
-        let skills_dir = self.skills_dir();
-        if !skills_dir.exists() {
-            return Ok(Vec::new());
-        }
-
+        // with an "agent-" prefix. Read those back as agents for reverse sync,
+        // from the shared dir and from `~/.codex/skills`, where older builds
+        // put them.
         let mut agents = Vec::new();
-        for entry in WalkDir::new(&skills_dir)
-            .min_depth(1)
-            .max_depth(20)
-            .follow_links(false)
-        {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(e) => {
-                    tracing::warn!(error = %e, "Skipping unreadable entry under the skills directory");
+        for skills_dir in [self.shared_skills.clone(), self.skills_dir()] {
+            if !skills_dir.exists() {
+                continue;
+            }
+            for entry in WalkDir::new(&skills_dir)
+                .min_depth(1)
+                .max_depth(20)
+                .follow_links(false)
+            {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Skipping unreadable entry under the skills directory");
+                        continue;
+                    }
+                };
+                if entry.file_type().is_symlink() {
                     continue;
                 }
-            };
-            if entry.file_type().is_symlink() {
-                continue;
-            }
-            let path = entry.path();
-            if is_hidden_path(path.strip_prefix(&skills_dir).unwrap_or(path)) {
-                continue;
-            }
-            if !entry.file_type().is_file() {
-                continue;
-            }
-
-            let is_skill_md = path.file_name().is_some_and(|n| n == "SKILL.md");
-            if !is_skill_md {
-                continue;
-            }
-
-            // Get the skill name from the parent directory
-            let skill_name = path
-                .parent()
-                .and_then(|p| p.strip_prefix(&skills_dir).ok())
-                .and_then(|p| p.to_str())
-                .filter(|s| !s.is_empty())
-                .unwrap_or("unknown");
-
-            // Only directories `write_agents` produced, stripping the prefix
-            let Some(agent_name) = skill_name.strip_prefix("agent-").map(str::to_owned) else {
-                continue;
-            };
-            if !is_converted_agent(path.parent().unwrap_or(path)) {
-                continue;
-            }
-
-            let read = fs::read(path).and_then(|c| Ok((c, fs::metadata(path)?)));
-            let (content, metadata) = match read {
-                Ok(pair) => pair,
-                Err(e) => {
-                    tracing::warn!(path = %path.display(), error = %e, "Skipping unreadable agent");
+                let path = entry.path();
+                if is_hidden_path(path.strip_prefix(&skills_dir).unwrap_or(path)) {
                     continue;
                 }
-            };
-            let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-            let hash = hash_content(&content);
+                if !entry.file_type().is_file() {
+                    continue;
+                }
 
-            let skill_dir = path.parent().unwrap_or(path);
-            let modules = collect_module_files(skill_dir);
+                let is_skill_md = path.file_name().is_some_and(|n| n == "SKILL.md");
+                if !is_skill_md {
+                    continue;
+                }
 
-            agents.push(Command {
-                name: agent_name,
-                content,
-                source_path: path.to_path_buf(),
-                modified,
-                hash,
-                modules,
-                content_format: ContentFormat::default(),
-                plugin_origin: None,
-            });
+                // Get the skill name from the parent directory
+                let skill_name = path
+                    .parent()
+                    .and_then(|p| p.strip_prefix(&skills_dir).ok())
+                    .and_then(|p| p.to_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("unknown");
+
+                // Only directories `write_agents` produced, stripping the prefix
+                let Some(agent_name) = skill_name.strip_prefix("agent-").map(str::to_owned) else {
+                    continue;
+                };
+                if !is_converted_agent(path.parent().unwrap_or(path)) {
+                    continue;
+                }
+
+                let read = fs::read(path).and_then(|c| Ok((c, fs::metadata(path)?)));
+                let (content, metadata) = match read {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        tracing::warn!(path = %path.display(), error = %e, "Skipping unreadable agent");
+                        continue;
+                    }
+                };
+                let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                // `write_agents` set `name` to the folder; give the agent its
+                // own name back so a round trip does not rename it.
+                let content = match std::str::from_utf8(&content) {
+                    Ok(text) if frontmatter_name(text).as_deref() == Some(skill_name) => {
+                        super::shared_skills::with_folder_name(text, &agent_name)
+                            .0
+                            .into_bytes()
+                    }
+                    _ => content,
+                };
+                let hash = hash_content(&content);
+
+                let skill_dir = path.parent().unwrap_or(path);
+                let modules = collect_module_files(skill_dir);
+
+                agents.push(Command {
+                    name: agent_name,
+                    content,
+                    source_path: path.to_path_buf(),
+                    modified,
+                    hash,
+                    modules,
+                    content_format: ContentFormat::default(),
+                    plugin_origin: None,
+                });
+            }
         }
 
         Ok(agents)
@@ -682,31 +647,25 @@ impl AgentAdapter for CodexAdapter {
             return Ok(WriteReport::default());
         }
 
-        let dir = self.skills_dir();
-        fs::create_dir_all(&dir)?;
-
-        let mut report = WriteReport::default();
-
-        let mut writer = super::utils::BatchWriter::new(&dir);
-        for agent in agents {
-            // Prefix agent names with "agent-" to distinguish from regular skills
-            let skill_name = format!("agent-{}", agent.name);
-            let safe_name = sanitize_name(&skill_name);
-            writer.write(
-                &skill_name,
-                &safe_name,
-                "SKILL.md",
-                &agent.content,
-                &agent.modules,
-                &mut report,
-            )?;
+        // Written where Codex loads skills, with `name` set to the folder like
+        // every other shared skill.
+        let as_skills: Vec<Command> = agents
+            .iter()
+            .map(|agent| Command {
+                name: sanitize_name_kebab(&format!("agent-{}", agent.name)),
+                ..agent.clone()
+            })
+            .collect();
+        let dir = &self.shared_skills;
+        let report = super::shared_skills::write_shared_skills(dir, &as_skills)?;
+        for skill in &as_skills {
             // Mark the directory only when the agent is actually there (not
             // refused), so `read_agents` never claims a user's own skill.
-            let agent_dir = dir.join(&safe_name);
+            let agent_dir = dir.join(&skill.name);
             let marker = agent_dir.join(AGENT_MARKER);
-            if !safe_name.is_empty()
+            if skill.name.starts_with("agent-")
                 && agent_dir.join("SKILL.md").is_file()
-                && super::utils::symlink_below(&dir, &marker).is_none()
+                && super::utils::symlink_below(dir, &marker).is_none()
                 && !marker.exists()
             {
                 super::utils::write_file(&marker, AGENT_MARKER_BODY)?;
@@ -1490,16 +1449,23 @@ startup_timeout_sec = 180
     /// its name and its value.
     #[test]
     fn skills_flag_leaves_a_similarly_named_key_alone() {
-        let updated = enable_skills_flag("[features]\nskills_beta = false\n").unwrap();
-        assert_eq!(updated, "[features]\nskills = true\nskills_beta = false\n");
+        let updated = enable_skills_flag("[features]\nskills_beta = false\n")
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated, "[features]\nskills_beta = false\nskills = true\n");
     }
 
     /// A second `[features]` table is a TOML redefinition error.
     #[test]
     fn skills_flag_honours_a_top_level_dotted_key() {
-        assert_eq!(enable_skills_flag("features.skills = true\n"), None);
         assert_eq!(
-            enable_skills_flag("features.skills = false\nmodel = \"o3\"\n").unwrap(),
+            enable_skills_flag("features.skills = true\n").unwrap(),
+            None
+        );
+        assert_eq!(
+            enable_skills_flag("features.skills = false\nmodel = \"o3\"\n")
+                .unwrap()
+                .unwrap(),
             "features.skills = true\nmodel = \"o3\"\n"
         );
     }
@@ -1509,18 +1475,67 @@ startup_timeout_sec = 180
     #[test]
     fn skills_flag_ignores_hash_inside_a_quoted_header() {
         let content = "[features]\nskills = true\n[servers.\"a#b\"]\nskills = false\n";
-        assert_eq!(enable_skills_flag(content), None);
+        assert_eq!(enable_skills_flag(content).unwrap(), None);
+    }
+
+    fn parsed_features(content: &str) -> toml_edit::DocumentMut {
+        content
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap_or_else(|e| panic!("not valid TOML: {e}\n{content}"))
+    }
+
+    /// An inline `features = { .. }` table used to get a second `[features]`
+    /// table appended, which TOML rejects, so Codex would not start.
+    #[test]
+    fn skills_flag_sets_the_key_inside_an_inline_features_table() {
+        let updated = enable_skills_flag("features = { web_search = true }\n")
+            .unwrap()
+            .unwrap();
+        let doc = parsed_features(&updated);
+        assert_eq!(doc["features"]["skills"].as_bool(), Some(true));
+        assert_eq!(doc["features"]["web_search"].as_bool(), Some(true));
+    }
+
+    /// A dotted `features.<other>` key defines the table too.
+    #[test]
+    fn skills_flag_sets_the_key_beside_another_dotted_features_key() {
+        let updated = enable_skills_flag("features.web_search = true\nmodel = \"o3\"\n")
+            .unwrap()
+            .unwrap();
+        let doc = parsed_features(&updated);
+        assert_eq!(doc["features"]["skills"].as_bool(), Some(true));
+        assert_eq!(doc["features"]["web_search"].as_bool(), Some(true));
+        assert_eq!(doc["model"].as_str(), Some("o3"));
+    }
+
+    /// A `[features]` line inside a multi-line string is not a header.
+    #[test]
+    fn skills_flag_ignores_a_header_inside_a_multiline_string() {
+        let content = "notes = \"\"\"\n[features]\nskills = true\n\"\"\"\n";
+        let updated = enable_skills_flag(content).unwrap().unwrap();
+        let doc = parsed_features(&updated);
+        assert_eq!(doc["features"]["skills"].as_bool(), Some(true));
+        assert_eq!(doc["notes"].as_str(), Some("[features]\nskills = true\n"));
+    }
+
+    /// Rewriting a file that does not parse could only make it worse.
+    #[test]
+    fn skills_flag_refuses_a_config_that_does_not_parse() {
+        assert!(enable_skills_flag("[features\nskills = \n").is_err());
     }
 
     #[test]
     fn skills_flag_is_a_no_op_when_already_true() {
-        assert_eq!(enable_skills_flag("[features]\nskills = true # on\n"), None);
+        assert_eq!(
+            enable_skills_flag("[features]\nskills = true # on\n").unwrap(),
+            None
+        );
     }
 
     #[test]
     fn skills_flag_appends_a_features_table_when_missing() {
         assert_eq!(
-            enable_skills_flag("model = \"o3\"\n").unwrap(),
+            enable_skills_flag("model = \"o3\"\n").unwrap().unwrap(),
             "model = \"o3\"\n\n[features]\nskills = true\n"
         );
     }
@@ -1755,17 +1770,23 @@ startup_timeout_sec = 180
         // Verify agents were written as skills with "agent-" prefix
         assert!(tmp
             .path()
-            .join("skills/agent-code-reviewer/SKILL.md")
+            .join(".agents/skills/agent-code-reviewer/SKILL.md")
             .exists());
         assert!(tmp
             .path()
-            .join("skills/agent-test-writer/SKILL.md")
+            .join(".agents/skills/agent-test-writer/SKILL.md")
             .exists());
 
-        // Verify content
-        let content =
-            fs::read_to_string(tmp.path().join("skills/agent-code-reviewer/SKILL.md")).unwrap();
-        assert!(content.contains("code-reviewer"));
+        // The name is the folder, the marker claims the directory, and the
+        // skills feature is on so Codex loads it.
+        let dir = tmp.path().join(".agents/skills/agent-code-reviewer");
+        let content = fs::read_to_string(dir.join("SKILL.md")).unwrap();
+        assert!(content.contains("name: agent-code-reviewer\n"), "{content}");
+        assert!(content.contains("description: Reviews code"), "{content}");
+        assert!(dir.join(AGENT_MARKER).is_file());
+        let config = fs::read_to_string(tmp.path().join("config.toml")).unwrap();
+        let config: toml_edit::DocumentMut = config.parse().unwrap();
+        assert_eq!(config["features"]["skills"].as_bool(), Some(true));
     }
 
     #[test]
@@ -1776,6 +1797,38 @@ startup_timeout_sec = 180
         let report = adapter.write_agents(&[]).unwrap();
         assert_eq!(report.written, 0);
         assert!(report.skipped.is_empty());
+    }
+
+    /// Codex loads user skills from `~/.agents/skills` only
+    /// (learn.chatgpt.com/docs/build-skills), so agents written to
+    /// `~/.codex/skills` were reported written and never loaded.
+    #[test]
+    fn write_agents_puts_agents_where_codex_loads_skills() {
+        let tmp = tempdir().unwrap();
+        let adapter = CodexAdapter::with_root(tmp.path().to_path_buf());
+        let agent = Command {
+            name: "code-reviewer".to_string(),
+            content: b"---\nname: code-reviewer\ndescription: Reviews code\n---\n# Agent\n"
+                .to_vec(),
+            source_path: PathBuf::from("/tmp/code-reviewer.md"),
+            modified: SystemTime::now(),
+            hash: String::new(),
+            modules: vec![],
+            content_format: ContentFormat::default(),
+            plugin_origin: None,
+        };
+
+        let report = adapter.write_agents(&[agent]).unwrap();
+
+        assert_eq!(report.written, 1, "{report:?}");
+        let dir = tmp.path().join(".agents/skills/agent-code-reviewer");
+        let skill = fs::read_to_string(dir.join("SKILL.md")).unwrap();
+        assert!(skill.contains("name: agent-code-reviewer"), "{skill}");
+        assert!(dir.join(AGENT_MARKER).is_file());
+        assert!(!tmp.path().join("skills/agent-code-reviewer").exists());
+        let agents = adapter.read_agents().unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].name, "code-reviewer");
     }
 
     #[test]

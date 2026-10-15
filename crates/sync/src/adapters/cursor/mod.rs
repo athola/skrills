@@ -214,10 +214,6 @@ impl AgentAdapter for CursorAdapter {
         let plan = plan_mirror(&local_dir, assets);
         report.warnings.extend(plan.refusals);
 
-        // Every accepted plugin, whether or not its batch was complete. Pruning
-        // must not remove a directory this run just wrote into.
-        let mut touched: HashSet<String> = HashSet::new();
-
         for (dir_name, batch) in &plan.accepted {
             let plugin_dir = local_dir.join(dir_name);
             if let Err(msg) = prepare_plugin_dir(&plugin_dir) {
@@ -225,14 +221,28 @@ impl AgentAdapter for CursorAdapter {
                 report.warnings.push(msg);
                 continue;
             }
-            touched.insert(dir_name.clone());
             // Read before this run writes anything: only a directory skrills
             // already owned may have files swept out of it.
             let already_marked = plugin_dir.join(MIRROR_MARKER).exists();
 
+            // Ownership is settled before the first write. An unmarked
+            // directory that holds files this plugin does not ship belongs to
+            // the user, and a complete plugin is not written into it.
+            if !already_marked && plan.authoritative.contains(dir_name) {
+                let planned: HashSet<PathBuf> = batch
+                    .iter()
+                    .map(|asset| plugin_dir.join(mirror_relative_path(asset)))
+                    .collect();
+                if !adoptable(&plugin_dir, dir_name, &planned, &mut report) {
+                    continue;
+                }
+            }
+
             let mut kept: HashSet<PathBuf> = HashSet::new();
             for asset in batch {
-                if let Some(dest) = write_one_asset(&plugin_dir, dir_name, asset, &mut report) {
+                if let Some(dest) =
+                    write_one_asset(&plugin_dir, dir_name, asset, already_marked, &mut report)
+                {
                     kept.insert(dest);
                 }
             }
@@ -243,8 +253,6 @@ impl AgentAdapter for CursorAdapter {
             if plan.authoritative.contains(dir_name) {
                 if already_marked {
                     sweep_unreferenced(&plugin_dir, dir_name, &kept, &mut report);
-                } else if !adoptable(&plugin_dir, dir_name, &kept, &mut report) {
-                    continue;
                 }
                 if let Err(e) = crate::adapters::utils::write_file(
                     plugin_dir.join(MIRROR_MARKER),
@@ -262,7 +270,7 @@ impl AgentAdapter for CursorAdapter {
         // A batch with no complete plugin in it says nothing about which plugins
         // are still installed, so it must not prune anything.
         if !plan.authoritative.is_empty() {
-            prune_stale_mirrors(&local_dir, &touched, &mut report);
+            prune_stale_mirrors(&local_dir, &plan.present, &mut report);
         }
 
         Ok(report)
@@ -280,12 +288,10 @@ impl AgentAdapter for CursorAdapter {
         report.written = plan.accepted.values().map(Vec::len).sum();
 
         if !plan.authoritative.is_empty() {
-            let touched: std::collections::HashSet<String> =
-                plan.accepted.keys().cloned().collect();
             let (marked, warnings) = marked_mirror_dirs(&local_dir);
             report.warnings.extend(warnings);
             for name in marked {
-                if !touched.contains(&name) {
+                if !plan.present.contains(&name) {
                     report
                         .warnings
                         .push(format!("Would prune stale plugin mirror: {name}"));
@@ -318,6 +324,9 @@ struct MirrorPlan<'a> {
     authoritative: std::collections::HashSet<String>,
     /// One message per refused plugin.
     refusals: Vec<String>,
+    /// Every directory some plugin in the batch maps to, refused or not. A
+    /// refused plugin is still installed, so pruning must leave its mirror.
+    present: std::collections::HashSet<String>,
 }
 
 /// Groups a batch by destination directory and refuses every plugin that cannot
@@ -355,6 +364,7 @@ fn plan_mirror<'a>(local_dir: &std::path::Path, assets: &'a [PluginAsset]) -> Mi
     let mut accepted = BTreeMap::new();
     let mut authoritative = HashSet::new();
     let mut refusals = Vec::new();
+    let present: HashSet<String> = grouped.keys().cloned().collect();
 
     for (dir_name, group) in grouped {
         let identities = group
@@ -411,6 +421,7 @@ fn plan_mirror<'a>(local_dir: &std::path::Path, assets: &'a [PluginAsset]) -> Mi
         accepted,
         authoritative,
         refusals,
+        present,
     }
 }
 
@@ -446,26 +457,34 @@ fn prepare_plugin_dir(plugin_dir: &std::path::Path) -> std::result::Result<(), S
     }
 }
 
+/// Where `asset` goes inside its plugin mirror: Claude's `.claude-plugin/`
+/// manifest directory becomes the `.cursor-plugin/` Cursor reads.
+fn mirror_relative_path(asset: &PluginAsset) -> std::path::PathBuf {
+    match asset.relative_path.strip_prefix(".claude-plugin") {
+        Ok(rest) => std::path::PathBuf::from(".cursor-plugin").join(rest),
+        Err(_) => asset.relative_path.clone(),
+    }
+}
+
 /// Writes one asset and returns its destination when the mirror should keep it.
 ///
 /// Per-asset failures become warnings and the batch continues: a single bad file
 /// used to abort `write_plugin_assets` through `?`, which threw away the whole
-/// report and failed again on every later sync.
+/// report and failed again on every later sync. `owned` says whether the
+/// directory carries the mirror marker; only then may a path in the asset's
+/// way be deleted.
 fn write_one_asset(
     plugin_dir: &std::path::Path,
     dir_name: &str,
     asset: &PluginAsset,
+    owned: bool,
     report: &mut WriteReport,
 ) -> Option<std::path::PathBuf> {
     use crate::adapters::utils::{hash_content, is_path_contained};
     use crate::report::SkipReason;
     use std::fs;
-    use std::path::PathBuf;
 
-    let relative = match asset.relative_path.strip_prefix(".claude-plugin") {
-        Ok(rest) => PathBuf::from(".cursor-plugin").join(rest),
-        Err(_) => asset.relative_path.clone(),
-    };
+    let relative = mirror_relative_path(asset);
     let dest = plugin_dir.join(&relative);
 
     if !is_path_contained(&dest, plugin_dir) {
@@ -482,7 +501,7 @@ fn write_one_asset(
         return None;
     }
 
-    if let Err(e) = clear_conflicting_path(plugin_dir, &dest) {
+    if let Err(e) = clear_conflicting_path(plugin_dir, &dest, owned) {
         tracing::warn!(
             plugin = %dir_name,
             path = %relative.display(),
@@ -594,12 +613,22 @@ fn write_one_asset(
 ///
 /// A plugin version can turn `scripts/helper` from a file into a directory or
 /// the reverse. Without this, `create_dir_all` or `fs::write` fails on that
-/// asset on this run and on every run after it.
+/// asset on this run and on every run after it. In a directory skrills does
+/// not own (`owned` false) whatever is in the way is the user's, so it is
+/// refused instead of removed.
 fn clear_conflicting_path(
     plugin_dir: &std::path::Path,
     dest: &std::path::Path,
+    owned: bool,
 ) -> std::io::Result<()> {
     use std::fs;
+
+    let refuse = |path: &std::path::Path| {
+        Err(std::io::Error::other(format!(
+            "{} is in the way and the directory has no {MIRROR_MARKER} marker, so it is left alone",
+            path.display()
+        )))
+    };
 
     if let Ok(relative) = dest.strip_prefix(plugin_dir) {
         let components: Vec<_> = relative.components().collect();
@@ -608,6 +637,7 @@ fn clear_conflicting_path(
             walked.push(component);
             match fs::symlink_metadata(&walked) {
                 Ok(meta) if meta.is_dir() => continue,
+                Ok(_) if !owned => return refuse(&walked),
                 // A file or a symlink: a symlinked parent would also steer the
                 // write out of the plugin directory.
                 Ok(_) => fs::remove_file(&walked)?,
@@ -618,8 +648,9 @@ fn clear_conflicting_path(
     }
 
     match fs::symlink_metadata(dest) {
-        Ok(meta) if meta.is_dir() => fs::remove_dir_all(dest),
         Ok(meta) if meta.is_file() => Ok(()),
+        Ok(_) if !owned => refuse(dest),
+        Ok(meta) if meta.is_dir() => fs::remove_dir_all(dest),
         Ok(_) => fs::remove_file(dest),
         Err(_) => Ok(()),
     }
@@ -741,8 +772,9 @@ fn sweep_unreferenced(
 /// An unmarked directory is either a mirror from a build that predates the
 /// marker or a hand-made Cursor plugin that shares its name with a Claude
 /// plugin. A legacy mirror holds only files the plugin ships, so it is adopted.
-/// Anything else is left unmarked: stamping it would let the next run sweep the
-/// user's own files out of it.
+/// Anything else is left unmarked and nothing is written into it: stamping it
+/// would let the next run sweep the user's own files out of it. An entry the
+/// walk cannot read counts as foreign, since it may hold the user's files.
 fn adoptable(
     plugin_dir: &std::path::Path,
     dir_name: &str,
@@ -755,9 +787,10 @@ fn adoptable(
         .min_depth(1)
         .follow_links(false)
         .into_iter()
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| !entry.file_type().is_dir())
-        .filter(|entry| !kept.contains(entry.path()))
+        .filter(|entry| match entry {
+            Ok(entry) => !entry.file_type().is_dir() && !kept.contains(entry.path()),
+            Err(_) => true,
+        })
         .count();
 
     if foreign == 0 {
@@ -766,9 +799,8 @@ fn adoptable(
     tracing::warn!(plugin = %dir_name, foreign, "Leaving an unmarked plugin directory unmanaged");
     report.warnings.push(format!(
         "plugins/local/{dir_name} has no {MIRROR_MARKER} marker and holds {foreign} file(s) the \
-         plugin does not ship, so sync wrote the plugin into it but will never remove anything \
-         there. If the directory is yours, rename it; if it is an old mirror, delete it so sync \
-         can manage it."
+         plugin does not ship (or that could not be read), so sync left it untouched. If the \
+         directory is yours, rename it; if it is an old mirror, delete it so sync can manage it."
     ));
     false
 }

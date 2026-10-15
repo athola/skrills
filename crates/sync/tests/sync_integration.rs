@@ -54,8 +54,8 @@ impl SyncTestSetup {
         )
         .unwrap();
 
-        // Create settings.json with MCP servers and preferences
-        let settings = serde_json::json!({
+        // User-scope MCP servers live in ~/.claude.json, preferences in settings.json
+        let user_config = serde_json::json!({
             "mcpServers": {
                 "test-server": {
                     "command": "/usr/bin/test-server",
@@ -67,7 +67,14 @@ impl SyncTestSetup {
                         "TOKEN": "test-token"
                     }
                 }
-            },
+            }
+        });
+        fs::write(
+            root.join(".claude.json"),
+            serde_json::to_string_pretty(&user_config).unwrap(),
+        )
+        .unwrap();
+        let settings = serde_json::json!({
             "model": "claude-3-5-sonnet",
             "preferences": {
                 "theme": "dark",
@@ -155,9 +162,17 @@ mod sync_direction_tests {
             report.mcp_servers.written > 0,
             "MCP servers should be written"
         );
+        // A Claude model has no known Codex id, so Codex keeps its own model
+        // and the report says why.
+        assert_eq!(report.preferences.written, 0);
         assert!(
-            report.preferences.written > 0,
-            "Preferences should be written"
+            report
+                .preferences
+                .warnings
+                .iter()
+                .any(|w| w.contains("no known codex equivalent")),
+            "{:?}",
+            report.preferences.warnings
         );
     }
 
@@ -526,4 +541,44 @@ mod sync_error_handling_tests {
             }
         }
     }
+}
+
+/// Codex rewrites `name:` to the folder and uses the leaf folder of a nested
+/// skill, so a dry run that compares the source bytes and name with the
+/// target reported the same skill as "would write" after every real sync.
+#[test]
+fn dry_run_after_a_real_sync_to_codex_reports_no_skill_changes() {
+    let source_dir = TempDir::new().unwrap();
+    let target_dir = TempDir::new().unwrap();
+    let skill = source_dir.path().join("skills/synced/abc/morning");
+    fs::create_dir_all(&skill).unwrap();
+    fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: morning-brief\ndescription: Start the day\n---\n\nBody.\n",
+    )
+    .unwrap();
+    fs::write(skill.join("helper.py"), "print('hi')\n").unwrap();
+
+    let only_skills = |dry_run| SyncParams {
+        dry_run,
+        sync_skills: true,
+        sync_commands: false,
+        sync_mcp_servers: false,
+        sync_preferences: false,
+        sync_agents: false,
+        sync_hooks: false,
+        sync_instructions: false,
+        sync_plugin_assets: false,
+        ..SyncParams::default()
+    };
+    let orchestrator = SyncOrchestrator::new(
+        ClaudeAdapter::with_root(source_dir.path().to_path_buf()),
+        CodexAdapter::with_root(target_dir.path().to_path_buf()),
+    );
+
+    let real = orchestrator.sync(&only_skills(false)).unwrap();
+    assert_eq!(real.skills.written, 1, "{:?}", real.skills);
+    let preview = orchestrator.sync(&only_skills(true)).unwrap();
+
+    assert_eq!(preview.skills.written, 0, "{:?}", preview.skills);
 }
