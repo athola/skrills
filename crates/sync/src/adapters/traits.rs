@@ -154,7 +154,7 @@ pub trait AgentAdapter: Send + Sync {
     /// skills (Codex sets `name:` to the folder) overrides this, or a dry run
     /// after a real sync reports changes that a sync would not make.
     fn preview_skills(&self, skills: &[Command]) -> Result<WriteReport> {
-        Ok(crate::orchestrator::preview_items(skills, || {
+        Ok(crate::orchestrator::preview_skill_items(skills, || {
             self.read_skills()
         }))
     }

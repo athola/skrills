@@ -118,3 +118,23 @@ fn every_skill_directory_skrills_writes_carries_the_synced_marker() {
         );
     }
 }
+
+/// A dry run right after a real sync must preview no writes. Nested names
+/// land in their leaf folder, so a preview that keyed by the full name
+/// reported every nested skill as a phantom write (M17).
+#[test]
+fn dry_run_after_a_sync_previews_nested_skills_as_unchanged() {
+    let tmp = TempDir::new().unwrap();
+    let skills = [skill("synced/abc/morning"), skill("plain")];
+
+    for (adapter, _) in adapters(tmp.path()) {
+        adapter.write_skills(&skills).unwrap();
+        let preview = adapter.preview_skills(&skills).unwrap();
+        let name = adapter.name();
+        // Cursor and Copilot rewrite content on write, so their preview
+        // over-counts by design (see `preview_items`).
+        if name == "claude" || name == "codex" {
+            assert_eq!(preview.written, 0, "{name}: {preview:?}");
+        }
+    }
+}

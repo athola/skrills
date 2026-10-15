@@ -189,15 +189,35 @@ pub(crate) fn preview_items(
     items: &[Command],
     read_target: impl FnOnce() -> Result<Vec<Command>>,
 ) -> WriteReport {
+    preview_items_keyed(items, read_target, |c| existing_key(&c.name))
+}
+
+/// [`preview_items`] for skills: writers put a skill in its
+/// [`skill_folder_name`](crate::adapters::utils::skill_folder_name) folder,
+/// so `synced/abc/morning` is read back as `morning` and has to be matched
+/// under that key.
+pub(crate) fn preview_skill_items(
+    items: &[Command],
+    read_target: impl FnOnce() -> Result<Vec<Command>>,
+) -> WriteReport {
+    preview_items_keyed(items, read_target, |c| {
+        existing_key(&crate::adapters::utils::skill_folder_name(c))
+    })
+}
+
+fn preview_items_keyed(
+    items: &[Command],
+    read_target: impl FnOnce() -> Result<Vec<Command>>,
+    key: impl Fn(&Command) -> String,
+) -> WriteReport {
     let target = read_target().unwrap_or_else(|e| {
         tracing::debug!(error = %format!("{e:#}"), "Dry run could not read the target; counting every item");
         Vec::new()
     });
-    let by_key: HashMap<String, &Command> =
-        target.iter().map(|c| (existing_key(&c.name), c)).collect();
+    let by_key: HashMap<String, &Command> = target.iter().map(|c| (key(c), c)).collect();
     let mut report = WriteReport::default();
     for item in items {
-        let unchanged = by_key.get(&existing_key(&item.name)).is_some_and(|t| {
+        let unchanged = by_key.get(&key(item)).is_some_and(|t| {
             t.content == item.content
                 && item.modules.iter().all(|m| {
                     t.modules
