@@ -113,3 +113,38 @@ fn a_local_skill_wins_over_a_marketplace_skill_of_the_same_name() {
     let written = fs::read_to_string(home.join(".agents/skills/demo/SKILL.md")).unwrap();
     assert!(written.contains("test skill"), "{written}");
 }
+
+/// `sync-all --include-marketplace` and the MCP sync tools route through
+/// `sync_between`, which built the Claude source without marketplace skills.
+#[test]
+fn sync_between_honours_include_marketplace_for_skills() {
+    let _lock = skrills_test_utils::env_guard();
+    let fixture = skrills_test_utils::TestFixture::new().unwrap();
+    let _home = fixture.home_guard();
+    let home = fixture.home_path();
+    write_skill(
+        &home.join(".claude/plugins/marketplaces/a/plugins/b/skills"),
+        "market",
+    );
+    let skills_only = skrills_sync::SyncParams {
+        sync_commands: false,
+        sync_mcp_servers: false,
+        sync_preferences: false,
+        sync_agents: false,
+        sync_hooks: false,
+        sync_instructions: false,
+        sync_plugin_assets: false,
+        include_marketplace: true,
+        ..Default::default()
+    };
+
+    let report = skrills_sync::orchestrator::sync_between(
+        skrills_sync::Platform::Claude,
+        skrills_sync::Platform::Codex,
+        &skills_only,
+    )
+    .unwrap();
+
+    assert_eq!(report.skills.written, 1, "{:?}", report.skills);
+    assert!(home.join(".agents/skills/market/SKILL.md").exists());
+}

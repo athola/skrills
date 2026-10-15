@@ -155,7 +155,8 @@ pub use common::{
 };
 pub use models::transform_model;
 pub use orchestrator::{
-    create_adapter, sync_between, sync_claude_skills_to_codex, SyncOrchestrator, SyncParams,
+    create_adapter, create_source_adapter, sync_between, sync_claude_skills_to_codex,
+    SyncOrchestrator, SyncParams,
 };
 pub use platform::{Platform, UnknownPlatform};
 pub use platform_routing::{skill_delivery, SkillDelivery};

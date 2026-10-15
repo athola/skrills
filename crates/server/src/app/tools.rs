@@ -932,7 +932,7 @@ impl SkillService {
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
         use skrills_sync::{
-            create_adapter, CopilotAdapter, Platform, SyncOrchestrator, SyncParams,
+            create_source_adapter, CopilotAdapter, Platform, SyncOrchestrator, SyncParams,
         };
 
         let from = args
@@ -961,8 +961,11 @@ impl SkillService {
             from,
             &[Platform::Claude, Platform::Codex, Platform::Cursor],
         )?;
-        let report =
-            SyncOrchestrator::new(create_adapter(from)?, CopilotAdapter::new()?).sync(&params)?;
+        let report = SyncOrchestrator::new(
+            create_source_adapter(from, &params)?,
+            CopilotAdapter::new()?,
+        )
+        .sync(&params)?;
 
         let succeeded = report.success;
         let content = vec![ContentBlock::text(report.summary.clone())];
@@ -1032,7 +1035,9 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
-        use skrills_sync::{create_adapter, CursorAdapter, Platform, SyncOrchestrator, SyncParams};
+        use skrills_sync::{
+            create_source_adapter, CursorAdapter, Platform, SyncOrchestrator, SyncParams,
+        };
 
         let from = args
             .get("from")
@@ -1063,7 +1068,8 @@ impl SkillService {
         };
 
         let report =
-            SyncOrchestrator::new(create_adapter(from)?, CursorAdapter::new()?).sync(&params)?;
+            SyncOrchestrator::new(create_source_adapter(from, &params)?, CursorAdapter::new()?)
+                .sync(&params)?;
 
         let succeeded = report.success;
         let content = vec![ContentBlock::text(report.summary.clone())];

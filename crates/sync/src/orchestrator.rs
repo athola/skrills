@@ -816,9 +816,25 @@ pub fn sync_between(
     to: crate::Platform,
     params: &SyncParams,
 ) -> Result<SyncReport> {
-    let source = create_adapter(from)?;
+    let source = create_source_adapter(from, params)?;
     let target = create_adapter(to)?;
     SyncOrchestrator::new(source, target).sync(params)
+}
+
+/// [`create_adapter`] for the side being read: a Claude source also reads
+/// marketplace skills when `params.include_marketplace` asks for them, as it
+/// already does for commands.
+pub fn create_source_adapter(
+    platform: crate::Platform,
+    params: &SyncParams,
+) -> Result<Box<dyn AgentAdapter>> {
+    if platform == crate::Platform::Claude {
+        return Ok(Box::new(
+            crate::adapters::ClaudeAdapter::new()?
+                .with_marketplace_skills(params.include_marketplace),
+        ));
+    }
+    create_adapter(platform)
 }
 
 /// Syncs the skills under `claude_root` into `home/.agents/skills`, the
