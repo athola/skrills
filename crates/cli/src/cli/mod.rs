@@ -300,7 +300,7 @@ pub enum Commands {
         #[arg(long)]
         min_tokens: Option<usize>,
         /// Include optimization suggestions.
-        #[arg(long, default_value_t = true, num_args = 0..=1, default_missing_value = "true", value_parser = clap::builder::BoolishValueParser::new(), action = ArgAction::Set)]
+        #[arg(long, default_value_t = true, num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::builder::BoolishValueParser::new(), action = ArgAction::Set)]
         suggestions: bool,
     },
     /// Shows aggregate statistics about discovered skills.
@@ -330,7 +330,7 @@ pub enum Commands {
         #[arg(long, default_value = "10")]
         limit: usize,
         /// Include quality scores in recommendations.
-        #[arg(long, default_value_t = true, num_args = 0..=1, default_missing_value = "true", value_parser = clap::builder::BoolishValueParser::new(), action = ArgAction::Set)]
+        #[arg(long, default_value_t = true, num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::builder::BoolishValueParser::new(), action = ArgAction::Set)]
         include_quality: bool,
     },
     /// Resolve dependencies or dependents for a skill URI.
@@ -461,7 +461,7 @@ pub enum Commands {
         #[arg(long, short = 'l', default_value = "10")]
         limit: usize,
         /// Also search descriptions, not just names.
-        #[arg(long, default_value_t = true, num_args = 0..=1, default_missing_value = "true", value_parser = clap::builder::BoolishValueParser::new(), action = ArgAction::Set)]
+        #[arg(long, default_value_t = true, num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::builder::BoolishValueParser::new(), action = ArgAction::Set)]
         include_description: bool,
         /// Skills directory to search (default: all discovered skills).
         #[arg(long = "skill-dir", value_name = "DIR")]
@@ -1717,7 +1717,7 @@ mod tests {
 
     #[test]
     fn default_true_flags_can_be_turned_off() {
-        let cli = Cli::try_parse_from(["skrills", "analyze", "--suggestions", "false"])
+        let cli = Cli::try_parse_from(["skrills", "analyze", "--suggestions=false"])
             .expect("analyze --suggestions false should parse");
         assert!(matches!(
             cli.command,
@@ -1731,8 +1731,7 @@ mod tests {
             "skrills",
             "recommend",
             "skill://x",
-            "--include-quality",
-            "false",
+            "--include-quality=false",
         ])
         .expect("recommend --include-quality false should parse");
         assert!(matches!(
@@ -1747,8 +1746,7 @@ mod tests {
             "skrills",
             "search-skills",
             "q",
-            "--include-description",
-            "false",
+            "--include-description=false",
         ])
         .expect("search-skills --include-description false should parse");
         assert!(matches!(
@@ -1757,6 +1755,14 @@ mod tests {
                 include_description: false,
                 ..
             })
+        ));
+
+        // A bare flag must not swallow the query that follows it.
+        let cli = Cli::try_parse_from(["skrills", "search-skills", "--include-description", "q"])
+            .expect("a bare flag before the query should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::SearchSkills { ref query, include_description: true, .. }) if query == "q"
         ));
 
         // The documented bare form still turns it on.
