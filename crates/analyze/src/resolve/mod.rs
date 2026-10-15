@@ -294,6 +294,55 @@ mod tests {
         assert!(flags(&via_graph).contains(&("leaf".to_string(), true)));
     }
 
+    #[test]
+    fn dependency_reached_by_optional_then_required_path_is_required_in_both_resolvers() {
+        // root -> a (optional) -> c -> d, and root -> b (required) -> c. The
+        // optional path is walked first; c and its subtree are still required.
+        let root = make_skill(
+            "root",
+            vec![
+                DeclaredDependency::Structured {
+                    name: "a".into(),
+                    version: None,
+                    source: None,
+                    optional: true,
+                },
+                DeclaredDependency::Simple("b".into()),
+            ],
+        );
+        let a = make_skill("a", vec![DeclaredDependency::Simple("c".into())]);
+        let b = make_skill("b", vec![DeclaredDependency::Simple("c".into())]);
+        let c = make_skill("c", vec![DeclaredDependency::Simple("d".into())]);
+        let d = make_skill("d", vec![]);
+
+        let mut registry = InMemoryRegistry::new();
+        for s in [&root, &a, &b, &c, &d] {
+            registry.add(s.clone());
+        }
+        let via_resolver = DependencyResolver::new(&registry, ResolveOptions::default())
+            .resolve("root")
+            .unwrap();
+        let graph = GraphBuilder::new()
+            .add_skills([root, a, b, c, d])
+            .build()
+            .unwrap();
+        let via_graph = graph.resolve("root").unwrap();
+
+        for result in [&via_resolver, &via_graph] {
+            let optional_of = |name: &str| {
+                result
+                    .resolved
+                    .iter()
+                    .find(|r| r.name == name)
+                    .map(|r| r.optional)
+            };
+            assert_eq!(optional_of("a"), Some(true));
+            assert_eq!(optional_of("b"), Some(false));
+            assert_eq!(optional_of("c"), Some(false), "{:?}", result.resolved);
+            assert_eq!(optional_of("d"), Some(false), "{:?}", result.resolved);
+        }
+    }
+
     // ========== DependencyGraph (pre-computed) tests ==========
 
     #[test]

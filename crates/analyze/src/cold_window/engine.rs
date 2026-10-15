@@ -251,9 +251,10 @@ impl ColdWindowEngine {
     }
 
     /// Construct an engine with caller-provided strategies. The token
-    /// budget ceiling defaults to `u64::MAX` (kill-switch never
-    /// engages); chain [`ColdWindowEngine::with_budget_ceiling`] when
-    /// the alert policy uses a real ceiling.
+    /// budget ceiling is the alert policy's
+    /// [`AlertPolicy::budget_ceiling`]; a policy without one leaves it
+    /// at `u64::MAX` (kill-switch never engages) unless
+    /// [`ColdWindowEngine::with_budget_ceiling`] sets it.
     pub fn with_strategies(
         cadence: Box<dyn CadenceStrategy>,
         alert_policy: Box<dyn AlertPolicy>,
@@ -261,6 +262,7 @@ impl ColdWindowEngine {
         diff: Box<dyn SnapshotDiff>,
     ) -> Self {
         let (tx, _) = broadcast::channel(SNAPSHOT_CHANNEL_CAPACITY);
+        let budget_ceiling = alert_policy.budget_ceiling().unwrap_or(u64::MAX);
         Self {
             tx,
             activity: Arc::new(Mutex::new(ActivityRing::with_capacity(
@@ -273,7 +275,7 @@ impl ColdWindowEngine {
             state: Arc::new(Mutex::new(EngineState::default())),
             tick_budget: DEFAULT_TICK_BUDGET,
             kill_switch: KillSwitch::new(),
-            budget_ceiling: u64::MAX,
+            budget_ceiling,
         }
     }
 
@@ -941,6 +943,25 @@ mod tests {
         assert!(
             switch.is_engaged(),
             "switch must engage at or above budget ceiling"
+        );
+    }
+
+    #[test]
+    fn with_strategies_takes_kill_switch_ceiling_from_alert_policy() {
+        let engine = ColdWindowEngine::with_strategies(
+            Box::new(LoadAwareCadence::new()),
+            Box::new(LayeredAlertPolicy::new(80_000)),
+            Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+            Box::new(FieldwiseDiff::new()),
+        );
+        let switch = engine.kill_switch();
+        let _ = engine.tick(TickInput::empty().with_token_ledger(TokenLedger {
+            total: 80_000,
+            ..Default::default()
+        }));
+        assert!(
+            switch.is_engaged(),
+            "the alert policy's ceiling must engage the kill switch"
         );
     }
 

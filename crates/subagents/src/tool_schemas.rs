@@ -16,14 +16,14 @@ pub fn run_schema() -> Arc<JsonObject> {
         "properties": {
             "prompt": {"type": "string", "description": "User instruction"},
             "agent_id": {"type": "string", "description": "Agent name to run (from list-agents). When specified, routes to appropriate execution path based on agent capabilities."},
-            "backend": {"type": "string", "description": "codex|claude|other (used only when execution_mode=api and agent_id is not specified)"},
+            "backend": {"type": "string", "description": "codex|claude|other. Picks the CLI binary in cli mode and the API backend in api mode; with agent_id it takes precedence over the agent's model. Without it: the cli_binary/default_backend config, then the detected client."},
             "execution_mode": {"type": "string", "description": "cli|api (default: cli). cli uses local headless CLI; api uses network APIs."},
             "cli_binary": {"type": "string", "description": "CLI binary to run in cli mode (overrides SKRILLS_CLI_BINARY/config)"},
-            "template_id": {"type": "string"},
-            "output_schema": {"type": "object"},
+            "template_id": {"type": "string", "description": "A template id from list-subagents for the selected backend; any other id is rejected"},
+            "output_schema": {"type": "object", "description": "JSON schema for structured output; API runs only, rejected for a CLI run"},
             "tracing": {"type": "boolean"},
             "stream": {"type": "boolean"},
-            "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 300000}
+            "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 300000, "description": "CLI runs only; rejected for a run that goes to an API"}
         }
     })))
 }

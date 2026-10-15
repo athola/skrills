@@ -77,7 +77,12 @@ impl<'a, R: SkillRegistry> DependencyResolver<'a, R> {
             });
         }
 
+        // A required path to a skill first reached through an optional edge
+        // makes it, and what it requires, required.
         if walk.visited.contains(&key) {
+            if !optional {
+                self.mark_required(walk, &key, skill_name, source_constraint);
+            }
             return Ok(());
         }
 
@@ -140,6 +145,7 @@ impl<'a, R: SkillRegistry> DependencyResolver<'a, R> {
 
         walk.in_stack.remove(&key);
         walk.stack_order.pop();
+        walk.positions.insert(key.clone(), walk.resolved.len());
         walk.visited.insert(key);
 
         walk.resolved.push(ResolvedDependency {
@@ -153,6 +159,44 @@ impl<'a, R: SkillRegistry> DependencyResolver<'a, R> {
 
         Ok(())
     }
+
+    /// Clears the optional flag on a resolved skill and on every skill it
+    /// reaches through required edges. Recursion stops at skills already
+    /// required, so each is cleared at most once.
+    fn mark_required(
+        &self,
+        walk: &mut Walk,
+        key: &str,
+        skill_name: &str,
+        source_constraint: Option<&str>,
+    ) {
+        let Some(&pos) = walk.positions.get(key) else {
+            return;
+        };
+        if !walk.resolved[pos].optional {
+            return;
+        }
+        walk.resolved[pos].optional = false;
+        let Some(fm) = self
+            .registry
+            .lookup(skill_name, source_constraint)
+            .and_then(|info| info.frontmatter)
+        else {
+            return;
+        };
+        // The first visit parsed these dependencies successfully; a parse
+        // error cannot appear now, and there is nothing further to clear.
+        let Ok(deps) = fm.normalized_dependencies() else {
+            return;
+        };
+        for dep in deps.iter().filter(|d| !d.optional) {
+            let dep_key = match dep.source.as_deref() {
+                Some(src) => format!("{}:{}", src, dep.name),
+                None => dep.name.clone(),
+            };
+            self.mark_required(walk, &dep_key, &dep.name, dep.source.as_deref());
+        }
+    }
 }
 
 /// Traversal state for one `DependencyResolver::resolve` call.
@@ -161,6 +205,8 @@ struct Walk {
     visited: HashSet<String>,
     in_stack: HashSet<String>,
     stack_order: Vec<String>,
+    /// Position in `resolved` of each visited key.
+    positions: HashMap<String, usize>,
     resolved: Vec<ResolvedDependency>,
     warnings: Vec<String>,
 }

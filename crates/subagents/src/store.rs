@@ -37,6 +37,11 @@ pub struct RunRequest {
     pub output_schema: Option<Value>,
     pub async_mode: bool,
     pub tracing: bool,
+    /// Model an API run asks for instead of the adapter's default, such as
+    /// a named agent's `model`. Absent from records written before it
+    /// existed, hence the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -150,8 +155,20 @@ pub(crate) fn dropped_event_count(events: &[RunEvent]) -> usize {
 /// Appends `event`, keeping at most [`MAX_EVENTS_PER_RUN`] events. Past the
 /// cap the oldest events are replaced by one `events_dropped` marker counting
 /// every event dropped so far, so an event's position in the run never
-/// changes: event `n` stays event `n` (RT-31).
+/// changes: event `n` stays event `n` (RT-31). Eviction drops
+/// [`EVENT_EVICTION_BLOCK`] events at once, so the held events are shifted
+/// once per block rather than on every push.
 fn push_event(record: &mut RunRecord, event: RunEvent) {
+    // A canceled run's task may still be finishing; what it reports after
+    // the run ended is not part of the run.
+    if record.status.state.is_terminal() {
+        tracing::debug!(
+            run_id = %record.id,
+            kind = %event.kind,
+            "ignoring event for a finished run"
+        );
+        return;
+    }
     record.updated_at = event.ts;
     record.events.push(event);
     if record.events.len() <= MAX_EVENTS_PER_RUN {
@@ -160,7 +177,7 @@ fn push_event(record: &mut RunRecord, event: RunEvent) {
     let already_dropped = dropped_event_count(&record.events);
     let marker_slots = usize::from(already_dropped > 0);
     // Keep room for the marker itself.
-    let excess = record.events.len() - (MAX_EVENTS_PER_RUN - 1);
+    let excess = record.events.len() - (MAX_EVENTS_PER_RUN - EVENT_EVICTION_BLOCK);
     let dropping = excess - marker_slots;
     let last_dropped_ts = record.events[excess - 1].ts;
     record.events.drain(..excess);
@@ -295,6 +312,9 @@ impl RunStore for MemRunStore {
 /// Maximum events kept per run to bound memory usage for long-running subagents.
 const MAX_EVENTS_PER_RUN: usize = 10_000;
 
+/// Events dropped at once when a run passes [`MAX_EVENTS_PER_RUN`].
+const EVENT_EVICTION_BLOCK: usize = MAX_EVENTS_PER_RUN / 10;
+
 /// Maximum runs kept; the oldest finished runs are dropped beyond this.
 const MAX_RUNS: usize = 500;
 
@@ -381,15 +401,16 @@ impl StateRunStore {
             runs.sort_by_key(|r| r.created_at);
             runs
         };
-        let data =
-            serde_json::to_string_pretty(&runs).context("failed to serialize run records")?;
-
-        // Move filesystem I/O to the blocking threadpool to avoid starving
-        // the tokio async runtime under load.
+        // Serialization and filesystem I/O run on the blocking threadpool so
+        // a large store does not stall the async workers. Compact JSON: the
+        // file is rewritten on every status change.
         let path = self.path.clone();
-        tokio::task::spawn_blocking(move || write_private_atomic(&path, data.as_bytes()))
-            .await
-            .context("persist task panicked")?
+        tokio::task::spawn_blocking(move || {
+            let data = serde_json::to_vec(&runs).context("failed to serialize run records")?;
+            write_private_atomic(&path, &data)
+        })
+        .await
+        .context("persist task panicked")?
     }
 }
 
@@ -408,9 +429,19 @@ fn write_private_atomic(path: &Path, data: &[u8]) -> Result<()> {
         .with_context(|| format!("failed to create temp file in: {}", parent.display()))?;
     temp.write_all(data)
         .with_context(|| format!("failed to write temp file: {}", temp.path().display()))?;
+    // Data reaches the disk before the rename does; otherwise a crash can
+    // leave a renamed but empty file, which is then quarantined at startup.
+    temp.as_file()
+        .sync_all()
+        .with_context(|| format!("failed to sync temp file: {}", temp.path().display()))?;
     temp.persist(path)
         .map_err(|e| e.error)
         .with_context(|| format!("failed to rename temp file to: {}", path.display()))?;
+    // The rename itself is durable once the directory entry is synced.
+    #[cfg(unix)]
+    fs::File::open(parent)
+        .and_then(|dir| dir.sync_all())
+        .with_context(|| format!("failed to sync store directory: {}", parent.display()))?;
     Ok(())
 }
 
@@ -565,6 +596,44 @@ impl RunStore for StateRunStore {
 mod tests {
     use super::*;
 
+    /// M257: past the cap, eviction drops a block of old events at once, so
+    /// the held events are not shifted on every later push.
+    #[test]
+    fn events_past_the_cap_are_evicted_in_blocks_not_per_push() {
+        let now = OffsetDateTime::now_utc();
+        let mut record = RunRecord {
+            id: RunId(Uuid::new_v4()),
+            request: super::store_tests::sample_request(),
+            status: RunStatus {
+                state: RunState::Running,
+                message: None,
+                updated_at: now,
+            },
+            events: Vec::new(),
+            created_at: now,
+            updated_at: now,
+        };
+        let event = |n: usize| RunEvent {
+            ts: now,
+            kind: "tick".into(),
+            data: Some(serde_json::json!({ "n": n })),
+        };
+        for n in 0..=MAX_EVENTS_PER_RUN {
+            push_event(&mut record, event(n));
+        }
+        let first_held = record.events[1].clone();
+        for n in 0..10 {
+            push_event(&mut record, event(MAX_EVENTS_PER_RUN + 1 + n));
+        }
+        assert_eq!(record.events[1], first_held);
+        assert!(record.events.len() <= MAX_EVENTS_PER_RUN);
+        // The marker still counts exactly the events no longer held.
+        let first_n = record.events[1].data.as_ref().unwrap()["n"]
+            .as_u64()
+            .unwrap();
+        assert_eq!(dropped_event_count(&record.events) as u64, first_n);
+    }
+
     #[tokio::test]
     async fn given_new_store_when_create_run_then_history_returns_most_recent_first() {
         let store = MemRunStore::new();
@@ -576,6 +645,7 @@ mod tests {
                 output_schema: None,
                 async_mode: false,
                 tracing: false,
+                model: None,
             })
             .await
             .unwrap();
@@ -589,6 +659,7 @@ mod tests {
                 output_schema: None,
                 async_mode: false,
                 tracing: false,
+                model: None,
             })
             .await
             .unwrap();
@@ -610,6 +681,7 @@ mod tests {
                 output_schema: None,
                 async_mode: false,
                 tracing: false,
+                model: None,
             })
             .await
             .unwrap();
@@ -628,7 +700,41 @@ mod store_tests {
     use super::*;
     use tokio::time::Duration;
 
-    fn sample_request() -> RunRequest {
+    /// M264: a finished run takes no further events.
+    #[tokio::test]
+    async fn events_for_a_finished_run_are_ignored() {
+        let store = MemRunStore::new();
+        let run_id = store.create_run(sample_request()).await.unwrap();
+        assert!(store.stop(run_id).await.unwrap());
+        store
+            .append_event(
+                run_id,
+                RunEvent {
+                    ts: OffsetDateTime::now_utc(),
+                    kind: "completion".into(),
+                    data: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(store.run(run_id).await.unwrap().unwrap().events.is_empty());
+    }
+
+    /// M258: runs.json is written compact, not pretty-printed.
+    #[tokio::test]
+    async fn state_store_writes_compact_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runs.json");
+        let store = StateRunStore::new(path.clone()).unwrap();
+        store.create_run(sample_request()).await.unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains('\n'), "{text}");
+        let runs: Vec<RunRecord> = serde_json::from_str(&text).unwrap();
+        assert_eq!(runs.len(), 1);
+    }
+
+    pub(super) fn sample_request() -> RunRequest {
         RunRequest {
             backend: BackendKind::Codex,
             prompt: "hello".to_string(),
@@ -636,6 +742,7 @@ mod store_tests {
             output_schema: None,
             async_mode: false,
             tracing: false,
+            model: None,
         }
     }
 

@@ -1,6 +1,6 @@
 //! Subagent MCP integration for the skrills server.
 //!
-//! Exposes tools to list and run subagents across backends (e.g., Codex Responses, Claude Code).
+//! Exposes tools to list and run subagents across backends (e.g., OpenAI Chat Completions, the Anthropic Messages API, and the `claude`/`codex` CLIs).
 //! Integrated into `skrills-server` via the `subagents` feature flag.
 
 #![deny(unsafe_code)]

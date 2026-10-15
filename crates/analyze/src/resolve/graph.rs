@@ -143,8 +143,12 @@ impl DependencyGraph {
             });
         }
 
-        // Already resolved
+        // Already resolved. A required path to a node first reached through
+        // an optional edge makes it, and what it requires, required.
         if walk.visited.contains(&idx) {
+            if !optional {
+                self.mark_required(walk, idx);
+            }
             return Ok(());
         }
 
@@ -202,6 +206,24 @@ impl DependencyGraph {
         walk.result.optionals.push(optional);
 
         Ok(())
+    }
+
+    /// Clears the optional flag on a resolved node and on every node it
+    /// reaches through required edges. Recursion stops at nodes already
+    /// required, so each node is cleared at most once.
+    fn mark_required(&self, walk: &mut IndexWalk, idx: usize) {
+        let Some(pos) = walk.result.order.iter().position(|&i| i == idx) else {
+            return;
+        };
+        if !walk.result.optionals[pos] {
+            return;
+        }
+        walk.result.optionals[pos] = false;
+        for edge in &self.edges[idx] {
+            if !edge.optional && edge.target < self.skills.len() {
+                self.mark_required(walk, edge.target);
+            }
+        }
     }
 
     /// Build ResolutionResult from cached data.

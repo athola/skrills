@@ -16,8 +16,9 @@
 //!    kill-switch). This is a steady-state escalation; SC7 budget
 //!    on a 60 min basis is comfortably met.
 //! 2. `oscillating_chaos` (bouncing around 20 K Advisory boundary):
-//!    asserts at most 12 same-fingerprint re-fires per hour
-//!    (steady-state SC7).
+//!    a dip into the hysteresis zone holds the alert (exactly one
+//!    transition); a dip below `high_clear` clears it each time, so
+//!    min-dwell 2 is never met and it never fires.
 
 use skrills_analyze::cold_window::alert::LayeredAlertPolicy;
 use skrills_analyze::cold_window::cadence::LoadAwareCadence;
@@ -27,24 +28,16 @@ use skrills_intelligence::cold_window_hints::MultiSignalScorer;
 use skrills_snapshot::{LoadSample, TokenEntry, TokenLedger, WindowSnapshot};
 use skrills_test_utils::cold_window_fixtures::chaos_sequence;
 
-/// Spec SC7 budget: <12 user-visible alerts / hour.
-/// 10-minute window therefore admits at most 12*(10/60) = 2 *re-fires
-/// of the same fingerprint*. Distinct fingerprints (one per tier)
-/// are not flapping.
-const SC7_BUDGET_PER_HOUR: usize = 12;
-
 /// 10-minute window at base 2 s tick = 300 ticks.
 const TEN_MIN_TICKS: usize = 300;
 
-/// Generate an oscillating token stream that bounces around the
-/// Advisory threshold (20 K). Without hysteresis this would re-fire
-/// the same alert on every crossing; with hysteresis (clear ratio
-/// 0.95 → 19 K floor) the alert fires once and stays armed.
-fn oscillating_chaos(n_ticks: usize) -> Vec<WindowSnapshot> {
+/// Generate a token stream that bounces between 22 K and `low`,
+/// straddling the Advisory threshold (20 K). Its hysteresis clear
+/// level is 19 K (ratio 0.95).
+fn oscillating_chaos(n_ticks: usize, low: u64) -> Vec<WindowSnapshot> {
     (0..n_ticks)
         .map(|t| {
-            // Bounce between 18 K and 22 K (straddling 20 K).
-            let total = if t % 2 == 0 { 22_000 } else { 18_000 };
+            let total = if t % 2 == 0 { 22_000 } else { low };
             WindowSnapshot {
                 version: t as u64,
                 timestamp_ms: 1_700_000_000_000 + (t as u64) * 2_000,
@@ -132,42 +125,27 @@ fn monotonic_ramp_emits_at_most_one_alert_per_tier() {
     // vacuously satisfy `fire_counts.len() >= 3` if alerts were
     // emitted but never re-counted as transitions, so we explicitly
     // require >= 1 transition here.
-    let total_transitions: usize = transitions.values().sum();
-    assert!(
-        total_transitions >= 1,
-        "monotonic ramp must produce at least one alert transition; got {transitions:?}"
-    );
+    // A monotonic ramp never drops below any tier once crossed, so each
+    // tier switches from inactive to active exactly once.
+    for (fp, count) in &transitions {
+        assert_eq!(
+            *count, 1,
+            "fingerprint {fp} switched on {count} times on a monotonic ramp: {transitions:?}"
+        );
+    }
 }
 
-#[test]
-fn oscillating_chaos_meets_sc7_via_hysteresis() {
-    // Spec SC7: a flapping signal must not re-fire the same alert
-    // > 12 times per hour. 10-min window admits 2 re-fires per
-    // fingerprint; we project to 1 hr by multiplying.
-    //
-    // N3 note: this assertion is intentionally **one-sided** (upper
-    // bound only). A zero-firing implementation passes vacuously, but
-    // that scenario is caught by `chaos_stream_eventually_fires_at_least_one_alert`
-    // and `monotonic_ramp_emits_at_most_one_alert_per_tier` (which
-    // adds an explicit `transitions >= 1` lower bound for the
-    // monotonic ramp). The flapping case here is correctly served by
-    // the upper bound: with hysteresis active, a true B6 fix can
-    // legitimately yield zero transitions (signal stays in the
-    // hysteresis zone the whole time) and SC7 must pass.
+/// Per-fingerprint inactive-to-active transitions over the stream.
+fn transitions_for(stream: Vec<WindowSnapshot>) -> std::collections::HashMap<String, usize> {
     let engine = ColdWindowEngine::with_strategies(
         Box::new(LoadAwareCadence::new()),
         Box::new(LayeredAlertPolicy::new(80_000).with_min_dwell(2)),
         Box::new(DefaultHintScorer(MultiSignalScorer::new())),
         Box::new(FieldwiseDiff::new()),
     );
-
-    // Track *transitions*: a re-fire counts as a new emission
-    // (active → inactive → active). If the alert stays on (active
-    // → active), that is one event held over time, not multiple.
     let mut transitions: std::collections::HashMap<String, usize> = Default::default();
     let mut last_active: std::collections::HashSet<String> = Default::default();
-
-    for snap in oscillating_chaos(TEN_MIN_TICKS) {
+    for snap in stream {
         let input = TickInput::empty()
             .with_timestamp_ms(snap.timestamp_ms)
             .with_token_ledger(snap.token_ledger.clone())
@@ -182,18 +160,28 @@ fn oscillating_chaos_meets_sc7_via_hysteresis() {
         }
         last_active = now_active;
     }
+    transitions
+}
 
-    // Project 10-min transitions to 1 hour.
-    let max_per_hour: usize = transitions
-        .values()
-        .map(|count| count * 6)
-        .max()
-        .unwrap_or(0);
-    assert!(
-        max_per_hour < SC7_BUDGET_PER_HOUR,
-        "SC7 violated: max re-fires per hour = {max_per_hour} (budget {SC7_BUDGET_PER_HOUR}). \
-         Per-fingerprint transitions in 10 min: {transitions:?}"
+#[test]
+fn signal_bouncing_inside_hysteresis_zone_fires_once_and_holds() {
+    // 22 K / 19.5 K: the dips stay above the 19 K clear level, so the
+    // advisory fires once and stays active instead of flapping.
+    let transitions = transitions_for(oscillating_chaos(TEN_MIN_TICKS, 19_500));
+    assert_eq!(
+        transitions.get("token-budget-advisory"),
+        Some(&1),
+        "{transitions:?}"
     );
+    assert_eq!(transitions.len(), 1, "{transitions:?}");
+}
+
+#[test]
+fn signal_bouncing_below_high_clear_never_meets_min_dwell() {
+    // 22 K / 18 K: every dip is a true clear that resets dwell, so with
+    // min-dwell 2 the advisory never fires.
+    let transitions = transitions_for(oscillating_chaos(TEN_MIN_TICKS, 18_000));
+    assert!(transitions.is_empty(), "{transitions:?}");
 }
 
 #[test]

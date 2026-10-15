@@ -87,7 +87,11 @@ impl ClaudeAdapter {
         store: Arc<dyn RunStore>,
     ) -> Result<()> {
         let url = endpoint(&self.config.base_url, "messages")?;
-        let body = build_anthropic_body(&self.config.model, self.max_tokens, &request);
+        let body = build_anthropic_body(
+            request.model.as_deref().unwrap_or(&self.config.model),
+            self.max_tokens,
+            &request,
+        );
         let api_key = self.config.api_key.clone();
 
         run_http_adapter(run_id, &store, &self.config.api_key, &PROVIDER, || {
@@ -304,6 +308,7 @@ mod tests {
             output_schema: None,
             tracing: false,
             async_mode: false,
+            model: None,
         };
 
         let body = build_anthropic_body("claude-3-haiku-20240307", DEFAULT_MAX_TOKENS, &request);
@@ -332,6 +337,7 @@ mod tests {
             output_schema: Some(serde_json::Value::Object(schema)),
             tracing: true,
             async_mode: true,
+            model: None,
         };
 
         let body = build_anthropic_body("claude-3-haiku-20240307", 512, &request);
@@ -474,6 +480,7 @@ mod tests {
             output_schema: None,
             tracing: false,
             async_mode: false,
+            model: None,
         };
 
         // The run method would:

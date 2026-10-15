@@ -149,6 +149,7 @@ mod subagent_service_tests {
             output_schema: None,
             async_mode: false,
             tracing: false,
+            model: None,
         };
 
         // Create the run
@@ -246,6 +247,7 @@ mod subagent_service_tests {
                 output_schema: None,
                 async_mode: false,
                 tracing: false,
+                model: None,
             };
 
             let run_id: RunId = ctx.store.create_run(request).await.unwrap();
@@ -312,6 +314,7 @@ mod subagent_service_tests {
             output_schema: None,
             async_mode: false,
             tracing: false,
+            model: None,
         };
 
         let codex_run_id: RunId = ctx.store.create_run(codex_request).await.unwrap();
@@ -326,6 +329,7 @@ mod subagent_service_tests {
             output_schema: None,
             async_mode: false,
             tracing: false,
+            model: None,
         };
 
         let claude_run_id: RunId = ctx.store.create_run(claude_request).await.unwrap();
@@ -349,6 +353,7 @@ mod subagent_service_tests {
             output_schema: None,
             async_mode: false,
             tracing: false,
+            model: None,
         };
 
         let run_id: RunId = ctx.store.create_run(request).await.unwrap();
@@ -381,6 +386,7 @@ mod subagent_service_tests {
             output_schema: Some(output_schema.clone()),
             async_mode: false,
             tracing: false,
+            model: None,
         };
 
         let run_id: RunId = ctx.store.create_run(request).await.unwrap();
@@ -405,6 +411,7 @@ mod subagent_service_tests {
             output_schema: None,
             async_mode: false,
             tracing: false,
+            model: None,
         };
 
         let run_id = ctx.store.create_run(request).await.unwrap();
@@ -454,15 +461,12 @@ mod subagent_service_tests {
             .unwrap();
         assert!(!result.content.is_empty());
 
-        // Extract run_id from result
-        if let Some(structured) = result.structured_content {
-            if let Some(run_id_str) = structured.get("run_id").and_then(|v| v.as_str()) {
-                let run_id = RunId(Uuid::parse_str(run_id_str).unwrap());
-
-                // Verify the run exists in the store
-                let run = ctx.store.run(run_id).await.unwrap();
-                assert!(run.is_some(), "Run should exist in store");
-            }
-        }
+        // SKRILLS_CLI_BINARY outranks the backend argument, so the harmless
+        // `true` ran as an untyped CLI and finished.
+        let structured = result.structured_content.expect("structured content");
+        let run_id = RunId(Uuid::parse_str(structured["run_id"].as_str().unwrap()).unwrap());
+        let run = ctx.store.run(run_id).await.unwrap().expect("run in store");
+        assert_eq!(run.request.backend, BackendKind::Other("cli".into()));
+        assert_eq!(run.status.state, RunState::Succeeded, "{:?}", run.status);
     }
 }

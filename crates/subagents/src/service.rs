@@ -5,10 +5,13 @@ use anyhow::{anyhow, Result};
 use rmcp::model::{CallToolResult, ContentBlock, Tool};
 use serde_json::{json, Map as JsonMap, Value};
 
-use crate::backend::BackendAdapter;
+use crate::backend::{abort_run_task, BackendAdapter};
 use crate::backend::{
     claude::ClaudeAdapter,
-    cli::{cancel_cli_process, CliConfig, CliProcessMap, CodexCliAdapter, KnownCli},
+    cli::{
+        cancel_cli_process, CliConfig, CliProcessMap, CodexCliAdapter, KnownCli,
+        MAX_CONCURRENT_CLI_RUNS,
+    },
     codex::CodexAdapter,
 };
 use crate::cli_detection::{
@@ -43,6 +46,14 @@ fn tool_err(content: Vec<ContentBlock>, structured_content: Option<Value>) -> Ca
     result
 }
 
+/// Model an API-mode Claude run asks for unless `SKRILLS_CLAUDE_MODEL` or an
+/// agent's model says otherwise. `claude-code` was not a Messages API model.
+const DEFAULT_CLAUDE_API_MODEL: &str = "claude-opus-5-5";
+
+/// Model an API-mode Codex run asks for. The adapter calls
+/// `chat/completions`, which `gpt-5-codex` does not serve (Responses only).
+const DEFAULT_CODEX_API_MODEL: &str = "gpt-6-astra";
+
 /// Largest `timeout_ms` a caller may ask for; matches the tool schema.
 const MAX_TIMEOUT_MS: u64 = 300_000;
 
@@ -67,6 +78,38 @@ fn compose_agent_prompt(agent_instructions: &str, prompt: &str) -> String {
     }
 }
 
+/// The model id an API-mode agent run asks for, from the agent's `model`.
+///
+/// Claude Code agent files name models by alias (`opus`, `sonnet`, `haiku`)
+/// or `inherit`; those are not API model ids, so they leave the adapter's
+/// configured model in place. Any other value is passed through.
+fn api_model_for_agent(model: Option<&str>) -> Option<String> {
+    let model = model?.trim();
+    let is_alias = ["opus", "sonnet", "haiku", "inherit"]
+        .iter()
+        .any(|alias| model.eq_ignore_ascii_case(alias));
+    (!model.is_empty() && !is_alias).then(|| model.to_string())
+}
+
+/// An API adapter's HTTP timeout is fixed when the service starts, so a
+/// per-call `timeout_ms` cannot reach it; accepting one left the call waiting
+/// past it on the adapter's own timeout.
+fn api_timeout_error() -> anyhow::Error {
+    anyhow!(
+        "timeout_ms applies only to CLI runs; an API run uses SKRILLS_CODEX_TIMEOUT_MS \
+         or SKRILLS_CLAUDE_TIMEOUT_MS"
+    )
+}
+
+/// The tool error every run-addressed tool returns for an unknown run.
+fn run_not_found(run_id: RunId) -> CallToolResult {
+    let message = format!("run not found: {run_id}");
+    tool_err(
+        vec![ContentBlock::text(message.clone())],
+        Some(json!({"error": message, "run_id": run_id.to_string()})),
+    )
+}
+
 fn run_id_from_value(val: &Value) -> Result<RunId> {
     let s = val
         .as_str()
@@ -78,13 +121,20 @@ fn run_id_from_value(val: &Value) -> Result<RunId> {
 pub struct SubagentService {
     store: Arc<dyn RunStore>,
     adapters: HashMap<BackendKind, Arc<dyn BackendAdapter>>,
+    /// Backend an API-mode run uses when neither the call nor an agent's
+    /// model names one.
     default_backend: BackendKind,
+    /// `default_backend` from the subagents config file, if set. Unlike the
+    /// constructor's fallback it also picks the CLI binary.
+    configured_backend: Option<BackendKind>,
     default_execution_mode: ExecutionMode,
     cli_binary: Option<String>,
     registry: Arc<AgentRegistry>,
     /// Cancel signals for every CLI child this service spawned, so `stop-run`
     /// reaches a child started by an earlier call.
     cli_processes: CliProcessMap,
+    /// Permits for live CLI children, shared by every CLI adapter built.
+    cli_slots: Arc<tokio::sync::Semaphore>,
 }
 
 impl SubagentService {
@@ -124,11 +174,11 @@ impl SubagentService {
         let mut adapters: HashMap<BackendKind, Arc<dyn BackendAdapter>> = HashMap::new();
         adapters.insert(
             BackendKind::Codex,
-            Arc::new(CodexAdapter::new("gpt-5-codex".into())?),
+            Arc::new(CodexAdapter::new(DEFAULT_CODEX_API_MODEL.into())?),
         );
         adapters.insert(
             BackendKind::Claude,
-            Arc::new(ClaudeAdapter::new("claude-code".into())?),
+            Arc::new(ClaudeAdapter::new(DEFAULT_CLAUDE_API_MODEL.into())?),
         );
 
         let default_execution_mode = match file_config.execution_mode.as_deref() {
@@ -142,15 +192,18 @@ impl SubagentService {
             }),
         };
         let cli_binary = normalize_cli_binary(file_config.cli_binary);
+        let configured_backend = file_config.default_backend.as_deref().map(backend_from_str);
 
         Ok(Self {
             store,
             adapters,
             default_backend,
+            configured_backend,
             default_execution_mode,
             cli_binary,
             registry,
             cli_processes: Default::default(),
+            cli_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CLI_RUNS)),
         })
     }
 
@@ -167,8 +220,14 @@ impl SubagentService {
     /// Binary selection precedence (highest to lowest):
     /// 1. Explicit `cli_binary_override` parameter
     /// 2. `SKRILLS_CLI_BINARY` environment variable (handled by `CliConfig::from_env()`)
-    /// 3. Backend hint (`Codex` -> "codex", `Claude` -> "claude")
-    /// 4. Default CLI binary from service configuration/environment detection
+    /// 3. Backend hint (`Codex` -> "codex", `Claude` -> "claude"): the
+    ///    call's `backend` argument or an agent's model
+    /// 4. [`Self::default_cli_binary`]: `cli_binary` from the subagents
+    ///    config, then a configured default backend, then client detection
+    ///
+    /// Pass `None` as the hint when the call named no backend: the service's
+    /// API fallback backend must not pick the CLI ahead of the operator's
+    /// configuration and the detected client.
     fn cli_adapter_for(
         &self,
         cli_binary_override: Option<String>,
@@ -202,9 +261,10 @@ impl SubagentService {
             config.binary = binary;
         }
 
-        Arc::new(CodexCliAdapter::with_shared_processes(
+        Arc::new(CodexCliAdapter::with_shared_state(
             config,
             self.cli_processes.clone(),
+            self.cli_slots.clone(),
         ))
     }
 
@@ -252,17 +312,30 @@ impl SubagentService {
             .unwrap_or(self.default_execution_mode)
     }
 
-    fn default_backend_from_env(&self) -> BackendKind {
+    /// The default backend the operator set, through
+    /// `SKRILLS_SUBAGENTS_DEFAULT_BACKEND` or the subagents config file.
+    fn configured_default_backend(&self) -> Option<BackendKind> {
         std::env::var("SKRILLS_SUBAGENTS_DEFAULT_BACKEND")
             .ok()
             .as_deref()
             .map(backend_from_str)
+            .or_else(|| self.configured_backend.clone())
+    }
+
+    fn default_backend_from_env(&self) -> BackendKind {
+        self.configured_default_backend()
             .unwrap_or_else(|| self.default_backend.clone())
     }
 
     fn default_cli_binary(&self) -> String {
+        let configured_backend_binary = || match self.configured_default_backend() {
+            Some(BackendKind::Codex) => Some("codex".to_string()),
+            Some(BackendKind::Claude) => Some("claude".to_string()),
+            Some(BackendKind::Other(_)) | None => None,
+        };
         self.cli_binary
             .clone()
+            .or_else(configured_backend_binary)
             .or_else(cli_binary_from_client_env)
             .or_else(cli_binary_from_exe_path)
             .unwrap_or_else(|| DEFAULT_CLI_BINARY.to_string())
@@ -395,31 +468,51 @@ impl SubagentService {
             .map(backend_from_str);
 
         // Smart routing: if agent_id is specified, use agent-based routing
-        let (adapter, prompt): (Arc<dyn BackendAdapter>, String) =
+        let (adapter, prompt, model): (Arc<dyn BackendAdapter>, String, Option<String>) =
             if let Some(agent_name) = agent_id {
                 let agent = self
                     .registry
                     .get(agent_name)
                     .ok_or_else(|| anyhow!("agent not found: {}", agent_name))?;
                 let prompt = compose_agent_prompt(&agent.config.system_prompt, &prompt);
-                let adapter = self.route_for_agent(
+                let (adapter, model) = self.route_for_agent(
                     agent_name,
                     execution_mode,
                     cli_binary_override.clone(),
                     explicit_backend,
                     timeout,
                 )?;
-                (adapter, prompt)
+                (adapter, prompt, model)
             } else {
-                let backend = explicit_backend.unwrap_or_else(|| self.default_backend_from_env());
                 let adapter = if matches!(execution_mode, ExecutionMode::Cli) {
-                    self.cli_adapter_for(cli_binary_override, Some(backend), timeout)
+                    self.cli_adapter_for(cli_binary_override, explicit_backend, timeout)
                 } else {
+                    if timeout.is_some() {
+                        return Err(api_timeout_error());
+                    }
                     // API mode: use backend from args or default.
+                    let backend =
+                        explicit_backend.unwrap_or_else(|| self.default_backend_from_env());
                     self.adapter_for(Some(backend))?
                 };
-                (adapter, prompt)
+                (adapter, prompt, None)
             };
+
+        if output_schema.is_some() && !adapter.capabilities().supports_schema {
+            return Err(anyhow!(
+                "output_schema is not supported by a CLI run; use execution_mode \"api\""
+            ));
+        }
+        if let Some(id) = template_id.as_deref() {
+            let offered = adapter.list_templates().await?;
+            if !offered.iter().any(|t| t.id == id) {
+                let ids: Vec<&str> = offered.iter().map(|t| t.id.as_str()).collect();
+                return Err(anyhow!(
+                    "template_id {id:?} is not offered by the selected backend (available: {})",
+                    ids.join(", ")
+                ));
+            }
+        }
 
         let request = RunRequest {
             backend: adapter.backend(),
@@ -428,6 +521,7 @@ impl SubagentService {
             output_schema,
             async_mode: stream,
             tracing,
+            model,
         };
         let run_id = adapter.run(request, self.store.clone()).await?;
         let status = if async_mode {
@@ -471,11 +565,12 @@ impl SubagentService {
     ///
     /// Returns:
     /// - CLI adapter if agent requires tools (spawns CLI subprocess)
-    /// - API adapter if agent doesn't require tools
+    /// - API adapter if agent doesn't require tools, with the model id the
+    ///   request should ask for (see [`api_model_for_agent`])
     /// - Error if agent not found
     ///
-    /// When routing to CLI, the `backend_hint` takes precedence over model-based detection
-    /// for determining which CLI binary to spawn.
+    /// The `backend_hint` takes precedence over model-based detection, both
+    /// for the CLI binary and for the API backend.
     fn route_for_agent(
         &self,
         agent_name: &str,
@@ -483,7 +578,7 @@ impl SubagentService {
         cli_binary_override: Option<String>,
         backend_hint: Option<BackendKind>,
         timeout: Option<std::time::Duration>,
-    ) -> Result<Arc<dyn BackendAdapter>> {
+    ) -> Result<(Arc<dyn BackendAdapter>, Option<String>)> {
         let agent = self
             .registry
             .get(agent_name)
@@ -505,21 +600,31 @@ impl SubagentService {
                 tools = ?agent.config.tools,
                 "routing to CLI adapter"
             );
-            // Use backend hint to determine CLI binary, falling back to model-based detection
-            let cli_backend = backend_hint.unwrap_or_else(|| {
-                self.backend_for_model(agent.config.model.as_ref().map(|m| m.as_str()))
+            // Use backend hint to determine CLI binary, falling back to
+            // model-based detection, then to the service's CLI default.
+            let cli_backend = backend_hint.or_else(|| {
+                Self::backend_for_model(agent.config.model.as_ref().map(|m| m.as_str()))
             });
-            return Ok(self.cli_adapter_for(cli_binary_override, Some(cli_backend), timeout));
+            return Ok((
+                self.cli_adapter_for(cli_binary_override, cli_backend, timeout),
+                None,
+            ));
         }
 
         // Agent doesn't require tools - use API adapter
         // Determine which API backend to use based on agent's model
-        let backend = self.backend_for_model(agent.config.model.as_ref().map(|m| m.as_str()));
-        self.adapter_for(Some(backend))
+        if timeout.is_some() {
+            return Err(api_timeout_error());
+        }
+        let model = agent.config.model.as_ref().map(|m| m.as_str());
+        let backend = backend_hint
+            .or_else(|| Self::backend_for_model(model))
+            .unwrap_or_else(|| self.default_backend_from_env());
+        Ok((self.adapter_for(Some(backend))?, api_model_for_agent(model)))
     }
 
-    /// Determine the backend kind based on the model name.
-    fn backend_for_model(&self, model: Option<&str>) -> BackendKind {
+    /// The backend an agent's model name belongs to, if it names one.
+    fn backend_for_model(model: Option<&str>) -> Option<BackendKind> {
         match model {
             Some(m)
                 if m.contains("claude")
@@ -527,7 +632,7 @@ impl SubagentService {
                     || m.contains("opus")
                     || m.contains("haiku") =>
             {
-                BackendKind::Claude
+                Some(BackendKind::Claude)
             }
             Some(m)
                 if m.contains("gpt")
@@ -535,10 +640,9 @@ impl SubagentService {
                     || m.contains("o1")
                     || m.contains("o3") =>
             {
-                BackendKind::Codex
+                Some(BackendKind::Codex)
             }
-            // Default to the service's default backend
-            _ => self.default_backend_from_env(),
+            _ => None,
         }
     }
 
@@ -548,13 +652,15 @@ impl SubagentService {
             .get("run_id")
             .ok_or_else(|| anyhow!("run_id is required"))?;
         let run_id = run_id_from_value(run_id_val)?;
-        let status = self.store.status(run_id).await?;
+        let Some(record) = self.store.run(run_id).await? else {
+            return Ok(run_not_found(run_id));
+        };
         Ok(tool_ok(
             vec![ContentBlock::text("status")],
             Some(json!({
                 "run_id": run_id,
-                "status": status,
-                "events": self.store.run(run_id).await?.map(|r| r.events).unwrap_or_default()
+                "status": record.status,
+                "events": record.events
             })),
         ))
     }
@@ -565,10 +671,16 @@ impl SubagentService {
             args.get("run_id")
                 .ok_or_else(|| anyhow!("run_id is required"))?,
         )?;
+        if self.store.status(run_id).await?.is_none() {
+            return Ok(run_not_found(run_id));
+        }
         let stopped = self.store.stop(run_id).await?;
         // Kill the CLI child, if this run has one. API runs have no process;
         // their late result is ignored because the run is already terminal.
-        cancel_cli_process(&self.cli_processes, run_id).await;
+        // An HTTP run has no child: abort its request task instead.
+        if !cancel_cli_process(&self.cli_processes, run_id).await {
+            abort_run_task(run_id);
+        }
         Ok(tool_ok(
             vec![ContentBlock::text("stopped")],
             Some(json!({"run_id": run_id, "stopped": stopped})),
@@ -608,17 +720,8 @@ impl SubagentService {
             .map(|v| usize::try_from(v).unwrap_or(usize::MAX));
 
         // Fetch the run record
-        let record = match self.store.run(run_id).await? {
-            Some(r) => r,
-            None => {
-                return Ok(tool_err(
-                    vec![ContentBlock::text(format!("run not found: {}", run_id))],
-                    Some(json!({
-                        "error": format!("run not found: {}", run_id),
-                        "run_id": run_id.to_string()
-                    })),
-                ));
-            }
+        let Some(record) = self.store.run(run_id).await? else {
+            return Ok(run_not_found(run_id));
         };
 
         // Indices are absolute over the run's whole life. Past the per-run cap
@@ -772,6 +875,101 @@ mod tests {
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string()
+    }
+
+    /// Like [`with_harmless_env`], but `PATH` holds only fake `claude`,
+    /// `codex` and `cursor` scripts that print `ran:<name>`, so a test can
+    /// see which CLI a run spawned. Client detection variables are cleared;
+    /// `env` then sets the ones the test needs. `body` gets the temp HOME.
+    #[cfg(unix)]
+    fn with_fake_clis<F, Fut>(env: &[(&'static str, Option<&str>)], body: F)
+    where
+        F: FnOnce(std::path::PathBuf) -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _lock = env_guard();
+        let home = tempdir().unwrap();
+        let bin = home.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        for name in ["claude", "codex", "cursor"] {
+            let script = bin.join(name);
+            fs::write(&script, format!("#!/bin/sh\necho ran:{name}\n")).unwrap();
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut guards: Vec<EnvVarGuard> = vec![
+            set_env_var("HOME", Some(home.path().to_str().unwrap())),
+            set_env_var("PATH", Some(bin.to_str().unwrap())),
+            set_env_var("SKRILLS_CLI_BINARY", None),
+            set_env_var("SKRILLS_CLI_TIMEOUT_MS", None),
+            set_env_var("SKRILLS_CODEX_API_KEY", None),
+            set_env_var("SKRILLS_CLAUDE_API_KEY", None),
+            set_env_var("SKRILLS_SUBAGENTS_EXECUTION_MODE", None),
+            set_env_var("SKRILLS_SUBAGENTS_DEFAULT_BACKEND", None),
+            set_env_var("SKRILLS_CLIENT", None),
+            set_env_var("CLAUDE_CODE_SESSION", None),
+            set_env_var("CLAUDE_CLI", None),
+            set_env_var("__CLAUDE_MCP_SERVER", None),
+            set_env_var("CLAUDE_CODE_ENTRYPOINT", None),
+            set_env_var("CODEX_SESSION_ID", None),
+            set_env_var("CODEX_CLI", None),
+            set_env_var("CODEX_HOME", None),
+            set_env_var("CURSOR_PROJECT_DIR", None),
+            set_env_var("CURSOR_VERSION", None),
+        ];
+        for (key, value) in env {
+            guards.push(set_env_var(key, *value));
+        }
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(body(home.path().to_path_buf()));
+    }
+
+    /// The `text` of a run's `completion` event.
+    fn completion_text(content: &Value) -> String {
+        content["events"]
+            .as_array()
+            .and_then(|events| events.iter().find(|e| e["kind"] == "completion"))
+            .and_then(|e| e["data"]["text"].as_str())
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// M251: with no `backend` argument and no configured default backend,
+    /// the CLI follows client detection instead of a hardcoded Codex.
+    #[cfg(unix)]
+    #[test]
+    fn run_without_backend_arg_follows_client_detection() {
+        with_fake_clis(&[("CLAUDE_CODE_ENTRYPOINT", Some("cli"))], |_home| async {
+            let service = SubagentService::new().unwrap();
+            let args = json!({"prompt": "hi"}).as_object().cloned();
+            let result = service.handle_run(false, args.as_ref()).await.unwrap();
+            let content = result.structured_content.unwrap();
+            assert_eq!(completion_text(&content), "ran:claude", "{content}");
+        });
+    }
+
+    /// M251: the `cli_binary` in subagents.toml picks the CLI when the call
+    /// names no backend.
+    #[cfg(unix)]
+    #[test]
+    fn run_without_backend_arg_uses_the_configured_cli_binary() {
+        with_fake_clis(&[("SKRILLS_CLIENT", Some("codex"))], |home| async move {
+            fs::create_dir_all(home.join(".claude")).unwrap();
+            fs::write(
+                home.join(".claude/subagents.toml"),
+                "cli_binary = \"claude\"\n",
+            )
+            .unwrap();
+            let service = SubagentService::new().unwrap();
+            let args = json!({"prompt": "hi"}).as_object().cloned();
+            let result = service.handle_run(false, args.as_ref()).await.unwrap();
+            let content = result.structured_content.unwrap();
+            assert_eq!(completion_text(&content), "ran:claude", "{content}");
+        });
     }
 
     #[tokio::test]
@@ -1375,11 +1573,11 @@ You are a CLI agent."#,
                 .cloned();
             let result = service.handle_run(false, args.as_ref()).await;
 
-            // Should succeed - routed to CLI adapter (though spawn may fail if codex isn't installed)
-            // The important thing is that routing works and returns a run_id
+            // Routed to the CLI: the `true` child ran and completed.
             let result = result.expect("should route to CLI adapter");
             let content = result.structured_content.unwrap();
-            assert!(content.get("run_id").is_some(), "should have run_id");
+            assert_eq!(content["status"]["state"], "Succeeded", "{content}");
+            assert!(event_kinds(&content).contains(&"completion".to_string()));
         });
     }
 
@@ -1463,31 +1661,65 @@ You are a CLI agent."#,
         });
     }
 
+    /// M261: in API mode the call's `backend` outranks the agent's model.
     #[test]
-    fn run_with_agent_id_ignores_backend_param() {
+    fn api_agent_run_honours_the_backend_argument() {
         with_harmless_env(|| async {
             let tmp = tempdir().unwrap();
-            let home = tmp.path();
-
-            // Create an agent without tools
-            create_agent_file(
-                &home.join(".codex"),
+            let registry = agent_registry(
+                tmp.path(),
                 "my-agent.md",
-                r#"---
-name: my-agent
-description: Test agent
-model: claude
----
-
-Content."#,
+                "---\nname: my-agent\ndescription: d\nmodel: opus\n---\n\nBody.",
             );
+            let service = SubagentService::with_store_and_registry(
+                Arc::new(MemRunStore::new()),
+                BackendKind::Claude,
+                registry,
+            )
+            .unwrap();
 
-            let roots = vec![SkillRoot {
-                root: home.join(".codex/agents"),
-                source: SkillSource::Codex,
-            }];
+            let args = json!({
+                "prompt": "hi",
+                "agent_id": "my-agent",
+                "backend": "codex",
+                "execution_mode": "api"
+            })
+            .as_object()
+            .cloned();
+            let result = service.handle_run(false, args.as_ref()).await.unwrap();
 
-            let registry = Arc::new(AgentRegistry::discover_from_roots(&roots).unwrap());
+            let content = result.structured_content.unwrap();
+            assert!(
+                status_message(&content).contains("Codex API key not set"),
+                "{content}"
+            );
+        });
+    }
+
+    /// M261: an API-mode agent run asks the API for the agent's model, not
+    /// the adapter's default.
+    #[test]
+    fn api_agent_run_sends_the_agent_model() {
+        with_harmless_env(|| async {
+            use wiremock::matchers::{body_partial_json, method};
+            use wiremock::{Mock, MockServer, ResponseTemplate};
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(body_partial_json(json!({"model": "gpt-4o-mini"})))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let _key = set_env_var("SKRILLS_CODEX_API_KEY", Some("test-key"));
+            let _base = set_env_var("SKRILLS_CODEX_BASE_URL", Some(&server.uri()));
+            let tmp = tempdir().unwrap();
+            let registry = agent_registry(
+                tmp.path(),
+                "mini.md",
+                "---\nname: mini\ndescription: d\nmodel: gpt-4o-mini\n---\n\nBody.",
+            );
             let service = SubagentService::with_store_and_registry(
                 Arc::new(MemRunStore::new()),
                 BackendKind::Codex,
@@ -1495,15 +1727,26 @@ Content."#,
             )
             .unwrap();
 
-            // Even with explicit backend=codex, agent_id takes precedence
-            let args = json!({"prompt": "hi", "agent_id": "my-agent", "backend": "codex"})
+            let args = json!({"prompt": "hi", "agent_id": "mini", "execution_mode": "api"})
                 .as_object()
                 .cloned();
             let result = service.handle_run(false, args.as_ref()).await.unwrap();
 
-            // Should succeed - agent_id route takes priority
-            assert!(result.structured_content.is_some());
+            let content = result.structured_content.unwrap();
+            assert_eq!(content["status"]["state"], "Succeeded", "{content}");
         });
+    }
+
+    #[test]
+    fn claude_code_model_aliases_are_not_sent_as_api_model_ids() {
+        for alias in ["opus", "Sonnet", "haiku", "inherit"] {
+            assert_eq!(api_model_for_agent(Some(alias)), None, "{alias}");
+        }
+        assert_eq!(
+            api_model_for_agent(Some("gpt-4o-mini")).as_deref(),
+            Some("gpt-4o-mini")
+        );
+        assert_eq!(api_model_for_agent(None), None);
     }
 
     #[test]
@@ -1612,6 +1855,7 @@ Content."#,
                 output_schema: None,
                 async_mode: false,
                 tracing: false,
+                model: None,
             })
             .await
             .unwrap();
@@ -1660,9 +1904,9 @@ Content."#,
         let behind = fetch(Some(2)).await;
         let first = &behind["events"][0];
         assert_eq!(first["kind"], "events_dropped", "{first}");
-        assert_eq!(first["data"]["count"], json!(6));
-        assert_eq!(behind["events"][1]["data"]["n"], json!(6));
-        assert_eq!(behind["events"][1]["index"], json!(6));
+        let dropped = &first["data"]["count"];
+        assert_eq!(&behind["events"][1]["data"]["n"], dropped);
+        assert_eq!(&behind["events"][1]["index"], dropped);
     }
 
     #[tokio::test]
@@ -1676,6 +1920,7 @@ Content."#,
                 output_schema: None,
                 async_mode: false,
                 tracing: false,
+                model: None,
             })
             .await
             .unwrap();
@@ -1731,6 +1976,7 @@ Content."#,
                 output_schema: None,
                 async_mode: false,
                 tracing: false,
+                model: None,
             })
             .await
             .unwrap();
@@ -1789,6 +2035,7 @@ Content."#,
                 output_schema: None,
                 async_mode: false,
                 tracing: false,
+                model: None,
             })
             .await
             .unwrap();
@@ -1839,6 +2086,7 @@ Content."#,
                 output_schema: None,
                 async_mode: false,
                 tracing: false,
+                model: None,
             })
             .await
             .unwrap();
@@ -1898,6 +2146,7 @@ Content."#,
                 output_schema: None,
                 async_mode: false,
                 tracing: false,
+                model: None,
             })
             .await
             .unwrap();
@@ -2061,6 +2310,143 @@ Content."#,
         });
     }
 
+    /// M262: an API run cannot honour a per-call timeout, so asking for one
+    /// is an error instead of a silently longer wait.
+    #[test]
+    fn api_run_rejects_timeout_ms() {
+        with_harmless_env(|| async {
+            let service =
+                SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex)
+                    .unwrap();
+            let args = json!({"prompt": "hi", "execution_mode": "api", "timeout_ms": 1000})
+                .as_object()
+                .cloned();
+            let err = service
+                .handle_call("run-subagent", args.as_ref())
+                .await
+                .expect_err("timeout_ms in API mode must be rejected");
+            assert!(err.to_string().contains("timeout_ms"), "{err}");
+        });
+    }
+
+    /// M263: a CLI run cannot honour `output_schema`, so it is an error
+    /// rather than a run that silently returns free-form text.
+    #[test]
+    fn cli_run_rejects_output_schema() {
+        with_harmless_env(|| async {
+            let service =
+                SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex)
+                    .unwrap();
+            let args = json!({"prompt": "hi", "output_schema": {"type": "object"}})
+                .as_object()
+                .cloned();
+            let err = service
+                .handle_call("run-subagent", args.as_ref())
+                .await
+                .expect_err("output_schema in CLI mode must be rejected");
+            assert!(err.to_string().contains("output_schema"), "{err}");
+        });
+    }
+
+    /// M263: a `template_id` the chosen backend does not offer is an error.
+    #[test]
+    fn run_rejects_an_unknown_template_id() {
+        with_harmless_env(|| async {
+            let service =
+                SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex)
+                    .unwrap();
+            let args = json!({"prompt": "hi", "template_id": "no-such-template"})
+                .as_object()
+                .cloned();
+            let err = service
+                .handle_call("run-subagent", args.as_ref())
+                .await
+                .expect_err("unknown template must be rejected");
+            assert!(err.to_string().contains("no-such-template"), "{err}");
+
+            let args = json!({"prompt": "hi", "template_id": "cli-default"})
+                .as_object()
+                .cloned();
+            service
+                .handle_call("run-subagent", args.as_ref())
+                .await
+                .expect("the CLI adapter's own template is accepted");
+        });
+    }
+
+    /// M265: every run-addressed tool reports an unknown run the same way.
+    #[tokio::test]
+    async fn unknown_run_is_the_same_tool_error_for_status_events_and_stop() {
+        let service =
+            SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+        let id = "11111111-1111-1111-1111-111111111111";
+        let args = json!({"run_id": id}).as_object().cloned();
+        for tool in ["get-run-status", "get-run-events", "stop-run"] {
+            let result = service
+                .handle_call(tool, args.as_ref())
+                .await
+                .unwrap_or_else(|e| panic!("{tool}: protocol error {e}"));
+            assert_eq!(result.is_error, Some(true), "{tool}");
+            assert_eq!(
+                result.structured_content,
+                Some(json!({"error": format!("run not found: {id}"), "run_id": id})),
+                "{tool}"
+            );
+        }
+    }
+
+    /// M275 / M276: with no model configured, each API backend asks for a
+    /// model id its endpoint serves.
+    #[test]
+    fn api_runs_default_to_models_their_endpoints_serve() {
+        for (backend, key, base, expected) in [
+            (
+                "claude",
+                "SKRILLS_CLAUDE_API_KEY",
+                "SKRILLS_CLAUDE_BASE_URL",
+                "claude-opus-5-5",
+            ),
+            (
+                "codex",
+                "SKRILLS_CODEX_API_KEY",
+                "SKRILLS_CODEX_BASE_URL",
+                "gpt-6-astra",
+            ),
+        ] {
+            with_harmless_env(|| async move {
+                use wiremock::matchers::{body_partial_json, method};
+                use wiremock::{Mock, MockServer, ResponseTemplate};
+                let server = MockServer::start().await;
+                Mock::given(method("POST"))
+                    .and(body_partial_json(json!({ "model": expected })))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                        "content": [{"type": "text", "text": "ok"}],
+                        "stop_reason": "end_turn",
+                        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]
+                    })))
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+                let _key = set_env_var(key, Some("test-key"));
+                let _base = set_env_var(base, Some(&server.uri()));
+                let _model_c = set_env_var("SKRILLS_CLAUDE_MODEL", None);
+                let _model_o = set_env_var("SKRILLS_CODEX_MODEL", None);
+                let service =
+                    SubagentService::with_store(Arc::new(MemRunStore::new()), BackendKind::Codex)
+                        .unwrap();
+                let args = json!({"prompt": "hi", "execution_mode": "api", "backend": backend})
+                    .as_object()
+                    .cloned();
+                let result = service.handle_run(false, args.as_ref()).await.unwrap();
+                let content = result.structured_content.unwrap();
+                assert_eq!(
+                    content["status"]["state"], "Succeeded",
+                    "{backend}: {content}"
+                );
+            });
+        }
+    }
+
     /// RT-18: a named agent's instructions reach the run.
     #[test]
     fn run_with_agent_id_sends_the_agent_instructions() {
@@ -2130,12 +2516,12 @@ Content."#,
             .unwrap();
 
             // Routing only: nothing is spawned.
-            let adapter = service
+            let (adapter, _) = service
                 .route_for_agent("opus-agent", ExecutionMode::Cli, None, None, None)
                 .unwrap();
             assert_eq!(adapter.backend(), BackendKind::Claude);
 
-            let adapter = service
+            let (adapter, _) = service
                 .route_for_agent(
                     "opus-agent",
                     ExecutionMode::Cli,
@@ -2160,6 +2546,7 @@ Content."#,
                 output_schema: None,
                 async_mode: true,
                 tracing: false,
+                model: None,
             })
             .await
             .unwrap();
@@ -2194,6 +2581,7 @@ Content."#,
                 output_schema: None,
                 async_mode: true,
                 tracing: false,
+                model: None,
             })
             .await
             .unwrap();

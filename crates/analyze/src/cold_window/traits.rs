@@ -70,6 +70,13 @@ pub trait AlertPolicy: Send + Sync {
         curr: &WindowSnapshot,
         history: &mut AlertHistory,
     ) -> Vec<Alert>;
+
+    /// The hard token ceiling this policy alerts on, if it has one. The
+    /// engine engages its kill switch at the same ceiling, so the two
+    /// cannot disagree.
+    fn budget_ceiling(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// Rank a list of hints into a `ScoredHint` vector.

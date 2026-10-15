@@ -46,41 +46,19 @@ fn estimate_tokens_with_ratio(chars: usize, chars_per_token: f64) -> usize {
 pub fn count_tokens(content: &str) -> TokenBreakdown {
     let mut breakdown = TokenBreakdown::default();
 
-    let mut in_frontmatter = false;
     let mut in_code_block = false;
     let mut frontmatter_chars = 0usize;
     let mut code_chars = 0usize;
     let mut prose_chars = 0usize;
 
-    // Frontmatter can only open on the first non-empty line. After
-    // that, a `---` line is a markdown horizontal rule.
-    let mut frontmatter_started = false;
-    let mut seen_content = false;
+    let frontmatter = frontmatter_lines(content);
 
-    for line in content.lines() {
+    for (index, line) in content.lines().enumerate() {
         // The ratios are characters per token, so count characters,
         // not UTF-8 bytes. +1 for the newline.
         let line_len = line.chars().count() + 1;
-        let opens_document = !seen_content;
-        if !line.trim().is_empty() {
-            seen_content = true;
-        }
 
-        // Handle frontmatter delimiters
-        if line.trim() == "---" {
-            if !frontmatter_started && opens_document {
-                frontmatter_started = true;
-                in_frontmatter = true;
-                frontmatter_chars += line_len;
-                continue;
-            } else if in_frontmatter {
-                in_frontmatter = false;
-                frontmatter_chars += line_len;
-                continue;
-            }
-        }
-
-        if in_frontmatter {
+        if frontmatter.as_ref().is_some_and(|r| r.contains(&index)) {
             frontmatter_chars += line_len;
             continue;
         }
@@ -107,6 +85,22 @@ pub fn count_tokens(content: &str) -> TokenBreakdown {
     breakdown.total = breakdown.frontmatter + breakdown.code + breakdown.prose;
 
     breakdown
+}
+
+/// Line indices of the frontmatter block, delimiters included.
+///
+/// Frontmatter opens only on the first non-empty line and counts only
+/// once a closing `---` is found; an unclosed opener is body text, not a
+/// file-long frontmatter block. After the opener's line, a `---` is a
+/// horizontal rule unless it closes the block.
+fn frontmatter_lines(content: &str) -> Option<std::ops::RangeInclusive<usize>> {
+    let mut lines = content.lines().enumerate();
+    let (open, _) = lines.find(|(_, l)| !l.trim().is_empty())?;
+    if content.lines().nth(open)?.trim() != "---" {
+        return None;
+    }
+    let (close, _) = lines.find(|(_, l)| l.trim() == "---")?;
+    Some(open..=close)
 }
 
 /// Token budget categories.
@@ -255,6 +249,15 @@ mod tests {
         let breakdown = count_tokens(content);
         assert_eq!(breakdown.frontmatter, 0);
         assert!(breakdown.code > 0);
+    }
+
+    #[test]
+    fn unterminated_frontmatter_counts_as_body() {
+        let content = "---\n# Title\n\nSome prose here.\n\n```rust\nfn main() {}\n```\n";
+        let tokens = count_tokens(content);
+        assert_eq!(tokens.frontmatter, 0, "{tokens:?}");
+        assert!(tokens.prose > 0, "{tokens:?}");
+        assert!(tokens.code > 0, "{tokens:?}");
     }
 
     #[test]

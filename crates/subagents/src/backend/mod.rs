@@ -3,13 +3,15 @@ pub mod cli;
 pub mod codex;
 pub mod config;
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock};
 
 use anyhow::{anyhow, Context as _, Result};
 use async_trait::async_trait;
 use reqwest::RequestBuilder;
 use serde_json::{json, Value};
 use time::OffsetDateTime;
+use tokio::task::AbortHandle;
 
 use crate::store::{
     BackendKind, RunEvent, RunId, RunRequest, RunState, RunStatus, RunStore, SubagentTemplate,
@@ -32,6 +34,43 @@ pub trait BackendAdapter: Send + Sync {
     async fn status(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<Option<RunStatus>>;
     async fn stop(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<bool>;
     async fn history(&self, limit: usize, store: Arc<dyn RunStore>) -> Result<Vec<RunStatus>>;
+}
+
+/// Abort handles of live run tasks, so `stop-run` can end an HTTP request in
+/// flight instead of letting it run on (and bill) after the run is canceled.
+static RUN_TASKS: LazyLock<std::sync::Mutex<HashMap<RunId, AbortHandle>>> =
+    LazyLock::new(Default::default);
+
+fn run_tasks() -> std::sync::MutexGuard<'static, HashMap<RunId, AbortHandle>> {
+    // The map holds plain handles; a panic elsewhere cannot leave it torn.
+    RUN_TASKS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Removes a run's entry from [`RUN_TASKS`] when its task ends, whether it
+/// finished, failed, panicked or was aborted.
+struct RunTaskEntry(RunId);
+
+impl Drop for RunTaskEntry {
+    fn drop(&mut self) {
+        run_tasks().remove(&self.0);
+    }
+}
+
+/// Aborts the background task of `run_id`. Returns whether one was live.
+pub(crate) fn abort_run_task(run_id: RunId) -> bool {
+    match run_tasks().remove(&run_id) {
+        Some(handle) => {
+            handle.abort();
+            true
+        }
+        None => false,
+    }
+}
+
+/// Whether the background task of `run_id` is still running.
+#[cfg(test)]
+pub(crate) fn run_task_live(run_id: RunId) -> bool {
+    run_tasks().contains_key(&run_id)
 }
 
 /// Creates a run, marks it `Running`, and drives `execute` on a background task.
@@ -64,7 +103,10 @@ where
         .await?;
 
     let task_store = store.clone();
+    // Registered before the task can finish, so its entry is always removed.
+    let mut tasks = run_tasks();
     let handle = tokio::spawn(async move {
+        let _entry = RunTaskEntry(run_id);
         if let Err(err) = execute(run_id, request, task_store.clone()).await {
             tracing::error!(%run_id, error = %err, "{label} run failed");
             if let Err(e) = task_store
@@ -95,8 +137,14 @@ where
             }
         }
     });
+    tasks.insert(run_id, handle.abort_handle());
+    drop(tasks);
     tokio::spawn(async move {
         if let Err(join_err) = handle.await {
+            if join_err.is_cancelled() {
+                tracing::debug!(%run_id, "{label} run task aborted by stop");
+                return;
+            }
             tracing::error!(%run_id, error = %join_err, "{label} backend task panicked");
             let _ = store
                 .update_status(
@@ -209,18 +257,7 @@ pub(crate) async fn run_http_adapter(
     // A reply cut off at the output cap still succeeds, but says so instead of
     // passing for a complete answer.
     let truncated = stop_reason.as_deref() == Some(truncated_reason);
-    for token in completion.split_whitespace() {
-        store
-            .append_event(
-                run_id,
-                RunEvent {
-                    ts: OffsetDateTime::now_utc(),
-                    kind: "stream".into(),
-                    data: Some(json!({ "token": token })),
-                },
-            )
-            .await?;
-    }
+    // The body arrives whole; the completion event carries it as sent.
     store
         .append_event(
             run_id,
@@ -285,6 +322,7 @@ mod tests {
             output_schema: None,
             async_mode: false,
             tracing: false,
+            model: None,
         }
     }
 
@@ -420,6 +458,76 @@ mod tests {
         let run = wait_done(&store, run_id).await;
         assert_eq!(run.status.state, RunState::Failed);
         assert_eq!(run.status.message.as_deref(), Some("bad request body"));
+    }
+
+    /// M264: stopping an HTTP run aborts its request task, and nothing is
+    /// appended to the canceled run afterwards; the reply is not split into
+    /// per-word stream events.
+    #[tokio::test]
+    async fn stopping_an_http_run_aborts_its_request() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({
+                        "choices": [{"message": {"content": "late reply"}, "finish_reason": "stop"}]
+                    }))
+                    .set_delay(Duration::from_millis(1500)),
+            )
+            .mount(&server)
+            .await;
+        let adapter = CodexAdapter::with_config(mock_config(server.uri(), "gpt-test")).unwrap();
+        let store: Arc<dyn RunStore> = Arc::new(MemRunStore::new());
+        let run_id = adapter
+            .run(request(BackendKind::Codex), store.clone())
+            .await
+            .unwrap();
+        while server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .is_empty()
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        assert!(store.stop(run_id).await.unwrap());
+        assert!(abort_run_task(run_id), "the run's task was not live");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!run_task_live(run_id), "the request task is still running");
+
+        tokio::time::sleep(Duration::from_millis(1700)).await;
+        let run = store.run(run_id).await.unwrap().unwrap();
+        assert_eq!(run.status.state, RunState::Canceled);
+        assert!(
+            run.events.iter().all(|e| e.kind == "start"),
+            "{:?}",
+            run.events
+        );
+    }
+
+    #[tokio::test]
+    async fn http_reply_is_not_split_into_word_events() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{"message": {"content": "a  b\nc"}, "finish_reason": "stop"}]
+            })))
+            .mount(&server)
+            .await;
+        let adapter = CodexAdapter::with_config(mock_config(server.uri(), "gpt-test")).unwrap();
+        let store: Arc<dyn RunStore> = Arc::new(MemRunStore::new());
+        let run_id = adapter
+            .run(request(BackendKind::Codex), store.clone())
+            .await
+            .unwrap();
+        let run = wait_done(&store, run_id).await;
+        assert!(
+            run.events.iter().all(|e| e.kind != "stream"),
+            "{:?}",
+            run.events
+        );
+        assert_eq!(completion(&run)["text"], "a  b\nc");
     }
 
     #[tokio::test]

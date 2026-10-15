@@ -29,6 +29,7 @@
 
 pub mod cold_window;
 pub mod deps;
+mod fence;
 pub mod graph;
 pub mod optimize;
 pub mod resolve;

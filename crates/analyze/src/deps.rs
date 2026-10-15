@@ -5,6 +5,7 @@
 //! - External links and URLs
 //! - Cross-skill references
 
+use crate::fence::FenceTracker;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -305,15 +306,22 @@ fn extract_content_dependencies(
 ) {
     let mut seen_urls: HashSet<String> = HashSet::new();
     let mut seen_paths: HashSet<String> = HashSet::new();
+    let mut fence = FenceTracker::default();
 
     for (line_num, line) in content.lines().enumerate() {
         let line_number = line_num + 1;
+        // Code examples are not references to files the skill ships.
+        if fence.is_code(line) {
+            continue;
+        }
 
         // Find external URLs
         for url_match in URL_REGEX.find_iter(line) {
-            let url = url_match
-                .as_str()
-                .trim_end_matches(&['.', ',', ')', ']'][..]);
+            let url = url_match.as_str().trim_end_matches(
+                &[
+                    '.', ',', ')', ']', '`', '"', '\'', '*', '>', ';', ':', '!', '?',
+                ][..],
+            );
             if !seen_urls.contains(url) {
                 seen_urls.insert(url.to_string());
                 analysis.dependencies.push(Dependency {
@@ -507,6 +515,38 @@ mod tests {
 
         assert_eq!(analysis.count_by_type(DependencyType::ExternalUrl), 1);
         assert!(analysis.dependencies[0].target.contains("example.com"));
+    }
+
+    #[test]
+    fn links_inside_code_fences_are_not_dependencies() {
+        let content = "```rust\nlet x = v[i](missing.md);\n```\n~~~~\n[a](also-missing.md)\n```\n~~~~\n[real](references/real.md)\n";
+        let mut analysis = DependencyAnalysis::default();
+        extract_content_dependencies(&mut analysis, Path::new("."), content);
+
+        let targets: Vec<&str> = analysis
+            .dependencies
+            .iter()
+            .map(|d| d.target.as_str())
+            .collect();
+        assert_eq!(targets, ["references/real.md"]);
+    }
+
+    #[test]
+    fn url_trailing_quote_and_punctuation_are_trimmed() {
+        let content = "Use `https://y.com/q` or \"https://z.com/a\"; see *https://w.com/b*! Or https://v.com/c? https://u.com/d:";
+        let mut analysis = DependencyAnalysis::default();
+        extract_content_dependencies(&mut analysis, Path::new("."), content);
+
+        assert_eq!(
+            analysis.external_urls(),
+            [
+                "https://y.com/q",
+                "https://z.com/a",
+                "https://w.com/b",
+                "https://v.com/c",
+                "https://u.com/d"
+            ]
+        );
     }
 
     #[test]

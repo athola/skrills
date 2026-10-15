@@ -19,6 +19,7 @@ fn sample_record() -> RunRecord {
             output_schema: None,
             async_mode: false,
             tracing: false,
+            model: None,
         },
         status: RunStatus {
             state: RunState::Succeeded,
