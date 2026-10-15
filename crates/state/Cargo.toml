@@ -2,6 +2,7 @@
 name = "skrills-state"
 version = "0.9.1"
 edition = "2021"
+rust-version.workspace = true
 description = "Environment, manifest and runtime-override configuration for skrills, with a validation result cache."
 license = "MIT"
 repository = "https://github.com/athola/skrills"
@@ -25,4 +26,4 @@ hex = "0.4.3"
 
 [dev-dependencies]
 tempfile.workspace = true
-skrills_test_utils = { path = "../test-utils" }
+skrills-test-utils = { path = "../test-utils" }

@@ -1,7 +1,8 @@
 [package]
-name = "skrills_test_utils"
+name = "skrills-test-utils"
 version = "0.9.1"
 edition = "2021"
+rust-version.workspace = true
 license = "Apache-2.0"
 description = "Shared test utilities for skrills crates"
 publish = false

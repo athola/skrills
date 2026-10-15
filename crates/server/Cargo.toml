@@ -2,6 +2,7 @@
 name = "skrills-server"
 version = "0.9.1"
 edition = "2021"
+rust-version.workspace = true
 description = "Core library for the skrills MCP server: discovery, filtering, manifest generation, and runtime control."
 license = "MIT"
 repository = "https://github.com/athola/skrills"
@@ -74,7 +75,7 @@ tokio-util = "0.7"
 # Only the dependency-analysis tests install a subscriber.
 tracing-subscriber.workspace = true
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
-skrills_test_utils = { path = "../test-utils" }
+skrills-test-utils = { path = "../test-utils" }
 chromiumoxide = { version = "0.9", default-features = false }
 futures = "0.3"
 tower = { version = "0.5", features = ["util"] }

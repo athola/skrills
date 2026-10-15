@@ -19,6 +19,8 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
+# 1.89: std `File::lock` (crates/sync/src/orchestrator.rs); runtime deps need 1.88.
+rust-version = "1.89"
 
 [workspace.dependencies]
 # rmcp >=1.4 closes RUSTSEC-2026-0189 (DNS rebinding in the Streamable HTTP
@@ -29,7 +31,7 @@ edition = "2021"
 rmcp = { version = "3.4", features = ["server", "transport-io", "transport-streamable-http-server", "tower"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
+serde_norway = "0.9"
 regex = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "io-util"] }
 walkdir = "2"

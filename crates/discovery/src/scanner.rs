@@ -296,7 +296,7 @@ fn extract_frontmatter_identity(content: &str) -> (Option<String>, Option<String
         description: Option<String>,
     }
 
-    match serde_yaml::from_str::<MinimalFrontmatter>(&yaml) {
+    match serde_norway::from_str::<MinimalFrontmatter>(&yaml) {
         Ok(fm) => {
             let name = fm.name.filter(|n| !n.trim().is_empty());
             let description = fm.description.filter(|d| !d.trim().is_empty());
@@ -965,7 +965,7 @@ fn parse_rule_file(path: &Path, contents: &str, source: &str) -> Option<RuleMeta
 
 /// Top-level keys of a YAML (or JSON) mapping; empty when it is not one.
 fn yaml_top_level_fields(contents: &str) -> Vec<(String, serde_json::Value)> {
-    match serde_yaml::from_str::<serde_json::Map<String, serde_json::Value>>(contents) {
+    match serde_norway::from_str::<serde_json::Map<String, serde_json::Value>>(contents) {
         Ok(map) => map.into_iter().collect(),
         Err(e) => {
             tracing::debug!(error = %e, "rule file is not a mapping");

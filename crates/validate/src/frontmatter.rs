@@ -179,7 +179,7 @@ pub struct SkillFrontmatter {
     pub depends: Vec<DeclaredDependency>,
     /// Additional fields that may be present.
     #[serde(flatten)]
-    pub extra: std::collections::HashMap<String, serde_yaml::Value>,
+    pub extra: std::collections::HashMap<String, serde_norway::Value>,
 }
 
 impl SkillFrontmatter {
@@ -342,10 +342,10 @@ pub fn parse_frontmatter(content: &str) -> Result<ParsedSkill, String> {
         if yaml.trim().is_empty() {
             Some(SkillFrontmatter::default())
         } else {
-            match serde_yaml::from_str::<SkillFrontmatter>(yaml) {
+            match serde_norway::from_str::<SkillFrontmatter>(yaml) {
                 Ok(fm) => Some(fm),
                 Err(e) => {
-                    // Extract line/column info from serde_yaml error if available
+                    // Extract line/column info from serde_norway error if available
                     // The frontmatter starts at line 2 (after the opening ---),
                     // so we add 1 to account for the opening --- line
                     let error_msg = if let Some(loc) = e.location() {
@@ -737,6 +737,18 @@ depends:
     }
 
     #[test]
+    fn unknown_frontmatter_keys_round_trip_through_the_yaml_crate() {
+        let content = "---\nname: my-skill\ndescription: d\nmetadata:\n  tags: [a, \"b: c\"]\n  level: 2\n---\nBody";
+        let fm = parse_frontmatter(content).unwrap().frontmatter.unwrap();
+        let metadata = &fm.extra["metadata"];
+        let rendered = serde_norway::to_string(metadata).unwrap();
+        let reparsed: serde_norway::Value = serde_norway::from_str(&rendered).unwrap();
+        assert_eq!(&reparsed, metadata);
+        assert_eq!(metadata["tags"][1].as_str(), Some("b: c"));
+        assert_eq!(metadata["level"].as_u64(), Some(2));
+    }
+
+    #[test]
     fn test_frontmatter_without_dependencies_backward_compat() {
         let content = "---\nname: old-skill\ndescription: No deps\n---\n# Old";
         let parsed = parse_frontmatter(content).unwrap();
@@ -1072,7 +1084,7 @@ name: duplicate
     #[test]
     fn test_yaml_error_with_location_info() {
         // Test that YAML parse errors include location information when available.
-        // Most serde_yaml errors include location info, which we format with
+        // Most serde_norway errors include location info, which we format with
         // line offset to account for the opening --- delimiter.
         let content = "---\n: missing key\n---\n";
         let result = parse_frontmatter(content);
@@ -1121,11 +1133,11 @@ name: duplicate
 
     #[test]
     fn test_yaml_error_fallback_format() {
-        // Test the fallback error format when serde_yaml errors lack location info.
+        // Test the fallback error format when serde_norway errors lack location info.
         // The fallback format is: "Invalid YAML frontmatter: {details}"
         //
         // Note: It's difficult to trigger the fallback path with real YAML because
-        // serde_yaml almost always provides location info for syntax errors.
+        // serde_norway almost always provides location info for syntax errors.
         // This test verifies the format by constructing the expected message directly
         // and checking that errors conform to our prefix convention.
         //

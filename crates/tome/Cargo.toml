@@ -2,6 +2,7 @@
 name = "skrills-tome"
 version = "0.9.1"
 edition = "2021"
+rust-version.workspace = true
 description = "Research API orchestration, caching, and knowledge graph for skrills."
 license = "MIT"
 repository = "https://github.com/athola/skrills"

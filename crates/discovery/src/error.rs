@@ -18,5 +18,5 @@ pub enum DiscoveryError {
 
     /// YAML frontmatter on a SKILL.md or AGENT.md failed to parse.
     #[error("Invalid YAML frontmatter: {0}")]
-    InvalidYaml(#[from] serde_yaml::Error),
+    InvalidYaml(#[from] serde_norway::Error),
 }

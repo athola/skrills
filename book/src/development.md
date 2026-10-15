@@ -4,7 +4,7 @@ This guide provides development information for contributors.
 
 ## Toolchain
 
-- **Rust**: Install Rust 1.78+, preferably with `rustup`.
+- **Rust**: Install Rust 1.89+, preferably with `rustup`. 1.89 builds the libraries and binaries (the workspace sets `rust-version = "1.89"`). Running the tests needs Rust 1.93.1+, because the `serial_test` 4 dev-dependency requires it.
 - **Formatting and Linting**: Use `cargo fmt` for formatting and `clippy` for linting to maintain code quality.
 - **Documentation**: This project uses `mdbook` for documentation. Install it with `cargo install mdbook --locked`.
 

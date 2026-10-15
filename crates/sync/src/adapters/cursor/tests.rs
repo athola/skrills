@@ -181,15 +181,15 @@ fn commands_empty_directory() {
 
 /// The frontmatter fields of a written Cursor skill, parsed as YAML, plus the
 /// body that follows them.
-fn cursor_skill_frontmatter(content: &str) -> (serde_yaml::Mapping, String) {
+fn cursor_skill_frontmatter(content: &str) -> (serde_norway::Mapping, String) {
     let (yaml, body, _) = skrills_validate::frontmatter::split_frontmatter(content);
     let yaml = yaml.unwrap_or_else(|| panic!("Cursor skill has no frontmatter:\n{content}"));
-    let fields: serde_yaml::Mapping = serde_yaml::from_str(&yaml)
+    let fields: serde_norway::Mapping = serde_norway::from_str(&yaml)
         .unwrap_or_else(|e| panic!("frontmatter is not valid YAML ({e}):\n{content}"));
     (fields, body.to_string())
 }
 
-fn yaml_str<'a>(fields: &'a serde_yaml::Mapping, key: &str) -> Option<&'a str> {
+fn yaml_str<'a>(fields: &'a serde_norway::Mapping, key: &str) -> Option<&'a str> {
     fields.get(key).and_then(|v| v.as_str())
 }
 

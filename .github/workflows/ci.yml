@@ -74,6 +74,8 @@ jobs:
           cargo clippy --workspace --all-targets --no-default-features -- -D warnings
           cargo clippy -p skrills-analyze --all-targets --no-default-features -- -D warnings
 
+      # NOTE: Same command as Makefile `test` with TEST_THREADS unset (cargo's
+      # parallel default); shared-state tests are serialized with serial_test.
       - name: Tests (all features)
         run: cargo test --workspace --all-features
 

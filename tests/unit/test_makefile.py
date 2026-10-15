@@ -124,6 +124,16 @@ def test_integration_tests_follow_the_thread_setting() -> None:
     assert "--test-threads=3" in recipe
 
 
+@pytest.mark.parametrize("target", ["test", "test-unit", "test-integration"])
+def test_test_targets_run_parallel_by_default_like_ci(target: str) -> None:
+    """Shared-state tests are serialized with serial_test, so the Makefile
+    leaves the thread count to cargo, as CI's `cargo test` does."""
+    recipe = _dry_run(target, "TEST_THREADS=")
+    assert "--test-threads" not in recipe
+    default_recipe = _dry_run(target)
+    assert "--test-threads" not in default_recipe
+
+
 def test_help_states_the_make_version_parallel_runs_need() -> None:
     assert "GNU make 4.4" in _help()
 

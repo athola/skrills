@@ -15,9 +15,11 @@ BIN ?= skrills
 TARGET_DIR ?= $(or $(CARGO_TARGET_DIR),target)
 BIN_PATH ?= $(TARGET_DIR)/release/$(BIN)
 MDBOOK ?= mdbook
-# Test thread count: defaults to 1 for isolation (tests share filesystem state).
-# Override with TEST_THREADS=4 for faster parallel runs if tests are independent.
-TEST_THREADS ?= 1
+# Test thread count: unset means cargo's default (parallel), the same as CI's
+# `cargo test`. Tests that touch HOME, cwd, env or git are serialized with
+# serial_test instead. Set TEST_THREADS=1 to run every test one at a time.
+TEST_THREADS ?=
+TEST_THREADS_FLAG = $(if $(TEST_THREADS),--test-threads=$(TEST_THREADS))
 CARGO_CMD = CARGO_HOME=$(CARGO_HOME) $(CARGO)
 DEMO_RUN = HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH)
 
@@ -248,13 +250,13 @@ check:
 	$(CARGO_CMD) check --workspace --all-targets
 
 test:
-	$(CARGO_CMD) test --workspace --all-features -- --test-threads=$(TEST_THREADS)
+	$(CARGO_CMD) test --workspace --all-features -- $(TEST_THREADS_FLAG)
 
 test-unit:
-	$(CARGO_CMD) test --workspace --lib --all-features -- --test-threads=$(TEST_THREADS)
+	$(CARGO_CMD) test --workspace --lib --all-features -- $(TEST_THREADS_FLAG)
 
 test-integration:
-	$(CARGO_CMD) test --workspace --test '*' --all-features -- --test-threads=$(TEST_THREADS)
+	$(CARGO_CMD) test --workspace --test '*' --all-features -- $(TEST_THREADS_FLAG)
 
 test-setup:
 	$(CARGO_CMD) test --package skrills-server --lib setup --all-features
@@ -265,7 +267,7 @@ test-install:
 
 release-consistency:
 	@echo "==> Verifying release-consistency invariants (Cargo.toml + plugin.json + commands/)"
-	$(CARGO_CMD) test -p skrills_test_utils --test release_consistency
+	$(CARGO_CMD) test -p skrills-test-utils --test release_consistency
 
 # Plugin audits (Phase 1 / 1b / 1c). Uses ~/claude-night-market upstream
 # scripts when present, else the in-tree ports under scripts/.
@@ -475,7 +477,7 @@ demo-release-consistency:
 	@echo "--- Invariant 5: marketplace.json plugin entries + sources"
 	@jq -r '"    metadata.version: \(.metadata.version // "-")", (.plugins | to_entries[] | "    plugins[\(.key)] \(.value.name) v\(.value.version) source=\(.value.source)")' .claude-plugin/marketplace.json
 	@echo "--- Running parity test suite"
-	$(CARGO_CMD) test -p skrills_test_utils --test release_consistency
+	$(CARGO_CMD) test -p skrills-test-utils --test release_consistency
 	@echo "==> Release-consistency demo complete"
 
 demo-empirical: demo-fixtures build

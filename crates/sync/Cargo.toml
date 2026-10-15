@@ -2,6 +2,7 @@
 name = "skrills_sync"
 version = "0.9.1"
 edition.workspace = true
+rust-version.workspace = true
 description = "Preference synchronization and validation sync utilities for skrills"
 license = "MIT"
 repository = "https://github.com/athola/skrills"
@@ -28,8 +29,8 @@ skrills-validate = { path = "../validate", version = "0.9.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
-serde_yaml.workspace = true
+serde_norway.workspace = true
 mockall = "0.15"
 tokio = { version = "1", features = ["full"] }
 proptest = "1.4"
-skrills_test_utils = { path = "../test-utils" }
+skrills-test-utils = { path = "../test-utils" }

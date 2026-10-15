@@ -2,6 +2,7 @@
 name = "skrills"
 version = "0.9.1"
 edition = "2021"
+rust-version.workspace = true
 description = "A command-line interface and MCP server for managing local SKILL.md files."
 license = "MIT"
 repository = "https://github.com/athola/skrills"
@@ -61,4 +62,4 @@ axum = { version = "0.8", optional = true }
 [dev-dependencies]
 tempfile.workspace = true
 scopeguard = "1.2"
-skrills_test_utils = { path = "../test-utils" }
+skrills-test-utils = { path = "../test-utils" }

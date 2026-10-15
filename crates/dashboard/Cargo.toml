@@ -2,6 +2,7 @@
 name = "skrills-dashboard"
 version = "0.9.1"
 edition.workspace = true
+rust-version.workspace = true
 description = "Terminal UI dashboard for skrills metrics and monitoring"
 license = "MIT"
 repository = "https://github.com/athola/skrills"
@@ -41,4 +42,4 @@ dirs = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 insta = "1"
-skrills_test_utils = { path = "../test-utils" }
+skrills-test-utils = { path = "../test-utils" }

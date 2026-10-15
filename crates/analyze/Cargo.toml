@@ -2,6 +2,7 @@
 name = "skrills-analyze"
 version = "0.9.1"
 edition.workspace = true
+rust-version.workspace = true
 description = "Skill analysis: token counting, dependencies, and optimization"
 license = "MIT"
 repository = "https://github.com/athola/skrills"
@@ -36,7 +37,7 @@ intelligence-scorer = ["dep:skrills-intelligence"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
-skrills_test_utils = { path = "../test-utils" }
+skrills-test-utils = { path = "../test-utils" }
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
 [[bench]]
