@@ -12,11 +12,43 @@
     let sortOrder = 'discovery'; // 'discovery' | 'alpha'
     let skillInvocationCounts = {}; // skill_name -> total_invocations
 
+    // With --auth-token the API answers 401 to requests without the token.
+    // The token comes from the page URL (`/#token=...`, never sent to the
+    // server) or, after a 401, from the user; it is kept for this tab only.
+    const TOKEN_KEY = 'skrills-auth-token';
+    function readToken() {
+        const match = /(?:^#|&)token=([^&]+)/.exec(window.location.hash);
+        if (match) {
+            const token = decodeURIComponent(match[1]);
+            try { sessionStorage.setItem(TOKEN_KEY, token); } catch (e) { /* storage blocked: keep it in memory */ }
+            history.replaceState(null, '', window.location.pathname);
+            return token;
+        }
+        try { return sessionStorage.getItem(TOKEN_KEY); } catch (e) { return null; }
+    }
+    let authToken = readToken();
+    let askedForToken = false;
+
+    async function apiFetch(url) {
+        const headers = authToken ? { 'Authorization': 'Bearer ' + authToken } : {};
+        const res = await fetch(url, { headers });
+        if (res.status === 401 && !askedForToken) {
+            askedForToken = true;
+            const entered = window.prompt('This skrills server needs its auth token:');
+            if (entered) {
+                authToken = entered.trim();
+                try { sessionStorage.setItem(TOKEN_KEY, authToken); } catch (e) { /* storage blocked: keep it in memory */ }
+                return fetch(url, { headers: { 'Authorization': 'Bearer ' + authToken } });
+            }
+        }
+        return res;
+    }
+
     async function refresh() {
         try {
             // On first load, fetch page 1. On subsequent refreshes, only
             // update the total count; don't nuke already-loaded skills.
-            const res = await fetch('/api/skills?limit=' + PAGE_SIZE);
+            const res = await apiFetch('/api/skills?limit=' + PAGE_SIZE);
             const data = await res.json();
             skillsTotal = data.total || 0;
             document.getElementById('skill-count').textContent = skillsTotal;
@@ -40,7 +72,7 @@
         }
 
         try {
-            const res = await fetch('/api/metrics/events');
+            const res = await apiFetch('/api/metrics/events');
             const data = await res.json();
             events = data.events || [];
             document.getElementById('event-count').textContent = events.length;
@@ -50,7 +82,7 @@
         }
 
         try {
-            const res = await fetch('/api/metrics/analytics');
+            const res = await apiFetch('/api/metrics/analytics');
             const data = await res.json();
             document.getElementById('invocation-count').textContent = data.total_invocations || 0;
         } catch (e) {
@@ -58,7 +90,7 @@
         }
 
         try {
-            const res = await fetch('/api/metrics/analytics/top');
+            const res = await apiFetch('/api/metrics/analytics/top');
             const data = await res.json();
             skillInvocationCounts = {};
             (data.skills || []).forEach(s => {
@@ -71,7 +103,7 @@
         }
 
         try {
-            const res = await fetch('/api/mcp-servers');
+            const res = await apiFetch('/api/mcp-servers');
             const data = await res.json();
             mcpServers = data.servers || [];
             document.getElementById('mcp-count').textContent = res.ok ? (data.total || 0) : '-';
@@ -87,7 +119,7 @@
         if (loadingMore || skills.length >= skillsTotal) return;
         loadingMore = true;
         try {
-            const res = await fetch('/api/skills?limit=' + PAGE_SIZE + '&offset=' + skills.length);
+            const res = await apiFetch('/api/skills?limit=' + PAGE_SIZE + '&offset=' + skills.length);
             const data = await res.json();
             const baseIdx = skills.length;
             const newItems = (data.items || []).map((s, i) => ({ ...s, _idx: baseIdx + i }));
@@ -313,7 +345,7 @@
         content.appendChild(dl);
 
         // Fetch and display invocation stats
-        fetch('/api/metrics/skills/' + encodeURIComponent(selectedSkill.name))
+        apiFetch('/api/metrics/skills/' + encodeURIComponent(selectedSkill.name))
             .then(res => res.json())
             .then(data => {
                 // Guard: user may have clicked a different skill

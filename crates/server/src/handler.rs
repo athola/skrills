@@ -102,7 +102,7 @@ fn tool_error(e: anyhow::Error) -> rmcp::ErrorData {
 /// tasks to another thread first, so a directory walk in one tool call does
 /// not stall concurrent requests. A current-thread runtime cannot do that, so
 /// the work runs inline there, as it did before.
-fn run_blocking<T>(work: impl FnOnce() -> T) -> T {
+pub(crate) fn run_blocking<T>(work: impl FnOnce() -> T) -> T {
     match tokio::runtime::Handle::try_current() {
         Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
             tokio::task::block_in_place(work)
@@ -1378,6 +1378,171 @@ mod tests {
                 )
                 .await
         })
+    }
+
+    /// Points HOME and the platform cache dir at `temp`, so tools that write
+    /// research databases or sync output stay inside it.
+    fn isolate_home(temp: &tempfile::TempDir) -> Vec<skrills_test_utils::EnvVarGuard> {
+        let home = temp.path().to_str().map(str::to_string);
+        let cache = temp.path().join("cache");
+        vec![
+            set_env_var("HOME", home.as_deref()),
+            set_env_var("XDG_CACHE_HOME", cache.to_str()),
+            set_env_var("LOCALAPPDATA", cache.to_str()),
+        ]
+    }
+
+    /// Every tool `list_tools` advertises must reach a handler; a name that
+    /// falls through to "unknown tool" is a listing the server cannot serve.
+    #[test]
+    fn every_listed_tool_dispatches() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _env = isolate_home(&temp);
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).expect("project dir");
+
+        let service = build_service(&temp);
+        let names: Vec<String> = run_async(async move {
+            let (running, context, _client) = service_with_context(service);
+            running
+                .service()
+                .list_tools(None, context)
+                .await
+                .expect("list_tools")
+                .tools
+                .into_iter()
+                .map(|t| t.name.to_string())
+                .collect()
+        });
+        for name in names {
+            // Keep context-analysing tools off the developer's checkout.
+            let args = json!({"project_dir": project.to_str().unwrap()});
+            let args = match name.as_str() {
+                "recommend-skills-smart" | "analyze-project-context" | "suggest-new-skills" => args,
+                _ => json!({}),
+            };
+            let tool = name.clone();
+            let service = build_service(&temp);
+            let result = run_async(async move {
+                let (running, context, _client) = service_with_context(service);
+                running
+                    .service()
+                    .call_tool(
+                        CallToolRequestParams::new(tool)
+                            .with_arguments(args.as_object().cloned().unwrap_or_default()),
+                        context,
+                    )
+                    .await
+            });
+            if let Err(err) = result {
+                assert!(
+                    !err.message.contains("unknown tool"),
+                    "{name} is listed but not dispatched: {}",
+                    err.message
+                );
+            }
+        }
+    }
+
+    /// Missing or invalid arguments are -32602 so clients do not retry a
+    /// call that can never succeed.
+    #[test]
+    fn argument_mistakes_are_invalid_params_for_every_tool() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _env = isolate_home(&temp);
+        let outside = temp.path().join("elsewhere");
+        let cases: Vec<(&'static str, serde_json::Value)> = vec![
+            ("search-papers", json!({})),
+            ("search-discussions", json!({})),
+            ("resolve-doi", json!({})),
+            ("fetch-pdf", json!({})),
+            (
+                "query-knowledge-graph",
+                json!({"query": "x", "kind": "bogus"}),
+            ),
+            ("add-knowledge-node", json!({})),
+            (
+                "add-knowledge-node",
+                json!({"id": "a", "kind": "bogus", "label": "l"}),
+            ),
+            ("link-knowledge", json!({})),
+            (
+                "link-knowledge",
+                json!({"source_id": "a", "target_id": "b", "kind": "bogus"}),
+            ),
+            ("track-citations", json!({})),
+            (
+                "track-citations",
+                json!({"paper_id": "p", "action": "bogus"}),
+            ),
+            (
+                "track-citations",
+                json!({"paper_id": "p", "action": "track"}),
+            ),
+            ("resolve-contradiction", json!({})),
+            (
+                "resolve-contradiction",
+                json!({"improve": "bogus", "degrades": "latency"}),
+            ),
+            ("create-skill", json!({})),
+            ("create-skill", json!({"name": "x"})),
+            ("create-skill", json!({"name": "../x", "description": "d"})),
+            ("create-skill", json!({"name": ".x", "description": "d"})),
+            ("create-skill", json!({"name": "a/b", "description": "d"})),
+            (
+                "create-skill",
+                json!({"name": "x", "description": "d", "method": "bogus"}),
+            ),
+            (
+                "create-skill",
+                json!({"name": "x", "description": "d", "target_dir": outside.to_str().unwrap()}),
+            ),
+            ("search-skills-github", json!({})),
+            ("search-skills-fuzzy", json!({})),
+            ("skill-diff", json!({})),
+            ("validate-skills", json!({"target": "bogus"})),
+            ("enable-skill-trace", json!({"target": "bogus"})),
+            ("sync-skills", json!({"from": "claude", "to": "claude"})),
+            ("sync-skills", json!({"from": "gemini", "to": "claude"})),
+            ("sync-to-cursor", json!({"from": "gemini"})),
+            ("describe-mcp-tool", json!({})),
+        ];
+        for (name, args) in cases {
+            let shown = args.to_string();
+            let err = call(build_service(&temp), name, args)
+                .expect_err(&format!("{name} {shown} should fail"));
+            assert_eq!(
+                err.code,
+                rmcp::model::ErrorCode::INVALID_PARAMS,
+                "{name} {shown}: {}",
+                err.message
+            );
+        }
+    }
+
+    /// The subagent branch of `call_tool` runs before name normalization and
+    /// has its own alias list; both spellings must reach the subagent service.
+    #[cfg(feature = "subagents")]
+    #[test]
+    fn list_subagents_dispatches_in_both_spellings() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _env = isolate_home(&temp);
+        for name in [
+            "list-subagents",
+            "list_subagents",
+            "list-agents",
+            "list_agents",
+        ] {
+            let response = call(build_service(&temp), name, json!({}))
+                .unwrap_or_else(|e| panic!("{name}: {}", e.message));
+            let CallToolResponse::Complete(result) = response else {
+                panic!("{name}: expected a tool result");
+            };
+            assert_ne!(result.is_error, Some(true), "{name}: {:?}", result.content);
+        }
     }
 
     /// A missing argument is the caller's mistake, not the server's.

@@ -20,6 +20,7 @@ use skrills_tome::models::{Paper, PaperSource};
 use skrills_tome::triz::{Parameter, TrizMatrix};
 
 use crate::app::SkillService;
+use crate::handler::invalid_params;
 use crate::mcp_result::{tool_err, tool_ok};
 
 /// Largest PDF `fetch-pdf` will download.
@@ -172,7 +173,7 @@ impl SkillService {
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: query"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: query"))?;
         let limit = args
             .get("limit")
             .and_then(|v| v.as_u64())
@@ -273,7 +274,7 @@ impl SkillService {
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: query"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: query"))?;
         let limit = args
             .get("limit")
             .and_then(|v| v.as_u64())
@@ -320,7 +321,7 @@ impl SkillService {
         let doi = args
             .get("doi")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: doi"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: doi"))?;
 
         let crossref = CrossRefClient::new();
         let metadata = crossref.resolve_doi(doi).await?;
@@ -360,7 +361,27 @@ impl SkillService {
         let doi = args
             .get("doi")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: doi"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: doi"))?;
+
+        let cache = ResearchCache::open()?;
+        let pdf_path = cache.pdf_dir().join(pdf_cache_file_name(doi));
+
+        // A cached file counts only if it is a PDF; anything else (an error
+        // page or a file written by an older, non-atomic version) is fetched
+        // again. A cached PDF is served without asking Unpaywall, so it stays
+        // reachable offline.
+        let path_str = pdf_path.to_string_lossy().to_string();
+        if has_pdf_magic(&pdf_path) {
+            return Ok(tool_ok(
+                vec![ContentBlock::text(format!("PDF cached at: {path_str}"))],
+                Some(json!({
+                    "path": path_str,
+                    "doi": doi,
+                    "url": null,
+                    "cached": true,
+                })),
+            ));
+        }
 
         let unpaywall = UnpaywallClient::default();
         let pdf_url = unpaywall
@@ -372,30 +393,19 @@ impl SkillService {
             .map_err(|e| anyhow!("Unpaywall returned an invalid PDF URL {pdf_url}: {e}"))?;
         check_pdf_url(&pdf_url)?;
 
-        let cache = ResearchCache::open()?;
-        let pdf_path = cache.pdf_dir().join(pdf_cache_file_name(doi));
-
-        // A cached file counts only if it is a PDF; anything else (an error
-        // page or a file written by an older, non-atomic version) is fetched
-        // again.
-        let cached = has_pdf_magic(&pdf_path);
-        if !cached {
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                    if attempt.previous().len() >= MAX_PDF_REDIRECTS {
-                        attempt.error("too many redirects")
-                    } else if let Err(e) = check_pdf_url(attempt.url()) {
-                        attempt.error(e.to_string())
-                    } else {
-                        attempt.follow()
-                    }
-                }))
-                .build()?;
-            download_pdf(&client, pdf_url.clone(), &pdf_path, MAX_PDF_BYTES).await?;
-        }
-
-        let path_str = pdf_path.to_string_lossy().to_string();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= MAX_PDF_REDIRECTS {
+                    attempt.error("too many redirects")
+                } else if let Err(e) = check_pdf_url(attempt.url()) {
+                    attempt.error(e.to_string())
+                } else {
+                    attempt.follow()
+                }
+            }))
+            .build()?;
+        download_pdf(&client, pdf_url.clone(), &pdf_path, MAX_PDF_BYTES).await?;
 
         Ok(tool_ok(
             vec![ContentBlock::text(format!("PDF cached at: {path_str}"))],
@@ -403,7 +413,7 @@ impl SkillService {
                 "path": path_str,
                 "doi": doi,
                 "url": pdf_url.as_str(),
-                "cached": cached,
+                "cached": false,
             })),
         ))
     }
@@ -463,7 +473,7 @@ impl SkillService {
             let kind = match args.get("kind").and_then(|v| v.as_str()) {
                 Some(s) => {
                     let k: NodeKind = serde_json::from_value(json!(s))
-                        .map_err(|_| anyhow!("Unknown node kind: {s}"))?;
+                        .map_err(|_| invalid_params(format!("Unknown node kind: {s}")))?;
                     Some(k)
                 }
                 None => None,
@@ -507,19 +517,19 @@ impl SkillService {
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: id"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: id"))?;
         let kind_str = args
             .get("kind")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: kind"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: kind"))?;
         let label = args
             .get("label")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: label"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: label"))?;
         let metadata = args.get("metadata").map(|v| v.to_string());
 
         let kind: NodeKind = serde_json::from_value(json!(kind_str))
-            .map_err(|_| anyhow!("Unknown node kind: {kind_str}"))?;
+            .map_err(|_| invalid_params(format!("Unknown node kind: {kind_str}")))?;
 
         let db_path = tome_cache_dir()?.join("knowledge.db");
         let kg = KnowledgeGraph::open(&db_path)?;
@@ -540,20 +550,20 @@ impl SkillService {
         let source_id = args
             .get("source_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: source_id"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: source_id"))?;
         let target_id = args
             .get("target_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: target_id"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: target_id"))?;
         let kind_str = args
             .get("kind")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: kind"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: kind"))?;
         let weight = args.get("weight").and_then(|v| v.as_f64()).unwrap_or(1.0);
         let metadata = args.get("metadata").map(|v| v.to_string());
 
         let kind: EdgeKind = serde_json::from_value(json!(kind_str))
-            .map_err(|_| anyhow!("Unknown edge kind: {kind_str}"))?;
+            .map_err(|_| invalid_params(format!("Unknown edge kind: {kind_str}")))?;
 
         let db_path = tome_cache_dir()?.join("knowledge.db");
         let kg = KnowledgeGraph::open(&db_path)?;
@@ -579,7 +589,7 @@ impl SkillService {
         let paper_id = args
             .get("paper_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: paper_id"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: paper_id"))?;
         let action = args
             .get("action")
             .and_then(|v| v.as_str())
@@ -591,7 +601,7 @@ impl SkillService {
         match action {
             "track" => {
                 let title = args.get("title").and_then(|v| v.as_str()).ok_or_else(|| {
-                    anyhow!("Missing required parameter: title (for track action)")
+                    invalid_params("Missing required parameter: title (for track action)")
                 })?;
                 let doi = args.get("doi").and_then(|v| v.as_str()).map(String::from);
 
@@ -664,9 +674,9 @@ impl SkillService {
                     })),
                 ))
             }
-            other => Err(anyhow!(
+            other => Err(invalid_params(format!(
                 "Unknown action: {other}. Use 'track', 'forward', or 'backward'"
-            )),
+            ))),
         }
     }
 
@@ -677,11 +687,11 @@ impl SkillService {
         let improve_str = args
             .get("improve")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: improve"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: improve"))?;
         let degrades_str = args
             .get("degrades")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: degrades"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: degrades"))?;
 
         let improve = parse_parameter(improve_str)?;
         let degrades = parse_parameter(degrades_str)?;
@@ -720,5 +730,5 @@ impl SkillService {
 
 fn parse_parameter(s: &str) -> Result<Parameter> {
     serde_json::from_value(serde_json::Value::String(s.to_owned()))
-        .map_err(|_| anyhow!("Unknown parameter: {s}"))
+        .map_err(|_| invalid_params(format!("Unknown parameter: {s}")))
 }

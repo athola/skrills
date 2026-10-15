@@ -274,6 +274,44 @@ fn unified_diff_aligns_lines_after_an_insertion() {
     assert_eq!(super::super::tools::unified_diff(&a2, &a2, "a", "b", 3), "");
 }
 
+/// A huge `context_lines` overflowed `change + context + 1`: a panic in debug
+/// builds, a wrapped range dropping the last change in release.
+#[test]
+fn skill_diff_with_huge_context_lines_keeps_every_change() {
+    use skrills_discovery::{SkillRoot, SkillSource};
+    let diff = super::super::tools::unified_diff("a\nb\n", "a\nc\n", "x", "y", usize::MAX);
+    assert!(diff.contains("-b\n+c\n"), "{diff}");
+
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let _cache = crate::test_support::set_env_var(
+        "SKRILLS_CACHE_PATH",
+        Some(temp.path().join("cache.json").to_str().unwrap()),
+    );
+    let claude = temp.path().join("claude");
+    let codex = temp.path().join("codex");
+    write_skill_file(&claude, "demo", "line one\nlast a\n");
+    write_skill_file(&codex, "demo", "line one\nlast b\n");
+    let service = service_for(vec![
+        SkillRoot {
+            root: claude,
+            source: SkillSource::Claude,
+        },
+        SkillRoot {
+            root: codex,
+            source: SkillSource::Codex,
+        },
+    ]);
+    let result = service
+        .skill_diff_tool(args(json!({"name": "demo", "context_lines": u64::MAX})))
+        .unwrap();
+    let diff = result.structured_content.unwrap()["comparisons"][0]["diff"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(diff.contains("+last b"), "{diff}");
+}
+
 /// SA-7: an unknown peer is refused before anything is written.
 #[test]
 fn copilot_and_cursor_sync_tools_reject_unknown_peers() {
@@ -361,4 +399,39 @@ fn validate_errors_only_summary_counts_all_skills() {
         text.contains("Validated 2 skills") && text.contains("1 Codex-valid"),
         "{text}"
     );
+}
+
+/// The schema advertises `copilot` and `all`; both must validate, and the
+/// Copilot result must be counted.
+#[test]
+fn validate_skills_accepts_the_copilot_and_all_targets() {
+    use skrills_discovery::{SkillRoot, SkillSource};
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let _cache = crate::test_support::set_env_var(
+        "SKRILLS_CACHE_PATH",
+        Some(temp.path().join("cache.json").to_str().unwrap()),
+    );
+    let root = temp.path().join("skills");
+    write_skill_file(
+        &root,
+        "good",
+        "---\nname: good\ndescription: A well formed skill for testing\n---\n# Good\n",
+    );
+    write_skill_file(&root, "bad", "no frontmatter");
+    let service = service_for(vec![SkillRoot {
+        root,
+        source: SkillSource::Claude,
+    }]);
+
+    for target in ["copilot", "all"] {
+        let result = service
+            .validate_skills_tool(args(json!({"target": target})))
+            .unwrap_or_else(|e| panic!("{target}: {e}"));
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["validated"], 2, "{target}");
+        assert_eq!(structured["copilot_valid"], 1, "{target}");
+        let text = format!("{:?}", result.content);
+        assert!(text.contains("1 Copilot-valid"), "{target}: {text}");
+    }
 }

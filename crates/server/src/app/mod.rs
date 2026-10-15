@@ -67,7 +67,7 @@ pub struct SkillService {
     pub(crate) cache: Arc<Mutex<SkillCache>>,
     /// Optional subagent service (enabled via `subagents` feature).
     #[cfg(feature = "subagents")]
-    pub(crate) subagents: Option<skrills_subagents::SubagentService>,
+    pub(crate) subagents: Option<Arc<skrills_subagents::SubagentService>>,
     /// Registry of MCP tools for context-optimized lazy loading.
     pub(crate) mcp_registry: Arc<Mutex<McpToolRegistry>>,
     /// Context usage statistics for tracking token savings.
@@ -159,12 +159,29 @@ impl SkillService {
         Ok(Self {
             cache: Arc::new(Mutex::new(SkillCache::new_with_ttl(roots, ttl))),
             #[cfg(feature = "subagents")]
-            subagents: Some(SubagentService::new()?),
+            subagents: Some(Arc::new(SubagentService::new()?)),
             mcp_registry,
             context_stats,
             metrics: None,
             project_roots: None,
         })
+    }
+
+    /// A service for another MCP session over the same state: the skill
+    /// cache, subagent service, tool registry, metrics store and project
+    /// roots are shared, so a new session costs no discovery walk. Context
+    /// statistics stay per session.
+    #[cfg(feature = "http-transport")]
+    pub(crate) fn new_session(&self) -> Self {
+        Self {
+            cache: self.cache.clone(),
+            #[cfg(feature = "subagents")]
+            subagents: self.subagents.clone(),
+            mcp_registry: self.mcp_registry.clone(),
+            context_stats: ContextStats::new(),
+            metrics: self.metrics.clone(),
+            project_roots: self.project_roots.clone(),
+        }
     }
 
     /// Records skill reads, validations and syncs to `collector`, which the
@@ -234,7 +251,7 @@ impl SkillService {
         Ok(Self {
             cache: Arc::new(Mutex::new(SkillCache::new_with_ttl(roots, ttl))),
             #[cfg(feature = "subagents")]
-            subagents: Some(SubagentService::new()?),
+            subagents: Some(Arc::new(SubagentService::new()?)),
             mcp_registry,
             context_stats,
             metrics: None,

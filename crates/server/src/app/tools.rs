@@ -4,6 +4,7 @@
 //! to the LLM. Each handler processes arguments and returns a `CallToolResult`.
 
 use super::SkillService;
+use crate::handler::invalid_params;
 use crate::mcp_result::{tool_err, tool_ok};
 use crate::skill_trace::{self, ClientTarget as TraceTarget, TraceInstallOptions};
 use anyhow::Result;
@@ -27,9 +28,9 @@ impl SkillService {
             "claude" => Ok(TraceTarget::Claude),
             "codex" => Ok(TraceTarget::Codex),
             "both" => Ok(TraceTarget::Both),
-            other => Err(anyhow::anyhow!(
+            other => Err(invalid_params(format!(
                 "Unknown target '{other}': expected claude, codex or both"
-            )),
+            ))),
         }
     }
 
@@ -38,7 +39,7 @@ impl SkillService {
     /// # Arguments
     ///
     /// The `args` map accepts the following JSON keys:
-    /// - `target`: `"claude"`, `"codex"`, or `"both"` (default: `"both"`) - which clients to validate for
+    /// - `target`: `"claude"`, `"codex"`, `"copilot"`, `"both"` (claude+codex) or `"all"` (default: `"both"`) - which clients to validate for
     /// - `errors_only`: `bool` (default: `false`) - only return skills with errors
     /// - `autofix`: `bool` (default: `false`) - attempt to autofix frontmatter issues
     /// - `check_dependencies`: `bool` (default: `false`) - validate skill dependencies exist
@@ -76,13 +77,18 @@ impl SkillService {
         let validation_target = match target_str {
             "claude" => VT::Claude,
             "codex" => VT::Codex,
+            "copilot" => VT::Copilot,
             "both" => VT::Both,
+            "all" => VT::All,
             other => {
-                return Err(anyhow::anyhow!(
-                    "Unknown target '{other}': expected claude, codex or both"
-                ))
+                return Err(invalid_params(format!(
+                    "Unknown target '{other}': expected claude, codex, copilot, both or all"
+                )))
             }
         };
+        let checks_claude = matches!(validation_target, VT::Claude | VT::Both | VT::All);
+        let checks_codex = matches!(validation_target, VT::Codex | VT::Both | VT::All);
+        let checks_copilot = matches!(validation_target, VT::Copilot | VT::All);
 
         let (skills, _) = self.current_skills_with_dups()?;
 
@@ -100,6 +106,7 @@ impl SkillService {
         let mut validated = 0usize;
         let mut claude_valid = 0usize;
         let mut codex_valid = 0usize;
+        let mut copilot_valid = 0usize;
 
         for meta in &skills {
             let mut content = match fs::read_to_string(&meta.path) {
@@ -113,8 +120,8 @@ impl SkillService {
             let mut autofixed_skill = false;
 
             if autofix
-                && !result.codex_valid
-                && validation_target != VT::Claude
+                && ((checks_codex && !result.codex_valid)
+                    || (checks_copilot && !result.copilot_valid))
                 && autofix_may_write(&meta.source)
             {
                 // Keep a backup: this rewrites files in place on a tool call.
@@ -190,7 +197,7 @@ impl SkillService {
 
             let mut passed = Vec::new();
             let mut failed = Vec::new();
-            if validation_target != VT::Codex {
+            if checks_claude {
                 if result.claude_valid {
                     &mut passed
                 } else {
@@ -198,13 +205,21 @@ impl SkillService {
                 }
                 .push("claude");
             }
-            if validation_target != VT::Claude {
+            if checks_codex {
                 if result.codex_valid {
                     &mut passed
                 } else {
                     &mut failed
                 }
                 .push("codex");
+            }
+            if checks_copilot {
+                if result.copilot_valid {
+                    &mut passed
+                } else {
+                    &mut failed
+                }
+                .push("copilot");
             }
             if check_dependencies {
                 if dependency_issues.is_empty() {
@@ -221,6 +236,7 @@ impl SkillService {
             validated += 1;
             claude_valid += usize::from(result.claude_valid);
             codex_valid += usize::from(result.codex_valid);
+            copilot_valid += usize::from(result.copilot_valid);
 
             if !errors_only || result.has_errors() || !dependency_issues.is_empty() {
                 let mut skill_json = json!({
@@ -228,6 +244,7 @@ impl SkillService {
                     "path": meta.path.display().to_string(),
                     "claude_valid": result.claude_valid,
                     "codex_valid": result.codex_valid,
+                    "copilot_valid": result.copilot_valid,
                     "errors": result.error_count(),
                     "warnings": result.warning_count(),
                     "autofixed": autofixed_skill,
@@ -267,6 +284,9 @@ impl SkillService {
             let mut base = format!(
                 "Validated {validated} skills: {claude_valid} Claude-valid, {codex_valid} Codex-valid"
             );
+            if checks_copilot {
+                base = format!("{base}, {copilot_valid} Copilot-valid");
+            }
             if errors_only {
                 base = format!("{base}\nShowing {} with issues", results.len());
             }
@@ -284,6 +304,7 @@ impl SkillService {
             "validated": validated,
             "claude_valid": claude_valid,
             "codex_valid": codex_valid,
+            "copilot_valid": copilot_valid,
             "target": target_str,
             "autofix": autofix,
             "autofixed": autofixed,
@@ -323,11 +344,15 @@ impl SkillService {
         let name = args
             .get("name")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("skill name is required"))?;
+            .ok_or_else(|| invalid_params("skill name is required"))?;
+        // No diff needs more context than this; the cap also keeps the value
+        // in range of `usize` on every target.
+        const MAX_CONTEXT_LINES: u64 = 1000;
         let context_lines = args
             .get("context_lines")
             .and_then(|v| v.as_u64())
-            .unwrap_or(3) as usize;
+            .unwrap_or(3)
+            .min(MAX_CONTEXT_LINES) as usize;
 
         // The cached list is de-duplicated by name, which keeps exactly one
         // copy of the skill this tool exists to compare. Scan each root on its
@@ -1126,10 +1151,10 @@ impl SkillService {
 
         // Prevent syncing to self
         if from == to {
-            return Err(anyhow::anyhow!(
+            return Err(invalid_params(format!(
                 "Source and target cannot be the same: {}",
                 from
-            ));
+            )));
         }
 
         let params = SyncParams {
@@ -1206,11 +1231,11 @@ impl SkillService {
                 SyncOrchestrator::new(source, target).sync(&params)?
             }
             _ => {
-                return Err(anyhow::anyhow!(
+                return Err(invalid_params(format!(
                     "Invalid sync direction: {} -> {}. Valid options are: claude, codex, copilot, cursor",
                     from,
                     to
-                ));
+                )));
             }
         };
 
@@ -1241,10 +1266,10 @@ fn check_sync_peer(field: &str, value: &str, allowed: &[&str]) -> Result<()> {
     if allowed.contains(&value) {
         Ok(())
     } else {
-        Err(anyhow::anyhow!(
+        Err(invalid_params(format!(
             "Invalid '{field}' value '{value}': expected one of {}",
             allowed.join(", ")
-        ))
+        )))
     }
 }
 
@@ -1375,10 +1400,16 @@ pub(crate) fn unified_diff(
     let mut k = 0;
     while k < changes.len() {
         let start = changes[k].saturating_sub(context);
-        let mut end = (changes[k] + context + 1).min(ops.len());
+        let mut end = changes[k]
+            .saturating_add(context)
+            .saturating_add(1)
+            .min(ops.len());
         k += 1;
         while k < changes.len() && changes[k].saturating_sub(context) <= end {
-            end = (changes[k] + context + 1).min(ops.len());
+            end = changes[k]
+                .saturating_add(context)
+                .saturating_add(1)
+                .min(ops.len());
             k += 1;
         }
         let a_len = a_before[end] - a_before[start];

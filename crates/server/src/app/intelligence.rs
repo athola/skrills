@@ -4,6 +4,7 @@
 //! per ADR-0001. These methods provide smart recommendations, project context analysis,
 //! skill gap detection, and skill creation capabilities.
 
+use crate::handler::{invalid_params, run_blocking};
 use crate::mcp_result::{tool_err, tool_ok};
 use crate::setup;
 use anyhow::{anyhow, Result};
@@ -549,17 +550,17 @@ impl SkillService {
         let name = args
             .get("name")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: name"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: name"))?;
 
         // Security: Reject path traversal attempts and hidden files
         if name.contains("..") {
-            return Err(anyhow!(
-                "Invalid name: path traversal sequences ('..') are not allowed"
+            return Err(invalid_params(
+                "Invalid name: path traversal sequences ('..') are not allowed",
             ));
         }
         if name.starts_with('.') {
-            return Err(anyhow!(
-                "Invalid name: hidden files (starting with '.') are not allowed"
+            return Err(invalid_params(
+                "Invalid name: hidden files (starting with '.') are not allowed",
             ));
         }
 
@@ -569,14 +570,14 @@ impl SkillService {
             Some(std::path::Component::Normal(_))
         ) && name_components.next().is_none();
         if !is_simple_name {
-            return Err(anyhow!(
-                "Invalid name: use a simple directory name without path separators"
+            return Err(invalid_params(
+                "Invalid name: use a simple directory name without path separators",
             ));
         }
         let description = args
             .get("description")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: description"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: description"))?;
         let method_str = args
             .get("method")
             .and_then(|v| v.as_str())
@@ -586,20 +587,22 @@ impl SkillService {
             .get("dry_run")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        // Path resolution, the project walk and session parsing below are
+        // blocking file I/O; only the GitHub and LLM calls are awaited.
         let project_dir = match args.get("project_dir").and_then(|v| v.as_str()) {
-            Some(dir) => self.client_project_dir(Some(dir), "create_skill")?,
+            Some(dir) => run_blocking(|| self.client_project_dir(Some(dir), "create_skill"))?,
             None => None,
         };
 
         let method: CreationMethod = method_str
             .parse()
-            .map_err(|err| anyhow!("Invalid creation method: {}", err))?;
+            .map_err(|err| invalid_params(format!("Invalid creation method: {}", err)))?;
 
         // Check containment before any search or generation runs, so a refused
         // request costs nothing and creates nothing.
         if let (Some(dir), TargetDirPolicy::WithinSkillRoots) = (target_dir, policy) {
             let expanded = PathBuf::from(shellexpand::tilde(dir).as_ref());
-            ensure_within_roots(&expanded, &self.writable_skill_roots())?;
+            run_blocking(|| ensure_within_roots(&expanded, &self.writable_skill_roots()))?;
         }
 
         // Build request with optional project context
@@ -613,7 +616,7 @@ impl SkillService {
 
         // Add project context if available
         if let Some(dir) = project_dir {
-            if let Ok(profile) = analyze_project(&dir) {
+            if let Ok(profile) = run_blocking(|| analyze_project(&dir)) {
                 request = request.with_context(profile);
             }
         }
@@ -678,7 +681,7 @@ impl SkillService {
             };
 
             if claude_projects.exists() {
-                match parse_claude_sessions(&claude_projects) {
+                match run_blocking(|| parse_claude_sessions(&claude_projects)) {
                     Ok(events) if events.len() >= 10 => {
                         // Empirical generation requires BehavioralEvent data with tool
                         // sequences and file accesses. Currently we only have basic
@@ -740,7 +743,7 @@ impl SkillService {
                 let target = target_dir
                     .map(|s| shellexpand::tilde(s).to_string())
                     .unwrap_or_else(|| default_skill_target_dir().display().to_string());
-                match write_generated_skill(Path::new(&target), name, content) {
+                match run_blocking(|| write_generated_skill(Path::new(&target), name, content)) {
                     Ok(path) => written_path = Some(path.display().to_string()),
                     Err(e) => errors.push(format!("{e:#}")),
                 }
@@ -797,7 +800,7 @@ impl SkillService {
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: query"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: query"))?;
         let limit = clamp_limit(args.get("limit").and_then(|v| v.as_u64()), 10);
 
         let results = search_github_skills(query, limit).await?;
@@ -859,7 +862,7 @@ impl SkillService {
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: query"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: query"))?;
 
         // Validate and clamp threshold to valid range [0.0, 1.0]
         let threshold = args
@@ -1048,7 +1051,7 @@ fn resolve_for_containment(path: &Path) -> Result<PathBuf> {
 /// Refuse a `target_dir` that does not resolve inside one of `roots`.
 fn ensure_within_roots(target: &Path, roots: &[PathBuf]) -> Result<()> {
     let resolved = resolve_for_containment(target)
-        .map_err(|e| anyhow!("Invalid target_dir {}: {e}", target.display()))?;
+        .map_err(|e| invalid_params(format!("Invalid target_dir {}: {e}", target.display())))?;
     let inside = roots.iter().any(|root| {
         resolve_for_containment(root)
             .map(|r| resolved.starts_with(r))
@@ -1057,7 +1060,7 @@ fn ensure_within_roots(target: &Path, roots: &[PathBuf]) -> Result<()> {
     if inside {
         Ok(())
     } else {
-        Err(anyhow!(
+        Err(invalid_params(format!(
             "Invalid target_dir {}: it must be inside a skill directory ({})",
             target.display(),
             roots
@@ -1065,7 +1068,7 @@ fn ensure_within_roots(target: &Path, roots: &[PathBuf]) -> Result<()> {
                 .map(|r| r.display().to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
-        ))
+        )))
     }
 }
 

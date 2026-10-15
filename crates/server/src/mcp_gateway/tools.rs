@@ -2,6 +2,7 @@
 
 use super::registry::McpToolEntry;
 use super::stats::ContextStatsSnapshot;
+use crate::handler::invalid_params;
 use crate::mcp_result::{tool_err, tool_ok};
 use anyhow::Result;
 use rmcp::model::{CallToolResult, ContentBlock, Tool, ToolAnnotations};
@@ -163,7 +164,7 @@ pub fn describe_mcp_tool(
     let tool_name = args
         .and_then(|a| a.get("tool_name"))
         .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("tool_name is required"))?;
+        .ok_or_else(|| invalid_params("tool_name is required"))?;
 
     match tool_finder(tool_name) {
         Some(tool) => {

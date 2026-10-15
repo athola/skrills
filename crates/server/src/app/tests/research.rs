@@ -1096,3 +1096,35 @@ async fn download_pdf_checks_magic_and_size_and_writes_atomically() {
         .collect();
     assert_eq!(names, vec![std::ffi::OsString::from("ok.pdf")]);
 }
+
+/// A cached PDF is served without asking Unpaywall, so it stays reachable
+/// offline or while Unpaywall is down. The DOI is not a real one: any call
+/// to Unpaywall would fail the request.
+#[test]
+fn fetch_pdf_serves_a_cached_pdf_without_calling_unpaywall() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempfile::tempdir().unwrap();
+    let cache_base = temp.path().join("cache");
+    let _home = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+    let _xdg = crate::test_support::set_env_var("XDG_CACHE_HOME", cache_base.to_str());
+    let _local = crate::test_support::set_env_var("LOCALAPPDATA", cache_base.to_str());
+
+    let doi = "10.0000/skrills-cached-only";
+    let pdf_dir = skrills_tome::cache::ResearchCache::cache_dir()
+        .unwrap()
+        .join("pdfs");
+    std::fs::create_dir_all(&pdf_dir).unwrap();
+    let cached = pdf_dir.join(super::super::research::pdf_cache_file_name(doi));
+    std::fs::write(&cached, b"%PDF-1.4 cached").unwrap();
+
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
+    let result = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(service.fetch_pdf_tool(json!({"doi": doi}).as_object().cloned().unwrap()))
+        .expect("a cached PDF needs no network");
+    let structured = result.structured_content.unwrap();
+    assert_eq!(structured["cached"], true);
+    assert_eq!(structured["path"], cached.to_string_lossy().as_ref());
+}

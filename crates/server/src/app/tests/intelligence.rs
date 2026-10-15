@@ -443,6 +443,68 @@ fn create_skill_reports_a_tool_error_when_empirical_generation_finds_no_sessions
     assert_eq!(structured["success"], json!(false));
 }
 
+/// Session parsing in `create-skill` is blocking file I/O. Run inline on the
+/// only worker it starves every other task; through `run_blocking` the worker
+/// is handed over first. The session file here is a FIFO whose writer is a
+/// task queued on the same worker, so the read only finishes if that task
+/// gets to run while the parse is blocked.
+#[cfg(unix)]
+#[test]
+fn create_skill_lets_other_tasks_run_while_it_reads_sessions() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let _home_guard = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+    let project = temp.path().join(".claude/projects/p");
+    fs::create_dir_all(&project).unwrap();
+    let fifo = project.join("s.jsonl");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(status.success(), "mkfifo failed");
+
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
+    let args = json!({
+        "name": "fifo-sessions",
+        "description": "reads a session file another task writes",
+        "method": "empirical",
+        "dry_run": true
+    })
+    .as_object()
+    .cloned()
+    .unwrap();
+
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let writer_path = fifo.clone();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let outcome = runtime.block_on(async move {
+            tokio::spawn(async move {
+                tokio::spawn(async move {
+                    std::fs::write(&writer_path, "").unwrap();
+                });
+                service.create_skill_tool(args).await
+            })
+            .await
+            .unwrap()
+        });
+        let _ = done_tx.send(outcome.is_ok());
+    });
+
+    match done_rx.recv_timeout(Duration::from_secs(10)) {
+        Ok(ok) => assert!(ok, "create-skill returned an error"),
+        Err(_) => {
+            // Release the blocked reader so the runtime thread can finish.
+            let _ = std::fs::write(&fifo, "");
+            panic!("create-skill blocked the only worker while reading sessions");
+        }
+    }
+}
+
 // -------------------------------------------------------------------------
 // search_skills_github_tool Tests
 // -------------------------------------------------------------------------

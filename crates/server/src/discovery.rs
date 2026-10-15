@@ -236,8 +236,24 @@ pub fn skill_roots(extra_dirs: &[PathBuf]) -> Result<Vec<SkillRoot>> {
             }
             SkillSource::Mirror => home.join(".codex/skills-mirror"),
             SkillSource::Agent => home.join(".agents/skills"),
+            // The XDG and legacy paths, as `default_roots` (and so the
+            // dashboard's `/api/skills`) lists them.
+            SkillSource::Copilot => {
+                if let Some(config_dir) = dirs::config_dir() {
+                    roots.push(SkillRoot {
+                        root: config_dir.join("copilot/skills"),
+                        source: source.clone(),
+                    });
+                }
+                home.join(".copilot/skills")
+            }
+            // Cursor discovery reads `.mdc` rules from a project's
+            // `.cursor/rules`, and a server has no project directory.
+            SkillSource::Cursor => continue,
             SkillSource::Extra(_) => continue,
-            _ => continue, // Handle future variants
+            // `SkillSource` is `#[non_exhaustive]`, so the compiler requires
+            // this arm; a new variant gets no root until it is mapped above.
+            _ => continue,
         };
         roots.push(SkillRoot { root, source });
     }
@@ -721,6 +737,31 @@ mod tests {
                 && !labels.contains(&"cache".to_string()),
             "Claude-derived roots should be excluded when SKRILLS_INCLUDE_CLAUDE=0"
         );
+    }
+
+    /// `/api/skills` serves Copilot skills from both paths; MCP resources
+    /// must see the same roots.
+    #[test]
+    fn skill_roots_include_both_copilot_paths() {
+        let _guard = env_guard();
+        let temp = tempfile::tempdir().unwrap();
+        let _home = crate::test_support::set_env_var("HOME", temp.path().to_str());
+        let roots = skill_roots(&[]).unwrap();
+        let copilot: Vec<_> = roots
+            .iter()
+            .filter(|r| r.source == SkillSource::Copilot)
+            .map(|r| r.root.clone())
+            .collect();
+        assert!(
+            copilot.contains(&temp.path().join(".copilot/skills")),
+            "{copilot:?}"
+        );
+        if let Some(config) = dirs::config_dir() {
+            assert!(
+                copilot.contains(&config.join("copilot/skills")),
+                "{copilot:?}"
+            );
+        }
     }
 
     #[test]

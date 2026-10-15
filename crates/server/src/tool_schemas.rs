@@ -110,33 +110,42 @@ fn validate_skills_output_schema() -> Arc<JsonMap<String, serde_json::Value>> {
     Arc::new(schema)
 }
 
-/// Returns the schema for sync tools (from, to, dry_run, force parameters).
-fn sync_schema() -> Arc<JsonMap<String, serde_json::Value>> {
+/// Returns the schema for a sync tool that reads `keys` (a subset of from,
+/// to, dry_run, include_marketplace and skip_existing_commands).
+fn sync_schema(keys: &[&str]) -> Arc<JsonMap<String, serde_json::Value>> {
+    let all = json!({
+        "from": {
+            "type": "string",
+            "enum": ["claude", "codex", "copilot", "cursor"],
+            "description": "Source agent: 'claude', 'codex', 'copilot', or 'cursor'"
+        },
+        "to": {
+            "type": "string",
+            "enum": ["claude", "codex", "copilot", "cursor"],
+            "description": "Target agent: 'claude', 'codex', 'copilot', or 'cursor'. Defaults to codex (for claude source) or claude (for others)"
+        },
+        "dry_run": {
+            "type": "boolean",
+            "description": "Preview changes without writing"
+        },
+        "include_marketplace": {
+            "type": "boolean",
+            "default": false,
+            "description": "Also read skills and commands under ~/.claude/plugins/marketplaces"
+        },
+        "skip_existing_commands": {
+            "type": "boolean",
+            "default": false,
+            "description": "Leave commands that already exist in the target unchanged"
+        }
+    });
+    let properties: JsonMap<String, serde_json::Value> = keys
+        .iter()
+        .filter_map(|key| all.get(*key).map(|v| ((*key).to_string(), v.clone())))
+        .collect();
     let mut schema = JsonMap::new();
     schema.insert("type".into(), json!("object"));
-    schema.insert(
-        "properties".into(),
-        json!({
-            "from": {
-                "type": "string",
-                "enum": ["claude", "codex", "copilot", "cursor"],
-                "description": "Source agent: 'claude', 'codex', 'copilot', or 'cursor'"
-            },
-            "to": {
-                "type": "string",
-                "enum": ["claude", "codex", "copilot", "cursor"],
-                "description": "Target agent: 'claude', 'codex', 'copilot', or 'cursor'. Defaults to codex (for claude source) or claude (for others)"
-            },
-            "dry_run": {
-                "type": "boolean",
-                "description": "Preview changes without writing"
-            },
-            "force": {
-                "type": "boolean",
-                "description": "Skip confirmation prompts"
-            }
-        }),
-    );
+    schema.insert("properties".into(), serde_json::Value::Object(properties));
     schema.insert("additionalProperties".into(), json!(false));
     Arc::new(schema)
 }
@@ -146,7 +155,16 @@ fn sync_schema() -> Arc<JsonMap<String, serde_json::Value>> {
 /// Tools: sync-from-claude, sync-from-copilot, sync-to-copilot, sync-skills,
 /// sync-commands, sync-mcp-servers, sync-preferences, sync-all, sync-status
 pub(crate) fn sync_tools() -> Vec<Tool> {
-    let sync_schema = sync_schema();
+    const PEER_FROM: &[&str] = &["from", "dry_run"];
+    const PEER_TO: &[&str] = &["to", "dry_run"];
+    const BETWEEN: &[&str] = &["from", "to", "dry_run"];
+    const WITH_COMMANDS: &[&str] = &[
+        "from",
+        "to",
+        "dry_run",
+        "include_marketplace",
+        "skip_existing_commands",
+    ];
 
     vec![
         tool(
@@ -161,67 +179,67 @@ pub(crate) fn sync_tools() -> Vec<Tool> {
             "Sync from GitHub Copilot CLI",
             "Sync skills and instructions from GitHub Copilot CLI \
              (~/.config/github-copilot) to Claude or Codex.",
-            sync_schema.clone(),
+            sync_schema(PEER_TO),
         ),
         tool(
             "sync-to-copilot",
             "Sync to GitHub Copilot CLI",
             "Sync skills and instructions from Claude or Codex to GitHub Copilot CLI \
              (~/.config/github-copilot).",
-            sync_schema.clone(),
+            sync_schema(PEER_FROM),
         ),
         tool(
             "sync-from-cursor",
             "Sync from Cursor IDE",
             "Sync skills, commands, agents, hooks, rules, and MCP servers from Cursor \
              (~/.cursor) to Claude or Codex.",
-            sync_schema.clone(),
+            sync_schema(PEER_TO),
         ),
         tool(
             "sync-to-cursor",
             "Sync to Cursor IDE",
             "Sync skills, commands, agents, hooks, rules (.mdc), and MCP servers from \
              Claude or Codex to Cursor (~/.cursor).",
-            sync_schema.clone(),
+            sync_schema(PEER_FROM),
         ),
         tool(
             "sync-skills",
             "Sync skills between agents",
             "Sync SKILL.md files between Claude, Codex, Copilot, and Cursor. Use --from \
              and --to to specify source and target.",
-            sync_schema.clone(),
+            sync_schema(&["from", "to", "dry_run", "include_marketplace"]),
         ),
         tool(
             "sync-commands",
             "Sync slash commands between agents",
             "Sync slash command definitions between Claude, Codex, Copilot, and Cursor.",
-            sync_schema.clone(),
+            sync_schema(WITH_COMMANDS),
         ),
         tool(
             "sync-mcp-servers",
             "Sync MCP server configurations",
             "Sync MCP server configurations between Claude, Codex, Copilot, and Cursor.",
-            sync_schema.clone(),
+            sync_schema(BETWEEN),
         ),
         tool(
             "sync-preferences",
             "Sync preferences between agents",
             "Sync compatible settings/preferences between Claude, Codex, Copilot, and \
              Cursor.",
-            sync_schema.clone(),
+            sync_schema(BETWEEN),
         ),
         tool(
             "sync-all",
             "Sync all configurations",
             "Sync skills, commands, hooks, MCP servers, and preferences between Claude, \
              Codex, Copilot, and Cursor in one operation.",
-            sync_schema.clone(),
+            sync_schema(WITH_COMMANDS),
         ),
         tool(
             "sync-status",
             "Preview sync changes",
             "Show what would be synced without making changes (dry run).",
-            sync_schema,
+            sync_schema(&["from", "to"]),
         ),
     ]
 }
@@ -597,6 +615,11 @@ pub(crate) fn intelligence_tools() -> Vec<Tool> {
                             "type": "integer",
                             "default": 50,
                             "description": "Number of recent commits to analyze"
+                        },
+                        "max_languages": {
+                            "type": "integer",
+                            "default": 10,
+                            "description": "Report at most this many languages, by file count (0 for all)"
                         }
                     }),
                 );
@@ -658,6 +681,10 @@ pub(crate) fn intelligence_tools() -> Vec<Tool> {
                         "target_dir": {
                             "type": "string",
                             "description": "Directory to create skill in (defaults to installed client, Claude preferred)"
+                        },
+                        "project_dir": {
+                            "type": "string",
+                            "description": "Project directory whose context informs generation"
                         },
                         "dry_run": {
                             "type": "boolean",
@@ -1251,6 +1278,169 @@ mod tests {
             .collect();
         with_schema.sort_unstable();
         assert_eq!(with_schema, ["sync-from-claude", "validate-skills"]);
+    }
+
+    /// The argument keys each handler reads. Strict clients honour
+    /// `additionalProperties: false`, so a key missing from the schema can
+    /// never be sent, and a property no handler reads is a false promise.
+    const HANDLER_KEYS: &[(&str, &[&str])] = &[
+        ("sync-from-claude", &["include_marketplace"]),
+        ("sync-from-copilot", &["to", "dry_run"]),
+        ("sync-to-copilot", &["from", "dry_run"]),
+        ("sync-from-cursor", &["to", "dry_run"]),
+        ("sync-to-cursor", &["from", "dry_run"]),
+        (
+            "sync-skills",
+            &["from", "to", "dry_run", "include_marketplace"],
+        ),
+        (
+            "sync-commands",
+            &[
+                "from",
+                "to",
+                "dry_run",
+                "include_marketplace",
+                "skip_existing_commands",
+            ],
+        ),
+        ("sync-mcp-servers", &["from", "to", "dry_run"]),
+        ("sync-preferences", &["from", "to", "dry_run"]),
+        (
+            "sync-all",
+            &[
+                "from",
+                "to",
+                "dry_run",
+                "include_marketplace",
+                "skip_existing_commands",
+            ],
+        ),
+        ("sync-status", &["from", "to"]),
+        (
+            "validate-skills",
+            &["target", "errors_only", "autofix", "check_dependencies"],
+        ),
+        ("analyze-skills", &["min_tokens", "include_suggestions"]),
+        ("skill-diff", &["name", "context_lines"]),
+        ("resolve-dependencies", &["uri", "direction", "transitive"]),
+        ("recommend-skills", &["uri", "limit", "include_quality"]),
+        ("skill-metrics", &["include_validation"]),
+        (
+            "skill-loading-status",
+            &[
+                "target",
+                "include_mirror",
+                "include_agent",
+                "include_cache",
+                "include_marketplace",
+            ],
+        ),
+        (
+            "enable-skill-trace",
+            &[
+                "target",
+                "instrument",
+                "backup",
+                "dry_run",
+                "include_mirror",
+                "include_agent",
+                "include_cache",
+                "include_marketplace",
+            ],
+        ),
+        ("disable-skill-trace", &["target", "dry_run"]),
+        ("skill-loading-selftest", &["target", "dry_run"]),
+        (
+            "recommend-skills-smart",
+            &[
+                "uri",
+                "prompt",
+                "project_dir",
+                "limit",
+                "include_usage",
+                "include_context",
+            ],
+        ),
+        (
+            "analyze-project-context",
+            &[
+                "project_dir",
+                "include_git",
+                "commit_limit",
+                "max_languages",
+            ],
+        ),
+        ("suggest-new-skills", &["project_dir", "focus_areas"]),
+        (
+            "create-skill",
+            &[
+                "name",
+                "description",
+                "method",
+                "target_dir",
+                "dry_run",
+                "project_dir",
+            ],
+        ),
+        ("search-skills-github", &["query", "limit"]),
+        (
+            "search-skills-fuzzy",
+            &["query", "threshold", "limit", "include_description"],
+        ),
+        ("search-papers", &["query", "limit", "sources"]),
+        ("search-discussions", &["query", "limit"]),
+        ("resolve-doi", &["doi"]),
+        ("fetch-pdf", &["doi"]),
+        (
+            "query-knowledge-graph",
+            &["query", "node_id", "direction", "kind"],
+        ),
+        ("add-knowledge-node", &["id", "kind", "label", "metadata"]),
+        (
+            "link-knowledge",
+            &["source_id", "target_id", "kind", "weight", "metadata"],
+        ),
+        ("track-citations", &["paper_id", "title", "doi", "action"]),
+        ("resolve-contradiction", &["improve", "degrades"]),
+    ];
+
+    #[test]
+    fn input_schemas_list_exactly_the_keys_their_handlers_read() {
+        let tools = all_tools();
+        let listed: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
+        let covered: Vec<&str> = HANDLER_KEYS.iter().map(|(name, _)| *name).collect();
+        assert_eq!(listed, covered, "HANDLER_KEYS must cover every tool");
+        for (tool, (_, keys)) in tools.iter().zip(HANDLER_KEYS) {
+            let mut properties: Vec<&str> = tool
+                .input_schema
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .map(|p| p.keys().map(String::as_str).collect())
+                .unwrap_or_default();
+            properties.sort_unstable();
+            let mut expected = keys.to_vec();
+            expected.sort_unstable();
+            assert_eq!(properties, expected, "{}", tool.name);
+        }
+    }
+
+    /// `call_tool` checks subagent names first, then core tools; a gateway
+    /// or subagent tool sharing a core name would shadow or be shadowed.
+    #[test]
+    fn core_gateway_and_subagent_tool_names_do_not_collide() {
+        let mut names: Vec<String> = all_tools()
+            .iter()
+            .chain(crate::mcp_gateway::mcp_gateway_tools().iter())
+            .map(|t| t.name.to_string())
+            .collect();
+        #[cfg(feature = "subagents")]
+        if let Ok(service) = skrills_subagents::SubagentService::new() {
+            names.extend(service.tools().iter().map(|t| t.name.to_string()));
+        }
+        let total = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), total, "duplicate tool names: {names:?}");
     }
 
     #[test]

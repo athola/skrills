@@ -27,6 +27,12 @@ pub(crate) fn related_skills(
 ) -> Vec<(String, RecommendationRelationship)> {
     let dependencies = dependencies_of(uri);
     let source_deps: HashSet<&String> = dependencies.iter().collect();
+    // A skill that is both a dependency and a dependent (A <-> B) is listed
+    // once, as a dependency.
+    let dependents: Vec<String> = dependents
+        .into_iter()
+        .filter(|d| !source_deps.contains(d))
+        .collect();
 
     let mut siblings: Vec<String> = Vec::new();
     if !source_deps.is_empty() {
@@ -315,5 +321,28 @@ mod tests {
         let result = service.recommend_skills(&uri("a"), 10, false).unwrap();
 
         assert_eq!(rows(&result), expected_without_quality());
+    }
+
+    /// A <-> B: B is both a dependency and a dependent of A, and must be
+    /// listed once, as the stronger relationship.
+    #[test]
+    fn mutually_linked_skills_are_listed_once() {
+        let all = vec!["a".to_string(), "b".to_string()];
+        let related = related_skills(
+            "a",
+            &all,
+            |u| match u {
+                "a" => vec!["b".to_string()],
+                "b" => vec!["a".to_string()],
+                _ => Vec::new(),
+            },
+            vec!["b".to_string()],
+        );
+        assert_eq!(related.len(), 1, "{related:?}");
+        assert_eq!(related[0].0, "b");
+        assert!(matches!(
+            related[0].1,
+            RecommendationRelationship::Dependency
+        ));
     }
 }
