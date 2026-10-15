@@ -9,27 +9,8 @@
 # Usage: ./scripts/lint-prose-slop.sh
 set -euo pipefail
 
-BANNED='leverage|seamless|cutting-edge|delve into'
-
-# Files that may legitimately contain these words (the linter itself,
-# the hygiene report that catalogs them, and historical archives).
-EXCLUDE_PATHS=(
-  "docs/archive/*"
-  "docs/CHANGELOG.md"
-  ".ai-hygiene-report.md"
-  ".unbloat-report.md"
-  ".refinement-evidence.md"
-  "scripts/lint-prose-slop.sh"
-  ".claude/*"
-  "node_modules/*"
-  "target/*"
-  ".cargo*"
-)
-
-EXCLUDES=()
-for p in "${EXCLUDE_PATHS[@]}"; do
-  EXCLUDES+=(--exclude-dir="${p%%/*}" --exclude="$p")
-done
+# Stems catch inflections (leveraging, seamlessly); matched case-insensitively.
+BANNED='leverag[a-z]*|seamless[a-z]*|cutting-edge|delve into'
 
 if ! command -v rg >/dev/null 2>&1; then
   echo "ripgrep (rg) is required for the prose-slop lint." >&2
@@ -41,6 +22,7 @@ RG_ARGS=(
   --color=never
   --no-heading
   --line-number
+  --ignore-case
   --type=md
   --glob='!docs/archive/**'
   --glob='!docs/CHANGELOG.md'

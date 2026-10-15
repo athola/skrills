@@ -52,7 +52,7 @@ ln -sf "$BIN_PATH" "$BIND/skrills"
 # run_entrypoint <home> <input_path> -> populates $RT for inspection, sets $EXIT
 run_entrypoint() {
   local home="$1" input_path="$2"
-  RT="$WORK/rt.$RANDOM"; mkdir -p "$RT"
+  RT="$(mktemp -d "$WORK/rt.XXXXXX")"
   # No `set +e`/`set -e` pair here. This script runs with `set -uo pipefail`
   # and no errexit by design, because every scenario reports through ok/bad.
   # The old `set -e` at the end of this function turned errexit ON for
@@ -111,7 +111,7 @@ then_ "recovered document is valid JSON" jq empty "$RT/skrills-validate.json"
 
 scenario "A missing skills directory degrades gracefully (no crash)"
 # Given INPUT_PATH points at a directory that does not exist
-run_entrypoint "$FRESH" "does-not-exist-$RANDOM/"
+run_entrypoint "$FRESH" "does-not-exist/"
 # Then the action exits 0 and reports zero skills rather than failing the build.
 [ "$EXIT" -eq 0 ] && ok "entrypoint exits 0 on missing dir" || bad "entrypoint exit=$EXIT on missing dir"
 then_ "reports total=0 for a missing dir" grep -q '^total=0' "$RT/gh.out"

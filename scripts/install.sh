@@ -20,6 +20,7 @@
 set -eu
 # dash (sh) on some systems doesn't support pipefail; guard it.
 if (set -o | grep -q pipefail 2>/dev/null); then
+  # shellcheck disable=SC3040 # guarded by the probe above
   set -o pipefail
 fi
 
@@ -202,7 +203,11 @@ DOWNLOAD_AND_EXTRACT()
   bin_dir="$2"
   bin_name="$3"
   tmpdir=$(mktemp -d)
-  trap 'rm -rf "$tmpdir"' EXIT INT TERM
+  # Clean up on EXIT only; INT/TERM exit 130 (which then runs the EXIT trap).
+  # A cleanup-only INT trap returned, and the install carried on against the
+  # deleted tmpdir.
+  trap 'rm -rf "$tmpdir"' EXIT
+  trap 'exit 130' INT TERM
   archive="$tmpdir/pkg.tar.gz"
   need_cmd curl
   curl -fL "$download_url" -o "$archive" || fail "download failed: $download_url"

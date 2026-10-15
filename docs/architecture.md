@@ -59,15 +59,15 @@ graph TD
 | Crate | Purpose |
 |-------|---------|
 | `cli` | The `skrills` binary and library: clap definitions, subcommand handlers, dispatcher, sync TUI, doctor, cold-window CLI |
-| `server` | MCP server and the engine subcommands call: `SkillService`, tool schemas, HTTP transport, REST API (`/api/mcp-servers`) |
+| `server` | MCP server and the engine subcommands call: `SkillService`, tool schemas, HTTP transport, REST API (`/api/mcp-servers`), Leptos SSR browser dashboard |
 | `sync` | Bidirectional Claude/Codex/Copilot/Cursor sync |
-| `validate` | Skill validation (Claude/Codex/Copilot/Cursor) |
+| `validate` | Skill validation (Claude/Codex/Copilot targets; Cursor has none) |
 | `analyze` | Token counting, dependencies |
 | `intelligence` | Recommendations, project analysis, skill generation |
 | `discovery` | Skill/agent discovery, ranking |
 | `state` | Environment config, persistence |
 | `subagents` | Multi-backend agent runtime |
-| `dashboard` | TUI and browser-based skill visualization (Leptos SSR) |
+| `dashboard` | Terminal skill dashboard (ratatui) |
 | `metrics` | SQLite-based telemetry for invocations, validations, sync |
 | `tome` | Research API orchestration, knowledge graph, citation tracking, caching |
 | `snapshot` | Cold-window wire-format types shared by the analyzer, the TUI and the browser SSE handler |
@@ -81,12 +81,17 @@ Leaf crates (`validate`, `state`, `metrics` and `snapshot`) have no internal dep
 
 The `app` module is split to stay under the 2500 LOC threshold (ADR-0001):
 
-| Module | Lines | Purpose |
-|--------|-------|---------|
-| `mod.rs` | ~570 | Core SkillService, MCP handlers, resource serving |
-| `tools.rs` | ~1250 | Sync, validation, skill-diff, and skill-trace tool implementations |
-| `intelligence.rs` | ~990 | Intelligence tool implementations |
-| `research.rs` | ~590 | Research API tool handlers (tome crate integration) |
+| Module | Purpose |
+|--------|---------|
+| `mod.rs` | Core SkillService, MCP handlers, resource serving |
+| `tools.rs` | Sync, validation, skill-diff, and skill-trace tool implementations |
+| `intelligence.rs` | Intelligence tool implementations |
+| `research.rs` | Research API tool handlers (tome crate integration) |
+| `mcp_registry.rs` | MCP tool registry construction and tool-name categorization |
+| `skill_metrics.rs` | Aggregate metrics shared by the `skill-metrics` tool and `skrills metrics` |
+| `skill_recommendations.rs` | Recommendation ranking shared by `recommend-skills` and `skrills recommend` |
+
+`wc -l crates/server/src/app/*.rs` gives current sizes.
 
 **LOC Monitoring**: When any `app` module approaches 2000 lines, extract the next logical group (e.g., subagent tool handlers or resource-serving methods). `tools.rs` is the closest today.
 

@@ -71,7 +71,7 @@ for crate_src in crates/*/src; do
     declared=0
     for parent in "${parents[@]}"; do
       [ -f "${parent}" ] || continue
-      if grep -qE "^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?mod[[:space:]]+${stem}[[:space:]]*;" \
+      if grep -qE "^[[:space:]]*(#\[[^]]*\][[:space:]]*)*(pub(\([^)]*\))?[[:space:]]+)?mod[[:space:]]+(r#)?${stem}[[:space:]]*;" \
         "${parent}"; then
         declared=1
         break

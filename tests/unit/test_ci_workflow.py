@@ -19,3 +19,7 @@ def _job(name: str) -> str:
 
 def test_hygiene_job_runs_markdown_lint() -> None:
     assert "run: make lint-md" in _job("hygiene-and-scripts")
+
+
+def test_hygiene_job_installs_shellcheck_for_lint_shell() -> None:
+    assert "shellcheck" in _job("hygiene-and-scripts")

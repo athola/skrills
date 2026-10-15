@@ -27,7 +27,7 @@ skrills cold-window --tui --skill-dir ~/.claude/skills
 ```
 
 By default the engine shows only real data: token attribution for the
-skills under `--skill-dir` (and `SKRILLS_EXTRA_SKILL_DIRS`), and plugin
+skills under `--skill-dir` (and `SKRILLS_SKILL_DIR`), and plugin
 health from `./plugins/*/health.toml`. The default skill roots are not
 walked, so with neither set the token ledger stays empty. To see every
 pane populated, add `--demo`, which feeds invented token growth, hints
@@ -127,9 +127,9 @@ bottom hint line shows only the keys valid for the focused pane, and
 | `Enter` | global | Open detail for the selected item |
 | `z` | global | Zoom the focused pane |
 | `A` | alerts | Acknowledge all non-warning alerts |
-| `d` | alerts | Dismiss the top warning |
+| `d` | alerts | Dismiss the selected warning |
 | `1`-`5` / `0` | hints | Filter by category / clear filter |
-| `P` | hints | Pin the top hint |
+| `P` | hints | Pin the selected hint |
 | `R` | research | Expand or collapse the findings panel |
 
 Breaking change in 0.8.2: `Esc` no longer quits. It dismisses
@@ -177,7 +177,7 @@ recorded as TR-001 through TR-006 in
 | Flag | Default | Effect |
 |---|---|---|
 | `--alert-budget <N>` | `100000` | Token-budget ceiling, at least `2`. At 80% a `Warning` alert fires; at 100% the kill-switch engages. A ceiling at or below 50000 moves `Advisory` to 20% and `Caution` to 50% of the ceiling, so the tiers stay in order (see [Token thresholds](#token-thresholds)). |
-| `--research-rate <N>` | `10` | Tome dispatcher fetches per hour. The bucket persists across restarts at `~/.skrills/research-quota.json` and refills pro-rata by elapsed time. |
+| `--research-rate <N>` | `10` | Tome dispatcher fetches per hour. The quota is kept in memory and resets on every run. |
 | `--port <N>` | `8888` | Browser HTTP port (only with `--browser`). |
 | `--browser` | off | Run the HTTP browser surface. |
 | `--demo` | off | Feed the engine built-in demo data (invented token growth, hints and research findings that walk every alert tier). Without it only real data is shown. |
@@ -185,7 +185,7 @@ recorded as TR-001 through TR-006 in
 | `--no-bell` | off | Suppress the terminal bell the TUI rings on a newly-fired WARNING alert. |
 | `--no-adaptive` | off | Disable load-aware cadence; fix tick rate to base. |
 | `--tick-rate-ms <N>` | `2000` | Override base tick rate. |
-| `--skill-dir <DIR>` | (none) | Repeatable. Skill directories walked each tick for per-skill token attribution, together with `SKRILLS_EXTRA_SKILL_DIRS`. The default skill roots are not walked. |
+| `--skill-dir <DIR>` | (none) | Repeatable. Skill directories walked each tick for per-skill token attribution, together with `SKRILLS_SKILL_DIR`. The default skill roots are not walked. |
 | `--plugins-dir <DIR>` | `./plugins` | Plugins root whose `<plugin>/health.toml` files participate in each tick. Missing or unreadable directories yield an empty plugin set without error. |
 
 ## Architecture
@@ -306,7 +306,7 @@ implementations.
 | Cold rewalk every tick | [Prometheus file_sd](https://github.com/prometheus/prometheus/blob/main/docs/http_sd.md), [fluent-bit `in_tail`](https://github.com/fluent/fluent-bit) | Full filesystem walk per tick within the SC1 200 ms p99 budget; no warm cache. |
 | Tick rate vs frame rate separation | [ratatui async-template](https://github.com/ratatui/async-template) | Adaptive cadence (state advance) is decoupled from SSE keep-alive (redraw). |
 | Hysteresis, min-dwell, and tier filtering | [Prometheus Alertmanager `aggrGroup`](https://github.com/prometheus/alertmanager/blob/main/dispatch/dispatch.go), [ISA-18.2 alarm management](https://github.com/alerta/alerta) | 4-tier model with hysteresis clear ratio 0.95 and min-dwell 2 ticks. |
-| Token-bucket quota with restart-resilient persistence | [governor](https://github.com/boinkor-net/governor), Sensu `dedup-key-template` | AlertManager-style research dispatcher with quota persisted at `~/.skrills/research-quota.json`. |
+| Token-bucket research quota | [governor](https://github.com/boinkor-net/governor), Sensu `dedup-key-template` | AlertManager-style research dispatcher; the cold-window keeps its quota in memory, so it resets on every run. |
 | Defense-in-depth XSS posture | [axum-htmx](https://github.com/robertwayne/axum-htmx) | Server `html_escape`, then browser `DOMParser` and `replaceChildren`. |
 
 The user-pain quotes that anchor the threshold defaults
@@ -378,8 +378,8 @@ contract: under a real terminal the process renders until the
 (CI, redirected stdio) the process exits 1 with a clear
 `requires a TTY` message rather than crashing on a termios
 syscall against `/dev/null`. Both surfaces use the same guard
-pattern (`crates/cli/src/tui.rs:22-23` and
-`crates/cli/src/dispatcher.rs:471-472`).
+pattern (`tui_flow` in `crates/cli/src/tui.rs` and the
+`Commands::Dashboard` arm in `crates/cli/src/dispatcher.rs`).
 
 ## Hint patterns (ISA-18.2 inspired)
 

@@ -104,3 +104,122 @@ def test_dogfood_without_timeout_fails_with_install_hint(target: str) -> None:
     unbounded or report exit 127 as a contract failure."""
     recipe = _dry_run(target, "TIMEOUT=")
     assert "brew install coreutils" in recipe
+
+
+def _help() -> str:
+    return subprocess.run(
+        ["make", "help"], cwd=REPO_ROOT, capture_output=True, text=True, check=True
+    ).stdout
+
+
+def test_check_deps_reports_the_tools_precommit_and_dogfood_call() -> None:
+    recipe = _dry_run("check-deps")
+    for tool in ("npx", "rg", "jq", "curl", "tmux", "python3", "pytest", "gtimeout", "shellcheck"):
+        assert tool in recipe, tool
+    assert "declare -A" in recipe  # bash 4+ probe for verify-publish
+
+
+def test_integration_tests_follow_the_thread_setting() -> None:
+    recipe = _dry_run("test-integration", "TEST_THREADS=3")
+    assert "--test-threads=3" in recipe
+
+
+def test_help_states_the_make_version_parallel_runs_need() -> None:
+    assert "GNU make 4.4" in _help()
+
+
+def _prerequisites(target: str) -> list[str]:
+    text = (REPO_ROOT / "Makefile").read_text()
+    line = next(l for l in text.splitlines() if l.startswith(f"{target}:"))
+    return line.split(":", 1)[1].split()
+
+
+def test_release_checks_formatting_instead_of_rewriting_it() -> None:
+    assert "fmt" not in _prerequisites("release")
+    assert "fmt --all -- --check" in _dry_run("release")
+
+
+def test_all_does_not_format_in_parallel_with_lint_and_tests() -> None:
+    """`fmt` as a sibling prerequisite of lint/test lets `make -j` run clippy
+    and tests against a half-formatted tree."""
+    assert "fmt" not in _prerequisites("all")
+    assert "fmt --all\n" in _dry_run("all")
+
+
+def test_help_lists_targets_it_used_to_omit() -> None:
+    help_text = _help()
+    for target in ("cold-window", "lint-reachability", "verify-publish", "lint-shell"):
+        assert f"  {target} " in help_text, target
+    hygiene = next(l for l in help_text.splitlines() if l.strip().startswith("lint-hygiene"))
+    assert "lint-reachability" in hygiene and "lint-shell" in hygiene
+    lint = next(l for l in help_text.splitlines() if l.strip().startswith("lint "))
+    assert "three" in lint
+
+
+def test_ensure_mdbook_finds_a_copy_it_installed_earlier() -> None:
+    recipe = _dry_run("book", "CARGO_HOME=/ch")
+    assert "PATH=/ch/bin:$PATH command -v mdbook" in recipe
+
+
+def test_install_puts_the_binary_in_the_users_cargo_bin() -> None:
+    recipe = _dry_run("install")
+    assert "cargo install --path crates/cli --locked" in recipe
+    assert "CARGO_HOME=" not in recipe
+
+
+@pytest.mark.parametrize(
+    "target", ["lint-md", "lint-prose", "lint-decoration", "lint-reachability",
+               "dogfood-validate-contract", "dogfood-tui-interactive"]
+)
+def test_scripts_run_through_their_shebang(target: str) -> None:
+    assert "/bin/bash ./scripts/" not in _dry_run(target)
+
+
+def test_recipe_pipelines_fail_when_an_early_stage_fails(tmp_path: Path) -> None:
+    probe = tmp_path / "probe.mk"
+    probe.write_text("pipefail-probe:\n\tfalse | cat\n")
+    completed = subprocess.run(
+        ["make", "-f", "Makefile", "-f", str(probe), "pipefail-probe"],
+        cwd=REPO_ROOT, capture_output=True, text=True,
+    )
+    assert completed.returncode != 0
+
+
+def test_cli_demo_asserts_the_expected_errors() -> None:
+    recipe = _dry_run("demo-cli")
+    assert '|| true' not in "\n".join(
+        l for l in recipe.splitlines() if "grep -q" in l
+    )
+    assert 'grep -q "No skills"' not in recipe
+
+
+def test_cert_demo_does_not_hide_failures_behind_head() -> None:
+    assert "| head -5" not in _dry_run("demo-cert")
+
+
+def test_uninstall_demo_checks_the_registration_is_gone() -> None:
+    recipe = _dry_run("demo-setup-uninstall")
+    assert ".claude/.mcp.json" in recipe.split("setup --uninstall", 1)[1]
+
+
+def test_setup_both_demo_checks_codex_too() -> None:
+    recipe = _dry_run("demo-setup-both").split("setup --client both", 1)[1]
+    assert ".codex/config.toml" in recipe
+
+
+def test_dogfood_scratch_paths_are_private_and_unpredictable() -> None:
+    for target in ("dogfood-cold-window-browser", "dogfood-tui", "dogfood-dashboard",
+                   "dogfood-skill-diff", "plugin-modernize-direct"):
+        recipe = _dry_run(target)
+        assert "/tmp/skrills-dogfood-" not in recipe, target
+        assert "mktemp -d" in recipe, target
+
+
+def test_lint_hygiene_runs_shellcheck() -> None:
+    assert "shellcheck" in _dry_run("lint-hygiene")
+
+
+@pytest.mark.skipif(shutil.which("shellcheck") is None, reason="shellcheck not installed")
+def test_shell_scripts_have_no_shellcheck_warnings() -> None:
+    completed = subprocess.run(["make", "lint-shell"], cwd=REPO_ROOT, capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stdout + completed.stderr

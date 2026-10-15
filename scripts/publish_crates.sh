@@ -29,15 +29,27 @@ crate_version() {
   printf '%s\n' "$version"
 }
 
+# Ask crates.io for the exact version: 200 means published, 404 means not.
+# `cargo search` ranks results, so a ranking change read as "not published"
+# and the re-run then aborted on cargo's "already exists" error.
 already_published() {
   local crate="$1"
   local version="$2"
-  local output
-  output=$(cargo search "$crate" --limit 1) || {
-    echo "ERROR: cargo search failed for $crate (network issue or rate limit?)" >&2
+  local status
+  status=$(curl -sS -o /dev/null -w '%{http_code}' \
+    -A "skrills-publish (https://github.com/athola/skrills)" \
+    "https://crates.io/api/v1/crates/${crate}/${version}") || {
+    echo "ERROR: crates.io lookup failed for $crate $version (network issue?)" >&2
     exit 1
   }
-  echo "$output" | grep -qF "$crate = \"$version\""
+  case "$status" in
+    200) return 0 ;;
+    404) return 1 ;;
+    *)
+      echo "ERROR: crates.io returned HTTP $status for $crate $version" >&2
+      exit 1
+      ;;
+  esac
 }
 
 publish_one() {
@@ -48,13 +60,14 @@ publish_one() {
     return
   fi
   echo "Publishing $crate v$version"
+  # cargo publish (1.66+) waits until the index lists the new version, so
+  # dependents published next can resolve it.
   cargo publish -p "$crate"
-  # allow index to update before dependents publish
-  sleep 20
 }
 
 require_token
 require_cmd jq
+require_cmd curl
 
 # Level 0: leaf crates (no internal dependencies)
 publish_one skrills-snapshot

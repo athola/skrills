@@ -61,6 +61,7 @@ FUNC_FILE=$(mktemp)
 trap 'rm -f "$FUNC_FILE"' EXIT
 
 extract_functions > "$FUNC_FILE"
+# shellcheck source=/dev/null # generated from install.sh above
 source "$FUNC_FILE"
 
 echo "=== Testing install.sh helper functions ==="
@@ -407,24 +408,34 @@ run_setup() {
     SETUP_CALLS="$(cat "$SETUP_LOG")"
 }
 
+# Like assert_eq, but a failure also shows what setup printed, so a CI log
+# carries the reason and not only the mismatch.
+assert_setup_eq() {
+    if [[ "$1" == "$2" ]]; then
+        pass "$3"
+    else
+        test_fail "$3 (expected '$2', got '$1'); setup output: $SETUP_OUT"
+    fi
+}
+
 unset SKRILLS_CLIENT SKRILLS_UNIVERSAL SKRILLS_NO_HOOK
 run_setup none
-assert_eq "$SETUP_RC" "0" "setup succeeds when no client directory exists"
-assert_eq "$SETUP_CALLS" "setup --yes --client claude --bin-dir $SETUP_DIR/bin" \
+assert_setup_eq "$SETUP_RC" "0" "setup succeeds when no client directory exists"
+assert_setup_eq "$SETUP_CALLS" "setup --yes --client claude --bin-dir $SETUP_DIR/bin" \
     "with no client directory, setup targets Claude Code in the install dir"
 
 run_setup two .codex .cursor
-assert_eq "$SETUP_RC" "0" "setup succeeds for two detected clients"
-assert_eq "$SETUP_CALLS" "setup --yes --client codex --bin-dir $SETUP_DIR/bin
+assert_setup_eq "$SETUP_RC" "0" "setup succeeds for two detected clients"
+assert_setup_eq "$SETUP_CALLS" "setup --yes --client codex --bin-dir $SETUP_DIR/bin
 setup --yes --client cursor --bin-dir $SETUP_DIR/bin" \
     "each detected client directory gets its own setup run"
 
 SKRILLS_CLIENT=all run_setup override .codex
-assert_eq "$SETUP_CALLS" "setup --yes --client all --bin-dir $SETUP_DIR/bin" \
+assert_setup_eq "$SETUP_CALLS" "setup --yes --client all --bin-dir $SETUP_DIR/bin" \
     "SKRILLS_CLIENT overrides detection"
 
 SKRILLS_UNIVERSAL=1 run_setup universal .claude
-assert_eq "$SETUP_CALLS" "setup --yes --client claude --bin-dir $SETUP_DIR/bin --universal" \
+assert_setup_eq "$SETUP_CALLS" "setup --yes --client claude --bin-dir $SETUP_DIR/bin --universal" \
     "SKRILLS_UNIVERSAL=1 passes --universal"
 
 # Summary

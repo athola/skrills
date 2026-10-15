@@ -64,7 +64,7 @@ Skrills can generate a self-contained HTML portal on demand via the `html-portal
 ## Key Concepts
 
 ### Skills
-Skills are `SKILL.md` files containing instructions and metadata. Skrills scans for these files in `~/.claude/skills`, `~/.codex/skills`, `~/.copilot/skills`, `~/.cursor/rules/`, and the shared `~/.agents/skills` directory that Codex, Cursor and Copilot CLI load.
+Skills are `SKILL.md` files containing instructions and metadata. By default Skrills scans `~/.codex/skills`, `~/.claude/skills`, `~/.copilot/skills`, `~/.cursor/skills`, the Claude Code plugin directories, and the shared `~/.agents/skills` directory that Codex, Cursor and Copilot CLI load. Cursor rules under `~/.cursor/rules/` are not scanned by default.
 
 ### MCP (Model Context Protocol)
 Skrills implements the Model Context Protocol, allowing assistants to invoke its tools (validation, analysis, sync) directly during a session.
@@ -74,17 +74,11 @@ Validation rules depend on the target. Claude Code is permissive and accepts any
 
 ## Architecture
 
-Skrills is a Rust workspace:
-
-| Crate | Purpose |
-|-------|---------|
-| `server` | MCP server and CLI interface |
-| `validate` | Skill validation |
-| `analyze` | Token counting |
-| `intelligence` | Recommendations and skill creation |
-| `sync` | Bidirectional sync |
-| `discovery` | Skill discovery |
-| `subagents` | Task delegation |
+Skrills is a Rust workspace of 14 crates. The `cli` crate builds the
+`skrills` binary; `server` holds the MCP server and the engine the
+subcommands call. The
+[architecture overview](https://github.com/athola/skrills/blob/master/docs/architecture.md)
+lists every crate and its purpose.
 
 ## Next Steps
 

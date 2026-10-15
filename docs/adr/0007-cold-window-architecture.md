@@ -89,8 +89,13 @@ Key red-team challenges resolved before implementation:
 
 - `skrills-snapshot` is a new wire-format crate; breaking changes follow
   semver and require incrementing the `version` field in `WindowSnapshot`.
-- The broadcast channel bus creates a hard dependency ordering:
-  engine → analyze crate → snapshot crate. Consumers must not take snapshots
-  crate as a direct dependency on the engine.
+- The engine lives in `skrills-analyze` and publishes `skrills-snapshot`
+  types on its broadcast channel, so the ordering is snapshot ← analyze ←
+  surfaces. `analyze` also depends on `skrills-intelligence`. Surfaces
+  (`server`, `dashboard`, `cli`) consume snapshots through the snapshot
+  crate's types; `intelligence`, `tome`, `sync` and `test-utils` depend on
+  `skrills-snapshot` directly too.
+  `skrills-snapshot` itself depends on no other workspace crate, so any crate
+  can read the wire format without pulling in the engine.
 - The `http-transport` feature flag gates all browser-surface code; builds
   with `--no-default-features` are unaffected.

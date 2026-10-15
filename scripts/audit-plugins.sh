@@ -88,11 +88,20 @@ REGISTRATION_SCRIPT="$(pick_script "${UPSTREAM_REGISTRATION}" "${LOCAL_REGISTRAT
 VALIDATE_SCRIPT="$(pick_script "${UPSTREAM_VALIDATE}" "${LOCAL_VALIDATE}")"
 MODERNIZE_SCRIPT="$(pick_script "${UPSTREAM_MODERNIZE}" "${LOCAL_MODERNIZE}")"
 
-if [[ "${REGISTRATION_SCRIPT}" == "${UPSTREAM_REGISTRATION}" ]]; then
-  echo "[shim] using upstream registration script: ${REGISTRATION_SCRIPT}"
-else
-  echo "[shim] using ported registration script: ${REGISTRATION_SCRIPT}"
-fi
+# Name every pick: an upstream script is external code, and with --fix the
+# registration auditor rewrites files in this repo.
+announce_pick() {
+  local label="$1" picked="$2" upstream="$3"
+  if [[ "${picked}" == "${upstream}" ]]; then
+    echo "[shim] using upstream ${label} script: ${picked}"
+  else
+    echo "[shim] using ported ${label} script: ${picked}"
+  fi
+}
+
+announce_pick registration "${REGISTRATION_SCRIPT}" "${UPSTREAM_REGISTRATION}"
+(( DO_VALIDATE )) && announce_pick validate "${VALIDATE_SCRIPT}" "${UPSTREAM_VALIDATE}"
+(( DO_MODERNIZE )) && announce_pick modernize "${MODERNIZE_SCRIPT}" "${UPSTREAM_MODERNIZE}"
 
 # 1) Registration audit.
 if (( DO_REGISTRATION )); then

@@ -61,7 +61,8 @@ skrills sync-commands --from claude --to codex --skip-existing-commands
 ### MCP Server Configurations
 
 MCP server definitions are synchronized between configuration files:
-- **Claude/Codex**: Share similar MCP configuration format
+- **Claude Code**: user-scope servers in `~/.claude.json` (not `settings.json`)
+- **Codex**: `[mcp_servers.*]` tables in `~/.codex/config.toml`
 - **Copilot**: Uses `mcp-config.json` (separate from main config)
 - **Cursor**: Uses `.cursor/mcp.json`
 
@@ -154,7 +155,8 @@ This shows:
 
 ## Mirror Command
 
-The `mirror` command syncs files and updates `AGENTS.md`:
+The `mirror` command syncs files and refreshes Codex's global
+`~/.codex/AGENTS.md` (never an `AGENTS.md` in the working directory):
 
 ```bash
 skrills mirror --skip-existing-commands

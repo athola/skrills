@@ -244,3 +244,28 @@ class TestModuleReachabilityLint:
         (src / "bin" / "tool.rs").write_text("fn main() {}\n")
         result = _run(tmp_path)
         assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.unit
+def test_attribute_prefixed_declaration_counts(tmp_path):
+    """`#[cfg(test)] mod tests;` on one line declares tests.rs."""
+    src = _crate_src(tmp_path, "#[cfg(test)] mod tests;\n")
+    (src / "tests.rs").write_text("\n")
+    result = _run(tmp_path)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.unit
+def test_raw_identifier_declaration_counts(tmp_path):
+    src = _crate_src(tmp_path, "pub mod r#type;\n")
+    (src / "type.rs").write_text("\n")
+    result = _run(tmp_path)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.unit
+def test_commented_out_declaration_still_fails(tmp_path):
+    src = _crate_src(tmp_path, "// mod gone;\n")
+    (src / "gone.rs").write_text("\n")
+    result = _run(tmp_path)
+    assert result.returncode == 1

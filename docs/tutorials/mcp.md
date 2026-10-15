@@ -6,7 +6,7 @@ This tutorial shows how to use Skrills as an MCP server with Claude Code CLI and
 
 ## Overview
 
-Skrills runs as an MCP (Model Context Protocol) server, providing 36 core tools for skill management and research, plus 10 subagent and 3 gateway tools in a default build:
+Skrills runs as an MCP (Model Context Protocol) server, providing 36 core tools for skill management and research, plus 9 subagent and 3 gateway tools in a default build:
 
 - **Sync Tools**: Bidirectional sync between Claude, Codex, Copilot, and Cursor
 - **Validation Tools**: Validate skills for CLI compatibility
@@ -42,18 +42,13 @@ After installation, tools appear as `mcp__plugin_skrills_skrills__<tool-name>`.
 
 ### Option 2: MCP Server (User-Level)
 
-Add to `~/.claude/settings.local.json`:
+Register it at user scope, which Claude Code records in `~/.claude.json`:
 
-```json
-{
-  "mcpServers": {
-    "skrills": {
-      "command": "skrills",
-      "args": ["serve"]
-    }
-  }
-}
+```bash
+claude mcp add --scope user skrills -- skrills serve
 ```
+
+`skrills setup --client claude` runs this for you.
 
 ### Option 3: MCP Server (Project-Level)
 
@@ -73,17 +68,13 @@ Add to `.mcp.json` in your project root:
 
 ### For Codex
 
-Add to `~/.codex/mcp.json`:
+Add to `~/.codex/config.toml` (or run `skrills setup --client codex`):
 
-```json
-{
-  "mcpServers": {
-    "skrills": {
-      "command": "skrills",
-      "args": ["serve"]
-    }
-  }
-}
+```toml
+[mcp_servers.skrills]
+type = "stdio"
+command = "skrills"
+args = ["serve"]
 ```
 
 ## Using Skrills Tools
@@ -260,7 +251,7 @@ Reconnected to skrills.
 
 2. **Verify configuration**: Check your MCP settings
    ```bash
-   cat ~/.claude/settings.local.json | jq '.mcpServers.skrills'
+   jq '.mcpServers.skrills' ~/.claude.json
    # or for project-level:
    cat .mcp.json | jq '.mcpServers.skrills'
    ```

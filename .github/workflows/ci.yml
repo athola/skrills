@@ -87,11 +87,12 @@ jobs:
         with:
           python-version: '3.12'
       # lint-prose-slop.sh and lint-rust-decoration.sh exit 2 without ripgrep,
+      # lint-shell refuses to run without shellcheck,
       # `make test-scripts` refuses to run without pytest on PATH, and the
       # dogfood slice tests skip themselves without jq.
-      - name: Install ripgrep, jq and pytest
+      - name: Install ripgrep, jq, shellcheck and pytest
         run: |
-          sudo apt-get update && sudo apt-get install -y ripgrep jq
+          sudo apt-get update && sudo apt-get install -y ripgrep jq shellcheck
           python -m pip install --upgrade pytest
       - name: Hygiene lints
         run: make lint-hygiene

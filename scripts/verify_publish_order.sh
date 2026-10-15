@@ -2,6 +2,14 @@
 
 set -euo pipefail
 
+# The dependency walk below uses associative arrays. Stock macOS bash is 3.2,
+# where `declare -A` fails with a bare usage line, so say what is needed.
+if (( BASH_VERSINFO[0] < 4 )); then
+  echo "ERROR: verify_publish_order.sh needs bash 4+ (associative arrays); found ${BASH_VERSION}." >&2
+  echo "       Install a newer bash (brew install bash) or run 'make verify-publish'." >&2
+  exit 1
+fi
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Validate crate name before using as associative array key
@@ -65,6 +73,35 @@ if [[ ${#WORKSPACE_MEMBERS[@]} -eq 0 ]]; then
   exit 1
 fi
 
+# Expand glob members (`crates/*`) the way cargo does: every matching
+# directory that holds a Cargo.toml.
+EXPANDED_MEMBERS=()
+for member in "${WORKSPACE_MEMBERS[@]}"; do
+  if [[ "${member}" == *[*?[]* ]]; then
+    for dir in "${ROOT}"/${member}; do
+      [[ -f "${dir}/Cargo.toml" ]] && EXPANDED_MEMBERS+=("${dir#"${ROOT}"/}")
+    done
+  else
+    EXPANDED_MEMBERS+=("${member}")
+  fi
+done
+WORKSPACE_MEMBERS=("${EXPANDED_MEMBERS[@]}")
+
+# `publish = false` and `publish = []` both mean "never publish"; a member
+# with `publish.workspace = true` inherits [workspace.package] publish.
+UNPUBLISHED_RE='^publish[[:space:]]*=[[:space:]]*(false|\[[[:space:]]*\])'
+INHERIT_RE='^publish(\.workspace[[:space:]]*=[[:space:]]*true|[[:space:]]*=[[:space:]]*\{[[:space:]]*workspace[[:space:]]*=[[:space:]]*true)'
+workspace_publishable=1
+root_section=""
+while read -r line; do
+  line="${line%%#*}"
+  if [[ "${line}" =~ ^\[.*\]$ ]]; then
+    root_section="${line}"
+  elif [[ "${root_section}" == "[workspace.package]" && "${line}" =~ ${UNPUBLISHED_RE} ]]; then
+    workspace_publishable=0
+  fi
+done < "${ROOT}/Cargo.toml"
+
 WORKSPACE_NAMES=()
 PUBLISHABLE_NAMES=()
 DEPS=()
@@ -88,8 +125,10 @@ for member in "${WORKSPACE_MEMBERS[@]}"; do
     if [[ "${in_section}" == "[package]" ]]; then
       if [[ "${line}" =~ ^name[[:space:]]*=[[:space:]]*\"([^\"]+)\" ]]; then
         name="${BASH_REMATCH[1]}"
-      elif [[ "${line}" =~ ^publish[[:space:]]*=[[:space:]]*false ]]; then
+      elif [[ "${line}" =~ ${UNPUBLISHED_RE} ]]; then
         publishable=0
+      elif [[ "${line}" =~ ${INHERIT_RE} ]]; then
+        publishable="${workspace_publishable}"
       fi
     fi
   done < "${manifest}"

@@ -12,9 +12,9 @@ cli_binary = "auto"
 # Default backend when execution_mode = "api" and no backend is specified
 default_backend = "codex"
 
-# Optional model overrides
-# codex_model = "gpt-5-codex"
-# claude_model = "claude-code"
+# API-mode models default to claude-opus-5-5 (Claude) and gpt-6-astra (Codex).
+# Override them with SKRILLS_CLAUDE_MODEL / SKRILLS_CODEX_MODEL; this file
+# has no model keys.
 
 # Timeout seconds for runs
 # timeout_secs = 300

@@ -61,7 +61,9 @@ Usage analytics are stored when you run analytics-building commands with persist
 
 Enable automatic persistence with:
 - `--auto-persist` flag on `recommend-skills-smart`
-- `SKRILLS_AUTO_PERSIST=1` environment variable
+- `SKRILLS_AUTO_PERSIST=1` environment variable. With it set, `skrills serve`
+  also saves analytics when the server exits, over stdio or HTTP, including
+  when it exits with an error.
 
 Manual persistence:
 ```bash

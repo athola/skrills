@@ -101,3 +101,23 @@ class TestUnknownFlag:
         result = _run(["--bogus"])
         assert result.returncode == 64
         assert "Unknown flag" in result.stderr
+
+
+@pytest.mark.unit
+def test_every_upstream_pick_is_announced(tmp_path):
+    """A NIGHT_MARKET_ROOT checkout swaps in external code (with --fix it
+    rewrites repo files), so each script picked from it must be named."""
+    upstream = tmp_path / "plugins" / "abstract" / "scripts"
+    upstream.mkdir(parents=True)
+    (upstream / "validate_plugin.py").write_text("print('upstream validate ran')\n")
+    modernize = tmp_path / "scripts"
+    modernize.mkdir()
+    (modernize / "check_hook_modernization.py").write_text("print('upstream modernize ran')\n")
+    env = {**os.environ, "NIGHT_MARKET_ROOT": str(tmp_path)}
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "--all"], cwd=REPO_ROOT, env=env,
+        capture_output=True, text=True, check=False,
+    )
+    assert "using upstream validate script" in result.stdout
+    assert "using upstream modernize script" in result.stdout
+    assert "using ported registration script" in result.stdout

@@ -42,3 +42,24 @@ def test_truncated_install_script_runs_nothing(tmp_path: Path) -> None:
 def test_install_script_ends_by_calling_main() -> None:
     last = INSTALL_SCRIPT.read_text().rstrip("\n").splitlines()[-1]
     assert last == 'main "$@"'
+
+
+def test_interrupt_during_download_stops_the_install(tmp_path: Path) -> None:
+    """The INT/TERM trap used to clean up and return, so the script carried
+    on against a deleted tmpdir and failed later with a misleading error."""
+    functions = INSTALL_SCRIPT.read_text().split("# --- main", 1)[0]
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        functions
+        + '\nDOWNLOAD_AND_EXTRACT "https://example.invalid/skrills-x.tar.gz" '
+        + f'"{tmp_path}/bin" skrills\necho CONTINUED\n'
+    )
+    shim_dir = tmp_path / "shims"
+    shim_dir.mkdir()
+    curl = shim_dir / "curl"
+    curl.write_text("#!/bin/sh\nkill -INT $PPID\nexit 0\n")
+    curl.chmod(0o755)
+    env = {**os.environ, "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
+    completed = subprocess.run(["sh", str(harness)], env=env, capture_output=True, text=True)
+    assert "CONTINUED" not in completed.stdout
+    assert completed.returncode == 130, completed.stderr

@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Anchor on the repo root: run from a subdirectory, the `**/*.md` globs
+# would lint only that subtree and report the rest clean.
+case "${BASH_SOURCE[0]}" in
+  */*) script_dir="${BASH_SOURCE[0]%/*}" ;;
+  *) script_dir="." ;;
+esac
+cd "${script_dir}/.."
+
 if ! command -v npx >/dev/null 2>&1; then
   echo "npx is required to run markdownlint. Install Node.js/npm first." >&2
   exit 1

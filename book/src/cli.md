@@ -134,7 +134,8 @@ skrills sync-preferences --from claude
 
 ### mirror
 
-Copy Claude assets to Codex defaults and refresh the agent list:
+Copy Claude assets to Codex defaults and refresh the agent list in
+`~/.codex/AGENTS.md`:
 
 ```bash
 skrills mirror                           # Full mirror
@@ -175,6 +176,12 @@ skrills serve --skill-dir ~/.custom/skills  # Custom skill directory
 | `--list-tools` | Print the available MCP tools and exit |
 | `--trace-wire` | Dump raw MCP initialize traffic as hex and UTF-8 for debugging (`SKRILLS_TRACE_WIRE`) |
 
+With `--auth-token`, the dashboard page and its static files load without
+the token, but every API call needs it. Open the dashboard as
+`http://127.0.0.1:3000/#token=<TOKEN>` (the fragment never leaves the
+browser), or enter the token when the page prompts after its first
+rejected request.
+
 The MCP transport validates the inbound `Host` header and accepts only
 `localhost`, `127.0.0.1` and `::1` unless told otherwise. That is what stops a
 page on an attacker's domain from resolving to your loopback address and
@@ -208,7 +215,7 @@ non-loopback address logs a warning at startup. The check applies only to a
 `project_dir` the client passes; when it passes none, the tools use the
 server's working directory.
 
-The MCP server exposes 36 core tools (49 with the default subagent and gateway features) for validation, analysis, sync, intelligence, and research directly to your AI assistant. The HTTP mode serves a browser dashboard with skills explorer, metrics, and activity feed.
+The MCP server exposes 36 core tools (48 with the default subagent and gateway features) for validation, analysis, sync, intelligence, and research directly to your AI assistant. The HTTP mode serves a browser dashboard with skills explorer, metrics, and activity feed.
 
 Skrills can generate a self-contained HTML portal (`skrills-portal.html`) via the `html-portal-generator` skill. It works offline without a running server and includes a skills browser, validator with autofix, token analyzer, cross-CLI converter, and full CLI/MCP reference. Open it directly in any browser or upload it into AI application portals. The file is git-ignored, so regenerate it as part of release prep.
 
@@ -236,7 +243,11 @@ When `execution_mode=api` and no backend is specified, skrills checks:
 2. `SKRILLS_SUBAGENTS_DEFAULT_BACKEND` environment variable
 3. Default: `codex`
 
-In `cli` mode, skrills uses `cli_binary` (or `SKRILLS_CLI_BINARY`), auto-detecting the current client via CLI env or server path (fallback: `claude`).
+In `cli` mode, when the run names no backend, skrills picks the binary in this order:
+1. `cli_binary` (or `SKRILLS_CLI_BINARY`) when it names a binary rather than `auto`
+2. The configured default backend (`SKRILLS_SUBAGENTS_DEFAULT_BACKEND` or `default_backend`): `codex` or `claude`
+3. The current client, detected from `SKRILLS_CLIENT` or the CLI environment, then the server binary path
+4. Default: `claude`
 
 ### multi-cli-agent
 

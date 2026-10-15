@@ -22,7 +22,7 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$REPO_ROOT"
+cd "$REPO_ROOT" || exit 2
 
 BIN_PATH="${BIN_PATH:-target/release/skrills}"
 # Make relative paths repo-relative once, so an absolute BIN_PATH (make passes
@@ -125,7 +125,9 @@ refusal() {  # $1=label  $2..=command
   local label="$1"; shift
   scenario "$label refuses gracefully when stdout is not a TTY"
   local out err rc
-  out="$WORK/out.$RANDOM"; err="$WORK/err.$RANDOM"
+  local scratch
+  scratch="$(mktemp -d "$WORK/refusal.XXXXXX")"
+  out="$scratch/out"; err="$scratch/err"
   # No `set +e`/`set -e` pair: this script runs without errexit by design, and
   # every scenario reports through ok/bad. The old trailing `set -e` turned
   # errexit on for the rest of the run after the first refusal, so a later

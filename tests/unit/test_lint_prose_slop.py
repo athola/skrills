@@ -108,3 +108,11 @@ class TestProseSlopLint:
         assert result.returncode == 2, result.stderr
         assert "prose lint did not run" in result.stderr
         assert "clean" not in result.stdout
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("word", ["Leverage", "leveraging", "seamlessly", "Seamless"])
+def test_banned_words_match_any_case_and_inflection(tmp_path, word):
+    (tmp_path / "doc.md").write_text(f"We {word} the cache.\n")
+    result = _run(tmp_path)
+    assert result.returncode == 1, result.stdout
