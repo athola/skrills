@@ -1,15 +1,11 @@
 use anyhow::{anyhow, Result};
 use pathdiff::diff_paths;
 use skrills_discovery::{
-    default_priority, discover_agents, discover_skills, load_priority_override,
-    priority_labels as disc_priority_labels,
-    priority_labels_and_rank_map as disc_priority_labels_and_rank_map, AgentMeta, SkillMeta,
-    SkillRoot, SkillSource,
+    default_priority, discover_agents, discover_skills, priority_labels as disc_priority_labels,
+    priority_labels_and_rank_map as disc_priority_labels_and_rank_map, AgentMeta, RootSettings,
+    SkillMeta, SkillRoot, SkillSource,
 };
-use skrills_state::{
-    env_include_claude, env_include_marketplace, extra_dirs_from_env, home_dir,
-    load_manifest_settings,
-};
+use skrills_state::{env_include_claude, env_include_marketplace, extra_dirs_from_env, home_dir};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -50,75 +46,11 @@ pub fn priority_labels_and_rank_map() -> (Vec<String>, serde_json::Map<String, s
 
 /// Determines the skill root directories based on configuration and environment.
 pub fn skill_roots(extra_dirs: &[PathBuf]) -> Result<Vec<SkillRoot>> {
-    let home = home_dir()?;
-    let include_claude = env_include_claude();
-    let order = {
-        if let Some(mut override_list) =
-            load_priority_override(&|| Ok(load_manifest_settings()?.priority.clone()))?
-        {
-            let mut seen: HashSet<String> = override_list.iter().map(|s| s.label()).collect();
-            for src in default_priority() {
-                if seen.insert(src.label()) {
-                    override_list.push(src);
-                }
-            }
-            override_list
-        } else {
-            default_priority()
-        }
-    };
-    let mut roots = Vec::new();
-    for source in order {
-        let root = match source {
-            SkillSource::Codex => home.join(".codex/skills"),
-            SkillSource::Claude => {
-                if !include_claude {
-                    continue;
-                }
-                home.join(".claude/skills")
-            }
-            SkillSource::Marketplace => {
-                if !include_claude || !env_include_marketplace() {
-                    continue;
-                }
-                home.join(".claude/plugins/marketplaces")
-            }
-            SkillSource::Cache => {
-                if !include_claude {
-                    continue;
-                }
-                home.join(".claude/plugins/cache")
-            }
-            SkillSource::Mirror => home.join(".codex/skills-mirror"),
-            SkillSource::Agent => home.join(".agents/skills"),
-            // The XDG and legacy paths, as `default_roots` (and so the
-            // dashboard's `/api/skills`) lists them.
-            SkillSource::Copilot => {
-                if let Some(config_dir) = dirs::config_dir() {
-                    roots.push(SkillRoot {
-                        root: config_dir.join("copilot/skills"),
-                        source: source.clone(),
-                    });
-                }
-                home.join(".copilot/skills")
-            }
-            // Where Cursor loads skills and sync writes them, as in
-            // `default_roots`.
-            SkillSource::Cursor => home.join(".cursor/skills"),
-            SkillSource::Extra(_) => continue,
-            // `SkillSource` is `#[non_exhaustive]`, so the compiler requires
-            // this arm; a new variant gets no root until it is mapped above.
-            _ => continue,
-        };
-        roots.push(SkillRoot { root, source });
-    }
-    for (idx, dir) in extra_dirs.iter().enumerate() {
-        roots.push(SkillRoot {
-            root: dir.clone(),
-            source: SkillSource::Extra(idx as u32),
-        });
-    }
-    Ok(roots)
+    Ok(skrills_discovery::skill_roots(
+        &home_dir()?,
+        &RootSettings::from_env()?,
+        extra_dirs,
+    ))
 }
 
 /// Merges extra directories from environment variables and CLI arguments.

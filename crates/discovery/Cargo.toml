@@ -17,6 +17,7 @@ path = "src/lib.rs"
 
 [dependencies]
 skrills-validate = { path = "../validate", version = "0.9.1" }
+skrills-state = { path = "../state", version = "0.9.1" }
 anyhow.workspace = true
 thiserror.workspace = true
 dirs.workspace = true

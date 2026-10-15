@@ -135,7 +135,7 @@ pub(crate) fn handle_skill_score_command(
     format: OutputFormat,
     below_threshold: Option<u8>,
 ) -> Result<()> {
-    let roots = crate::commands::skill_roots_for(&skill_dirs);
+    let roots = crate::commands::skill_roots_for(&skill_dirs)?;
     let skills = discover_skills(&roots, None)?;
     let skills_to_score = select_skills(&skills, name.as_deref())?;
 

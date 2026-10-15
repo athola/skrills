@@ -14,7 +14,7 @@ pub(crate) fn handle_pre_commit_validate_command(
     let skill_files = if staged {
         staged_skill_files(Path::new("."))?
     } else {
-        let roots = crate::commands::skill_roots_for(&skill_dirs);
+        let roots = crate::commands::skill_roots_for(&skill_dirs)?;
         discover_skills(&roots, None)?
             .into_iter()
             .map(|s| {

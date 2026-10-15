@@ -124,7 +124,7 @@ pub(crate) fn handle_validate_command(
     errors_only: bool,
 ) -> Result<()> {
     let validation_target: VT = target;
-    let roots = crate::commands::skill_roots_for(&skill_dirs);
+    let roots = crate::commands::skill_roots_for(&skill_dirs)?;
     let mode = if autofix {
         Autofix::Write { backup }
     } else {

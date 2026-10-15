@@ -958,14 +958,23 @@ impl RefreshSource {
             .unwrap_or_default()
     }
 
+    /// The `--skill-dir` directories, or the roots the user's settings
+    /// select, as the MCP server uses.
+    fn skill_roots(&self) -> std::result::Result<Vec<skrills_discovery::SkillRoot>, String> {
+        let settings = skrills_discovery::RootSettings::from_env().map_err(|e| format!("{e:#}"))?;
+        Ok(skrills_discovery::skill_roots_or_default(
+            &self.skill_dirs,
+            &settings,
+        ))
+    }
+
     fn collect_skills(
         &self,
         validity: &HashMap<String, bool>,
     ) -> std::result::Result<(usize, Vec<SkillInfo>), String> {
-        use skrills_discovery::{discover_skills, skill_roots_or_default};
-
-        let roots = skill_roots_or_default(&self.skill_dirs);
-        let discovered = discover_skills(&roots, None).map_err(|e| format!("{e:#}"))?;
+        let roots = self.skill_roots()?;
+        let discovered =
+            skrills_discovery::discover_skills(&roots, None).map_err(|e| format!("{e:#}"))?;
         let total = discovered.len();
 
         // Group all occurrences by base skill name, preserving insertion order.
@@ -1787,6 +1796,27 @@ mod tests {
         assert_eq!(detail.checks_failed, vec!["format".to_string()]);
     }
 
+    /// M457: the dashboard searched `~/.claude` whatever
+    /// `SKRILLS_INCLUDE_CLAUDE` said, unlike the MCP server.
+    #[test]
+    fn dashboard_skill_roots_honour_include_claude() {
+        let _env = skrills_test_utils::env_guard();
+        let home = tempfile::tempdir().unwrap();
+        let _home = skrills_test_utils::set_env_var("HOME", home.path().to_str());
+        let claude = home.path().join(".claude/skills");
+        let source =
+            Dashboard::with_collector(Vec::new(), Arc::new(MetricsCollector::in_memory().unwrap()))
+                .source();
+
+        let _off = skrills_test_utils::set_env_var("SKRILLS_INCLUDE_CLAUDE", None);
+        let roots = source.skill_roots().unwrap();
+        assert!(!roots.iter().any(|r| r.root == claude), "{roots:?}");
+
+        let _on = skrills_test_utils::set_env_var("SKRILLS_INCLUDE_CLAUDE", Some("1"));
+        let roots = source.skill_roots().unwrap();
+        assert!(roots.iter().any(|r| r.root == claude), "{roots:?}");
+    }
+
     /// RT-48: `SkillInfo::valid` was always `None`, so every row showed `[--]`.
     #[test]
     fn refresh_fills_in_the_latest_validation_verdict() {
@@ -1859,7 +1889,10 @@ mod tests {
         )
         .unwrap();
         let discovered = skrills_discovery::discover_skills(
-            &skrills_discovery::skill_roots_or_default(std::slice::from_ref(&root)),
+            &skrills_discovery::skill_roots_or_default(
+                std::slice::from_ref(&root),
+                &skrills_discovery::RootSettings::default(),
+            ),
             None,
         )
         .unwrap();

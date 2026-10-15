@@ -6,7 +6,9 @@
 //!
 //! The same runs pin SA-5: with no `--skill-dir` and no `SKRILLS_SKILL_DIR`,
 //! these commands said "No skills found" although their help promises "all
-//! discovered skills".
+//! discovered skills". Since M457 the default roots follow
+//! `SKRILLS_INCLUDE_CLAUDE` as the MCP server's do, so the runs set it to
+//! reach the `~/.claude/skills` fixture.
 
 use std::path::Path;
 use std::process::Command;
@@ -23,6 +25,7 @@ fn run_json(home: &Path, args: &[&str]) -> (serde_json::Value, String) {
         .env("RUST_LOG", "debug")
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("SKRILLS_SKILL_DIR")
+        .env("SKRILLS_INCLUDE_CLAUDE", "1")
         .output()
         .expect("spawn skrills");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();

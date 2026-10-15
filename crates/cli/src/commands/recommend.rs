@@ -19,7 +19,7 @@ pub(crate) fn handle_recommend_command(
     limit: usize,
     include_quality: bool,
 ) -> Result<()> {
-    let roots = crate::commands::skill_roots_for(&skill_dirs);
+    let roots = crate::commands::skill_roots_for(&skill_dirs)?;
     let skills = discover_skills(&roots, None)?;
     let (result, uri_to_name) = recommendations_for(&uri, &skills, limit, include_quality)?;
     if format.is_json() {

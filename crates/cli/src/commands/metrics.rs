@@ -11,7 +11,7 @@ pub(crate) fn handle_metrics_command(
     format: OutputFormat,
     include_validation: bool,
 ) -> Result<()> {
-    let roots = crate::commands::skill_roots_for(&skill_dirs);
+    let roots = crate::commands::skill_roots_for(&skill_dirs)?;
     let skills = discover_skills(&roots, None)?;
     let metrics = compute_metrics(&skills, include_validation);
 

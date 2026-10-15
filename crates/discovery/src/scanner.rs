@@ -687,59 +687,97 @@ pub fn extract_refs_from_agents(md: &str) -> std::collections::HashSet<String> {
     refs
 }
 
-/// Returns the default skill root directories.
-pub fn default_roots(home: &Path) -> Vec<SkillRoot> {
-    let mut roots = vec![
-        SkillRoot {
-            root: home.join(".codex/skills"),
-            source: SkillSource::Codex,
-        },
-        SkillRoot {
-            root: home.join(".codex/skills-mirror"),
-            source: SkillSource::Mirror,
-        },
-        SkillRoot {
-            root: home.join(".claude/skills"),
-            source: SkillSource::Claude,
-        },
-    ];
+/// Which optional skill sources a scan includes, and in what order.
+///
+/// Every surface that answers "which skills exist" (MCP, REST, dashboard,
+/// CLI) builds its roots with [`skill_roots`] from one of these, so they
+/// agree.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RootSettings {
+    /// Scan `~/.claude/skills` and the Claude plugin cache
+    /// (`SKRILLS_INCLUDE_CLAUDE`).
+    pub include_claude: bool,
+    /// Also scan Claude plugin marketplaces (`SKRILLS_INCLUDE_MARKETPLACE`);
+    /// only together with `include_claude`.
+    pub include_marketplace: bool,
+    /// Source order from the manifest's `priority` list; sources it leaves
+    /// out follow in [`default_priority`] order.
+    pub priority: Option<Vec<String>>,
+}
 
-    // Copilot: Add both XDG and legacy paths for multi-faceted discovery.
-    // XDG path: $XDG_CONFIG_HOME/copilot/skills or ~/.config/copilot/skills
-    // Legacy path: ~/.copilot/skills
-    if let Some(config_dir) = dirs::config_dir() {
-        let xdg_copilot_skills = config_dir.join("copilot/skills");
-        roots.push(SkillRoot {
-            root: xdg_copilot_skills,
-            source: SkillSource::Copilot,
-        });
+impl RootSettings {
+    /// Every source, in the default order.
+    pub fn all() -> Self {
+        Self {
+            include_claude: true,
+            include_marketplace: true,
+            priority: None,
+        }
     }
-    // Always include legacy path for backwards compatibility
-    roots.push(SkillRoot {
-        root: home.join(".copilot/skills"),
-        source: SkillSource::Copilot,
-    });
 
-    roots.extend([
-        SkillRoot {
-            root: home.join(".cursor/skills"),
-            source: SkillSource::Cursor,
-        },
-        SkillRoot {
-            root: home.join(".claude/plugins/marketplaces"),
-            source: SkillSource::Marketplace,
-        },
-        SkillRoot {
-            root: home.join(".claude/plugins/cache"),
-            source: SkillSource::Cache,
-        },
-        SkillRoot {
-            root: home.join(".agents/skills"),
-            source: SkillSource::Agent,
-        },
-    ]);
+    /// The settings the user configured: `SKRILLS_INCLUDE_CLAUDE`,
+    /// `SKRILLS_INCLUDE_MARKETPLACE` and the manifest's priority list.
+    pub fn from_env() -> Result<Self> {
+        Ok(Self {
+            include_claude: skrills_state::env_include_claude(),
+            include_marketplace: skrills_state::env_include_marketplace(),
+            priority: skrills_state::load_manifest_settings()?.priority,
+        })
+    }
+}
 
+/// The skill roots under `home` that `settings` selects, in priority order,
+/// followed by `extra` directories.
+pub fn skill_roots(home: &Path, settings: &RootSettings, extra: &[PathBuf]) -> Vec<SkillRoot> {
+    let mut order = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let requested = settings
+        .priority
+        .iter()
+        .flatten()
+        .filter_map(|key| parse_source_key(key));
+    for source in requested.chain(default_priority()) {
+        if seen.insert(source.label()) {
+            order.push(source);
+        }
+    }
+    let mut roots = Vec::new();
+    for source in order {
+        let root = match source {
+            SkillSource::Codex => home.join(".codex/skills"),
+            SkillSource::Mirror => home.join(".codex/skills-mirror"),
+            SkillSource::Claude if settings.include_claude => home.join(".claude/skills"),
+            // Copilot reads the XDG path and the legacy one.
+            SkillSource::Copilot => {
+                if let Some(config_dir) = dirs::config_dir() {
+                    roots.push(SkillRoot {
+                        root: config_dir.join("copilot/skills"),
+                        source: SkillSource::Copilot,
+                    });
+                }
+                home.join(".copilot/skills")
+            }
+            // Where Cursor loads skills and sync writes them.
+            SkillSource::Cursor => home.join(".cursor/skills"),
+            SkillSource::Marketplace if settings.include_claude && settings.include_marketplace => {
+                home.join(".claude/plugins/marketplaces")
+            }
+            SkillSource::Cache if settings.include_claude => home.join(".claude/plugins/cache"),
+            SkillSource::Agent => home.join(".agents/skills"),
+            // Claude sources left out by the settings, and extra directories,
+            // which come from `extra` only. `SkillSource` is
+            // `#[non_exhaustive]`; a new variant gets no root until mapped.
+            _ => continue,
+        };
+        roots.push(SkillRoot { root, source });
+    }
+    roots.extend(extra_skill_roots(extra));
     roots
+}
+
+/// Every skill root under `home`, whatever the user's settings say.
+pub fn default_roots(home: &Path) -> Vec<SkillRoot> {
+    skill_roots(home, &RootSettings::all(), &[])
 }
 
 /// Builds skill roots from extra directories.
@@ -763,7 +801,8 @@ pub fn default_roots_auto() -> Vec<SkillRoot> {
         .unwrap_or_default()
 }
 
-/// Returns skill roots from custom directories, or defaults if empty.
+/// Returns skill roots from custom directories, or the roots `settings`
+/// selects under the home directory if there are none.
 ///
 /// Custom directories are assigned `SkillSource` based on path component
 /// matching, most specific first:
@@ -776,9 +815,11 @@ pub fn default_roots_auto() -> Vec<SkillRoot> {
 /// - `.copilot` or `copilot` component → `SkillSource::Copilot`
 /// - `.cursor` component → `SkillSource::Cursor`
 /// - Otherwise → `SkillSource::Extra(index)`
-pub fn skill_roots_or_default(custom: &[PathBuf]) -> Vec<SkillRoot> {
+pub fn skill_roots_or_default(custom: &[PathBuf], settings: &RootSettings) -> Vec<SkillRoot> {
     if custom.is_empty() {
-        default_roots_auto()
+        dirs::home_dir()
+            .map(|home| skill_roots(&home, settings, &[]))
+            .unwrap_or_default()
     } else {
         custom
             .iter()
@@ -2590,16 +2631,93 @@ Content
         assert!(refs.contains("ccc"));
     }
 
+    /// M457: the server and the REST/dashboard/CLI surfaces built their
+    /// default roots two ways; only the server honoured
+    /// `SKRILLS_INCLUDE_CLAUDE`.
+    #[test]
+    fn skill_roots_leave_out_claude_sources_unless_included() {
+        let home = Path::new("/home/u");
+        let labels = |settings: &RootSettings| -> Vec<String> {
+            skill_roots(home, settings, &[])
+                .iter()
+                .map(|r| r.source.label())
+                .collect()
+        };
+
+        let without = labels(&RootSettings::default());
+        assert!(
+            !without
+                .iter()
+                .any(|l| l == "claude" || l == "cache" || l == "marketplace"),
+            "{without:?}"
+        );
+
+        let claude_only = labels(&RootSettings {
+            include_claude: true,
+            ..RootSettings::default()
+        });
+        assert!(claude_only.contains(&"claude".to_string()));
+        assert!(claude_only.contains(&"cache".to_string()));
+        assert!(!claude_only.contains(&"marketplace".to_string()));
+
+        let pairs = |roots: Vec<SkillRoot>| -> Vec<(PathBuf, String)> {
+            roots
+                .into_iter()
+                .map(|r| (r.root, r.source.label()))
+                .collect()
+        };
+        assert_eq!(
+            pairs(skill_roots(home, &RootSettings::all(), &[])),
+            pairs(default_roots(home))
+        );
+    }
+
+    #[test]
+    fn skill_roots_follow_the_manifest_priority_then_the_default_order() {
+        let home = Path::new("/home/u");
+        let settings = RootSettings {
+            priority: Some(vec!["agent".into(), "cursor".into()]),
+            ..RootSettings::default()
+        };
+        let extra = PathBuf::from("/extra");
+        let roots = skill_roots(home, &settings, std::slice::from_ref(&extra));
+        let labels: Vec<_> = roots.iter().map(|r| r.source.label()).collect();
+        assert_eq!(&labels[..3], ["agent", "cursor", "codex"]);
+        assert_eq!(roots.last().map(|r| &r.root), Some(&extra));
+    }
+
+    #[test]
+    fn skill_roots_or_default_without_dirs_honours_the_settings() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let claude = home.join(".claude/skills");
+
+        let without = skill_roots_or_default(&[], &RootSettings::default());
+        assert!(!without.iter().any(|r| r.root == claude), "{without:?}");
+        let with = skill_roots_or_default(
+            &[],
+            &RootSettings {
+                include_claude: true,
+                ..RootSettings::default()
+            },
+        );
+        assert!(with.iter().any(|r| r.root == claude), "{with:?}");
+    }
+
     #[test]
     fn skill_roots_or_default_classifies_mirror_and_plugin_dirs() {
-        let roots = skill_roots_or_default(&[
-            PathBuf::from("/h/.claude/plugins/cache"),
-            PathBuf::from("/h/.claude/plugins/marketplaces"),
-            PathBuf::from("/h/.codex/skills-mirror"),
-            PathBuf::from("/h/.agents/skills"),
-            PathBuf::from("/h/.claude/skills"),
-            PathBuf::from("/h/.cursor/skills"),
-        ]);
+        let roots = skill_roots_or_default(
+            &[
+                PathBuf::from("/h/.claude/plugins/cache"),
+                PathBuf::from("/h/.claude/plugins/marketplaces"),
+                PathBuf::from("/h/.codex/skills-mirror"),
+                PathBuf::from("/h/.agents/skills"),
+                PathBuf::from("/h/.claude/skills"),
+                PathBuf::from("/h/.cursor/skills"),
+            ],
+            &RootSettings::default(),
+        );
         let sources: Vec<_> = roots.into_iter().map(|r| r.source).collect();
         assert_eq!(
             sources,

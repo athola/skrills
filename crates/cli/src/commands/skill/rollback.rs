@@ -14,7 +14,7 @@ pub(crate) fn handle_skill_rollback_command(
     skill_dirs: Vec<PathBuf>,
     format: OutputFormat,
 ) -> Result<()> {
-    let roots = crate::commands::skill_roots_for(&skill_dirs);
+    let roots = crate::commands::skill_roots_for(&skill_dirs)?;
     let skills = discover_skills(&roots, None)?;
     let skill = find_skill(&skills, &name)?;
     let skill_path = &skill.path;

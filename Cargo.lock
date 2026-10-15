@@ -4448,6 +4448,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_norway",
+ "skrills-state",
  "skrills-validate",
  "tempfile",
  "thiserror 2.0.20",

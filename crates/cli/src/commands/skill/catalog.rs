@@ -21,7 +21,7 @@ pub(crate) fn handle_skill_catalog_command(
         bail!("skill-catalog --category is not implemented: skills have no category field");
     }
 
-    let roots = crate::commands::skill_roots_for(&skill_dirs);
+    let roots = crate::commands::skill_roots_for(&skill_dirs)?;
     let skills = discover_skills(&roots, None)?;
     let result = build_catalog(&skills, search.as_deref(), source, limit);
 
