@@ -176,7 +176,7 @@ recorded as TR-001 through TR-006 in
 
 | Flag | Default | Effect |
 |---|---|---|
-| `--alert-budget <N>` | `100000` | Token-budget ceiling, at least `2`. At 80% a `Warning` alert fires; at 100% the kill-switch engages. A ceiling at or below 50000 moves `Advisory` to 20% and `Caution` to 50% of the ceiling, so the tiers stay in order (see [Token thresholds](#token-thresholds)). |
+| `--alert-budget <N>` | `100000` | Token-budget ceiling, at least `3`. At 80% a `Warning` alert fires; at 100% the kill-switch engages. A ceiling at or below 50000 moves `Advisory` to 20% and `Caution` to 50% of the ceiling, so the tiers stay in order (see [Token thresholds](#token-thresholds)). |
 | `--research-rate <N>` | `10` | Tome dispatcher fetches per hour. The quota is kept in memory and resets on every run. |
 | `--port <N>` | `8888` | Browser HTTP port (only with `--browser`). |
 | `--browser` | off | Run the HTTP browser surface. |
@@ -348,7 +348,7 @@ candidate or after touching the engine, browser, or shutdown code:
 
 ```sh
 make dogfood-cold-window-headless   # engine ticks 3 s, expects clean SIGTERM
-make dogfood-cold-window-chaos      # --demo --no-adaptive and budget=2, kill-switch path
+make dogfood-cold-window-chaos      # --demo --no-adaptive and budget=3, kill-switch path
 make dogfood-cold-window-browser    # HTML/SSE parity and 2 s shutdown budget
 make dogfood-tui                    # tui TTY-or-graceful-refusal contract
 make dogfood-dashboard              # dashboard TTY-or-graceful-refusal contract
