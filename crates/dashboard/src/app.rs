@@ -303,6 +303,8 @@ impl App {
         use crossterm::event::KeyCode;
 
         match key {
+            // Esc backs out of the help overlay first, as in the cold-window TUI.
+            KeyCode::Esc if self.show_help => self.show_help = false,
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('?') | KeyCode::F(1) => self.show_help = !self.show_help,
             KeyCode::Char('s') => self.toggle_sort(),
@@ -1218,6 +1220,22 @@ mod tests {
         let mut app = App::new();
         assert!(!app.should_quit);
         app.on_key(KeyCode::Char('q'));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn esc_closes_the_help_overlay_without_quitting() {
+        let mut app = App::new();
+        app.on_key(KeyCode::Char('?'));
+        app.on_key(KeyCode::Esc);
+        assert!(!app.show_help, "Esc closes help");
+        assert!(!app.should_quit, "Esc with help open does not quit");
+    }
+
+    #[test]
+    fn esc_quits_when_no_overlay_is_open() {
+        let mut app = App::new();
+        app.on_key(KeyCode::Esc);
         assert!(app.should_quit);
     }
 

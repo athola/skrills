@@ -2,8 +2,8 @@
 //!
 //! All modal surfaces (help, drill-down detail, future config popups)
 //! live on a single `Vec`-backed stack. The topmost overlay consumes
-//! every keystroke; `Esc` pops it (and does nothing at the base
-//! surface), `q` pops it too but quits once the stack is empty. The
+//! every keystroke; `Esc` pops it, `q` pops it too, and both quit
+//! once the stack is empty (`Esc` first clears zoom and the hint filter). The
 //! base panes therefore never need to know whether an overlay is open.
 //!
 //! Overlays render last, over the panes, into a centered rect cleared

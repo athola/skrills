@@ -3,8 +3,8 @@
 //! Renders the visible alerts (filtered and sorted by `ColdWindowState`)
 //! as a colored ratatui list. Handles two keystrokes:
 //!
-//! - `A` (uppercase): master-acknowledge, clears all CAUTION,
-//!   ADVISORY, and STATUS alerts in one stroke.
+//! - `A` (uppercase): master-acknowledge, hides all showing CAUTION,
+//!   ADVISORY, and STATUS alerts in one stroke until each one resolves.
 //! - `d`: dismiss the selected alert when it is WARNING-tier (per-row ack).
 //!
 //! Resize behavior: the pane re-derives its

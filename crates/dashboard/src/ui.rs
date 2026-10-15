@@ -318,7 +318,8 @@ fn draw_help_overlay(f: &mut Frame) {
     let help_text = r#"
 Keyboard Shortcuts:
 
-  q, Esc     Quit dashboard
+  q          Quit dashboard
+  Esc        Close this help; quit when it is closed
   Tab        Switch to next panel
   Shift+Tab  Switch to previous panel
   j, Down    Select next item

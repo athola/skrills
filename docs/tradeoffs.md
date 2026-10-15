@@ -46,6 +46,8 @@ Baseline binds q, Esc, and Ctrl-C all to quit. The overlay-stack model (FR-4) ne
 
 Esc dismisses the topmost overlay and does nothing at the base surface; q and Ctrl-C remain quit. Documented as breaking in CHANGELOG.
 
+Amended 2026-10-15 (0.9.1): Esc now quits at the bare base surface (no overlay, zoom or hint filter open), so the cold-window TUI and the skill dashboard share one rule: Esc backs out of an open state, otherwise quits.
+
 ### Y-statement
 
 In the context of adopting an overlay stack, facing the need for a dismiss key, we chose Esc-pops over Esc-quits to match TUI convention, accepting a one-time muscle-memory break.

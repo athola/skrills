@@ -119,22 +119,25 @@ bottom hint line shows only the keys valid for the focused pane, and
 | Key | Scope | Action |
 |---|---|---|
 | `q` / `Ctrl-C` | global | Quit (`q` closes an open overlay first) |
-| `Esc` | global | Close the topmost overlay; unzoom; no-op at base |
+| `Esc` | global | Back out one level (overlay, zoom, hint filter); quit when none is open |
 | `?` | global | Toggle the help overlay |
 | `:` | global | Open the command palette (type to filter, Enter runs) |
 | `Tab` / `Shift-Tab` | global | Cycle pane focus |
 | `Up`/`Down`, `j`/`k` | global | Move the focused pane's selection |
 | `Enter` | global | Open detail for the selected item |
 | `z` | global | Zoom the focused pane |
-| `A` | alerts | Acknowledge all non-warning alerts |
+| `A` | alerts | Acknowledge all showing non-warning alerts; each stays hidden until it resolves, and shows again if it recurs |
 | `d` | alerts | Dismiss the selected warning |
 | `1`-`5` / `0` | hints | Filter by category / clear filter |
 | `P` | hints | Pin the selected hint |
 | `R` | research | Expand or collapse the findings panel |
 
-Breaking change in 0.8.2: `Esc` no longer quits. It dismisses
-overlays (and zoom) the way it does in lazygit, gitui, and k9s. `q`
-and `Ctrl-C` remain the quit keys. Every action is reachable without
+`Esc` backs out one level at a time: it closes the topmost overlay,
+then clears zoom, then clears the hint filter. With none of those
+open it quits, the same rule the skill dashboard follows. (0.8.2
+made `Esc` never quit; 0.9.1 restores quitting at the bare base
+surface so both TUIs agree.) `Ctrl-C` always quits; `q` quits
+after closing any open overlay. Every action is reachable without
 CTRL/ALT modifiers, so the TUI stays usable from phone keyboards
 over SSH.
 

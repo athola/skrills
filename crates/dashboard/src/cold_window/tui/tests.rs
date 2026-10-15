@@ -377,20 +377,62 @@ fn key(code: KeyCode) -> KeyEvent {
 }
 
 #[test]
-fn q_quits_at_base_but_esc_does_not() {
-    // BREAKING (FR-4.2): Esc stopped quitting when the overlay
-    // stack landed; it only closes overlays now.
+fn q_and_esc_quit_at_the_bare_base_surface() {
+    // Esc backs out of an open overlay, zoom or hint filter; with none
+    // of those open it quits, as it does in the skill dashboard. This
+    // reverses the 0.8.2 rule that Esc never quits.
     let mut ui = UiState::new();
     let mut s = ColdWindowState::new();
     let mut h = HintPaneState::new();
     let mut r = ResearchPaneState::default();
     assert_eq!(
         handle_key(key(KeyCode::Esc), &mut ui, &mut s, &mut h, &mut r),
-        KeyOutcome::Redraw,
-        "Esc at the base surface must not quit"
+        KeyOutcome::Quit,
+        "Esc at the bare base surface quits"
     );
     assert_eq!(
         handle_key(key(KeyCode::Char('q')), &mut ui, &mut s, &mut h, &mut r),
+        KeyOutcome::Quit
+    );
+}
+
+#[test]
+fn esc_clears_the_hint_filter_before_quitting() {
+    let mut ui = UiState::new();
+    let mut s = ColdWindowState::new();
+    let mut h = HintPaneState::new();
+    let mut r = ResearchPaneState::default();
+    h.set_filter(Some(HintCategory::Token));
+    assert_eq!(
+        handle_key(key(KeyCode::Esc), &mut ui, &mut s, &mut h, &mut r),
+        KeyOutcome::Redraw,
+        "Esc with a hint filter set clears it instead of quitting"
+    );
+    assert_eq!(h.filter, None);
+    assert_eq!(
+        handle_key(key(KeyCode::Esc), &mut ui, &mut s, &mut h, &mut r),
+        KeyOutcome::Quit
+    );
+}
+
+#[test]
+fn esc_closes_an_overlay_and_unzooms_before_quitting() {
+    let mut ui = UiState::new();
+    let mut s = ColdWindowState::new();
+    let mut h = HintPaneState::new();
+    let mut r = ResearchPaneState::default();
+    ui.zoomed = true;
+    ui.overlays.push(Overlay::Help);
+    for expected_zoom in [true, false] {
+        assert_eq!(
+            handle_key(key(KeyCode::Esc), &mut ui, &mut s, &mut h, &mut r),
+            KeyOutcome::Redraw
+        );
+        assert_eq!(ui.zoomed, expected_zoom);
+    }
+    assert!(ui.overlays.is_empty());
+    assert_eq!(
+        handle_key(key(KeyCode::Esc), &mut ui, &mut s, &mut h, &mut r),
         KeyOutcome::Quit
     );
 }

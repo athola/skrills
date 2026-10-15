@@ -50,23 +50,18 @@ impl EventHandler {
             loop {
                 tokio::select! {
                     maybe_event = reader.next() => {
-                        match maybe_event {
-                            Some(Ok(CrosstermEvent::Key(key)))
-                                if tx_clone.send(Event::Key(key)).await.is_err() =>
-                            {
-                                break;
-                            }
-                            Some(Ok(CrosstermEvent::Resize(w, h)))
-                                if tx_clone.send(Event::Resize(w, h)).await.is_err() =>
-                            {
-                                break;
-                            }
+                        let event = match maybe_event {
+                            Some(Ok(CrosstermEvent::Key(key))) => Event::Key(key),
+                            Some(Ok(CrosstermEvent::Resize(w, h))) => Event::Resize(w, h),
+                            Some(Ok(_)) => continue,
                             Some(Err(e)) => {
                                 tracing::warn!(error = %e, "crossterm event stream error, stopping event loop");
                                 break;
                             }
-                    None => break,
-                            _ => {}
+                            None => break,
+                        };
+                        if tx_clone.send(event).await.is_err() {
+                            break;
                         }
                     }
                     _ = interval.tick() => {
@@ -109,5 +104,33 @@ mod tests {
         })
         .await;
         assert!(drained.is_ok(), "next() never returned None");
+    }
+
+    #[tokio::test]
+    async fn keys_resizes_and_ticks_all_reach_next() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let terminal = futures::stream::iter([
+            Ok(CrosstermEvent::Key(KeyEvent::new(
+                KeyCode::Char('x'),
+                KeyModifiers::NONE,
+            ))),
+            Ok(CrosstermEvent::FocusGained),
+            Ok(CrosstermEvent::Resize(80, 24)),
+        ])
+        .chain(futures::stream::pending());
+        let mut handler = EventHandler::from_stream(terminal, Duration::from_millis(10));
+        let (mut key, mut resize, mut tick) = (false, false, false);
+        let all_seen = tokio::time::timeout(Duration::from_secs(5), async {
+            while !(key && resize && tick) {
+                match handler.next().await {
+                    Some(Event::Key(k)) => key |= k.code == KeyCode::Char('x'),
+                    Some(Event::Resize(80, 24)) => resize = true,
+                    Some(Event::Tick) => tick = true,
+                    other => panic!("unexpected event {other:?}"),
+                }
+            }
+        })
+        .await;
+        assert!(all_seen.is_ok(), "key={key} resize={resize} tick={tick}");
     }
 }

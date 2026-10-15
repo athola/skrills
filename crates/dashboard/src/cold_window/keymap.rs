@@ -78,7 +78,7 @@ pub fn bindings() -> &'static [Binding] {
         Binding {
             scope: BindingScope::Global,
             keys: "Esc",
-            action: "close overlay",
+            action: "back / quit",
             codes: &[KeyCode::Esc],
             modifier: false,
         },
