@@ -36,6 +36,10 @@ pub enum MetricsError {
     HomeNotFound,
 
     /// Channel send error.
+    #[deprecated(
+        since = "0.9.1",
+        note = "never constructed: a broadcast with no subscribers is not an error"
+    )]
     #[error("channel send error")]
     ChannelSend,
 

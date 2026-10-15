@@ -43,6 +43,16 @@ pub(crate) fn http_client(api: &str, user_agent: Option<&str>) -> reqwest::Clien
     })
 }
 
+/// The page size to request, or `None` when there is nothing to ask for:
+/// an empty query or a zero limit would only earn an API error.
+pub(crate) fn search_limit(query: &str, limit: usize, max: usize) -> Option<usize> {
+    if query.trim().is_empty() || limit == 0 {
+        None
+    } else {
+        Some(limit.min(max))
+    }
+}
+
 /// Map a non-success status to an error: 429 becomes `RateLimited` so
 /// callers can back off, everything else `Api`.
 pub(crate) fn status_error(
@@ -184,5 +194,12 @@ mod tests {
         assert_eq!(body, b"123456");
         assert!(append_capped("a", &mut body, b"7", 6).is_err());
         assert_eq!(body.len(), 6, "rejected chunk is not appended");
+    }
+
+    #[test]
+    fn zero_limit_means_no_request() {
+        assert_eq!(search_limit("q", 0, 100), None);
+        assert_eq!(search_limit("q", 500, 100), Some(100));
+        assert_eq!(search_limit("q", 5, 100), Some(5));
     }
 }

@@ -28,7 +28,9 @@ impl SemanticScholarClient {
 
     /// Search for papers by query string.
     pub async fn search(&self, query: &str, limit: usize) -> TomeResult<Vec<Paper>> {
-        let limit = limit.min(100);
+        let Some(limit) = super::search_limit(query, limit, 100) else {
+            return Ok(Vec::new());
+        };
         let url = format!("{BASE_URL}/paper/search");
         let resp = self
             .http

@@ -202,11 +202,11 @@ impl KnowledgeGraph {
                 Ok(Node {
                     id: row.get(0)?,
                     kind: parse_node_kind(row.get::<_, String>(1)?.as_str())
-                        .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
+                        .map_err(|e| conversion_error(1, e))?,
                     label: row.get(2)?,
                     metadata_json: row.get(3)?,
                     created_at: parse_timestamp(row.get::<_, String>(4)?.as_str())
-                        .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
+                        .map_err(|e| conversion_error(4, e))?,
                 })
             },
         );
@@ -227,7 +227,7 @@ impl KnowledgeGraph {
         let mut stmt = conn.prepare(
             "SELECT id, kind, label, metadata_json, created_at FROM nodes \
              WHERE label LIKE ?1 ESCAPE '\\' AND (?2 IS NULL OR kind = ?2) \
-             ORDER BY created_at DESC LIMIT ?3",
+             ORDER BY julianday(created_at) DESC, id DESC LIMIT ?3",
         )?;
         let rows = stmt.query_map(
             rusqlite::params![pattern, kind.map(|k| k.as_str()), MAX_SEARCH_RESULTS as i64],
@@ -235,11 +235,11 @@ impl KnowledgeGraph {
                 Ok(Node {
                     id: row.get(0)?,
                     kind: parse_node_kind(row.get::<_, String>(1)?.as_str())
-                        .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
+                        .map_err(|e| conversion_error(1, e))?,
                     label: row.get(2)?,
                     metadata_json: row.get(3)?,
                     created_at: parse_timestamp(row.get::<_, String>(4)?.as_str())
-                        .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
+                        .map_err(|e| conversion_error(4, e))?,
                 })
             },
         )?;
@@ -258,7 +258,7 @@ impl KnowledgeGraph {
                 source_id: row.get(0)?,
                 target_id: row.get(1)?,
                 kind: parse_edge_kind(row.get::<_, String>(2)?.as_str())
-                    .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
+                    .map_err(|e| conversion_error(2, e))?,
                 weight: row.get(3)?,
                 metadata_json: row.get(4)?,
             })
@@ -278,7 +278,7 @@ impl KnowledgeGraph {
                 source_id: row.get(0)?,
                 target_id: row.get(1)?,
                 kind: parse_edge_kind(row.get::<_, String>(2)?.as_str())
-                    .map_err(|e| rusqlite::Error::InvalidColumnName(format!("{e}")))?,
+                    .map_err(|e| conversion_error(2, e))?,
                 weight: row.get(3)?,
                 metadata_json: row.get(4)?,
             })
@@ -317,6 +317,12 @@ fn parse_timestamp(s: &str) -> TomeResult<OffsetDateTime> {
             time::PrimitiveDateTime::parse(s, &LEGACY_TIMESTAMP_FMT).map(|dt| dt.assume_utc())
         })
         .map_err(|e| TomeError::Other(format!("invalid timestamp '{s}': {e}")))
+}
+
+/// A stored value that does not parse is a conversion failure on that
+/// column, not an unknown column name.
+fn conversion_error(column: usize, e: TomeError) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(column, rusqlite::types::Type::Text, Box::new(e))
 }
 
 fn parse_node_kind(s: &str) -> TomeResult<NodeKind> {
@@ -637,5 +643,56 @@ mod tests {
             .unwrap();
         let results = kg.search_nodes("quantum", None).unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn search_orders_mixed_timestamp_formats_by_time() {
+        let kg = KnowledgeGraph::open_in_memory().unwrap();
+        kg.add_node("old", NodeKind::Topic, "topic old", None)
+            .unwrap();
+        kg.add_node("new", NodeKind::Topic, "topic new", None)
+            .unwrap();
+        {
+            let conn = kg.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE nodes SET created_at = '2024-01-01T01:00:00Z' WHERE id = 'old'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE nodes SET created_at = '2024-01-01 23:00:00' WHERE id = 'new'",
+                [],
+            )
+            .unwrap();
+        }
+        let ids: Vec<_> = kg
+            .search_nodes("topic", None)
+            .unwrap()
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
+        assert_eq!(ids, ["new", "old"]);
+    }
+
+    #[test]
+    fn unreadable_timestamp_is_reported_as_a_conversion_failure() {
+        let kg = KnowledgeGraph::open_in_memory().unwrap();
+        kg.add_node("n", NodeKind::Topic, "label", None).unwrap();
+        kg.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE nodes SET created_at = 'yesterday' WHERE id = 'n'",
+                [],
+            )
+            .unwrap();
+        let err = kg.get_node("n").unwrap_err();
+        assert!(
+            matches!(
+                err,
+                TomeError::Cache(rusqlite::Error::FromSqlConversionFailure(..))
+            ),
+            "{err:?}"
+        );
     }
 }

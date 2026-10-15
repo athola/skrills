@@ -4,8 +4,8 @@
 //! and "fetch external research". Borrowed from Prometheus
 //! AlertManager via the war-room TRIZ bridge:
 //!
-//! - **Group**: alerts sharing labels collapse into one fetch with a
-//!   list inside.
+//! - **Group**: requests for the same fingerprint within the
+//!   fingerprint TTL collapse into one fetch (see Dedup).
 //! - **Dedup**: same fingerprint from multiple sources fires once.
 //! - **Inhibit**: a higher-confidence finding mutes redundant fetches
 //!   (e.g. "GitHub already gave us the answer; don't HN-search the
@@ -64,8 +64,11 @@ pub const DEFAULT_RESEARCH_RATE_PER_HOUR: u32 = 10;
 /// fingerprints within this duration collapse to one fetch.
 pub const DEFAULT_FINGERPRINT_TTL: Duration = Duration::from_secs(60 * 60);
 
-/// Group/coalesce window for the dispatcher: incoming requests
-/// arriving within this window with the same fingerprint collapse.
+/// Group/coalesce window for the dispatcher.
+#[deprecated(
+    since = "0.9.1",
+    note = "never read: same-fingerprint requests collapse over the fingerprint TTL"
+)]
 pub const DEFAULT_GROUP_WINDOW: Duration = Duration::from_secs(30);
 
 /// Persistence file name (lives under the user's home directory).
@@ -388,6 +391,10 @@ impl BucketedBudget {
         let now_ms_opt = (self.clock)();
 
         let mut inner = self.inner.lock();
+        // Drop fingerprints whose window has lapsed, so a long-running
+        // daemon does not keep one entry per topic it ever saw.
+        let ttl = self.fingerprint_ttl;
+        inner.in_flight.retain(|_, entry| entry.is_live(now, ttl));
 
         // Group / dedup / inhibit against the channels already seen
         // for this fingerprint in the current TTL window.
@@ -411,7 +418,6 @@ impl BucketedBudget {
 
         // Record the dispatch, same critical section as the
         // dedup check and the bucket consume.
-        let ttl = self.fingerprint_ttl;
         let entry = inner
             .in_flight
             .entry(fingerprint.to_string())
@@ -586,9 +592,17 @@ fn persist_bucket(path: &Path, bucket: &PersistedBucket) -> TomeResult<()> {
     // Failure is tolerated: the rename will overwrite anyway.
     let _ = std::fs::remove_file(&tmp_path);
 
-    std::fs::write(&tmp_path, &bytes)?;
-    if let Err(e) = std::fs::rename(&tmp_path, path) {
-        // Rename failed, clean up the tmp file so we don't leak.
+    // fsync before the rename: otherwise a crash can leave the renamed
+    // file empty, and an empty quota file loads as a full bucket.
+    let written = (|| {
+        use std::io::Write;
+        let mut tmp = std::fs::File::create(&tmp_path)?;
+        tmp.write_all(&bytes)?;
+        tmp.sync_all()?;
+        std::fs::rename(&tmp_path, path)
+    })();
+    if let Err(e) = written {
+        // Clean up the tmp file so a failed write does not leak it.
         let _ = std::fs::remove_file(&tmp_path);
         return Err(e.into());
     }
@@ -1070,5 +1084,17 @@ mod tests {
             bucket.available, 0.0,
             "u64::MAX last_refill must saturate elapsed at 0"
         );
+    }
+
+    #[test]
+    fn expired_fingerprints_are_pruned_from_the_in_flight_map() {
+        let budget = BucketedBudget::in_memory(100);
+        let t0 = Instant::now();
+        budget.try_dispatch_at("old", ResearchChannel::GitHub, t0);
+        let later = t0 + DEFAULT_FINGERPRINT_TTL + Duration::from_secs(1);
+        budget.try_dispatch_at("new", ResearchChannel::GitHub, later);
+        let inner = budget.inner.lock();
+        assert!(!inner.in_flight.contains_key("old"));
+        assert!(inner.in_flight.contains_key("new"));
     }
 }

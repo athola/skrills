@@ -17,11 +17,7 @@ pub const MAX_DESCRIPTION_LENGTH: usize = 500;
 
 /// Validate a skill for Codex CLI compatibility.
 pub fn validate_codex(path: &Path, content: &str) -> ValidationResult {
-    let name = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unknown")
-        .to_string();
+    let name = crate::autofix::derive_name_from_path(path);
 
     let mut result = ValidationResult::new(path.to_path_buf(), name.clone());
 
@@ -65,7 +61,7 @@ pub fn validate_codex(path: &Path, content: &str) -> ValidationResult {
     }
 
     // Validate required fields
-    validate_codex_frontmatter(&mut result, fm);
+    validate_codex_frontmatter(&mut result, fm, content);
 
     // Validate content
     validate_codex_content(&mut result, &parsed);
@@ -76,13 +72,17 @@ pub fn validate_codex(path: &Path, content: &str) -> ValidationResult {
 fn validate_codex_frontmatter(
     result: &mut ValidationResult,
     fm: &crate::frontmatter::SkillFrontmatter,
+    content: &str,
 ) {
+    // Missing keys have no line to point at; present ones cite their own.
+    let name_line = crate::frontmatter::frontmatter_key_line(content, "name");
+    let desc_line = crate::frontmatter::frontmatter_key_line(content, "description");
+
     // Name is required
     match &fm.name {
         None => {
             result.add_issue(
                 ValidationIssue::error(ValidationTarget::Codex, "Missing required 'name' field")
-                    .with_line(2)
                     .with_suggestion("Add 'name: your-skill-name' to frontmatter"),
             );
         }
@@ -90,7 +90,7 @@ fn validate_codex_frontmatter(
             if name.is_empty() {
                 result.add_issue(
                     ValidationIssue::error(ValidationTarget::Codex, "'name' field cannot be empty")
-                        .with_line(2),
+                        .with_optional_line(name_line),
                 );
             } else if name.chars().count() > MAX_NAME_LENGTH {
                 result.add_issue(
@@ -102,7 +102,7 @@ fn validate_codex_frontmatter(
                             MAX_NAME_LENGTH
                         ),
                     )
-                    .with_line(2),
+                    .with_optional_line(name_line),
                 );
             }
 
@@ -113,7 +113,7 @@ fn validate_codex_frontmatter(
                         ValidationTarget::Codex,
                         "'name' cannot contain newlines",
                     )
-                    .with_line(2),
+                    .with_optional_line(name_line),
                 );
             }
         }
@@ -127,7 +127,6 @@ fn validate_codex_frontmatter(
                     ValidationTarget::Codex,
                     "Missing required 'description' field",
                 )
-                .with_line(3)
                 .with_suggestion(
                     "Add 'description: Brief description of what the skill does' to frontmatter",
                 ),
@@ -140,7 +139,7 @@ fn validate_codex_frontmatter(
                         ValidationTarget::Codex,
                         "'description' field cannot be empty",
                     )
-                    .with_line(3),
+                    .with_optional_line(desc_line),
                 );
             } else if desc.chars().count() > MAX_DESCRIPTION_LENGTH {
                 result.add_issue(
@@ -152,7 +151,7 @@ fn validate_codex_frontmatter(
                             MAX_DESCRIPTION_LENGTH
                         ),
                     )
-                    .with_line(3)
+                    .with_optional_line(desc_line)
                     .with_suggestion("Shorten the description to 500 characters or less"),
                 );
             }
@@ -280,5 +279,27 @@ mod tests {
             .issues
             .iter()
             .any(|i| i.message.contains("(501 > 500 chars)")));
+    }
+
+    #[test]
+    fn length_issues_cite_the_line_of_their_key() {
+        let content = format!(
+            "---\nlicense: MIT\ndescription: d\nname: {}\n---\n# C",
+            "a".repeat(101)
+        );
+        let result = validate_codex(&PathBuf::from("skill.md"), &content);
+        let issue = result
+            .issues
+            .iter()
+            .find(|i| i.message.contains("'name' exceeds"))
+            .unwrap();
+        assert_eq!(issue.line, Some(4));
+        let missing = validate_codex(&PathBuf::from("skill.md"), "---\nname: n\n---\n# C");
+        let issue = missing
+            .issues
+            .iter()
+            .find(|i| i.message.contains("Missing required 'description'"))
+            .unwrap();
+        assert_eq!(issue.line, None);
     }
 }

@@ -177,11 +177,11 @@ impl HintPaneState {
         visible.sort_by(|a, b| {
             let a_pinned = pinned.contains(&a.hint.uri);
             let b_pinned = pinned.contains(&b.hint.uri);
-            b_pinned.cmp(&a_pinned).then_with(|| {
-                b.score
-                    .partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+            // `total_cmp` is a total order even with NaN scores; a
+            // `partial_cmp` fallback to Equal lets `sort_by` panic.
+            b_pinned
+                .cmp(&a_pinned)
+                .then_with(|| b.score.total_cmp(&a.score))
         });
         visible
     }
@@ -697,5 +697,32 @@ mod tests {
             .map(|c| c.symbol())
             .collect();
         assert!(text.contains("skill://h9"), "{text}");
+    }
+
+    #[test]
+    fn nan_scores_sort_without_panicking() {
+        let mut snap_state = ColdWindowState::new();
+        let mut hints: Vec<_> = (0..2000)
+            .map(|i| {
+                let score = f64::from((i * 7919) % 2003);
+                hint(&format!("skill://h{i}"), HintCategory::Token, score)
+            })
+            .collect();
+        for h in hints.iter_mut().step_by(3) {
+            h.score = f64::NAN;
+        }
+        snap_state.ingest(snap(hints));
+        let visible = HintPaneState::new().visible_hints(&snap_state);
+        assert_eq!(visible.len(), 2000);
+        // A total order puts every NaN together instead of scattering them.
+        let finite: Vec<f64> = visible
+            .iter()
+            .map(|h| h.score)
+            .filter(|s| !s.is_nan())
+            .collect();
+        assert!(
+            finite.windows(2).all(|w| w[0] >= w[1]),
+            "finite scores out of order"
+        );
     }
 }

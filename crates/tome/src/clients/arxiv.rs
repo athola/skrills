@@ -28,8 +28,10 @@ impl ArxivClient {
 
     /// Search arXiv for papers. Returns parsed Atom XML results.
     pub async fn search(&self, query: &str, limit: usize) -> TomeResult<Vec<Paper>> {
-        let limit = limit.min(100);
         let sanitized = sanitize_query(query);
+        let Some(limit) = super::search_limit(&sanitized, limit, 100) else {
+            return Ok(Vec::new());
+        };
 
         let resp = self
             .http
@@ -55,9 +57,9 @@ fn parse_arxiv_atom(xml: &str) -> Vec<Paper> {
     let mut skipped = 0u32;
 
     for entry in xml.split("<entry>").skip(1) {
-        let title = extract_tag(entry, "title").map(|t| t.replace('\n', " ").trim().to_string());
+        let title = extract_tag(entry, "title").map(|t| xml_text(&t));
         let id = extract_tag(entry, "id");
-        let summary = extract_tag(entry, "summary").map(|s| s.trim().to_string());
+        let summary = extract_tag(entry, "summary").map(|s| xml_text(&s));
         let published = extract_tag(entry, "published");
 
         if let (Some(title), Some(id)) = (title, id) {
@@ -106,6 +108,58 @@ fn strip_arxiv_version(id: &str) -> &str {
     }
 }
 
+/// Element text as a reader sees it: CDATA unwrapped, the XML entities
+/// decoded, and line breaks and indentation runs collapsed to one space.
+fn xml_text(raw: &str) -> String {
+    let raw = raw.trim();
+    let decoded = match raw
+        .strip_prefix("<![CDATA[")
+        .and_then(|r| r.strip_suffix("]]>"))
+    {
+        Some(cdata) => cdata.to_string(),
+        None => decode_entities(raw),
+    };
+    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn decode_entities(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let after = &rest[amp..];
+        let decoded = after.find(';').and_then(|semi| {
+            let entity = &after[1..semi];
+            let ch = match entity {
+                "amp" => Some('&'),
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "quot" => Some('"'),
+                "apos" => Some('\''),
+                _ => entity
+                    .strip_prefix("#x")
+                    .or_else(|| entity.strip_prefix("#X"))
+                    .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+                    .or_else(|| entity.strip_prefix('#').and_then(|dec| dec.parse().ok()))
+                    .and_then(char::from_u32),
+            };
+            ch.map(|c| (c, semi + 1))
+        });
+        match decoded {
+            Some((c, len)) => {
+                out.push(c);
+                rest = &after[len..];
+            }
+            None => {
+                out.push('&');
+                rest = &after[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn extract_tag(xml: &str, tag: &str) -> Option<String> {
     let open = format!("<{tag}");
     let close = format!("</{tag}>");
@@ -120,6 +174,7 @@ fn extract_authors(entry: &str) -> Vec<String> {
         .split("<author>")
         .skip(1)
         .filter_map(|a| extract_tag(a, "name"))
+        .map(|name| xml_text(&name))
         .collect()
 }
 
@@ -282,5 +337,28 @@ mod tests {
             papers[0].pdf_url.as_deref(),
             Some("https://arxiv.org/pdf/hep-th/9901001v1")
         );
+    }
+
+    #[test]
+    fn arxiv_text_is_entity_decoded_and_whitespace_collapsed() {
+        let xml = r#"<feed>
+            <entry>
+                <id>http://arxiv.org/abs/2301.00001v1</id>
+                <title>Q&amp;A   systems
+                    for &lt;code&gt;</title>
+                <summary><![CDATA[a & b]]></summary>
+                <author><name>O&apos;Brien</name></author>
+            </entry>
+        </feed>"#;
+        let papers = parse_arxiv_atom(xml);
+        assert_eq!(papers[0].title, "Q&A systems for <code>");
+        assert_eq!(papers[0].abstract_text.as_deref(), Some("a & b"));
+        assert_eq!(papers[0].authors, vec!["O'Brien"]);
+    }
+
+    #[test]
+    fn query_that_sanitizes_to_nothing_is_not_sent() {
+        assert_eq!(sanitize_query("ti: AND ()"), "");
+        assert!(super::super::search_limit("", 10, 100).is_none());
     }
 }

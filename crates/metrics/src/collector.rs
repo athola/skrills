@@ -178,8 +178,20 @@ impl MetricsCollector {
             std::fs::create_dir_all(parent)?;
         }
 
+        let target = path.to_str().ok_or_else(|| {
+            MetricsError::InvalidArgument(format!("path is not valid UTF-8: {}", path.display()))
+        })?;
+        // VACUUM INTO refuses an existing file, so write a sibling and
+        // rename it over the target.
+        let tmp = format!("{target}.tmp-{}", std::process::id());
+        let _ = std::fs::remove_file(&tmp); // a leftover from a crashed flush
         let conn = self.conn.lock();
-        conn.execute("VACUUM INTO ?1", [path.to_string_lossy()])?;
+        conn.execute("VACUUM INTO ?1", [&tmp])?;
+        drop(conn);
+        if let Err(e) = std::fs::rename(&tmp, path) {
+            let _ = std::fs::remove_file(&tmp); // the rename error is what matters
+            return Err(e.into());
+        }
         Ok(())
     }
 
@@ -198,7 +210,10 @@ impl MetricsCollector {
         metric: &str,
         window: std::time::Duration,
     ) -> Result<Vec<f64>> {
-        let secs = window.as_secs() as i64;
+        // SQLite's datetime() yields NULL for offsets past its year range,
+        // which matched no rows; a century covers any real window.
+        const MAX_WINDOW_SECS: u64 = 100 * 365 * 24 * 60 * 60;
+        let secs = window.as_secs().min(MAX_WINDOW_SECS) as i64;
         let conn = self.conn.lock();
         // Map the caller-supplied metric name onto a typed (table, column)
         // pair drawn from a closed whitelist of enum variants. The SQL string
@@ -228,7 +243,9 @@ impl MetricsCollector {
 
     /// Broadcast a metric event to all subscribers.
     ///
-    /// Logs a warning if there are no active subscribers or if the channel is full.
+    /// A send fails only when no one is subscribed, which is the normal case
+    /// without a dashboard, so it is traced and dropped. A full channel does
+    /// not fail: slow receivers see `RecvError::Lagged` instead.
     fn broadcast(&self, event: MetricEvent) {
         match self.sender.send(event) {
             Ok(_) => {}
@@ -262,7 +279,13 @@ impl MetricsCollector {
         let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO skill_invocations (skill_name, plugin, duration_ms, success, tokens_used) VALUES (?1, ?2, ?3, ?4, ?5)",
-            (skill, plugin, duration_ms as i64, success as i32, tokens.map(|t| t as i64)),
+            (
+                skill,
+                plugin,
+                saturating_i64(duration_ms),
+                success as i32,
+                tokens.map(saturating_i64),
+            ),
         )?;
 
         let id = conn.last_insert_rowid();
@@ -328,7 +351,11 @@ impl MetricsCollector {
         let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO sync_events (operation, files_count, status) VALUES (?1, ?2, ?3)",
-            (operation.as_str(), files as i64, status.as_str()),
+            (
+                operation.as_str(),
+                saturating_i64(files as u64),
+                status.as_str(),
+            ),
         )?;
 
         let id = conn.last_insert_rowid();
@@ -404,30 +431,12 @@ impl MetricsCollector {
         })?;
         for val in validations {
             let (id, skill_name, passed_json, failed_json, created_at) = val?;
-            let checks_passed: Vec<String> = match serde_json::from_str(&passed_json) {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(
-                        id,
-                        skill_name = %skill_name,
-                        error = %e,
-                        "failed to deserialize checks_passed JSON, skipping row"
-                    );
-                    continue;
-                }
-            };
-            let checks_failed: Vec<String> = match serde_json::from_str(&failed_json) {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(
-                        id,
-                        skill_name = %skill_name,
-                        error = %e,
-                        "failed to deserialize checks_failed JSON, skipping row"
-                    );
-                    continue;
-                }
-            };
+            // Reported, as history and summary do: skipping the row served
+            // an older run as the current one.
+            let checks_passed =
+                decode_validation_checks(&passed_json, &skill_name, "checks_passed")?;
+            let checks_failed =
+                decode_validation_checks(&failed_json, &skill_name, "checks_failed")?;
             events.push(MetricEvent::Validation {
                 id,
                 skill_name,
@@ -504,7 +513,7 @@ impl MetricsCollector {
         let mut stmt = conn.prepare(
             "SELECT
                 COALESCE(SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END), 0) as successful,
-                COALESCE(SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END), 0) as failed,
+                COALESCE(SUM(CASE WHEN success IS NOT 1 THEN 1 ELSE 0 END), 0) as failed,
                 AVG(duration_ms) as avg_duration,
                 COALESCE(SUM(tokens_used), 0) as total_tokens
              FROM skill_invocations WHERE skill_name = ?1",
@@ -695,7 +704,7 @@ impl MetricsCollector {
                 skill_name,
                 COUNT(*) as total,
                 COALESCE(SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END), 0) as successful,
-                COALESCE(SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END), 0) as failed,
+                COALESCE(SUM(CASE WHEN success IS NOT 1 THEN 1 ELSE 0 END), 0) as failed,
                 AVG(duration_ms) as avg_duration
              FROM skill_invocations
              GROUP BY skill_name
@@ -731,7 +740,7 @@ impl MetricsCollector {
             "SELECT
                 COUNT(*) as total,
                 COALESCE(SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END), 0) as successful,
-                COALESCE(SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END), 0) as failed,
+                COALESCE(SUM(CASE WHEN success IS NOT 1 THEN 1 ELSE 0 END), 0) as failed,
                 COALESCE(AVG(duration_ms), 0.0) as avg_duration,
                 COALESCE(SUM(tokens_used), 0) as total_tokens,
                 COUNT(DISTINCT skill_name) as unique_skills
@@ -853,7 +862,7 @@ impl MetricsCollector {
         let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO rule_triggers (rule_name, category, triggered_by, duration_ms, outcome, details) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            (rule_name, category, triggered_by, duration_ms.map(|d| d as i64), outcome.as_str(), details),
+            (rule_name, category, triggered_by, duration_ms.map(saturating_i64), outcome.as_str(), details),
         )?;
 
         let id = conn.last_insert_rowid();
@@ -1041,27 +1050,30 @@ impl MetricsCollector {
         let conn = self.conn.lock();
         let cutoff = format!("-{} days", days);
 
+        // One transaction: a failure part-way leaves every table as it was.
+        let tx = conn.unchecked_transaction()?;
         let mut total_deleted = 0usize;
 
-        total_deleted += conn.execute(
-            "DELETE FROM skill_invocations WHERE created_at < datetime('now', ?1)",
+        total_deleted += tx.execute(
+            "DELETE FROM skill_invocations WHERE created_at < datetime('now', ?1) OR created_at IS NULL",
             [&cutoff],
         )?;
 
-        total_deleted += conn.execute(
-            "DELETE FROM validation_runs WHERE created_at < datetime('now', ?1)",
+        total_deleted += tx.execute(
+            "DELETE FROM validation_runs WHERE created_at < datetime('now', ?1) OR created_at IS NULL",
             [&cutoff],
         )?;
 
-        total_deleted += conn.execute(
-            "DELETE FROM sync_events WHERE created_at < datetime('now', ?1)",
+        total_deleted += tx.execute(
+            "DELETE FROM sync_events WHERE created_at < datetime('now', ?1) OR created_at IS NULL",
             [&cutoff],
         )?;
 
-        total_deleted += conn.execute(
-            "DELETE FROM rule_triggers WHERE created_at < datetime('now', ?1)",
+        total_deleted += tx.execute(
+            "DELETE FROM rule_triggers WHERE created_at < datetime('now', ?1) OR created_at IS NULL",
             [&cutoff],
         )?;
+        tx.commit()?;
 
         Ok(total_deleted)
     }
@@ -1070,6 +1082,12 @@ impl MetricsCollector {
     pub fn apply_retention_policy(&self) -> Result<usize> {
         self.cleanup_old_data(30)
     }
+}
+
+/// SQLite stores INTEGER as i64; `as` would wrap a value above `i64::MAX`
+/// to a negative number and corrupt averages and baselines.
+fn saturating_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 /// Reads a nullable check-list column, treating NULL as no checks the way
@@ -2254,5 +2272,116 @@ mod tests {
             "{}",
             summary.success_rate
         );
+    }
+
+    #[test]
+    fn huge_baseline_window_still_returns_values() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        collector
+            .record_skill_invocation("s", 7, true, Some(3))
+            .unwrap();
+        let values = collector
+            .collect_metric_values("skill_duration_ms", std::time::Duration::MAX)
+            .unwrap();
+        assert_eq!(values, vec![7.0]);
+    }
+
+    #[test]
+    fn flush_to_disk_twice_to_the_same_path_succeeds() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let collector = MetricsCollector::in_memory().unwrap();
+        let target = temp_dir.path().join("copy.db");
+        collector.flush_to_disk(&target).unwrap();
+        collector
+            .record_skill_invocation("later", 1, true, None)
+            .unwrap();
+        collector.flush_to_disk(&target).unwrap();
+        let copy = MetricsCollector::persistent(target).unwrap();
+        assert_eq!(
+            copy.get_skill_stats("later").unwrap().total_invocations(),
+            1
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn flush_to_disk_rejects_a_non_utf8_path() {
+        use std::os::unix::ffi::OsStrExt;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let collector = MetricsCollector::in_memory().unwrap();
+        let target = temp_dir
+            .path()
+            .join(std::ffi::OsStr::from_bytes(b"bad\xff.db"));
+        assert!(collector.flush_to_disk(&target).is_err());
+    }
+
+    #[test]
+    fn null_success_counts_as_failed_everywhere() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        collector
+            .record_skill_invocation("s", 1, true, None)
+            .unwrap();
+        collector
+            .conn
+            .lock()
+            .execute_batch(
+                "INSERT INTO skill_invocations (skill_name, duration_ms, success) VALUES ('s', 1, NULL);",
+            )
+            .unwrap();
+        let stats = collector.get_skill_stats("s").unwrap();
+        assert_eq!(stats.total_invocations(), 2);
+        let summary = collector.get_analytics_summary().unwrap();
+        assert_eq!(
+            summary.successful_invocations + summary.failed_invocations,
+            summary.total_invocations
+        );
+        let top = collector.get_top_skills(1).unwrap();
+        assert_eq!(top[0].failed_invocations, 1);
+    }
+
+    #[test]
+    fn recent_events_report_a_corrupt_validation_row() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        collector
+            .conn
+            .lock()
+            .execute_batch(
+                "INSERT INTO validation_runs (skill_name, checks_passed, checks_failed)
+                     VALUES ('v', 'not json', '[]');",
+            )
+            .unwrap();
+        assert!(collector.get_recent_events(10).is_err());
+    }
+
+    #[test]
+    fn retention_purge_removes_rows_without_a_date() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        collector
+            .conn
+            .lock()
+            .execute_batch(
+                "INSERT INTO skill_invocations (skill_name, created_at) VALUES ('s', NULL);
+                 INSERT INTO validation_runs (skill_name, created_at) VALUES ('v', NULL);
+                 INSERT INTO sync_events (operation, created_at) VALUES ('push', NULL);
+                 INSERT INTO rule_triggers (rule_name, created_at) VALUES ('r', NULL);",
+            )
+            .unwrap();
+        assert_eq!(collector.cleanup_old_data(1).unwrap(), 4);
+    }
+
+    #[test]
+    fn durations_above_i64_max_are_stored_saturated() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        collector
+            .record_skill_invocation("s", u64::MAX, true, Some(u64::MAX))
+            .unwrap();
+        let stored: i64 = collector
+            .conn
+            .lock()
+            .query_row("SELECT duration_ms FROM skill_invocations", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(stored, i64::MAX);
     }
 }

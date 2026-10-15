@@ -124,6 +124,22 @@ pub struct ActivityEntry {
     /// This allows events with varying message text (e.g. different skill counts)
     /// to still be consolidated into a single line.
     pub key: Option<String>,
+    /// Outcome the entry reports; drives its colour instead of the text.
+    pub status: ActivityStatus,
+}
+
+/// Outcome of an activity entry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ActivityStatus {
+    /// Neutral notice.
+    #[default]
+    Info,
+    /// Succeeded.
+    Ok,
+    /// Failed.
+    Fail,
+    /// Still running.
+    Pending,
 }
 
 impl ActivityEntry {
@@ -136,6 +152,7 @@ impl ActivityEntry {
             timestamp,
             count: 1,
             key: None,
+            status: ActivityStatus::Info,
         }
     }
 
@@ -178,6 +195,9 @@ impl ActivityEntry {
     }
 }
 
+/// How many recent metric events a refresh reads into the activity feed.
+const RECENT_EVENT_LIMIT: usize = 50;
+
 /// Number of skills to show per page for lazy loading.
 pub const PAGE_SIZE: usize = 50;
 
@@ -218,6 +238,9 @@ pub struct App {
     pub selected_validation: Option<ValidationDetail>,
     /// MCP servers discovered from all adapters.
     pub mcp_servers: Vec<McpServerInfo>,
+    /// Highest metric-event id already shown, per event kind (ids are per
+    /// table), so a refresh adds only events it has not shown.
+    event_watermarks: HashMap<&'static str, i64>,
 }
 
 impl Default for App {
@@ -241,6 +264,7 @@ impl Default for App {
             overall_success_rate: 0.0,
             selected_validation: None,
             mcp_servers: Vec::new(),
+            event_watermarks: HashMap::new(),
         }
     }
 }
@@ -415,28 +439,50 @@ impl App {
         }
     }
 
+    /// Whether `event` is newer than every event of its kind already shown;
+    /// records it as shown.
+    fn is_new_event(&mut self, event: &MetricEvent) -> bool {
+        let (kind, id) = match event {
+            MetricEvent::SkillInvocation { id, .. } => ("invocation", *id),
+            MetricEvent::Validation { id, .. } => ("validation", *id),
+            MetricEvent::Sync { id, .. } => ("sync", *id),
+            MetricEvent::RuleTrigger { id, .. } => ("rule", *id),
+        };
+        let seen = self.event_watermarks.entry(kind).or_insert(0);
+        if id > *seen {
+            *seen = id;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Update from metric event.
     pub fn on_metric_event(&mut self, event: MetricEvent) {
-        let msg = match event {
+        let (msg, status) = match event {
             MetricEvent::SkillInvocation {
                 skill_name,
                 success,
                 ..
             } => {
-                let status = if success { "OK" } else { "FAIL" };
-                format!("[INV] {} - {}", skill_name, status)
+                let (tag, status) = if success {
+                    ("OK", ActivityStatus::Ok)
+                } else {
+                    ("FAIL", ActivityStatus::Fail)
+                };
+                (format!("[INV] {} - {}", skill_name, tag), status)
             }
             MetricEvent::Validation {
                 skill_name,
                 checks_failed,
                 ..
             } => {
-                let status = if checks_failed.is_empty() {
-                    "PASS"
+                let (tag, status) = if checks_failed.is_empty() {
+                    ("PASS", ActivityStatus::Ok)
                 } else {
-                    "FAIL"
+                    ("FAIL", ActivityStatus::Fail)
                 };
-                format!("[VAL] {} - {}", skill_name, status)
+                (format!("[VAL] {} - {}", skill_name, tag), status)
             }
             MetricEvent::Sync {
                 ref operation,
@@ -444,14 +490,17 @@ impl App {
                 ref status,
                 ..
             } => {
-                let status_tag = match status {
-                    skrills_metrics::SyncStatus::Success => "OK",
-                    skrills_metrics::SyncStatus::Failed => "FAIL",
-                    skrills_metrics::SyncStatus::InProgress => "...",
+                let (status_tag, status) = match status {
+                    skrills_metrics::SyncStatus::Success => ("OK", ActivityStatus::Ok),
+                    skrills_metrics::SyncStatus::Failed => ("FAIL", ActivityStatus::Fail),
+                    skrills_metrics::SyncStatus::InProgress => ("...", ActivityStatus::Pending),
                 };
-                format!(
-                    "[SYNC] {} {} files - {}",
-                    operation, files_count, status_tag
+                (
+                    format!(
+                        "[SYNC] {} {} files - {}",
+                        operation, files_count, status_tag
+                    ),
+                    status,
                 )
             }
             MetricEvent::RuleTrigger {
@@ -459,16 +508,18 @@ impl App {
                 ref outcome,
                 ..
             } => {
-                let tag = match outcome {
-                    skrills_metrics::RuleOutcome::Pass => "OK",
-                    skrills_metrics::RuleOutcome::Fail => "FAIL",
-                    skrills_metrics::RuleOutcome::Skip => "SKIP",
-                    skrills_metrics::RuleOutcome::Error => "ERR",
+                let (tag, status) = match outcome {
+                    skrills_metrics::RuleOutcome::Pass => ("OK", ActivityStatus::Ok),
+                    skrills_metrics::RuleOutcome::Fail => ("FAIL", ActivityStatus::Fail),
+                    skrills_metrics::RuleOutcome::Skip => ("SKIP", ActivityStatus::Info),
+                    skrills_metrics::RuleOutcome::Error => ("ERR", ActivityStatus::Fail),
                 };
-                format!("[RULE] {} - {}", rule_name, tag)
+                (format!("[RULE] {} - {}", rule_name, tag), status)
             }
         };
+        // `add_activity` leaves the new or bumped entry at the front.
         self.add_activity(msg);
+        self.activity[0].status = status;
     }
 
     /// Take the validation counts from a summary read, or clear them and name
@@ -540,6 +591,8 @@ struct RefreshSnapshot {
     mcp_servers: Vec<McpServerInfo>,
     /// One message per agent whose MCP config could not be read.
     mcp_errors: Vec<String>,
+    /// Newest metric events from every process that writes the database.
+    recent_events: skrills_metrics::Result<Vec<MetricEvent>>,
 }
 
 impl Dashboard {
@@ -640,10 +693,6 @@ impl Dashboard {
         // Load initial skills
         self.refresh_skills(&mut app);
 
-        // Subscribe to metrics
-        let mut rx = self.collector.subscribe();
-        let mut metrics_open = true;
-
         // Event handler
         let mut events = EventHandler::new(Duration::from_millis(250));
 
@@ -700,20 +749,6 @@ impl Dashboard {
                         ),
                     }
                 }
-                metric = rx.recv(), if metrics_open => {
-                    match metric {
-                        Ok(metric) => app.on_metric_event(metric),
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
-                            app.add_activity_keyed(
-                                "metrics-lagged".into(),
-                                format!("Missed {missed} metric events (feed fell behind)"),
-                            );
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            metrics_open = false;
-                        }
-                    }
-                }
                 _ = &mut sigint => {
                     // Graceful shutdown on Ctrl+C
                     break;
@@ -724,14 +759,18 @@ impl Dashboard {
         Ok(())
     }
 
-    /// Version-like suffix pattern: `-v1.2.3`, `-1.2.3`, etc.
+    /// Version-like suffix pattern: `-v1.2.3`, `-1.2.3`, etc. The whole
+    /// segment after the last `-`/`_` must be `v?N(.N)*`, so names such as
+    /// `auth-2fa` or `auth-1password` are left alone.
     fn strip_version_suffix(s: &str) -> &str {
-        // Find last '-' or '_' followed by a version-like pattern
         if let Some(pos) = s.rfind(['-', '_']) {
             let after = &s[pos + 1..];
-            // Check if remainder starts with optional 'v' then digit
             let rest = after.strip_prefix('v').unwrap_or(after);
-            if rest.starts_with(|c: char| c.is_ascii_digit()) {
+            let is_version = !rest.is_empty()
+                && rest
+                    .split('.')
+                    .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()));
+            if is_version {
                 return &s[..pos];
             }
         }
@@ -780,18 +819,20 @@ impl Dashboard {
         // A scan that fails (a permission or I/O error on one file, now that
         // discovery only skips a vanished file) must not blank the list: the
         // previous list stands and the activity feed names the failure.
-        let (total, skills) = match snapshot.skills {
-            Ok(found) => found,
+        // On a discovery error the skill list stands; every other panel is
+        // still applied below.
+        match snapshot.skills {
+            Ok((total, skills)) => {
+                app.total_skills = total;
+                app.skills = skills;
+            }
             Err(e) => {
                 app.add_activity_keyed(
                     "skill-discovery-error".into(),
                     format!("Skill discovery failed: {e}"),
                 );
-                return;
             }
-        };
-        app.total_skills = total;
-        app.skills = skills;
+        }
 
         // Re-apply current sort order after rebuilding the list
         match app.sort_order {
@@ -830,6 +871,21 @@ impl Dashboard {
         app.last_refresh = now
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|_| "now".to_string());
+
+        match snapshot.recent_events {
+            Ok(events) => {
+                // Oldest first, so the feed ends with the newest.
+                for event in events.into_iter().rev() {
+                    if app.is_new_event(&event) {
+                        app.on_metric_event(event);
+                    }
+                }
+            }
+            Err(e) => app.add_activity_keyed(
+                "metric-events-error".into(),
+                format!("Metric events unavailable: {e}"),
+            ),
+        }
 
         app.add_activity_keyed(
             "refresh".into(),
@@ -873,6 +929,7 @@ impl RefreshSource {
             validation_summary: self.collector.get_validation_summary(),
             mcp_servers,
             mcp_errors,
+            recent_events: self.collector.get_recent_events(RECENT_EVENT_LIMIT),
         }
     }
 
@@ -1834,5 +1891,78 @@ mod tests {
             "{:?}",
             app.activity
         );
+    }
+
+    #[test]
+    fn strip_version_suffix_needs_a_whole_version_segment() {
+        assert_eq!(Dashboard::strip_version_suffix("auth-2fa"), "auth-2fa");
+        assert_eq!(
+            Dashboard::strip_version_suffix("auth-1password"),
+            "auth-1password"
+        );
+        assert_eq!(Dashboard::strip_version_suffix("leyline-v1.3.0"), "leyline");
+        assert_eq!(Dashboard::strip_version_suffix("leyline-1.3"), "leyline");
+        assert_eq!(Dashboard::strip_version_suffix("tool_2"), "tool");
+    }
+
+    #[test]
+    fn discovery_failure_still_applies_the_other_panels() {
+        let dashboard =
+            Dashboard::with_collector(Vec::new(), Arc::new(MetricsCollector::in_memory().unwrap()));
+        let mut app = App::new();
+        let snapshot = RefreshSnapshot {
+            skills: Err("boom".into()),
+            analytics: Some((7, 50.0)),
+            validation_summary: Ok(ValidationSummary::default()),
+            mcp_servers: Vec::new(),
+            mcp_errors: Vec::new(),
+            recent_events: Ok(Vec::new()),
+        };
+        dashboard.apply_snapshot(&mut app, snapshot);
+        assert_eq!(app.total_invocations, 7);
+        assert!(!app.last_refresh.is_empty());
+        assert!(app
+            .activity
+            .iter()
+            .any(|e| e.message.contains("Skill discovery failed")));
+    }
+
+    /// The server and CLI write metrics from other processes, so the
+    /// in-process broadcast never carried them to the activity feed.
+    #[test]
+    fn refresh_shows_metric_events_written_elsewhere_once() {
+        let _env = skrills_test_utils::env_guard();
+        let fixture = skrills_test_utils::TestFixture::new().unwrap();
+        let _home = fixture.home_guard();
+        let collector = Arc::new(MetricsCollector::in_memory().unwrap());
+        let dashboard = Dashboard::with_collector(Vec::new(), collector.clone());
+        let mut app = App::new();
+        collector
+            .record_skill_invocation("elsewhere", 1, true, None)
+            .unwrap();
+        dashboard.refresh_skills(&mut app);
+        dashboard.refresh_skills(&mut app);
+        let inv: Vec<_> = app
+            .activity
+            .iter()
+            .filter(|e| e.message.starts_with("[INV] elsewhere"))
+            .collect();
+        assert_eq!(inv.len(), 1);
+        assert_eq!(inv[0].count, 1, "{:?}", app.activity);
+    }
+
+    #[test]
+    fn activity_status_comes_from_the_event_not_the_text() {
+        let mut app = App::new();
+        app.on_metric_event(MetricEvent::SkillInvocation {
+            id: 1,
+            skill_name: "FAILSAFE".into(),
+            plugin: None,
+            duration_ms: 1,
+            success: true,
+            tokens_used: None,
+            created_at: String::new(),
+        });
+        assert_eq!(app.activity[0].status, ActivityStatus::Ok);
     }
 }

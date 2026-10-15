@@ -61,10 +61,19 @@ pub fn derive_name_from_path(path: &Path) -> String {
 ///
 /// Looks for the first paragraph or heading to use as a description.
 pub fn derive_description_from_content(content: &str) -> String {
-    let lines: Vec<&str> = content.lines().collect();
+    let mut in_fence = false;
 
-    for line in lines.iter() {
+    for line in content.lines() {
         let trimmed = line.trim();
+
+        // Skip fenced code blocks, fence lines included.
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
 
         // Skip empty lines and headings
         if trimmed.is_empty() {
@@ -80,8 +89,8 @@ pub fn derive_description_from_content(content: &str) -> String {
             continue;
         }
 
-        // Skip code blocks
-        if trimmed.starts_with("```") || trimmed.starts_with("    ") {
+        // Skip indented code blocks
+        if line.starts_with("    ") || line.starts_with('\t') {
             continue;
         }
 
@@ -107,18 +116,27 @@ fn truncate_description(desc: &str) -> String {
 /// Normalize a name to kebab-case.
 pub fn to_kebab_case(name: &str) -> String {
     name.chars()
-        .map(|c| {
-            if c.is_alphanumeric() {
-                c.to_ascii_lowercase()
+        .flat_map(|c| {
+            let mapped: Vec<char> = if c.is_alphanumeric() {
+                c.to_lowercase().collect()
             } else {
-                '-'
-            }
+                vec!['-']
+            };
+            mapped
         })
         .collect::<String>()
         .split('-')
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("-")
+}
+
+/// Kebab-cases `name`, or returns `"skill"` when nothing usable is left.
+fn kebab_or_default(name: &str) -> String {
+    match to_kebab_case(name) {
+        k if k.is_empty() => "skill".to_string(),
+        k => k,
+    }
 }
 
 /// Scaffold body sections when content is too short.
@@ -204,8 +222,12 @@ pub fn autofix_frontmatter(
                 .or(options.suggested_description.clone())
                 .unwrap_or_else(|| derive_description_from_content(&parsed.content));
 
-            // Normalize name to kebab-case
-            let kebab = to_kebab_case(&name);
+            // Normalize name to kebab-case; a name with no letters or digits
+            // would become empty (YAML null), so fall back to the path.
+            let kebab = match to_kebab_case(&name) {
+                k if k.is_empty() => kebab_or_default(&derive_name_from_path(path)),
+                k => k,
+            };
             let name_normalized = kebab != name;
             let name = if name_normalized {
                 changes.push(format!("Normalized name to kebab-case: {kebab}"));
@@ -272,16 +294,22 @@ pub fn autofix_frontmatter(
                 content.to_string()
             }
         } else {
-            content.to_string()
+            return Err(
+                "Frontmatter opens with `---` but has no closing `---` line; fix it by hand"
+                    .to_string(),
+            );
         }
     } else {
         // No frontmatter - add it
-        let name = to_kebab_case(
+        let name = match to_kebab_case(
             &options
                 .suggested_name
                 .clone()
                 .unwrap_or_else(|| derive_name_from_path(path)),
-        );
+        ) {
+            k if k.is_empty() => kebab_or_default(&derive_name_from_path(path)),
+            k => k,
+        };
 
         let description = options
             .suggested_description
@@ -309,12 +337,22 @@ pub fn autofix_frontmatter(
     if modified && options.write_changes {
         // Create backup if requested
         if options.create_backup {
-            let backup_path = path.with_extension("md.bak");
-            fs::copy(path, &backup_path).map_err(|e| format!("Failed to create backup: {e}"))?;
+            // `<name>.bak`, never replaced: a re-run must not overwrite the
+            // original with an already-fixed copy.
+            let mut backup_name = path.as_os_str().to_owned();
+            backup_name.push(".bak");
+            let backup_path = std::path::PathBuf::from(backup_name);
+            if !backup_path.exists() {
+                fs::copy(path, &backup_path)
+                    .map_err(|e| format!("Failed to create backup: {e}"))?;
+            }
             result.backup_path = Some(backup_path);
         }
 
-        write_atomically(path, &new_content)
+        // Write through a symlink (synced skills are links) instead of
+        // replacing the link with a regular file.
+        let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        write_atomically(&target, &new_content)
             .map_err(|e| format!("Failed to write changes: {e}"))?;
     }
 
@@ -717,5 +755,86 @@ mod tests {
         );
         assert!(fm.extra.contains_key("license"));
         assert!(!result.content.contains("second line"));
+    }
+
+    #[test]
+    fn derived_description_skips_fenced_code() {
+        let content = "```rust\nfn main(){}\n```\nReal description here.";
+        assert_eq!(
+            derive_description_from_content(content),
+            "Real description here."
+        );
+    }
+
+    #[test]
+    fn autofix_reports_unterminated_frontmatter() {
+        let content = "---\nname: s\ndescription: d\n\n# Body";
+        let outcome = autofix_frontmatter(
+            Path::new("/t/s/SKILL.md"),
+            content,
+            &AutofixOptions::default(),
+        );
+        assert!(outcome.is_err(), "{outcome:?}");
+    }
+
+    #[test]
+    fn autofix_backup_appends_bak_and_keeps_the_first_backup() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let skill_path = temp_dir.path().join("skill.markdown");
+        let original = "# My Skill\nShort body only.";
+        fs::write(&skill_path, original).unwrap();
+        let options = AutofixOptions {
+            create_backup: true,
+            write_changes: true,
+            ..Default::default()
+        };
+        let first = autofix_frontmatter(&skill_path, original, &options).unwrap();
+        let backup = first.backup_path.unwrap();
+        assert_eq!(backup, temp_dir.path().join("skill.markdown.bak"));
+
+        // A second run on the fixed file must not replace the original backup.
+        autofix_frontmatter(&skill_path, original, &options).unwrap();
+        assert_eq!(fs::read_to_string(&backup).unwrap(), original);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn autofix_writes_through_a_symlinked_skill() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let target = temp_dir.path().join("source.md");
+        let link = temp_dir.path().join("SKILL.md");
+        let content = "# My Skill\nShort body only.";
+        fs::write(&target, content).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let options = AutofixOptions {
+            write_changes: true,
+            ..Default::default()
+        };
+        let result = autofix_frontmatter(&link, content, &options).unwrap();
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read_to_string(&target).unwrap(), result.content);
+    }
+
+    #[test]
+    fn kebab_case_lowercases_unicode_and_never_returns_empty() {
+        assert_eq!(to_kebab_case("ÉCOLE"), "école");
+        let result = autofix_frontmatter(
+            Path::new("/t/fallback-name/SKILL.md"),
+            "---\nname: \"!!!\"\ndescription: d\n---\n\n# Body",
+            &AutofixOptions::default(),
+        )
+        .unwrap();
+        let fm = parse_frontmatter(&result.content)
+            .unwrap()
+            .frontmatter
+            .unwrap();
+        assert_eq!(fm.name.as_deref(), Some("fallback-name"));
     }
 }

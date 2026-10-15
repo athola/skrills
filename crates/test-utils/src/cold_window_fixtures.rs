@@ -129,35 +129,46 @@ pub fn chaos_sequence(n_ticks: usize) -> Vec<WindowSnapshot> {
     (0..n_ticks)
         .map(|t| {
             let total = (t as u64).saturating_mul(5_000);
+            // The fixed skill and plugin entries total 1,800; a tick below
+            // that carries none, so the parts always sum to `total`.
+            let fixed_parts = total >= 1_800;
             let mcp_tokens = total.saturating_sub(1_800);
             WindowSnapshot {
                 version: t as u64,
                 timestamp_ms: 1_700_000_000_000 + (t as u64) * 2_000,
                 token_ledger: TokenLedger {
-                    per_skill: vec![
-                        TokenEntry {
-                            source: "skill://demo-a".into(),
-                            tokens: 300,
-                        },
-                        TokenEntry {
-                            source: "skill://demo-b".into(),
-                            tokens: 300,
-                        },
-                        TokenEntry {
-                            source: "skill://demo-c".into(),
-                            tokens: 300,
-                        },
-                    ],
-                    per_plugin: vec![
-                        TokenEntry {
-                            source: "plugin://alpha".into(),
-                            tokens: 450,
-                        },
-                        TokenEntry {
-                            source: "plugin://beta".into(),
-                            tokens: 450,
-                        },
-                    ],
+                    per_skill: if fixed_parts {
+                        vec![
+                            TokenEntry {
+                                source: "skill://demo-a".into(),
+                                tokens: 300,
+                            },
+                            TokenEntry {
+                                source: "skill://demo-b".into(),
+                                tokens: 300,
+                            },
+                            TokenEntry {
+                                source: "skill://demo-c".into(),
+                                tokens: 300,
+                            },
+                        ]
+                    } else {
+                        Vec::new()
+                    },
+                    per_plugin: if fixed_parts {
+                        vec![
+                            TokenEntry {
+                                source: "plugin://alpha".into(),
+                                tokens: 450,
+                            },
+                            TokenEntry {
+                                source: "plugin://beta".into(),
+                                tokens: 450,
+                            },
+                        ]
+                    } else {
+                        Vec::new()
+                    },
                     per_mcp: vec![TokenEntry {
                         source: "mcp://github".into(),
                         tokens: mcp_tokens,
@@ -262,7 +273,7 @@ mod tests {
         let seq = chaos_sequence(10);
         let totals: Vec<u64> = seq.iter().map(|s| s.token_ledger.total).collect();
         for w in totals.windows(2) {
-            assert!(w[1] >= w[0], "totals should be non-decreasing: {totals:?}");
+            assert!(w[1] > w[0], "totals should strictly increase: {totals:?}");
         }
     }
 
@@ -300,5 +311,20 @@ mod tests {
         let s = empty_snapshot();
         assert_eq!(s.token_ledger.total, 0);
         assert!(s.alerts.is_empty());
+    }
+
+    #[test]
+    fn chaos_sequence_parts_sum_to_the_total_on_every_tick() {
+        for s in chaos_sequence(5) {
+            let ledger = &s.token_ledger;
+            let parts: u64 = ledger
+                .per_skill
+                .iter()
+                .chain(&ledger.per_plugin)
+                .chain(&ledger.per_mcp)
+                .map(|e| e.tokens)
+                .sum();
+            assert_eq!(parts, ledger.total, "tick {}", s.version);
+        }
     }
 }

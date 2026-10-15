@@ -60,6 +60,14 @@ impl ColdWindowState {
     /// gate is applied here, so a `true` return means ring
     /// unconditionally; the caller does not re-check the flag.
     pub fn ingest(&mut self, snapshot: Arc<WindowSnapshot>) -> bool {
+        // A late, older snapshot must not replace a newer view.
+        if self
+            .current
+            .as_ref()
+            .is_some_and(|current| snapshot.version < current.version)
+        {
+            return false;
+        }
         let warnings: HashSet<String> = snapshot
             .alerts
             .iter()
@@ -69,6 +77,10 @@ impl ColdWindowState {
         let new_warning = warnings.iter().any(|fingerprint| {
             !self.acked_warnings.contains(fingerprint) && !self.rung_warnings.contains(fingerprint)
         });
+        // An ack covers one firing: once the warning is gone, forget the
+        // ack so a later re-fire shows and rings again.
+        self.acked_warnings
+            .retain(|fingerprint| warnings.contains(fingerprint));
         self.rung_warnings = warnings;
         self.current = Some(snapshot);
         new_warning && self.bell_enabled
@@ -399,5 +411,32 @@ mod tests {
         let snap2 = snapshot(2, vec![alert("c1", Severity::Caution, 200)]);
         s.ingest(snap2);
         assert_eq!(s.visible_alerts().len(), 1);
+    }
+
+    fn snap_with(version: u64, warnings: &[&str]) -> Arc<WindowSnapshot> {
+        snapshot(
+            version,
+            warnings
+                .iter()
+                .map(|fp| alert(fp, Severity::Warning, version))
+                .collect(),
+        )
+    }
+    #[test]
+    fn acked_warning_that_resolves_rings_again_when_it_refires() {
+        let mut state = ColdWindowState::new();
+        state.ingest(snap_with(1, &["w"]));
+        state.ack_warning("w");
+        state.ingest(snap_with(2, &[]));
+        assert!(state.ingest(snap_with(3, &["w"])), "re-fired warning rings");
+        assert_eq!(state.visible_alerts().len(), 1);
+    }
+
+    #[test]
+    fn an_older_snapshot_is_ignored() {
+        let mut state = ColdWindowState::new();
+        state.ingest(snap_with(5, &["w"]));
+        state.ingest(snap_with(4, &[]));
+        assert_eq!(state.current.as_ref().unwrap().version, 5);
     }
 }

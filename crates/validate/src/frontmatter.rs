@@ -68,7 +68,7 @@ pub struct NormalizedDependency {
 // RATIONALE: This regex pattern is a compile-time string literal that has been verified
 // to be valid. The `.expect()` will never panic (pattern is hardcoded, not user-provided).
 static COMPACT_DEP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?:([a-z]+):)?([^@:\s]+)(?:@(.+))?$")
+    Regex::new(r"^(?:([a-z][a-z0-9_-]*):)?([^@:\s]+)(?:@(.+))?$")
         .expect("COMPACT_DEP_REGEX: compile-time constant")
 });
 
@@ -85,6 +85,16 @@ impl DeclaredDependency {
                 source,
                 optional,
             } => {
+                // Same rules as the compact form, so `name: ""` or a source
+                // the compact syntax could not express are rejected too.
+                if !is_valid_dependency_name(name) {
+                    return Err(format!("Invalid dependency name: '{}'", name));
+                }
+                if let Some(source) = source {
+                    if !is_valid_dependency_source(source) {
+                        return Err(format!("Invalid dependency source: '{}'", source));
+                    }
+                }
                 let version_req = match version {
                     Some(v) => Some(
                         semver::VersionReq::parse(v)
@@ -101,6 +111,22 @@ impl DeclaredDependency {
             }
         }
     }
+}
+
+/// A dependency name: non-empty, no whitespace, `@` or `:` (the compact
+/// syntax's separators).
+fn is_valid_dependency_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name
+            .chars()
+            .any(|c| c.is_whitespace() || c == '@' || c == ':')
+}
+
+/// A dependency source: a lowercase identifier such as `codex` or `my-source`.
+fn is_valid_dependency_source(source: &str) -> bool {
+    let mut chars = source.chars();
+    chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
 
 /// Parse compact dependency syntax: `[source:]name[@version]`
@@ -220,19 +246,28 @@ pub fn split_frontmatter(content: &str) -> (Option<String>, String, usize) {
         .take_while(|line| line.trim().is_empty())
         .count();
 
-    // Find the closing ---
+    // Drop only the opening fence's own line ending: blank lines after it
+    // belong to the block, and an immediate `---` closes an empty block.
     let after_open = &trimmed[3..];
-    let after_open = after_open.trim_start_matches(['\r', '\n']);
+    let after_open = after_open
+        .strip_prefix("\r\n")
+        .or_else(|| after_open.strip_prefix('\n'))
+        .unwrap_or(after_open);
 
     if let Some((end_pos, fence_end)) = find_closing_fence(after_open) {
         let block = &after_open[..end_pos];
         let yaml = block.strip_suffix('\r').unwrap_or(block);
-        let rest = &after_open[fence_end..];
-        let rest = rest.trim_start_matches(['\r', '\n']);
+        let after_fence = &after_open[fence_end..];
+        let rest = after_fence.trim_start_matches(['\r', '\n']);
 
-        // Calculate content start line
-        let frontmatter_lines = yaml.lines().count() + 2; // +2 for opening and closing ---
-        let content_start = leading_lines + frontmatter_lines + 1;
+        // Opening fence, every block line (blank ones too), closing fence,
+        // then the blank lines skipped before the body. The first newline
+        // after the fence ends the fence's own line.
+        let block_lines = after_open[..fence_end].matches('\n').count();
+        let skipped = after_fence[..after_fence.len() - rest.len()]
+            .matches('\n')
+            .count();
+        let content_start = leading_lines + 1 + block_lines + 1 + skipped.saturating_sub(1) + 1;
 
         (Some(yaml.to_string()), rest.to_string(), content_start)
     } else {
@@ -250,6 +285,11 @@ pub fn split_frontmatter(content: &str) -> (Option<String>, String, usize) {
 /// since its `\r` trails the previous line, and a `\r\n---` in the body of an
 /// LF file is never mistaken for the fence.
 fn find_closing_fence(after_open: &str) -> Option<(usize, usize)> {
+    // An empty block: the fence is the very first line.
+    let first_end = after_open.find('\n').unwrap_or(after_open.len());
+    if after_open[..first_end].trim_end() == "---" {
+        return Some((0, first_end));
+    }
     let mut search_from = 0;
     while let Some(rel) = after_open[search_from..].find("\n---") {
         let newline = search_from + rel;
@@ -265,29 +305,59 @@ fn find_closing_fence(after_open: &str) -> Option<(usize, usize)> {
     None
 }
 
+/// 1-indexed file line of the top-level `key:` entry in the frontmatter
+/// block, or `None` when the block or the key is absent.
+pub(crate) fn frontmatter_key_line(content: &str, key: &str) -> Option<usize> {
+    let content = strip_bom(content);
+    let mut lines = content
+        .lines()
+        .enumerate()
+        .skip_while(|(_, line)| line.trim().is_empty());
+    let (_, open) = lines.next()?;
+    if open.trim() != "---" {
+        return None;
+    }
+    for (idx, line) in lines {
+        if line.trim_end() == "---" {
+            return None;
+        }
+        if line
+            .strip_prefix(key)
+            .is_some_and(|rest| rest.trim_start().starts_with(':'))
+        {
+            return Some(idx + 1);
+        }
+    }
+    None
+}
+
 /// Parse YAML frontmatter from a skill file.
 pub fn parse_frontmatter(content: &str) -> Result<ParsedSkill, String> {
     let (raw_yaml, body, content_start) = split_frontmatter(content);
 
     let frontmatter = if let Some(ref yaml) = raw_yaml {
-        match serde_yaml::from_str::<SkillFrontmatter>(yaml) {
-            Ok(fm) => Some(fm),
-            Err(e) => {
-                // Extract line/column info from serde_yaml error if available
-                // The frontmatter starts at line 2 (after the opening ---),
-                // so we add 1 to account for the opening --- line
-                let error_msg = if let Some(loc) = e.location() {
-                    let actual_line = loc.line() + 1; // +1 for opening ---
-                    format!(
-                        "Invalid YAML frontmatter at line {}, column {}: {}",
-                        actual_line,
-                        loc.column(),
-                        e
-                    )
-                } else {
-                    format!("Invalid YAML frontmatter: {e}")
-                };
-                return Err(error_msg);
+        if yaml.trim().is_empty() {
+            Some(SkillFrontmatter::default())
+        } else {
+            match serde_yaml::from_str::<SkillFrontmatter>(yaml) {
+                Ok(fm) => Some(fm),
+                Err(e) => {
+                    // Extract line/column info from serde_yaml error if available
+                    // The frontmatter starts at line 2 (after the opening ---),
+                    // so we add 1 to account for the opening --- line
+                    let error_msg = if let Some(loc) = e.location() {
+                        let actual_line = loc.line() + 1; // +1 for opening ---
+                        format!(
+                            "Invalid YAML frontmatter at line {}, column {}: {}",
+                            actual_line,
+                            loc.column(),
+                            e
+                        )
+                    } else {
+                        format!("Invalid YAML frontmatter: {e}")
+                    };
+                    return Err(error_msg);
+                }
             }
         }
     } else {
@@ -379,7 +449,8 @@ mod tests {
 
         assert_eq!(yaml.as_deref(), Some("name: test\r\nmodel: x"));
         assert_eq!(body, "# Body\r\n");
-        assert_eq!(line, 5);
+        // 1 ---, 2 name, 3 model, 4 ---, 5 blank, 6 # Body
+        assert_eq!(line, 6);
     }
 
     /// Only a line that is exactly `---` closes the block. A `----` rule or a
@@ -1174,5 +1245,40 @@ name: duplicate
         // The fallback branch exists for edge cases - verify the code handles
         // both branches by checking the shared prefix
         assert!(err.starts_with("Invalid YAML frontmatter"));
+    }
+
+    #[test]
+    fn empty_frontmatter_block_is_recognized() {
+        let (yaml, body, line) = split_frontmatter("---\n---\nbody\n---\nmore\n");
+        assert_eq!(yaml.as_deref(), Some(""));
+        assert_eq!(body, "body\n---\nmore\n");
+        assert_eq!(line, 3);
+    }
+
+    #[test]
+    fn content_start_line_counts_blank_lines_around_the_fences() {
+        let (yaml, body, line) = split_frontmatter("---\n\nname: a\n\n---\n\n\nBody");
+        assert_eq!(yaml.as_deref(), Some("\nname: a\n"));
+        assert_eq!(body, "Body");
+        // 1 ---, 2 blank, 3 name, 4 blank, 5 ---, 6 blank, 7 blank, 8 Body
+        assert_eq!(line, 8);
+    }
+
+    #[test]
+    fn structured_and_compact_dependencies_share_one_name_and_source_rule() {
+        let structured = |name: &str, source: Option<&str>| DeclaredDependency::Structured {
+            name: name.into(),
+            version: None,
+            source: source.map(Into::into),
+            optional: false,
+        };
+        assert!(structured("", None).normalize().is_err());
+        assert!(structured("a b", None).normalize().is_err());
+        assert!(structured("ok", Some("Bad Source")).normalize().is_err());
+        let compact = DeclaredDependency::Simple("my-source:foo".into())
+            .normalize()
+            .unwrap();
+        assert_eq!(compact.source.as_deref(), Some("my-source"));
+        assert_eq!(compact.name, "foo");
     }
 }

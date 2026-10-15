@@ -23,8 +23,11 @@ impl HnAlgoliaClient {
         }
     }
 
-    /// Search HN stories and comments.
+    /// Search HN stories (`tags=story`; comments are not searched).
     pub async fn search(&self, query: &str, limit: usize) -> TomeResult<Vec<Discussion>> {
+        if super::search_limit(query, limit, 100).is_none() {
+            return Ok(Vec::new());
+        }
         let resp = self.http.execute(self.request(query, limit)?).await?;
 
         let resp = super::ensure_success("hn_algolia", resp, "")?;

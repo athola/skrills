@@ -6,8 +6,19 @@ use crate::TomeResult;
 
 const BASE_URL: &str = "https://api.crossref.org";
 
-fn encode_doi(doi: &str) -> String {
-    url::form_urlencoded::byte_serialize(doi.as_bytes()).collect()
+/// Percent-encode a DOI for use as URL path segments. `/` stays literal:
+/// CDNs normalise `%2F` back to `/`, and form encoding turns a space into
+/// `+`, which a path does not decode.
+pub(crate) fn encode_doi(doi: &str) -> String {
+    let mut out = String::with_capacity(doi.len());
+    for b in doi.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) {
+            out.push(char::from(b));
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 pub struct CrossRefClient {
@@ -58,7 +69,8 @@ pub(crate) fn parse_crossref_message(doi: &str, msg: &serde_json::Value) -> DoiM
                         let given = x["given"].as_str().unwrap_or("");
                         let family = x["family"].as_str().unwrap_or("");
                         if family.is_empty() {
-                            None
+                            // Organisational authors carry only `name`.
+                            x["name"].as_str().map(String::from)
                         } else {
                             Some(format!("{given} {family}").trim().to_string())
                         }
@@ -163,8 +175,25 @@ mod tests {
         assert_eq!(parse_crossref_message("10.0/y", &msg).year, Some(2020));
     }
 
+    /// The DOI's `/` stays literal, as in CrossRef's own `/works/{doi}`
+    /// examples: an encoded `%2F` is normalised back by CDNs and 404s.
     #[test]
     fn encode_doi_special_chars() {
-        assert_eq!(encode_doi("10.1234/test"), "10.1234%2Ftest");
+        assert_eq!(encode_doi("10.1234/test"), "10.1234/test");
+    }
+
+    #[test]
+    fn organisational_authors_are_kept() {
+        let msg = serde_json::json!({
+            "title": ["T"],
+            "author": [{"name": "The Consortium"}, {"given": "A", "family": "B"}]
+        });
+        let meta = parse_crossref_message("10.1/x", &msg);
+        assert_eq!(meta.authors, vec!["The Consortium", "A B"]);
+    }
+
+    #[test]
+    fn doi_is_encoded_as_a_path_with_its_slash_kept() {
+        assert_eq!(encode_doi("10.1000/a b+c"), "10.1000/a%20b%2Bc");
     }
 }

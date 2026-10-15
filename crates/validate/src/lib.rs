@@ -146,7 +146,9 @@ pub fn validate_all(dir: &Path, target: ValidationTarget) -> Result<Vec<Validati
         }
 
         // Only process SKILL.md files (Codex requires the filename to be exactly SKILL.md).
-        if path.is_file() {
+        // `entry.file_type()` describes the entry itself; `Path::is_file`
+        // would follow a symlinked SKILL.md despite `follow_links(false)`.
+        if entry.file_type().is_file() {
             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             if filename == "SKILL.md" {
                 match std::fs::read_to_string(path) {
@@ -682,4 +684,26 @@ fn test_validate_frontmatter_invalid_yaml_syntax() {
     let result = validate_skill(Path::new("bad-yaml.md"), content, ValidationTarget::Codex);
     // Should handle gracefully - either invalid or has issues
     assert!(!result.codex_valid || !result.issues.is_empty());
+}
+
+/// `Path::is_file` follows links, so a synced link was validated twice.
+#[cfg(unix)]
+#[test]
+fn validate_all_skips_symlinked_skill_files() {
+    use tempfile::TempDir;
+
+    let temp_dir = TempDir::new().unwrap();
+    let real = temp_dir.path().join("real");
+    let linked = temp_dir.path().join("linked");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::create_dir_all(&linked).unwrap();
+    std::fs::write(
+        real.join("SKILL.md"),
+        "---\nname: real\ndescription: fine\n---\n# Content\nBody.",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(real.join("SKILL.md"), linked.join("SKILL.md")).unwrap();
+
+    let results = validate_all(temp_dir.path(), ValidationTarget::All).unwrap();
+    assert_eq!(results.len(), 1, "{results:?}");
 }

@@ -85,6 +85,14 @@ impl ValidationIssue {
         self
     }
 
+    /// Attach `line` when it is known.
+    pub(crate) fn with_optional_line(self, line: Option<usize>) -> Self {
+        match line {
+            Some(line) => self.with_line(line),
+            None => self,
+        }
+    }
+
     /// Add a suggested fix to the issue.
     pub fn with_suggestion(mut self, suggestion: impl Into<String>) -> Self {
         self.suggestion = Some(suggestion.into());

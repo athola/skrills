@@ -28,7 +28,9 @@ impl OpenAlexClient {
 
     /// Search for works (papers) via the OpenAlex API.
     pub async fn search(&self, query: &str, limit: usize) -> TomeResult<Vec<Paper>> {
-        let limit = limit.min(200);
+        let Some(limit) = super::search_limit(query, limit, 200) else {
+            return Ok(Vec::new());
+        };
         let resp = self
             .http
             .get(format!("{BASE_URL}/works"))

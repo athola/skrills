@@ -42,13 +42,19 @@ pub trait BaselineQuery: Send + Sync {
     /// trailing `window`, or `None` when the window has fewer than
     /// [`MIN_BASELINE_SAMPLES`] samples.
     ///
-    /// `q` is clamped to `[0.0, 1.0]`. Unknown metric names return
+    /// `q` is clamped to `[0.0, 1.0]`; a NaN `q` is an error. Unknown metric names return
     /// `Ok(None)` (treated as warmup).
     fn quantile_over_window(&self, metric: &str, window: Duration, q: f64) -> Result<Option<f64>>;
 }
 
 impl BaselineQuery for MetricsCollector {
     fn quantile_over_window(&self, metric: &str, window: Duration, q: f64) -> Result<Option<f64>> {
+        // `clamp` passes NaN through, and `NaN as usize` is 0: the minimum.
+        if q.is_nan() {
+            return Err(crate::MetricsError::InvalidArgument(
+                "quantile must not be NaN".into(),
+            ));
+        }
         let values = self.collect_metric_values(metric, window)?;
         if values.len() < MIN_BASELINE_SAMPLES {
             return Ok(None);
@@ -60,7 +66,8 @@ impl BaselineQuery for MetricsCollector {
 
 /// Compute the q-quantile of `values` (assumes sortable f64).
 ///
-/// Uses nearest-rank ordering: `values[round((n-1) * q)]`. This is
+/// Uses index rounding: `values[round((n-1) * q)]`, with halves rounded
+/// away from zero (so p50 of four values is the third). This is
 /// less sophisticated than linear interpolation but plays well with
 /// the heuristic-bound nature of token estimation, a few extra digits of precision would lie about
 /// the underlying signal.
@@ -165,5 +172,28 @@ mod tests {
         // Compile-time guard: BaselineQuery must remain object-safe
         // so callers can store it as Box<dyn BaselineQuery>.
         fn _assert_object_safe(_: &dyn BaselineQuery) {}
+    }
+
+    #[test]
+    fn quantile_p50_of_even_length_rounds_half_up() {
+        let mut v = [1.0, 2.0, 3.0, 4.0];
+        // index round(3 * 0.5) = round(1.5) = 2
+        assert_eq!(quantile(&mut v, 0.5), 3.0);
+    }
+
+    #[test]
+    fn nan_quantile_is_rejected() {
+        let collector = MetricsCollector::in_memory().unwrap();
+        for _ in 0..MIN_BASELINE_SAMPLES {
+            collector
+                .record_skill_invocation("s", 5, true, None)
+                .unwrap();
+        }
+        let result = collector.quantile_over_window(
+            "skill_duration_ms",
+            Duration::from_secs(3600),
+            f64::NAN,
+        );
+        assert!(result.is_err(), "{result:?}");
     }
 }
