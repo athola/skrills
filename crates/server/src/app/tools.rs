@@ -334,10 +334,8 @@ impl SkillService {
     ///
     /// # Returns
     ///
-    /// A `CallToolResult` containing:
-    /// - Unified diff output
-    /// - Frontmatter comparison
-    /// - Token count differences
+    /// A `CallToolResult` containing unified diffs and token counts. Within
+    /// each client the first copy in root (priority) order is compared.
     pub(crate) fn skill_diff_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
         use skrills_discovery::SkillSource;
 
@@ -357,18 +355,30 @@ impl SkillService {
         // The cached list is de-duplicated by name, which keeps exactly one
         // copy of the skill this tool exists to compare. Scan each root on its
         // own so every copy is seen.
-        let roots = self.cache.lock().roots().to_vec();
-        let mut skills = Vec::new();
-        for root in &roots {
-            match skrills_discovery::discover_skills(std::slice::from_ref(root), None) {
-                Ok(found) => skills.extend(found),
-                Err(e) => tracing::warn!(
-                    root = %root.root.display(),
-                    error = %e,
-                    "skill-diff could not scan root"
-                ),
+        // The walk hashes every file, so its result is kept for one cache TTL
+        // and the lock is not held while it runs.
+        let (cached, roots) = {
+            let cache = self.cache.lock();
+            (cache.every_copy(), cache.roots().to_vec())
+        };
+        let skills = match cached {
+            Some(skills) => skills,
+            None => {
+                let mut skills = Vec::new();
+                for root in &roots {
+                    match skrills_discovery::discover_skills(std::slice::from_ref(root), None) {
+                        Ok(found) => skills.extend(found),
+                        Err(e) => tracing::warn!(
+                            root = %root.root.display(),
+                            error = %e,
+                            "skill-diff could not scan root"
+                        ),
+                    }
+                }
+                self.cache.lock().store_every_copy(skills.clone());
+                skills
             }
-        }
+        };
         let wanted = skill_dir_name(name);
 
         // Find matching skills across each source
@@ -387,7 +397,10 @@ impl SkillService {
                         {
                             claude_skill = Some((path_str, c));
                         }
-                        SkillSource::Codex | SkillSource::Mirror if codex_skill.is_none() => {
+                        // `~/.agents/skills` is where Codex loads user skills.
+                        SkillSource::Codex | SkillSource::Agent | SkillSource::Mirror
+                            if codex_skill.is_none() =>
+                        {
                             codex_skill = Some((path_str, c));
                         }
                         SkillSource::Copilot if copilot_skill.is_none() => {
@@ -592,6 +605,7 @@ impl SkillService {
             .get("to")
             .and_then(|v| v.as_str())
             .unwrap_or_else(|| default_target_for(from));
+        crate::handler::check_sync_pair(from, to)?;
         let dry_run = args
             .get("dry_run")
             .and_then(|v| v.as_bool())
@@ -735,18 +749,10 @@ impl SkillService {
                 .get("dry_run")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
-            include_cache: args
-                .get("include_cache")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            include_marketplace: args
-                .get("include_marketplace")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            include_mirror: args
-                .get("include_mirror")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true),
+            // Third-party trees are never instrumented (see `enable_trace`).
+            include_cache: false,
+            include_marketplace: false,
+            include_mirror: false,
             include_agent: args
                 .get("include_agent")
                 .and_then(|v| v.as_bool())

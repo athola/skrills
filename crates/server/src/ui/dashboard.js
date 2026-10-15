@@ -46,21 +46,20 @@
 
     async function refresh() {
         try {
-            // On first load, fetch page 1. On subsequent refreshes, only
-            // update the total count; don't nuke already-loaded skills.
-            const res = await apiFetch('/api/skills?limit=' + PAGE_SIZE);
+            // Re-fetch every page already shown, so added skills appear and
+            // deleted ones disappear while the scroll depth is kept.
+            const shown = Math.max(PAGE_SIZE, skills.length);
+            const res = await apiFetch('/api/skills?limit=' + shown);
             const data = await res.json();
             skillsTotal = data.total || 0;
             document.getElementById('skill-count').textContent = skillsTotal;
 
-            if (!initialized) {
-                skills = (data.items || []).map((s, i) => ({ ...s, _idx: i }));
-                if (sortOrder === 'alpha') {
-                    skills.sort((a, b) => a.name.localeCompare(b.name));
-                }
-                renderSkills();
-                initialized = true;
+            skills = (data.items || []).map((s, i) => ({ ...s, _idx: i }));
+            if (sortOrder === 'alpha') {
+                skills.sort((a, b) => a.name.localeCompare(b.name));
             }
+            renderSkills();
+            initialized = true;
 
             // Clear selected skill if it no longer exists in the refreshed list
             if (selectedSkill && !skills.find(s => s.name === selectedSkill.name)) {

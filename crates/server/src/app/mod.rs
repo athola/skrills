@@ -22,19 +22,23 @@ pub use crate::cache::build_dependency_graph;
 pub use skill_metrics::compute_skill_metrics;
 pub use skill_recommendations::rank_skill_recommendations;
 
+pub(crate) use intelligence::clamp_limit;
 use mcp_registry::build_mcp_registry;
 
 #[cfg(test)]
-pub(crate) use intelligence::{resolve_project_dir, select_default_skill_root};
+pub(crate) use intelligence::{
+    cached_usage_events, resolve_project_dir, select_default_skill_root, MAX_USAGE_EVENTS,
+};
 
 use crate::cache::SkillCache;
 use crate::discovery::{
     priority_labels, read_skill, skill_roots, AGENTS_DESCRIPTION, AGENTS_NAME, AGENTS_TEXT,
     AGENTS_URI, ENV_EXPOSE_AGENTS,
 };
+use crate::handler::{invalid_params, resource_not_found};
 // Note: skill_trace imports moved to tools.rs
 use crate::mcp_gateway::{ContextStats, McpToolRegistry};
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 #[cfg(feature = "watch")]
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::Mutex;
@@ -132,7 +136,7 @@ pub(crate) fn invalidates_cache(kind: &notify::EventKind) -> bool {
 /// Returns an error if called.
 #[cfg(not(feature = "watch"))]
 pub fn start_fs_watcher(_service: &SkillService) -> Result<()> {
-    Err(anyhow!(
+    Err(anyhow::anyhow!(
         "watch feature is disabled; rebuild with --features watch"
     ))
 }
@@ -156,10 +160,16 @@ impl SkillService {
             skills = "deferred", // Skill discovery is deferred until after initialize to keep initial response fast.
             "SkillService constructed"
         );
+        #[cfg(feature = "subagents")]
+        let subagents = {
+            let service = Arc::new(SubagentService::new()?);
+            mcp_registry::register_subagent_tools(&mut mcp_registry.lock(), &service.tools());
+            service
+        };
         Ok(Self {
             cache: Arc::new(Mutex::new(SkillCache::new_with_ttl(roots, ttl))),
             #[cfg(feature = "subagents")]
-            subagents: Some(Arc::new(SubagentService::new()?)),
+            subagents: Some(subagents),
             mcp_registry,
             context_stats,
             metrics: None,
@@ -248,10 +258,16 @@ impl SkillService {
             skills = "deferred",
             "SkillService constructed (test roots)"
         );
+        #[cfg(feature = "subagents")]
+        let subagents = {
+            let service = Arc::new(SubagentService::new()?);
+            mcp_registry::register_subagent_tools(&mut mcp_registry.lock(), &service.tools());
+            service
+        };
         Ok(Self {
             cache: Arc::new(Mutex::new(SkillCache::new_with_ttl(roots, ttl))),
             #[cfg(feature = "subagents")]
-            subagents: Some(Arc::new(SubagentService::new()?)),
+            subagents: Some(subagents),
             mcp_registry,
             context_stats,
             metrics: None,
@@ -368,7 +384,7 @@ impl SkillService {
     pub(crate) fn read_resource_sync(&self, uri: &str) -> Result<ReadResourceResult> {
         if uri == AGENTS_URI {
             if !self.expose_agents_doc()? {
-                return Err(anyhow!("resource not found"));
+                return Err(resource_not_found(format!("resource not found: {uri}")));
             }
             return Ok(ReadResourceResult::new(vec![text_with_location(
                 AGENTS_TEXT,
@@ -378,7 +394,7 @@ impl SkillService {
             )]));
         }
         if !uri.starts_with("skill://") {
-            return Err(anyhow!("unsupported uri"));
+            return Err(invalid_params(format!("unsupported uri: {uri}")));
         }
 
         // Parse query parameters
@@ -387,7 +403,9 @@ impl SkillService {
         let rest = base_uri.trim_start_matches("skill://");
         let mut parts = rest.splitn(3, '/');
         let host = parts.next().unwrap_or("");
-        let first = parts.next().ok_or_else(|| anyhow!("invalid uri"))?;
+        let first = parts
+            .next()
+            .ok_or_else(|| invalid_params(format!("invalid uri: {uri}")))?;
         let remainder = parts.next();
         let canonical_uri = if host == "skrills" {
             let name = remainder.unwrap_or("");
@@ -457,8 +475,12 @@ impl SkillService {
             return Ok(flag);
         }
         if let Ok(val) = std::env::var(ENV_EXPOSE_AGENTS) {
-            if let Ok(parsed) = val.parse::<bool>() {
-                return Ok(parsed);
+            match parse_flag(&val) {
+                Some(parsed) => return Ok(parsed),
+                None => tracing::warn!(
+                    value = %val,
+                    "{ENV_EXPOSE_AGENTS} is not 0/1/true/false/yes/no; ignoring it"
+                ),
             }
         }
         // Legacy/edge: explicit manifest JSON without manifest schema parsing.
@@ -473,6 +495,16 @@ impl SkillService {
         }
 
         Ok(true)
+    }
+}
+
+/// Reads an on/off environment value: 1/0, true/false, yes/no, on/off, in
+/// any case and with surrounding spaces. `None` for anything else.
+pub(crate) fn parse_flag(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
     }
 }
 
@@ -509,7 +541,7 @@ fn text_with_location(
     }
     ResourceContents::TextResourceContents {
         uri: uri.into(),
-        mime_type: Some("text".into()),
+        mime_type: Some("text/markdown".into()),
         text: text.into(),
         meta: Some(meta),
     }
@@ -538,7 +570,7 @@ fn text_with_location_and_role(
     }
     ResourceContents::TextResourceContents {
         uri: uri.into(),
-        mime_type: Some("text".into()),
+        mime_type: Some("text/markdown".into()),
         text: text.into(),
         meta: Some(meta),
     }

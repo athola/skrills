@@ -1128,3 +1128,143 @@ fn fetch_pdf_serves_a_cached_pdf_without_calling_unpaywall() {
     assert_eq!(structured["cached"], true);
     assert_eq!(structured["path"], cached.to_string_lossy().as_ref());
 }
+
+/// `["arxiv" x 10000]` made 10 000 outbound calls; sources are deduplicated
+/// and unknown names reported without a call.
+#[test]
+fn search_sources_are_deduplicated_and_unknown_names_reported() {
+    let requested: Vec<serde_json::Value> = std::iter::repeat_n(json!("arxiv"), 10_000)
+        .chain([json!("openalex"), json!("bogus"), json!("arxiv")])
+        .collect();
+    let (sources, errors) = super::super::research::paper_sources(Some(&requested));
+    assert_eq!(sources, ["arxiv", "openalex"]);
+    assert_eq!(errors, ["Unknown source: bogus"]);
+    let (all, none) = super::super::research::paper_sources(None);
+    assert_eq!(all, ["arxiv", "semantic_scholar", "openalex"]);
+    assert!(none.is_empty());
+}
+
+/// Results were concatenated in source order and truncated, so with the
+/// default limit every result came from arXiv; DOI-less duplicates repeated.
+#[test]
+fn search_results_interleave_sources_and_drop_duplicate_titles() {
+    use skrills_tome::models::{Paper, PaperSource};
+    let paper = |title: &str, doi: Option<&str>, source: PaperSource| Paper {
+        id: title.into(),
+        title: title.into(),
+        authors: Vec::new(),
+        abstract_text: None,
+        year: None,
+        doi: doi.map(String::from),
+        url: None,
+        source,
+        citation_count: None,
+        pdf_url: None,
+    };
+    let per_source = vec![
+        vec![
+            paper("A one", None, PaperSource::Arxiv),
+            paper("A two", None, PaperSource::Arxiv),
+        ],
+        vec![
+            paper("a  ONE!", None, PaperSource::OpenAlex),
+            paper("B two", Some("10.1/b"), PaperSource::OpenAlex),
+        ],
+        vec![paper(
+            "B again",
+            Some("10.1/b"),
+            PaperSource::SemanticScholar,
+        )],
+    ];
+    let merged = super::super::research::merge_papers(per_source, 3);
+    let titles: Vec<&str> = merged.iter().map(|p| p.title.as_str()).collect();
+    assert_eq!(titles, ["A one", "B again", "A two"]);
+}
+
+/// Reserved ranges a literal PDF URL could still name.
+#[test]
+fn check_pdf_url_rejects_reserved_and_embedded_private_addresses() {
+    use super::super::research::check_pdf_url;
+    for url in [
+        "https://0.1.2.3/x.pdf",
+        "https://198.18.0.1/x.pdf",
+        "https://224.0.0.1/x.pdf",
+        "https://240.0.0.1/x.pdf",
+        "https://[64:ff9b::a00:1]/x.pdf",
+        "https://[::10.0.0.1]/x.pdf",
+        "https://[ff02::1]/x.pdf",
+        "https://[::ffff:169.254.169.254]/x.pdf",
+    ] {
+        let parsed = reqwest::Url::parse(url).unwrap();
+        assert!(check_pdf_url(&parsed).is_err(), "{url} was accepted");
+    }
+    let public = reqwest::Url::parse("https://93.184.215.14/x.pdf").unwrap();
+    assert!(check_pdf_url(&public).is_ok());
+}
+
+/// A public-looking name can resolve to a private address; the download
+/// client's resolver refuses such answers.
+#[test]
+fn pdf_resolver_refuses_names_that_resolve_to_private_addresses() {
+    use reqwest::dns::Resolve;
+    let resolver = super::super::research::PublicOnlyResolver;
+    let outcome = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(resolver.resolve("localhost".parse().unwrap()));
+    assert!(outcome.is_err(), "localhost resolved to an allowed address");
+}
+
+/// Node fields had no size limit, so a looping client could grow
+/// `knowledge.db` without bound.
+#[test]
+fn add_knowledge_node_refuses_oversized_fields() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempfile::tempdir().unwrap();
+    let cache_base = temp.path().join("cache");
+    let _home = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+    let _xdg = crate::test_support::set_env_var("XDG_CACHE_HOME", cache_base.to_str());
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
+    let big = "x".repeat(super::super::research::MAX_KNOWLEDGE_FIELD_BYTES + 1);
+    for args in [
+        json!({"id": big, "kind": "topic", "label": "l"}),
+        json!({"id": "a", "kind": "topic", "label": big}),
+        json!({"id": "a", "kind": "topic", "label": "l", "metadata": {"note": big}}),
+    ] {
+        let err = service
+            .add_knowledge_node_tool(args.as_object().cloned().unwrap())
+            .expect_err("oversized field accepted");
+        assert!(err.to_string().contains("too large"), "{err}");
+    }
+}
+
+#[test]
+fn knowledge_node_budget_admits_updates_but_not_new_nodes_when_full() {
+    use super::super::research::{node_budget_allows, MAX_KNOWLEDGE_NODES};
+    assert!(node_budget_allows(MAX_KNOWLEDGE_NODES - 1, false));
+    assert!(!node_budget_allows(MAX_KNOWLEDGE_NODES, false));
+    assert!(node_budget_allows(MAX_KNOWLEDGE_NODES, true));
+}
+
+/// Each DOI could add 100 MiB to the PDF cache with no total limit; the
+/// oldest files are evicted to keep the cache under its budget.
+#[test]
+fn pdf_cache_evicts_the_oldest_files_past_its_budget() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    let now = std::time::SystemTime::now();
+    for (name, age_secs) in [("old.pdf", 300u64), ("mid.pdf", 200), ("new.pdf", 100)] {
+        let path = dir.join(name);
+        std::fs::write(&path, vec![b'x'; 10]).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(now - Duration::from_secs(age_secs))
+            .unwrap();
+    }
+    super::super::research::evict_pdf_cache(dir, 20).unwrap();
+    assert!(!dir.join("old.pdf").exists());
+    assert!(dir.join("mid.pdf").exists() && dir.join("new.pdf").exists());
+}

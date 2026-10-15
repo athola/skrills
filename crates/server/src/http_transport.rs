@@ -675,7 +675,7 @@ fn log_startup(addr: SocketAddr, security: &HttpSecurityConfig) {
 /// Starts the MCP server over HTTP transport with security configuration.
 ///
 /// Binds `bind_addr`, moving to one of the next nine ports when it is taken
-/// (for HTTP and HTTPS alike). Callers that need to know the port in advance,
+/// (for HTTP and HTTPS alike), unless an `allowed_hosts` entry names a port. Callers that need to know the port in advance,
 /// such as tests, should bind themselves and use [`serve_http_on_listener`].
 ///
 /// # Arguments
@@ -699,7 +699,17 @@ where
         .with_context(|| format!("invalid bind address: {bind_addr}"))?;
 
     let prepared = prepare_server(service_factory, security.clone(), skill_dirs)?;
-    let (listener, bound) = bind_with_fallback(addr).await?;
+    let (listener, bound) = if port_fallback_allowed(&security) {
+        bind_with_fallback(addr).await?
+    } else {
+        let listener = tokio::net::TcpListener::bind(addr).await.with_context(|| {
+            format!(
+                "failed to bind to {addr}; not trying other ports because --allowed-hosts \
+                 names a port, which another port would not match"
+            )
+        })?;
+        with_bound_addr(listener)?
+    };
     log_startup(bound, &security);
     run_prepared(prepared, listener, open_browser).await
 }
@@ -751,6 +761,17 @@ fn with_bound_addr(
         .local_addr()
         .context("failed to read the bound address")?;
     Ok((listener, addr))
+}
+
+/// Whether `serve` may move to another port when the requested one is taken.
+/// Not when an allowed host names a port: requests would carry the new port
+/// and every one would be refused.
+fn port_fallback_allowed(security: &HttpSecurityConfig) -> bool {
+    !security
+        .allowed_hosts
+        .iter()
+        .filter_map(|entry| parse_host_authority(entry))
+        .any(|authority| authority.port.is_some())
 }
 
 /// Try to bind to the given address, falling back to up to 9 subsequent ports on conflict.
@@ -805,22 +826,29 @@ async fn bind_with_fallback(addr: SocketAddr) -> Result<(tokio::net::TcpListener
 
 /// Open a URL in the default browser.
 fn open_in_browser(url: &str) {
+    // Every Unix other than macOS (Linux, the BSDs, illumos) uses the
+    // freedesktop opener.
     #[cfg(target_os = "macos")]
     let cmd = "open";
-    #[cfg(target_os = "linux")]
+    #[cfg(all(unix, not(target_os = "macos")))]
     let cmd = "xdg-open";
-    #[cfg(target_os = "windows")]
+    #[cfg(windows)]
     let cmd = "explorer";
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    #[cfg(not(any(unix, windows)))]
     {
         tracing::warn!(
             target: "skrills::http",
             url,
             "Cannot open browser: unsupported platform"
         );
-        return;
     }
+    #[cfg(any(unix, windows))]
+    spawn_browser(cmd, url);
+}
 
+/// Runs `cmd url` and reports a failed launch or a non-zero exit.
+#[cfg(any(unix, windows))]
+fn spawn_browser(cmd: &str, url: &str) {
     match std::process::Command::new(cmd).arg(url).spawn() {
         Ok(mut child) => {
             // Check if the browser command exits with an error (e.g., no DISPLAY)
@@ -1477,6 +1505,20 @@ mod tests {
             assert!(config.has_tls());
         }
 
+        /// Moving to another port breaks a port-qualified `--allowed-hosts`
+        /// entry: every request then names a refused authority.
+        #[test]
+        fn port_fallback_is_off_when_an_allowed_host_names_a_port() {
+            let with = |hosts: &[&str]| HttpSecurityConfig {
+                allowed_hosts: hosts.iter().map(|h| h.to_string()).collect(),
+                ..Default::default()
+            };
+            assert!(port_fallback_allowed(&with(&[])));
+            assert!(port_fallback_allowed(&with(&["skrills.internal"])));
+            assert!(!port_fallback_allowed(&with(&["skrills.internal:8080"])));
+            assert!(!port_fallback_allowed(&with(&["a.example", "[::1]:3000"])));
+        }
+
         #[tokio::test]
         async fn bind_with_fallback_binds_to_free_port() {
             // Grab an ephemeral port to discover a free one, then release it
@@ -1529,27 +1571,33 @@ mod tests {
 
         #[tokio::test]
         async fn bind_with_fallback_errors_when_all_ports_occupied() {
-            // Occupy 10 consecutive ports (the original + 9 fallbacks).
-            // Use a fixed high port to avoid ephemeral-range race conditions.
-            // If we can't block all 10, skip, another process holds one.
-            let base_port: u16 = 19_100;
-            let base_addr = SocketAddr::new("127.0.0.1".parse().unwrap(), base_port);
-
-            let mut blockers = Vec::with_capacity(10);
-            for offset in 0..10u16 {
-                let addr = SocketAddr::new(base_addr.ip(), base_port + offset);
-                match tokio::net::TcpListener::bind(addr).await {
-                    Ok(l) => blockers.push(l),
-                    Err(_) => {
-                        // Can't block all ports, skip test rather than flake
-                        eprintln!(
-                            "skipping: port {} already in use by another process",
-                            base_port + offset
-                        );
-                        return;
+            // Occupy 10 consecutive ports (the original + 9 fallbacks). The
+            // base comes from the OS; if another process holds one of the
+            // ten, try another base rather than skip, so the test can never
+            // pass without running.
+            let mut held = None;
+            for _ in 0..50 {
+                let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let base_port = probe.local_addr().unwrap().port();
+                drop(probe);
+                if base_port > u16::MAX - 10 {
+                    continue;
+                }
+                let mut blockers = Vec::with_capacity(10);
+                for offset in 0..10u16 {
+                    let addr = SocketAddr::new("127.0.0.1".parse().unwrap(), base_port + offset);
+                    match tokio::net::TcpListener::bind(addr).await {
+                        Ok(l) => blockers.push(l),
+                        Err(_) => break,
                     }
                 }
+                if blockers.len() == 10 {
+                    held = Some((base_port, blockers));
+                    break;
+                }
             }
+            let (base_port, blockers) = held.expect("could not hold 10 consecutive ports");
+            let base_addr = SocketAddr::new("127.0.0.1".parse().unwrap(), base_port);
 
             let result = bind_with_fallback(base_addr).await;
             assert!(

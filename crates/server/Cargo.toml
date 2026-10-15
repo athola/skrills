@@ -25,7 +25,6 @@ serde_json.workspace = true
 tokio.workspace = true
 walkdir.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 pathdiff.workspace = true
 dirs.workspace = true
 inquire.workspace = true
@@ -54,14 +53,15 @@ skrills-intelligence = { path = "../intelligence", version = "0.9.1" }
 skrills-metrics = { path = "../metrics", version = "0.9.1" }
 skrills-tome = { path = "../tome", version = "0.9.1" }
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
-skrills-dashboard = { path = "../dashboard", version = "0.9.1", optional = true }
 shellexpand = "3"
 
 [features]
 # Enable subagents and HTTP transport by default so MCP exposes subagent tools
 # and remote access capabilities out of the box.
 default = ["watch", "subagents", "http-transport", "dashboard"]
-dashboard = ["skrills-dashboard"]
+# No server source uses the TUI crate; the feature stays so `skrills`'s
+# `dashboard` feature can keep naming it. Only the cold-window tests use it.
+dashboard = []
 watch = ["notify"]
 subagents = ["skrills-subagents"]
 http-transport = ["axum", "axum-server", "tower", "tower-http", "subtle", "rcgen", "leptos", "async-stream", "futures"]
@@ -71,6 +71,8 @@ test-support = []
 rmcp = { workspace = true, features = ["client", "transport-async-rw", "transport-child-process"] }
 wiremock = "0.6"
 tokio-util = "0.7"
+# Only the dependency-analysis tests install a subscriber.
+tracing-subscriber.workspace = true
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 skrills_test_utils = { path = "../test-utils" }
 chromiumoxide = { version = "0.9", default-features = false }
@@ -83,6 +85,7 @@ serial_test = "4"
 # both `skrills-dashboard` and the parity test resolve to a single
 # widget-type identity.
 ratatui = { workspace = true }
+skrills-dashboard = { path = "../dashboard", version = "0.9.1" }
 
 # The crate deprecates some of its own public items for downstream users
 # (SB-16, SB-41); its own definitions, re-exports and tests still use them. Inline

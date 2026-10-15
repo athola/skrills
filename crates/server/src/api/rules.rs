@@ -50,7 +50,12 @@ impl From<RuleMeta> for RuleResponse {
             category: meta.category.to_string(),
             enabled: meta.enabled,
             description: meta.description,
-            command: meta.command,
+            // Hook commands often carry tokens (`Authorization: Bearer ...`,
+            // `API_KEY=...`); they are served redacted, as MCP server args are.
+            command: meta
+                .command
+                .as_deref()
+                .map(super::mcp_servers::redact_command_line),
         }
     }
 }
@@ -218,5 +223,31 @@ mod tests {
 
         let (status, _) = get(app, "/api/rules/nope").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// Hook commands often carry credentials; `/api/rules` must not serve
+    /// them to whoever reaches the port.
+    #[test]
+    fn rule_commands_are_served_with_credentials_redacted() {
+        let mut rule = make_test_rules().remove(0);
+        for (command, secret) in [
+            (
+                "curl -H 'Authorization: Bearer abc123' https://h/x",
+                "abc123",
+            ),
+            ("API_KEY=sk-live-1 ./notify.sh", "sk-live-1"),
+            ("notify --token tok-2 --channel ops", "tok-2"),
+            ("psql postgresql://user:hunter2@db/app", "hunter2"),
+        ] {
+            rule.command = Some(command.to_string());
+            let response = RuleResponse::from(rule.clone());
+            let served = response.command.unwrap();
+            assert!(!served.contains(secret), "{secret} leaked: {served}");
+        }
+        rule.command = Some("cargo clippy --all-targets".to_string());
+        assert_eq!(
+            RuleResponse::from(rule).command.as_deref(),
+            Some("cargo clippy --all-targets")
+        );
     }
 }

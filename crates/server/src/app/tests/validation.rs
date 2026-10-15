@@ -435,3 +435,84 @@ fn validate_skills_accepts_the_copilot_and_all_targets() {
         assert!(text.contains("1 Copilot-valid"), "{target}: {text}");
     }
 }
+
+/// Each `skill-diff` call walked and hashed every root; within the cache TTL
+/// the per-root listing is reused, and an invalidation (the watcher) drops it.
+#[test]
+fn skill_diff_reuses_the_root_listing_until_the_cache_is_invalidated() {
+    use skrills_discovery::{SkillRoot, SkillSource};
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let _cache = crate::test_support::set_env_var(
+        "SKRILLS_CACHE_PATH",
+        Some(temp.path().join("cache.json").to_str().unwrap()),
+    );
+    let claude = temp.path().join("claude");
+    let codex = temp.path().join("codex");
+    write_skill_file(&claude, "demo", "line one\n");
+    let service = service_for(vec![
+        SkillRoot {
+            root: claude,
+            source: SkillSource::Claude,
+        },
+        SkillRoot {
+            root: codex.clone(),
+            source: SkillSource::Codex,
+        },
+    ]);
+    let locations = |service: &SkillService| {
+        service
+            .skill_diff_tool(args(json!({"name": "demo"})))
+            .unwrap()
+            .structured_content
+            .unwrap()["locations"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    assert_eq!(locations(&service), 1);
+    write_skill_file(&codex, "demo", "line two\n");
+    assert_eq!(
+        locations(&service),
+        1,
+        "the second call walked the roots again"
+    );
+    service.invalidate_cache().unwrap();
+    assert_eq!(locations(&service), 2);
+}
+
+/// Codex loads user skills from `~/.agents/skills`; a copy there is the
+/// Codex side of the comparison.
+#[test]
+fn skill_diff_reads_the_shared_agents_dir_as_codex() {
+    use skrills_discovery::{SkillRoot, SkillSource};
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let _cache = crate::test_support::set_env_var(
+        "SKRILLS_CACHE_PATH",
+        Some(temp.path().join("cache.json").to_str().unwrap()),
+    );
+    let claude = temp.path().join("claude");
+    let agents = temp.path().join("agents");
+    write_skill_file(&claude, "demo", "line one\n");
+    write_skill_file(&agents, "demo", "line two\n");
+    let service = service_for(vec![
+        SkillRoot {
+            root: claude,
+            source: SkillSource::Claude,
+        },
+        SkillRoot {
+            root: agents,
+            source: SkillSource::Agent,
+        },
+    ]);
+    let structured = service
+        .skill_diff_tool(args(json!({"name": "demo"})))
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(
+        structured["comparisons"][0]["comparison"], "claude_vs_codex",
+        "{structured}"
+    );
+}

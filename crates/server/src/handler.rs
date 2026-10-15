@@ -87,10 +87,55 @@ pub(crate) fn invalid_params(message: impl Into<String>) -> anyhow::Error {
     InvalidParams(message.into()).into()
 }
 
-/// Converts a tool error to the JSON-RPC error the client sees.
+/// Agents a sync tool can read from or write to.
+const SYNC_PLATFORMS: [&str; 4] = ["claude", "codex", "copilot", "cursor"];
+
+/// Refuses an unknown platform or a sync from a platform to itself, which
+/// would read a tool's configuration and write it back through its own
+/// lossy writer.
+pub(crate) fn check_sync_pair(from: &str, to: &str) -> Result<()> {
+    for (field, value) in [("from", from), ("to", to)] {
+        if !SYNC_PLATFORMS.contains(&value) {
+            return Err(invalid_params(format!(
+                "Invalid '{field}' value '{value}': expected one of {}",
+                SYNC_PLATFORMS.join(", ")
+            )));
+        }
+    }
+    if from.eq_ignore_ascii_case(to) {
+        return Err(invalid_params(format!(
+            "Source and target cannot be the same: {from}"
+        )));
+    }
+    Ok(())
+}
+
+/// A resource URI that names nothing (a deleted skill, a hidden document).
+/// Mapped to `resource_not_found` (-32002).
+#[derive(Debug)]
+struct ResourceNotFound(String);
+
+impl std::fmt::Display for ResourceNotFound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ResourceNotFound {}
+
+pub(crate) fn resource_not_found(message: impl Into<String>) -> anyhow::Error {
+    ResourceNotFound(message.into()).into()
+}
+
+/// Converts a tool or resource error to the JSON-RPC error the client sees.
 fn tool_error(e: anyhow::Error) -> rmcp::ErrorData {
     if e.downcast_ref::<InvalidParams>().is_some() {
         rmcp::ErrorData::invalid_params(e.to_string(), None)
+    } else if e.downcast_ref::<ResourceNotFound>().is_some()
+        || e.downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+    {
+        rmcp::ErrorData::resource_not_found(e.to_string(), None)
     } else {
         rmcp::ErrorData::internal_error(e.to_string(), None)
     }
@@ -127,6 +172,17 @@ fn synced_file_count(value: &serde_json::Value) -> usize {
             .map(synced_file_count)
             .fold(0usize, usize::saturating_add),
         _ => 0,
+    }
+}
+
+/// The direction a sync tool moves configuration, from skrills' side:
+/// `sync-from-<peer>` pulls a peer's configuration into Claude or Codex;
+/// every other sync tool (including `sync-from-claude`, which copies Claude
+/// out) pushes.
+fn sync_operation(tool: &str) -> skrills_metrics::SyncOperation {
+    match tool.strip_prefix("sync-from-") {
+        Some(peer) if peer != "claude" => skrills_metrics::SyncOperation::Pull,
+        _ => skrills_metrics::SyncOperation::Push,
     }
 }
 
@@ -171,7 +227,7 @@ impl SkillService {
         args: Option<&serde_json::Map<String, serde_json::Value>>,
         result: &Result<CallToolResult>,
     ) {
-        use skrills_metrics::{SyncOperation, SyncStatus};
+        use skrills_metrics::SyncStatus;
 
         let dry_run = args
             .and_then(|a| a.get("dry_run"))
@@ -187,9 +243,8 @@ impl SkillService {
             ),
             _ => (0, SyncStatus::Failed),
         };
-        // Every sync tool writes into another tool's configuration.
         self.record_metric("sync", |m| {
-            m.record_sync_event(SyncOperation::Push, files, status)
+            m.record_sync_event(sync_operation(tool), files, status)
         });
     }
 }
@@ -229,7 +284,7 @@ impl ServerHandler for SkillService {
     {
         let result = run_blocking(|| self.read_resource_sync(&request.uri))
             .map(ReadResourceResponse::from)
-            .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None));
+            .map_err(tool_error);
         std::future::ready(result)
     }
 
@@ -400,6 +455,7 @@ impl ServerHandler for SkillService {
                             .and_then(|obj| obj.get("to"))
                             .and_then(|v| v.as_str())
                             .unwrap_or_else(|| default_target_for(&args.from));
+                        check_sync_pair(&args.from, to)?;
 
                         let params = SyncParams {
                             from: Some(args.from.clone()),
@@ -438,6 +494,7 @@ impl ServerHandler for SkillService {
                             .and_then(|obj| obj.get("to"))
                             .and_then(|v| v.as_str())
                             .unwrap_or_else(|| default_target_for(&args.from));
+                        check_sync_pair(&args.from, to)?;
 
                         let params = SyncParams {
                             from: Some(args.from.clone()),
@@ -473,6 +530,7 @@ impl ServerHandler for SkillService {
                             .and_then(|obj| obj.get("to"))
                             .and_then(|v| v.as_str())
                             .unwrap_or_else(|| default_target_for(&args.from));
+                        check_sync_pair(&args.from, to)?;
 
                         let params = SyncParams {
                             from: Some(args.from.clone()),
@@ -513,6 +571,7 @@ impl ServerHandler for SkillService {
                             .and_then(|obj| obj.get("to"))
                             .and_then(|v| v.as_str())
                             .unwrap_or_else(|| default_target_for(&args.from));
+                        check_sync_pair(&args.from, to)?;
 
                         let params = SyncParams {
                             from: Some(args.from.clone()),
@@ -737,11 +796,10 @@ impl ServerHandler for SkillService {
                             .and_then(|v| v.as_str())
                             .ok_or_else(|| invalid_params("uri parameter is required"))?;
 
-                        let limit = args
-                            .get("limit")
-                            .and_then(|v| v.as_u64())
-                            .map(|v| usize::try_from(v).unwrap_or(usize::MAX))
-                            .unwrap_or(10);
+                        let limit = crate::app::clamp_limit(
+                            args.get("limit").and_then(|v| v.as_u64()),
+                            10,
+                        );
 
                         let include_quality = args
                             .get("include_quality")
@@ -817,14 +875,22 @@ impl ServerHandler for SkillService {
                     "describe-mcp-tool" => {
                         // Lookup tool in all_tools by name; only a schema that
                         // was actually returned counts as loaded.
-                        let all = tool_schemas::all_tools();
-                        let gateway_tools = crate::mcp_gateway::mcp_gateway_tools();
+                        // The same set `list_tools` advertises, found by
+                        // either spelling `call_tool` accepts.
+                        #[cfg_attr(not(feature = "subagents"), allow(unused_mut))]
+                        let mut all = tool_schemas::all_tools();
+                        all.extend(crate::mcp_gateway::mcp_gateway_tools());
+                        #[cfg(feature = "subagents")]
+                        if let Some(subagents) = &self.subagents {
+                            all.extend(subagents.tools());
+                        }
                         crate::mcp_gateway::describe_mcp_tool(request.arguments.as_ref(), |name| {
+                            let kebab = name.replace('_', "-");
                             let found = all
                                 .iter()
                                 .find(|t| t.name.as_ref() == name)
-                                .cloned()
-                                .or_else(|| gateway_tools.iter().find(|t| t.name.as_ref() == name).cloned());
+                                .or_else(|| all.iter().find(|t| t.name.as_ref() == kebab))
+                                .cloned();
                             if found.is_some() {
                                 self.context_stats.record_schema_load();
                             }
@@ -1259,14 +1325,9 @@ mod tests {
     fn snake_case_aliases_accepted_for_all_sync_research_tools() {
         let _guard = test_support::env_guard();
         let temp = tempdir().expect("tempdir");
-        let _home = set_env_var(
-            "HOME",
-            Some(
-                temp.path()
-                    .to_str()
-                    .expect("temp home should be valid utf-8"),
-            ),
-        );
+        // HOME alone left XDG_CACHE_HOME/LOCALAPPDATA pointing at the
+        // developer's real research databases.
+        let _env = isolate_home(&temp);
 
         // Each (snake_case_name, minimal_valid_args) pair for sync research tools
         let cases: Vec<(&str, serde_json::Value)> = vec![
@@ -1307,12 +1368,13 @@ mod tests {
                     .await
             });
 
-            assert!(
-                result.is_ok(),
-                "snake_case tool '{}' should be dispatched, got error: {:?}",
-                name,
-                result.err()
-            );
+            let response = result.unwrap_or_else(|e| {
+                panic!("snake_case tool '{name}' should be dispatched, got error: {e:?}")
+            });
+            let CallToolResponse::Complete(result) = response else {
+                panic!("{name}: expected a tool result");
+            };
+            assert_ne!(result.is_error, Some(true), "{name}: {:?}", result.content);
         }
     }
 
@@ -1508,6 +1570,13 @@ mod tests {
             ("sync-skills", json!({"from": "gemini", "to": "claude"})),
             ("sync-to-cursor", json!({"from": "gemini"})),
             ("describe-mcp-tool", json!({})),
+            ("sync-commands", json!({"from": "claude", "to": "claude"})),
+            ("sync-commands", json!({"from": "claude", "to": "Claude"})),
+            ("sync-mcp-servers", json!({"from": "codex", "to": "codex"})),
+            ("sync-preferences", json!({"from": "gemini"})),
+            ("sync-status", json!({"from": "cursor", "to": "cursor"})),
+            ("sync-all", json!({"from": "claude", "to": "claude"})),
+            ("sync-all", json!({"from": "claude", "to": "gemini"})),
         ];
         for (name, args) in cases {
             let shown = args.to_string();
@@ -1543,6 +1612,121 @@ mod tests {
             };
             assert_ne!(result.is_error, Some(true), "{name}: {:?}", result.content);
         }
+    }
+
+    /// `list_tools` advertises the subagent tools and `call_tool` accepts
+    /// snake_case names; the gateway must describe and list the same set.
+    #[cfg(feature = "subagents")]
+    #[test]
+    fn gateway_describes_and_lists_every_advertised_tool() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _env = isolate_home(&temp);
+        for name in ["run-subagent", "list_mcp_tools", "validate_skills"] {
+            let response = call(
+                build_service(&temp),
+                "describe-mcp-tool",
+                json!({"tool_name": name}),
+            )
+            .expect("describe");
+            let CallToolResponse::Complete(result) = response else {
+                panic!("{name}: expected a tool result");
+            };
+            assert_ne!(result.is_error, Some(true), "{name} not described");
+        }
+        let listing =
+            structured(call(build_service(&temp), "list-mcp-tools", json!({})).expect("list"));
+        let names: Vec<&str> = listing["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert!(names.contains(&"run-subagent"), "{names:?}");
+    }
+
+    fn read(service: SkillService, uri: &str) -> Result<ReadResourceResponse, rmcp::ErrorData> {
+        let uri = uri.to_string();
+        run_async(async move {
+            let (running, context, _client) = service_with_context(service);
+            running
+                .service()
+                .read_resource(ReadResourceRequestParams::new(uri), context)
+                .await
+        })
+    }
+
+    /// A deleted skill is not a server fault, a malformed URI is the
+    /// caller's, and skill text is Markdown as `list_resources` says.
+    #[test]
+    fn read_resource_reports_missing_and_malformed_uris_and_serves_markdown() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _env = isolate_home(&temp);
+
+        let err = read(build_service(&temp), "skill://skrills/codex/nope").unwrap_err();
+        assert_eq!(
+            err.code,
+            rmcp::model::ErrorCode::RESOURCE_NOT_FOUND,
+            "{}",
+            err.message
+        );
+        let err = read(build_service(&temp), "https://example.com/x").unwrap_err();
+        assert_eq!(
+            err.code,
+            rmcp::model::ErrorCode::INVALID_PARAMS,
+            "{}",
+            err.message
+        );
+
+        for uri in ["skill://skrills/codex/demo/SKILL.md", AGENTS_URI] {
+            let ReadResourceResponse::Complete(result) =
+                read(build_service(&temp), uri).expect("read")
+            else {
+                panic!("expected a completed read");
+            };
+            let ResourceContents::TextResourceContents { mime_type, .. } = &result.contents[0]
+            else {
+                panic!("expected text");
+            };
+            assert_eq!(mime_type.as_deref(), Some("text/markdown"), "{uri}");
+        }
+    }
+
+    /// `limit` was taken as given: 0 silently returned nothing. It is
+    /// clamped to 1..=100 like every other tool's.
+    #[test]
+    fn recommend_skills_clamps_its_limit() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _env = isolate_home(&temp);
+        let skills = temp.path().join("extra");
+        for (name, body) in [
+            ("a", "See [b](../b/SKILL.md) and [c](../c/SKILL.md)."),
+            ("b", "b"),
+            ("c", "c"),
+        ] {
+            std::fs::create_dir_all(skills.join(name)).unwrap();
+            std::fs::write(
+                skills.join(name).join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: fixture {name}\n---\n{body}\n"),
+            )
+            .unwrap();
+        }
+        let service = SkillService::new_with_ttl(vec![skills], Duration::from_secs(60)).unwrap();
+        let result = structured(
+            call(
+                service,
+                "recommend-skills",
+                json!({"uri": "skill://skrills/extra0/a/SKILL.md", "limit": 0}),
+            )
+            .expect("recommend"),
+        );
+        assert_eq!(
+            result["recommendations"].as_array().unwrap().len(),
+            1,
+            "{result}"
+        );
     }
 
     /// A missing argument is the caller's mistake, not the server's.
@@ -1852,12 +2036,23 @@ mod tests {
     /// nothing wrote. These pin the writers, using an in-memory collector.
     mod metrics_writers {
         use super::*;
-        use skrills_metrics::{MetricEvent, MetricsCollector, SyncStatus};
+        use skrills_metrics::{MetricEvent, MetricsCollector, SyncOperation, SyncStatus};
         use std::sync::Arc;
 
         /// The skill `build_service` writes, by the name `/api/skills`
         /// reports, so the dashboard can join the two.
         const DEMO: &str = "demo/SKILL.md";
+
+        /// `sync-from-copilot` and `sync-from-cursor` pull into Claude or
+        /// Codex but were recorded as pushes.
+        #[test]
+        fn sync_direction_follows_the_tool_name() {
+            assert_eq!(sync_operation("sync-from-copilot"), SyncOperation::Pull);
+            assert_eq!(sync_operation("sync-from-cursor"), SyncOperation::Pull);
+            assert_eq!(sync_operation("sync-from-claude"), SyncOperation::Push);
+            assert_eq!(sync_operation("sync-to-cursor"), SyncOperation::Push);
+            assert_eq!(sync_operation("sync-all"), SyncOperation::Push);
+        }
 
         fn events(collector: &MetricsCollector) -> Vec<MetricEvent> {
             collector.get_recent_events(100).expect("read events")

@@ -730,3 +730,20 @@ async fn sync_all_tool_syncs_skills_into_codex_skills_root() {
         "sync-all should not write skills into ~/.codex/skills-mirror"
     );
 }
+
+/// `SKRILLS_EXPOSE_AGENTS=0` was ignored (only `true`/`false` parsed), so
+/// AGENTS.md stayed exposed when the user tried to hide it.
+#[test]
+fn expose_agents_env_accepts_zero_and_one_in_any_case() {
+    for (value, expected) in [
+        ("0", false),
+        ("1", true),
+        ("FALSE", false),
+        ("True", true),
+        (" no ", false),
+        ("yes", true),
+    ] {
+        assert_eq!(super::super::parse_flag(value), Some(expected), "{value}");
+    }
+    assert_eq!(super::super::parse_flag("maybe"), None);
+}

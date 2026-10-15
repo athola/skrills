@@ -107,9 +107,24 @@ fn redact_args(args: &[String]) -> Vec<String> {
         if arg.starts_with('-') && !arg.contains('=') && looks_secret(arg) {
             redact_next = true;
         }
+        // An auth scheme split from its credential: `Bearer <token>`.
+        if arg.eq_ignore_ascii_case("bearer") || arg.eq_ignore_ascii_case("basic") {
+            redact_next = true;
+        }
         out.push(arg.clone());
     }
     out
+}
+
+/// Redacts a shell command line the way [`redact_args`] redacts argv. The
+/// line is split on whitespace with quotes dropped, so the result is for
+/// display, not for running.
+pub(crate) fn redact_command_line(command: &str) -> String {
+    let words: Vec<String> = command
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c| c == '\'' || c == '"').to_string())
+        .collect();
+    redact_args(&words).join(" ")
 }
 
 /// Strip credentials from a URL: user info, and the value of every query

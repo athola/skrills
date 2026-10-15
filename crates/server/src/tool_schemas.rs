@@ -317,9 +317,9 @@ pub(crate) fn validation_tools() -> Vec<Tool> {
         tool(
             "skill-diff",
             "Compare skill versions across CLIs",
-            "Compare a skill across Claude, Codex, and Copilot to identify differences in \
-             content and frontmatter. Shows unified diff, frontmatter variations, and \
-             token count differences.",
+            "Compare a skill across Claude, Codex (including ~/.agents/skills), and Copilot. \
+             Shows a unified diff of each pair and token counts; within each client the \
+             highest-priority copy is compared.",
             Arc::new({
                 let mut schema = JsonMap::new();
                 schema.insert("type".into(), json!("object"));
@@ -490,10 +490,7 @@ pub(crate) fn trace_tools() -> Vec<Tool> {
                         "instrument": { "type": "boolean", "default": true, "description": "Append skrills markers to SKILL.md files under selected roots" },
                         "backup": { "type": "boolean", "default": true, "description": "Create .md.bak backups before modifying SKILL.md files" },
                         "dry_run": { "type": "boolean", "default": false, "description": "Preview without writing files" },
-                        "include_mirror": { "type": "boolean", "default": true, "description": "Include ~/.codex/skills-mirror when instrumenting codex" },
-                        "include_agent": { "type": "boolean", "default": true, "description": "Include ~/.agents/skills when instrumenting" },
-                        "include_cache": { "type": "boolean", "default": false, "description": "Include ~/.claude/plugins/cache when instrumenting claude" },
-                        "include_marketplace": { "type": "boolean", "default": false, "description": "Include ~/.claude/plugins/marketplaces when instrumenting claude" }
+                        "include_agent": { "type": "boolean", "default": true, "description": "Include ~/.agents/skills when instrumenting" }
                     }),
                 );
                 schema.insert("additionalProperties".into(), json!(false));
@@ -1337,16 +1334,7 @@ mod tests {
         ),
         (
             "enable-skill-trace",
-            &[
-                "target",
-                "instrument",
-                "backup",
-                "dry_run",
-                "include_mirror",
-                "include_agent",
-                "include_cache",
-                "include_marketplace",
-            ],
+            &["target", "instrument", "backup", "dry_run", "include_agent"],
         ),
         ("disable-skill-trace", &["target", "dry_run"]),
         ("skill-loading-selftest", &["target", "dry_run"]),

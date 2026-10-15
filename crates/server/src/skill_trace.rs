@@ -502,7 +502,13 @@ pub fn enable_trace(
         }
     }
 
-    let roots = roots_for_target(home, target, &opts);
+    // Plugin caches, marketplaces and the mirror belong to other tools (the
+    // rule autofix follows too): markers there break checksums and vanish on
+    // update, so only user skill trees are instrumented.
+    let roots: Vec<_> = roots_for_target(home, target, &opts)
+        .into_iter()
+        .filter(|(label, _)| !matches!(label.as_str(), "cache" | "marketplace" | "mirror"))
+        .collect();
     report.roots = roots
         .iter()
         .map(|(label, path)| format!("{label}:{}", path.display()))
@@ -751,6 +757,44 @@ mod tests {
         assert!(shared.join(PROBE_SKILL_DIR).join("SKILL.md").exists());
         assert!(shared.join(TRACE_SKILL_DIR).join("SKILL.md").exists());
         assert!(!home.join(".codex/skills").join(PROBE_SKILL_DIR).exists());
+    }
+
+    /// Plugin caches, marketplace checkouts and the Codex mirror belong to
+    /// other tools; markers and `.md.bak` files there break checksums and are
+    /// lost on update, so they are never instrumented.
+    #[test]
+    fn enable_trace_leaves_third_party_trees_untouched() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path();
+        let body = "---\nname: x\ndescription: x\n---\nbody";
+        let cache = home.join(".claude/plugins/cache");
+        let market = home.join(".claude/plugins/marketplaces");
+        let mirror = home.join(".codex/skills-mirror");
+        for root in [&cache, &market, &mirror] {
+            write_skill(root, "x", body);
+        }
+        let opts = TraceInstallOptions {
+            instrument: true,
+            backup: true,
+            dry_run: false,
+            include_mirror: true,
+            include_agent: false,
+            include_cache: true,
+            include_marketplace: true,
+        };
+
+        enable_trace(home, ClientTarget::Both, opts).unwrap();
+
+        for root in [&cache, &market, &mirror] {
+            let skill = root.join("x/SKILL.md");
+            assert_eq!(
+                fs::read_to_string(&skill).unwrap(),
+                body,
+                "{}",
+                skill.display()
+            );
+            assert!(!skill.with_extension("md.bak").exists());
+        }
     }
 
     #[test]

@@ -39,11 +39,19 @@ pub const DEFAULT_EMBED_PREVIEW_BYTES: usize = 4096;
 /// Default embedding threshold.
 pub const DEFAULT_EMBED_THRESHOLD: f32 = 0.18;
 /// Environment variable to specify CLI type for agent file selection.
+#[deprecated(
+    since = "0.9.1",
+    note = "no caller in skrills; AGENTS.md is served from the embedded text. Will be removed in a future release"
+)]
 pub const ENV_CLI_TYPE: &str = "SKRILLS_CLI_TYPE";
 
 /// Represents the type of CLI that skrills is integrated with.
 ///
 /// Each CLI type has its own configuration directory and agent file naming convention.
+#[deprecated(
+    since = "0.9.1",
+    note = "no caller in skrills; AGENTS.md is served from the embedded text. Will be removed in a future release"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CliType {
     /// Codex CLI (default) - uses `~/.codex/AGENTS.md`
@@ -84,6 +92,10 @@ impl CliType {
 }
 
 /// Error returned when parsing an invalid CLI type string.
+#[deprecated(
+    since = "0.9.1",
+    note = "no caller in skrills; AGENTS.md is served from the embedded text. Will be removed in a future release"
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseCliTypeError(String);
 
@@ -125,6 +137,10 @@ impl std::fmt::Display for CliType {
 /// Checks the `SKRILLS_CLI_TYPE` environment variable first.
 /// Returns `CliType::Codex` as the default if not set or unrecognized; an
 /// unrecognized value is logged so a typo does not pass silently.
+#[deprecated(
+    since = "0.9.1",
+    note = "no caller in skrills; AGENTS.md is served from the embedded text. Will be removed in a future release"
+)]
 pub fn detect_cli_type() -> CliType {
     let Ok(cli_type) = std::env::var(ENV_CLI_TYPE) else {
         return CliType::Codex;
@@ -144,6 +160,10 @@ pub fn detect_cli_type() -> CliType {
 ///
 /// Attempts to read the appropriate agent file based on CLI type.
 /// Falls back to the embedded `AGENTS_TEXT` if the file doesn't exist.
+#[deprecated(
+    since = "0.9.1",
+    note = "no caller in skrills; AGENTS.md is served from the embedded text. Will be removed in a future release"
+)]
 pub fn read_agent_file() -> Result<String> {
     let home = home_dir()?;
     read_agent_file_for_cli(detect_cli_type(), &home)
@@ -153,6 +173,10 @@ pub fn read_agent_file() -> Result<String> {
 ///
 /// Attempts to read the appropriate agent file based on CLI type.
 /// Falls back to the embedded `AGENTS_TEXT` if the file doesn't exist.
+#[deprecated(
+    since = "0.9.1",
+    note = "no caller in skrills; AGENTS.md is served from the embedded text. Will be removed in a future release"
+)]
 pub fn read_agent_file_for_cli(cli_type: CliType, home: &Path) -> Result<String> {
     let path = cli_type.agent_path(home);
     if path.exists() {
@@ -166,6 +190,10 @@ pub fn read_agent_file_for_cli(cli_type: CliType, home: &Path) -> Result<String>
 /// Returns the path to the agent file for the detected CLI type.
 ///
 /// Returns `None` if the file doesn't exist.
+#[deprecated(
+    since = "0.9.1",
+    note = "no caller in skrills; AGENTS.md is served from the embedded text. Will be removed in a future release"
+)]
 pub fn agent_file_path() -> Result<Option<PathBuf>> {
     let home = home_dir()?;
     agent_file_path_for_cli(detect_cli_type(), &home)
@@ -174,6 +202,10 @@ pub fn agent_file_path() -> Result<Option<PathBuf>> {
 /// Returns the path to the agent file for a specific CLI type.
 ///
 /// Returns `None` if the file doesn't exist.
+#[deprecated(
+    since = "0.9.1",
+    note = "no caller in skrills; AGENTS.md is served from the embedded text. Will be removed in a future release"
+)]
 pub fn agent_file_path_for_cli(cli_type: CliType, home: &Path) -> Result<Option<PathBuf>> {
     let path = cli_type.agent_path(home);
     if path.exists() {
@@ -247,9 +279,9 @@ pub fn skill_roots(extra_dirs: &[PathBuf]) -> Result<Vec<SkillRoot>> {
                 }
                 home.join(".copilot/skills")
             }
-            // Cursor discovery reads `.mdc` rules from a project's
-            // `.cursor/rules`, and a server has no project directory.
-            SkillSource::Cursor => continue,
+            // Where Cursor loads skills and sync writes them, as in
+            // `default_roots`.
+            SkillSource::Cursor => home.join(".cursor/skills"),
             SkillSource::Extra(_) => continue,
             // `SkillSource` is `#[non_exhaustive]`, so the compiler requires
             // this arm; a new variant gets no root until it is mapped above.
@@ -599,10 +631,23 @@ pub fn trigram_similarity_checked(prompt: &str, text: &str) -> f32 {
 pub fn read_prefix(path: &Path, max: usize) -> Result<String> {
     use std::io::Read;
     let mut file = fs::File::open(path)?;
-    let mut buf = Vec::with_capacity(max);
-    file.by_ref().take(max as u64).read_to_end(&mut buf)?;
+    // One byte past `max` tells a file of exactly `max` bytes from a longer one.
+    let mut buf = Vec::with_capacity(max.saturating_add(1));
+    file.by_ref()
+        .take((max as u64).saturating_add(1))
+        .read_to_end(&mut buf)?;
+    let truncated = buf.len() > max;
+    if truncated {
+        buf.truncate(max);
+        // Drop a character the cut split rather than show U+FFFD.
+        if let Err(e) = std::str::from_utf8(&buf) {
+            if e.error_len().is_none() {
+                buf.truncate(e.valid_up_to());
+            }
+        }
+    }
     let mut s = String::from_utf8_lossy(&buf).into_owned();
-    if buf.len() == max {
+    if truncated {
         s.push('…');
     }
     Ok(s)
@@ -762,6 +807,38 @@ mod tests {
                 "{copilot:?}"
             );
         }
+    }
+
+    /// Cursor loads skills from `~/.cursor/skills`, where sync writes them;
+    /// MCP discovery must list that root too.
+    #[test]
+    fn skill_roots_include_the_cursor_skills_dir() {
+        let _guard = env_guard();
+        let temp = tempfile::tempdir().unwrap();
+        let _home = crate::test_support::set_env_var("HOME", temp.path().to_str());
+        let roots = skill_roots(&[]).unwrap();
+        assert!(
+            roots
+                .iter()
+                .any(|r| r.source == SkillSource::Cursor
+                    && r.root == temp.path().join(".cursor/skills")),
+            "{roots:?}"
+        );
+    }
+
+    /// A file of exactly `max` bytes is complete, and a cut must not split a
+    /// UTF-8 character into U+FFFD.
+    #[test]
+    fn read_prefix_marks_only_real_truncation_on_a_char_boundary() {
+        let temp = tempdir().unwrap();
+        let exact = temp.path().join("exact.md");
+        fs::write(&exact, "abcd").unwrap();
+        assert_eq!(read_prefix(&exact, 4).unwrap(), "abcd");
+
+        let long = temp.path().join("long.md");
+        fs::write(&long, "abcé more").unwrap(); // é is two bytes at 3..5
+        assert_eq!(read_prefix(&long, 4).unwrap(), "abc…");
+        assert_eq!(read_prefix(&long, 5).unwrap(), "abcé…");
     }
 
     #[test]

@@ -1314,3 +1314,83 @@ fn project_roots_unset_leaves_project_dir_unrestricted() {
         .analyze_project_context_tool(project_args(&anywhere))
         .expect("no allowlist, no refusal");
 }
+
+/// `recommend-skills-smart` re-parsed all session history on every call;
+/// within the TTL the parsed events are reused, per home directory, and the
+/// event count is capped.
+#[test]
+fn usage_events_are_parsed_once_per_ttl_and_capped() {
+    use skrills_intelligence::usage::SkillUsageEvent;
+    let event = |n: u64| SkillUsageEvent {
+        timestamp: n,
+        skill_path: format!("skill-{n}"),
+        session_id: "s".into(),
+        prompt_context: None,
+    };
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("cache-home");
+    let loads = std::cell::Cell::new(0);
+    let load = || {
+        loads.set(loads.get() + 1);
+        (0..(MAX_USAGE_EVENTS as u64 + 10)).map(event).collect()
+    };
+    let first = cached_usage_events(&home, load);
+    let second = cached_usage_events(&home, load);
+    assert_eq!(loads.get(), 1, "the second call re-parsed sessions");
+    assert_eq!(first.len(), MAX_USAGE_EVENTS);
+    assert_eq!(second.len(), MAX_USAGE_EVENTS);
+
+    let other = temp.path().join("other-home");
+    cached_usage_events(&other, load);
+    assert_eq!(loads.get(), 2, "another home must not reuse the cache");
+}
+
+/// With the default `method: "both"` and no working LLM, GitHub results
+/// made the call a success although nothing was created.
+#[test]
+fn create_skill_fails_when_requested_generation_produced_nothing() {
+    use super::super::intelligence::creation_succeeded;
+    // method both: GitHub found results, LLM failed.
+    assert!(!creation_succeeded(true, false, true, false));
+    // method github only: results are the product.
+    assert!(creation_succeeded(false, false, true, false));
+    // LLM produced content and it was written.
+    assert!(creation_succeeded(true, true, false, false));
+    // LLM produced content but the write failed.
+    assert!(!creation_succeeded(true, true, true, true));
+    // Nothing at all.
+    assert!(!creation_succeeded(false, false, false, false));
+}
+
+/// `ci`, `cd`, `doc`, `auth` matched inside "precision", "decide",
+/// "docker" and "author", flagging gaps for nearly every project.
+#[test]
+fn gap_patterns_match_whole_words_only() {
+    use super::super::intelligence::keyword_mentions;
+    for (keyword, pattern) in [
+        ("precision", "ci"),
+        ("decide", "cd"),
+        ("author", "auth"),
+        ("docker", "doc"),
+    ] {
+        assert!(!keyword_mentions(keyword, pattern), "{keyword} ~ {pattern}");
+    }
+    for (keyword, pattern) in [
+        ("ci", "ci"),
+        ("github-ci", "ci"),
+        ("testing", "test"),
+        ("docs", "doc"),
+        ("auth_service", "auth"),
+    ] {
+        assert!(keyword_mentions(keyword, pattern), "{keyword} !~ {pattern}");
+    }
+}
+
+#[test]
+fn suggested_skill_names_are_valid_directory_names() {
+    use super::super::intelligence::skill_slug;
+    assert_eq!(skill_slug("C++"), "cpp");
+    assert_eq!(skill_slug("C#"), "csharp");
+    assert_eq!(skill_slug("Objective C"), "objective-c");
+    assert_eq!(skill_slug("Node.js"), "node-js");
+}

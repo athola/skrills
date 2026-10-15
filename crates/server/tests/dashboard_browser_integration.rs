@@ -41,11 +41,15 @@ fn chrome_available() -> bool {
     false
 }
 
-/// Skip the test at runtime if Chrome is not installed.
-/// Returns true if the test should be skipped.
+/// Skip the test at runtime if Chrome is not installed, except under CI:
+/// there a missing Chrome would make the whole suite pass while testing
+/// nothing, so it fails instead.
 macro_rules! skip_without_chrome {
     () => {
         if !chrome_available() {
+            if std::env::var_os("CI").is_some_and(|v| !v.is_empty()) {
+                panic!("Chrome is required under CI (CI is set); install it or set CHROME_PATH");
+            }
             eprintln!("Skipping: Chrome not found on this system");
             return;
         }

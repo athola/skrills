@@ -21,6 +21,7 @@ pub(crate) enum ToolCategory {
     Intelligence,
     Metrics,
     Dependency,
+    Research,
     Gateway,
 }
 
@@ -36,7 +37,13 @@ impl ToolCategory {
             | "search-skills-fuzzy" => Some(Self::Intelligence),
             n if n.starts_with("sync") => Some(Self::Sync),
             n if n.starts_with("validate") || n.starts_with("analyze") => Some(Self::Validation),
-            n if n.contains("trace") || n.contains("instrument") => Some(Self::Trace),
+            "skill-diff" => Some(Self::Validation),
+            n if n.contains("trace")
+                || n.contains("instrument")
+                || n.starts_with("skill-loading") =>
+            {
+                Some(Self::Trace)
+            }
             n if n.contains("recommend") || n.contains("suggest") => Some(Self::Intelligence),
             n if n.contains("metric") => Some(Self::Metrics),
             n if n.contains("depend") => Some(Self::Dependency),
@@ -53,6 +60,7 @@ impl ToolCategory {
             Self::Intelligence => "intelligence",
             Self::Metrics => "metrics",
             Self::Dependency => "dependency",
+            Self::Research => "research",
             Self::Gateway => "gateway",
         }
     }
@@ -64,13 +72,25 @@ pub(crate) fn build_mcp_registry() -> McpToolRegistry {
 
     let mut registry = McpToolRegistry::new();
 
+    // Research tools share no naming pattern, so they are recognised by the
+    // group they are declared in.
+    let research: Vec<String> = tool_schemas::research_tools()
+        .iter()
+        .map(|t| t.name.to_string())
+        .collect();
+
     // Register all internal tools from tool_schemas
     for tool in tool_schemas::all_tools() {
         let schema_json = serde_json::to_string(&tool.input_schema).unwrap_or_default();
         let estimated_tokens = estimate_tokens(&schema_json);
 
         // Infer category from tool name using enum matching
-        let category = ToolCategory::from_tool_name(&tool.name).map(|c| c.as_str().to_string());
+        let category = if research.iter().any(|r| r == tool.name.as_ref()) {
+            Some(ToolCategory::Research)
+        } else {
+            ToolCategory::from_tool_name(&tool.name)
+        }
+        .map(|c| c.as_str().to_string());
 
         registry.register(McpToolEntry {
             name: tool.name.to_string(),
@@ -97,6 +117,23 @@ pub(crate) fn build_mcp_registry() -> McpToolRegistry {
     registry
 }
 
+/// Adds the subagent tools `list_tools` advertises, so the gateway lists and
+/// counts them like every other tool.
+#[cfg(feature = "subagents")]
+pub(crate) fn register_subagent_tools(registry: &mut McpToolRegistry, tools: &[rmcp::model::Tool]) {
+    use crate::mcp_gateway::estimate_tokens;
+    for tool in tools {
+        let schema_json = serde_json::to_string(&tool.input_schema).unwrap_or_default();
+        registry.register(McpToolEntry {
+            name: tool.name.to_string(),
+            description: tool.description.clone().unwrap_or_default().to_string(),
+            source: "subagents".to_string(),
+            estimated_tokens: estimate_tokens(&schema_json),
+            category: Some("subagents".to_string()),
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::ToolCategory;
@@ -119,5 +156,35 @@ mod tests {
             ToolCategory::from_tool_name("validate-skills"),
             Some(ToolCategory::Validation)
         );
+    }
+
+    /// `category=trace` returned two of the four trace tools, and research
+    /// tools could not be filtered at all.
+    #[test]
+    fn every_tool_has_a_category() {
+        let registry = super::build_mcp_registry();
+        let missing: Vec<&str> = registry
+            .list_all()
+            .into_iter()
+            .filter(|e| e.category.is_none())
+            .map(|e| e.name.as_str())
+            .collect();
+        assert!(missing.is_empty(), "no category: {missing:?}");
+        assert_eq!(registry.list_by_category("trace").len(), 4);
+        assert_eq!(registry.list_by_category("research").len(), 9);
+    }
+
+    /// The listing came out in `HashMap` order and changed between runs.
+    #[test]
+    fn listing_is_sorted_by_name() {
+        let registry = super::build_mcp_registry();
+        let names: Vec<&str> = registry
+            .list_all()
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(names, sorted);
     }
 }
