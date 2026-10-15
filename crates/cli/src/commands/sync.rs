@@ -275,7 +275,7 @@ pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
     let multi_target = targets.len() > 1;
     let from = args.from;
 
-    for target in targets {
+    sync_each_target(&targets, |target| {
         if multi_target {
             tracing::info!(
                 from = %from.as_str(),
@@ -306,12 +306,37 @@ pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
             report.summary,
             skipped_commands_note(args.skip_existing_commands, &report)
         );
-    }
+        Ok(())
+    })?;
 
     if args.dry_run {
         tracing::info!("(dry run - no changes made)");
     }
     Ok(())
+}
+
+/// Runs `sync` for every target, carrying on past a failure, and returns an
+/// error naming which targets succeeded and which failed. Stopping at the
+/// first failure left later targets unsynced with no word on the earlier ones.
+fn sync_each_target(
+    targets: &[SyncSource],
+    mut sync: impl FnMut(SyncSource) -> Result<()>,
+) -> Result<()> {
+    let outcomes: Vec<(SyncSource, Result<()>)> = targets.iter().map(|&t| (t, sync(t))).collect();
+    if outcomes.iter().all(|(_, r)| r.is_ok()) {
+        return Ok(());
+    }
+    let summary: Vec<String> = outcomes
+        .iter()
+        .map(|(target, outcome)| match outcome {
+            Ok(()) => format!("{}: ok", target.as_str()),
+            Err(e) => format!("{}: failed: {e:#}", target.as_str()),
+        })
+        .collect();
+    bail!(
+        "sync-all failed for some targets:\n  {}",
+        summary.join("\n  ")
+    )
 }
 
 /// The "kept target copy" line for `--skip-existing-commands`, or nothing.
@@ -431,6 +456,35 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::env::set_current_dir(&self.original);
         }
+    }
+
+    #[test]
+    fn sync_all_continues_past_a_failed_target_and_names_each_outcome() {
+        let mut attempted = Vec::new();
+
+        let err = sync_each_target(
+            &[SyncSource::Codex, SyncSource::Copilot, SyncSource::Cursor],
+            |target| {
+                attempted.push(target);
+                if target == SyncSource::Copilot {
+                    bail!("copilot dir is not writable")
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert_eq!(
+            attempted,
+            vec![SyncSource::Codex, SyncSource::Copilot, SyncSource::Cursor]
+        );
+        assert!(err.contains("codex: ok"), "{err}");
+        assert!(
+            err.contains("copilot: failed: copilot dir is not writable"),
+            "{err}"
+        );
+        assert!(err.contains("cursor: ok"), "{err}");
     }
 
     #[test]

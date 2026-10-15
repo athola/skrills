@@ -25,7 +25,8 @@ fn resolve_source(source: &str) -> Result<(PathBuf, String)> {
     if source.starts_with("http://") || source.starts_with("https://") {
         bail!("URL imports are not supported. Download the skill and pass its local path.");
     }
-    if source.starts_with("git://") || source.ends_with(".git") {
+    // A local directory named `skills.git` is a path, not a git URL.
+    if source.starts_with("git://") || (source.ends_with(".git") && !Path::new(source).exists()) {
         bail!(
             "Git imports are not supported. Clone the repository and pass the skill's local path."
         );
@@ -80,6 +81,41 @@ fn copy_skill_tree(source_dir: &Path, target_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `content` with its frontmatter `name` set to `name`. Content without
+/// frontmatter, or without a `name` line, is returned unchanged.
+fn frontmatter_with_name(content: &str, name: &str) -> String {
+    let Some(rest) = content.strip_prefix("---\n") else {
+        return content.to_string();
+    };
+    let Some(end) = rest.find("\n---") else {
+        return content.to_string();
+    };
+    let (header, body) = rest.split_at(end);
+    let value = if name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        name.to_string()
+    } else {
+        format!("\"{}\"", super::escape_yaml_string(name))
+    };
+    let mut changed = false;
+    let lines: Vec<String> = header
+        .lines()
+        .map(|line| match line.strip_prefix("name:") {
+            Some(current) if current.trim().trim_matches(|c| c == '"' || c == '\'') != name => {
+                changed = true;
+                format!("name: {value}")
+            }
+            _ => line.to_string(),
+        })
+        .collect();
+    if !changed {
+        return content.to_string();
+    }
+    format!("---\n{}{}", lines.join("\n"), body)
+}
+
 /// Handle the skill-import command.
 ///
 /// The skill is written as `<target>/<name>/SKILL.md`, the only layout skill
@@ -92,7 +128,7 @@ pub(crate) fn handle_skill_import_command(
     dry_run: bool,
     format: OutputFormat,
 ) -> Result<()> {
-    let home = dirs::home_dir().with_context(|| "Could not determine home directory")?;
+    let home = skrills_state::home_dir()?;
     let target_dir = import_target_dir(target, &home);
 
     let (source_path, skill_name) = resolve_source(&source)?;
@@ -102,25 +138,20 @@ pub(crate) fn handle_skill_import_command(
     let target_path = target_dir.join(&skill_name).join("SKILL.md");
 
     if target_path.exists() && !force {
-        let result = ImportResult {
-            source: source.clone(),
-            target_path: target_path.clone(),
-            imported: false,
-            skill_name: Some(skill_name.clone()),
-            message: format!(
-                "Skill '{}' already exists at {}. Use --force to overwrite.",
-                skill_name,
-                target_path.display()
-            ),
-        };
-
-        if format.is_json() {
-            println!("{}", serde_json::to_string_pretty(&result)?);
-        } else {
-            eprintln!("{}", result.message);
-        }
-        return Ok(());
+        bail!(
+            "Skill '{}' already exists at {}. Use --force to overwrite.",
+            skill_name,
+            target_path.display()
+        );
     }
+
+    // Cursor and OpenCode load a skill only when its frontmatter `name`
+    // matches its folder, so the imported name follows the folder.
+    let renamed = frontmatter_with_name(&skill_content, &skill_name);
+    if renamed != skill_content {
+        eprintln!("Note: frontmatter name set to '{skill_name}' to match the target folder");
+    }
+    let skill_content = renamed;
 
     if dry_run {
         let result = ImportResult {
@@ -273,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn import_without_force_skips_existing() {
+    fn import_without_force_fails_and_keeps_the_existing_skill() {
         let _g = env_guard();
         let fixture = TestFixture::new().expect("fixture");
         let _home = fixture.home_guard();
@@ -294,7 +325,8 @@ mod tests {
             OutputFormat::Json,
         );
 
-        result.expect("import without force should succeed");
+        let err = result.expect_err("an import that imports nothing must not exit 0");
+        assert!(err.to_string().contains("--force"), "{err}");
 
         let content = std::fs::read_to_string(&existing).expect("read");
         assert_eq!(content, "keep this", "content should not be overwritten");
@@ -371,6 +403,20 @@ mod tests {
     }
 
     #[test]
+    fn imported_frontmatter_name_is_set_to_the_target_folder() {
+        assert_eq!(
+            frontmatter_with_name("---\nname: other\ndescription: D\n---\nBody\n", "folder"),
+            "---\nname: folder\ndescription: D\n---\nBody\n"
+        );
+        let same = "---\nname: folder\n---\nBody\n";
+        assert_eq!(frontmatter_with_name(same, "folder"), same);
+        assert_eq!(
+            frontmatter_with_name("no frontmatter\n", "folder"),
+            "no frontmatter\n"
+        );
+    }
+
+    #[test]
     fn a_skill_md_source_takes_its_directory_name() {
         let dir = tempdir().unwrap();
         let skill = dir.path().join("my-skill/SKILL.md");
@@ -399,6 +445,18 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(git.contains("local path"), "{git}");
+    }
+
+    #[test]
+    fn a_local_directory_ending_in_dot_git_is_imported_as_a_path() {
+        let dir = tempdir().unwrap();
+        let skill = dir.path().join("skills.git/SKILL.md");
+        std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        std::fs::write(&skill, "x").unwrap();
+
+        let (path, name) = resolve_source(dir.path().join("skills.git").to_str().unwrap()).unwrap();
+
+        assert_eq!((path, name.as_str()), (skill, "skills.git"));
     }
 
     /// SB-38: Copilot imports went to `~/.copilot/skills` even when Copilot

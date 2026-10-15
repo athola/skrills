@@ -167,6 +167,43 @@ mod tests {
         assert_eq!(channel, ResearchChannel::GitHub);
     }
 
+    /// An infinite threshold serialized as `null` and the band could not be
+    /// read back, breaking every SSE consumer.
+    #[test]
+    fn alert_band_refuses_infinite_thresholds() {
+        assert_eq!(
+            AlertBand::new(0.0, 0.0, f64::INFINITY, 10.0),
+            Err(BandError::NonFinite)
+        );
+        assert_eq!(
+            AlertBand::new(f64::NEG_INFINITY, 0.0, 10.0, 5.0),
+            Err(BandError::NonFinite)
+        );
+        let band = AlertBand::new(0.0, 1.0, 10.0, 9.0).unwrap();
+        let json = serde_json::to_string(&band).unwrap();
+        let back: AlertBand = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, band);
+    }
+
+    /// The edit window is `age < 10_000`: 9_999 is active, 10_000 is not.
+    #[test]
+    fn cadence_label_boundaries() {
+        let cases = [
+            (Some(9_999), 0.0, "tick: 2.0s [active edit]"),
+            (Some(10_000), 0.0, "tick: 2.0s [base]"),
+            (Some(10_000), 0.5, "tick: 2.0s [load 0.50]"),
+            (None, 0.0, "tick: 2.0s [base]"),
+            (Some(0), 3.0, "tick: 2.0s [active edit]"),
+        ];
+        for (age, load, expected) in cases {
+            let mut snap = fixture();
+            snap.next_tick_ms = 2_000;
+            snap.load_sample.last_edit_age_ms = age;
+            snap.load_sample.loadavg_1min = load;
+            assert_eq!(snap.cadence_label(), expected, "age {age:?} load {load}");
+        }
+    }
+
     #[test]
     fn cadence_label_uses_active_edit_when_recent() {
         let mut snap = fixture();

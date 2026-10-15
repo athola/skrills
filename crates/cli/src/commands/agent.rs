@@ -40,11 +40,19 @@ impl AgentPath {
     }
 }
 
+/// The arguments a Codex CLI is run with for the agent at `agent_path`.
+pub(super) fn codex_args(agent_path: &AgentPath) -> Vec<String> {
+    ["--yolo", "exec", "--timeout_ms", "1800000"]
+        .into_iter()
+        .map(String::from)
+        .chain(std::iter::once(agent_path.prompt()))
+        .collect()
+}
+
 /// Runs `bin` (a Codex CLI) on the agent at `agent_path`.
 pub(super) fn run_with_codex(bin: &str, agent_path: &AgentPath) -> Result<()> {
     let status = Command::new(bin)
-        .args(["--yolo", "exec", "--timeout_ms", "1800000"])
-        .arg(agent_path.prompt())
+        .args(codex_args(agent_path))
         .status()
         .map_err(|e| anyhow!("could not run {bin}: {e}"))?;
     if status.success() {

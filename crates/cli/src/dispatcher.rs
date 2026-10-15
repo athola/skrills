@@ -77,7 +77,6 @@ pub fn run() -> Result<()> {
             error = %format!("{e:#}"),
             "Failed to parse config file (~/.skrills/config.toml); continuing without its settings"
         );
-        eprintln!("WARNING: Config file parse error: {e:#}. Continuing without config settings.");
     }
     let is_setup = matches!(command_ref, Some(Commands::Setup { .. }));
     let is_batch = matches!(command_ref, Some(Commands::SyncAll { .. }));
@@ -103,22 +102,10 @@ pub fn run() -> Result<()> {
         }
     }
 
-    match cli.command.unwrap_or(Commands::Serve {
-        skill_dirs: Vec::new(),
-        cache_ttl_ms: None,
-        trace_wire: false,
-        #[cfg(feature = "watch")]
-        watch: false,
-        http: None,
-        list_tools: false,
-        auth_token: None,
-        tls_cert: None,
-        tls_key: None,
-        cors_origins: Vec::new(),
-        allowed_hosts: Vec::new(),
-        tls_auto: false,
-        open: false,
-    }) {
+    match match cli.command {
+        Some(command) => command,
+        None => default_command()?,
+    } {
         Commands::Serve {
             skill_dirs,
             cache_ttl_ms,
@@ -285,7 +272,7 @@ pub fn run() -> Result<()> {
             if !std::io::stdout().is_terminal() {
                 return Err(anyhow::anyhow!("Dashboard requires a TTY"));
             }
-            let dashboard = skrills_dashboard::Dashboard::new(skill_dirs)?;
+            let dashboard = skrills_dashboard::Dashboard::new(dashboard_skill_dirs(&skill_dirs))?;
             tokio::runtime::Runtime::new()?.block_on(dashboard.run())
         }
         #[cfg(not(feature = "dashboard"))]
@@ -516,6 +503,61 @@ pub fn run() -> Result<()> {
                     anyhow::anyhow!("failed to build tokio runtime for cold-window: {e}")
                 })?;
             runtime.block_on(crate::cold_window_cli::run(args))
+        }
+    }
+}
+
+/// The skill directories the dashboard watches: `--skill-dir` plus
+/// `SKRILLS_SKILL_DIR`, as `tui` and every other command merge them.
+#[cfg_attr(not(feature = "dashboard"), allow(dead_code))]
+fn dashboard_skill_dirs(skill_dirs: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {
+    merge_extra_dirs(skill_dirs)
+}
+
+/// The command bare `skrills` runs: `serve`, parsed as if typed, so its
+/// environment defaults (`SKRILLS_HTTP`, `SKRILLS_TRACE_WIRE`, the TLS and
+/// auth variables) apply exactly as they do to `skrills serve`.
+fn default_command() -> anyhow::Result<Commands> {
+    Cli::try_parse_from(["skrills", "serve"])?
+        .command
+        .ok_or_else(|| anyhow::anyhow!("`skrills serve` parsed to no command"))
+}
+
+#[cfg(test)]
+mod default_command_tests {
+    use super::*;
+
+    #[test]
+    fn dashboard_skill_dirs_include_the_environment() {
+        let _g = skrills_test_utils::env_guard();
+        let _dirs = skrills_test_utils::set_env_var("SKRILLS_SKILL_DIR", Some("/from/env"));
+
+        let dirs = dashboard_skill_dirs(&[std::path::PathBuf::from("/from/flag")]);
+
+        assert_eq!(
+            dirs,
+            vec![
+                std::path::PathBuf::from("/from/env"),
+                std::path::PathBuf::from("/from/flag")
+            ]
+        );
+    }
+
+    #[test]
+    fn bare_skrills_honours_the_serve_environment() {
+        let _g = skrills_test_utils::env_guard();
+        let _http = skrills_test_utils::set_env_var("SKRILLS_HTTP", Some("127.0.0.1:9"));
+        let _trace = skrills_test_utils::set_env_var("SKRILLS_TRACE_WIRE", Some("true"));
+        let _token = skrills_test_utils::set_env_var("SKRILLS_AUTH_TOKEN", None);
+
+        match default_command().unwrap() {
+            Commands::Serve {
+                http, trace_wire, ..
+            } => {
+                assert_eq!(http.as_deref(), Some("127.0.0.1:9"));
+                assert!(trace_wire);
+            }
+            other => panic!("expected serve, got {other:?}"),
         }
     }
 }

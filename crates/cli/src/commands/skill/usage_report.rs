@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::OutputFormat;
 
-use super::profiling::{load_usage_analytics, now_secs, period_label, usage_counts};
+use super::profiling::{load_usage_analytics, now_secs, period_label, rfc3339, usage_counts};
 use super::{UsageReportResult, UsageStats};
 
 /// Handle the skill-usage-report command.
@@ -16,7 +16,9 @@ pub(crate) fn handle_skill_usage_report_command(
     output: Option<PathBuf>,
     skill_dirs: Vec<PathBuf>,
 ) -> Result<()> {
-    let generated_at = now_secs().to_string();
+    // RFC 3339 rather than raw epoch seconds, which "Generated:" printed.
+    let now = now_secs();
+    let generated_at = rfc3339(now).unwrap_or_else(|| now.to_string());
     let dirs = skrills_server::discovery::merge_extra_dirs(&skill_dirs);
 
     let report_text = match load_usage_analytics()? {

@@ -155,10 +155,24 @@ pub fn doctor_report() -> Result<()> {
     let cfg_path = home.join(".codex/config.toml");
     let expected_cmd = home.join(".codex/bin/skrills");
     let lines = doctor_report_with_paths(&mcp_path, &cfg_path, &expected_cmd)?;
-    for line in lines {
+    for line in &lines {
         println!("{line}");
     }
+    // A report with problems exits non-zero, so a script or CI step can gate
+    // on it.
+    let problems = problem_count(&lines);
+    if problems > 0 {
+        anyhow::bail!("doctor found {problems} problem(s)");
+    }
     Ok(())
+}
+
+/// The report lines that name a problem: those marked `!`.
+fn problem_count(lines: &[String]) -> usize {
+    lines
+        .iter()
+        .filter(|l| l.trim_start().starts_with('!'))
+        .count()
 }
 
 #[cfg(test)]
@@ -301,5 +315,17 @@ args = ["--flag"]
                 .any(|l| l.contains("command not found on PATH")),
             "{lines:?}"
         );
+    }
+
+    #[test]
+    fn problems_are_the_lines_marked_with_a_bang() {
+        let lines = vec![
+            "== skrills doctor ==".to_string(),
+            "config.toml   : type=http command=x args=None (p)".to_string(),
+            "  ! expected type=\"stdio\"".to_string(),
+            "  i command differs; ensure binary path is correct and executable".to_string(),
+        ];
+        assert_eq!(problem_count(&lines), 1);
+        assert_eq!(problem_count(&lines[..2]), 0);
     }
 }

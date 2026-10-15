@@ -3,7 +3,7 @@
 //! Routes agent execution across available CLI backends (Claude, Codex)
 //! with automatic fallback when the primary backend is unavailable.
 
-use super::agent::{run_with_codex, AgentPath};
+use super::agent::{codex_args, run_with_codex, AgentPath};
 use crate::cli::AgentBackend;
 use anyhow::{anyhow, Result};
 use indexmap::IndexMap;
@@ -38,10 +38,32 @@ fn find_binary<'a>(candidates: &'a [&'a str]) -> Option<&'a str> {
     candidates.iter().copied().find(|bin| is_available(bin))
 }
 
+/// The arguments the Claude CLI is run with for the agent at `agent_path`.
+fn claude_args(agent_path: &AgentPath) -> Vec<String> {
+    vec!["--print".to_string(), agent_path.prompt()]
+}
+
+/// The command line `backend` runs, for `--dry-run`: the `--yolo` (Codex)
+/// versus `--print` (Claude) difference is the part worth seeing.
+fn dry_run_command(backend: AgentBackend, bin: &str, agent_path: &AgentPath) -> String {
+    let args = match backend {
+        AgentBackend::Claude => claude_args(agent_path),
+        AgentBackend::Codex => codex_args(agent_path),
+        AgentBackend::Auto => unreachable!("select_backend never returns Auto as a backend"),
+    };
+    std::iter::once(bin.to_string())
+        .chain(
+            args.into_iter()
+                .map(|a| if a.contains(' ') { format!("{a:?}") } else { a }),
+        )
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Launch an agent via the Claude CLI.
 fn run_with_claude(bin: &str, agent_path: &AgentPath) -> Result<()> {
     let status = Command::new(bin)
-        .args(["--print", &agent_path.prompt()])
+        .args(claude_args(agent_path))
         .status()
         .map_err(|e| anyhow!("could not run {bin}: {e}"))?;
     if status.success() {
@@ -121,14 +143,17 @@ pub(crate) fn handle_multi_cli_agent_command(
 
     if dry_run {
         println!("Agent path: {}", agent_path.as_str());
-        println!("Would run with: {backend_label}");
+        println!(
+            "Would run: {}",
+            dry_run_command(backend_kind, bin, &agent_path)
+        );
         return Ok(());
     }
 
     match backend_kind {
         AgentBackend::Claude => run_with_claude(bin, &agent_path),
         AgentBackend::Codex => run_with_codex(bin, &agent_path),
-        AgentBackend::Auto => unreachable!("resolve_backends never returns Auto as a backend"),
+        AgentBackend::Auto => unreachable!("select_backend never returns Auto as a backend"),
     }
 }
 
@@ -175,6 +200,7 @@ mod tests {
         assert!(result.is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn find_binary_returns_first_available() {
         // "sh" should exist on any Unix system
@@ -187,6 +213,7 @@ mod tests {
         assert!(!is_available("absolutely-nonexistent-binary-12345"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn is_available_returns_true_for_sh() {
         assert!(is_available("sh"));
@@ -198,6 +225,7 @@ mod tests {
         assert!(result.is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn find_binary_returns_first_when_all_available() {
         // Both "sh" and "bash" should exist, first one wins
@@ -264,5 +292,22 @@ mod tests {
     fn auto_with_nothing_installed_is_an_error() {
         let backends = AgentBackend::Auto.backends();
         assert!(select_backend(AgentBackend::Auto, &backends, only(&[])).is_err());
+    }
+
+    #[test]
+    fn dry_run_shows_each_backends_full_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("agent.md");
+        std::fs::write(&file, "x").unwrap();
+        let path = AgentPath::new(&file).unwrap();
+
+        let codex = dry_run_command(AgentBackend::Codex, "codex", &path);
+        let claude = dry_run_command(AgentBackend::Claude, "claude", &path);
+
+        assert!(
+            codex.starts_with("codex --yolo exec --timeout_ms 1800000 \""),
+            "{codex}"
+        );
+        assert!(claude.starts_with("claude --print \""), "{claude}");
     }
 }

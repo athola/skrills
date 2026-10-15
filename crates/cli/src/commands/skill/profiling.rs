@@ -13,7 +13,7 @@ use super::{ProfileResult, SkillStats};
 /// so every report said 0 invocations. It is decoded as the
 /// `UsageAnalytics` it was saved from instead.
 pub(super) fn load_usage_analytics() -> Result<Option<UsageAnalytics>> {
-    let home = dirs::home_dir().context("Could not determine home directory")?;
+    let home = skrills_state::home_dir()?;
     load_analytics(&home.join(".skrills/analytics_cache.json"))
         .context("Failed to read the analytics cache")
 }
@@ -54,6 +54,21 @@ pub(super) fn usage_counts(
         .collect();
     counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     counts
+}
+
+/// `secs` since the Unix epoch as an RFC 3339 UTC timestamp, or `None` when
+/// it is out of range.
+pub(super) fn rfc3339(secs: u64) -> Option<String> {
+    let secs = i64::try_from(secs).ok()?;
+    ::time::OffsetDateTime::from_unix_timestamp(secs)
+        .ok()?
+        .format(&::time::format_description::well_known::Rfc3339)
+        .ok()
+}
+
+/// When the analytics key `skill` was last used, as RFC 3339.
+fn last_used(analytics: &UsageAnalytics, skill: &str) -> Option<String> {
+    analytics.recency.get(skill).copied().and_then(rfc3339)
 }
 
 /// What the counts cover, for text output. The cache keeps all-time counts,
@@ -109,15 +124,19 @@ pub(crate) fn handle_skill_profile_command(
     let counts = usage_counts(&analytics, period, now_secs());
 
     if let Some(ref target_name) = name {
-        let count: u64 = counts
+        let matching: Vec<&(String, u64)> = counts
             .iter()
             .filter(|(key, _)| key_names_skill(key, target_name))
-            .map(|(_, n)| n)
-            .sum();
+            .collect();
+        let count: u64 = matching.iter().map(|(_, n)| n).sum();
+        let latest = matching
+            .iter()
+            .filter_map(|(key, _)| analytics.recency.get(key).copied())
+            .max();
         let stats = SkillStats {
             name: target_name.clone(),
             invocations: count,
-            last_used: None,
+            last_used: latest.and_then(rfc3339),
             avg_tokens: None,
             success_rate: None,
         };
@@ -134,7 +153,7 @@ pub(crate) fn handle_skill_profile_command(
         return Ok(());
     }
 
-    let result = profile(&counts, period);
+    let result = profile(&counts, period, &analytics);
 
     if format.is_json() {
         println!("{}", serde_json::to_string_pretty(&result)?);
@@ -160,7 +179,7 @@ pub(crate) fn handle_skill_profile_command(
 
 /// The overall profile: totals over every skill used in the period, and the
 /// ten most used.
-fn profile(counts: &[(String, u64)], period: u32) -> ProfileResult {
+fn profile(counts: &[(String, u64)], period: u32, analytics: &UsageAnalytics) -> ProfileResult {
     ProfileResult {
         period_days: period,
         total_invocations: counts.iter().map(|(_, n)| n).sum(),
@@ -172,7 +191,7 @@ fn profile(counts: &[(String, u64)], period: u32) -> ProfileResult {
             .map(|(name, invocations)| SkillStats {
                 name: name.clone(),
                 invocations: *invocations,
-                last_used: None,
+                last_used: last_used(analytics, name),
                 avg_tokens: None,
                 success_rate: None,
             })
@@ -251,12 +270,25 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
 
-        let result = profile(&usage_counts(&a, 30, NOW), 30);
+        let result = profile(&usage_counts(&a, 30, NOW), 30, &a);
 
         assert_eq!(result.unique_skills_used, 12);
         assert_eq!(result.top_skills.len(), 10);
         assert_eq!(result.top_skills[0].name, "skill-00");
         assert_eq!(result.total_invocations, (1..=12).sum::<u64>());
+    }
+
+    /// `last_used` was always null although the cache records it.
+    #[test]
+    fn profile_reports_when_each_skill_was_last_used() {
+        let a = analytics(&[("review", 3, 86_400)]);
+
+        let result = profile(&usage_counts(&a, 0, NOW), 0, &a);
+
+        assert_eq!(
+            result.top_skills[0].last_used.as_deref(),
+            Some("1970-01-02T00:00:00Z")
+        );
     }
 
     #[test]

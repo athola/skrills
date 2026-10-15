@@ -42,21 +42,8 @@ pub(crate) fn handle_skill_diff_command(
     format: OutputFormat,
     context_lines: usize,
 ) -> Result<()> {
-    // Discover skills from each source separately to avoid deduplication.
-    // This ensures we find ALL versions of a skill across different CLIs.
-    // Use default_roots which includes all CLIs (Codex, Claude, Copilot).
     let home = home_dir()?;
-    let mut roots = default_roots(&home);
-    // Add Cursor rules from current working directory (project-local)
-    let cursor_rules = std::env::current_dir()
-        .unwrap_or_default()
-        .join(".cursor/rules");
-    if cursor_rules.exists() {
-        roots.push(SkillRoot {
-            root: cursor_rules,
-            source: SkillSource::Cursor,
-        });
-    }
+    let roots = diff_roots(&home, &std::env::current_dir().unwrap_or_default());
     let versions = find_versions(&roots, &name)?;
 
     if versions.is_empty() {
@@ -67,18 +54,13 @@ pub(crate) fn handle_skill_diff_command(
         if format.is_json() {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&json!({
-                    "skill": name,
-                    "found_in": [format!("{:?}", source)],
-                    "identical": true,
-                    "message": "Skill only exists in one CLI"
-                }))?
+                serde_json::to_string_pretty(&single_copy_json(&name, source))?
             );
         } else {
             println!(
-                "Skill '{}' only found in {:?} at {}",
+                "Skill '{}' only found in {} at {}",
                 name,
-                source,
+                source.label(),
                 path.display()
             );
             println!("No diff available - skill exists in only one location.");
@@ -88,7 +70,7 @@ pub(crate) fn handle_skill_diff_command(
 
     // Compare every pair of copies. Two copies can share a source (two
     // plugins both shipping `review/SKILL.md`), so each copy is its own entry.
-    let sources: Vec<_> = versions.iter().map(|(s, _, _)| s.clone()).collect();
+    let sources: Vec<String> = versions.iter().map(|(s, _, _)| s.label()).collect();
     let mut comparisons = Vec::new();
     let mut all_identical = true;
 
@@ -105,8 +87,8 @@ pub(crate) fn handle_skill_diff_command(
             }
 
             comparisons.push(json!({
-                "source_a": format!("{:?}", source_a),
-                "source_b": format!("{:?}", source_b),
+                "source_a": source_a.label(),
+                "source_b": source_b.label(),
                 "path_a": path_a.to_string_lossy(),
                 "path_b": path_b.to_string_lossy(),
                 "identical": is_identical,
@@ -115,9 +97,9 @@ pub(crate) fn handle_skill_diff_command(
             }));
 
             if !format.is_json() && !is_identical {
-                println!("\n=== {:?} vs {:?} ===", source_a, source_b);
-                println!("--- {:?}: {}", source_a, path_a.display());
-                println!("+++ {:?}: {}", source_b, path_b.display());
+                println!("\n=== {} vs {} ===", source_a.label(), source_b.label());
+                println!("--- {}: {}", source_a.label(), path_a.display());
+                println!("+++ {}: {}", source_b.label(), path_b.display());
                 println!("{}", diff);
             }
         }
@@ -128,7 +110,7 @@ pub(crate) fn handle_skill_diff_command(
             "{}",
             serde_json::to_string_pretty(&json!({
                 "skill": name,
-                "found_in": sources.iter().map(|s| format!("{:?}", s)).collect::<Vec<_>>(),
+                "found_in": sources,
                 "identical": all_identical,
                 "comparisons": comparisons
             }))?
@@ -260,17 +242,45 @@ fn unified_diff(a: &str, b: &str, context: usize) -> String {
     output
 }
 
-/// Estimate token count difference between two contents.
+/// Token count difference between two contents, by the analyzer's estimate
+/// so it agrees with `analyze` and `metrics`.
 fn estimate_token_diff(a: &str, b: &str) -> i64 {
-    let tokens_a = estimate_tokens(a);
-    let tokens_b = estimate_tokens(b);
+    let tokens_a = skrills_analyze::estimate_tokens(a.len());
+    let tokens_b = skrills_analyze::estimate_tokens(b.len());
     tokens_b as i64 - tokens_a as i64
 }
 
-/// Simple token estimation (words and punctuation).
-fn estimate_tokens(content: &str) -> usize {
-    // Rough estimate: ~4 chars per token for English text
-    content.len() / 4
+/// The roots `skill-diff` searches: every CLI's default roots, the Cursor
+/// skills directory, and the project's `.cursor/rules` when present.
+fn diff_roots(home: &std::path::Path, cwd: &std::path::Path) -> Vec<SkillRoot> {
+    let mut roots = default_roots(home);
+    let cursor_skills =
+        crate::commands::sync::source_skill_root(crate::cli::SyncSource::Cursor, home);
+    if !roots.iter().any(|r| r.root == cursor_skills) {
+        roots.push(SkillRoot {
+            root: cursor_skills,
+            source: SkillSource::Cursor,
+        });
+    }
+    let cursor_rules = cwd.join(".cursor/rules");
+    if cursor_rules.exists() {
+        roots.push(SkillRoot {
+            root: cursor_rules,
+            source: SkillSource::Cursor,
+        });
+    }
+    roots
+}
+
+/// The JSON for a skill found once: nothing was compared, so `identical`
+/// is null rather than true.
+fn single_copy_json(name: &str, source: &SkillSource) -> serde_json::Value {
+    json!({
+        "skill": name,
+        "found_in": [source.label()],
+        "identical": null,
+        "message": "Skill only exists in one CLI"
+    })
 }
 
 /// Normalize a skill name by extracting the base name from the path.
@@ -377,5 +387,42 @@ mod tests {
         let diff = unified_diff("a\nb\n", "a\nc\n", usize::MAX);
 
         assert_eq!(diff, "@@ -1,2 +1,2 @@\n a\n-b\n+c\n");
+    }
+
+    #[test]
+    fn diff_roots_include_the_cursor_skills_directory() {
+        let _g = skrills_test_utils::env_guard();
+        let home = tempfile::tempdir().unwrap();
+        let _h = skrills_test_utils::set_env_var("HOME", Some(home.path().to_str().unwrap()));
+        let cwd = tempfile::tempdir().unwrap();
+
+        let roots = diff_roots(home.path(), cwd.path());
+
+        let cursor =
+            crate::commands::sync::source_skill_root(crate::cli::SyncSource::Cursor, home.path());
+        assert!(
+            roots
+                .iter()
+                .any(|r| r.root == cursor && r.source == SkillSource::Cursor),
+            "{roots:?}"
+        );
+    }
+
+    #[test]
+    fn token_diff_uses_the_analyzer_estimate() {
+        let a = "x".repeat(10);
+        let b = "x".repeat(20);
+        let expected = skrills_analyze::estimate_tokens(20) as i64
+            - skrills_analyze::estimate_tokens(10) as i64;
+
+        assert_eq!(estimate_token_diff(&a, &b), expected);
+    }
+
+    #[test]
+    fn single_copy_report_says_nothing_was_compared() {
+        let report = single_copy_json("review", &SkillSource::Extra(0));
+
+        assert!(report["identical"].is_null(), "{report}");
+        assert_eq!(report["found_in"][0], "extra0");
     }
 }

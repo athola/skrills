@@ -169,6 +169,12 @@ fn cold_window_help_dispatches() {
         stdout.contains("--research-rate"),
         "help output missing `--research-rate` flag:\n{stdout}"
     );
+    // The quota lives in memory, so the help must not imply it persists.
+    let flat = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("resets on every run"),
+        "--research-rate help should say the quota resets each run:\n{stdout}"
+    );
 }
 
 /// `--skill-dir` help must describe what the producer walks: the given
@@ -335,5 +341,32 @@ fn serve_config_file_auth_token_enables_auth() {
     assert!(
         authorized.starts_with("HTTP/1.1 200"),
         "a request carrying the config-file token must be served, got:\n{authorized}"
+    );
+}
+
+/// A config file that does not parse is reported once, not by both a
+/// `tracing` warning and an `eprintln!`.
+#[test]
+fn a_bad_config_file_is_reported_once() {
+    let bin = env!("CARGO_BIN_EXE_skrills");
+    let home = tempfile::tempdir().expect("temp HOME");
+    std::fs::create_dir_all(home.path().join(".skrills")).unwrap();
+    std::fs::write(home.path().join(".skrills/config.toml"), "not = [valid").unwrap();
+    let skills = home.path().join("skills");
+    std::fs::create_dir_all(&skills).unwrap();
+
+    let output = Command::new(bin)
+        .args(["validate", "--skill-dir"])
+        .arg(&skills)
+        .env("HOME", home.path())
+        .env_remove("RUST_LOG")
+        .output()
+        .expect("spawn skrills validate");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(
+        stderr.matches("TOML parse error").count(),
+        1,
+        "config error should be reported once:\n{stderr}"
     );
 }

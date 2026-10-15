@@ -20,6 +20,17 @@ pub struct Cli {
     pub command: Option<Commands>,
 }
 
+/// Parses a number in `0.0..=1.0`. `NaN` and out-of-range values are
+/// refused rather than clamped: `-t 5` used to return every skill.
+fn parse_unit_interval(raw: &str) -> Result<f64, String> {
+    let value: f64 = raw.parse().map_err(|e| format!("{e}"))?;
+    if (0.0..=1.0).contains(&value) {
+        Ok(value)
+    } else {
+        Err(format!("{raw} is not between 0.0 and 1.0"))
+    }
+}
+
 /// Available `skrills` commands.
 #[derive(Debug, Subcommand)]
 pub enum Commands {
@@ -46,8 +57,15 @@ pub enum Commands {
 
         // --- Phase 2 Security Options ---
         /// Bearer token for HTTP authentication. Validates `Authorization: Bearer <token>`.
-        /// If not specified, auth is disabled (Phase 1 behavior).
-        #[arg(long, value_name = "TOKEN", env = "SKRILLS_AUTH_TOKEN")]
+        /// If not specified, auth is disabled (Phase 1 behavior). Prefer
+        /// `SKRILLS_AUTH_TOKEN` or `auth_token` in ~/.skrills/config.toml: a
+        /// token on the command line is visible to other users through `ps`.
+        #[arg(
+            long,
+            value_name = "TOKEN",
+            env = "SKRILLS_AUTH_TOKEN",
+            hide_env_values = true
+        )]
         auth_token: Option<String>,
         /// Path to TLS certificate file (PEM format). Requires --tls-key.
         #[arg(
@@ -132,7 +150,7 @@ pub enum Commands {
         /// Agent name or unique substring to launch.
         #[arg(required = true)]
         agent: String,
-        ///// Primary backend: auto, claude, or codex (default: auto).
+        /// Primary backend: auto, claude, or codex (default: auto).
         #[arg(long, value_enum, default_value_t = AgentBackend::Auto)]
         backend: AgentBackend,
         /// Additional skill directories (repeatable).
@@ -437,7 +455,7 @@ pub enum Commands {
         #[arg(required = true)]
         query: String,
         /// Similarity threshold (0.0-1.0, lower = more results).
-        #[arg(long, short = 't', default_value = "0.3")]
+        #[arg(long, short = 't', default_value = "0.3", value_parser = parse_unit_interval)]
         threshold: f64,
         /// Maximum results to return.
         #[arg(long, short = 'l', default_value = "10")]
@@ -473,9 +491,11 @@ pub enum Commands {
         #[arg(long)]
         overwrite: bool,
     },
-    /// Interactive TUI for sync and pin management.
+    /// Interactive prompts that mirror Claude skills, agents, commands, MCP
+    /// servers and preferences into Codex.
     Tui {
-        /// Additional skill directories (repeatable).
+        /// Ignored: the TUI always mirrors from the Claude root. Kept so
+        /// existing invocations still parse.
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
     },
@@ -490,7 +510,7 @@ pub enum Commands {
         /// Skill name to compare (e.g., "commit", "review-pr").
         #[arg(required = true)]
         name: String,
-        /// Output format: text (unified diff), json, or summary.
+        /// Output format: text (unified diff with hunk headers) or json.
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
         /// Show context lines around differences.
@@ -594,7 +614,7 @@ pub enum Commands {
         /// Filter by source CLI.
         #[arg(long, value_enum)]
         source: Option<SyncSource>,
-        /// Filter by category tag.
+        /// Not implemented: skills carry no category, so passing it is an error.
         #[arg(long)]
         category: Option<String>,
         /// Maximum results to return.
@@ -619,9 +639,9 @@ pub enum Commands {
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
     },
-    /// Import skills from external sources (URLs, git repos, local paths).
+    /// Import a skill from a local file or directory.
     SkillImport {
-        /// Source to import from (URL, git URL, or local path).
+        /// Local path: a SKILL.md, a directory holding one, or a markdown file.
         #[arg(required = true)]
         source: String,
         /// Target CLI to import skill into.
@@ -642,7 +662,7 @@ pub enum Commands {
         /// Time period in days to analyze.
         #[arg(long, default_value = "30")]
         period: u32,
-        /// Output format: text, json, html, or markdown.
+        /// Output format: text or json.
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
         /// Output file path (if not specified, prints to stdout).
@@ -933,10 +953,10 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn validate_rejects_invalid_target() {
         let _guard = env_guard();
-        let _ = Cli::try_parse_from(["skrills", "validate", "--target", "invalid"]).unwrap();
+        let err = Cli::try_parse_from(["skrills", "validate", "--target", "invalid"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
     }
 
     #[test]
@@ -1628,6 +1648,71 @@ mod tests {
             }
             _ => unreachable!("expected Serve command"),
         }
+    }
+
+    /// The help text of `subcommand`: its about plus every argument's help.
+    fn help_of(subcommand: &str) -> String {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let sub = cmd.find_subcommand(subcommand).expect("subcommand exists");
+        let mut text = sub.get_about().map(|a| a.to_string()).unwrap_or_default();
+        for arg in sub.get_arguments() {
+            text.push('\n');
+            text.push_str(&format!("{}: ", arg.get_id()));
+            if let Some(help) = arg.get_help() {
+                text.push_str(&help.to_string());
+            }
+        }
+        text
+    }
+
+    #[test]
+    fn auth_token_help_hides_the_env_value_and_steers_away_from_argv() {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let serve = cmd.find_subcommand("serve").unwrap();
+        let arg = serve
+            .get_arguments()
+            .find(|a| a.get_id() == "auth_token")
+            .unwrap();
+        assert!(arg.is_hide_env_values_set());
+        assert!(help_of("serve").contains("visible to other users"));
+    }
+
+    #[test]
+    fn search_threshold_must_be_between_zero_and_one() {
+        for bad in ["5", "-0.1", "nan", "NaN", "inf"] {
+            assert!(
+                Cli::try_parse_from(["skrills", "search-skills", "q", "-t", bad]).is_err(),
+                "{bad} accepted"
+            );
+        }
+        for good in ["0", "0.5", "1.0"] {
+            assert!(
+                Cli::try_parse_from(["skrills", "search-skills", "q", "-t", good]).is_ok(),
+                "{good} refused"
+            );
+        }
+    }
+
+    #[test]
+    fn help_promises_only_formats_and_sources_that_exist() {
+        let usage = help_of("skill-usage-report");
+        assert!(
+            !usage.contains("html") && !usage.contains("markdown"),
+            "{usage}"
+        );
+        let diff = help_of("skill-diff");
+        assert!(!diff.contains("summary"), "{diff}");
+        let import = help_of("skill-import");
+        assert!(
+            !import.contains("URL") && !import.contains("git"),
+            "{import}"
+        );
+        let tui = help_of("tui");
+        assert!(!tui.contains("pin"), "{tui}");
+        let agent = help_of("multi-cli-agent");
+        assert!(agent.contains("backend: Primary backend"), "{agent}");
     }
 
     #[test]

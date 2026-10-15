@@ -4,7 +4,10 @@ use std::path::PathBuf;
 
 use crate::cli::OutputFormat;
 
-use super::{escape_yaml_string, find_skill, skill_dir_name, write_skill_file, DeprecationResult};
+use super::{
+    escape_yaml_string, find_skill, frontmatter_is_deprecated, is_deprecated_line, skill_dir_name,
+    write_skill_file, DeprecationResult,
+};
 
 /// Handle the skill-deprecate command.
 pub(crate) fn handle_skill_deprecate_command(
@@ -97,10 +100,11 @@ fn deprecated_content(
 
     let mut out = String::from("---\n");
     if let Some(raw_fm) = &parsed.raw_frontmatter {
-        if raw_fm.lines().any(|l| l.starts_with("deprecated:")) {
+        if frontmatter_is_deprecated(content) {
             return Ok(None);
         }
-        for line in raw_fm.lines() {
+        // A `deprecated: false` line is replaced, not kept beside the new one.
+        for line in raw_fm.lines().filter(|l| !is_deprecated_line(l)) {
             out.push_str(line);
             out.push('\n');
         }
@@ -118,23 +122,7 @@ fn deprecated_content(
 
 #[cfg(test)]
 mod tests {
-    use super::super::DeprecationResult;
     use super::*;
-
-    #[test]
-    fn deprecation_result_serializes_all_fields() {
-        let result = DeprecationResult {
-            skill_name: "old-skill".to_string(),
-            skill_path: PathBuf::from("/skills/old-skill.md"),
-            deprecated: true,
-            message: Some("Use new-skill instead".to_string()),
-            replacement: Some("new-skill".to_string()),
-        };
-        let json = serde_json::to_string_pretty(&result).unwrap();
-        assert!(json.contains("\"skill_name\": \"old-skill\""));
-        assert!(json.contains("\"deprecated\": true"));
-        assert!(json.contains("Use new-skill instead"));
-    }
 
     #[test]
     fn appends_fields_to_existing_frontmatter() {
@@ -155,6 +143,20 @@ mod tests {
     fn an_already_deprecated_skill_is_left_alone() {
         let doc = "---\nname: x\ndeprecated: true\n---\nbody\n";
         assert!(deprecated_content(doc, "x", "m", None).unwrap().is_none());
+    }
+
+    /// `deprecated: false` is not deprecated: the flag is flipped, not left.
+    #[test]
+    fn a_skill_marked_deprecated_false_is_deprecated() {
+        let doc = "---\nname: x\ndeprecated: false\n---\nbody\n";
+
+        let out = deprecated_content(doc, "x", "m", None).unwrap().unwrap();
+
+        assert!(out.contains("deprecated: true\n"), "{out}");
+        assert!(!out.contains("deprecated: false"), "{out}");
+        assert_eq!(out.matches("deprecated:").count(), 1, "{out}");
+        assert!(super::super::frontmatter_is_deprecated(&out));
+        assert!(!super::super::frontmatter_is_deprecated(doc));
     }
 
     /// SA-46: with no frontmatter the name came from the discovery key

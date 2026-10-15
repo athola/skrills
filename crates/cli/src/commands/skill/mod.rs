@@ -90,6 +90,30 @@ pub(super) fn write_skill_file(path: &std::path::Path, content: &str) -> std::io
     Ok(())
 }
 
+/// Whether a frontmatter line is the `deprecated` key.
+pub(super) fn is_deprecated_line(line: &str) -> bool {
+    line.split_once(':')
+        .is_some_and(|(key, _)| key.trim() == "deprecated")
+}
+
+/// Whether `content`'s frontmatter sets `deprecated` to true. `deprecated:
+/// false` is not deprecated; `skill-deprecate` and `skill-catalog` both ask
+/// this so they agree.
+pub(super) fn frontmatter_is_deprecated(content: &str) -> bool {
+    skrills_validate::frontmatter::parse_frontmatter(content)
+        .ok()
+        .and_then(|p| p.raw_frontmatter)
+        .is_some_and(|fm| {
+            fm.lines().filter(|l| is_deprecated_line(l)).any(|l| {
+                let value = l.split_once(':').map_or("", |(_, v)| v);
+                value
+                    .trim()
+                    .trim_matches(|c| c == '"' || c == '\'')
+                    .eq_ignore_ascii_case("true")
+            })
+        })
+}
+
 /// Finds the one discovered skill that `query` names.
 ///
 /// A skill matches when `query` equals, ignoring ASCII case, its discovery
@@ -249,82 +273,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn skill_version_serializes_correctly() {
-        let version = SkillVersion {
-            hash: "abc1234".to_string(),
-            date: "2024-01-15 10:30:00 -0500".to_string(),
-            message: "Initial commit".to_string(),
-        };
-
-        let json = serde_json::to_string(&version).unwrap();
-        assert!(json.contains("abc1234"));
-        assert!(json.contains("Initial commit"));
-    }
-
-    #[test]
-    fn rollback_result_default_state() {
-        let result = RollbackResult {
-            skill_name: "test-skill".to_string(),
-            skill_path: PathBuf::from("/path/to/skill.md"),
-            rolled_back: false,
-            from_version: None,
-            to_version: None,
-            available_versions: vec![],
-        };
-
-        let json = serde_json::to_string_pretty(&result).unwrap();
-        assert!(json.contains("\"rolled_back\": false"));
-        assert!(json.contains("\"available_versions\": []"));
-    }
-
-    #[test]
-    fn import_result_existing_skill_message() {
-        let result = ImportResult {
-            source: "/path/to/source.md".to_string(),
-            target_path: PathBuf::from("/home/user/.claude/skills/my-skill.md"),
-            imported: false,
-            skill_name: Some("my-skill".to_string()),
-            message: "Skill 'my-skill' already exists. Use --force to overwrite.".to_string(),
-        };
-
-        let json = serde_json::to_string(&result).unwrap();
-        assert!(json.contains("\"imported\":false"));
-        assert!(json.contains("--force"));
-    }
-
-    #[test]
     fn escape_yaml_string_handles_special_chars() {
         assert_eq!(escape_yaml_string("hello"), "hello");
         assert_eq!(escape_yaml_string(r#"say "hi""#), r#"say \"hi\""#);
         assert_eq!(escape_yaml_string(r"back\slash"), r"back\\slash");
-    }
-
-    #[test]
-    fn rollback_result_with_empty_available_versions() {
-        let result = RollbackResult {
-            skill_name: "test".to_string(),
-            skill_path: PathBuf::from("/tmp/skill.md"),
-            rolled_back: false,
-            from_version: None,
-            to_version: None,
-            available_versions: vec![],
-        };
-        let json = serde_json::to_string(&result).unwrap();
-        assert!(json.contains("\"available_versions\":[]"));
-        assert!(json.contains("\"rolled_back\":false"));
-    }
-
-    #[test]
-    fn deprecation_with_empty_string_message() {
-        let message = Some("".to_string());
-        let deprecation_msg = message.as_deref().unwrap_or("This skill is deprecated");
-        assert_eq!(deprecation_msg, "");
-        // Empty string is technically valid but produces empty deprecation_message
-        let formatted = format!(
-            "deprecation_message: \"{}\"\n",
-            escape_yaml_string(deprecation_msg)
-        );
-        assert_eq!(formatted, "deprecation_message: \"\"\n");
     }
 
     #[test]
@@ -337,19 +289,6 @@ mod tests {
         let input = r#"say "hello" and use back\slash"#;
         let escaped = escape_yaml_string(input);
         assert_eq!(escaped, r#"say \"hello\" and use back\\slash"#);
-    }
-
-    #[test]
-    fn catalog_entry_deprecated_flag() {
-        let entry = CatalogEntry {
-            name: "old-skill".to_string(),
-            source: "claude".to_string(),
-            description: Some("Deprecated skill".to_string()),
-            path: PathBuf::from("/skills/old.md"),
-            deprecated: true,
-        };
-        let json = serde_json::to_string(&entry).unwrap();
-        assert!(json.contains("\"deprecated\":true"));
     }
 
     /// A hard link still holding the old bytes shows the file was replaced

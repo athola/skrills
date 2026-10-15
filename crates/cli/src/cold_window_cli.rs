@@ -57,7 +57,8 @@ pub struct ColdWindowArgs {
     #[arg(long, default_value_t = 100_000, value_parser = clap::value_parser!(u64).range(2..))]
     pub alert_budget: u64,
 
-    /// Research dispatcher fetches per hour.
+    /// Research dispatcher fetches per hour. The quota is kept in memory
+    /// and resets on every run.
     #[arg(long, default_value_t = 10)]
     pub research_rate: u32,
 
@@ -356,8 +357,10 @@ async fn producer_loop(
     loop {
         tokio::select! {
             biased;
-            _ = shutdown.changed() => {
-                if *shutdown.borrow() {
+            changed = shutdown.changed() => {
+                // A dropped sender is a shutdown too: `changed()` would
+                // return `Err` at once on every turn and spin the loop.
+                if changed.is_err() || *shutdown.borrow() {
                     tracing::info!("producer received shutdown");
                     break;
                 }
@@ -971,6 +974,34 @@ mod tests {
             }
         }
         let _ = tx.send(true);
+    }
+
+    /// A dropped shutdown sender made `changed()` return `Err` at once, and
+    /// the biased `select!` spun on it forever instead of stopping.
+    #[tokio::test]
+    async fn producer_loop_stops_when_the_shutdown_sender_is_dropped() {
+        let engine = Arc::new(ColdWindowEngine::with_defaults(100_000));
+        let (tx, shutdown_rx) = watch::channel(false);
+        drop(tx);
+
+        let finished = tokio::time::timeout(
+            Duration::from_secs(2),
+            producer_loop(
+                engine,
+                60_000,
+                true,
+                true,
+                PathBuf::from("/nonexistent-plugins-test"),
+                vec![],
+                shutdown_rx,
+            ),
+        )
+        .await;
+
+        assert!(
+            finished.is_ok(),
+            "producer kept running after the sender dropped"
+        );
     }
 
     #[tokio::test]
