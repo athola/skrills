@@ -16,5 +16,5 @@ pub mod tool_schemas;
 pub use registry::{AgentRegistry, CachedAgent};
 pub use service::SubagentService;
 pub use store::{
-    BackendKind, RunEvent, RunId, RunRecord, RunRequest, RunState, RunStatus, RunStore,
+    BackendKind, RunEvent, RunId, RunOwner, RunRecord, RunRequest, RunState, RunStatus, RunStore,
 };

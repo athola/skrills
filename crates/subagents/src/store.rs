@@ -85,6 +85,71 @@ pub struct RunRecord {
     pub events: Vec<RunEvent>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
+    /// The process that started the run. Every skrills server (one per
+    /// client) shares the store, so a server opening it uses this to leave
+    /// alone the runs another live server is still driving. Absent from
+    /// records written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<RunOwner>,
+}
+
+/// The process that owns a run.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunOwner {
+    /// Process id of the owning server.
+    pub pid: u32,
+    /// Random id drawn once per process, so a later process that is given
+    /// the same pid (a container's pid 1 after a restart) is not mistaken
+    /// for the owner.
+    pub process: Uuid,
+}
+
+impl RunOwner {
+    /// This process.
+    pub fn current() -> Self {
+        static PROCESS: std::sync::OnceLock<Uuid> = std::sync::OnceLock::new();
+        Self {
+            pid: std::process::id(),
+            process: *PROCESS.get_or_init(Uuid::new_v4),
+        }
+    }
+
+    /// Whether the owning process may still finish the run. A failed check
+    /// counts as alive: failing a run another server is driving loses work,
+    /// leaving a dead one Running only leaves a stale entry.
+    fn is_alive(&self) -> bool {
+        let me = Self::current();
+        if self.pid == me.pid {
+            return self.process == me.process;
+        }
+        pid_is_alive(self.pid)
+    }
+}
+
+/// Whether a process with this pid exists, by `kill -0`. A pid owned by
+/// another user also reads as gone; the store lives in the user's home.
+#[cfg(unix)]
+fn pid_is_alive(pid: u32) -> bool {
+    match std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+    {
+        Ok(status) => status.success(),
+        Err(e) => {
+            tracing::warn!(pid, error = %e, "could not check whether a run's owner is alive; assuming it is");
+            true
+        }
+    }
+}
+
+/// No portable check without new dependencies; an unknown owner counts as
+/// alive, so its runs are left as they are.
+#[cfg(not(unix))]
+fn pid_is_alive(_pid: u32) -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -269,6 +334,7 @@ impl RunStore for MemRunStore {
             events: Vec::new(),
             created_at: now,
             updated_at: now,
+            owner: Some(RunOwner::current()),
         };
         let mut guard = self.inner.lock().await;
         guard.insert(id, record);
@@ -341,41 +407,36 @@ pub struct StateRunStore {
 impl StateRunStore {
     /// Opens the store at `path`.
     ///
-    /// Runs left unfinished by an earlier process are marked `Failed`, since
-    /// nothing is left to finish them. A file that does not parse is moved
-    /// aside as `<name>.corrupt-<unix time>` and the store starts empty, so
-    /// one truncated write does not disable the subagent service.
+    /// Unfinished runs whose owner is gone (or unrecorded) are marked
+    /// `Failed` and written back, since nothing is left to finish them; runs
+    /// another live server owns are left alone. A file that does not parse
+    /// is moved aside as `<name>.corrupt-<unix time>` and the store starts
+    /// empty, so one truncated write does not disable the subagent service.
     pub fn new(path: PathBuf) -> Result<Self> {
-        let records = match read_records(&path) {
-            Ok(records) => records,
-            Err(ReadError::Io(e)) => {
-                return Err(e).with_context(|| {
-                    format!("failed to initialize store from: {}", path.display())
-                })
-            }
-            Err(ReadError::Parse(e)) => {
-                let aside = quarantine(&path)?;
-                tracing::warn!(
-                    path = %path.display(),
-                    moved_to = %aside.display(),
-                    error = %e,
-                    "subagent run store did not parse; moved it aside and started empty"
-                );
-                Vec::new()
-            }
-        };
+        let _lock = lock_store(&path)?;
+        let records = read_records_or_quarantine(&path)
+            .with_context(|| format!("failed to initialize store from: {}", path.display()))?;
         let now = OffsetDateTime::now_utc();
         let mut runs = HashMap::new();
+        let mut interrupted = false;
         for mut record in records {
-            apply_status(
-                &mut record,
-                RunStatus {
-                    state: RunState::Failed,
-                    message: Some(INTERRUPTED_MESSAGE.into()),
-                    updated_at: now,
-                },
-            );
+            // Finished runs are skipped first: each liveness check spawns `kill`.
+            if !record.status.state.is_terminal()
+                && !record.owner.is_some_and(|owner| owner.is_alive())
+            {
+                interrupted |= apply_status(
+                    &mut record,
+                    RunStatus {
+                        state: RunState::Failed,
+                        message: Some(INTERRUPTED_MESSAGE.into()),
+                        updated_at: now,
+                    },
+                );
+            }
             runs.insert(record.id, record);
+        }
+        if interrupted {
+            write_runs(&path, &runs)?;
         }
         Ok(Self {
             path,
@@ -393,11 +454,14 @@ impl StateRunStore {
     pub async fn load_from_disk(&self) -> Result<()> {
         let _persisting = self.persist_lock.lock().await;
         let path = self.path.clone();
-        let records = tokio::task::spawn_blocking(move || read_records(&path))
-            .await
-            .context("store reload task panicked")?
-            .map_err(ReadError::into_anyhow)
-            .with_context(|| format!("failed to reload store from: {}", self.path.display()))?;
+        let records = tokio::task::spawn_blocking(move || {
+            let _lock = lock_store(&path).map_err(ReadError::Io)?;
+            read_records(&path)
+        })
+        .await
+        .context("store reload task panicked")?
+        .map_err(ReadError::into_anyhow)
+        .with_context(|| format!("failed to reload store from: {}", self.path.display()))?;
         let mut guard = self.inner.lock().await;
         guard.clear();
         for record in records {
@@ -410,22 +474,107 @@ impl StateRunStore {
         // Snapshot and write under one lock: two persists that snapshot in one
         // order and rename in the other would leave the older state on disk.
         let _persisting = self.persist_lock.lock().await;
-        let runs: Vec<RunRecord> = {
-            let guard = self.inner.lock().await;
-            let mut runs: Vec<_> = guard.values().cloned().collect();
-            runs.sort_by_key(|r| r.created_at);
-            runs
-        };
-        // Serialization and filesystem I/O run on the blocking threadpool so
-        // a large store does not stall the async workers. Compact JSON: the
-        // file is rewritten on every status change.
+        let ours = self.inner.lock().await.clone();
+        // Other servers write the same file, so the write merges into what
+        // is on disk now, read under the cross-process lock, instead of
+        // replacing it. Serialization and filesystem I/O run on the blocking
+        // threadpool so a large store does not stall the async workers.
         let path = self.path.clone();
-        tokio::task::spawn_blocking(move || {
-            let data = serde_json::to_vec(&runs).context("failed to serialize run records")?;
-            write_private_atomic(&path, &data)
+        let merged = tokio::task::spawn_blocking(move || {
+            let _lock = lock_store(&path)?;
+            let on_disk = read_records_or_quarantine(&path)?;
+            let merged = merge_runs(on_disk.into_iter().map(|r| (r.id, r)).collect(), ours);
+            write_runs(&path, &merged)?;
+            Ok::<_, anyhow::Error>(merged)
         })
         .await
-        .context("persist task panicked")?
+        .context("persist task panicked")??;
+        // Runs changed in memory since the snapshot are kept by the merge
+        // rule; what other servers wrote becomes visible here.
+        let mut guard = self.inner.lock().await;
+        let current = std::mem::take(&mut *guard);
+        *guard = merge_runs(merged, current);
+        Ok(())
+    }
+}
+
+/// Merges `ours` (this store's memory) into `theirs` (the file as another
+/// server may have left it). A finished run is final, so a finished copy
+/// beats an unfinished one; otherwise the copy from the owning process
+/// wins, and runs this process does not own are taken as written.
+fn merge_runs(
+    mut theirs: HashMap<RunId, RunRecord>,
+    ours: HashMap<RunId, RunRecord>,
+) -> HashMap<RunId, RunRecord> {
+    let me = RunOwner::current();
+    for (id, record) in ours {
+        let keep_ours = match theirs.get(&id) {
+            None => true,
+            Some(other) => match (
+                record.status.state.is_terminal(),
+                other.status.state.is_terminal(),
+            ) {
+                (true, false) => true,
+                (false, true) => false,
+                _ => record.owner == Some(me),
+            },
+        };
+        if keep_ours {
+            theirs.insert(id, record);
+        }
+    }
+    prune_runs(&mut theirs);
+    theirs
+}
+
+/// Opens and exclusively locks `<store>.lock` beside the store file,
+/// blocking until no other process holds it; dropping the file releases it.
+/// A separate file, because every write renames a new store file into place
+/// and a lock on the replaced one would guard nothing.
+fn lock_store(path: &Path) -> Result<fs::File> {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".lock");
+    let lock_path = path.with_file_name(name);
+    if let Some(parent) = lock_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create store directory: {}", parent.display()))?;
+    }
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("failed to open store lock: {}", lock_path.display()))?;
+    file.lock()
+        .with_context(|| format!("failed to lock store: {}", lock_path.display()))?;
+    Ok(file)
+}
+
+/// Writes `runs` oldest first as compact JSON (the file is rewritten on
+/// every status change).
+fn write_runs(path: &Path, runs: &HashMap<RunId, RunRecord>) -> Result<()> {
+    let mut sorted: Vec<&RunRecord> = runs.values().collect();
+    sorted.sort_by_key(|r| r.created_at);
+    let data = serde_json::to_vec(&sorted).context("failed to serialize run records")?;
+    write_private_atomic(path, &data)
+}
+
+/// Reads the store; a file that does not parse is moved aside and read as
+/// empty, as at startup, so it cannot block every later write.
+fn read_records_or_quarantine(path: &Path) -> Result<Vec<RunRecord>> {
+    match read_records(path) {
+        Ok(records) => Ok(records),
+        Err(ReadError::Io(e)) => Err(e),
+        Err(ReadError::Parse(e)) => {
+            let aside = quarantine(path)?;
+            tracing::warn!(
+                path = %path.display(),
+                moved_to = %aside.display(),
+                error = %e,
+                "subagent run store did not parse; moved it aside and started empty"
+            );
+            Ok(Vec::new())
+        }
     }
 }
 
@@ -522,6 +671,7 @@ impl RunStore for StateRunStore {
             events: Vec::new(),
             created_at: now,
             updated_at: now,
+            owner: Some(RunOwner::current()),
         };
         {
             let mut guard = self.inner.lock().await;
@@ -614,6 +764,7 @@ mod tests {
             events: Vec::new(),
             created_at: now,
             updated_at: now,
+            owner: Some(RunOwner::current()),
         };
         let event = |n: usize| RunEvent {
             ts: now,
@@ -1028,9 +1179,13 @@ mod store_tests {
         }
     }
 
-    /// RT-15: runs left unfinished on disk are failed on load.
+    /// RT-15, narrowed by M260: a reopen fails only runs nobody can finish.
     #[tokio::test]
-    async fn test_unfinished_runs_are_failed_on_reopen() {
+    async fn runs_of_a_live_owner_survive_a_reopen() {
+        // Was `test_unfinished_runs_are_failed_on_reopen`: reopening failed
+        // every unfinished run. Under M260 a run whose owner (here, this
+        // process) is alive is left alone; a dead owner's run is covered by
+        // `startup_interrupts_only_runs_whose_owner_is_gone`.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("runs.json");
         let store = StateRunStore::new(path.clone()).unwrap();
@@ -1051,10 +1206,157 @@ mod store_tests {
 
         let reopened = StateRunStore::new(path).unwrap();
         let status = reopened.status(running).await.unwrap().unwrap();
-        assert_eq!(status.state, RunState::Failed);
-        assert_eq!(status.message.as_deref(), Some(INTERRUPTED_MESSAGE));
+        assert_eq!(status.state, RunState::Running);
         let status = reopened.status(done).await.unwrap().unwrap();
         assert_eq!(status.state, RunState::Canceled);
+    }
+
+    /// M260: two servers (one per client) share runs.json; each persist
+    /// rewrote the whole file from its own memory, so the last writer
+    /// dropped the other's runs.
+    #[tokio::test]
+    async fn two_stores_on_one_file_keep_each_others_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runs.json");
+        let first = StateRunStore::new(path.clone()).unwrap();
+        let second = StateRunStore::new(path.clone()).unwrap();
+
+        let from_first = first.create_run(sample_request()).await.unwrap();
+        let from_second = second.create_run(sample_request()).await.unwrap();
+        first
+            .append_event(
+                from_first,
+                RunEvent {
+                    ts: OffsetDateTime::now_utc(),
+                    kind: "progress".into(),
+                    data: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let on_disk: Vec<RunId> = read_records(&path)
+            .map_err(ReadError::into_anyhow)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert!(on_disk.contains(&from_first), "{on_disk:?}");
+        assert!(on_disk.contains(&from_second), "{on_disk:?}");
+    }
+
+    /// M260: a stop recorded by a store that does not own the run is final;
+    /// the owner's next write must not put the run back to Running.
+    #[tokio::test]
+    async fn a_stop_from_another_store_survives_the_owners_next_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runs.json");
+        let owner = StateRunStore::new(path.clone()).unwrap();
+        let run = owner.create_run(sample_request()).await.unwrap();
+        let other = StateRunStore::new(path.clone()).unwrap();
+        assert!(other.stop(run).await.unwrap());
+
+        owner
+            .append_event(
+                run,
+                RunEvent {
+                    ts: OffsetDateTime::now_utc(),
+                    kind: "progress".into(),
+                    data: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let reopened = StateRunStore::new(path).unwrap();
+        let status = reopened.status(run).await.unwrap().unwrap();
+        assert_eq!(status.state, RunState::Canceled);
+        assert_eq!(
+            owner.status(run).await.unwrap().unwrap().state,
+            RunState::Canceled,
+            "the owner's own view picks up the stop on its next write"
+        );
+    }
+
+    /// M260: opening the store failed every unfinished run, including runs
+    /// another live server was still driving. Only runs nobody can finish
+    /// are interrupted: a dead owner, an earlier process that had this pid,
+    /// or a record written before owners were kept.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn startup_interrupts_only_runs_whose_owner_is_gone() {
+        let mut sleeper = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let mut exited = std::process::Command::new("true").spawn().unwrap();
+        exited.wait().unwrap();
+
+        let now = OffsetDateTime::now_utc();
+        let running = |owner: Option<RunOwner>| RunRecord {
+            id: RunId(Uuid::new_v4()),
+            request: sample_request(),
+            status: RunStatus {
+                state: RunState::Running,
+                message: None,
+                updated_at: now,
+            },
+            events: Vec::new(),
+            created_at: now,
+            updated_at: now,
+            owner,
+        };
+        let live = running(Some(RunOwner {
+            pid: sleeper.id(),
+            process: Uuid::new_v4(),
+        }));
+        let dead = running(Some(RunOwner {
+            pid: exited.id(),
+            process: Uuid::new_v4(),
+        }));
+        let earlier_self = running(Some(RunOwner {
+            pid: std::process::id(),
+            process: Uuid::new_v4(),
+        }));
+        let legacy = running(None);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runs.json");
+        let records = vec![
+            live.clone(),
+            dead.clone(),
+            earlier_self.clone(),
+            legacy.clone(),
+        ];
+        fs::write(&path, serde_json::to_vec(&records).unwrap()).unwrap();
+
+        let store = {
+            // The liveness check runs `kill` from PATH, which other tests
+            // replace while they hold this guard.
+            let _env = skrills_test_utils::env_guard();
+            StateRunStore::new(path.clone()).unwrap()
+        };
+        let state = |id| {
+            let store = &store;
+            async move { store.status(id).await.unwrap().unwrap().state }
+        };
+        let live_state = state(live.id).await;
+        let dead_state = state(dead.id).await;
+        let earlier_self_state = state(earlier_self.id).await;
+        let legacy_state = state(legacy.id).await;
+        sleeper.kill().unwrap();
+        sleeper.wait().unwrap();
+
+        assert_eq!(live_state, RunState::Running);
+        assert_eq!(dead_state, RunState::Failed);
+        assert_eq!(earlier_self_state, RunState::Failed);
+        assert_eq!(legacy_state, RunState::Failed);
+        let on_disk = read_records(&path).map_err(ReadError::into_anyhow).unwrap();
+        let dead_on_disk = on_disk.iter().find(|r| r.id == dead.id).unwrap();
+        assert_eq!(
+            dead_on_disk.status.state,
+            RunState::Failed,
+            "the interruption is written, so other servers see it"
+        );
     }
 
     /// RT-14: concurrent writes all land on disk.
@@ -1075,8 +1377,9 @@ mod store_tests {
         }
         let reopened = StateRunStore::new(path).unwrap();
         assert_eq!(reopened.history(100).await.unwrap().len(), 40);
+        // The store file and its lock file, which is kept between writes.
         let leftovers = fs::read_dir(dir.path()).unwrap().count();
-        assert_eq!(leftovers, 1, "temp files must not be left behind");
+        assert_eq!(leftovers, 2, "temp files must not be left behind");
     }
 
     /// RT-13: streamed events are not written one by one.

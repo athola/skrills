@@ -33,6 +33,7 @@ fn sample_record() -> RunRecord {
         }],
         created_at: now,
         updated_at: now,
+        owner: None,
     }
 }
 
