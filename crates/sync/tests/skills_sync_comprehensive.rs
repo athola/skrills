@@ -703,12 +703,7 @@ mod autofix_sync_tests {
         let skill = SkillSyncTestContext::claude_only_skill("needs-fix");
 
         // WHEN: Validating with autofix enabled
-        let options = SyncValidationOptions {
-            validate: true,
-            autofix: true,
-            create_backups: false,
-            strict: false,
-        };
+        let options = SyncValidationOptions { autofix: true };
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
         // THEN: Autofix generates frontmatter and skill can sync
@@ -729,12 +724,7 @@ mod autofix_sync_tests {
         );
 
         // WHEN: Validating with autofix
-        let options = SyncValidationOptions {
-            validate: true,
-            autofix: true,
-            create_backups: false,
-            strict: false,
-        };
+        let options = SyncValidationOptions { autofix: true };
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
         // THEN: Name is derived and added
@@ -753,12 +743,7 @@ mod autofix_sync_tests {
         let skill = SkillSyncTestContext::missing_description_skill("needs-desc");
 
         // WHEN: Validating with autofix
-        let options = SyncValidationOptions {
-            validate: true,
-            autofix: true,
-            create_backups: false,
-            strict: false,
-        };
+        let options = SyncValidationOptions { autofix: true };
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
         // THEN: Description is derived and added
@@ -778,12 +763,7 @@ mod autofix_sync_tests {
             SkillSyncTestContext::universal_skill("already-valid", "Already has everything");
 
         // WHEN: Validating with autofix
-        let options = SyncValidationOptions {
-            validate: true,
-            autofix: true,
-            create_backups: false,
-            strict: false,
-        };
+        let options = SyncValidationOptions { autofix: true };
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
         // THEN: No autofix applied (skill was already valid)
@@ -803,12 +783,7 @@ mod autofix_sync_tests {
         ];
 
         // WHEN: Validating with autofix
-        let options = SyncValidationOptions {
-            validate: true,
-            autofix: true,
-            create_backups: false,
-            strict: false,
-        };
+        let options = SyncValidationOptions { autofix: true };
         let report = validate_skills_for_sync(&skills, ValidationTarget::Codex, &options);
 
         // THEN: Report shows autofixed count
@@ -825,12 +800,7 @@ mod autofix_sync_tests {
         let skill = SkillSyncTestContext::malformed_yaml_skill("broken-yaml");
 
         // WHEN: Validating with autofix
-        let options = SyncValidationOptions {
-            validate: true,
-            autofix: true,
-            create_backups: false,
-            strict: false,
-        };
+        let options = SyncValidationOptions { autofix: true };
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
         // THEN: Skill cannot be fixed (malformed YAML)
@@ -849,12 +819,7 @@ mod autofix_sync_tests {
         let skill = SkillSyncTestContext::claude_only_skill("no-autofix");
 
         // WHEN: Validating with autofix disabled
-        let options = SyncValidationOptions {
-            validate: true,
-            autofix: false,
-            create_backups: false,
-            strict: false,
-        };
+        let options = SyncValidationOptions { autofix: false };
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
         // THEN: No autofix applied
@@ -1199,20 +1164,15 @@ mod negative_tests {
     }
 
     #[test]
-    fn given_strict_mode_and_invalid_skill_when_validate_then_fails() {
-        // GIVEN: Invalid skill with strict mode
+    fn given_invalid_skill_when_validate_then_report_counts_the_failure() {
+        // GIVEN: One valid and one invalid skill
         let skills = vec![
             SkillSyncTestContext::universal_skill("valid", "Valid skill"),
             SkillSyncTestContext::claude_only_skill("invalid"),
         ];
 
-        // WHEN: Validating with strict mode
-        let options = SyncValidationOptions {
-            validate: true,
-            autofix: false,
-            create_backups: false,
-            strict: true,
-        };
+        // WHEN: Validating without autofix
+        let options = SyncValidationOptions { autofix: false };
         let report = validate_skills_for_sync(&skills, ValidationTarget::Codex, &options);
 
         // THEN: Report shows failure

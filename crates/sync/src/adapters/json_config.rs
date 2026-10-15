@@ -321,4 +321,23 @@ mod tests {
             serde_json::json!({})
         );
     }
+
+    /// Rewrites used to alphabetize the user's keys, churning dotfile repos.
+    #[test]
+    fn model_rewrite_keeps_the_users_key_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{\n  \"z\": 1,\n  \"a\": 2,\n  \"m\": 3\n}").unwrap();
+
+        write_model(&path, Some("opus")).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let keys: Vec<&str> = ["\"z\"", "\"a\"", "\"m\"", "\"model\""]
+            .into_iter()
+            .filter(|k| text.contains(k))
+            .collect();
+        assert_eq!(keys.len(), 4, "{text}");
+        let positions: Vec<usize> = keys.iter().map(|k| text.find(k).unwrap()).collect();
+        assert!(positions.windows(2).all(|w| w[0] < w[1]), "{text}");
+    }
 }

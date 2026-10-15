@@ -13,14 +13,8 @@ use tracing::warn;
 /// Options for validation during sync.
 #[derive(Debug, Clone, Default)]
 pub struct SyncValidationOptions {
-    /// Whether to validate skills before syncing.
-    pub validate: bool,
     /// Whether to auto-fix skills that fail validation.
     pub autofix: bool,
-    /// Create backups before autofix.
-    pub create_backups: bool,
-    /// Stop sync if validation fails.
-    pub strict: bool,
 }
 
 /// Result of validating a skill during sync.
@@ -99,8 +93,9 @@ pub fn validate_skill_for_sync(
     // content is never autofixed: the fix would work on a lossy copy.
     if !is_valid && options.autofix && std::str::from_utf8(&skill.content).is_ok() {
         let autofix_opts = AutofixOptions {
-            create_backup: options.create_backups,
-            write_changes: false, // We'll handle writing separately
+            // Nothing is written here, so there is nothing to back up.
+            create_backup: false,
+            write_changes: false,
             suggested_name: Some(skill.name.clone()),
             suggested_description: None,
         };
@@ -221,10 +216,7 @@ mod tests {
     #[test]
     fn autofix_that_leaves_another_error_does_not_make_the_skill_syncable() {
         let skill = make_skill("demo", "---\ndescription: \"\"\n---\n# Body\n");
-        let options = SyncValidationOptions {
-            autofix: true,
-            ..Default::default()
-        };
+        let options = SyncValidationOptions { autofix: true };
 
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
@@ -239,6 +231,22 @@ mod tests {
         skill.content = b"---\ndescription: d\n---\n\xFF\xFE body\n".to_vec();
 
         assert!(apply_autofix_to_skill(&skill).is_err());
+    }
+
+    /// Autofix must never see a lossy copy: the bytes it would hand back
+    /// carry U+FFFD in place of every invalid byte.
+    #[test]
+    fn autofix_leaves_non_utf8_skill_bytes_untouched() {
+        let mut skill = make_skill("bin", "");
+        let original = b"# no frontmatter \xFF\xFE body\n".to_vec();
+        skill.content = original.clone();
+        let options = SyncValidationOptions { autofix: true };
+
+        let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
+
+        assert!(result.autofix.is_none());
+        assert!(!result.can_sync);
+        assert_eq!(skill.content, original);
     }
 
     fn make_skill(name: &str, content: &str) -> Command {
@@ -277,10 +285,7 @@ mod tests {
     #[test]
     fn test_validate_invalid_skill_with_autofix() {
         let skill = make_skill("test", "# No frontmatter\nBut has content.");
-        let options = SyncValidationOptions {
-            autofix: true,
-            ..Default::default()
-        };
+        let options = SyncValidationOptions { autofix: true };
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
         assert!(result.can_sync);
