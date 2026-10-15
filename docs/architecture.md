@@ -27,7 +27,7 @@ graph TD
     cli[cli<br/>clap, commands, dispatcher] --> server[server<br/>MCP runtime, engine]
     cli --> sync & validate & analyze & intelligence
     cli --> tome & discovery & state & snapshot
-    cli -. optional .-> dashboard
+    cli -. optional .-> dashboard[dashboard<br/>TUI and browser UI]
     server --> sync[sync]
     server --> validate[validate]
     server --> analyze[analyze]
@@ -37,7 +37,6 @@ graph TD
     server --> tome[tome<br/>research APIs, caching]
     server --> state & snapshot
     server -. optional .-> subagents[subagents]
-    server -. optional .-> dashboard[dashboard<br/>TUI and browser UI]
     dashboard --> metrics & discovery & sync & snapshot
     analyze --> validate & discovery & intelligence & snapshot
     sync --> validate & snapshot
