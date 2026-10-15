@@ -1876,9 +1876,10 @@ mod tests {
         let _env = skrills_test_utils::env_guard();
         let fixture = skrills_test_utils::TestFixture::new().unwrap();
         let _home = fixture.home_guard();
-        let claude = dirs::home_dir().unwrap().join(".claude");
-        std::fs::create_dir_all(&claude).unwrap();
-        std::fs::write(claude.join("settings.json"), "{broken").unwrap();
+        // Claude Code keeps user MCP servers in ~/.claude.json.
+        let home = dirs::home_dir().unwrap();
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(home.join(".claude.json"), "{broken").unwrap();
 
         let dashboard =
             Dashboard::with_collector(Vec::new(), Arc::new(MetricsCollector::in_memory().unwrap()));
