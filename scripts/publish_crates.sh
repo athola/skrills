@@ -117,8 +117,9 @@ main() {
   publish_one skrills-metrics
   publish_one skrills-tome
 
-  # Level 1: depend on leaf crates only
+  # Level 1: depend on leaf crates only (skrills-setup needs skrills_sync)
   publish_one skrills_sync
+  publish_one skrills-setup
   publish_one skrills-subagents
   publish_one skrills-analyze
   publish_one skrills-dashboard

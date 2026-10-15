@@ -13,12 +13,10 @@ mod agents_doc;
 #[cfg_attr(test, allow(dead_code))]
 pub mod app;
 pub(crate) mod cache;
-pub mod config;
 mod handler;
 pub mod mcp_gateway;
 mod mcp_result;
 pub(crate) mod metrics_types;
-pub mod setup;
 mod skill_trace;
 #[cfg(test)]
 mod test_support;

@@ -4367,11 +4367,13 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "shellexpand",
  "skrills-analyze",
  "skrills-dashboard",
  "skrills-discovery",
  "skrills-intelligence",
  "skrills-server",
+ "skrills-setup",
  "skrills-snapshot",
  "skrills-state",
  "skrills-subagents",
@@ -4510,7 +4512,6 @@ dependencies = [
  "dirs 7.0.0",
  "futures",
  "http-body-util",
- "inquire",
  "leptos",
  "notify",
  "parking_lot",
@@ -4528,6 +4529,7 @@ dependencies = [
  "skrills-discovery",
  "skrills-intelligence",
  "skrills-metrics",
+ "skrills-setup",
  "skrills-snapshot",
  "skrills-state",
  "skrills-subagents",
@@ -4540,13 +4542,28 @@ dependencies = [
  "time",
  "tokio",
  "tokio-util",
- "toml",
  "tower",
  "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
  "walkdir",
  "wiremock",
+]
+
+[[package]]
+name = "skrills-setup"
+version = "0.9.1"
+dependencies = [
+ "anyhow",
+ "dirs 7.0.0",
+ "inquire",
+ "serde_json",
+ "shellexpand",
+ "skrills-test-utils",
+ "skrills_sync",
+ "tempfile",
+ "toml",
+ "tracing",
 ]
 
 [[package]]

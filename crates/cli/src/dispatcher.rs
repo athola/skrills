@@ -55,7 +55,7 @@ pub fn run() -> Result<()> {
 
     // Load config file and apply settings to env vars before CLI parsing.
     // This ensures precedence: CLI > ENV > config file.
-    let config_error = skrills_server::config::try_apply_config_to_env().err();
+    let config_error = crate::config::try_apply_config_to_env().err();
 
     let cli = Cli::parse();
 
@@ -85,13 +85,13 @@ pub fn run() -> Result<()> {
     // ends. With stdout piped (a script, `--format json | jq`, CI) its banner
     // would land in the captured output ahead of the document.
     if !is_serve && !is_setup && !is_batch && is_interactive_terminal() {
-        if let Ok(true) = skrills_server::setup::is_first_run() {
-            if let Ok(true) = skrills_server::setup::prompt_first_run_setup() {
+        if let Ok(true) = skrills_setup::is_first_run() {
+            if let Ok(true) = skrills_setup::prompt_first_run_setup() {
                 // Run interactive setup
-                let config = skrills_server::setup::interactive_setup(
-                    None, None, false, false, false, false, false, None,
+                let config = skrills_setup::interactive_setup(
+                    None, None, false, false, false, false, false, None, false,
                 )?;
-                skrills_server::setup::run_setup(config)?;
+                skrills_setup::run_setup(config)?;
                 tracing::info!(
                     "you can now use skrills; run your command again or explore 'skrills --help'"
                 );
@@ -296,6 +296,7 @@ pub fn run() -> Result<()> {
             yes,
             universal,
             mirror_source,
+            include_marketplace,
         } => handle_setup_command(SetupOptions {
             client,
             bin_dir,
@@ -305,6 +306,7 @@ pub fn run() -> Result<()> {
             yes,
             universal,
             mirror_source,
+            include_marketplace,
         }),
         Commands::Validate {
             skill_dirs,

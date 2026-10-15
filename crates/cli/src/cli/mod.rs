@@ -554,6 +554,9 @@ pub enum Commands {
         /// Source directory for mirroring skills (default: ~/.claude).
         #[arg(long)]
         mirror_source: Option<PathBuf>,
+        /// With --universal, also copy marketplace skills (uninstalled plugins).
+        #[arg(long, env = "SKRILLS_INCLUDE_MARKETPLACE", default_value_t = false)]
+        include_marketplace: bool,
     },
     /// Mark a skill as deprecated with optional migration guidance.
     SkillDeprecate {
@@ -1530,6 +1533,7 @@ mod tests {
                 yes,
                 universal,
                 mirror_source,
+                include_marketplace: _,
             }) => {
                 assert_eq!(client.as_deref(), Some("claude"));
                 assert_eq!(bin_dir, Some(PathBuf::from("/usr/local/bin")));
@@ -1542,6 +1546,27 @@ mod tests {
             }
             _ => unreachable!("expected Setup command"),
         }
+    }
+
+    /// Marketplace skills belong to plugins that are not installed, so
+    /// `setup` copies them only when asked.
+    #[test]
+    fn setup_include_marketplace_is_opt_in() {
+        let _guard = env_guard();
+        let _env = set_env_var("SKRILLS_INCLUDE_MARKETPLACE", None);
+        let parse = |args: &[&str]| match Cli::try_parse_from(args)
+            .expect("setup args should parse")
+            .command
+        {
+            Some(Commands::Setup {
+                include_marketplace,
+                ..
+            }) => include_marketplace,
+            _ => unreachable!("expected Setup command"),
+        };
+
+        assert!(!parse(&["skrills", "setup"]));
+        assert!(parse(&["skrills", "setup", "--include-marketplace"]));
     }
 
     #[test]

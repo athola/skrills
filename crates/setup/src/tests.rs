@@ -7,7 +7,7 @@ use std::fs;
 use tempfile::TempDir;
 
 fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-    crate::test_support::env_guard()
+    skrills_test_utils::env_guard()
 }
 
 /// Test fixture helper for creating temporary home directories
@@ -19,7 +19,7 @@ fn create_test_home() -> Result<TempDir> {
 /// that restores the original value on drop.
 /// Note: dirs::home_dir() may not respect this on all platforms
 fn set_test_home(dir: &TempDir) -> skrills_test_utils::EnvVarGuard {
-    crate::test_support::set_env_var("HOME", Some(dir.path().to_str().unwrap()))
+    skrills_test_utils::set_env_var("HOME", Some(dir.path().to_str().unwrap()))
 }
 
 /// The installer passes `--bin-dir ~/.skrills/bin` while running the binary
@@ -854,6 +854,7 @@ mod sync_universal_tests {
             yes: true,
             universal: true,
             mirror_source: Some(temp.path().join("nonexistent")),
+            include_marketplace: false,
         };
 
         // Should handle missing source gracefully
@@ -886,6 +887,7 @@ mod sync_universal_tests {
             yes: true,
             universal: true,
             mirror_source: None,
+            include_marketplace: false,
         };
         sync_universal(&config)?;
 
@@ -897,6 +899,62 @@ mod sync_universal_tests {
         assert!(!temp.path().join(".agent").exists());
         assert!(!agent_skills.join(".credentials.json").exists());
         assert!(!agent_skills.join("projects").exists());
+        Ok(())
+    }
+
+    fn universal_config(temp: &TempDir, include_marketplace: bool) -> SetupConfig {
+        SetupConfig {
+            clients: vec![Client::Claude],
+            bin_dir: temp.path().join("bin"),
+            reinstall: false,
+            uninstall: false,
+            add: false,
+            yes: true,
+            universal: true,
+            mirror_source: None,
+            include_marketplace,
+        }
+    }
+
+    fn write_marketplace_skill(temp: &TempDir) -> Result<()> {
+        let skill = temp
+            .path()
+            .join(".claude/plugins/marketplaces/a/plugins/b/skills/market");
+        fs::create_dir_all(&skill)?;
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: market\ndescription: marketplace skill\n---\nbody\n",
+        )?;
+        Ok(())
+    }
+
+    /// `setup --universal --include-marketplace` copies marketplace skills
+    /// the way `sync --include-marketplace` does.
+    #[test]
+    fn sync_universal_copies_marketplace_skills_when_included() -> Result<()> {
+        let _guard = env_guard();
+        let temp = create_test_home()?;
+        let _home = set_test_home(&temp);
+        write_marketplace_skill(&temp)?;
+
+        sync_universal(&universal_config(&temp, true))?;
+
+        assert!(temp.path().join(".agents/skills/market/SKILL.md").exists());
+        Ok(())
+    }
+
+    /// Marketplace skills belong to plugins that are not installed, so the
+    /// default leaves them out.
+    #[test]
+    fn sync_universal_skips_marketplace_skills_by_default() -> Result<()> {
+        let _guard = env_guard();
+        let temp = create_test_home()?;
+        let _home = set_test_home(&temp);
+        write_marketplace_skill(&temp)?;
+
+        sync_universal(&universal_config(&temp, false))?;
+
+        assert!(!temp.path().join(".agents/skills/market").exists());
         Ok(())
     }
 }

@@ -6,10 +6,10 @@
 
 use crate::handler::{invalid_params, run_blocking};
 use crate::mcp_result::{tool_err, tool_ok};
-use crate::setup;
 use anyhow::{anyhow, Result};
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::{json, Map as JsonMap, Value};
+use skrills_setup as setup;
 use skrills_state::home_dir;
 use std::collections::{HashMap, HashSet};
 use std::fs;

@@ -39,8 +39,25 @@ a published crate's API.
 - Done in 0.9.1: decision 1 (`skrills_sync::sync_claude_skills_to_codex`
   replaced the server-side copier, which is deleted), decision 3, and the
   single skill-root builder (`skrills_discovery::skill_roots`).
-- Deferred: decision 2's module moves. Each move is a public API change in
-  `skrills-server` and is made in its own pull request.
+- Done after 0.9.1 (decision 2), each listed as breaking in the changelog:
+  - `skrills_server::discovery` helpers moved to `skrills_discovery` (module
+    `lookup`; the env-driven `skill_roots` is now `skill_roots_from_env`).
+    The `doc://agents` resource constants stay private to the server.
+  - `skrills_server::sync` moved to `skrills_sync` (module `agents_md`),
+    with the default AGENTS.md template; `skrills_sync` now depends on
+    `skrills-discovery`, which does not depend on it.
+  - `skrills_server::setup` became the `skrills-setup` crate, since the
+    server still calls `is_setup`.
+  - `skrills_server::config` (the `~/.skrills/config.toml` loader) moved to
+    the CLI crate; the server never read it.
+- Left in `skrills-server`, used by the CLI to start the server: `app`
+  (`SkillService`, `start_fs_watcher`), `http_transport`, `tls_auto`
+  (`skrills cert` shares the server's certificate generator), `trace`,
+  `tool_schemas`, `mcp_gateway` and `api` (cold-window HTTP routes).
+- Not yet done: `recommend`, `metrics`, `resolve`, `skill-uri` and the
+  intelligence commands run `SkillService` and its ranking/metrics helpers
+  offline. Moving them out means separating the engine from the MCP
+  handler, a larger change than a module move.
 
 ## Alternatives Considered
 

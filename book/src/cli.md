@@ -626,6 +626,7 @@ skrills setup --universal                 # Also sync to ~/.agents/skills
 | `--yes` | Skip confirmation prompts |
 | `--universal` | Also sync skills to `~/.agents/skills` |
 | `--mirror-source` | Override source directory for mirroring (default: `~/.claude`) |
+| `--include-marketplace` | With `--universal`, also copy skills from `~/.claude/plugins/marketplaces` (uninstalled plugins). Off by default; `SKRILLS_INCLUDE_MARKETPLACE` sets it too |
 
 ### tui
 

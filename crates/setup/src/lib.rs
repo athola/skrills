@@ -1,8 +1,11 @@
-//! Setup and installation logic.
+//! Setup and installation logic for `skrills setup`. Its own crate because
+//! both the CLI and the MCP server (which reports whether setup ran) use it.
 //!
 //! Handles first-run detection, interactive setup, reinstallation, and uninstallation
 //! for Claude Code, Codex, and GitHub Copilot clients, and supports a universal
 //! `~/.agents/skills` directory.
+
+#![deny(unsafe_code)]
 
 use anyhow::{anyhow, Context, Result};
 use inquire::{Confirm, Select, Text};
@@ -79,6 +82,10 @@ pub struct SetupConfig {
     pub yes: bool,
     pub universal: bool,
     pub mirror_source: Option<PathBuf>,
+    /// Also copy skills from `~/.claude/plugins/marketplaces` in the
+    /// universal sync. Off by default: those belong to plugins that are not
+    /// installed.
+    pub include_marketplace: bool,
 }
 
 /// Checks if skrills is already set up for a given client.
@@ -182,6 +189,7 @@ pub fn interactive_setup(
     yes: bool,
     universal: bool,
     mirror_source: Option<PathBuf>,
+    include_marketplace: bool,
 ) -> Result<SetupConfig> {
     let clients = if let Some(ref client_str) = client_arg {
         parse_clients(client_str)?
@@ -219,6 +227,7 @@ pub fn interactive_setup(
         yes,
         universal,
         mirror_source,
+        include_marketplace,
     })
 }
 
@@ -922,7 +931,12 @@ fn sync_universal(config: &SetupConfig) -> Result<()> {
     );
     println!("Source: {}", mirror_source.display());
 
-    let report = skrills_sync::sync_claude_skills_to_codex(&mirror_source, &home, false, false)?;
+    let report = skrills_sync::sync_claude_skills_to_codex(
+        &mirror_source,
+        &home,
+        config.include_marketplace,
+        false,
+    )?;
     for warning in &report.skills.warnings {
         println!("  Warning: {warning}");
     }

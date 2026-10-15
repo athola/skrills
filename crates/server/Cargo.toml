@@ -28,11 +28,9 @@ walkdir.workspace = true
 tracing.workspace = true
 pathdiff.workspace = true
 dirs.workspace = true
-inquire.workspace = true
 base64.workspace = true
 tempfile.workspace = true
 notify = { version = "8", optional = true }
-toml.workspace = true
 parking_lot.workspace = true
 subtle = { version = "2.6", optional = true }
 axum = { version = "0.8", optional = true }
@@ -48,6 +46,7 @@ skrills-subagents = { path = "../subagents", version = "0.9.1", optional = true 
 skrills-discovery = { path = "../discovery", version = "0.9.1" }
 skrills-state = { path = "../state", version = "0.9.1" }
 skrills_sync = { path = "../sync", version = "0.9.1" }
+skrills-setup = { path = "../setup", version = "0.9.1" }
 skrills-validate = { path = "../validate", version = "0.9.1" }
 skrills-analyze = { path = "../analyze", version = "0.9.1" }
 skrills-intelligence = { path = "../intelligence", version = "0.9.1" }

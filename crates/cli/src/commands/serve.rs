@@ -92,7 +92,7 @@ pub(crate) struct ServeOptions {
 #[cfg_attr(not(feature = "http-transport"), allow(dead_code))]
 fn resolve_auth_token(
     from_cli_or_env: Option<String>,
-    load_config: impl FnOnce() -> Result<Option<skrills_server::config::Config>>,
+    load_config: impl FnOnce() -> Result<Option<crate::config::Config>>,
 ) -> Result<Option<String>> {
     if from_cli_or_env.is_some() {
         return Ok(from_cli_or_env);
@@ -106,7 +106,7 @@ fn resolve_auth_token(
 /// `[serve] project_roots` from `~/.skrills/config.toml`, with `~` expanded.
 /// `None` when the file or the key is absent.
 fn resolve_project_roots(
-    load_config: impl FnOnce() -> Result<Option<skrills_server::config::Config>>,
+    load_config: impl FnOnce() -> Result<Option<crate::config::Config>>,
 ) -> Result<Option<Vec<PathBuf>>> {
     Ok(load_config()?.and_then(|c| c.serve.project_roots_expanded()))
 }
@@ -259,7 +259,7 @@ pub(crate) fn handle_serve_command(options: ServeOptions) -> Result<()> {
         .unwrap_or_else(|| cache_ttl(&load_manifest_settings));
 
     let project_roots =
-        resolve_project_roots(|| skrills_server::config::load_config().map_err(|e| anyhow!(e)))?;
+        resolve_project_roots(|| crate::config::load_config().map_err(|e| anyhow!(e)))?;
 
     let rt = Runtime::new()?;
 
@@ -311,7 +311,7 @@ pub(crate) fn handle_serve_command(options: ServeOptions) -> Result<()> {
             };
 
             let auth_token = resolve_auth_token(auth_token, || {
-                skrills_server::config::load_config().map_err(|e| anyhow!(e))
+                crate::config::load_config().map_err(|e| anyhow!(e))
             })?;
 
             // Build security config from CLI arguments
@@ -428,7 +428,7 @@ mod tests {
     /// SA-23: `[serve] project_roots` reaches serve with `~` expanded.
     #[test]
     fn project_roots_come_from_the_config_file() {
-        let config: skrills_server::config::Config =
+        let config: crate::config::Config =
             toml::from_str("[serve]\nproject_roots = [\"/work\"]\n").unwrap();
         assert_eq!(
             resolve_project_roots(|| Ok(Some(config))).unwrap(),
@@ -437,7 +437,7 @@ mod tests {
         assert_eq!(resolve_project_roots(|| Ok(None)).unwrap(), None);
     }
 
-    fn config_with_token(token: &str) -> skrills_server::config::Config {
+    fn config_with_token(token: &str) -> crate::config::Config {
         toml::from_str(&format!("[serve]\nauth_token = \"{token}\"\n")).unwrap()
     }
 
@@ -483,7 +483,7 @@ mod tests {
         .unwrap();
 
         let token = resolve_auth_token(None, || {
-            skrills_server::config::load_config().map_err(|e| anyhow!(e))
+            crate::config::load_config().map_err(|e| anyhow!(e))
         })
         .unwrap();
 
