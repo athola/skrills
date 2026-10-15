@@ -27,42 +27,8 @@ mod stats;
 mod tools;
 
 pub use registry::{McpToolEntry, McpToolRegistry};
-pub use stats::{ContextStats, ContextStatsSnapshot, ToolUsageStats};
-pub use tools::{
-    describe_mcp_tool, get_context_stats, list_mcp_tools, mcp_gateway_tools, MCP_GATEWAY_TOOL_NAMES,
-};
-
-/// Configuration for the MCP Gateway.
-#[deprecated(
-    since = "0.9.0",
-    note = "nothing in skrills reads a GatewayConfig; unused, will be removed in a future release"
-)]
-#[derive(Debug, Clone, Default)]
-pub struct GatewayConfig {
-    /// Whether lazy loading is enabled (always true for now).
-    pub lazy_loading: bool,
-    /// Maximum number of schemas to cache in memory.
-    pub schema_cache_size: usize,
-    /// Categories to preload at startup (empty = load none).
-    pub preload_categories: Vec<String>,
-}
-
-impl GatewayConfig {
-    /// Create default configuration with lazy loading enabled.
-    pub fn new() -> Self {
-        Self {
-            lazy_loading: true,
-            schema_cache_size: 100,
-            preload_categories: Vec::new(),
-        }
-    }
-
-    /// Configure preloading for specific categories.
-    pub fn with_preload(mut self, categories: Vec<String>) -> Self {
-        self.preload_categories = categories;
-        self
-    }
-}
+pub use stats::{ContextStats, ContextStatsSnapshot};
+pub use tools::{describe_mcp_tool, get_context_stats, list_mcp_tools, mcp_gateway_tools};
 
 /// Estimate tokens for a tool definition (rough approximation).
 ///

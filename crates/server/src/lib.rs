@@ -24,13 +24,6 @@ pub mod sync;
 mod test_support;
 pub mod tool_schemas;
 
-/// Skills manifest for caching and quick loading.
-#[deprecated(
-    since = "0.9.0",
-    note = "nothing in skrills reads or writes the skills manifest; unused, will be removed in a future release"
-)]
-pub mod manifest;
-
 /// HTTP transport for remote MCP access.
 #[cfg(feature = "http-transport")]
 pub mod http_transport;
@@ -49,11 +42,5 @@ pub mod tls_auto;
 
 /// Skill discovery mechanism.
 pub mod discovery;
-/// Server runtime.
-#[deprecated(
-    since = "0.9.0",
-    note = "only re-exports skrills_state::runtime_overrides_path; use that instead. Will be removed in a future release"
-)]
-pub mod runtime;
 /// Tracing and logging configuration.
 pub mod trace;
