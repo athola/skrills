@@ -52,9 +52,9 @@ const MIN_TICK_MS: u64 = 50;
 #[derive(Debug, Clone, Args)]
 pub struct ColdWindowArgs {
     /// Token budget ceiling. Above this the LayeredAlertPolicy fires
-    /// a Warning and engages the kill-switch. At least 2: 0 tripped the
-    /// kill-switch on the first tick, and 0 or 1 cannot hold ordered tiers.
-    #[arg(long, default_value_t = 100_000, value_parser = clap::value_parser!(u64).range(2..))]
+    /// a Warning and engages the kill-switch. At least 3: 0 tripped the
+    /// kill-switch on the first tick, and below 3 the tiers cannot be ordered.
+    #[arg(long, default_value_t = 100_000, value_parser = clap::value_parser!(u64).range(3..))]
     pub alert_budget: u64,
 
     /// Research dispatcher fetches per hour. The quota is kept in memory
@@ -1340,18 +1340,19 @@ mod tests {
         args: ColdWindowArgs,
     }
 
-    /// IN-18: a budget below 2 cannot hold ordered alert tiers.
+    /// IN-18: a budget below 3 cannot hold ordered alert tiers (advisory >= 1,
+    /// caution above it, warning at the ceiling).
     #[test]
-    fn alert_budget_below_two_is_rejected() {
+    fn alert_budget_below_three_is_rejected() {
         use clap::Parser;
-        for bad in ["0", "1"] {
+        for bad in ["0", "1", "2"] {
             assert!(
                 ArgsCli::try_parse_from(["t", "--alert-budget", bad]).is_err(),
                 "--alert-budget {bad} must be rejected"
             );
         }
-        let ok = ArgsCli::try_parse_from(["t", "--alert-budget", "2"]).unwrap();
-        assert_eq!(ok.args.alert_budget, 2);
+        let ok = ArgsCli::try_parse_from(["t", "--alert-budget", "3"]).unwrap();
+        assert_eq!(ok.args.alert_budget, 3);
     }
 
     #[test]
