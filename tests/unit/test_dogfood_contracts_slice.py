@@ -40,6 +40,7 @@ def _scratch_repo(tmp_path: Path, install_body: str) -> Path:
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     shutil.copy2(SCRIPT, scripts / SCRIPT.name)
+    shutil.copy2(SCRIPT.parent / "logging.sh", scripts / "logging.sh")
     (scripts / "install.sh").write_text(install_body)
     entrypoint = tmp_path / ENTRYPOINT_REL
     entrypoint.parent.mkdir(parents=True)

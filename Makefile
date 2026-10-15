@@ -127,7 +127,7 @@ help:
 	@printf "  %-23s %s\n" "lint-prose" "block AI-slop vocabulary in docs"
 	@printf "  %-23s %s\n" "lint-decoration" "block decorative // ─ separator comments"
 	@printf "  %-23s %s\n" "lint-reachability" "fail on crate source files no module declares"
-	@printf "  %-23s %s\n" "lint-shell" "shellcheck scripts/*.sh and githooks/pre-commit"
+	@printf "  %-23s %s\n" "lint-shell" "shellcheck + shfmt scripts/*.sh and githooks/pre-commit"
 	@printf "  %-23s %s\n" "lint-hygiene" "lint-prose + lint-decoration + lint-reachability + lint-shell"
 	@printf "  %-23s %s\n" "check" "cargo check all targets"
 	@printf "  %-23s %s\n" "test | test-unit | test-integration" "run tests"
@@ -163,7 +163,7 @@ help:
 	@printf "  %-23s %s\n" "deny" "run cargo deny (licenses, bans, sources)"
 	@printf "  %-23s %s\n" "deps-update" "update dependencies"
 	@printf "  %-23s %s\n" "check-deps" "check optional tool availability"
-	@printf "  %-23s %s\n" "" "also: npx, rg, jq, curl, tmux, timeout, python3/pytest, shellcheck, bash 4+"
+	@printf "  %-23s %s\n" "" "also: npx, rg, jq, curl, tmux, timeout, python3/pytest, shellcheck, shfmt, bash 4+"
 	@printf "\nDocs\n"
 	@printf "  %-23s %s\n" "docs" "build rustdoc and open"
 	@printf "  %-23s %s\n" "book | book-serve" "build or serve mdBook"
@@ -238,11 +238,9 @@ lint-reachability:
 	./scripts/lint-module-reachability.sh
 
 # Aggregate AI hygiene lints (banned words + decorative comments).
-# Shell scripts: shellcheck at warning level. shfmt is not gated yet; most
-# scripts would need a reformat first.
+# Shell scripts: shellcheck at warning level plus shfmt formatting.
 lint-shell:
-	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck not installed (brew/apt install shellcheck)"; exit 1; }
-	shellcheck -S warning scripts/*.sh githooks/pre-commit
+	./scripts/shellcheck.sh
 
 lint-hygiene: lint-prose lint-decoration lint-reachability lint-shell
 
@@ -671,7 +669,7 @@ check-deps:
 	@command -v $(MDBOOK) >/dev/null 2>&1 && echo "  mdbook: ok" || echo "  mdbook: missing"
 	@command -v cargo-tarpaulin >/dev/null 2>&1 && echo "  cargo-tarpaulin: ok" || echo "  cargo-tarpaulin: missing"
 	@echo "Checking tools precommit and dogfood call..."
-	@for tool in npx rg jq curl tmux python3 pytest shellcheck; do \
+	@for tool in npx rg jq curl tmux python3 pytest shellcheck shfmt; do \
 	  command -v $$tool >/dev/null 2>&1 && echo "  $$tool: ok" || echo "  $$tool: missing"; \
 	done
 	@{ command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; } && echo "  timeout: ok" || echo "  timeout: missing (brew install coreutils)"

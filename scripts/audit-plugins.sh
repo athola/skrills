@@ -6,137 +6,194 @@
 #      contains the upstream sanctum/abstract scripts, use those; they are
 #      the source of truth and may include Phase 2-4 features.
 #   2. Otherwise fall back to the in-tree ports under scripts/.
-#
-# Usage:
-#   scripts/audit-plugins.sh [--fix] [--validate] [--modernize] [--all]
-#                            [<plugin-name>]
-#
-# Flags:
-#   --fix         Pass --fix through to the registration auditor.
-#   --validate    Run the structural validator (validate_plugin.py).
-#   --modernize   Run the hook modernization auditor.
-#   --all         Run registration audit + validate + modernize.
-#   --skip-research  Reserved for parity with sanctum CLI; ignored locally.
-#
-# Environment:
-#   NIGHT_MARKET_ROOT   Override the upstream checkout path.
-
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PLUGINS_ROOT="${REPO_ROOT}/plugins"
+MYDIR="${0%"${0##*/}"}"
+readonly MYDIR="${MYDIR:-./}"
+# shellcheck source=scripts/logging.sh
+. "${MYDIR%/}/logging.sh"
 
-# Default flags.
-DO_REGISTRATION=1
-DO_VALIDATE=0
-DO_MODERNIZE=0
-FIX_FLAG=""
-PLUGIN_NAME=""
+REPO_ROOT="$(cd "${MYDIR%/}/.." && pwd)"
+readonly REPO_ROOT
+readonly PLUGINS_ROOT="${REPO_ROOT}/plugins"
+readonly REQUIRED_DEPENDENCIES="python3"
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --fix)        FIX_FLAG="--fix" ;;
-    --validate)   DO_VALIDATE=1 ;;
-    --modernize)  DO_MODERNIZE=1 ;;
-    --all)        DO_VALIDATE=1; DO_MODERNIZE=1 ;;
-    --skip-research) ;;  # parity flag; no-op here
-    -h|--help)
-      sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
-      exit 0
-      ;;
-    -*)
-      echo "Unknown flag: $1" >&2
-      exit 64
-      ;;
+readonly LOCAL_REGISTRATION="${REPO_ROOT}/scripts/update_plugin_registrations.py"
+readonly LOCAL_VALIDATE="${REPO_ROOT}/scripts/validate_plugin.py"
+readonly LOCAL_MODERNIZE="${REPO_ROOT}/scripts/check_hook_modernization.py"
+
+usage() {
+  log "Usage: ${0##*/} [--fix] [--validate] [--modernize] [--all] [-x] [<plugin-name>]"
+  printf '  %-16s %s\n' \
+    "--fix" "Pass --fix through to the registration auditor." \
+    "--validate" "Run the structural validator (validate_plugin.py)." \
+    "--modernize" "Run the hook modernization auditor." \
+    "--all" "Run registration audit + validate + modernize." \
+    "--skip-research" "Reserved for parity with sanctum CLI; ignored locally." \
+    "-x" "Trace execution (set -x)." \
+    "-h, --help" "Show this help and exit."
+  printf '\n  %s\n' "Environment:"
+  printf '  %-16s %s\n' "NIGHT_MARKET_ROOT" "Override the upstream checkout path."
+  exit 0
+}
+
+depcheck() {
+  local utility missing=""
+  for utility in ${REQUIRED_DEPENDENCIES}; do
+    command -v "${utility}" >/dev/null 2>&1 || missing="${missing:+"${missing} "}${utility}"
+  done
+  case "${missing}" in
+    "") return 0 ;;
+  esac
+  for utility in ${missing}; do
+    log 5 "${utility} is required but was not found on PATH."
+  done
+  exit 1
+}
+
+# Print NIGHT_MARKET_ROOT, or the first upstream checkout found under HOME.
+resolve_night_market_root() {
+  local candidate
+  case "${NIGHT_MARKET_ROOT:-}" in
+    "") ;;
     *)
-      PLUGIN_NAME="$1"
+      printf '%s\n' "${NIGHT_MARKET_ROOT}"
+      return
       ;;
   esac
-  shift
-done
-
-# Resolve upstream checkout if available.
-NIGHT_MARKET_ROOT="${NIGHT_MARKET_ROOT:-}"
-if [[ -z "${NIGHT_MARKET_ROOT}" ]]; then
   for candidate in "${HOME}/claude-night-market" "${HOME}/work/claude-night-market"; do
-    if [[ -d "${candidate}" ]]; then
-      NIGHT_MARKET_ROOT="${candidate}"
-      break
+    if [ -d "${candidate}" ]; then
+      printf '%s\n' "${candidate}"
+      return
     fi
   done
-fi
-
-UPSTREAM_REGISTRATION="${NIGHT_MARKET_ROOT}/plugins/sanctum/scripts/update_plugin_registrations.py"
-UPSTREAM_VALIDATE="${NIGHT_MARKET_ROOT}/plugins/abstract/scripts/validate_plugin.py"
-UPSTREAM_MODERNIZE="${NIGHT_MARKET_ROOT}/scripts/check_hook_modernization.py"
-
-LOCAL_REGISTRATION="${REPO_ROOT}/scripts/update_plugin_registrations.py"
-LOCAL_VALIDATE="${REPO_ROOT}/scripts/validate_plugin.py"
-LOCAL_MODERNIZE="${REPO_ROOT}/scripts/check_hook_modernization.py"
+}
 
 pick_script() {
-  local upstream="$1"
-  local local_fallback="$2"
-  if [[ -n "${NIGHT_MARKET_ROOT}" && -f "${upstream}" ]]; then
-    echo "${upstream}"
-  else
-    echo "${local_fallback}"
-  fi
+  local upstream="${1}"
+  local local_fallback="${2}"
+  case "${night_market_root}" in
+    "") ;;
+    *)
+      if [ -f "${upstream}" ]; then
+        printf '%s\n' "${upstream}"
+        return
+      fi
+      ;;
+  esac
+  printf '%s\n' "${local_fallback}"
 }
-
-REGISTRATION_SCRIPT="$(pick_script "${UPSTREAM_REGISTRATION}" "${LOCAL_REGISTRATION}")"
-VALIDATE_SCRIPT="$(pick_script "${UPSTREAM_VALIDATE}" "${LOCAL_VALIDATE}")"
-MODERNIZE_SCRIPT="$(pick_script "${UPSTREAM_MODERNIZE}" "${LOCAL_MODERNIZE}")"
 
 # Name every pick: an upstream script is external code, and with --fix the
-# registration auditor rewrites files in this repo.
+# registration auditor rewrites files in this repo. stdout, not log: the
+# announcement is part of the audit report callers read.
 announce_pick() {
-  local label="$1" picked="$2" upstream="$3"
-  if [[ "${picked}" == "${upstream}" ]]; then
-    echo "[shim] using upstream ${label} script: ${picked}"
-  else
-    echo "[shim] using ported ${label} script: ${picked}"
-  fi
+  local label="${1}" picked="${2}" upstream="${3}"
+  case "${picked}" in
+    "${upstream}") printf '%s\n' "[shim] using upstream ${label} script: ${picked}" ;;
+    *) printf '%s\n' "[shim] using ported ${label} script: ${picked}" ;;
+  esac
 }
 
-announce_pick registration "${REGISTRATION_SCRIPT}" "${UPSTREAM_REGISTRATION}"
-(( DO_VALIDATE )) && announce_pick validate "${VALIDATE_SCRIPT}" "${UPSTREAM_VALIDATE}"
-(( DO_MODERNIZE )) && announce_pick modernize "${MODERNIZE_SCRIPT}" "${UPSTREAM_MODERNIZE}"
+main() {
+  local do_registration=1 do_validate=0 do_modernize=0 fix_flag="" plugin_name=""
+  local rc=0 night_market_root plugin_dir
+  local registration_script validate_script modernize_script
+  local upstream_registration upstream_validate upstream_modernize
 
-# 1) Registration audit.
-if (( DO_REGISTRATION )); then
-  echo
-  echo "=== Phase 1: registration audit ==="
-  pushd "${REPO_ROOT}" >/dev/null
-  if [[ -n "${PLUGIN_NAME}" ]]; then
-    python3 "${REGISTRATION_SCRIPT}" "${PLUGIN_NAME}" \
-      --plugins-root "${PLUGINS_ROOT}" ${FIX_FLAG:+${FIX_FLAG}} || rc=$?
-  else
-    python3 "${REGISTRATION_SCRIPT}" \
-      --plugins-root "${PLUGINS_ROOT}" ${FIX_FLAG:+${FIX_FLAG}} || rc=$?
-  fi
-  popd >/dev/null
-fi
+  case "${1:-}" in
+    *[uU][sS][aA][gG][eE] | *[hH][eE][lL][pP]) usage ;;
+  esac
+  while [ "${#}" -gt 0 ]; do
+    case "${1}" in
+      --fix) fix_flag="--fix" ;;
+      --validate) do_validate=1 ;;
+      --modernize) do_modernize=1 ;;
+      --all)
+        do_validate=1
+        do_modernize=1
+        ;;
+      --skip-research) ;; # parity flag; no-op here
+      -h | --help) usage ;;
+      -x) set -x ;;
+      -*)
+        log 3 "Unknown flag: ${1}"
+        exit 64
+        ;;
+      *)
+        plugin_name="${1}"
+        ;;
+    esac
+    shift
+  done
 
-# 2) Structural validation.
-if (( DO_VALIDATE )); then
-  echo
-  echo "=== Phase 1b: structural validation ==="
-  if [[ -n "${PLUGIN_NAME}" ]]; then
-    python3 "${VALIDATE_SCRIPT}" "${PLUGINS_ROOT}/${PLUGIN_NAME}" || rc=$?
-  else
-    for plugin_dir in "${PLUGINS_ROOT}"/*/; do
-      [[ -d "${plugin_dir}" ]] || continue
-      python3 "${VALIDATE_SCRIPT}" "${plugin_dir%/}" || rc=$?
-    done
-  fi
-fi
+  depcheck
 
-# 3) Hook modernization.
-if (( DO_MODERNIZE )); then
-  echo
-  echo "=== Phase 1c: hook modernization audit ==="
-  python3 "${MODERNIZE_SCRIPT}" --root "${REPO_ROOT}" || rc=$?
-fi
+  night_market_root="$(resolve_night_market_root)"
+  upstream_registration="${night_market_root}/plugins/sanctum/scripts/update_plugin_registrations.py"
+  upstream_validate="${night_market_root}/plugins/abstract/scripts/validate_plugin.py"
+  upstream_modernize="${night_market_root}/scripts/check_hook_modernization.py"
 
-exit "${rc:-0}"
+  registration_script="$(pick_script "${upstream_registration}" "${LOCAL_REGISTRATION}")"
+  validate_script="$(pick_script "${upstream_validate}" "${LOCAL_VALIDATE}")"
+  modernize_script="$(pick_script "${upstream_modernize}" "${LOCAL_MODERNIZE}")"
+
+  announce_pick registration "${registration_script}" "${upstream_registration}"
+  case "${do_validate}" in
+    1) announce_pick validate "${validate_script}" "${upstream_validate}" ;;
+  esac
+  case "${do_modernize}" in
+    1) announce_pick modernize "${modernize_script}" "${upstream_modernize}" ;;
+  esac
+
+  # 1) Registration audit.
+  case "${do_registration}" in
+    1)
+      log 6 ""
+      log 6 "=== Phase 1: registration audit ==="
+      (
+        cd "${REPO_ROOT}"
+        case "${plugin_name}" in
+          "")
+            python3 "${registration_script}" \
+              --plugins-root "${PLUGINS_ROOT}" ${fix_flag:+${fix_flag}}
+            ;;
+          *)
+            python3 "${registration_script}" "${plugin_name}" \
+              --plugins-root "${PLUGINS_ROOT}" ${fix_flag:+${fix_flag}}
+            ;;
+        esac
+      ) || rc=${?}
+      ;;
+  esac
+
+  # 2) Structural validation.
+  case "${do_validate}" in
+    1)
+      log 6 ""
+      log 6 "=== Phase 1b: structural validation ==="
+      case "${plugin_name}" in
+        "")
+          for plugin_dir in "${PLUGINS_ROOT}"/*/; do
+            [ -d "${plugin_dir}" ] || continue
+            python3 "${validate_script}" "${plugin_dir%/}" || rc=${?}
+          done
+          ;;
+        *) python3 "${validate_script}" "${PLUGINS_ROOT}/${plugin_name}" || rc=${?} ;;
+      esac
+      ;;
+  esac
+
+  # 3) Hook modernization.
+  case "${do_modernize}" in
+    1)
+      log 6 ""
+      log 6 "=== Phase 1c: hook modernization audit ==="
+      python3 "${modernize_script}" --root "${REPO_ROOT}" || rc=${?}
+      ;;
+  esac
+
+  exit "${rc}"
+}
+
+main "$@"

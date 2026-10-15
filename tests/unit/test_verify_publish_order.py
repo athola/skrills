@@ -59,6 +59,7 @@ def test_glob_members_and_unpublished_forms_are_understood(tmp_path: Path, unpub
     scripts.mkdir()
     (scripts / "publish_crates.sh").write_text("publish_one alpha\n")
     shutil.copy2(SCRIPT, scripts / SCRIPT.name)
+    shutil.copy2(SCRIPT.parent / "logging.sh", scripts / "logging.sh")
     completed = subprocess.run(
         [_bash4(), str(scripts / SCRIPT.name)], cwd=tmp_path, capture_output=True, text=True
     )

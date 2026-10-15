@@ -45,6 +45,7 @@ jobs:
             # suite covers the scripts under scripts/, so all three trigger it.
             scripts:
               - 'scripts/**'
+              - 'githooks/**'
               - 'tests/unit/**'
               - 'Makefile'
               - 'crates/**'
@@ -97,6 +98,15 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y ripgrep jq shellcheck
           python -m pip install --upgrade pytest
+      # lint-shell diffs every script against shfmt. Pinned to the release
+      # developers run, because shfmt minors format differently; the digest is
+      # the one GitHub publishes for this release asset.
+      - name: Install shfmt 3.13.1
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/shfmt" \
+            https://github.com/mvdan/sh/releases/download/v3.13.1/shfmt_v3.13.1_linux_amd64
+          echo "fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1  $RUNNER_TEMP/shfmt" | sha256sum -c -
+          sudo install -m 0755 "$RUNNER_TEMP/shfmt" /usr/local/bin/shfmt
       - name: Hygiene lints
         run: make lint-hygiene
       # The pre-commit hook runs markdownlint; without this step a PR from a

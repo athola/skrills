@@ -28,7 +28,7 @@ def test_publishes_only_versions_crates_io_lacks(tmp_path: Path) -> None:
     bin_dir.mkdir()
     log = tmp_path / "calls.log"
     crates = [line.split()[1] for line in SCRIPT.read_text().splitlines()
-              if line.startswith("publish_one ")]
+              if line.lstrip().startswith("publish_one ")]
     metadata = {"packages": [{"name": c, "version": "9.9.9"} for c in crates]}
     (tmp_path / "metadata.json").write_text(json.dumps(metadata))
     _shim(bin_dir, "cargo", f"""case "$1" in

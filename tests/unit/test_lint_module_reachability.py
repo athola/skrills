@@ -27,6 +27,7 @@ def _run(tree: Path, cwd: Path | None = None) -> subprocess.CompletedProcess[str
     scripts.mkdir(exist_ok=True)
     copied = scripts / SCRIPT.name
     shutil.copy2(SCRIPT, copied)
+    shutil.copy2(SCRIPT.parent / "logging.sh", scripts / "logging.sh")
     return subprocess.run(
         ["bash", str(copied)],
         cwd=cwd or tree,
