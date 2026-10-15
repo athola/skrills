@@ -56,6 +56,17 @@ pub(super) fn usage_counts(
     counts
 }
 
+/// What the counts cover, for text output. The cache keeps all-time counts,
+/// so `period_days` only selects which skills appear (see [`usage_counts`]);
+/// "last N days" would claim counts the cache does not have.
+pub(super) fn period_label(period_days: u32) -> String {
+    if period_days == 0 {
+        "all-time counts".to_string()
+    } else {
+        format!("all-time counts, skills last used within {period_days} days")
+    }
+}
+
 /// Whether the analytics key `key` (a skill path or name) names `name`:
 /// equal, or naming the same skill directory (`.../review/SKILL.md`).
 fn key_names_skill(key: &str, name: &str) -> bool {
@@ -115,7 +126,7 @@ pub(crate) fn handle_skill_profile_command(
             println!("{}", serde_json::to_string_pretty(&stats)?);
         } else {
             println!("Profile for '{}':", target_name);
-            println!("  Invocations ({}d): {}", period, count);
+            println!("  Invocations ({}): {}", period_label(period), count);
             if count == 0 {
                 println!("  No usage data found for this skill.");
             }
@@ -128,7 +139,7 @@ pub(crate) fn handle_skill_profile_command(
     if format.is_json() {
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
-        println!("Skill Usage Profile (last {} days)", period);
+        println!("Skill Usage Profile ({})", period_label(period));
         println!("─────────────────────────────────────");
         println!("Total invocations: {}", result.total_invocations);
         println!("Unique skills used: {}", result.unique_skills_used);
@@ -183,6 +194,15 @@ mod tests {
             a.recency.insert(skill.to_string(), *last_used);
         }
         a
+    }
+
+    #[test]
+    fn period_label_says_counts_are_all_time() {
+        assert_eq!(
+            period_label(30),
+            "all-time counts, skills last used within 30 days"
+        );
+        assert_eq!(period_label(0), "all-time counts");
     }
 
     /// SB-33: the counts come from a cache written by `save_analytics`, the

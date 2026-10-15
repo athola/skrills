@@ -144,6 +144,30 @@ mod tests {
     }
 
     #[test]
+    fn research_channel_serializes_every_variant_to_its_wire_name() {
+        let cases = [
+            (ResearchChannel::GitHub, "github"),
+            (ResearchChannel::HackerNews, "hacker-news"),
+            (ResearchChannel::Lobsters, "lobsters"),
+            (ResearchChannel::Paper, "paper"),
+            (ResearchChannel::Triz, "triz"),
+        ];
+        for (channel, name) in cases {
+            let json = serde_json::to_string(&channel).expect("serialize");
+            assert_eq!(json, format!("\"{name}\""));
+            let back: ResearchChannel = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, channel);
+        }
+    }
+
+    /// `git-hub` is what earlier versions wrote; a reader still accepts it.
+    #[test]
+    fn research_channel_reads_the_old_git_hub_spelling() {
+        let channel: ResearchChannel = serde_json::from_str("\"git-hub\"").expect("deserialize");
+        assert_eq!(channel, ResearchChannel::GitHub);
+    }
+
+    #[test]
     fn cadence_label_uses_active_edit_when_recent() {
         let mut snap = fixture();
         snap.next_tick_ms = 2_000;

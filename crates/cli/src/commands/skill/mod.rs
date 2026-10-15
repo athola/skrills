@@ -51,6 +51,45 @@ pub(super) fn skill_dir_name(meta: &SkillMeta) -> String {
         .unwrap_or_else(|| meta.name.clone())
 }
 
+/// Replaces the skill file at `path` with `content` through a synced sibling
+/// temp file and a rename, so a crash, SIGKILL or full disk mid-write leaves
+/// the old file whole rather than truncated. An existing file keeps its
+/// permission bits.
+pub(super) fn write_skill_file(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => std::path::Path::new("."),
+    };
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = parent.join(format!(".{file_name}.skrills-tmp-{}", std::process::id()));
+    let existing_perms = std::fs::metadata(path).ok().map(|m| m.permissions());
+
+    let written = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        file.write_all(content.as_bytes())?;
+        if let Some(perms) = existing_perms {
+            file.set_permissions(perms)?;
+        }
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&tmp, path)
+    })();
+    if let Err(e) = written {
+        // The temp file is ours; the write error is the one to report.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
 /// Finds the one discovered skill that `query` names.
 ///
 /// A skill matches when `query` equals, ignoring ASCII case, its discovery
@@ -311,6 +350,30 @@ mod tests {
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"deprecated\":true"));
+    }
+
+    /// A hard link still holding the old bytes shows the file was replaced
+    /// by a rename, not truncated and rewritten in place, where a crash
+    /// mid-write leaves the only copy cut short.
+    #[cfg(unix)]
+    #[test]
+    fn write_skill_file_replaces_the_file_instead_of_rewriting_it_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("SKILL.md");
+        std::fs::write(&path, "old").unwrap();
+        let link = dir.path().join("link");
+        std::fs::hard_link(&path, &link).unwrap();
+
+        write_skill_file(&path, "new").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(&link).unwrap(), "old");
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|n| n != "SKILL.md" && n != "link")
+            .collect();
+        assert!(leftovers.is_empty(), "temp file left behind: {leftovers:?}");
     }
 
     fn meta(root: &str, rel: &str, fm_name: Option<&str>) -> SkillMeta {

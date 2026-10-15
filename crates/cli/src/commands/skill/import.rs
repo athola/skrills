@@ -50,6 +50,36 @@ fn resolve_source(source: &str) -> Result<(PathBuf, String)> {
     Ok((path, name))
 }
 
+/// Copies every file under `source_dir` except `SKILL.md` (written
+/// separately) into `target_dir`, keeping relative paths. Hidden entries
+/// (`.git`) and symlinks are skipped: a link could point anywhere on the
+/// source machine.
+fn copy_skill_tree(source_dir: &Path, target_dir: &Path) -> Result<()> {
+    let walker = walkdir::WalkDir::new(source_dir)
+        .min_depth(1)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'));
+    for entry in walker {
+        let entry = entry
+            .with_context(|| format!("Failed to read source tree {}", source_dir.display()))?;
+        let rel = entry
+            .path()
+            .strip_prefix(source_dir)
+            .context("walked entry lies outside the source directory")?;
+        let dest = target_dir.join(rel);
+        let file_type = entry.file_type();
+        if file_type.is_dir() {
+            std::fs::create_dir_all(&dest)
+                .with_context(|| format!("Failed to create {}", dest.display()))?;
+        } else if file_type.is_file() && rel != Path::new("SKILL.md") {
+            std::fs::copy(entry.path(), &dest)
+                .with_context(|| format!("Failed to copy {}", entry.path().display()))?;
+        }
+    }
+    Ok(())
+}
+
 /// Handle the skill-import command.
 ///
 /// The skill is written as `<target>/<name>/SKILL.md`, the only layout skill
@@ -112,7 +142,12 @@ pub(crate) fn handle_skill_import_command(
     let skill_dir = target_path.parent().expect("target path has a parent");
     std::fs::create_dir_all(skill_dir)
         .with_context(|| format!("Failed to create {}", skill_dir.display()))?;
-    std::fs::write(&target_path, &skill_content)
+    // A directory source brings its scripts, references and assets along;
+    // copying SKILL.md alone left its relative links dangling.
+    if let Some(source_dir) = source_path.parent().filter(|_| Path::new(&source).is_dir()) {
+        copy_skill_tree(source_dir, skill_dir)?;
+    }
+    super::write_skill_file(&target_path, &skill_content)
         .with_context(|| format!("Failed to write skill to {}", target_path.display()))?;
 
     let result = ImportResult {
@@ -284,6 +319,54 @@ mod tests {
         assert!(
             err.contains("does not exist"),
             "error should mention missing file"
+        );
+    }
+
+    #[test]
+    fn import_from_a_directory_copies_the_whole_skill_tree() {
+        let _g = env_guard();
+        let fixture = TestFixture::new().expect("fixture");
+        let _home = fixture.home_guard();
+
+        let source_dir = tempdir().expect("tempdir");
+        let skill = source_dir.path().join("tree-skill");
+        std::fs::create_dir_all(skill.join("scripts")).unwrap();
+        std::fs::create_dir_all(skill.join("references")).unwrap();
+        std::fs::create_dir_all(skill.join(".git")).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: tree-skill\ndescription: T\n---\nSee references/guide.md\n",
+        )
+        .unwrap();
+        std::fs::write(skill.join("scripts/run.sh"), "echo hi\n").unwrap();
+        std::fs::write(skill.join("references/guide.md"), "guide\n").unwrap();
+        std::fs::write(skill.join(".git/HEAD"), "ref\n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/etc/hosts", skill.join("hosts-link")).unwrap();
+
+        handle_skill_import_command(
+            skill.to_string_lossy().to_string(),
+            SyncSource::Claude,
+            false,
+            false,
+            OutputFormat::Json,
+        )
+        .expect("directory import should succeed");
+
+        let target = fixture.claude_skills.join("tree-skill");
+        assert!(target.join("SKILL.md").is_file());
+        assert_eq!(
+            std::fs::read_to_string(target.join("scripts/run.sh")).unwrap(),
+            "echo hi\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("references/guide.md")).unwrap(),
+            "guide\n"
+        );
+        assert!(!target.join(".git").exists(), "hidden entries are skipped");
+        assert!(
+            std::fs::symlink_metadata(target.join("hosts-link")).is_err(),
+            "symlinks are skipped"
         );
     }
 

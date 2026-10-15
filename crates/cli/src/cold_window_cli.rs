@@ -25,9 +25,14 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Args;
-use skrills_analyze::cold_window::cadence::read_loadavg_1min;
+use skrills_analyze::cold_window::alert::LayeredAlertPolicy;
+use skrills_analyze::cold_window::cadence::{read_loadavg_1min, LoadAwareCadence};
+use skrills_analyze::cold_window::diff::FieldwiseDiff;
 use skrills_analyze::cold_window::engine::TickInput;
-use skrills_analyze::cold_window::{ColdWindowEngine, PluginHealthCollector, SkillCollector};
+use skrills_analyze::cold_window::{
+    ColdWindowEngine, DefaultHintScorer, PluginHealthCollector, SkillCollector,
+};
+use skrills_intelligence::cold_window_hints::MultiSignalScorer;
 use skrills_snapshot::{
     Hint, HintCategory, KillSwitch, LoadSample, ResearchChannel, ResearchFinding, TokenEntry,
     TokenLedger,
@@ -94,7 +99,7 @@ pub struct ColdWindowArgs {
 
     /// Additional skill directories the producer walks each tick to
     /// build the snapshot's per-skill token attribution. Combined with
-    /// any directories supplied via `SKRILLS_EXTRA_SKILL_DIRS`; the
+    /// any directories supplied via `SKRILLS_SKILL_DIR`; the
     /// default skill roots are not walked. Token totals are estimated from file size
     /// (`bytes / 4`); a real BPE tokenizer is a follow-up.
     #[arg(long = "skill-dir", value_name = "DIR")]
@@ -165,8 +170,11 @@ pub async fn run(args: ColdWindowArgs) -> Result<()> {
     // adapters consult it before mutating I/O.
     let kill_switch = KillSwitch::new();
 
+    // The floor applies to a fixed rate too: `--no-adaptive
+    // --tick-rate-ms 0` otherwise spun with no delay at all.
+    let base_tick_ms = args.tick_rate_ms.unwrap_or(2_000).max(MIN_TICK_MS);
     let engine = Arc::new(
-        ColdWindowEngine::with_defaults(args.alert_budget).with_kill_switch(kill_switch.clone()),
+        build_engine(args.alert_budget, base_tick_ms).with_kill_switch(kill_switch.clone()),
     );
     let bus = engine.bus_sender();
 
@@ -211,9 +219,7 @@ pub async fn run(args: ColdWindowArgs) -> Result<()> {
         .unwrap_or_else(|| PathBuf::from("plugins"));
     let producer_handle = tokio::spawn(producer_loop(
         Arc::clone(&engine),
-        // The floor applies to a fixed rate too: `--no-adaptive
-        // --tick-rate-ms 0` otherwise spun with no delay at all.
-        args.tick_rate_ms.unwrap_or(2_000).max(MIN_TICK_MS),
+        base_tick_ms,
         args.no_adaptive,
         args.demo,
         plugins_dir,
@@ -463,6 +469,18 @@ async fn producer_loop(
         }
     }
     Ok(())
+}
+
+/// The default engine, with the adaptive cadence based on `base_tick_ms`
+/// instead of the cadence's own 2 s default.
+fn build_engine(alert_budget: u64, base_tick_ms: u64) -> ColdWindowEngine {
+    ColdWindowEngine::with_strategies(
+        Box::new(LoadAwareCadence::new().with_base(Duration::from_millis(base_tick_ms))),
+        Box::new(LayeredAlertPolicy::for_budget(alert_budget)),
+        Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+        Box::new(FieldwiseDiff::new()),
+    )
+    .with_budget_ceiling(alert_budget)
 }
 
 /// The load sample for a tick: zeroed under `--no-adaptive`.
@@ -863,6 +881,18 @@ mod tests {
         let i = build_demo_input(5, true).expect("clock available in test env");
         assert_eq!(i.load_sample.loadavg_1min, 0.0);
         assert!(i.load_sample.last_edit_age_ms.is_none());
+    }
+
+    /// `--tick-rate-ms` sets the adaptive cadence base, so every tick after
+    /// the first keeps it rather than falling back to the 2 s default.
+    #[test]
+    fn tick_rate_sets_the_adaptive_cadence_base_for_later_ticks() {
+        let engine = build_engine(u64::MAX, 1_000);
+        let input = build_demo_input(1, true).expect("clock available in test env");
+
+        let snap = engine.tick(input);
+
+        assert_eq!(snap.next_tick_ms, 1_000);
     }
 
     #[test]

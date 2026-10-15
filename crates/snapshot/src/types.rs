@@ -361,7 +361,9 @@ pub struct ScoredHint {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ResearchChannel {
-    /// GitHub code search.
+    /// GitHub code search. Named explicitly: kebab-case splits `GitHub`
+    /// into `git-hub`, which is not what producers or the server send.
+    #[serde(rename = "github")]
     GitHub,
     /// Hacker News discourse.
     HackerNews,

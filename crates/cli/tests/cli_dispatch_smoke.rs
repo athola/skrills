@@ -172,7 +172,7 @@ fn cold_window_help_dispatches() {
 }
 
 /// `--skill-dir` help must describe what the producer walks: the given
-/// directories plus `SKRILLS_EXTRA_SKILL_DIRS`, never the default skill
+/// directories plus `SKRILLS_SKILL_DIR`, never the default skill
 /// roots (`merge_extra_dirs` does not add them).
 #[test]
 fn cold_window_skill_dir_help_matches_what_is_walked() {
@@ -183,9 +183,15 @@ fn cold_window_skill_dir_help_matches_what_is_walked() {
         .expect("spawn skrills cold-window --help");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let flat = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+    // `SKRILLS_SKILL_DIR` is the variable the code reads; the old help named
+    // `SKRILLS_EXTRA_SKILL_DIRS`, which nothing reads.
     assert!(
-        flat.contains("SKRILLS_EXTRA_SKILL_DIRS"),
-        "--skill-dir help should name SKRILLS_EXTRA_SKILL_DIRS:\n{stdout}"
+        flat.contains("SKRILLS_SKILL_DIR"),
+        "--skill-dir help should name SKRILLS_SKILL_DIR:\n{stdout}"
+    );
+    assert!(
+        !flat.contains("SKRILLS_EXTRA_SKILL_DIRS"),
+        "--skill-dir help names SKRILLS_EXTRA_SKILL_DIRS, which nothing reads:\n{stdout}"
     );
     assert!(
         !flat.contains("and the default skill roots"),

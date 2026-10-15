@@ -7,9 +7,17 @@ use std::time::Duration;
 const DEFAULT_CACHE_TTL_MS: u64 = 43_200_000; // 12 hours
 
 /// Returns extra skill directories specified via `SKRILLS_SKILL_DIR` environment variable.
+///
+/// The value is split with the platform's path-list separator (`:`, or `;`
+/// on Windows). Empty entries are dropped: an empty value or a stray
+/// separator would otherwise add the working directory as a skill root.
 pub fn extra_dirs_from_env() -> Vec<PathBuf> {
-    std::env::var("SKRILLS_SKILL_DIR")
-        .map(|s| s.split(':').map(PathBuf::from).collect::<Vec<PathBuf>>())
+    std::env::var_os("SKRILLS_SKILL_DIR")
+        .map(|s| {
+            std::env::split_paths(&s)
+                .filter(|p| !p.as_os_str().is_empty())
+                .collect::<Vec<PathBuf>>()
+        })
         .unwrap_or_default()
 }
 
@@ -122,6 +130,26 @@ mod tests {
     use super::*;
     use skrills_test_utils::{env_guard, set_env_var};
     use tempfile::tempdir;
+
+    #[test]
+    fn extra_dirs_from_env_drops_empty_entries() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let first = temp.path().join("skills_a");
+        let second = temp.path().join("skills_b");
+
+        let _empty = set_env_var("SKRILLS_SKILL_DIR", Some(""));
+        assert!(extra_dirs_from_env().is_empty(), "empty value adds cwd");
+
+        let _colon = set_env_var("SKRILLS_SKILL_DIR", Some(":"));
+        assert!(extra_dirs_from_env().is_empty(), "lone separator adds cwd");
+
+        let _padded = set_env_var(
+            "SKRILLS_SKILL_DIR",
+            Some(&format!(":{}::{}:", first.display(), second.display())),
+        );
+        assert_eq!(extra_dirs_from_env(), vec![first, second]);
+    }
 
     #[test]
     fn extra_dirs_from_env_splits_colon_paths() {

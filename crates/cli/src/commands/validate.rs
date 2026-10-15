@@ -85,7 +85,9 @@ pub(crate) fn run_validation(
 
         let mut result = validate_skill(&meta.path, &content, target);
 
-        if autofix != Autofix::Off && !result.codex_valid && target != VT::Claude {
+        // `has_errors` covers whichever target was checked: `codex_valid` stayed
+        // true under `--target copilot`, so the fix never ran.
+        if autofix != Autofix::Off && result.has_errors() && target != VT::Claude {
             let opts = AutofixOptions {
                 create_backup: matches!(autofix, Autofix::Write { backup: true }),
                 write_changes: matches!(autofix, Autofix::Write { .. }),
@@ -282,5 +284,23 @@ mod tests {
 
         assert_eq!(run.fixed, vec![path.clone()]);
         assert_ne!(std::fs::read_to_string(&path).unwrap(), body);
+    }
+
+    #[test]
+    fn write_autofix_repairs_a_skill_that_fails_copilot_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = "# Bare\nNo frontmatter, but a body long enough to describe.\n";
+        let path = write_skill(dir.path(), "bare", body);
+
+        let run = run_validation(
+            &root(dir.path()),
+            VT::Copilot,
+            Autofix::Write { backup: false },
+        )
+        .unwrap();
+
+        assert_eq!(run.fixed, vec![path.clone()]);
+        assert_ne!(std::fs::read_to_string(&path).unwrap(), body);
+        assert!(!run.failed(), "{:?}", run.failure_lines());
     }
 }

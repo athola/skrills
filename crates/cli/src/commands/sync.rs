@@ -59,12 +59,17 @@ pub(crate) fn handle_mirror_command(
             "Warning: mirroring commands into ~/.codex/prompts will overwrite prompts with the same name unless --skip-existing-commands is used."
         );
     }
-    // Mirror agents into ~/.codex/agents.
-    let agent_report = sync_agents_only_from_claude(
-        &claude_root,
-        &home.join(".codex/agents"),
-        include_marketplace,
-    )?;
+    // Mirror agents into ~/.codex/agents. The agent copier has no preview
+    // mode, so a dry run skips it rather than writing.
+    let agent_report = if dry_run {
+        skrills_server::sync::MirrorReport::default()
+    } else {
+        sync_agents_only_from_claude(
+            &claude_root,
+            &home.join(".codex/agents"),
+            include_marketplace,
+        )?
+    };
     // Skills go to ~/.agents/skills, where Codex loads them.
     let codex_report =
         sync_skills_from_claude_to_codex(&claude_root, &home, include_marketplace, dry_run)?;
@@ -84,8 +89,12 @@ pub(crate) fn handle_mirror_command(
         ..Default::default()
     };
     let sync_report = orch.sync(&params)?;
-    // Refresh AGENTS.md with skills and agents (mirror roots now populated)
-    handle_sync_agents_command(None, vec![])?;
+    // Refresh Codex's global AGENTS.md with skills and agents (mirror roots
+    // now populated). Never the working directory's AGENTS.md: that is
+    // whatever repository `mirror` happens to run from.
+    if !dry_run {
+        handle_sync_agents_command(Some(home.join(".codex/AGENTS.md")), vec![])?;
+    }
 
     println!(
         "mirror complete: agents copied {}, skipped {}; skills (codex) copied {}, skipped {}; commands written {}, skipped {}; prefs {}, mcp {}{}",
@@ -98,7 +107,7 @@ pub(crate) fn handle_mirror_command(
         sync_report.preferences.written,
         sync_report.mcp_servers.written,
         if dry_run {
-            " (dry-run for skills/commands/prefs/mcp)"
+            " (dry run: nothing written; agents and ~/.codex/AGENTS.md not checked)"
         } else {
             ""
         }
@@ -463,6 +472,71 @@ mod tests {
                 .exists(),
             "expected agent copied into ~/.codex/agents"
         );
+        Ok(())
+    }
+
+    /// Seeds one Claude skill and one Claude agent under `home`.
+    fn seed_claude_skill_and_agent(home: &std::path::Path) -> Result<()> {
+        let claude_skill = home.join(".claude/skills/example-skill/SKILL.md");
+        std::fs::create_dir_all(claude_skill.parent().unwrap())?;
+        std::fs::write(
+            &claude_skill,
+            "---\nname: example-skill\ndescription: An example skill.\n---\nBody\n",
+        )?;
+        let claude_agent = home.join(".claude/plugins/cache/tool/agents/helper.md");
+        std::fs::create_dir_all(claude_agent.parent().unwrap())?;
+        std::fs::write(&claude_agent, "agent content")?;
+        Ok(())
+    }
+
+    #[test]
+    fn mirror_dry_run_writes_no_skills_agents_config_or_agents_md() -> Result<()> {
+        let _guard = skrills_test_utils::env_guard();
+        let tmp = tempdir()?;
+        let home = tmp.path().join("home");
+        let cwd = tmp.path().join("repo");
+        std::fs::create_dir_all(&cwd)?;
+        let _home_guard = skrills_test_utils::set_env_var("HOME", Some(home.to_str().unwrap()));
+        let _cwd_guard = CwdGuard::change_to(&cwd)?;
+        seed_claude_skill_and_agent(&home)?;
+
+        handle_mirror_command(true, true, false)?;
+
+        assert!(!home.join(".agents").exists(), "dry run copied skills");
+        assert!(
+            !home.join(".codex/agents").exists(),
+            "dry run copied agents"
+        );
+        assert!(
+            !home.join(".codex/config.toml").exists(),
+            "dry run edited config.toml"
+        );
+        assert!(
+            !home.join(".codex/AGENTS.md").exists(),
+            "dry run wrote AGENTS.md"
+        );
+        assert!(!cwd.join("AGENTS.md").exists(), "dry run wrote ./AGENTS.md");
+        Ok(())
+    }
+
+    #[test]
+    fn mirror_refreshes_codex_home_agents_md_not_the_working_directory() -> Result<()> {
+        let _guard = skrills_test_utils::env_guard();
+        let tmp = tempdir()?;
+        let home = tmp.path().join("home");
+        let cwd = tmp.path().join("repo");
+        std::fs::create_dir_all(&cwd)?;
+        let _home_guard = skrills_test_utils::set_env_var("HOME", Some(home.to_str().unwrap()));
+        let _cwd_guard = CwdGuard::change_to(&cwd)?;
+        seed_claude_skill_and_agent(&home)?;
+
+        handle_mirror_command(false, true, false)?;
+
+        assert!(
+            !cwd.join("AGENTS.md").exists(),
+            "mirror rewrote AGENTS.md in the working directory"
+        );
+        assert!(home.join(".codex/AGENTS.md").exists());
         Ok(())
     }
 }

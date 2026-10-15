@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use crate::cli::OutputFormat;
 
-use super::{escape_yaml_string, find_skill, skill_dir_name, DeprecationResult};
+use super::{escape_yaml_string, find_skill, skill_dir_name, write_skill_file, DeprecationResult};
 
 /// Handle the skill-deprecate command.
 pub(crate) fn handle_skill_deprecate_command(
@@ -45,7 +45,7 @@ pub(crate) fn handle_skill_deprecate_command(
         return Ok(());
     };
 
-    std::fs::write(&skill_path, &new_content)
+    write_skill_file(&skill_path, &new_content)
         .with_context(|| format!("Failed to write to skill file: {}", skill_path.display()))?;
 
     let result = DeprecationResult {

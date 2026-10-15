@@ -282,7 +282,7 @@ pub enum Commands {
         #[arg(long)]
         min_tokens: Option<usize>,
         /// Include optimization suggestions.
-        #[arg(long, default_value_t = true)]
+        #[arg(long, default_value_t = true, num_args = 0..=1, default_missing_value = "true", value_parser = clap::builder::BoolishValueParser::new(), action = ArgAction::Set)]
         suggestions: bool,
     },
     /// Shows aggregate statistics about discovered skills.
@@ -312,7 +312,7 @@ pub enum Commands {
         #[arg(long, default_value = "10")]
         limit: usize,
         /// Include quality scores in recommendations.
-        #[arg(long, default_value_t = true)]
+        #[arg(long, default_value_t = true, num_args = 0..=1, default_missing_value = "true", value_parser = clap::builder::BoolishValueParser::new(), action = ArgAction::Set)]
         include_quality: bool,
     },
     /// Resolve dependencies or dependents for a skill URI.
@@ -443,7 +443,7 @@ pub enum Commands {
         #[arg(long, short = 'l', default_value = "10")]
         limit: usize,
         /// Also search descriptions, not just names.
-        #[arg(long, default_value = "true")]
+        #[arg(long, default_value_t = true, num_args = 0..=1, default_missing_value = "true", value_parser = clap::builder::BoolishValueParser::new(), action = ArgAction::Set)]
         include_description: bool,
         /// Skills directory to search (default: all discovered skills).
         #[arg(long = "skill-dir", value_name = "DIR")]
@@ -1628,6 +1628,71 @@ mod tests {
             }
             _ => unreachable!("expected Serve command"),
         }
+    }
+
+    #[test]
+    fn default_true_flags_can_be_turned_off() {
+        let cli = Cli::try_parse_from(["skrills", "analyze", "--suggestions", "false"])
+            .expect("analyze --suggestions false should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Analyze {
+                suggestions: false,
+                ..
+            })
+        ));
+
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "recommend",
+            "skill://x",
+            "--include-quality",
+            "false",
+        ])
+        .expect("recommend --include-quality false should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Recommend {
+                include_quality: false,
+                ..
+            })
+        ));
+
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "search-skills",
+            "q",
+            "--include-description",
+            "false",
+        ])
+        .expect("search-skills --include-description false should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::SearchSkills {
+                include_description: false,
+                ..
+            })
+        ));
+
+        // The documented bare form still turns it on.
+        let cli = Cli::try_parse_from(["skrills", "analyze", "--suggestions"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Analyze {
+                suggestions: true,
+                ..
+            })
+        ));
+
+        // The defaults stay on.
+        let cli = Cli::try_parse_from(["skrills", "analyze"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Analyze {
+                suggestions: true,
+                ..
+            })
+        ));
     }
 
     #[test]

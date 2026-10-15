@@ -45,9 +45,12 @@ pub(crate) fn handle_pre_commit_validate_command(
     Ok(())
 }
 
-/// Whether a path names a file the hook validates.
+/// Whether a path names a file the hook validates: a `SKILL.md`, the file
+/// discovery treats as a skill, or a `.skill` file. Other markdown (README,
+/// CHANGELOG, a skill's references) is not a skill and has no frontmatter.
 fn is_hook_skill_file(path: &str) -> bool {
-    path.ends_with(".md") || path.ends_with(".skill")
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name == "SKILL.md" || name.ends_with(".skill")
 }
 
 /// The staged skill files in the repository that contains `dir`, with the
@@ -171,9 +174,13 @@ mod tests {
     }
 
     #[test]
-    fn hook_skill_file_filter_keeps_md_and_skill() {
-        assert!(is_hook_skill_file("skills/my-skill.md"));
+    fn hook_skill_file_filter_keeps_skill_md_and_skill_but_skips_other_markdown() {
+        assert!(is_hook_skill_file("skills/my-skill/SKILL.md"));
+        assert!(is_hook_skill_file("SKILL.md"));
         assert!(is_hook_skill_file("tools/helper.skill"));
+        assert!(!is_hook_skill_file("README.md"));
+        assert!(!is_hook_skill_file("docs/CHANGELOG.md"));
+        assert!(!is_hook_skill_file("skills/my-skill/references/guide.md"));
         assert!(!is_hook_skill_file("src/main.rs"));
         assert!(!is_hook_skill_file("README.txt"));
     }

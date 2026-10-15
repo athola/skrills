@@ -360,6 +360,31 @@ fn is_pem_private_key(data: &[u8]) -> bool {
     text.starts_with("-----BEGIN ") && text.contains("PRIVATE KEY-----")
 }
 
+/// Checks that `key_pem` is the private key for the certificate in
+/// `cert_pem`, by comparing the certificate's public key with the one the
+/// key derives. A PEM header alone said nothing about either.
+#[cfg(feature = "http-transport")]
+fn check_key_matches_cert(cert_pem: &[u8], key_pem: &[u8]) -> Result<()> {
+    use rcgen::PublicKeyData;
+    use x509_parser::prelude::*;
+
+    let (_, pem) = x509_parser::pem::parse_x509_pem(cert_pem)
+        .map_err(|e| anyhow::anyhow!("Failed to parse certificate PEM: {e}"))?;
+    let (_, cert) = X509Certificate::from_der(&pem.contents)
+        .map_err(|e| anyhow::anyhow!("Failed to parse X.509 certificate: {e}"))?;
+    let key_text = std::str::from_utf8(key_pem).context("Key file is not UTF-8 PEM")?;
+    let key = rcgen::KeyPair::from_pem(key_text).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to parse the private key to check it against the certificate: {e} \
+             (a PKCS#1 RSA key can be converted with `openssl pkcs8 -topk8 -nocrypt`)"
+        )
+    })?;
+    if cert.public_key().subject_public_key.data.as_ref() != key.der_bytes() {
+        bail!("The private key does not match the certificate's public key");
+    }
+    Ok(())
+}
+
 /// Handle `skrills cert install <path>` command.
 ///
 /// The certificate and the key are both checked before anything is written,
@@ -407,6 +432,23 @@ pub fn handle_cert_install_command(
         }
         None => None,
     };
+
+    // A certificate is useless with the wrong key: check the given key, or,
+    // without `--key`, the key already installed that it would be paired with.
+    #[cfg(feature = "http-transport")]
+    match key_data.as_deref() {
+        Some(key) => check_key_matches_cert(&cert_data, key)?,
+        None if key_dest.exists() => {
+            let installed = read_limited(&key_dest)?;
+            check_key_matches_cert(&cert_data, &installed).with_context(|| {
+                format!(
+                    "The certificate does not fit the installed key {}; pass its key with --key",
+                    key_dest.display()
+                )
+            })?;
+        }
+        None => bail!("No key is installed for this certificate; pass it with --key"),
+    }
 
     install_pair(&tls_path, &cert_data, key_data.as_deref())?;
 
@@ -607,9 +649,20 @@ mod tests {
         assert!(!validate_pem_format(&path).unwrap());
     }
 
-    const CERT_PEM: &str =
-        "-----BEGIN CERTIFICATE-----\nMIIBxTCCAW...\n-----END CERTIFICATE-----\n";
-    const KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBAD...\n-----END PRIVATE KEY-----\n";
+    /// A certificate and its key. With `http-transport` the install parses
+    /// both and checks they match, so the pair has to be real.
+    #[cfg(feature = "http-transport")]
+    fn test_pair() -> (String, String) {
+        skrills_server::tls_auto::generate_self_signed_cert().unwrap()
+    }
+
+    #[cfg(not(feature = "http-transport"))]
+    fn test_pair() -> (String, String) {
+        (
+            "-----BEGIN CERTIFICATE-----\nMIIBxTCCAW...\n-----END CERTIFICATE-----\n".into(),
+            "-----BEGIN PRIVATE KEY-----\nMIIEvQIBAD...\n-----END PRIVATE KEY-----\n".into(),
+        )
+    }
 
     /// A temp HOME with the TLS directory resolved under it.
     /// Fields drop in order: HOME is restored before the lock is released.
@@ -657,18 +710,19 @@ mod tests {
     #[test]
     fn install_writes_cert_and_owner_only_key() {
         let home = Home::new();
-        let cert = home.source("c.pem", CERT_PEM);
-        let key = home.source("k.pem", KEY_PEM);
+        let (cert_pem, key_pem) = test_pair();
+        let cert = home.source("c.pem", &cert_pem);
+        let key = home.source("k.pem", &key_pem);
 
         handle_cert_install_command(cert, Some(key), OutputFormat::Json).unwrap();
 
         assert_eq!(
             fs::read_to_string(home.tls().join("cert.pem")).unwrap(),
-            CERT_PEM
+            cert_pem
         );
         assert_eq!(
             fs::read_to_string(home.tls().join("key.pem")).unwrap(),
-            KEY_PEM
+            key_pem
         );
         #[cfg(unix)]
         {
@@ -690,8 +744,9 @@ mod tests {
         let old_key = home.tls().join("key.pem");
         fs::write(&old_key, "old").unwrap();
         fs::set_permissions(&old_key, fs::Permissions::from_mode(0o644)).unwrap();
-        let cert = home.source("c.pem", CERT_PEM);
-        let key = home.source("k.pem", KEY_PEM);
+        let (cert_pem, key_pem) = test_pair();
+        let cert = home.source("c.pem", &cert_pem);
+        let key = home.source("k.pem", &key_pem);
 
         handle_cert_install_command(cert, Some(key), OutputFormat::Text).unwrap();
 
@@ -707,7 +762,7 @@ mod tests {
         fs::create_dir_all(home.tls()).unwrap();
         fs::write(home.tls().join("cert.pem"), "old cert").unwrap();
         fs::write(home.tls().join("key.pem"), "old key").unwrap();
-        let cert = home.source("c.pem", CERT_PEM);
+        let cert = home.source("c.pem", &test_pair().0);
         let not_a_key = home.source("k.pem", "hello");
 
         let missing = handle_cert_install_command(
@@ -730,6 +785,58 @@ mod tests {
             fs::read_to_string(home.tls().join("key.pem")).unwrap(),
             "old key"
         );
+    }
+
+    #[test]
+    #[cfg(feature = "http-transport")]
+    fn install_refuses_a_key_that_does_not_match_the_certificate() {
+        let home = Home::new();
+        let (cert_pem, _) = test_pair();
+        let (_, other_key) = test_pair();
+        let cert = home.source("c.pem", &cert_pem);
+        let key = home.source("k.pem", &other_key);
+
+        let err = handle_cert_install_command(cert, Some(key), OutputFormat::Text)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("does not match"), "{err}");
+        assert!(!home.tls().join("cert.pem").exists());
+    }
+
+    #[test]
+    #[cfg(feature = "http-transport")]
+    fn install_without_a_key_refuses_a_certificate_the_installed_key_does_not_match() {
+        let home = Home::new();
+        let (old_cert, old_key) = test_pair();
+        fs::create_dir_all(home.tls()).unwrap();
+        fs::write(home.tls().join("cert.pem"), &old_cert).unwrap();
+        fs::write(home.tls().join("key.pem"), &old_key).unwrap();
+        let new_cert = home.source("c.pem", &test_pair().0);
+
+        let err = handle_cert_install_command(new_cert, None, OutputFormat::Text)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("--key"), "{err}");
+        assert_eq!(
+            fs::read_to_string(home.tls().join("cert.pem")).unwrap(),
+            old_cert
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "http-transport")]
+    fn install_refuses_a_certificate_that_only_has_a_pem_header() {
+        let home = Home::new();
+        let cert = home.source(
+            "c.pem",
+            "-----BEGIN CERTIFICATE-----\nMIIBxTCCAW...\n-----END CERTIFICATE-----\n",
+        );
+        let key = home.source("k.pem", &test_pair().1);
+
+        assert!(handle_cert_install_command(cert, Some(key), OutputFormat::Text).is_err());
+        assert!(!home.tls().join("cert.pem").exists());
     }
 
     /// SA-10: renewal deleted a CA-issued certificate and replaced it with a
