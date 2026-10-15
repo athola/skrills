@@ -729,7 +729,7 @@ dogfood-cold-window-headless: build
 
 dogfood-cold-window-chaos: build
 	$(_require_timeout)
-	@echo "==> [chaos] --demo --no-adaptive + alert-budget=2 (the minimum) forces kill-switch path"
+	@echo "==> [chaos] --demo --no-adaptive + alert-budget=3 (the minimum) forces kill-switch path"
 	@set +e; HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(TIMEOUT) --signal=TERM 3 \
 	  $(BIN_PATH) cold-window --demo --no-adaptive --tick-rate-ms 200 --alert-budget 3 >/dev/null 2>&1 ; \
 	$(_assert_clean_exit)
