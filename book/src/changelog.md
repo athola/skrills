@@ -5,6 +5,13 @@
 - **Cursor**: skills synced to Cursor keep the `name` and `description` frontmatter Cursor needs to load them. A mirrored plugin's `hooks/hooks.json` is rewritten to Cursor's hook layout. Top-level Claude hooks are no longer copied, because Cursor already loads them from `~/.claude/settings.json`. Agents with no write tool become `readonly`.
 - **Codex**: skills go to `~/.agents/skills`, the only user skills directory Codex documents, instead of `~/.codex/skills`. This covers `sync`, `mirror`, `sync-all`, the TUI, the `sync-from-claude` and `sync-all` MCP tools, and `create-skill` for a Codex-only install. Discovery and `skrills setup --universal` use `~/.agents/skills` in place of `~/.agent/skills`, which no tool loads. `sync-from-claude` now reports `warnings` instead of the `synced` name list.
 - **Copilot**: on macOS, sync and `skrills setup` write to `~/.copilot` (or `COPILOT_HOME`), where Copilot CLI reads, instead of `~/Library/Application Support/copilot`.
+- **Claude MCP servers**: sync reads and writes them in `~/.claude.json`, where Claude Code loads user servers, instead of `~/.claude/settings.json`. Servers an earlier version wrote into `settings.json` are no longer read.
+- **Codex agents**: go to `~/.agents/skills/agent-<name>`. A Claude model is no longer replaced by `gpt-4o` on Codex or Copilot; the target keeps its own model.
+- **Sync safety**: the Cursor plugin mirror no longer deletes or overwrites a plugin it skipped or a directory it does not own, one unwritable item no longer stops a whole phase, and concurrent syncs into one target wait on a lock file.
+- **Server**: credentials in MCP server arguments and hook commands are redacted from the dashboard API, `cold-window --browser` checks `Host`, `fetch-pdf` refuses private addresses, an empty auth token is refused, and the dashboard works with `--auth-token` (open it at `/#token=<TOKEN>`).
+- **CLI**: `skrills doctor` exits non-zero when it finds problems. `--include-description`, `--include-quality` and `--suggestions` turn off with `=false`. `cold-window --alert-budget` must be at least 3.
+- **Validation**: autofix keeps every frontmatter field, writes YAML that parses, and no longer panics on long descriptions with multibyte characters.
+- **API**: `SyncError` has a new `KillSwitchEngaged` variant, which breaks exhaustive matches outside this workspace.
 
 ## 0.9.0 (Unreleased)
 
