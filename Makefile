@@ -20,6 +20,9 @@ MDBOOK ?= mdbook
 # serial_test instead. Set TEST_THREADS=1 to run every test one at a time.
 TEST_THREADS ?=
 TEST_THREADS_FLAG = $(if $(TEST_THREADS),--test-threads=$(TEST_THREADS))
+# Point the suite's syncs at a kill-switch marker of their own, so a running
+# `skrills cold-window` with its switch engaged does not fail every test.
+TEST_ENV = SKRILLS_KILL_SWITCH_FILE=$(abspath $(TARGET_DIR))/test-kill-switch.pid
 CARGO_CMD = CARGO_HOME=$(CARGO_HOME) $(CARGO)
 DEMO_RUN = HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH)
 
@@ -248,13 +251,13 @@ check:
 	$(CARGO_CMD) check --workspace --all-targets
 
 test:
-	$(CARGO_CMD) test --workspace --all-features -- $(TEST_THREADS_FLAG)
+	$(TEST_ENV) $(CARGO_CMD) test --workspace --all-features -- $(TEST_THREADS_FLAG)
 
 test-unit:
-	$(CARGO_CMD) test --workspace --lib --all-features -- $(TEST_THREADS_FLAG)
+	$(TEST_ENV) $(CARGO_CMD) test --workspace --lib --all-features -- $(TEST_THREADS_FLAG)
 
 test-integration:
-	$(CARGO_CMD) test --workspace --test '*' --all-features -- $(TEST_THREADS_FLAG)
+	$(TEST_ENV) $(CARGO_CMD) test --workspace --test '*' --all-features -- $(TEST_THREADS_FLAG)
 
 test-setup:
 	$(CARGO_CMD) test --package skrills-server --lib setup --all-features

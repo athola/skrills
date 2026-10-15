@@ -244,6 +244,9 @@ Defaults are research-backed:
   `mirror`, the MCP sync tools), in any process, refuses. The file is
   removed when cold-window exits; a file left by a process that has
   died is ignored and removed. Dry runs still preview.
+  `SKRILLS_KILL_SWITCH_FILE` (an absolute path) moves the file; the
+  Makefile test targets set it so a running cold-window does not fail
+  the test suite's syncs.
 
 A learned baseline of recent token totals no longer raises the 20K
 and 50K tiers, since that hid steadily growing totals. When

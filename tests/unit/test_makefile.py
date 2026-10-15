@@ -273,3 +273,11 @@ def test_lint_checks_analyze_without_the_intelligence_scorer() -> None:
     """Workspace feature unification turns the scorer back on, so only a
     package-scoped pass sees a featureless skrills-analyze (ADR 0010)."""
     assert "-p skrills-analyze --all-targets --no-default-features" in _dry_run("lint")
+
+
+@pytest.mark.parametrize("target", ["test", "test-unit", "test-integration"])
+def test_test_runs_keep_the_kill_switch_marker_out_of_home(target: str) -> None:
+    """A developer's running cold-window writes ~/.skrills/kill-switch.pid,
+    and every real sync in the suite then refused with KillSwitchEngaged."""
+    recipe = _dry_run(target, "CARGO_TARGET_DIR=/elsewhere")
+    assert "SKRILLS_KILL_SWITCH_FILE=/elsewhere/test-kill-switch.pid" in recipe

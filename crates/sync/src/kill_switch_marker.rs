@@ -20,12 +20,23 @@ use crate::Result;
 /// File name of the marker under `~/.skrills`.
 const MARKER_FILE: &str = "kill-switch.pid";
 
-/// `~/.skrills/kill-switch.pid`, or `None` when no home directory is known.
+/// Absolute path that replaces [`marker_path`]'s default. The Makefile test
+/// targets set it, so a developer's running cold-window does not make the
+/// test suite's syncs refuse.
+pub const MARKER_ENV: &str = "SKRILLS_KILL_SWITCH_FILE";
+
+/// `~/.skrills/kill-switch.pid` (or an absolute [`MARKER_ENV`]), or `None`
+/// when no home directory is known.
 ///
 /// Home is resolved as `skrills_state::home_dir` does it: an absolute `HOME`
 /// first, then the platform lookup. That crate is not a dependency here
 /// because it brings SQLite with it.
 pub fn marker_path() -> Option<PathBuf> {
+    if let Some(file) = std::env::var_os(MARKER_ENV).map(PathBuf::from) {
+        if file.is_absolute() {
+            return Some(file);
+        }
+    }
     #[cfg(unix)]
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         if home.is_absolute() {
@@ -150,11 +161,34 @@ mod tests {
         let _lock = skrills_test_utils::env_guard();
         let fixture = skrills_test_utils::TestFixture::new().unwrap();
         let _home = fixture.home_guard();
+        let _no_override = skrills_test_utils::set_env_var(MARKER_ENV, None);
 
         let path = marker_path().unwrap();
 
         assert!(path.ends_with(".skrills/kill-switch.pid"), "{path:?}");
         #[cfg(unix)]
         assert!(path.starts_with(fixture.home_path()), "{path:?}");
+    }
+
+    #[test]
+    fn marker_path_follows_the_env_override() {
+        let _lock = skrills_test_utils::env_guard();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("switch.pid");
+        let _override = skrills_test_utils::set_env_var(MARKER_ENV, file.to_str());
+
+        assert_eq!(marker_path(), Some(file));
+    }
+
+    #[test]
+    fn a_relative_override_is_ignored() {
+        let _lock = skrills_test_utils::env_guard();
+        let fixture = skrills_test_utils::TestFixture::new().unwrap();
+        let _home = fixture.home_guard();
+        let _override = skrills_test_utils::set_env_var(MARKER_ENV, Some("rel/switch.pid"));
+
+        let path = marker_path().unwrap();
+
+        assert!(path.ends_with(".skrills/kill-switch.pid"), "{path:?}");
     }
 }
