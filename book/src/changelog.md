@@ -19,6 +19,9 @@
 - **TUIs**: `Esc` backs out of what is open, then quits, in both TUIs; cold-window master-ack holds until the alert resolves.
 - **Build**: MSRV 1.89, YAML via `serde_norway`, tests run in parallel, and every shell script follows one style checked by `scripts/shellcheck.sh` (shellcheck plus shfmt).
 - **API**: `skrills_sync::Platform` replaces platform strings, and skrills-server drops its deprecated items. Both break callers outside this workspace.
+- **Agent timeout**: `skrills agent` and `multi-cli-agent` stop a run after `--timeout` seconds (default 1800, `0` for no limit).
+- **Setup**: `skrills setup --universal --include-marketplace` also copies marketplace skills; off by default.
+- **Crates**: skrills-server no longer exports `discovery`, `sync`, `setup` or `config`. They moved to `skrills-discovery`, `skrills_sync`, the new `skrills-setup` crate and the CLI (ADR 0009).
 
 ## 0.9.0 (Unreleased)
 

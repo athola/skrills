@@ -39,7 +39,7 @@ a published crate's API.
 - Done in 0.9.1: decision 1 (`skrills_sync::sync_claude_skills_to_codex`
   replaced the server-side copier, which is deleted), decision 3, and the
   single skill-root builder (`skrills_discovery::skill_roots`).
-- Done after 0.9.1 (decision 2), each listed as breaking in the changelog:
+- Also done in 0.9.1 (decision 2), each listed as breaking in the changelog:
   - `skrills_server::discovery` helpers moved to `skrills_discovery` (module
     `lookup`; the env-driven `skill_roots` is now `skill_roots_from_env`).
     The `doc://agents` resource constants stay private to the server.
