@@ -2,11 +2,13 @@ use std::ffi::OsStr;
 
 pub(crate) const DEFAULT_CLI_BINARY: &str = "claude";
 
+/// Trims a configured binary name; empty and `auto` mean "detect".
 pub(crate) fn normalize_cli_binary(value: Option<String>) -> Option<String> {
-    match value.as_deref() {
-        Some(raw) if raw.trim().is_empty() => None,
-        Some(raw) if raw.eq_ignore_ascii_case("auto") => None,
-        _ => value,
+    let trimmed = value?.trim().to_string();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
+        None
+    } else {
+        Some(trimmed)
     }
 }
 
@@ -31,10 +33,7 @@ pub(crate) fn client_hint_from_env() -> Option<&'static str> {
         return Some("claude");
     }
 
-    if std::env::var("CODEX_CLI").is_ok()
-        || std::env::var("CODEX_SESSION_ID").is_ok()
-        || std::env::var("CODEX_HOME").is_ok()
-    {
+    if std::env::var("CODEX_CLI").is_ok() || std::env::var("CODEX_SESSION_ID").is_ok() {
         return Some("codex");
     }
 
@@ -42,11 +41,27 @@ pub(crate) fn client_hint_from_env() -> Option<&'static str> {
         return Some("cursor");
     }
 
+    // A config location users may export globally, so it is the weakest
+    // marker: it only decides when no session marker is present.
+    if std::env::var("CODEX_HOME").is_ok() {
+        return Some("codex");
+    }
+
     None
 }
 
+/// The CLI binary a detected client runs subagents with. Cursor has none:
+/// `cursor` is its editor launcher, which given a prompt would open the
+/// editor and exit 0, so a Cursor client falls back to the default binary.
+fn cli_binary_for_client(client: &str) -> Option<String> {
+    match client {
+        "claude" | "codex" => Some(client.to_string()),
+        _ => None,
+    }
+}
+
 pub(crate) fn cli_binary_from_client_env() -> Option<String> {
-    client_hint_from_env().map(|client| client.to_string())
+    client_hint_from_env().and_then(cli_binary_for_client)
 }
 
 pub(crate) fn client_hint_from_exe_path() -> Option<&'static str> {
@@ -67,7 +82,7 @@ pub(crate) fn client_hint_from_exe_path() -> Option<&'static str> {
 }
 
 pub(crate) fn cli_binary_from_exe_path() -> Option<String> {
-    client_hint_from_exe_path().map(|client| client.to_string())
+    client_hint_from_exe_path().and_then(cli_binary_for_client)
 }
 
 pub(crate) fn default_cli_binary() -> String {
@@ -113,6 +128,16 @@ mod tests {
         );
     }
 
+    /// M319: surrounding whitespace is not part of a binary name.
+    #[test]
+    fn normalize_cli_binary_trims() {
+        assert_eq!(
+            normalize_cli_binary(Some(" claude ".to_string())),
+            Some("claude".to_string())
+        );
+        assert_eq!(normalize_cli_binary(Some(" auto ".to_string())), None);
+    }
+
     #[test]
     fn client_hint_from_env_prefers_skrills_client() {
         /*
@@ -140,6 +165,30 @@ mod tests {
         let _claude = set_env_var("CLAUDE_CODE_SESSION", Some("1"));
 
         assert_eq!(client_hint_from_env(), Some("claude"));
+    }
+
+    /// M278: the `cursor` command is Cursor's editor launcher, not a
+    /// headless agent CLI, so a Cursor client never makes it the binary.
+    #[test]
+    fn cursor_client_falls_back_to_the_default_cli_binary() {
+        let _guard = env_guard();
+        let _clear = clear_client_env();
+        let _cursor = set_env_var("SKRILLS_CLIENT", Some("cursor"));
+
+        assert_eq!(cli_binary_from_client_env(), None);
+        assert_eq!(default_cli_binary(), DEFAULT_CLI_BINARY.to_string());
+    }
+
+    /// M278: `CODEX_HOME` is a config location a user may export globally;
+    /// a Cursor session marker outranks it.
+    #[test]
+    fn cursor_session_marker_outranks_codex_home() {
+        let _guard = env_guard();
+        let _clear = clear_client_env();
+        let _codex_home = set_env_var("CODEX_HOME", Some("/tmp/codex"));
+        let _cursor = set_env_var("CURSOR_VERSION", Some("1.0"));
+
+        assert_eq!(client_hint_from_env(), Some("cursor"));
     }
 
     #[test]

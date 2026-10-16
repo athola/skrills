@@ -135,6 +135,32 @@ pub fn backend_from_str(raw: &str) -> BackendKind {
 mod tests {
     use super::*;
 
+    /// M322: the running client's config file is read first.
+    #[test]
+    fn config_paths_put_the_detected_clients_file_first() {
+        use skrills_test_utils::{env_guard, set_env_var};
+        let _lock = env_guard();
+        let home = tempfile::tempdir().unwrap();
+        let _home = set_env_var("HOME", Some(home.path().to_str().unwrap()));
+        let claude = home.path().join(".claude/subagents.toml");
+        let codex = home.path().join(".codex/subagents.toml");
+        for (client, expected) in [
+            ("codex", vec![codex.clone(), claude.clone()]),
+            ("claude", vec![claude.clone(), codex.clone()]),
+            ("cursor", vec![claude.clone(), codex.clone()]),
+        ] {
+            let _client = set_env_var("SKRILLS_CLIENT", Some(client));
+            assert_eq!(config_paths(), expected, "{client}");
+        }
+
+        std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+        std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+        std::fs::write(&codex, "cli_binary = \"codex\"\n").unwrap();
+        std::fs::write(&claude, "cli_binary = \"claude\"\n").unwrap();
+        let _client = set_env_var("SKRILLS_CLIENT", Some("codex"));
+        assert_eq!(load_file_config().cli_binary.as_deref(), Some("codex"));
+    }
+
     #[test]
     fn execution_mode_parsing() {
         assert_eq!("cli".parse(), Ok(ExecutionMode::Cli));

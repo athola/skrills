@@ -1,29 +1,20 @@
 use super::validate::{run_validation, Autofix};
-use crate::cli::SyncSource;
+use crate::cli::Platform;
 use anyhow::{anyhow, bail, Result};
+use skrills_discovery::merge_extra_dirs;
 use skrills_discovery::{SkillRoot, SkillSource};
-use skrills_server::discovery::merge_extra_dirs;
-use skrills_server::sync::{
-    mirror_source_root, sync_agents, sync_agents_only_from_claude, sync_skills_only_from_claude,
-};
 use skrills_state::home_dir;
+use skrills_sync::{mirror_source_root, sync_agents, sync_agents_only_from_claude};
 use skrills_validate::ValidationTarget as VT;
 use std::path::{Path, PathBuf};
 
-/// Reports what stops Codex from loading the skills that were just mirrored.
-///
-/// `ensure_codex_skills_feature_enabled` fails when `~/.codex/config.toml` is
-/// unreadable or unwritable, and Codex only loads skills when
-/// `[features] skills = true`. Without this the commands print "copied: N" and
-/// exit zero while Codex loads nothing.
-pub(crate) fn codex_skills_feature_warning(config_path: &Path) -> Option<String> {
-    let err = skrills_server::setup::ensure_codex_skills_feature_enabled(config_path).err()?;
-    tracing::warn!(error = %err, "could not ensure codex skills feature flag");
-    Some(format!(
-        "Warning: could not enable the codex skills feature in {}: {}",
-        config_path.display(),
-        err
-    ))
+/// Prints the skill phase's warnings, such as a `~/.codex/config.toml` the
+/// skills feature flag could not be written to, which would otherwise leave
+/// "copied: N" on screen while Codex loads nothing.
+pub(crate) fn print_skill_warnings(report: &skrills_sync::SyncReport) {
+    for warning in &report.skills.warnings {
+        eprintln!("Warning: {warning}");
+    }
 }
 
 pub(crate) fn handle_sync_agents_command(
@@ -39,15 +30,18 @@ pub(crate) fn handle_sync_agents_command(
 /// Handle the `sync` command.
 pub(crate) fn handle_sync_command(include_marketplace: bool) -> Result<()> {
     let home = home_dir()?;
-    let report = sync_skills_only_from_claude(
+    let report = skrills_sync::sync_claude_skills_to_codex(
         &mirror_source_root(&home),
-        &home.join(".codex/skills"),
+        &home,
         include_marketplace,
+        false,
     )?;
-    if let Some(warning) = codex_skills_feature_warning(&home.join(".codex/config.toml")) {
-        eprintln!("{warning}");
-    }
-    println!("copied: {}, skipped: {}", report.copied, report.skipped);
+    print_skill_warnings(&report);
+    println!(
+        "copied: {}, skipped: {}",
+        report.skills.written,
+        report.skills.skipped.len()
+    );
     Ok(())
 }
 
@@ -63,21 +57,25 @@ pub(crate) fn handle_mirror_command(
             "Warning: mirroring commands into ~/.codex/prompts will overwrite prompts with the same name unless --skip-existing-commands is used."
         );
     }
-    // Mirror agents into ~/.codex/agents (skills are materialized into ~/.codex/skills only).
-    let agent_report = sync_agents_only_from_claude(
+    // Mirror agents into ~/.codex/agents. The agent copier has no preview
+    // mode, so a dry run skips it rather than writing.
+    let agent_report = if dry_run {
+        skrills_sync::MirrorReport::default()
+    } else {
+        sync_agents_only_from_claude(
+            &claude_root,
+            &home.join(".codex/agents"),
+            include_marketplace,
+        )?
+    };
+    // Skills go to ~/.agents/skills, where Codex loads them.
+    let codex_report = skrills_sync::sync_claude_skills_to_codex(
         &claude_root,
-        &home.join(".codex/agents"),
+        &home,
         include_marketplace,
+        dry_run,
     )?;
-    // Also materialize skills into ~/.codex/skills so Codex's built-in skills system can discover them.
-    let codex_report = sync_skills_only_from_claude(
-        &claude_root,
-        &home.join(".codex/skills"),
-        include_marketplace,
-    )?;
-    if let Some(warning) = codex_skills_feature_warning(&home.join(".codex/config.toml")) {
-        eprintln!("{warning}");
-    }
+    print_skill_warnings(&codex_report);
     // Mirror commands/mcp/prefs
     let source = skrills_sync::ClaudeAdapter::new()?;
     let target = skrills_sync::CodexAdapter::new()?;
@@ -93,21 +91,25 @@ pub(crate) fn handle_mirror_command(
         ..Default::default()
     };
     let sync_report = orch.sync(&params)?;
-    // Refresh AGENTS.md with skills and agents (mirror roots now populated)
-    handle_sync_agents_command(None, vec![])?;
+    // Refresh Codex's global AGENTS.md with skills and agents (mirror roots
+    // now populated). Never the working directory's AGENTS.md: that is
+    // whatever repository `mirror` happens to run from.
+    if !dry_run {
+        handle_sync_agents_command(Some(home.join(".codex/AGENTS.md")), vec![])?;
+    }
 
     println!(
         "mirror complete: agents copied {}, skipped {}; skills (codex) copied {}, skipped {}; commands written {}, skipped {}; prefs {}, mcp {}{}",
         agent_report.copied,
         agent_report.skipped,
-        codex_report.copied,
-        codex_report.skipped,
+        codex_report.skills.written,
+        codex_report.skills.skipped.len(),
         sync_report.commands.written,
         sync_report.commands.skipped.len(),
         sync_report.preferences.written,
         sync_report.mcp_servers.written,
         if dry_run {
-            " (dry-run for commands/prefs/mcp)"
+            " (dry run: nothing written; agents and ~/.codex/AGENTS.md not checked)"
         } else {
             ""
         }
@@ -124,8 +126,8 @@ pub(crate) fn handle_mirror_command(
 
 /// Runs one adapter sync from `from` to `to`.
 pub(crate) fn run_sync_with_adapters(
-    from: SyncSource,
-    to: SyncSource,
+    from: Platform,
+    to: Platform,
     params: &skrills_sync::SyncParams,
 ) -> Result<skrills_sync::SyncReport> {
     if from == to {
@@ -135,19 +137,19 @@ pub(crate) fn run_sync_with_adapters(
         ));
     }
     // sync_between handles adapter creation for every platform.
-    skrills_sync::orchestrator::sync_between(from.as_str(), to.as_str(), params)
+    skrills_sync::orchestrator::sync_between(from, to, params)
 }
 
 /// The directory a CLI keeps its skills in, as `sync-status` counts them.
-pub(crate) fn source_skill_root(from: SyncSource, home: &Path) -> PathBuf {
+pub(crate) fn source_skill_root(from: Platform, home: &Path) -> PathBuf {
     use skrills_sync::adapters::traits::AgentAdapter;
     match from {
-        SyncSource::Claude => mirror_source_root(home),
-        SyncSource::Codex => home.join(".codex/skills"),
-        SyncSource::Copilot => skrills_sync::CopilotAdapter::new()
+        Platform::Claude => mirror_source_root(home),
+        Platform::Codex => home.join(".codex/skills"),
+        Platform::Copilot => skrills_sync::CopilotAdapter::new()
             .map(|a| a.config_root().join("skills"))
             .unwrap_or_else(|_| home.join(".copilot/skills")),
-        SyncSource::Cursor => skrills_sync::CursorAdapter::new()
+        Platform::Cursor => skrills_sync::CursorAdapter::new()
             .map(|a| a.config_root().join("skills"))
             .unwrap_or_else(|_| home.join(".cursor/skills")),
     }
@@ -160,13 +162,13 @@ pub(crate) fn source_skill_root(from: SyncSource, home: &Path) -> PathBuf {
 /// trees the skill sync walks. The rest of `~/.claude` (sessions, settings)
 /// holds no skills.
 fn source_validation_roots(
-    from: SyncSource,
+    from: Platform,
     home: &Path,
     include_marketplace: bool,
 ) -> Vec<SkillRoot> {
     let root = source_skill_root(from, home);
     let mut dirs = match from {
-        SyncSource::Claude => vec![root.join("skills"), root.join("plugins/cache")],
+        Platform::Claude => vec![root.join("skills"), root.join("plugins/cache")],
         _ => vec![root.clone()],
     };
     if from.is_claude() && include_marketplace {
@@ -182,9 +184,9 @@ fn source_validation_roots(
 }
 
 /// The strictest validation target any of `targets` needs.
-fn validation_target_for(targets: &[SyncSource]) -> VT {
-    let codex = targets.contains(&SyncSource::Codex);
-    let copilot = targets.contains(&SyncSource::Copilot);
+fn validation_target_for(targets: &[Platform]) -> VT {
+    let codex = targets.contains(&Platform::Codex);
+    let copilot = targets.contains(&Platform::Copilot);
     match (codex, copilot) {
         (true, true) => VT::All,
         (true, false) => VT::Codex,
@@ -197,8 +199,8 @@ fn validation_target_for(targets: &[SyncSource]) -> VT {
 /// Options for `sync-all`, one field per flag.
 #[derive(Debug, Clone)]
 pub(crate) struct SyncAllArgs {
-    pub from: SyncSource,
-    pub to: Option<SyncSource>,
+    pub from: Platform,
+    pub to: Option<Platform>,
     pub dry_run: bool,
     pub skip_existing_commands: bool,
     pub include_marketplace: bool,
@@ -210,7 +212,7 @@ pub(crate) struct SyncAllArgs {
 /// Validates (and with `--autofix`, repairs) the source skills before any
 /// target is touched. Returns an error, and so writes nothing, when an error
 /// remains.
-fn validate_sync_source(args: &SyncAllArgs, targets: &[SyncSource], home: &Path) -> Result<()> {
+fn validate_sync_source(args: &SyncAllArgs, targets: &[Platform], home: &Path) -> Result<()> {
     let roots = source_validation_roots(args.from, home, args.include_marketplace);
     let target = validation_target_for(targets);
     let mode = match (args.autofix, args.dry_run) {
@@ -263,7 +265,7 @@ fn validate_sync_source(args: &SyncAllArgs, targets: &[SyncSource], home: &Path)
 /// `--autofix` repairs the source first (or, under `--dry-run`, checks what
 /// the repair would leave) and then validates as `--validate` does.
 pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
-    let targets: Vec<SyncSource> = match args.to {
+    let targets: Vec<Platform> = match args.to {
         Some(t) => vec![t],
         None => args.from.other_targets(),
     };
@@ -275,7 +277,7 @@ pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
     let multi_target = targets.len() > 1;
     let from = args.from;
 
-    for target in targets {
+    sync_each_target(&targets, |target| {
         if multi_target {
             tracing::info!(
                 from = %from.as_str(),
@@ -284,25 +286,7 @@ pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
             );
         }
 
-        // Skills go through the dedicated mirror for claude -> codex.
-        if from.is_claude() && target.is_codex() && !args.dry_run {
-            let home = home_dir()?;
-            let skill_report = sync_skills_only_from_claude(
-                &mirror_source_root(&home),
-                &home.join(".codex/skills"),
-                args.include_marketplace,
-            )?;
-            if let Some(warning) = codex_skills_feature_warning(&home.join(".codex/config.toml")) {
-                eprintln!("{warning}");
-            }
-            tracing::info!(
-                synced = skill_report.copied,
-                unchanged = skill_report.skipped,
-                "skills synced"
-            );
-        }
-
-        let delivery = skrills_sync::skill_delivery(from.as_str(), target.as_str());
+        let delivery = skrills_sync::skill_delivery(from, target);
         let params = skrills_sync::SyncParams {
             from: Some(from.as_str().to_string()),
             dry_run: args.dry_run,
@@ -324,12 +308,37 @@ pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
             report.summary,
             skipped_commands_note(args.skip_existing_commands, &report)
         );
-    }
+        Ok(())
+    })?;
 
     if args.dry_run {
         tracing::info!("(dry run - no changes made)");
     }
     Ok(())
+}
+
+/// Runs `sync` for every target, carrying on past a failure, and returns an
+/// error naming which targets succeeded and which failed. Stopping at the
+/// first failure left later targets unsynced with no word on the earlier ones.
+fn sync_each_target(
+    targets: &[Platform],
+    mut sync: impl FnMut(Platform) -> Result<()>,
+) -> Result<()> {
+    let outcomes: Vec<(Platform, Result<()>)> = targets.iter().map(|&t| (t, sync(t))).collect();
+    if outcomes.iter().all(|(_, r)| r.is_ok()) {
+        return Ok(());
+    }
+    let summary: Vec<String> = outcomes
+        .iter()
+        .map(|(target, outcome)| match outcome {
+            Ok(()) => format!("{}: ok", target.as_str()),
+            Err(e) => format!("{}: failed: {e:#}", target.as_str()),
+        })
+        .collect();
+    bail!(
+        "sync-all failed for some targets:\n  {}",
+        summary.join("\n  ")
+    )
 }
 
 /// The "kept target copy" line for `--skip-existing-commands`, or nothing.
@@ -354,10 +363,10 @@ pub(crate) fn skipped_commands_note(
 }
 
 /// Handle the `sync-status` command.
-pub(crate) fn handle_sync_status_command(from: SyncSource, to: Option<SyncSource>) -> Result<()> {
+pub(crate) fn handle_sync_status_command(from: Platform, to: Option<Platform>) -> Result<()> {
     let target = to.unwrap_or_else(|| from.default_target());
     // Same rule as sync-all, so the preview matches the run.
-    let delivery = skrills_sync::skill_delivery(from.as_str(), target.as_str());
+    let delivery = skrills_sync::skill_delivery(from, target);
 
     let params = skrills_sync::SyncParams {
         from: Some(from.as_str().to_string()),
@@ -397,7 +406,7 @@ pub(crate) fn handle_sync_status_command(from: SyncSource, to: Option<SyncSource
         {
             match entry {
                 Ok(e) => {
-                    if skrills_server::discovery::is_skill_file(&e) {
+                    if skrills_discovery::is_skill_file(&e) {
                         skill_count += 1;
                     }
                 }
@@ -428,41 +437,6 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    #[test]
-    fn codex_skills_feature_warning_names_the_config_it_could_not_write() {
-        // A directory where the config file belongs makes every read of it
-        // fail, which is the shape of a read-only or corrupted home.
-        let temp = tempdir().expect("tempdir");
-        let config_path = temp.path().join("config.toml");
-        std::fs::create_dir_all(&config_path).expect("create config.toml as a directory");
-
-        let warning = codex_skills_feature_warning(&config_path)
-            .expect("an unreadable config should produce a warning");
-
-        assert!(
-            warning.contains("codex skills feature"),
-            "warning should name the feature, got: {warning}"
-        );
-        assert!(
-            warning.contains(&config_path.display().to_string()),
-            "warning should name the config path, got: {warning}"
-        );
-    }
-
-    #[test]
-    fn codex_skills_feature_warning_is_silent_when_the_flag_can_be_written() {
-        let temp = tempdir().expect("tempdir");
-        let config_path = temp.path().join("config.toml");
-
-        assert!(codex_skills_feature_warning(&config_path).is_none());
-        assert!(
-            std::fs::read_to_string(&config_path)
-                .expect("config should have been written")
-                .contains("skills = true"),
-            "the feature flag should have been enabled"
-        );
-    }
-
     /// Restores the working directory even if the test returns early or panics.
     ///
     /// The directory is process-global, so the change is only safe while
@@ -484,6 +458,35 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::env::set_current_dir(&self.original);
         }
+    }
+
+    #[test]
+    fn sync_all_continues_past_a_failed_target_and_names_each_outcome() {
+        let mut attempted = Vec::new();
+
+        let err = sync_each_target(
+            &[Platform::Codex, Platform::Copilot, Platform::Cursor],
+            |target| {
+                attempted.push(target);
+                if target == Platform::Copilot {
+                    bail!("copilot dir is not writable")
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert_eq!(
+            attempted,
+            vec![Platform::Codex, Platform::Copilot, Platform::Cursor]
+        );
+        assert!(err.contains("codex: ok"), "{err}");
+        assert!(
+            err.contains("copilot: failed: copilot dir is not writable"),
+            "{err}"
+        );
+        assert!(err.contains("cursor: ok"), "{err}");
     }
 
     #[test]
@@ -516,15 +519,80 @@ mod tests {
             "mirror should not create ~/.codex/skills-mirror"
         );
         assert!(
-            home.join(".codex/skills/skills/example-skill/SKILL.md")
-                .exists(),
-            "expected skill copied into ~/.codex/skills"
+            home.join(".agents/skills/example-skill/SKILL.md").exists(),
+            "expected skill copied into ~/.agents/skills, where Codex loads it"
         );
+        assert!(!home.join(".codex/skills").exists());
         assert!(
             home.join(".codex/agents/plugins/cache/tool/agents/helper.md")
                 .exists(),
             "expected agent copied into ~/.codex/agents"
         );
+        Ok(())
+    }
+
+    /// Seeds one Claude skill and one Claude agent under `home`.
+    fn seed_claude_skill_and_agent(home: &std::path::Path) -> Result<()> {
+        let claude_skill = home.join(".claude/skills/example-skill/SKILL.md");
+        std::fs::create_dir_all(claude_skill.parent().unwrap())?;
+        std::fs::write(
+            &claude_skill,
+            "---\nname: example-skill\ndescription: An example skill.\n---\nBody\n",
+        )?;
+        let claude_agent = home.join(".claude/plugins/cache/tool/agents/helper.md");
+        std::fs::create_dir_all(claude_agent.parent().unwrap())?;
+        std::fs::write(&claude_agent, "agent content")?;
+        Ok(())
+    }
+
+    #[test]
+    fn mirror_dry_run_writes_no_skills_agents_config_or_agents_md() -> Result<()> {
+        let _guard = skrills_test_utils::env_guard();
+        let tmp = tempdir()?;
+        let home = tmp.path().join("home");
+        let cwd = tmp.path().join("repo");
+        std::fs::create_dir_all(&cwd)?;
+        let _home_guard = skrills_test_utils::set_env_var("HOME", Some(home.to_str().unwrap()));
+        let _cwd_guard = CwdGuard::change_to(&cwd)?;
+        seed_claude_skill_and_agent(&home)?;
+
+        handle_mirror_command(true, true, false)?;
+
+        assert!(!home.join(".agents").exists(), "dry run copied skills");
+        assert!(
+            !home.join(".codex/agents").exists(),
+            "dry run copied agents"
+        );
+        assert!(
+            !home.join(".codex/config.toml").exists(),
+            "dry run edited config.toml"
+        );
+        assert!(
+            !home.join(".codex/AGENTS.md").exists(),
+            "dry run wrote AGENTS.md"
+        );
+        assert!(!cwd.join("AGENTS.md").exists(), "dry run wrote ./AGENTS.md");
+        Ok(())
+    }
+
+    #[test]
+    fn mirror_refreshes_codex_home_agents_md_not_the_working_directory() -> Result<()> {
+        let _guard = skrills_test_utils::env_guard();
+        let tmp = tempdir()?;
+        let home = tmp.path().join("home");
+        let cwd = tmp.path().join("repo");
+        std::fs::create_dir_all(&cwd)?;
+        let _home_guard = skrills_test_utils::set_env_var("HOME", Some(home.to_str().unwrap()));
+        let _cwd_guard = CwdGuard::change_to(&cwd)?;
+        seed_claude_skill_and_agent(&home)?;
+
+        handle_mirror_command(false, true, false)?;
+
+        assert!(
+            !cwd.join("AGENTS.md").exists(),
+            "mirror rewrote AGENTS.md in the working directory"
+        );
+        assert!(home.join(".codex/AGENTS.md").exists());
         Ok(())
     }
 }

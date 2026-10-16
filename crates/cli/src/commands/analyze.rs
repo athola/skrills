@@ -11,7 +11,7 @@ pub(crate) fn handle_analyze_command(
 ) -> Result<()> {
     use skrills_analyze::{analyze_skill, AnalysisSummary, Priority};
 
-    let roots = crate::commands::skill_roots_for(&skill_dirs);
+    let roots = crate::commands::skill_roots_for(&skill_dirs)?;
     let skills = discover_skills(&roots, None)?;
 
     if skills.is_empty() {

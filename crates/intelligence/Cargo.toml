@@ -1,7 +1,8 @@
 [package]
 name = "skrills-intelligence"
-version = "0.9.0"
+version = "0.9.1"
 edition = "2021"
+rust-version.workspace = true
 description = "Intelligent skill recommendations based on usage patterns and project context."
 license = "MIT"
 repository = "https://github.com/athola/skrills"
@@ -25,7 +26,8 @@ walkdir.workspace = true
 toml.workspace = true
 dirs.workspace = true
 tracing.workspace = true
-skrills-snapshot = { path = "../snapshot", version = "0.9.0" }
+skrills-snapshot = { path = "../snapshot", version = "0.9.1" }
+skrills-subagents = { path = "../subagents", version = "0.9.1" }
 
 # Additional dependencies for intelligence features
 chrono = { version = "0.4", features = ["serde"] }
@@ -37,7 +39,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 wiremock = "0.6"
 serial_test = "4"
 proptest = "1.4"
-skrills_test_utils = { path = "../test-utils" }
+skrills-test-utils = { path = "../test-utils" }
 
 # The crate deprecates some of its own public items for downstream users
 # (IN-16); its own definitions, re-exports and tests still use them. Inline

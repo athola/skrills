@@ -6,6 +6,8 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+
+use crate::cli_detection::{client_hint_from_env, client_hint_from_exe_path};
 use skrills_discovery::{discover_agents, AgentConfig, AgentMeta, SkillRoot, SkillSource};
 use tracing::warn;
 
@@ -31,7 +33,8 @@ pub struct AgentRegistry {
 impl AgentRegistry {
     /// Discover agents from standard locations and parse their configs.
     ///
-    /// Discovery locations (in priority order):
+    /// Discovery locations (in priority order; under Claude Code the first
+    /// two swap, so its own agent wins a name clash):
     /// - `~/.codex/agents/` (Codex CLI)
     /// - `~/.claude/agents/` (Claude Code)
     /// - `~/.agent/agents/` (Universal)
@@ -48,7 +51,12 @@ impl AgentRegistry {
     ///
     /// This is useful for testing with a custom home directory.
     pub fn discover_from(home: &std::path::Path) -> Result<Self> {
-        let roots = agent_roots(home);
+        let mut roots = agent_roots(home);
+        // The running client's own agents win a name clash, matching how
+        // the subagents config file is chosen.
+        if client_hint_from_env().or_else(client_hint_from_exe_path) == Some("claude") {
+            roots.swap(0, 1);
+        }
         Self::discover_from_roots(&roots)
     }
 
@@ -103,9 +111,11 @@ impl AgentRegistry {
         self.agents.get(&key)
     }
 
-    /// List all discovered agents.
+    /// List all discovered agents, ordered by name.
     pub fn list(&self) -> Vec<&CachedAgent> {
-        self.agents.values().collect()
+        let mut agents: Vec<(&String, &CachedAgent)> = self.agents.iter().collect();
+        agents.sort_by(|a, b| a.0.cmp(b.0));
+        agents.into_iter().map(|(_, agent)| agent).collect()
     }
 
     /// Check if agent requires CLI execution (has tools specified).
@@ -130,7 +140,9 @@ impl AgentRegistry {
     }
 }
 
-/// Returns the standard agent root directories (in priority order).
+/// Returns the standard agent root directories in default priority order
+/// (Codex, Claude, universal); [`AgentRegistry::discover_from`] puts
+/// Claude first under Claude Code.
 fn agent_roots(home: &std::path::Path) -> Vec<SkillRoot> {
     vec![
         SkillRoot {
@@ -169,6 +181,34 @@ mod tests {
         let agents_dir = dir.join("agents");
         fs::create_dir_all(&agents_dir).unwrap();
         fs::write(agents_dir.join(name), content).unwrap();
+    }
+
+    /// M317: under Claude Code a same-named agent comes from
+    /// `~/.claude/agents`, and `list` is ordered by name.
+    #[test]
+    fn client_hint_orders_roots_and_list_is_sorted() {
+        let _lock = skrills_test_utils::env_guard();
+        let _client = skrills_test_utils::set_env_var("SKRILLS_CLIENT", Some("claude"));
+        let tmp = tempdir().unwrap();
+        let home = tmp.path();
+        let agent = |name: &str| format!("---\nname: {name}\ndescription: d\n---\n\nBody.");
+        create_agent_file(&home.join(".codex"), "shared.md", &agent("shared"));
+        create_agent_file(&home.join(".claude"), "shared.md", &agent("shared"));
+        for name in ["zeta", "alpha", "mid"] {
+            create_agent_file(&home.join(".codex"), &format!("{name}.md"), &agent(name));
+        }
+
+        let registry = AgentRegistry::discover_from(home).unwrap();
+        assert_eq!(
+            registry.get("shared").unwrap().meta.source,
+            SkillSource::Claude
+        );
+        let names: Vec<&str> = registry
+            .list()
+            .iter()
+            .map(|a| a.config.name.as_str())
+            .collect();
+        assert_eq!(names, ["alpha", "mid", "shared", "zeta"]);
     }
 
     #[test]

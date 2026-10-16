@@ -14,7 +14,7 @@ pub(crate) fn handle_pre_commit_validate_command(
     let skill_files = if staged {
         staged_skill_files(Path::new("."))?
     } else {
-        let roots = crate::commands::skill_roots_for(&skill_dirs);
+        let roots = crate::commands::skill_roots_for(&skill_dirs)?;
         discover_skills(&roots, None)?
             .into_iter()
             .map(|s| {
@@ -29,7 +29,7 @@ pub(crate) fn handle_pre_commit_validate_command(
         return Ok(());
     }
 
-    let outcome = validate_files(&skill_files, target.into());
+    let outcome = validate_files(&skill_files, target);
     for line in &outcome.failures {
         eprintln!("{line}");
     }
@@ -45,9 +45,12 @@ pub(crate) fn handle_pre_commit_validate_command(
     Ok(())
 }
 
-/// Whether a path names a file the hook validates.
+/// Whether a path names a file the hook validates: a `SKILL.md`, the file
+/// discovery treats as a skill, or a `.skill` file. Other markdown (README,
+/// CHANGELOG, a skill's references) is not a skill and has no frontmatter.
 fn is_hook_skill_file(path: &str) -> bool {
-    path.ends_with(".md") || path.ends_with(".skill")
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name == "SKILL.md" || name.ends_with(".skill")
 }
 
 /// The staged skill files in the repository that contains `dir`, with the
@@ -156,6 +159,11 @@ mod tests {
             ])
             .args(args)
             .current_dir(repo)
+            // A git hook's GIT_DIR/GIT_INDEX_FILE would point this at the
+            // enclosing repository instead of the temp one.
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_WORK_TREE")
             .status()
             .expect("spawn git");
         assert!(status.success(), "git {args:?}");
@@ -166,9 +174,13 @@ mod tests {
     }
 
     #[test]
-    fn hook_skill_file_filter_keeps_md_and_skill() {
-        assert!(is_hook_skill_file("skills/my-skill.md"));
+    fn hook_skill_file_filter_keeps_skill_md_and_skill_but_skips_other_markdown() {
+        assert!(is_hook_skill_file("skills/my-skill/SKILL.md"));
+        assert!(is_hook_skill_file("SKILL.md"));
         assert!(is_hook_skill_file("tools/helper.skill"));
+        assert!(!is_hook_skill_file("README.md"));
+        assert!(!is_hook_skill_file("docs/CHANGELOG.md"));
+        assert!(!is_hook_skill_file("skills/my-skill/references/guide.md"));
         assert!(!is_hook_skill_file("src/main.rs"));
         assert!(!is_hook_skill_file("README.txt"));
     }

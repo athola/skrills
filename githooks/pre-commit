@@ -1,14 +1,69 @@
 #!/usr/bin/env bash
+# Git pre-commit hook (core.hooksPath=githooks): run `make precommit` from the
+# repo root.
 set -euo pipefail
 
-# Ensure we run from repo root
-repo_root="$(git rev-parse --show-toplevel)"
-cd "$repo_root"
+MYDIR="${0%"${0##*/}"}"
+readonly MYDIR="${MYDIR:-./}"
+# shellcheck source=scripts/logging.sh
+. "${MYDIR%/}/../scripts/logging.sh"
 
-if ! command -v make >/dev/null 2>&1; then
-  echo "pre-commit hook: make not found; install build tools first." >&2
+readonly REQUIRED_DEPENDENCIES="git make"
+
+usage() {
+  log "Usage: ${0##*/} [-h] [-x]"
+  printf '  %-4s %s\n' \
+    "-h" "Show this help and exit" \
+    "-x" "Trace execution (set -x)"
+  printf '  %s\n' "Git runs this hook with no arguments before each commit."
+  exit 0
+}
+
+depcheck() {
+  local utility missing=""
+  for utility in ${REQUIRED_DEPENDENCIES}; do
+    command -v "${utility}" >/dev/null 2>&1 || missing="${missing:+"${missing} "}${utility}"
+  done
+  case "${missing}" in
+    "") return 0 ;;
+  esac
+  for utility in ${missing}; do
+    log 5 "pre-commit hook: ${utility} not found; install build tools first."
+  done
   exit 1
-fi
+}
 
-echo "pre-commit: running make precommit"
-make precommit
+main() {
+  case "${1:-}" in
+    *[uU][sS][aA][gG][eE] | *[hH][eE][lL][pP]) usage ;;
+  esac
+  local opt
+  while getopts ":hx" opt; do
+    case "${opt}" in
+      h) usage ;;
+      x) set -x ;;
+      *)
+        log 3 "Unknown flag: -${OPTARG}"
+        exit 64
+        ;;
+    esac
+  done
+
+  depcheck
+
+  # Ensure we run from repo root
+  local repo_root
+  repo_root="$(git rev-parse --show-toplevel)"
+
+  # Git exports these to hooks (absolute paths in a linked worktree). Tests that
+  # run git in temp dirs would inherit them and act on this repository instead.
+  unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE
+
+  log 6 "pre-commit: running make precommit"
+  (
+    cd "${repo_root:?git rev-parse returned no repo root}"
+    make precommit
+  )
+}
+
+main "$@"

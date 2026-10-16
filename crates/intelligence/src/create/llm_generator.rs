@@ -3,6 +3,7 @@
 use super::{cli_detector, CreateSkillRequest, CreateSkillResult, CreationMethod};
 use crate::context::ProjectProfile;
 use anyhow::Result;
+use skrills_subagents::launch::{CodexExec, CodexPrompt, CodexSandbox};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
@@ -99,10 +100,7 @@ pub async fn generate_skill_with_llm(request: &CreateSkillRequest) -> Result<Cre
         String::new()
     };
 
-    let prompt = SKILL_GENERATION_PROMPT
-        .replace("{name}", &request.name)
-        .replace("{description}", &request.description)
-        .replace("{context_section}", &context_section);
+    let prompt = build_prompt(&request.name, &request.description, &context_section);
 
     debug!("Generation prompt:\n{}", prompt);
 
@@ -123,7 +121,7 @@ pub async fn generate_skill_with_llm(request: &CreateSkillRequest) -> Result<Cre
             let stdout = String::from_utf8_lossy(&output.stdout);
             let content = extract_skill_content(&stdout);
 
-            if content.is_empty() || !content.contains("---") {
+            if !is_valid_skill_md(&content) {
                 return Ok(CreateSkillResult::failure(
                     CreationMethod::LLMGenerate,
                     "Generated content does not appear to be a valid SKILL.md",
@@ -143,25 +141,58 @@ pub async fn generate_skill_with_llm(request: &CreateSkillRequest) -> Result<Cre
     }
 }
 
+/// Fill the prompt template in one pass, so a `{description}` inside the
+/// name (or a `{context_section}` inside the description) stays literal.
+fn build_prompt(name: &str, description: &str, context_section: &str) -> String {
+    let mut prompt = String::with_capacity(SKILL_GENERATION_PROMPT.len());
+    let mut rest = SKILL_GENERATION_PROMPT;
+    while let Some(start) = rest.find('{') {
+        prompt.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        let (value, len) = if tail.starts_with("{name}") {
+            (name, "{name}".len())
+        } else if tail.starts_with("{description}") {
+            (description, "{description}".len())
+        } else if tail.starts_with("{context_section}") {
+            (context_section, "{context_section}".len())
+        } else {
+            ("{", 1)
+        };
+        prompt.push_str(value);
+        rest = &tail[len..];
+    }
+    prompt.push_str(rest);
+    prompt
+}
+
 /// How long a skill-generation CLI may run before it is killed.
 const LLM_CLI_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Arguments for a one-shot, non-interactive run of `binary`.
 ///
-/// Claude Code takes `--print -p <prompt>`. Codex has no `--print` and its
-/// `-p` selects a config profile; its non-interactive entry point is
-/// `codex exec <prompt>`, read-only so generation cannot touch the tree.
+/// Claude Code takes `--print -p <prompt>`, with `--tools ""` (no built-in
+/// tools) and `--strict-mcp-config` (no MCP servers) so a prompt-injected
+/// name or description cannot run the user's allowed tools. Codex has no
+/// `--print` and its `-p` selects a config profile; its non-interactive entry
+/// point is `codex exec <prompt>`, read-only so generation cannot touch the
+/// tree.
 fn cli_args(binary: &str, prompt: &str) -> Vec<String> {
     if binary.starts_with("codex") {
+        CodexExec {
+            prompt: CodexPrompt::Arg(prompt),
+            sandbox: CodexSandbox::ReadOnly,
+            skip_git_repo_check: true,
+        }
+        .args()
+    } else {
         vec![
-            "exec".to_string(),
-            "--skip-git-repo-check".to_string(),
-            "--sandbox".to_string(),
-            "read-only".to_string(),
+            "--tools".to_string(),
+            String::new(),
+            "--strict-mcp-config".to_string(),
+            "--print".to_string(),
+            "-p".to_string(),
             prompt.to_string(),
         ]
-    } else {
-        vec!["--print".to_string(), "-p".to_string(), prompt.to_string()]
     }
 }
 
@@ -239,18 +270,22 @@ fn extract_skill_content(response: &str) -> String {
         return response.to_string();
     }
 
-    // Look for code blocks
-    if let Some(start) = response.find("```") {
-        // Find end of code block
-        if let Some(end_offset) = response[start + 3..].find("```") {
-            let content = &response[start + 3..start + 3 + end_offset];
-            // Skip language identifier if present (e.g., ```markdown)
-            if let Some(newline) = content.find('\n') {
-                let after_lang = &content[newline + 1..];
-                if after_lang.contains("---") {
-                    return after_lang.trim().to_string();
-                }
-            }
+    // Look for a fenced block that opens with frontmatter. Its end is the
+    // last bare fence line, so a fenced example inside the skill body does not
+    // cut the skill short.
+    let lines: Vec<&str> = response.lines().collect();
+    for (open, line) in lines.iter().enumerate() {
+        if !line.trim_start().starts_with("```") {
+            continue;
+        }
+        if lines.get(open + 1).map(|l| l.trim()) != Some("---") {
+            continue;
+        }
+        if let Some(close) = (open + 2..lines.len())
+            .rev()
+            .find(|&i| lines[i].trim() == "```")
+        {
+            return lines[open + 1..close].join("\n").trim().to_string();
         }
     }
 
@@ -263,8 +298,43 @@ fn extract_skill_content(response: &str) -> String {
     response.to_string()
 }
 
+/// True when `content` opens with a closed `---` frontmatter block that
+/// gives a non-empty `name` and `description`.
+///
+/// A reply that merely contains `---` (a refusal with a markdown rule in it)
+/// is not a skill.
+fn is_valid_skill_md(content: &str) -> bool {
+    let mut lines = content.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return false;
+    }
+    let mut has_name = false;
+    let mut has_description = false;
+    for line in lines {
+        if line.trim() == "---" {
+            return has_name && has_description;
+        }
+        let field = |key: &str| {
+            line.strip_prefix(key)
+                .and_then(|rest| rest.strip_prefix(':'))
+                .is_some_and(|value| !value.trim().is_empty())
+        };
+        has_name |= field("name");
+        has_description |= field("description");
+    }
+    false
+}
+
 /// Generate a skill synchronously (blocking).
+///
+/// Builds its own runtime, so it fails (rather than panicking) when called
+/// from inside a tokio runtime; async callers use [`generate_skill_with_llm`].
 pub fn generate_skill_sync(request: &CreateSkillRequest) -> Result<CreateSkillResult> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        anyhow::bail!(
+            "generate_skill_sync called inside a tokio runtime; use generate_skill_with_llm"
+        );
+    }
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -853,11 +923,20 @@ description: Code block never closed
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "hello");
     }
 
+    /// Generation needs no tools: a prompt-injected description must not be
+    /// able to run the user's allowed tools or MCP servers.
     #[test]
-    fn cli_args_use_print_mode_for_claude() {
+    fn cli_args_for_claude_disable_every_tool_and_mcp_server() {
         assert_eq!(
             cli_args("claude", "do it"),
-            vec!["--print".to_string(), "-p".to_string(), "do it".to_string()]
+            vec![
+                "--tools".to_string(),
+                String::new(),
+                "--strict-mcp-config".to_string(),
+                "--print".to_string(),
+                "-p".to_string(),
+                "do it".to_string()
+            ]
         );
     }
 
@@ -872,6 +951,21 @@ description: Code block never closed
         assert!(args.iter().any(|a| a == "--skip-git-repo-check"));
     }
 
+    /// M453: skill generation builds its Codex argv with the shared launcher,
+    /// read-only so generation cannot touch the tree.
+    #[test]
+    fn codex_cli_args_come_from_the_shared_launcher() {
+        assert_eq!(
+            cli_args("codex", "do it"),
+            CodexExec {
+                prompt: CodexPrompt::Arg("do it"),
+                sandbox: CodexSandbox::ReadOnly,
+                skip_git_repo_check: true,
+            }
+            .args()
+        );
+    }
+
     /// A response that already is a skill must be returned whole, even when
     /// its body carries a fenced example with its own `---` lines.
     #[test]
@@ -881,5 +975,78 @@ description: Code block never closed
         assert!(content.starts_with("---\nname: x"), "got: {content}");
         assert!(content.contains("# T"));
         assert!(content.contains("foo: 1"));
+    }
+
+    #[test]
+    fn refusal_with_a_markdown_rule_is_not_a_valid_skill() {
+        let content = extract_skill_content("I can't help with that.\n\n---\n\nSorry.");
+        assert!(!is_valid_skill_md(&content), "accepted: {content}");
+    }
+
+    #[test]
+    fn generated_skill_needs_name_and_description_in_its_frontmatter() {
+        assert!(is_valid_skill_md(
+            "---\nname: x\ndescription: does y\n---\n# X"
+        ));
+        assert!(!is_valid_skill_md("---\nname: x\n---\n# X"));
+        assert!(!is_valid_skill_md("---\nname: \ndescription: d\n---\n"));
+        assert!(!is_valid_skill_md("---\nname: x\ndescription: d\n"));
+    }
+
+    #[test]
+    fn extract_skill_content_keeps_a_nested_fence_inside_the_outer_block() {
+        let response = "Here:\n```markdown\n---\nname: n\ndescription: d\n---\n# T\n```bash\necho hi\n```\nmore body\n```\nThanks";
+        let content = extract_skill_content(response);
+        assert!(content.starts_with("---\nname: n"), "got: {content}");
+        assert!(content.contains("more body"), "got: {content}");
+        assert!(!content.contains("Thanks"), "got: {content}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generate_skill_with_llm_reports_failure_for_a_refusal() {
+        use std::os::unix::fs::PermissionsExt;
+        let _guard = env_guard();
+        let bin = tempfile::tempdir().unwrap();
+        let script = bin.path().join("fake-llm-cli");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf 'I cannot do that.\\n\\n---\\n\\nSorry.\\n'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!(
+            "{}:{}",
+            bin.path().display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let _path = set_env_var("PATH", Some(&path));
+        let _bin = set_env_var("SKRILLS_CLI_BINARY", Some("fake-llm-cli"));
+
+        let request = CreateSkillRequest::new("x", "y");
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(generate_skill_with_llm(&request))
+            .unwrap();
+        assert!(!result.success, "refusal accepted: {:?}", result.content);
+    }
+
+    #[tokio::test]
+    async fn generate_skill_sync_refuses_to_run_inside_a_runtime() {
+        let request = CreateSkillRequest::new("x", "y");
+        assert!(generate_skill_sync(&request).is_err());
+    }
+
+    #[test]
+    fn prompt_placeholders_inside_values_are_not_expanded() {
+        let prompt = build_prompt("{description}", "uses {context_section} literally", "CTX");
+        assert!(prompt.contains("Name: {description}"), "{prompt}");
+        assert!(
+            prompt.contains("Description: uses {context_section} literally"),
+            "{prompt}"
+        );
+        assert_eq!(prompt.matches("CTX").count(), 1, "{prompt}");
     }
 }

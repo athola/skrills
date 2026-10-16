@@ -31,6 +31,7 @@ fn sample_skill(name: &str, source: &str, valid: Option<bool>, invocations: u64)
         }],
         valid,
         invocations,
+        metric_names: vec![format!("{name}/SKILL.md")],
     }
 }
 
@@ -920,4 +921,53 @@ fn header_shows_mcp_count_when_servers_present() {
         output.contains("MCP: 1"),
         "Header should show MCP server count when servers present"
     );
+}
+
+#[test]
+fn mcp_panel_says_how_many_servers_it_could_not_show() {
+    let mut terminal = test_terminal(130, 30);
+    let mut app = app_with_skills();
+    app.mcp_servers = (0..9)
+        .map(|i| McpServerInfo {
+            name: format!("server{i}"),
+            source: "claude".into(),
+            transport: "stdio".into(),
+            command: "cmd".into(),
+            enabled: true,
+            allowed_tools: vec![],
+            disabled_tools: vec![],
+        })
+        .collect();
+    terminal
+        .draw(|f| ui::draw(f, &mut app))
+        .expect("draw failed");
+    let output = render_to_string(&terminal);
+    assert!(output.contains("more"), "{output}");
+}
+
+#[test]
+fn successful_invocation_renders_green() {
+    let mut terminal = test_terminal(130, 30);
+    let mut app = app_with_skills();
+    app.on_metric_event(skrills_metrics::MetricEvent::SkillInvocation {
+        id: 1,
+        skill_name: "ok-skill".into(),
+        plugin: None,
+        duration_ms: 1,
+        success: true,
+        tokens_used: None,
+        created_at: String::new(),
+    });
+    terminal
+        .draw(|f| ui::draw(f, &mut app))
+        .expect("draw failed");
+    let buffer = terminal.backend().buffer().clone();
+    let green = (0..buffer.area.height).any(|y| {
+        let row: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        row.contains("[INV] ok-skill")
+            && (0..buffer.area.width).any(|x| buffer[(x, y)].fg == ratatui::style::Color::Green)
+    });
+    assert!(green);
 }

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 mod enums;
 
 pub use enums::{
-    AgentBackend, CertAction, CreateSkillMethod, DependencyDirection, OutputFormat, SyncSource,
+    AgentBackend, CertAction, CreateSkillMethod, DependencyDirection, OutputFormat, Platform,
     ValidationTarget,
 };
 
@@ -18,6 +18,17 @@ pub use enums::{
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
+}
+
+/// Parses a number in `0.0..=1.0`. `NaN` and out-of-range values are
+/// refused rather than clamped: `-t 5` used to return every skill.
+fn parse_unit_interval(raw: &str) -> Result<f64, String> {
+    let value: f64 = raw.parse().map_err(|e| format!("{e}"))?;
+    if (0.0..=1.0).contains(&value) {
+        Ok(value)
+    } else {
+        Err(format!("{raw} is not between 0.0 and 1.0"))
+    }
 }
 
 /// Available `skrills` commands.
@@ -46,8 +57,15 @@ pub enum Commands {
 
         // --- Phase 2 Security Options ---
         /// Bearer token for HTTP authentication. Validates `Authorization: Bearer <token>`.
-        /// If not specified, auth is disabled (Phase 1 behavior).
-        #[arg(long, value_name = "TOKEN", env = "SKRILLS_AUTH_TOKEN")]
+        /// If not specified, auth is disabled (Phase 1 behavior). Prefer
+        /// `SKRILLS_AUTH_TOKEN` or `auth_token` in ~/.skrills/config.toml: a
+        /// token on the command line is visible to other users through `ps`.
+        #[arg(
+            long,
+            value_name = "TOKEN",
+            env = "SKRILLS_AUTH_TOKEN",
+            hide_env_values = true
+        )]
         auth_token: Option<String>,
         /// Path to TLS certificate file (PEM format). Requires --tls-key.
         #[arg(
@@ -112,7 +130,8 @@ pub enum Commands {
         #[arg(long, env = "SKRILLS_INCLUDE_MARKETPLACE", default_value_t = false)]
         include_marketplace: bool,
     },
-    /// Launches a discovered agent by name using the stored run template.
+    /// Runs a discovered agent by name with `codex exec`, sandboxed to the
+    /// working directory (`--sandbox workspace-write`).
     Agent {
         /// Agent name or unique substring to launch.
         #[arg(required = true)]
@@ -123,6 +142,14 @@ pub enum Commands {
         /// Only print the resolved command without executing it.
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+        /// Run Codex with no sandbox and no approvals
+        /// (`--dangerously-bypass-approvals-and-sandbox`). Only for agent
+        /// files you trust, in an environment that is sandboxed already.
+        #[arg(long, default_value_t = false)]
+        dangerously_bypass_sandbox: bool,
+        /// Kill the agent after this many seconds (0 = no limit).
+        #[arg(long, value_name = "SECONDS", default_value_t = 1800)]
+        timeout: u64,
     },
     /// Launches an agent with multi-CLI backend routing.
     ///
@@ -132,7 +159,7 @@ pub enum Commands {
         /// Agent name or unique substring to launch.
         #[arg(required = true)]
         agent: String,
-        ///// Primary backend: auto, claude, or codex (default: auto).
+        /// Primary backend: auto, claude, or codex (default: auto).
         #[arg(long, value_enum, default_value_t = AgentBackend::Auto)]
         backend: AgentBackend,
         /// Additional skill directories (repeatable).
@@ -141,6 +168,14 @@ pub enum Commands {
         /// Only print the resolved command without executing it.
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+        /// Codex backend only: run with no sandbox and no approvals
+        /// (`--dangerously-bypass-approvals-and-sandbox`). Refused when the
+        /// Claude backend is selected.
+        #[arg(long, default_value_t = false)]
+        dangerously_bypass_sandbox: bool,
+        /// Kill the agent after this many seconds (0 = no limit).
+        #[arg(long, value_name = "SECONDS", default_value_t = 1800)]
+        timeout: u64,
     },
     /// Generates `<available_skills>` section in AGENTS.md for non-MCP agents.
     SyncAgents {
@@ -161,11 +196,11 @@ pub enum Commands {
     /// Syncs slash commands between AI CLI tools (Claude, Codex, Copilot, Cursor).
     SyncCommands {
         /// Source CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
-        from: SyncSource,
+        #[arg(long, value_enum, default_value_t = Platform::Claude)]
+        from: Platform,
         /// Target CLI: claude, codex, copilot, or cursor. If not specified, defaults to codex (for claude source) or claude (for others).
         #[arg(long, value_enum)]
-        to: Option<SyncSource>,
+        to: Option<Platform>,
         /// Preview changes without writing.
         #[arg(long)]
         dry_run: bool,
@@ -179,11 +214,11 @@ pub enum Commands {
     /// Syncs MCP server configurations between AI CLI tools.
     SyncMcpServers {
         /// Source CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
-        from: SyncSource,
+        #[arg(long, value_enum, default_value_t = Platform::Claude)]
+        from: Platform,
         /// Target CLI: claude, codex, copilot, or cursor.
         #[arg(long, value_enum)]
-        to: Option<SyncSource>,
+        to: Option<Platform>,
         /// Preview changes without writing.
         #[arg(long)]
         dry_run: bool,
@@ -191,11 +226,11 @@ pub enum Commands {
     /// Syncs preferences between AI CLI tools.
     SyncPreferences {
         /// Source CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
-        from: SyncSource,
+        #[arg(long, value_enum, default_value_t = Platform::Claude)]
+        from: Platform,
         /// Target CLI: claude, codex, copilot, or cursor.
         #[arg(long, value_enum)]
-        to: Option<SyncSource>,
+        to: Option<Platform>,
         /// Preview changes without writing.
         #[arg(long)]
         dry_run: bool,
@@ -203,11 +238,11 @@ pub enum Commands {
     /// Syncs all configurations (commands, MCP servers, preferences, skills).
     SyncAll {
         /// Source CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
-        from: SyncSource,
+        #[arg(long, value_enum, default_value_t = Platform::Claude)]
+        from: Platform,
         /// Target CLI: claude, codex, copilot, or cursor. If omitted, syncs to ALL other CLIs.
         #[arg(long, value_enum)]
-        to: Option<SyncSource>,
+        to: Option<Platform>,
         /// Preview changes without writing.
         #[arg(long)]
         dry_run: bool,
@@ -233,11 +268,11 @@ pub enum Commands {
     /// Shows sync status and configuration differences.
     SyncStatus {
         /// Source CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
-        from: SyncSource,
+        #[arg(long, value_enum, default_value_t = Platform::Claude)]
+        from: Platform,
         /// Target CLI: claude, codex, copilot, or cursor.
         #[arg(long, value_enum)]
-        to: Option<SyncSource>,
+        to: Option<Platform>,
     },
     /// Diagnoses Codex MCP configuration for this server.
     Doctor,
@@ -282,7 +317,7 @@ pub enum Commands {
         #[arg(long)]
         min_tokens: Option<usize>,
         /// Include optimization suggestions.
-        #[arg(long, default_value_t = true)]
+        #[arg(long, default_value_t = true, num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::builder::BoolishValueParser::new(), action = ArgAction::Set)]
         suggestions: bool,
     },
     /// Shows aggregate statistics about discovered skills.
@@ -312,7 +347,7 @@ pub enum Commands {
         #[arg(long, default_value = "10")]
         limit: usize,
         /// Include quality scores in recommendations.
-        #[arg(long, default_value_t = true)]
+        #[arg(long, default_value_t = true, num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::builder::BoolishValueParser::new(), action = ArgAction::Set)]
         include_quality: bool,
     },
     /// Resolve dependencies or dependents for a skill URI.
@@ -437,13 +472,13 @@ pub enum Commands {
         #[arg(required = true)]
         query: String,
         /// Similarity threshold (0.0-1.0, lower = more results).
-        #[arg(long, short = 't', default_value = "0.3")]
+        #[arg(long, short = 't', default_value = "0.3", value_parser = parse_unit_interval)]
         threshold: f64,
         /// Maximum results to return.
         #[arg(long, short = 'l', default_value = "10")]
         limit: usize,
         /// Also search descriptions, not just names.
-        #[arg(long, default_value = "true")]
+        #[arg(long, default_value_t = true, num_args = 0..=1, require_equals = true, default_missing_value = "true", value_parser = clap::builder::BoolishValueParser::new(), action = ArgAction::Set)]
         include_description: bool,
         /// Skills directory to search (default: all discovered skills).
         #[arg(long = "skill-dir", value_name = "DIR")]
@@ -473,9 +508,11 @@ pub enum Commands {
         #[arg(long)]
         overwrite: bool,
     },
-    /// Interactive TUI for sync and pin management.
+    /// Interactive prompts that mirror Claude skills, agents, commands, MCP
+    /// servers and preferences into Codex.
     Tui {
-        /// Additional skill directories (repeatable).
+        /// Ignored: the TUI always mirrors from the Claude root. Kept so
+        /// existing invocations still parse.
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
     },
@@ -490,7 +527,7 @@ pub enum Commands {
         /// Skill name to compare (e.g., "commit", "review-pr").
         #[arg(required = true)]
         name: String,
-        /// Output format: text (unified diff), json, or summary.
+        /// Output format: text (unified diff with hunk headers) or json.
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
         /// Show context lines around differences.
@@ -517,12 +554,15 @@ pub enum Commands {
         /// Skip confirmation prompts (non-interactive mode).
         #[arg(long, short = 'y')]
         yes: bool,
-        /// Also sync skills to universal ~/.agent/skills directory for cross-agent reuse.
+        /// Also sync skills to universal ~/.agents/skills directory for cross-agent reuse.
         #[arg(long)]
         universal: bool,
         /// Source directory for mirroring skills (default: ~/.claude).
         #[arg(long)]
         mirror_source: Option<PathBuf>,
+        /// With --universal, also copy marketplace skills (uninstalled plugins).
+        #[arg(long, env = "SKRILLS_INCLUDE_MARKETPLACE", default_value_t = false)]
+        include_marketplace: bool,
     },
     /// Mark a skill as deprecated with optional migration guidance.
     SkillDeprecate {
@@ -566,8 +606,8 @@ pub enum Commands {
         #[arg(long)]
         skill: Option<String>,
         /// Target CLI to pull skills into.
-        #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
-        target: SyncSource,
+        #[arg(long, value_enum, default_value_t = Platform::Claude)]
+        target: Platform,
         /// Preview changes without applying.
         #[arg(long)]
         dry_run: bool,
@@ -593,8 +633,8 @@ pub enum Commands {
         search: Option<String>,
         /// Filter by source CLI.
         #[arg(long, value_enum)]
-        source: Option<SyncSource>,
-        /// Filter by category tag.
+        source: Option<Platform>,
+        /// Not implemented: skills carry no category, so passing it is an error.
         #[arg(long)]
         category: Option<String>,
         /// Maximum results to return.
@@ -619,14 +659,14 @@ pub enum Commands {
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
     },
-    /// Import skills from external sources (URLs, git repos, local paths).
+    /// Import a skill from a local file or directory.
     SkillImport {
-        /// Source to import from (URL, git URL, or local path).
+        /// Local path: a SKILL.md, a directory holding one, or a markdown file.
         #[arg(required = true)]
         source: String,
         /// Target CLI to import skill into.
-        #[arg(long, value_enum, default_value_t = SyncSource::Claude)]
-        target: SyncSource,
+        #[arg(long, value_enum, default_value_t = Platform::Claude)]
+        target: Platform,
         /// Force overwrite if skill already exists.
         #[arg(long)]
         force: bool,
@@ -642,7 +682,7 @@ pub enum Commands {
         /// Time period in days to analyze.
         #[arg(long, default_value = "30")]
         period: u32,
-        /// Output format: text, json, html, or markdown.
+        /// Output format: text or json.
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
         /// Output file path (if not specified, prints to stdout).
@@ -933,10 +973,10 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn validate_rejects_invalid_target() {
         let _guard = env_guard();
-        let _ = Cli::try_parse_from(["skrills", "validate", "--target", "invalid"]).unwrap();
+        let err = Cli::try_parse_from(["skrills", "validate", "--target", "invalid"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
     }
 
     #[test]
@@ -1259,6 +1299,8 @@ mod tests {
 
         match cli.command {
             Some(Commands::Agent {
+                dangerously_bypass_sandbox: false,
+                timeout: 1800,
                 agent,
                 skill_dirs,
                 dry_run,
@@ -1302,8 +1344,8 @@ mod tests {
                 validate,
                 autofix,
             }) => {
-                assert!(matches!(from, SyncSource::Codex));
-                assert_eq!(to, Some(SyncSource::Copilot));
+                assert!(matches!(from, Platform::Codex));
+                assert_eq!(to, Some(Platform::Copilot));
                 assert!(dry_run);
                 assert!(skip_existing_commands);
                 assert!(!include_marketplace);
@@ -1324,7 +1366,7 @@ mod tests {
             Some(Commands::SyncCommands {
                 from, to, dry_run, ..
             }) => {
-                assert!(matches!(from, SyncSource::Claude));
+                assert!(matches!(from, Platform::Claude));
                 assert!(to.is_none());
                 assert!(!dry_run);
             }
@@ -1498,6 +1540,7 @@ mod tests {
                 yes,
                 universal,
                 mirror_source,
+                include_marketplace: _,
             }) => {
                 assert_eq!(client.as_deref(), Some("claude"));
                 assert_eq!(bin_dir, Some(PathBuf::from("/usr/local/bin")));
@@ -1510,6 +1553,27 @@ mod tests {
             }
             _ => unreachable!("expected Setup command"),
         }
+    }
+
+    /// Marketplace skills belong to plugins that are not installed, so
+    /// `setup` copies them only when asked.
+    #[test]
+    fn setup_include_marketplace_is_opt_in() {
+        let _guard = env_guard();
+        let _env = set_env_var("SKRILLS_INCLUDE_MARKETPLACE", None);
+        let parse = |args: &[&str]| match Cli::try_parse_from(args)
+            .expect("setup args should parse")
+            .command
+        {
+            Some(Commands::Setup {
+                include_marketplace,
+                ..
+            }) => include_marketplace,
+            _ => unreachable!("expected Setup command"),
+        };
+
+        assert!(!parse(&["skrills", "setup"]));
+        assert!(parse(&["skrills", "setup", "--include-marketplace"]));
     }
 
     #[test]
@@ -1536,7 +1600,7 @@ mod tests {
                 format,
             }) => {
                 assert_eq!(source, "https://github.com/example/skill.git");
-                assert!(matches!(target, SyncSource::Codex));
+                assert!(matches!(target, Platform::Codex));
                 assert!(force);
                 assert!(dry_run);
                 assert_eq!(format, OutputFormat::Json);
@@ -1630,6 +1694,149 @@ mod tests {
         }
     }
 
+    /// The help text of `subcommand`: its about plus every argument's help.
+    fn help_of(subcommand: &str) -> String {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let sub = cmd.find_subcommand(subcommand).expect("subcommand exists");
+        let mut text = sub.get_about().map(|a| a.to_string()).unwrap_or_default();
+        for arg in sub.get_arguments() {
+            text.push('\n');
+            text.push_str(&format!("{}: ", arg.get_id()));
+            if let Some(help) = arg.get_help() {
+                text.push_str(&help.to_string());
+            }
+        }
+        text
+    }
+
+    #[test]
+    fn auth_token_help_hides_the_env_value_and_steers_away_from_argv() {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let serve = cmd.find_subcommand("serve").unwrap();
+        let arg = serve
+            .get_arguments()
+            .find(|a| a.get_id() == "auth_token")
+            .unwrap();
+        assert!(arg.is_hide_env_values_set());
+        assert!(help_of("serve").contains("visible to other users"));
+    }
+
+    #[test]
+    fn search_threshold_must_be_between_zero_and_one() {
+        for bad in ["5", "-0.1", "nan", "NaN", "inf"] {
+            assert!(
+                Cli::try_parse_from(["skrills", "search-skills", "q", "-t", bad]).is_err(),
+                "{bad} accepted"
+            );
+        }
+        for good in ["0", "0.5", "1.0"] {
+            assert!(
+                Cli::try_parse_from(["skrills", "search-skills", "q", "-t", good]).is_ok(),
+                "{good} refused"
+            );
+        }
+    }
+
+    #[test]
+    fn help_promises_only_formats_and_sources_that_exist() {
+        let usage = help_of("skill-usage-report");
+        assert!(
+            !usage.contains("html") && !usage.contains("markdown"),
+            "{usage}"
+        );
+        let diff = help_of("skill-diff");
+        assert!(!diff.contains("summary"), "{diff}");
+        let import = help_of("skill-import");
+        assert!(
+            !import.contains("URL") && !import.contains("git"),
+            "{import}"
+        );
+        let tui = help_of("tui");
+        assert!(!tui.contains("pin"), "{tui}");
+        let agent = help_of("multi-cli-agent");
+        assert!(agent.contains("backend: Primary backend"), "{agent}");
+    }
+
+    #[test]
+    fn setup_universal_help_names_the_directory_setup_writes() {
+        let setup = help_of("setup");
+        assert!(setup.contains("~/.agents/skills"), "{setup}");
+        assert!(!setup.contains("~/.agent/skills"), "{setup}");
+    }
+
+    #[test]
+    fn default_true_flags_can_be_turned_off() {
+        let cli = Cli::try_parse_from(["skrills", "analyze", "--suggestions=false"])
+            .expect("analyze --suggestions false should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Analyze {
+                suggestions: false,
+                ..
+            })
+        ));
+
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "recommend",
+            "skill://x",
+            "--include-quality=false",
+        ])
+        .expect("recommend --include-quality false should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Recommend {
+                include_quality: false,
+                ..
+            })
+        ));
+
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "search-skills",
+            "q",
+            "--include-description=false",
+        ])
+        .expect("search-skills --include-description false should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::SearchSkills {
+                include_description: false,
+                ..
+            })
+        ));
+
+        // A bare flag must not swallow the query that follows it.
+        let cli = Cli::try_parse_from(["skrills", "search-skills", "--include-description", "q"])
+            .expect("a bare flag before the query should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::SearchSkills { ref query, include_description: true, .. }) if query == "q"
+        ));
+
+        // The documented bare form still turns it on.
+        let cli = Cli::try_parse_from(["skrills", "analyze", "--suggestions"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Analyze {
+                suggestions: true,
+                ..
+            })
+        ));
+
+        // The defaults stay on.
+        let cli = Cli::try_parse_from(["skrills", "analyze"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Analyze {
+                suggestions: true,
+                ..
+            })
+        ));
+    }
+
     #[test]
     fn parse_serve_open_without_http_is_error() {
         let result = Cli::try_parse_from(["skrills", "serve", "--open"]);
@@ -1640,12 +1847,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_agent_timeout_zero_means_no_limit() {
+        for sub in ["agent", "multi-cli-agent"] {
+            let cli = Cli::try_parse_from(["skrills", sub, "a", "--timeout", "0"]).unwrap();
+            assert!(
+                matches!(
+                    cli.command,
+                    Some(Commands::Agent { timeout: 0, .. })
+                        | Some(Commands::MultiCliAgent { timeout: 0, .. })
+                ),
+                "{sub}"
+            );
+        }
+    }
+
+    #[test]
     fn parse_multi_cli_agent_defaults() {
         let cli = Cli::try_parse_from(["skrills", "multi-cli-agent", "my-agent"])
             .expect("multi-cli-agent should parse");
 
         match cli.command {
             Some(Commands::MultiCliAgent {
+                dangerously_bypass_sandbox: false,
+                timeout: 1800,
                 agent,
                 backend,
                 skill_dirs,
@@ -1676,6 +1900,8 @@ mod tests {
 
         match cli.command {
             Some(Commands::MultiCliAgent {
+                dangerously_bypass_sandbox: false,
+                timeout: 1800,
                 agent,
                 backend,
                 skill_dirs,
@@ -1688,6 +1914,38 @@ mod tests {
             }
             _ => unreachable!("expected MultiCliAgent command"),
         }
+    }
+
+    #[test]
+    fn agent_commands_accept_the_bypass_opt_in() {
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "agent",
+            "my-agent",
+            "--dangerously-bypass-sandbox",
+        ])
+        .expect("agent --dangerously-bypass-sandbox should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Agent {
+                dangerously_bypass_sandbox: true,
+                ..
+            })
+        ));
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "multi-cli-agent",
+            "my-agent",
+            "--dangerously-bypass-sandbox",
+        ])
+        .expect("multi-cli-agent --dangerously-bypass-sandbox should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::MultiCliAgent {
+                dangerously_bypass_sandbox: true,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -1735,66 +1993,112 @@ mod tests {
             Some(Commands::SyncAll {
                 from, to, dry_run, ..
             }) => {
-                assert!(matches!(from, SyncSource::Claude));
-                assert_eq!(to, Some(SyncSource::Cursor));
+                assert!(matches!(from, Platform::Claude));
+                assert_eq!(to, Some(Platform::Cursor));
                 assert!(dry_run);
             }
             _ => unreachable!("expected SyncAll command"),
         }
     }
 
-    // --- SyncSource enum method tests ---
+    /// The platform and validation-target enums now come from skrills_sync and
+    /// skrills-validate; every flag value the CLI accepted before still parses
+    /// to the same variant.
+    #[test]
+    fn platform_and_validation_target_flags_keep_their_spellings() {
+        for (name, platform) in [
+            ("claude", Platform::Claude),
+            ("codex", Platform::Codex),
+            ("copilot", Platform::Copilot),
+            ("cursor", Platform::Cursor),
+        ] {
+            let other = if name == "claude" { "codex" } else { "claude" };
+            let cli = Cli::try_parse_from(["skrills", "sync-all", "--from", name, "--to", other])
+                .unwrap_or_else(|e| panic!("--from {name}: {e}"));
+            match cli.command {
+                Some(Commands::SyncAll { from, .. }) => assert_eq!(from, platform),
+                _ => unreachable!("expected SyncAll command"),
+            }
+        }
+        assert!(Cli::try_parse_from(["skrills", "sync-all", "--from", "vscode"]).is_err());
+
+        for (name, expected) in [
+            ("claude", ValidationTarget::Claude),
+            ("codex", ValidationTarget::Codex),
+            ("copilot", ValidationTarget::Copilot),
+            ("all", ValidationTarget::All),
+            ("both", ValidationTarget::Both),
+        ] {
+            let cli = Cli::try_parse_from(["skrills", "validate", "--target", name])
+                .unwrap_or_else(|e| panic!("--target {name}: {e}"));
+            match cli.command {
+                Some(Commands::Validate { target, .. }) => assert_eq!(target, expected),
+                _ => unreachable!("expected Validate command"),
+            }
+        }
+        // The defaults the help text promises.
+        match Cli::try_parse_from(["skrills", "validate"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Validate { target, .. }) => assert_eq!(target, ValidationTarget::Both),
+            _ => unreachable!("expected Validate command"),
+        }
+        match Cli::try_parse_from(["skrills", "sync-all"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::SyncAll { from, .. }) => assert_eq!(from, Platform::Claude),
+            _ => unreachable!("expected SyncAll command"),
+        }
+    }
+
+    // --- Platform enum method tests ---
 
     #[test]
     fn sync_source_as_str_returns_expected_names() {
-        assert_eq!(SyncSource::Claude.as_str(), "claude");
-        assert_eq!(SyncSource::Codex.as_str(), "codex");
-        assert_eq!(SyncSource::Copilot.as_str(), "copilot");
-        assert_eq!(SyncSource::Cursor.as_str(), "cursor");
+        assert_eq!(Platform::Claude.as_str(), "claude");
+        assert_eq!(Platform::Codex.as_str(), "codex");
+        assert_eq!(Platform::Copilot.as_str(), "copilot");
+        assert_eq!(Platform::Cursor.as_str(), "cursor");
     }
 
     #[test]
     fn sync_source_is_predicates() {
-        assert!(SyncSource::Claude.is_claude());
-        assert!(!SyncSource::Claude.is_codex());
+        assert!(Platform::Claude.is_claude());
+        assert!(!Platform::Claude.is_codex());
 
-        assert!(SyncSource::Codex.is_codex());
-        assert!(!SyncSource::Codex.is_claude());
+        assert!(Platform::Codex.is_codex());
+        assert!(!Platform::Codex.is_claude());
 
-        assert!(SyncSource::Copilot.is_copilot());
-        assert!(!SyncSource::Copilot.is_cursor());
+        assert!(Platform::Copilot.is_copilot());
+        assert!(!Platform::Copilot.is_cursor());
 
-        assert!(SyncSource::Cursor.is_cursor());
-        assert!(!SyncSource::Cursor.is_copilot());
+        assert!(Platform::Cursor.is_cursor());
+        assert!(!Platform::Cursor.is_copilot());
     }
 
     #[test]
     fn sync_source_default_target() {
+        assert!(matches!(Platform::Claude.default_target(), Platform::Codex));
+        assert!(matches!(Platform::Codex.default_target(), Platform::Claude));
         assert!(matches!(
-            SyncSource::Claude.default_target(),
-            SyncSource::Codex
+            Platform::Copilot.default_target(),
+            Platform::Claude
         ));
         assert!(matches!(
-            SyncSource::Codex.default_target(),
-            SyncSource::Claude
-        ));
-        assert!(matches!(
-            SyncSource::Copilot.default_target(),
-            SyncSource::Claude
-        ));
-        assert!(matches!(
-            SyncSource::Cursor.default_target(),
-            SyncSource::Claude
+            Platform::Cursor.default_target(),
+            Platform::Claude
         ));
     }
 
     #[test]
     fn sync_source_other_targets_excludes_self() {
         for source in [
-            SyncSource::Claude,
-            SyncSource::Codex,
-            SyncSource::Copilot,
-            SyncSource::Cursor,
+            Platform::Claude,
+            Platform::Codex,
+            Platform::Copilot,
+            Platform::Cursor,
         ] {
             let targets = source.other_targets();
             assert_eq!(targets.len(), 3, "{:?} should have 3 other targets", source);

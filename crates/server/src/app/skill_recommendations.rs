@@ -5,11 +5,10 @@
 //! (through [`rank_skill_recommendations`]). Both used to carry their own
 //! copy of it (SA-44).
 
-use crate::cache::SkillCache;
 use crate::metrics_types::{RecommendationRelationship, SkillRecommendation, SkillRecommendations};
 use anyhow::Result;
 use skrills_analyze::{analyze_skill, RelationshipGraph};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 
 use super::SkillService;
@@ -27,6 +26,12 @@ pub(crate) fn related_skills(
 ) -> Vec<(String, RecommendationRelationship)> {
     let dependencies = dependencies_of(uri);
     let source_deps: HashSet<&String> = dependencies.iter().collect();
+    // A skill that is both a dependency and a dependent (A <-> B) is listed
+    // once, as a dependency.
+    let dependents: Vec<String> = dependents
+        .into_iter()
+        .filter(|d| !source_deps.contains(d))
+        .collect();
 
     let mut siblings: Vec<String> = Vec::new();
     if !source_deps.is_empty() {
@@ -117,20 +122,14 @@ pub fn rank_skill_recommendations(
     rank(uri, related, limit, quality)
 }
 
-/// The quality score of the skill at `uri`, read from disk.
+/// The quality score of the skill file at `path`.
 ///
-/// `None` on I/O or cache failure (warnings logged).
-fn quality_score(uri: &str, cache: &mut SkillCache) -> Option<f64> {
-    match cache.skill_by_uri(uri) {
-        Ok(meta) => match fs::read_to_string(&meta.path) {
-            Ok(content) => Some(analyze_skill(&meta.path, &content).quality_score),
-            Err(e) => {
-                tracing::warn!(uri = %uri, error = %e, "Failed to read skill for quality scoring");
-                None
-            }
-        },
+/// `None` when the file cannot be read (warning logged).
+fn quality_score(uri: &str, path: &std::path::Path) -> Option<f64> {
+    match fs::read_to_string(path) {
+        Ok(content) => Some(analyze_skill(path, &content).quality_score),
         Err(e) => {
-            tracing::warn!(uri = %uri, error = %e, "Failed to find skill metadata for quality scoring");
+            tracing::warn!(uri = %uri, error = %e, "Failed to read skill for quality scoring");
             None
         }
     }
@@ -150,26 +149,45 @@ impl SkillService {
         limit: usize,
         include_quality: bool,
     ) -> Result<SkillRecommendations> {
-        let mut cache = self.cache.lock();
-        cache.ensure_fresh()?;
+        // Only graph lookups happen under the cache lock; the skill files
+        // are read for quality after it is released, so other tools and the
+        // watcher are not held up by disk reads.
+        let (related, paths) = {
+            let mut cache = self.cache.lock();
+            cache.ensure_fresh()?;
 
-        let all_uris = cache.skill_uris()?;
+            let all_uris = cache.skill_uris()?;
 
-        if !all_uris.contains(&uri.to_string()) {
-            anyhow::bail!("Skill not found: {}", uri);
-        }
+            if !all_uris.contains(&uri.to_string()) {
+                anyhow::bail!("Skill not found: {}", uri);
+            }
 
-        let related = related_skills(
-            uri,
-            &all_uris,
-            |u| cache.dependencies_raw(u),
-            cache.dependents_raw(uri),
-        );
+            let related = related_skills(
+                uri,
+                &all_uris,
+                |u| cache.dependencies_raw(u),
+                cache.dependents_raw(uri),
+            );
+            let mut paths: HashMap<String, std::path::PathBuf> = HashMap::new();
+            if include_quality {
+                for (related_uri, _) in &related {
+                    match cache.skill_by_uri(related_uri) {
+                        Ok(meta) => {
+                            paths.insert(related_uri.clone(), meta.path);
+                        }
+                        Err(e) => tracing::warn!(
+                            uri = %related_uri,
+                            error = %e,
+                            "Failed to find skill metadata for quality scoring"
+                        ),
+                    }
+                }
+            }
+            (related, paths)
+        };
 
         Ok(rank(uri, related, limit, |u| {
-            include_quality
-                .then(|| quality_score(u, &mut cache))
-                .flatten()
+            paths.get(u).and_then(|path| quality_score(u, path))
         }))
     }
 }
@@ -315,5 +333,28 @@ mod tests {
         let result = service.recommend_skills(&uri("a"), 10, false).unwrap();
 
         assert_eq!(rows(&result), expected_without_quality());
+    }
+
+    /// A <-> B: B is both a dependency and a dependent of A, and must be
+    /// listed once, as the stronger relationship.
+    #[test]
+    fn mutually_linked_skills_are_listed_once() {
+        let all = vec!["a".to_string(), "b".to_string()];
+        let related = related_skills(
+            "a",
+            &all,
+            |u| match u {
+                "a" => vec!["b".to_string()],
+                "b" => vec!["a".to_string()],
+                _ => Vec::new(),
+            },
+            vec!["b".to_string()],
+        );
+        assert_eq!(related.len(), 1, "{related:?}");
+        assert_eq!(related[0].0, "b");
+        assert!(matches!(
+            related[0].1,
+            RecommendationRelationship::Dependency
+        ));
     }
 }

@@ -6,221 +6,304 @@
 # expressed as Given/When/Then scenarios run against the REAL release binary
 # and the REAL shipped tooling (the validate-skills GitHub Action entrypoint).
 #
-# Run:    ./scripts/dogfood-contracts.sh
-# Env:    BIN_PATH=path/to/skrills   (default: target/release/skrills)
-# Exit:   0 = all scenarios pass, 1 = a contract regressed, 2 = setup error.
+# No errexit, by design: every scenario reports through ok/bad, and the
+# summary decides the exit status.
 set -uo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$REPO_ROOT" || exit 2
+MYDIR="${0%"${0##*/}"}"
+readonly MYDIR="${MYDIR:-./}"
+# shellcheck source=scripts/logging.sh
+. "${MYDIR%/}/logging.sh"
 
-BIN_PATH="${BIN_PATH:-target/release/skrills}"
-ENTRYPOINT=".github/actions/validate-skills/entrypoint.sh"
-SKILL_DIR="skills"
+readonly REQUIRED_DEPENDENCIES="jq python3"
+readonly ENTRYPOINT=".github/actions/validate-skills/entrypoint.sh"
+readonly SKILL_DIR="skills"
 
-GREEN='\033[0;32m'; RED='\033[0;31m'; CYAN='\033[0;36m'; DIM='\033[2m'; NC='\033[0m'
-PASS=0; FAIL=0
+readonly GREEN='\033[0;32m' RED='\033[0;31m' CYAN='\033[0;36m' DIM='\033[2m' NC='\033[0m'
+PASS=0
+FAIL=0
 
-feature() { printf "\n${CYAN}Feature:${NC} %s\n" "$1"; }
-scenario() { printf "  ${DIM}Scenario:${NC} %s\n" "$1"; }
-ok()   { printf "    ${GREEN}PASS${NC} %s\n" "$1"; PASS=$((PASS + 1)); }
-bad()  { printf "    ${RED}FAIL${NC} %s\n" "$1"; FAIL=$((FAIL + 1)); }
+usage() {
+  log "Usage: ${0##*/} [-h] [-x]"
+  printf '  %-4s %s\n' \
+    "-h" "Show this help and exit" \
+    "-x" "Trace execution (set -x)"
+  printf '  %s\n' \
+    "Env:  BIN_PATH=path/to/skrills (default: target/release/skrills)" \
+    "Exit: 0 all scenarios pass, 1 a contract regressed, 2 setup error."
+  exit 0
+}
+
+depcheck() {
+  local utility missing=""
+  for utility in ${REQUIRED_DEPENDENCIES}; do
+    command -v "${utility}" >/dev/null 2>&1 || missing="${missing:+"${missing} "}${utility}"
+  done
+  case "${missing}" in
+    "") return 0 ;;
+  esac
+  for utility in ${missing}; do
+    log 5 "ERROR: ${utility} required for these contracts"
+  done
+  exit 2
+}
+
+# Report lines go to stdout with printf: they are this harness's output.
+feature() { printf "\n${CYAN}Feature:${NC} %s\n" "${1}"; }
+scenario() { printf "  ${DIM}Scenario:${NC} %s\n" "${1}"; }
+ok() {
+  printf "    ${GREEN}PASS${NC} %s\n" "${1}"
+  PASS=$((PASS + 1))
+}
+bad() {
+  printf "    ${RED}FAIL${NC} %s\n" "${1}"
+  FAIL=$((FAIL + 1))
+}
 
 # then <description> <command...>  — asserts the command succeeds (exit 0).
 then_() {
-  local desc="$1"; shift
-  if "$@" >/dev/null 2>&1; then ok "$desc"; else bad "$desc"; fi
+  local desc="${1}"
+  shift
+  if "$@" >/dev/null 2>&1; then ok "${desc}"; else bad "${desc}"; fi
 }
 
-# ---- preconditions ---------------------------------------------------------
-[ -x "$BIN_PATH" ] || { echo "ERROR: binary not found at $BIN_PATH (run: make build)"; exit 2; }
-[ -f "$ENTRYPOINT" ] || { echo "ERROR: entrypoint not found at $ENTRYPOINT"; exit 2; }
-command -v jq >/dev/null 2>&1 || { echo "ERROR: jq required for these contracts"; exit 2; }
-command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 required for these contracts"; exit 2; }
-
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
-BIND="$WORK/bin"; mkdir -p "$BIND"
-ln -sf "$REPO_ROOT/$BIN_PATH" "$BIND/skrills"
-
-# run_entrypoint <home> <input_path> -> populates $RT for inspection, sets $EXIT
 run_entrypoint() {
-  local home="$1" input_path="$2"
-  RT="$WORK/rt.$RANDOM"; mkdir -p "$RT"
+  local home="${1}" input_path="${2}"
+  RT="$(mktemp -d "${WORK}/rt.XXXXXX")"
   # No `set +e`/`set -e` pair here. This script runs with `set -uo pipefail`
   # and no errexit by design, because every scenario reports through ok/bad.
   # The old `set -e` at the end of this function turned errexit ON for
   # everything after the first call, so the next command substitution that
   # failed ended the run mid-feature with no summary and no diagnosis.
-  HOME="$home" PATH="$BIND:$PATH" RUST_LOG=debug RUNNER_TEMP="$RT" \
-    GITHUB_OUTPUT="$RT/gh.out" INPUT_PATH="$input_path" \
+  HOME="${home}" PATH="${BIND}:${PATH}" RUST_LOG=debug RUNNER_TEMP="${RT}" \
+    GITHUB_OUTPUT="${RT}/gh.out" INPUT_PATH="${input_path}" \
     INPUT_TARGETS="all" INPUT_STRICT="false" \
-    bash "$ENTRYPOINT" </dev/null >"$RT/stdout.log" 2>"$RT/stderr.log"
-  EXIT=$?
+    bash "${ENTRYPOINT}" </dev/null >"${RT}/stdout.log" 2>"${RT}/stderr.log"
+  EXIT=${?}
 }
 
-# ===========================================================================
-feature "skrills validate --format json stays machine-parseable on a noisy stdout"
-# The validate-skills action pipes validate's stdout through jq. Three real
-# regressions poisoned that stream: a first-run banner, interleaved tracing
-# logs, and an ambient RUST_LOG that re-enabled logging. The binary now keeps
-# stdout clean itself; the action must still recover clean JSON from older
-# binaries. We drive the ACTUAL action entrypoint.
+# The validate-skills action recovers clean JSON from a noisy stdout.
+feature_validate_json() {
+  feature "skrills validate --format json stays machine-parseable on a noisy stdout"
+  # The validate-skills action pipes validate's stdout through jq. Three real
+  # regressions poisoned that stream: a first-run banner, interleaved tracing
+  # logs, and an ambient RUST_LOG that re-enabled logging. The binary now keeps
+  # stdout clean itself; the action must still recover clean JSON from older
+  # binaries. We drive the ACTUAL action entrypoint.
 
-scenario "The binary keeps --format json stdout clean on an unconfigured runner with RUST_LOG"
-# Given a fresh HOME (skrills not configured) and ambient RUST_LOG=debug
-FRESH="$WORK/fresh-home"; mkdir -p "$FRESH"
-HOME="$FRESH" RUST_LOG=debug "$BIN_PATH" validate --skill-dir "$SKILL_DIR" \
-  --target all --format json </dev/null >"$WORK/raw.out" 2>"$WORK/raw.err" || true
-# Then logging is really on (stderr has tracing lines), yet stdout carries no
-# banner and no tracing, and parses as JSON as-is. Tracing goes to stderr and
-# the first-run prompt only shows on a TTY.
-if grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T' "$WORK/raw.err"; then ok "tracing lines go to stderr"; else bad "no tracing lines on stderr (RUST_LOG had no effect, check is vacuous)"; fi
-if grep -q "not configured on this system" "$WORK/raw.out"; then bad "raw stdout carries the first-run banner"; else ok "raw stdout has no first-run banner"; fi
-if grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T' "$WORK/raw.out"; then bad "raw stdout carries tracing lines"; else ok "raw stdout has no tracing lines"; fi
-if jq empty "$WORK/raw.out" >/dev/null 2>&1; then ok "raw stdout is valid JSON as-is"; else bad "raw stdout is not valid JSON"; fi
+  scenario "The binary keeps --format json stdout clean on an unconfigured runner with RUST_LOG"
+  # Given a fresh HOME (skrills not configured) and ambient RUST_LOG=debug
+  FRESH="${WORK}/fresh-home"
+  mkdir -p "${FRESH}"
+  HOME="${FRESH}" RUST_LOG=debug "${BIN_PATH}" validate --skill-dir "${SKILL_DIR}" \
+    --target all --format json </dev/null >"${WORK}/raw.out" 2>"${WORK}/raw.err" || true
+  # Then logging is really on (stderr has tracing lines), yet stdout carries no
+  # banner and no tracing, and parses as JSON as-is. Tracing goes to stderr and
+  # the first-run prompt only shows on a TTY.
+  if grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T' "${WORK}/raw.err"; then ok "tracing lines go to stderr"; else bad "no tracing lines on stderr (RUST_LOG had no effect, check is vacuous)"; fi
+  if grep -q "not configured on this system" "${WORK}/raw.out"; then bad "raw stdout carries the first-run banner"; else ok "raw stdout has no first-run banner"; fi
+  if grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T' "${WORK}/raw.out"; then bad "raw stdout carries tracing lines"; else ok "raw stdout has no tracing lines"; fi
+  if jq empty "${WORK}/raw.out" >/dev/null 2>&1; then ok "raw stdout is valid JSON as-is"; else bad "raw stdout is not valid JSON"; fi
 
-scenario "An unconfigured runner with ambient RUST_LOG still yields parseable JSON"
-# Given the same fresh, unconfigured HOME and RUST_LOG=debug
-# When the validate-skills action entrypoint runs over the skills directory
-run_entrypoint "$FRESH" "$SKILL_DIR/"
-# Then it exits cleanly and recovers a valid JSON array with summary outputs.
-[ "$EXIT" -eq 0 ] && ok "entrypoint exits 0" || bad "entrypoint exit=$EXIT (stderr: $(tail -1 "$RT/stderr.log"))"
-then_ "recovered document is valid JSON" jq empty "$RT/skrills-validate.json"
-then_ "recovered JSON is an array" jq -e 'type == "array"' "$RT/skrills-validate.json"
-then_ "GITHUB_OUTPUT records total=" grep -q '^total=' "$RT/gh.out"
-then_ "GITHUB_OUTPUT records errors=" grep -q '^errors=' "$RT/gh.out"
-then_ "GITHUB_OUTPUT records warnings=" grep -q '^warnings=' "$RT/gh.out"
+  scenario "An unconfigured runner with ambient RUST_LOG still yields parseable JSON"
+  # Given the same fresh, unconfigured HOME and RUST_LOG=debug
+  # When the validate-skills action entrypoint runs over the skills directory
+  run_entrypoint "${FRESH}" "${SKILL_DIR}/"
+  # Then it exits cleanly and recovers a valid JSON array with summary outputs.
+  [ "${EXIT}" -eq 0 ] && ok "entrypoint exits 0" || bad "entrypoint exit=${EXIT} (stderr: $(tail -1 "${RT}/stderr.log"))"
+  then_ "recovered document is valid JSON" jq empty "${RT}/skrills-validate.json"
+  then_ "recovered JSON is an array" jq -e 'type == "array"' "${RT}/skrills-validate.json"
+  then_ "GITHUB_OUTPUT records total=" grep -q '^total=' "${RT}/gh.out"
+  then_ "GITHUB_OUTPUT records errors=" grep -q '^errors=' "${RT}/gh.out"
+  then_ "GITHUB_OUTPUT records warnings=" grep -q '^warnings=' "${RT}/gh.out"
 
-scenario "A configured runner (no banner) still yields parseable JSON"
-# Given a HOME where skrills IS configured (no first-run banner path)
-CONF="$WORK/conf-home"; mkdir -p "$CONF/.codex/bin"
-printf '[mcp_servers.skrills]\ncommand = "skrills"\n' >"$CONF/.codex/config.toml"
-ln -sf "$REPO_ROOT/$BIN_PATH" "$CONF/.codex/bin/skrills"
-# When the entrypoint runs
-run_entrypoint "$CONF" "$SKILL_DIR/"
-# Then JSON is still clean (proves recovery is not coupled to the banner).
-[ "$EXIT" -eq 0 ] && ok "entrypoint exits 0" || bad "entrypoint exit=$EXIT"
-then_ "recovered document is valid JSON" jq empty "$RT/skrills-validate.json"
+  scenario "A configured runner (no banner) still yields parseable JSON"
+  # Given a HOME where skrills IS configured (no first-run banner path)
+  CONF="${WORK}/conf-home"
+  mkdir -p "${CONF}/.codex/bin"
+  printf '[mcp_servers.skrills]\ncommand = "skrills"\n' >"${CONF}/.codex/config.toml"
+  ln -sf "${BIN_PATH}" "${CONF}/.codex/bin/skrills"
+  # When the entrypoint runs
+  run_entrypoint "${CONF}" "${SKILL_DIR}/"
+  # Then JSON is still clean (proves recovery is not coupled to the banner).
+  [ "${EXIT}" -eq 0 ] && ok "entrypoint exits 0" || bad "entrypoint exit=${EXIT}"
+  then_ "recovered document is valid JSON" jq empty "${RT}/skrills-validate.json"
 
-scenario "A missing skills directory degrades gracefully (no crash)"
-# Given INPUT_PATH points at a directory that does not exist
-run_entrypoint "$FRESH" "does-not-exist-$RANDOM/"
-# Then the action exits 0 and reports zero skills rather than failing the build.
-[ "$EXIT" -eq 0 ] && ok "entrypoint exits 0 on missing dir" || bad "entrypoint exit=$EXIT on missing dir"
-then_ "reports total=0 for a missing dir" grep -q '^total=0' "$RT/gh.out"
+  scenario "A missing skills directory degrades gracefully (no crash)"
+  # Given INPUT_PATH points at a directory that does not exist
+  run_entrypoint "${FRESH}" "does-not-exist/"
+  # Then the action exits 0 and reports zero skills rather than failing the build.
+  [ "${EXIT}" -eq 0 ] && ok "entrypoint exits 0 on missing dir" || bad "entrypoint exit=${EXIT} on missing dir"
+  then_ "reports total=0 for a missing dir" grep -q '^total=0' "${RT}/gh.out"
+}
 
-# ===========================================================================
-feature "install.sh selects the tarball, never the .sha256 checksum sidecar"
-# Releases ship skrills-<target>.tar.gz alongside skrills-<target>.sha256, and
-# GitHub lists the .sha256 first because asset names sort alphabetically. Both
-# carry the target triple, so matching on the triple alone feeds a 102-byte
-# text file to tar ("not in gzip format"). We source the REAL selection
-# function and assert across jq and the awk fallback.
-# Sourced from a real file, not `source <(...)`: bash 3.2 (stock macOS
-# /bin/bash) silently stops reading a sourced process substitution partway,
-# so SELECT_ASSET_FROM_JSON went undefined and these scenarios never ran.
-#
-# The slice is delimited by two cosmetic markers in install.sh. Assert both
-# exist BEFORE slicing: `sed` prints to EOF when its end pattern is missing,
-# and the resulting slice ends in the installer's main body, so sourcing it
-# would hit api.github.com, write a binary into $HOME/.skrills/bin and replace
-# this script's EXIT trap.
-for marker in '^fail()' '^# --- main'; do
-  grep -qE "$marker" scripts/install.sh || {
-    printf 'install.sh slice marker %s not found; refusing to slice\n' "$marker" >&2
+# install.sh picks the tarball, not its checksum sidecar.
+feature_install_asset_selection() {
+  feature "install.sh selects the tarball, never the .sha256 checksum sidecar"
+  # Releases ship skrills-<target>.tar.gz alongside skrills-<target>.sha256, and
+  # GitHub lists the .sha256 first because asset names sort alphabetically. Both
+  # carry the target triple, so matching on the triple alone feeds a 102-byte
+  # text file to tar ("not in gzip format"). We source the REAL selection
+  # function and assert across jq and the awk fallback.
+  # Sourced from a real file, not `source <(...)`: bash 3.2 (stock macOS
+  # /bin/bash) silently stops reading a sourced process substitution partway,
+  # so SELECT_ASSET_FROM_JSON went undefined and these scenarios never ran.
+  #
+  # The slice is delimited by two cosmetic markers in install.sh. Assert both
+  # exist BEFORE slicing: `sed` prints to EOF when its end pattern is missing,
+  # and the resulting slice ends in the installer's main body, so sourcing it
+  # would hit api.github.com, write a binary into $HOME/.skrills/bin and replace
+  # this script's EXIT trap.
+  for marker in '^fail()' '^# --- main'; do
+    grep -qE "${marker}" scripts/install.sh || {
+      log 3 "install.sh slice marker ${marker} not found; refusing to slice"
+      exit 2
+    }
+  done
+  sed -n '/^fail()/,/^# --- main/p' scripts/install.sh | sed '$d' >"${WORK}/install-slice.sh"
+  # A slice that still carries the top-level asset_url assignment or the
+  # DOWNLOAD_AND_EXTRACT call is a slice that reached main, whatever the markers
+  # say. Refuse it rather than source it.
+  if grep -qE '^[[:space:]]*(asset_url=|DOWNLOAD_AND_EXTRACT[[:space:]])' "${WORK}/install-slice.sh"; then
+    log 3 "install.sh slice reaches the main body; the slice markers drifted"
+    exit 2
+  fi
+  # shellcheck source=/dev/null
+  . "${WORK}/install-slice.sh"
+  # An empty slice sources cleanly and would silently skip these scenarios --
+  # the same silent skip this block already had once. Fail loudly instead.
+  command -v SELECT_ASSET_FROM_JSON >/dev/null 2>&1 || {
+    log 3 "install.sh slice extraction failed: SELECT_ASSET_FROM_JSON undefined"
     exit 2
   }
-done
-sed -n '/^fail()/,/^# --- main/p' scripts/install.sh | sed '$d' > "$WORK/install-slice.sh"
-# A slice that still carries the top-level asset_url assignment or the
-# DOWNLOAD_AND_EXTRACT call is a slice that reached main, whatever the markers
-# say. Refuse it rather than source it.
-if grep -qE '^[[:space:]]*(asset_url=|DOWNLOAD_AND_EXTRACT[[:space:]])' "$WORK/install-slice.sh"; then
-  printf 'install.sh slice reaches the main body; the slice markers drifted\n' >&2
-  exit 2
-fi
-# shellcheck source=/dev/null
-. "$WORK/install-slice.sh"
-# An empty slice sources cleanly and would silently skip these scenarios --
-# the same silent skip this block already had once. Fail loudly instead.
-command -v SELECT_ASSET_FROM_JSON >/dev/null 2>&1 || {
-  printf 'install.sh slice extraction failed: SELECT_ASSET_FROM_JSON undefined\n' >&2
-  exit 2
+
+  SIDECAR_FIRST='{ "assets": [
+    { "name": "skrills-x86_64-unknown-linux-gnu.sha256",  "browser_download_url": "https://example.com/skrills-x86_64-unknown-linux-gnu.sha256" },
+    { "name": "skrills-x86_64-unknown-linux-gnu.tar.gz",  "browser_download_url": "https://example.com/x.tar.gz" } ] }'
+
+  # Run through /bin/sh, not this bash: install.sh's shebang is `env sh`, and
+  # under dash and macOS /bin/sh `echo` expands backslash escapes. Sourcing the
+  # slice into bash (as the scenarios below do) cannot see that class of bug --
+  # a release note containing \n broke asset selection for every `curl | sh`
+  # user while the whole test suite stayed green. A literal backslash in the
+  # body (JSON `\\`) is the sharper case: echo collapses it to `\c`, which is
+  # not a JSON escape at all, so jq rejects the document outright.
+  # Both selection paths run under /bin/sh, because the awk fallback reads the
+  # same `printf` output and a revert would only show up on one of them.
+  NEWLINE_JSON='{ "body": "notes\nwith newline and a\\certain backslash", "assets": [
+    { "name": "skrills-x86_64-unknown-linux-gnu.tar.gz", "browser_download_url": "https://example.com/x.tar.gz" } ] }'
+  for impl in jq awk; do
+    scenario "asset selection via ${impl} survives escape sequences in the release body (/bin/sh)"
+    [ "${impl}" = awk ] && force_no_jq=1 || force_no_jq=0
+    sh_got="$(SKRILLS_FORCE_NO_JQ="${force_no_jq}" /bin/sh -c '
+      . "${1}"
+      SELECT_ASSET_FROM_JSON "${2}" "${3}"
+    ' _ "${WORK}/install-slice.sh" "${NEWLINE_JSON}" "x86_64-unknown-linux-gnu" 2>&1 | tail -1)"
+    [ "${sh_got}" = "https://example.com/x.tar.gz" ] &&
+      ok "[/bin/sh:${impl}] chose the tarball despite escapes in the body" ||
+      bad "[/bin/sh:${impl}] got '${sh_got}' (expected the .tar.gz tarball)"
+  done
+
+  for impl in jq awk; do
+    scenario "asset selection via ${impl} skips a sidecar listed first"
+    if [ "${impl}" = awk ]; then export SKRILLS_FORCE_NO_JQ=1; else unset SKRILLS_FORCE_NO_JQ; fi
+    got="$(SELECT_ASSET_FROM_JSON "${SIDECAR_FIRST}" "x86_64-unknown-linux-gnu")"
+    [ "${got}" = "https://example.com/x.tar.gz" ] &&
+      ok "[${impl}] chose the .tar.gz tarball" ||
+      bad "[${impl}] chose '${got}' (expected the .tar.gz tarball)"
+  done
+  unset SKRILLS_FORCE_NO_JQ
 }
 
-SIDECAR_FIRST='{ "assets": [
-  { "name": "skrills-x86_64-unknown-linux-gnu.sha256",  "browser_download_url": "https://example.com/skrills-x86_64-unknown-linux-gnu.sha256" },
-  { "name": "skrills-x86_64-unknown-linux-gnu.tar.gz",  "browser_download_url": "https://example.com/x.tar.gz" } ] }'
+# Subcommands can wait on the child processes they spawn.
+feature_subprocesses() {
+  feature "subcommands can still run subprocesses"
+  # run() used to install SIG_IGN|SA_NOCLDWAIT for SIGCHLD, which makes waitpid
+  # return ECHILD, so every Command::status()/output() in the process failed with
+  # "No child processes". Unit tests never saw it: they call the command
+  # functions directly and never go through run(). The visible symptom was
+  # analyze-project-context returning an empty git_keywords list in a repo with
+  # history, because the `git log` it shells out to could not be waited on.
+  scenario "analyze-project-context extracts keywords from git history"
+  # Keep the binary's exit status, the JSON parse and the count separate. Folding
+  # them together (two `2>/dev/null` and an `|| echo 0`) reported a missing
+  # python3, a changed JSON shape and a crashed binary all as "cannot wait on
+  # child processes", and under pipefail a binary that printed valid JSON and
+  # then exited non-zero produced a second `0` line that passed the scenario.
+  CTX_OUT="${WORK}/analyze-context.json"
+  CTX_ERR="${WORK}/analyze-context.err"
+  "${BIN_PATH}" analyze-project-context --include-git true --format json \
+    >"${CTX_OUT}" 2>"${CTX_ERR}"
+  ctx_exit=${?}
+  if [ "${ctx_exit}" -ne 0 ]; then
+    bad "analyze-project-context exited ${ctx_exit} (stderr: $(tail -3 "${CTX_ERR}" | tr '\n' ' '))"
+  else
+    kw_count="$(sed -n '/^{/,$p' "${CTX_OUT}" |
+      python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("git_keywords", [])))' \
+        2>>"${CTX_ERR}")" || kw_count=""
+    case "${kw_count}" in
+      "") bad "could not count git_keywords in the JSON output (stderr: $(tail -3 "${CTX_ERR}" | tr '\n' ' '))" ;;
+      0) bad "git_keywords empty; the process cannot wait on child processes" ;;
+      *) ok "git_keywords populated (${kw_count} keywords from git log)" ;;
+    esac
+  fi
+}
 
-# Run through /bin/sh, not this bash: install.sh's shebang is `env sh`, and
-# under dash and macOS /bin/sh `echo` expands backslash escapes. Sourcing the
-# slice into bash (as the scenarios below do) cannot see that class of bug --
-# a release note containing \n broke asset selection for every `curl | sh`
-# user while the whole test suite stayed green. A literal backslash in the
-# body (JSON `\\`) is the sharper case: echo collapses it to `\c`, which is
-# not a JSON escape at all, so jq rejects the document outright.
-# Both selection paths run under /bin/sh, because the awk fallback reads the
-# same `printf` output and a revert would only show up on one of them.
-NEWLINE_JSON='{ "body": "notes\nwith newline and a\\certain backslash", "assets": [
-  { "name": "skrills-x86_64-unknown-linux-gnu.tar.gz", "browser_download_url": "https://example.com/x.tar.gz" } ] }'
-for impl in jq awk; do
-  scenario "asset selection via $impl survives escape sequences in the release body (/bin/sh)"
-  [ "$impl" = awk ] && force_no_jq=1 || force_no_jq=0
-  sh_got="$(SKRILLS_FORCE_NO_JQ="$force_no_jq" /bin/sh -c '
-    . "$1"
-    SELECT_ASSET_FROM_JSON "$2" "$3"
-  ' _ "$WORK/install-slice.sh" "$NEWLINE_JSON" "x86_64-unknown-linux-gnu" 2>&1 | tail -1)"
-  [ "$sh_got" = "https://example.com/x.tar.gz" ] \
-    && ok "[/bin/sh:$impl] chose the tarball despite escapes in the body" \
-    || bad "[/bin/sh:$impl] got '$sh_got' (expected the .tar.gz tarball)"
-done
-
-for impl in jq awk; do
-  scenario "asset selection via $impl skips a sidecar listed first"
-  if [ "$impl" = awk ]; then export SKRILLS_FORCE_NO_JQ=1; else unset SKRILLS_FORCE_NO_JQ; fi
-  got="$(SELECT_ASSET_FROM_JSON "$SIDECAR_FIRST" "x86_64-unknown-linux-gnu")"
-  [ "$got" = "https://example.com/x.tar.gz" ] \
-    && ok "[$impl] chose the .tar.gz tarball" \
-    || bad "[$impl] chose '$got' (expected the .tar.gz tarball)"
-done
-unset SKRILLS_FORCE_NO_JQ
-
-# ===========================================================================
-feature "subcommands can still run subprocesses"
-# run() used to install SIG_IGN|SA_NOCLDWAIT for SIGCHLD, which makes waitpid
-# return ECHILD, so every Command::status()/output() in the process failed with
-# "No child processes". Unit tests never saw it: they call the command
-# functions directly and never go through run(). The visible symptom was
-# analyze-project-context returning an empty git_keywords list in a repo with
-# history, because the `git log` it shells out to could not be waited on.
-scenario "analyze-project-context extracts keywords from git history"
-# Keep the binary's exit status, the JSON parse and the count separate. Folding
-# them together (two `2>/dev/null` and an `|| echo 0`) reported a missing
-# python3, a changed JSON shape and a crashed binary all as "cannot wait on
-# child processes", and under pipefail a binary that printed valid JSON and
-# then exited non-zero produced a second `0` line that passed the scenario.
-CTX_OUT="$WORK/analyze-context.json"
-CTX_ERR="$WORK/analyze-context.err"
-"$BIN_PATH" analyze-project-context --include-git true --format json \
-  >"$CTX_OUT" 2>"$CTX_ERR"
-ctx_exit=$?
-if [ "$ctx_exit" -ne 0 ]; then
-  bad "analyze-project-context exited $ctx_exit (stderr: $(tail -3 "$CTX_ERR" | tr '\n' ' '))"
-else
-  kw_count="$(sed -n '/^{/,$p' "$CTX_OUT" \
-    | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("git_keywords", [])))' \
-    2>>"$CTX_ERR")" || kw_count=""
-  case "${kw_count}" in
-    "") bad "could not count git_keywords in the JSON output (stderr: $(tail -3 "$CTX_ERR" | tr '\n' ' '))" ;;
-    0) bad "git_keywords empty; the process cannot wait on child processes" ;;
-    *) ok "git_keywords populated (${kw_count} keywords from git log)" ;;
+main() {
+  case "${1:-}" in
+    *[uU][sS][aA][gG][eE] | *[hH][eE][lL][pP]) usage ;;
   esac
-fi
+  local opt
+  while getopts ":hx" opt; do
+    case "${opt}" in
+      h) usage ;;
+      x) set -x ;;
+      *)
+        log 3 "Unknown flag: -${OPTARG}"
+        exit 64
+        ;;
+    esac
+  done
 
-# ---- summary ---------------------------------------------------------------
-printf "\n========================================\n"
-printf "Dogfood contracts: ${GREEN}%d passed${NC}, ${RED}%d failed${NC}\n" "$PASS" "$FAIL"
-printf "========================================\n"
-[ "$FAIL" -eq 0 ] || exit 1
-exit 0
+  REPO_ROOT="$(cd "${MYDIR%/}/.." && pwd)"
+  BIN_PATH="${BIN_PATH:-target/release/skrills}"
+  # Make relative paths repo-relative once, so an absolute BIN_PATH (make passes
+  # one when CARGO_TARGET_DIR is set) is used as given rather than prefixed.
+  case "${BIN_PATH}" in
+    /*) ;;
+    *) BIN_PATH="${REPO_ROOT}/${BIN_PATH}" ;;
+  esac
+
+  (
+    cd "${REPO_ROOT}" || exit 2
+
+    [ -x "${BIN_PATH}" ] || {
+      log 3 "ERROR: binary not found at ${BIN_PATH} (run: make build)"
+      exit 2
+    }
+    [ -f "${ENTRYPOINT}" ] || {
+      log 3 "ERROR: entrypoint not found at ${ENTRYPOINT}"
+      exit 2
+    }
+    depcheck
+
+    WORK="$(mktemp -d)"
+    trap 'rm -rf "${WORK}"' EXIT
+    BIND="${WORK}/bin"
+    mkdir -p "${BIND}"
+    ln -sf "${BIN_PATH}" "${BIND}/skrills"
+
+    feature_validate_json
+    feature_install_asset_selection
+    feature_subprocesses
+
+    printf '\n'
+    banner "Dogfood contracts: ${PASS} passed, ${FAIL} failed"
+    case "${FAIL}" in
+      0) exit 0 ;;
+      *) exit 1 ;;
+    esac
+  )
+}
+
+main "$@"

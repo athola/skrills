@@ -165,7 +165,7 @@ pub struct SkillFrontmatter {
     #[serde(default)]
     pub depends: Vec<DeclaredDependency>,
     #[serde(flatten)]
-    pub extra: HashMap<String, serde_yaml::Value>,
+    pub extra: HashMap<String, serde_norway::Value>,
 }
 ```
 

@@ -25,10 +25,11 @@ optional (feature-gated). `test-utils` is a dev-dependency only and is left out.
 ```mermaid
 graph TD
     cli[cli<br/>clap, commands, dispatcher] --> server[server<br/>MCP runtime, engine]
-    cli --> sync & validate & analyze & intelligence
+    cli --> sync & validate & analyze & intelligence & setup
     cli --> tome & discovery & state & snapshot
-    cli -. optional .-> dashboard
+    cli -. optional .-> dashboard[dashboard<br/>TUI and browser UI]
     server --> sync[sync]
+    server --> setup[setup<br/>install and MCP registration]
     server --> validate[validate]
     server --> analyze[analyze]
     server --> intelligence[intelligence]
@@ -37,11 +38,11 @@ graph TD
     server --> tome[tome<br/>research APIs, caching]
     server --> state & snapshot
     server -. optional .-> subagents[subagents]
-    server -. optional .-> dashboard[dashboard<br/>TUI and browser UI]
     dashboard --> metrics & discovery & sync & snapshot
     analyze --> validate & discovery & intelligence & snapshot
-    sync --> validate & snapshot
-    discovery --> validate
+    sync --> validate & discovery & snapshot
+    setup --> sync
+    discovery --> validate & state
     subagents --> discovery & state
     intelligence --> snapshot
     tome --> snapshot
@@ -58,16 +59,17 @@ graph TD
 
 | Crate | Purpose |
 |-------|---------|
-| `cli` | The `skrills` binary and library: clap definitions, subcommand handlers, dispatcher, sync TUI, doctor, cold-window CLI |
-| `server` | MCP server and the engine subcommands call: `SkillService`, tool schemas, HTTP transport, REST API (`/api/mcp-servers`) |
-| `sync` | Bidirectional Claude/Codex/Copilot/Cursor sync |
-| `validate` | Skill validation (Claude/Codex/Copilot/Cursor) |
+| `cli` | The `skrills` binary and library: clap definitions, subcommand handlers, dispatcher, `~/.skrills/config.toml` loading, sync TUI, doctor, cold-window CLI |
+| `server` | MCP server and the engine subcommands call: `SkillService`, tool schemas, HTTP transport, REST API (`/api/mcp-servers`), Leptos SSR browser dashboard |
+| `sync` | Bidirectional Claude/Codex/Copilot/Cursor sync, the AGENTS.md skill/agent references, the Claude to Codex agent copy |
+| `setup` | `skrills setup`: binary install, MCP registration and uninstall per client; the server reads it to report whether setup ran |
+| `validate` | Skill validation (Claude/Codex/Copilot targets; Cursor has none) |
 | `analyze` | Token counting, dependencies |
 | `intelligence` | Recommendations, project analysis, skill generation |
-| `discovery` | Skill/agent discovery, ranking |
+| `discovery` | Skill/agent discovery, ranking, env-driven root lists and name resolution |
 | `state` | Environment config, persistence |
 | `subagents` | Multi-backend agent runtime |
-| `dashboard` | TUI and browser-based skill visualization (Leptos SSR) |
+| `dashboard` | Terminal skill dashboard (ratatui) |
 | `metrics` | SQLite-based telemetry for invocations, validations, sync |
 | `tome` | Research API orchestration, knowledge graph, citation tracking, caching |
 | `snapshot` | Cold-window wire-format types shared by the analyzer, the TUI and the browser SSE handler |
@@ -75,24 +77,29 @@ graph TD
 
 ## Design Principles
 
-Leaf crates (`validate`, `state`, `metrics` and `snapshot`) have no internal dependencies, and `discovery` depends only on `validate`, which keeps the graph acyclic. `AgentAdapter` allows pluggable adapters for Claude, Codex, Copilot, and Cursor, while `SyncOrchestrator<S, T>` uses compile-time dispatch for type safety. We gate features like `subagents` behind flags to minimize binary size.
+Leaf crates (`validate`, `state`, `metrics` and `snapshot`) have no internal dependencies, and `discovery` depends only on `validate` and `state`, which keeps the graph acyclic. `AgentAdapter` allows pluggable adapters for Claude, Codex, Copilot, and Cursor, while `SyncOrchestrator<S, T>` uses compile-time dispatch for type safety. We gate features like `subagents` behind flags to minimize binary size.
 
 ## Module Organization
 
 The `app` module is split to stay under the 2500 LOC threshold (ADR-0001):
 
-| Module | Lines | Purpose |
-|--------|-------|---------|
-| `mod.rs` | ~570 | Core SkillService, MCP handlers, resource serving |
-| `tools.rs` | ~1250 | Sync, validation, skill-diff, and skill-trace tool implementations |
-| `intelligence.rs` | ~990 | Intelligence tool implementations |
-| `research.rs` | ~590 | Research API tool handlers (tome crate integration) |
+| Module | Purpose |
+|--------|---------|
+| `mod.rs` | Core SkillService, MCP handlers, resource serving |
+| `tools.rs` | Sync, validation, skill-diff, and skill-trace tool implementations |
+| `intelligence.rs` | Intelligence tool implementations |
+| `research.rs` | Research API tool handlers (tome crate integration) |
+| `mcp_registry.rs` | MCP tool registry construction and tool-name categorization |
+| `skill_metrics.rs` | Aggregate metrics shared by the `skill-metrics` tool and `skrills metrics` |
+| `skill_recommendations.rs` | Recommendation ranking shared by `recommend-skills` and `skrills recommend` |
+
+`wc -l crates/server/src/app/*.rs` gives current sizes.
 
 **LOC Monitoring**: When any `app` module approaches 2000 lines, extract the next logical group (e.g., subagent tool handlers or resource-serving methods). `tools.rs` is the closest today.
 
 ## Roadmap
 
-Command handlers are in `crates/cli/src/commands/`, one submodule per command group, so CLI commands line up with MCP tools. `crates/cli` still depends on `skrills-server` for `app`, `sync`, `setup`, `tool_schemas` and `http_transport`, so the split is a cohesion boundary and does not yet lighten the CLI build. Future work includes consolidating `sync-from-claude` with `sync-all`. The `app` module size is monitored to trigger refactoring at the threshold.
+Command handlers are in `crates/cli/src/commands/`, one submodule per command group, so CLI commands line up with MCP tools. `crates/cli` uses `skrills-server` to start the MCP and HTTP servers (`app`, `http_transport`, `tls_auto`, `trace`, `tool_schemas`, `mcp_gateway`, `api`) and, for now, to run `SkillService` offline in `recommend`, `metrics`, `resolve` and the intelligence commands; ADR 0009 records what moved out and what is left. Future work includes consolidating `sync-from-claude` with `sync-all`. The `app` module size is monitored to trigger refactoring at the threshold.
 
 ## Related Documents
 
@@ -101,4 +108,7 @@ Command handlers are in `crates/cli/src/commands/`, one submodule per command gr
 - [ADR 0003: CLI Parity for Intelligence Tools](adr/0003-cli-parity-intelligence-tools.md)
 - [ADR 0004: Intelligence Crate Versioning](adr/0004-intelligence-crate-versioning.md)
 - [ADR 0007: Cold-Window Architecture](adr/0007-cold-window-architecture.md)
+- [ADR 0008: Plugin-Asset Mirroring and the Shared Skills Directory](adr/0008-plugin-asset-mirroring-and-shared-skills-dir.md)
+- [ADR 0009: One Sync Engine and Server Crate Boundaries](adr/0009-one-sync-engine-and-crate-boundaries.md)
+- [ADR 0010: Token Analysis Without the Intelligence Crate](adr/0010-analyze-independent-of-intelligence.md)
 - [Book: Overview](../book/src/overview.md)

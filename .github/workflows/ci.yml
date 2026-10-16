@@ -45,6 +45,7 @@ jobs:
             # suite covers the scripts under scripts/, so all three trigger it.
             scripts:
               - 'scripts/**'
+              - 'githooks/**'
               - 'tests/unit/**'
               - 'Makefile'
               - 'crates/**'
@@ -72,7 +73,10 @@ jobs:
           cargo clippy --workspace --all-targets --all-features -- -D warnings
           cargo clippy --workspace --all-targets -- -D warnings
           cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+          cargo clippy -p skrills-analyze --all-targets --no-default-features -- -D warnings
 
+      # NOTE: Same command as Makefile `test` with TEST_THREADS unset (cargo's
+      # parallel default); shared-state tests are serialized with serial_test.
       - name: Tests (all features)
         run: cargo test --workspace --all-features
 
@@ -87,14 +91,29 @@ jobs:
         with:
           python-version: '3.12'
       # lint-prose-slop.sh and lint-rust-decoration.sh exit 2 without ripgrep,
+      # lint-shell refuses to run without shellcheck,
       # `make test-scripts` refuses to run without pytest on PATH, and the
       # dogfood slice tests skip themselves without jq.
-      - name: Install ripgrep, jq and pytest
+      - name: Install ripgrep, jq, shellcheck and pytest
         run: |
-          sudo apt-get update && sudo apt-get install -y ripgrep jq
+          sudo apt-get update && sudo apt-get install -y ripgrep jq shellcheck
           python -m pip install --upgrade pytest
+      # lint-shell diffs every script against shfmt. Pinned to the release
+      # developers run, because shfmt minors format differently; the digest is
+      # the one GitHub publishes for this release asset.
+      - name: Install shfmt 3.13.1
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/shfmt" \
+            https://github.com/mvdan/sh/releases/download/v3.13.1/shfmt_v3.13.1_linux_amd64
+          echo "fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1  $RUNNER_TEMP/shfmt" | sha256sum -c -
+          sudo install -m 0755 "$RUNNER_TEMP/shfmt" /usr/local/bin/shfmt
       - name: Hygiene lints
         run: make lint-hygiene
+      # The pre-commit hook runs markdownlint; without this step a PR from a
+      # contributor without the hook merges failures that block everyone else.
+      # ubuntu-latest ships Node, so npx is on PATH.
+      - name: Markdown lint
+        run: make lint-md
       - name: Script test suite
         run: make test-scripts
 
@@ -221,7 +240,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install cross (Linux only)
         if: matrix.build_tool == 'cross'
-        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: cross
       - name: Build release binaries (no upload)

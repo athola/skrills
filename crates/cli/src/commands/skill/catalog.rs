@@ -2,14 +2,14 @@ use anyhow::{bail, Result};
 use skrills_discovery::{discover_skills, SkillMeta};
 use std::path::PathBuf;
 
-use crate::cli::{OutputFormat, SyncSource};
+use crate::cli::{OutputFormat, Platform};
 
 use super::{CatalogEntry, CatalogResult};
 
 /// Handle the skill-catalog command.
 pub(crate) fn handle_skill_catalog_command(
     search: Option<String>,
-    source: Option<SyncSource>,
+    source: Option<Platform>,
     category: Option<String>,
     limit: usize,
     skill_dirs: Vec<PathBuf>,
@@ -21,7 +21,7 @@ pub(crate) fn handle_skill_catalog_command(
         bail!("skill-catalog --category is not implemented: skills have no category field");
     }
 
-    let roots = crate::commands::skill_roots_for(&skill_dirs);
+    let roots = crate::commands::skill_roots_for(&skill_dirs)?;
     let skills = discover_skills(&roots, None)?;
     let result = build_catalog(&skills, search.as_deref(), source, limit);
 
@@ -66,7 +66,7 @@ pub(crate) fn handle_skill_catalog_command(
 fn build_catalog(
     skills: &[SkillMeta],
     search: Option<&str>,
-    source: Option<SyncSource>,
+    source: Option<Platform>,
     limit: usize,
 ) -> CatalogResult {
     let query = search.map(str::to_lowercase);
@@ -81,7 +81,7 @@ fn build_catalog(
             }
             None => true,
         })
-        .filter(|s| source.is_none_or(|src| s.source.label() == src.as_str()))
+        .filter(|s| source.is_none_or(|src| source_matches(&s.source, src)))
         .map(|s| CatalogEntry {
             name: s.name.clone(),
             source: s.source.label(),
@@ -101,16 +101,23 @@ fn build_catalog(
     }
 }
 
+/// Whether a skill discovered under `found` belongs to the CLI `wanted`.
+/// Claude's plugin cache and marketplaces hold Claude skills.
+fn source_matches(found: &skrills_discovery::SkillSource, wanted: Platform) -> bool {
+    use skrills_discovery::SkillSource as S;
+    match (found, wanted) {
+        (S::Cache | S::Marketplace, Platform::Claude) => true,
+        _ => found.label() == wanted.as_str(),
+    }
+}
+
 /// Whether the skill's frontmatter carries `deprecated: true`, as
 /// `skill-deprecate` writes it. An unreadable file counts as not deprecated.
 fn is_deprecated(meta: &SkillMeta) -> bool {
     let Ok(content) = std::fs::read_to_string(&meta.path) else {
         return false;
     };
-    skrills_validate::frontmatter::parse_frontmatter(&content)
-        .ok()
-        .and_then(|p| p.raw_frontmatter)
-        .is_some_and(|fm| fm.lines().any(|l| l.trim_end() == "deprecated: true"))
+    super::frontmatter_is_deprecated(&content)
 }
 
 /// `s` cut to at most `max` characters, with `...` marking a cut. Counts
@@ -153,6 +160,34 @@ mod tests {
         .unwrap()
     }
 
+    /// Claude's plugin skills are discovered as `cache`/`marketplace`, but
+    /// they are Claude skills.
+    #[test]
+    fn source_claude_includes_plugin_cache_and_marketplace_skills() {
+        let tmp = tempfile::tempdir().unwrap();
+        skill(&tmp.path().join("cache"), "plugged", "");
+        skill(&tmp.path().join("codex"), "other", "");
+        let skills = discover_skills(
+            &[
+                SkillRoot {
+                    root: tmp.path().join("cache"),
+                    source: SkillSource::Cache,
+                },
+                SkillRoot {
+                    root: tmp.path().join("codex"),
+                    source: SkillSource::Codex,
+                },
+            ],
+            None,
+        )
+        .unwrap();
+
+        let catalog = build_catalog(&skills, None, Some(Platform::Claude), 50);
+
+        let names: Vec<_> = catalog.skills.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["plugged/SKILL.md"]);
+    }
+
     /// SA-6: `&d[..57]` panicked on a multi-byte character at byte 57.
     #[test]
     fn truncate_chars_never_splits_a_character() {
@@ -191,9 +226,9 @@ mod tests {
         let found = build_catalog(&skills, Some("MATCHING"), None, 100);
         assert_eq!(found.total_skills, 1);
 
-        let none = build_catalog(&skills, None, Some(SyncSource::Codex), 100);
+        let none = build_catalog(&skills, None, Some(Platform::Codex), 100);
         assert_eq!(none.total_skills, 0);
-        let all = build_catalog(&skills, None, Some(SyncSource::Claude), 100);
+        let all = build_catalog(&skills, None, Some(Platform::Claude), 100);
         assert_eq!(all.total_skills, 2);
     }
 

@@ -73,10 +73,35 @@ pub fn best_word_match(needle: &str, haystack: &str) -> f64 {
 
     haystack
         .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
-        .filter(|word| word.len() >= 3)
+        .filter(|word| word.chars().count() >= 3)
         .map(|word| f64::from(similarity(&needle_lower, &word.to_lowercase())))
         .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
         .unwrap_or(0.0)
+}
+
+/// Best trigram similarity between `query` and any run of as many
+/// consecutive words of `haystack` as the query has.
+///
+/// A one-word query reduces to [`best_word_match`]. A multi-word query is
+/// compared with phrases of the same length, so "database migration" matches
+/// "... database migration scripts" as a whole rather than by its best
+/// single word.
+fn best_phrase_match(query: &str, haystack: &str) -> f64 {
+    let query_words = query.split_whitespace().count();
+    if query_words <= 1 {
+        return best_word_match(query, haystack);
+    }
+    let words: Vec<&str> = haystack
+        .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
+        .filter(|word| !word.is_empty())
+        .collect();
+    if words.len() < query_words {
+        return compute_similarity(query, haystack);
+    }
+    words
+        .windows(query_words)
+        .map(|window| compute_similarity(query, &window.join(" ")))
+        .fold(0.0, f64::max)
 }
 
 /// Match a query against a skill's name and description.
@@ -86,7 +111,7 @@ pub fn match_skill(query: &str, name: &str, description: Option<&str>) -> (f64, 
     let name_score = compute_similarity(query, name);
 
     let desc_score = description
-        .map(|d| best_word_match(query, d))
+        .map(|d| best_phrase_match(query, d))
         .unwrap_or(0.0);
 
     if name_score >= desc_score {
@@ -523,5 +548,23 @@ mod tests {
             score > 0.1,
             "Should handle long descriptions: got score {score}"
         );
+    }
+
+    #[test]
+    fn multi_word_query_matching_a_description_phrase_scores_high() {
+        let (phrase, _) = match_skill(
+            "database migration",
+            "zzz",
+            Some("Runs database migration scripts safely"),
+        );
+        let (single, _) = match_skill("database", "zzz", Some("A database helper"));
+        assert!(phrase >= 0.9, "phrase scored {phrase}");
+        assert!(single >= 0.9, "single scored {single}");
+    }
+
+    #[test]
+    fn word_length_filter_counts_characters_not_bytes() {
+        // "日本" is two characters (six bytes) and is too short to compare.
+        assert_eq!(best_word_match("日本", "日本"), 0.0);
     }
 }

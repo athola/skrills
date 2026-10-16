@@ -6,6 +6,7 @@ mod claude_parser;
 mod codex_parser;
 
 pub use analytics::{build_analytics, get_cooccurring_skills, recency_score};
+pub(crate) use analytics::{recency_decay, skill_key};
 pub use behavioral::{
     build_behavioral_patterns, detect_session_outcome, extract_common_ngrams,
     extract_file_accesses, extract_tool_calls, BehavioralEvent, BehavioralPatterns, FileAccess,
@@ -110,7 +111,8 @@ pub fn save_analytics(analytics: &UsageAnalytics, path: &std::path::Path) -> any
     let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
     tmp_name.push(format!(".tmp.{}", std::process::id()));
     let tmp_path = path.with_file_name(tmp_name);
-    if let Err(e) = std::fs::write(&tmp_path, json).and_then(|()| std::fs::rename(&tmp_path, path))
+    if let Err(e) =
+        write_private(&tmp_path, json.as_bytes()).and_then(|()| std::fs::rename(&tmp_path, path))
     {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(e.into());
@@ -118,13 +120,32 @@ pub fn save_analytics(analytics: &UsageAnalytics, path: &std::path::Path) -> any
     Ok(())
 }
 
+/// Writes `bytes` to a new file readable only by its owner: the cache holds
+/// keywords taken from the user's prompts.
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)?.write_all(bytes)
+}
+
 /// A cache older than this is rebuilt even if no session file changed.
 const ANALYTICS_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
 /// Whether the cache at `cache_path` can be reused: younger than `ttl` and
-/// newer than every `*.jsonl` session file under `session_dirs`.
+/// newer than every `*.jsonl` session file under `session_dirs` that the
+/// parsers read.
 ///
-/// Only file metadata is read, which is far cheaper than re-parsing.
+/// Only file metadata is read, which is far cheaper than re-parsing. A cache
+/// whose mtime lies in the future is stale. Session files the parsers skip
+/// (deeper than they walk, such as `subagents/*.jsonl` under a Claude
+/// project) do not count. Deleted sessions are not detected; the TTL bounds
+/// how long their events stay.
 fn analytics_cache_is_fresh(
     cache_path: &std::path::Path,
     session_dirs: &[std::path::PathBuf],
@@ -134,11 +155,13 @@ fn analytics_cache_is_fresh(
         return false;
     };
     match cache_mtime.elapsed() {
-        Ok(age) if age > ttl => return false,
-        _ => {}
+        Ok(age) if age <= ttl => {}
+        // Too old, or dated in the future (elapsed() fails).
+        _ => return false,
     }
     let newer_session_exists = session_dirs.iter().any(|dir| {
         walkdir::WalkDir::new(dir)
+            .max_depth(session_walk_depth(dir))
             .into_iter()
             .filter_map(Result::ok)
             .filter(|e| e.file_type().is_file())
@@ -151,6 +174,17 @@ fn analytics_cache_is_fresh(
             })
     });
     !newer_session_exists
+}
+
+/// How deep the parser for `dir` looks for session files: the Claude parser
+/// reads `projects/<project>/*.jsonl` (depth 2), the Codex parser walks five
+/// levels of `sessions/`.
+fn session_walk_depth(dir: &std::path::Path) -> usize {
+    if dir.file_name().is_some_and(|n| n == "projects") {
+        2
+    } else {
+        5
+    }
 }
 
 /// Load usage analytics from a JSON file.
@@ -166,6 +200,27 @@ pub fn load_analytics(path: &std::path::Path) -> anyhow::Result<Option<UsageAnal
     let json = std::fs::read_to_string(path)?;
     let analytics: UsageAnalytics = serde_json::from_str(&json)?;
     Ok(Some(analytics))
+}
+
+/// Claude and Codex command history; a file that cannot be read is logged
+/// and contributes nothing.
+fn load_command_history(home: &std::path::Path) -> Vec<CommandEntry> {
+    let mut history = Vec::new();
+    let claude = home.join(".claude").join("history.jsonl");
+    match parse_claude_command_history(&claude) {
+        Ok(entries) => history.extend(entries),
+        Err(e) => {
+            tracing::warn!(path = %claude.display(), error = %e, "Could not read command history")
+        }
+    }
+    let codex = home.join(".codex").join("history.jsonl");
+    match parse_codex_command_history(&codex) {
+        Ok(entries) => history.extend(entries),
+        Err(e) => {
+            tracing::warn!(path = %codex.display(), error = %e, "Could not read command history")
+        }
+    }
+    history
 }
 
 /// Load analytics from default cache location, or build fresh if not cached.
@@ -210,7 +265,8 @@ pub fn load_or_build_analytics(
     let mut all_events = claude_events;
     all_events.extend(codex_events);
 
-    let analytics = build_analytics(all_events);
+    let mut analytics = build_analytics(all_events);
+    analytics.command_history = load_command_history(&home);
 
     // Auto-save if requested
     if auto_save {
@@ -228,17 +284,6 @@ pub fn load_or_build_analytics(
 mod tests {
     use super::*;
     use tempfile::tempdir;
-
-    #[test]
-    fn test_default_analytics_cache_path() {
-        // Should return Some path when HOME is available
-        let path = default_analytics_cache_path();
-        if let Some(p) = path {
-            assert!(p.ends_with("analytics_cache.json"));
-            assert!(p.to_string_lossy().contains(".skrills"));
-        }
-        // Note: test passes even if HOME unavailable (returns None)
-    }
 
     #[test]
     fn test_save_and_load_analytics_roundtrip() {
@@ -401,5 +446,89 @@ mod tests {
             vec![std::ffi::OsString::from("analytics_cache.json")]
         );
         assert!(load_analytics(&cache).unwrap().is_some());
+    }
+
+    #[test]
+    fn default_analytics_cache_path_is_under_home() {
+        let _g = crate::test_support::env_guard();
+        let home = tempdir().unwrap();
+        let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
+        assert_eq!(
+            default_analytics_cache_path(),
+            Some(home.path().join(".skrills").join("analytics_cache.json"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn analytics_cache_is_readable_only_by_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempdir().unwrap();
+        let cache = temp.path().join("analytics_cache.json");
+        save_analytics(&UsageAnalytics::default(), &cache).unwrap();
+        let mode = std::fs::metadata(&cache).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn analytics_cache_with_a_future_mtime_is_stale() {
+        let temp = tempdir().unwrap();
+        let cache = temp.path().join("analytics_cache.json");
+        std::fs::write(&cache, "{}").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&cache)
+            .unwrap()
+            .set_modified(
+                std::time::SystemTime::now() + std::time::Duration::from_secs(86_400 * 30),
+            )
+            .unwrap();
+        assert!(!analytics_cache_is_fresh(
+            &cache,
+            &[],
+            std::time::Duration::from_secs(3600)
+        ));
+    }
+
+    /// The Claude parser reads only `projects/<project>/*.jsonl`, so a newer
+    /// file deeper down (a subagent log) must not invalidate the cache.
+    #[test]
+    fn analytics_cache_ignores_session_files_the_parser_does_not_read() {
+        let temp = tempdir().unwrap();
+        let projects = temp.path().join("projects");
+        let sub = projects.join("p").join("s").join("subagents");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("agent.jsonl"), "").unwrap();
+        let cache = temp.path().join("analytics_cache.json");
+        std::fs::write(&cache, "{}").unwrap();
+        set_mtime(&cache, std::time::Duration::from_secs(600));
+        assert!(analytics_cache_is_fresh(
+            &cache,
+            &[projects],
+            std::time::Duration::from_secs(3600)
+        ));
+    }
+
+    #[test]
+    fn load_or_build_analytics_fills_command_history() {
+        let _g = crate::test_support::env_guard();
+        let home = tempdir().unwrap();
+        let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
+        let claude = home.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(
+            claude.join("history.jsonl"),
+            r#"{"display":"fix the build","timestamp":1700000000000,"sessionId":"s"}"#,
+        )
+        .unwrap();
+        let analytics = load_or_build_analytics(true, false).unwrap();
+        assert!(
+            analytics
+                .command_history
+                .iter()
+                .any(|c| c.text == "fix the build"),
+            "{:?}",
+            analytics.command_history
+        );
     }
 }

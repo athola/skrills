@@ -1,27 +1,48 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 
-use crate::cli::{OutputFormat, SyncSource};
+use crate::cli::{OutputFormat, Platform};
 
 use super::SyncPullResult;
 
+/// Commands that do what `sync-pull` cannot yet, with what each does.
+const ALTERNATIVES: [(&str, &str); 3] = [
+    (
+        "skrills skill-import <path>",
+        "Import a skill from local path",
+    ),
+    ("skrills sync", "Sync skills from Claude to Codex"),
+    (
+        "skrills sync-all --from claude",
+        "Sync all assets from Claude",
+    ),
+];
+
 /// Handle the sync-pull command.
+///
+/// Remote registries are not implemented, so a pull from `--source` is an
+/// error: exiting 0 with `skills_pulled: 0` told scripts the pull worked.
 pub(crate) fn handle_sync_pull_command(
     source: Option<String>,
     skill: Option<String>,
-    target: SyncSource,
+    target: Platform,
     dry_run: bool,
     format: OutputFormat,
 ) -> Result<()> {
+    if let Some(source) = source {
+        let alternatives: Vec<&str> = ALTERNATIVES.iter().map(|(c, _)| *c).collect();
+        bail!(
+            "sync-pull from {source}: remote skill registries are not implemented. Use one of: {}",
+            alternatives.join(", ")
+        );
+    }
+
     let result = SyncPullResult {
-        source: source.clone(),
+        source: None,
         target: target.as_str().to_string(),
         skills_pulled: 0,
         dry_run,
-        message: if source.is_some() {
-            "Remote skill registries not yet implemented. Use 'skill-import' for individual files or 'sync' to copy from another CLI.".to_string()
-        } else {
-            "No source specified. Use --source <url> to specify a remote registry.".to_string()
-        },
+        message: "No source specified. Use --source <url> to specify a remote registry."
+            .to_string(),
     };
 
     if format.is_json() {
@@ -30,9 +51,9 @@ pub(crate) fn handle_sync_pull_command(
         println!("sync-pull: {}", result.message);
         println!();
         println!("Available alternatives:");
-        println!("  skrills skill-import <path>      Import a skill from local path");
-        println!("  skrills sync --from claude       Sync skills from Claude to Codex");
-        println!("  skrills sync-all --from claude   Sync all assets from Claude");
+        for (command, what) in ALTERNATIVES {
+            println!("  {command:<33}{what}");
+        }
 
         if let Some(ref s) = skill {
             println!();
@@ -51,10 +72,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sync_pull_returns_placeholder_message() {
+    fn sync_pull_without_a_source_explains_and_succeeds() {
         let result =
-            handle_sync_pull_command(None, None, SyncSource::Claude, false, OutputFormat::Json);
+            handle_sync_pull_command(None, None, Platform::Claude, false, OutputFormat::Json);
 
-        result.expect("sync-pull should succeed (placeholder)");
+        result.expect("sync-pull without --source only prints guidance");
+    }
+
+    #[test]
+    fn sync_pull_with_a_source_fails_because_remote_registries_are_not_implemented() {
+        let err = handle_sync_pull_command(
+            Some("https://example.com/registry".into()),
+            None,
+            Platform::Claude,
+            false,
+            OutputFormat::Json,
+        )
+        .expect_err("a pull that pulls nothing must not exit 0");
+
+        assert!(err.to_string().contains("not implemented"), "{err}");
+    }
+
+    #[test]
+    fn sync_pull_alternatives_are_commands_that_parse() {
+        use clap::Parser;
+        for (command, _) in ALTERNATIVES {
+            let argv = command
+                .split_whitespace()
+                .map(|arg| if arg == "<path>" { "/tmp/x" } else { arg });
+            crate::cli::Cli::try_parse_from(argv)
+                .unwrap_or_else(|e| panic!("`{command}` does not parse: {e}"));
+        }
     }
 }

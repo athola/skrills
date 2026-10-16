@@ -45,13 +45,17 @@ fn utf8_name(path: &Path) -> Option<String> {
     name.map(str::to_owned)
 }
 
-fn subdirs(dir: &Path) -> Vec<PathBuf> {
+/// The non-hidden, non-symlink subdirectories of `dir`. Clears `complete`
+/// when `dir` or one of its entries could not be read, so a caller can tell an
+/// empty directory from one it failed to list.
+fn subdirs(dir: &Path, complete: &mut bool) -> Vec<PathBuf> {
     match fs::read_dir(dir) {
         Ok(entries) => entries
             .filter_map(|entry| match entry {
                 Ok(entry) => Some(entry),
                 Err(e) => {
                     tracing::warn!(dir = %dir.display(), error = %e, "Skipping unreadable plugin cache entry");
+                    *complete = false;
                     None
                 }
             })
@@ -63,6 +67,7 @@ fn subdirs(dir: &Path) -> Vec<PathBuf> {
             .collect(),
         Err(e) => {
             tracing::warn!(dir = %dir.display(), error = %e, "Could not read plugin cache directory");
+            *complete = false;
             Vec::new()
         }
     }
@@ -72,16 +77,24 @@ fn subdirs(dir: &Path) -> Vec<PathBuf> {
 /// version by [`version_key`], then the most recently modified, then the
 /// greatest name, so the pick never depends on `read_dir` order.
 pub(super) fn latest_plugin_versions(cache_dir: &Path) -> Vec<PluginVersion> {
+    latest_plugin_versions_listing(cache_dir).0
+}
+
+/// [`latest_plugin_versions`], plus whether every cache directory could be
+/// listed. When it is `false`, a plugin missing from the list may still be
+/// installed.
+pub(super) fn latest_plugin_versions_listing(cache_dir: &Path) -> (Vec<PluginVersion>, bool) {
+    let mut complete = true;
     let mut picked = Vec::new();
-    for publisher_dir in subdirs(cache_dir) {
+    for publisher_dir in subdirs(cache_dir, &mut complete) {
         let Some(publisher) = utf8_name(&publisher_dir) else {
             continue;
         };
-        for plugin_dir in subdirs(&publisher_dir) {
+        for plugin_dir in subdirs(&publisher_dir, &mut complete) {
             let Some(plugin_name) = utf8_name(&plugin_dir) else {
                 continue;
             };
-            let latest = subdirs(&plugin_dir)
+            let latest = subdirs(&plugin_dir, &mut complete)
                 .into_iter()
                 .filter_map(|path| Some((utf8_name(&path)?, path)))
                 .max_by_key(|(name, path)| {
@@ -102,11 +115,11 @@ pub(super) fn latest_plugin_versions(cache_dir: &Path) -> Vec<PluginVersion> {
             }
         }
     }
-    picked
+    (picked, complete)
 }
 
-/// Lists the `.md` files under a `kind_dir` directory (`skills`, `commands`,
-/// `agents`, `hooks`) in the latest version of every cached plugin, with the
+/// Lists the `.md` files under the top-level `kind_dir` directory (`skills`,
+/// `commands`, `agents`, `hooks`) in the latest version of every cached plugin, with the
 /// plugin each came from. Hidden paths, symlinks and unreadable entries are
 /// skipped; the last two with a warning.
 pub(super) fn plugin_cache_files(cache_dir: &Path, kind_dir: &str) -> Vec<(PathBuf, PluginOrigin)> {
@@ -141,11 +154,14 @@ pub(super) fn plugin_cache_files(cache_dir: &Path, kind_dir: &str) -> Vec<(PathB
             if is_hidden_path(rel) {
                 continue;
             }
-            // Only the path inside the plugin counts: a `skills` directory
-            // somewhere above the cache must not admit every file.
-            let under_kind = rel
-                .parent()
-                .is_some_and(|dir| dir.components().any(|c| c.as_os_str() == kind_dir));
+            // Only the plugin's own top-level `kind_dir` counts: a
+            // `docs/commands/` README is not a command, and an `agents/`
+            // directory inside a skill holds that skill's modules.
+            let under_kind = rel.components().count() > 1
+                && rel
+                    .components()
+                    .next()
+                    .is_some_and(|c| c.as_os_str() == kind_dir);
             if under_kind {
                 files.push((file.to_path_buf(), origin.clone()));
             }

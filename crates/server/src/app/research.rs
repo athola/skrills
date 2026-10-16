@@ -20,10 +20,20 @@ use skrills_tome::models::{Paper, PaperSource};
 use skrills_tome::triz::{Parameter, TrizMatrix};
 
 use crate::app::SkillService;
+use crate::handler::{invalid_params, run_blocking};
 use crate::mcp_result::{tool_err, tool_ok};
 
 /// Largest PDF `fetch-pdf` will download.
 const MAX_PDF_BYTES: u64 = 100 * 1024 * 1024;
+
+/// Total size the PDF cache may reach; the oldest PDFs are evicted first.
+const MAX_PDF_CACHE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Largest id, label or metadata a knowledge-graph node or edge may carry.
+pub(crate) const MAX_KNOWLEDGE_FIELD_BYTES: usize = 16 * 1024;
+
+/// Most nodes the knowledge graph holds; updates of existing nodes still pass.
+pub(crate) const MAX_KNOWLEDGE_NODES: usize = 100_000;
 
 /// Redirect hops `fetch-pdf` will follow; each hop is re-checked.
 const MAX_PDF_REDIRECTS: usize = 5;
@@ -47,43 +57,21 @@ pub(crate) fn pdf_cache_file_name(doi: &str) -> String {
 /// Refuse a PDF location that is not plain https on a public host.
 ///
 /// The URL comes from a third-party API and may redirect, so every hop is
-/// checked. Literal loopback, private, link-local and similar addresses and
-/// `localhost` names are rejected; a public name that resolves to a private
-/// address is not caught here.
+/// checked. Literal addresses in [`is_blocked_ip`] and `localhost` names are
+/// rejected; a public name that resolves to a private address is refused by
+/// [`PublicOnlyResolver`] when the download connects.
 pub(crate) fn check_pdf_url(url: &reqwest::Url) -> Result<()> {
     use std::net::IpAddr;
 
     if url.scheme() != "https" {
         return Err(anyhow!("refusing non-https PDF URL: {url}"));
     }
-    let blocked_ip = |ip: IpAddr| match ip {
-        IpAddr::V4(v4) => {
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                || v4.is_documentation()
-                // 100.64.0.0/10, carrier-grade NAT
-                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64)
-        }
-        IpAddr::V6(v6) => {
-            let seg0 = v6.segments()[0];
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || (seg0 & 0xFE00) == 0xFC00 // unique local
-                || (seg0 & 0xFFC0) == 0xFE80 // link local
-                || v6.to_ipv4_mapped().is_some_and(|v4| {
-                    v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
-                })
-        }
-    };
     let blocked = match url.host_str() {
         None => true,
         Some(host) => {
             let bare = host.trim_start_matches('[').trim_end_matches(']');
             match bare.parse::<IpAddr>() {
-                Ok(ip) => blocked_ip(ip),
+                Ok(ip) => is_blocked_ip(ip),
                 Err(_) => {
                     let name = host.trim_end_matches('.').to_ascii_lowercase();
                     name == "localhost" || name.ends_with(".localhost")
@@ -97,6 +85,70 @@ pub(crate) fn check_pdf_url(url: &reqwest::Url) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// Addresses a PDF download must not reach: loopback, private, link-local,
+/// carrier-grade NAT, benchmarking, multicast, reserved and unspecified
+/// ranges, including IPv4 addresses carried inside IPv6 (mapped, compatible
+/// and NAT64 `64:ff9b::/96`).
+pub(crate) fn is_blocked_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::{IpAddr, Ipv4Addr};
+    let blocked_v4 = |v4: Ipv4Addr| {
+        let [a, b, ..] = v4.octets();
+        v4.is_loopback()
+            || v4.is_private()
+            || v4.is_link_local()
+            || v4.is_unspecified()
+            || v4.is_broadcast()
+            || v4.is_documentation()
+            || v4.is_multicast()
+            || a == 0 // 0.0.0.0/8, "this network"
+            || a >= 240 // 240.0.0.0/4, reserved
+            || (a == 100 && (b & 0xC0) == 64) // 100.64.0.0/10, carrier-grade NAT
+            || (a == 198 && (b & 0xFE) == 18) // 198.18.0.0/15, benchmarking
+    };
+    match ip {
+        IpAddr::V4(v4) => blocked_v4(v4),
+        IpAddr::V6(v6) => {
+            let seg = v6.segments();
+            let octets = v6.octets();
+            let tail_v4 = Ipv4Addr::new(octets[12], octets[13], octets[14], octets[15]);
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (seg[0] & 0xFE00) == 0xFC00 // unique local
+                || (seg[0] & 0xFFC0) == 0xFE80 // link local
+                || v6.to_ipv4_mapped().is_some_and(blocked_v4)
+                // IPv4-compatible ::a.b.c.d
+                || (seg[..6].iter().all(|s| *s == 0) && blocked_v4(tail_v4))
+                // NAT64 64:ff9b::/96 reaches the embedded IPv4 address
+                || (seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0] && blocked_v4(tail_v4))
+        }
+    }
+}
+
+/// DNS resolver for the PDF download client: resolves with the system
+/// resolver and drops every blocked address, so a public name that points
+/// at a private host (directly or after a redirect) cannot be reached.
+pub(crate) struct PublicOnlyResolver;
+
+impl reqwest::dns::Resolve for PublicOnlyResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            use std::net::ToSocketAddrs;
+            let lookup = host.clone();
+            let addrs: Vec<std::net::SocketAddr> =
+                tokio::task::spawn_blocking(move || (lookup.as_str(), 0).to_socket_addrs())
+                    .await??
+                    .filter(|addr| !is_blocked_ip(addr.ip()))
+                    .collect();
+            if addrs.is_empty() {
+                return Err(format!("{host} resolves only to local or private addresses").into());
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
 }
 
 /// Whether `path` exists and starts with the PDF signature.
@@ -135,7 +187,9 @@ pub(crate) async fn download_pdf(
     let dir = dest
         .parent()
         .ok_or_else(|| anyhow!("PDF cache path has no parent: {}", dest.display()))?;
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    // File writes, the fsync and the rename are blocking; `run_blocking`
+    // hands the worker's other tasks off first on a multi-thread runtime.
+    let mut tmp = run_blocking(|| tempfile::NamedTempFile::new_in(dir))?;
     let mut written: u64 = 0;
     let mut head = Vec::with_capacity(5);
     while let Some(chunk) = resp.chunk().await? {
@@ -147,14 +201,125 @@ pub(crate) async fn download_pdf(
             let need = 5 - head.len();
             head.extend_from_slice(&chunk[..need.min(chunk.len())]);
         }
-        tmp.write_all(&chunk)?;
+        run_blocking(|| tmp.write_all(&chunk))?;
     }
     if head != b"%PDF-" {
         return Err(anyhow!("{url} did not return a PDF"));
     }
-    tmp.as_file().sync_all()?;
-    tmp.persist(dest).map_err(|e| e.error)?;
+    run_blocking(|| -> Result<()> {
+        tmp.as_file().sync_all()?;
+        tmp.persist(dest).map_err(|e| e.error)?;
+        Ok(())
+    })?;
     Ok(written)
+}
+
+/// Paper sources `search-papers` queries.
+const PAPER_SOURCES: [&str; 3] = ["arxiv", "semantic_scholar", "openalex"];
+
+/// The sources to query, each once and in the order first named, plus an
+/// error for every unknown name. No list means every source.
+pub(crate) fn paper_sources(requested: Option<&Vec<Value>>) -> (Vec<&'static str>, Vec<String>) {
+    let Some(requested) = requested else {
+        return (PAPER_SOURCES.to_vec(), Vec::new());
+    };
+    let mut sources = Vec::new();
+    let mut errors = Vec::new();
+    for name in requested.iter().filter_map(|v| v.as_str()) {
+        match PAPER_SOURCES.iter().find(|s| **s == name) {
+            Some(known) if !sources.contains(known) => sources.push(*known),
+            Some(_) => {}
+            None => {
+                let error = format!("Unknown source: {name}");
+                if !errors.contains(&error) {
+                    errors.push(error);
+                }
+            }
+        }
+    }
+    (sources, errors)
+}
+
+/// Takes one paper from each source in turn, so a `limit` does not fill up
+/// from the first source, and drops repeats: by DOI when there is one, else
+/// by title with case and punctuation ignored.
+pub(crate) fn merge_papers(per_source: Vec<Vec<Paper>>, limit: usize) -> Vec<Paper> {
+    let normalized_title = |title: &str| -> String {
+        title
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect()
+    };
+    let mut seen_dois = HashSet::new();
+    let mut seen_titles = HashSet::new();
+    let mut merged = Vec::new();
+    let mut iters: Vec<_> = per_source.into_iter().map(Vec::into_iter).collect();
+    while merged.len() < limit {
+        let mut took_any = false;
+        for papers in &mut iters {
+            let Some(paper) = papers.next() else {
+                continue;
+            };
+            took_any = true;
+            let fresh = match &paper.doi {
+                Some(doi) => seen_dois.insert(doi.to_ascii_lowercase()),
+                None => seen_titles.insert(normalized_title(&paper.title)),
+            };
+            if fresh && merged.len() < limit {
+                merged.push(paper);
+            }
+        }
+        if !took_any {
+            break;
+        }
+    }
+    merged
+}
+
+/// Refuses a knowledge-graph field over [`MAX_KNOWLEDGE_FIELD_BYTES`].
+fn check_field_size(field: &str, value: &str) -> Result<()> {
+    if value.len() > MAX_KNOWLEDGE_FIELD_BYTES {
+        return Err(invalid_params(format!(
+            "{field} is too large: {} bytes, limit {MAX_KNOWLEDGE_FIELD_BYTES}",
+            value.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Whether a node may be stored when the graph holds `nodes` nodes.
+pub(crate) fn node_budget_allows(nodes: usize, is_update: bool) -> bool {
+    is_update || nodes < MAX_KNOWLEDGE_NODES
+}
+
+/// Deletes the oldest `.pdf` files in `dir` until the rest total at most
+/// `budget` bytes.
+pub(crate) fn evict_pdf_cache(dir: &std::path::Path, budget: u64) -> Result<()> {
+    let mut files: Vec<(std::time::SystemTime, u64, std::path::PathBuf)> = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "pdf") {
+            continue;
+        }
+        let meta = entry.metadata()?;
+        if meta.is_file() {
+            let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+            files.push((modified, meta.len(), path));
+        }
+    }
+    let mut total: u64 = files.iter().map(|(_, len, _)| *len).sum();
+    files.sort();
+    for (_, len, path) in files {
+        if total <= budget {
+            break;
+        }
+        std::fs::remove_file(&path)?;
+        tracing::info!(path = %path.display(), "Evicted a cached PDF to stay under the cache budget");
+        total = total.saturating_sub(len);
+    }
+    Ok(())
 }
 
 /// Resolve the skrills-tome cache directory.
@@ -172,59 +337,27 @@ impl SkillService {
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: query"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: query"))?;
         let limit = args
             .get("limit")
             .and_then(|v| v.as_u64())
             .unwrap_or(10)
             .min(100) as usize;
-        let sources: Vec<String> = args
-            .get("sources")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_else(|| {
-                vec![
-                    "arxiv".to_string(),
-                    "semantic_scholar".to_string(),
-                    "openalex".to_string(),
-                ]
-            });
+        let (sources, mut errors) = paper_sources(args.get("sources").and_then(|v| v.as_array()));
 
-        let mut all_papers: Vec<Paper> = Vec::new();
-        let mut errors: Vec<String> = Vec::new();
-
-        for source in &sources {
-            let result: Result<Vec<Paper>, _> = match source.as_str() {
+        let mut per_source: Vec<Vec<Paper>> = Vec::new();
+        for source in sources {
+            let result: Result<Vec<Paper>, _> = match source {
                 "arxiv" => ArxivClient::new().search(query, limit).await,
                 "semantic_scholar" => SemanticScholarClient::new().search(query, limit).await,
-                "openalex" => OpenAlexClient::new().search(query, limit).await,
-                other => {
-                    errors.push(format!("Unknown source: {other}"));
-                    continue;
-                }
+                _ => OpenAlexClient::new().search(query, limit).await,
             };
             match result {
-                Ok(papers) => all_papers.extend(papers),
+                Ok(papers) => per_source.push(papers),
                 Err(e) => errors.push(format!("{source}: {e}")),
             }
         }
-
-        // Deduplicate by DOI
-        let mut seen_dois = HashSet::new();
-        let mut deduped: Vec<Paper> = Vec::new();
-        for paper in all_papers {
-            if let Some(doi) = &paper.doi {
-                if !seen_dois.insert(doi.clone()) {
-                    continue;
-                }
-            }
-            deduped.push(paper);
-        }
-        deduped.truncate(limit);
+        let deduped = merge_papers(per_source, limit);
 
         let paper_json: Vec<Value> = deduped
             .iter()
@@ -247,7 +380,11 @@ impl SkillService {
         let all_failed = deduped.is_empty() && !errors.is_empty();
         let mut text = format!("Found {} papers", deduped.len());
         if !errors.is_empty() {
-            text.push_str(&format!(" ({} source errors)", errors.len()));
+            text.push_str(&format!(
+                " ({} source errors: {})",
+                errors.len(),
+                errors.join("; ")
+            ));
         }
         if all_failed {
             text.push_str(": all sources failed");
@@ -273,7 +410,7 @@ impl SkillService {
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: query"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: query"))?;
         let limit = args
             .get("limit")
             .and_then(|v| v.as_u64())
@@ -320,7 +457,7 @@ impl SkillService {
         let doi = args
             .get("doi")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: doi"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: doi"))?;
 
         let crossref = CrossRefClient::new();
         let metadata = crossref.resolve_doi(doi).await?;
@@ -360,7 +497,27 @@ impl SkillService {
         let doi = args
             .get("doi")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: doi"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: doi"))?;
+
+        let cache = ResearchCache::open()?;
+        let pdf_path = cache.pdf_dir().join(pdf_cache_file_name(doi));
+
+        // A cached file counts only if it is a PDF; anything else (an error
+        // page or a file written by an older, non-atomic version) is fetched
+        // again. A cached PDF is served without asking Unpaywall, so it stays
+        // reachable offline.
+        let path_str = pdf_path.to_string_lossy().to_string();
+        if has_pdf_magic(&pdf_path) {
+            return Ok(tool_ok(
+                vec![ContentBlock::text(format!("PDF cached at: {path_str}"))],
+                Some(json!({
+                    "path": path_str,
+                    "doi": doi,
+                    "url": null,
+                    "cached": true,
+                })),
+            ));
+        }
 
         let unpaywall = UnpaywallClient::default();
         let pdf_url = unpaywall
@@ -372,30 +529,21 @@ impl SkillService {
             .map_err(|e| anyhow!("Unpaywall returned an invalid PDF URL {pdf_url}: {e}"))?;
         check_pdf_url(&pdf_url)?;
 
-        let cache = ResearchCache::open()?;
-        let pdf_path = cache.pdf_dir().join(pdf_cache_file_name(doi));
-
-        // A cached file counts only if it is a PDF; anything else (an error
-        // page or a file written by an older, non-atomic version) is fetched
-        // again.
-        let cached = has_pdf_magic(&pdf_path);
-        if !cached {
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                    if attempt.previous().len() >= MAX_PDF_REDIRECTS {
-                        attempt.error("too many redirects")
-                    } else if let Err(e) = check_pdf_url(attempt.url()) {
-                        attempt.error(e.to_string())
-                    } else {
-                        attempt.follow()
-                    }
-                }))
-                .build()?;
-            download_pdf(&client, pdf_url.clone(), &pdf_path, MAX_PDF_BYTES).await?;
-        }
-
-        let path_str = pdf_path.to_string_lossy().to_string();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .dns_resolver(std::sync::Arc::new(PublicOnlyResolver))
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= MAX_PDF_REDIRECTS {
+                    attempt.error("too many redirects")
+                } else if let Err(e) = check_pdf_url(attempt.url()) {
+                    attempt.error(e.to_string())
+                } else {
+                    attempt.follow()
+                }
+            }))
+            .build()?;
+        run_blocking(|| evict_pdf_cache(cache.pdf_dir(), MAX_PDF_CACHE_BYTES - MAX_PDF_BYTES))?;
+        download_pdf(&client, pdf_url.clone(), &pdf_path, MAX_PDF_BYTES).await?;
 
         Ok(tool_ok(
             vec![ContentBlock::text(format!("PDF cached at: {path_str}"))],
@@ -403,7 +551,7 @@ impl SkillService {
                 "path": path_str,
                 "doi": doi,
                 "url": pdf_url.as_str(),
-                "cached": cached,
+                "cached": false,
             })),
         ))
     }
@@ -463,7 +611,7 @@ impl SkillService {
             let kind = match args.get("kind").and_then(|v| v.as_str()) {
                 Some(s) => {
                     let k: NodeKind = serde_json::from_value(json!(s))
-                        .map_err(|_| anyhow!("Unknown node kind: {s}"))?;
+                        .map_err(|_| invalid_params(format!("Unknown node kind: {s}")))?;
                     Some(k)
                 }
                 None => None,
@@ -507,22 +655,33 @@ impl SkillService {
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: id"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: id"))?;
         let kind_str = args
             .get("kind")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: kind"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: kind"))?;
         let label = args
             .get("label")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: label"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: label"))?;
         let metadata = args.get("metadata").map(|v| v.to_string());
+        check_field_size("id", id)?;
+        check_field_size("label", label)?;
+        if let Some(metadata) = &metadata {
+            check_field_size("metadata", metadata)?;
+        }
 
         let kind: NodeKind = serde_json::from_value(json!(kind_str))
-            .map_err(|_| anyhow!("Unknown node kind: {kind_str}"))?;
+            .map_err(|_| invalid_params(format!("Unknown node kind: {kind_str}")))?;
 
         let db_path = tome_cache_dir()?.join("knowledge.db");
         let kg = KnowledgeGraph::open(&db_path)?;
+        let (nodes, _) = kg.stats()?;
+        if !node_budget_allows(nodes, kg.get_node(id)?.is_some()) {
+            return Err(anyhow!(
+                "the knowledge graph is full ({MAX_KNOWLEDGE_NODES} nodes); remove nodes before adding more"
+            ));
+        }
         kg.add_node(id, kind, label, metadata.as_deref())?;
 
         Ok(tool_ok(
@@ -540,20 +699,23 @@ impl SkillService {
         let source_id = args
             .get("source_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: source_id"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: source_id"))?;
         let target_id = args
             .get("target_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: target_id"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: target_id"))?;
         let kind_str = args
             .get("kind")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: kind"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: kind"))?;
         let weight = args.get("weight").and_then(|v| v.as_f64()).unwrap_or(1.0);
         let metadata = args.get("metadata").map(|v| v.to_string());
+        if let Some(metadata) = &metadata {
+            check_field_size("metadata", metadata)?;
+        }
 
         let kind: EdgeKind = serde_json::from_value(json!(kind_str))
-            .map_err(|_| anyhow!("Unknown edge kind: {kind_str}"))?;
+            .map_err(|_| invalid_params(format!("Unknown edge kind: {kind_str}")))?;
 
         let db_path = tome_cache_dir()?.join("knowledge.db");
         let kg = KnowledgeGraph::open(&db_path)?;
@@ -579,7 +741,7 @@ impl SkillService {
         let paper_id = args
             .get("paper_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: paper_id"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: paper_id"))?;
         let action = args
             .get("action")
             .and_then(|v| v.as_str())
@@ -591,7 +753,7 @@ impl SkillService {
         match action {
             "track" => {
                 let title = args.get("title").and_then(|v| v.as_str()).ok_or_else(|| {
-                    anyhow!("Missing required parameter: title (for track action)")
+                    invalid_params("Missing required parameter: title (for track action)")
                 })?;
                 let doi = args.get("doi").and_then(|v| v.as_str()).map(String::from);
 
@@ -664,9 +826,9 @@ impl SkillService {
                     })),
                 ))
             }
-            other => Err(anyhow!(
+            other => Err(invalid_params(format!(
                 "Unknown action: {other}. Use 'track', 'forward', or 'backward'"
-            )),
+            ))),
         }
     }
 
@@ -677,11 +839,11 @@ impl SkillService {
         let improve_str = args
             .get("improve")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: improve"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: improve"))?;
         let degrades_str = args
             .get("degrades")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: degrades"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: degrades"))?;
 
         let improve = parse_parameter(improve_str)?;
         let degrades = parse_parameter(degrades_str)?;
@@ -720,5 +882,5 @@ impl SkillService {
 
 fn parse_parameter(s: &str) -> Result<Parameter> {
     serde_json::from_value(serde_json::Value::String(s.to_owned()))
-        .map_err(|_| anyhow!("Unknown parameter: {s}"))
+        .map_err(|_| invalid_params(format!("Unknown parameter: {s}")))
 }

@@ -7,7 +7,7 @@ use std::fs;
 use tempfile::TempDir;
 
 fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-    crate::test_support::env_guard()
+    skrills_test_utils::env_guard()
 }
 
 /// Test fixture helper for creating temporary home directories
@@ -19,7 +19,7 @@ fn create_test_home() -> Result<TempDir> {
 /// that restores the original value on drop.
 /// Note: dirs::home_dir() may not respect this on all platforms
 fn set_test_home(dir: &TempDir) -> skrills_test_utils::EnvVarGuard {
-    crate::test_support::set_env_var("HOME", Some(dir.path().to_str().unwrap()))
+    skrills_test_utils::set_env_var("HOME", Some(dir.path().to_str().unwrap()))
 }
 
 /// The installer passes `--bin-dir ~/.skrills/bin` while running the binary
@@ -80,6 +80,23 @@ mod client_tests {
 
         let bin_dir = Client::Claude.default_bin_dir()?;
         assert!(bin_dir.ends_with(".claude/bin"));
+        Ok(())
+    }
+
+    /// Setup kept its own Copilot lookup, which on macOS picked
+    /// `~/Library/Application Support/copilot` when `~/.copilot` was missing,
+    /// a directory Copilot CLI never reads and sync no longer writes.
+    #[test]
+    fn copilot_base_dir_matches_the_sync_adapter() -> Result<()> {
+        use skrills_sync::adapters::traits::AgentAdapter;
+        let _guard = env_guard();
+        let temp = create_test_home()?;
+        let _home = set_test_home(&temp);
+
+        assert_eq!(
+            Client::Copilot.base_dir()?,
+            skrills_sync::CopilotAdapter::new()?.config_root()
+        );
         Ok(())
     }
 
@@ -837,6 +854,7 @@ mod sync_universal_tests {
             yes: true,
             universal: true,
             mirror_source: Some(temp.path().join("nonexistent")),
+            include_marketplace: false,
         };
 
         // Should handle missing source gracefully
@@ -869,16 +887,74 @@ mod sync_universal_tests {
             yes: true,
             universal: true,
             mirror_source: None,
+            include_marketplace: false,
         };
         sync_universal(&config)?;
 
-        let agent_skills = temp.path().join(".agent/skills");
-        assert_eq!(
-            fs::read_to_string(agent_skills.join("skills/demo/SKILL.md"))?,
-            "demo"
-        );
+        // `~/.agents/skills` is the directory Codex, Cursor and Copilot CLI
+        // load; each skill sits one level deep, named after its folder.
+        let agent_skills = temp.path().join(".agents/skills");
+        let demo = fs::read_to_string(agent_skills.join("demo/SKILL.md"))?;
+        assert!(demo.contains("name: demo"), "{demo}");
+        assert!(!temp.path().join(".agent").exists());
         assert!(!agent_skills.join(".credentials.json").exists());
-        assert!(!agent_skills.join("projects/p/session.jsonl").exists());
+        assert!(!agent_skills.join("projects").exists());
+        Ok(())
+    }
+
+    fn universal_config(temp: &TempDir, include_marketplace: bool) -> SetupConfig {
+        SetupConfig {
+            clients: vec![Client::Claude],
+            bin_dir: temp.path().join("bin"),
+            reinstall: false,
+            uninstall: false,
+            add: false,
+            yes: true,
+            universal: true,
+            mirror_source: None,
+            include_marketplace,
+        }
+    }
+
+    fn write_marketplace_skill(temp: &TempDir) -> Result<()> {
+        let skill = temp
+            .path()
+            .join(".claude/plugins/marketplaces/a/plugins/b/skills/market");
+        fs::create_dir_all(&skill)?;
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: market\ndescription: marketplace skill\n---\nbody\n",
+        )?;
+        Ok(())
+    }
+
+    /// `setup --universal --include-marketplace` copies marketplace skills
+    /// the way `sync --include-marketplace` does.
+    #[test]
+    fn sync_universal_copies_marketplace_skills_when_included() -> Result<()> {
+        let _guard = env_guard();
+        let temp = create_test_home()?;
+        let _home = set_test_home(&temp);
+        write_marketplace_skill(&temp)?;
+
+        sync_universal(&universal_config(&temp, true))?;
+
+        assert!(temp.path().join(".agents/skills/market/SKILL.md").exists());
+        Ok(())
+    }
+
+    /// Marketplace skills belong to plugins that are not installed, so the
+    /// default leaves them out.
+    #[test]
+    fn sync_universal_skips_marketplace_skills_by_default() -> Result<()> {
+        let _guard = env_guard();
+        let temp = create_test_home()?;
+        let _home = set_test_home(&temp);
+        write_marketplace_skill(&temp)?;
+
+        sync_universal(&universal_config(&temp, false))?;
+
+        assert!(!temp.path().join(".agents/skills/market").exists());
         Ok(())
     }
 }

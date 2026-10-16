@@ -9,6 +9,7 @@
 pub mod cli;
 pub mod cold_window_cli;
 mod commands;
+pub mod config;
 pub mod dispatcher;
 pub mod doctor;
 pub mod tui;

@@ -155,10 +155,24 @@ pub fn doctor_report() -> Result<()> {
     let cfg_path = home.join(".codex/config.toml");
     let expected_cmd = home.join(".codex/bin/skrills");
     let lines = doctor_report_with_paths(&mcp_path, &cfg_path, &expected_cmd)?;
-    for line in lines {
+    for line in &lines {
         println!("{line}");
     }
+    // A report with problems exits non-zero, so a script or CI step can gate
+    // on it.
+    let problems = problem_count(&lines);
+    if problems > 0 {
+        anyhow::bail!("doctor found {problems} problem(s)");
+    }
     Ok(())
+}
+
+/// The report lines that name a problem: those marked `!`.
+fn problem_count(lines: &[String]) -> usize {
+    lines
+        .iter()
+        .filter(|l| l.trim_start().starts_with('!'))
+        .count()
 }
 
 #[cfg(test)]
@@ -301,5 +315,48 @@ args = ["--flag"]
                 .any(|l| l.contains("command not found on PATH")),
             "{lines:?}"
         );
+    }
+
+    #[test]
+    fn problems_are_the_lines_marked_with_a_bang() {
+        let lines = vec![
+            "== skrills doctor ==".to_string(),
+            "config.toml   : type=http command=x args=None (p)".to_string(),
+            "  ! expected type=\"stdio\"".to_string(),
+            "  i command differs; ensure binary path is correct and executable".to_string(),
+        ];
+        assert_eq!(problem_count(&lines), 1);
+        assert_eq!(problem_count(&lines[..2]), 0);
+    }
+
+    #[test]
+    fn doctor_fails_naming_the_problem_count_when_a_problem_is_found() {
+        let _guard = skrills_test_utils::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = skrills_test_utils::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+        let codex_dir = temp.path().join(".codex");
+        fs::create_dir_all(&codex_dir).unwrap();
+        // An existing command path, so the wrong type is the only problem.
+        fs::write(
+            codex_dir.join("config.toml"),
+            format!(
+                "[mcp_servers.skrills]\ntype = \"http\"\ncommand = \"{}\"\n",
+                temp.path().display()
+            ),
+        )
+        .unwrap();
+
+        let err = doctor_report().unwrap_err();
+
+        assert_eq!(err.to_string(), "doctor found 1 problem(s)");
+    }
+
+    #[test]
+    fn doctor_succeeds_when_no_line_is_marked_as_a_problem() {
+        let _guard = skrills_test_utils::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = skrills_test_utils::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+
+        doctor_report().expect("a missing config.toml is reported, not a problem");
     }
 }

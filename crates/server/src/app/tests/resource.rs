@@ -714,14 +714,13 @@ async fn sync_all_tool_syncs_skills_into_codex_skills_root() {
         )
         .unwrap();
 
-    // `sync_skills_only_from_claude` preserves paths relative to ~/.claude.
-    let expected = temp
-        .path()
-        .join(".codex/skills/skills/example-skill/SKILL.md");
+    // Codex loads user skills from ~/.agents/skills, one level deep.
+    let expected = temp.path().join(".agents/skills/example-skill/SKILL.md");
     assert!(
         expected.exists(),
-        "expected skill copied into ~/.codex/skills"
+        "expected skill copied into ~/.agents/skills"
     );
+    assert!(!temp.path().join(".codex/skills").exists());
 
     let unexpected = temp
         .path()
@@ -730,4 +729,21 @@ async fn sync_all_tool_syncs_skills_into_codex_skills_root() {
         !unexpected.exists(),
         "sync-all should not write skills into ~/.codex/skills-mirror"
     );
+}
+
+/// `SKRILLS_EXPOSE_AGENTS=0` was ignored (only `true`/`false` parsed), so
+/// AGENTS.md stayed exposed when the user tried to hide it.
+#[test]
+fn expose_agents_env_accepts_zero_and_one_in_any_case() {
+    for (value, expected) in [
+        ("0", false),
+        ("1", true),
+        ("FALSE", false),
+        ("True", true),
+        (" no ", false),
+        ("yes", true),
+    ] {
+        assert_eq!(super::super::parse_flag(value), Some(expected), "{value}");
+    }
+    assert_eq!(super::super::parse_flag("maybe"), None);
 }

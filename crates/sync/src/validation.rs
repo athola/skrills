@@ -13,14 +13,8 @@ use tracing::warn;
 /// Options for validation during sync.
 #[derive(Debug, Clone, Default)]
 pub struct SyncValidationOptions {
-    /// Whether to validate skills before syncing.
-    pub validate: bool,
     /// Whether to auto-fix skills that fail validation.
     pub autofix: bool,
-    /// Create backups before autofix.
-    pub create_backups: bool,
-    /// Stop sync if validation fails.
-    pub strict: bool,
 }
 
 /// Result of validating a skill during sync.
@@ -90,30 +84,28 @@ pub fn validate_skill_for_sync(
     let content = String::from_utf8_lossy(&skill.content);
     let validation = validate_skill(&skill.source_path, &content, target);
 
-    let is_valid = match target {
-        ValidationTarget::Claude => validation.is_claude_valid(),
-        ValidationTarget::Codex => validation.is_codex_valid(),
-        ValidationTarget::Copilot => validation.is_copilot_valid(),
-        ValidationTarget::Both => validation.is_claude_valid() && validation.is_codex_valid(),
-        ValidationTarget::All => validation.is_valid_for_all(),
-    };
+    let is_valid = valid_for(&validation, target);
 
     let mut autofix_result = None;
     let mut can_sync = is_valid;
 
-    // If validation failed and autofix is enabled, try to fix
-    if !is_valid && options.autofix {
+    // If validation failed and autofix is enabled, try to fix. Non-UTF-8
+    // content is never autofixed: the fix would work on a lossy copy.
+    if !is_valid && options.autofix && std::str::from_utf8(&skill.content).is_ok() {
         let autofix_opts = AutofixOptions {
-            create_backup: options.create_backups,
-            write_changes: false, // We'll handle writing separately
+            // Nothing is written here, so there is nothing to back up.
+            create_backup: false,
+            write_changes: false,
             suggested_name: Some(skill.name.clone()),
             suggested_description: None,
         };
 
         match autofix_frontmatter(&skill.source_path, &content, &autofix_opts) {
             Ok(result) => {
+                // A change is not a fix: the result must pass on its own.
                 if result.modified {
-                    can_sync = true;
+                    let fixed = validate_skill(&skill.source_path, &result.content, target);
+                    can_sync = valid_for(&fixed, target);
                 }
                 autofix_result = Some(result);
             }
@@ -134,6 +126,16 @@ pub fn validate_skill_for_sync(
         validation,
         autofix: autofix_result,
         can_sync,
+    }
+}
+
+fn valid_for(validation: &ValidationResult, target: ValidationTarget) -> bool {
+    match target {
+        ValidationTarget::Claude => validation.is_claude_valid(),
+        ValidationTarget::Codex => validation.is_codex_valid(),
+        ValidationTarget::Copilot => validation.is_copilot_valid(),
+        ValidationTarget::Both => validation.is_claude_valid() && validation.is_codex_valid(),
+        ValidationTarget::All => validation.is_valid_for_all(),
     }
 }
 
@@ -180,8 +182,12 @@ pub fn skill_is_copilot_compatible(skill: &Command) -> bool {
 }
 
 /// Apply autofix to a skill and return the modified content.
+///
+/// Non-UTF-8 content is an error: fixing a lossy copy would replace every
+/// invalid byte with U+FFFD.
 pub fn apply_autofix_to_skill(skill: &Command) -> Result<Vec<u8>, String> {
-    let content = String::from_utf8_lossy(&skill.content);
+    let content = std::str::from_utf8(&skill.content)
+        .map_err(|e| format!("{} is not valid UTF-8: {e}", skill.source_path.display()))?;
 
     let options = AutofixOptions {
         create_backup: false,
@@ -190,7 +196,7 @@ pub fn apply_autofix_to_skill(skill: &Command) -> Result<Vec<u8>, String> {
         suggested_description: None,
     };
 
-    let result = autofix_frontmatter(&skill.source_path, &content, &options)?;
+    let result = autofix_frontmatter(&skill.source_path, content, &options)?;
 
     if result.modified {
         Ok(result.content.into_bytes())
@@ -205,6 +211,44 @@ mod tests {
     use std::path::PathBuf;
     use std::time::SystemTime;
 
+    /// Autofix adds the missing name but keeps the empty description, yet any
+    /// change used to mark the skill syncable.
+    #[test]
+    fn autofix_that_leaves_another_error_does_not_make_the_skill_syncable() {
+        let skill = make_skill("demo", "---\ndescription: \"\"\n---\n# Body\n");
+        let options = SyncValidationOptions { autofix: true };
+
+        let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
+
+        assert!(result.autofix.as_ref().is_some_and(|a| a.modified));
+        assert!(!result.can_sync);
+    }
+
+    /// A lossy decode put U+FFFD in place of every invalid byte.
+    #[test]
+    fn apply_autofix_refuses_non_utf8_content() {
+        let mut skill = make_skill("bin", "");
+        skill.content = b"---\ndescription: d\n---\n\xFF\xFE body\n".to_vec();
+
+        assert!(apply_autofix_to_skill(&skill).is_err());
+    }
+
+    /// Autofix must never see a lossy copy: the bytes it would hand back
+    /// carry U+FFFD in place of every invalid byte.
+    #[test]
+    fn autofix_leaves_non_utf8_skill_bytes_untouched() {
+        let mut skill = make_skill("bin", "");
+        let original = b"# no frontmatter \xFF\xFE body\n".to_vec();
+        skill.content = original.clone();
+        let options = SyncValidationOptions { autofix: true };
+
+        let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
+
+        assert!(result.autofix.is_none());
+        assert!(!result.can_sync);
+        assert_eq!(skill.content, original);
+    }
+
     fn make_skill(name: &str, content: &str) -> Command {
         let mut cmd = Command::new(
             name.to_string(),
@@ -213,6 +257,35 @@ mod tests {
         );
         cmd.modified = SystemTime::UNIX_EPOCH;
         cmd
+    }
+
+    /// Claude accepts a skill without frontmatter; Codex and Copilot do not,
+    /// so each target must be checked against its own verdict.
+    #[test]
+    fn skill_without_frontmatter_syncs_to_claude_only() {
+        let skill = make_skill("plain", "# No frontmatter");
+        let options = SyncValidationOptions::default();
+        let can_sync = |target| validate_skill_for_sync(&skill, target, &options).can_sync;
+
+        assert!(can_sync(ValidationTarget::Claude));
+        assert!(!can_sync(ValidationTarget::Copilot));
+        assert!(!can_sync(ValidationTarget::All));
+    }
+
+    #[test]
+    fn fully_valid_skill_syncs_to_copilot_and_all() {
+        let skill = make_skill(
+            "test",
+            "---\nname: test\ndescription: A test skill\n---\n# Content",
+        );
+        let options = SyncValidationOptions::default();
+
+        for target in [ValidationTarget::Copilot, ValidationTarget::All] {
+            assert!(
+                validate_skill_for_sync(&skill, target, &options).can_sync,
+                "{target:?}"
+            );
+        }
     }
 
     #[test]
@@ -241,10 +314,7 @@ mod tests {
     #[test]
     fn test_validate_invalid_skill_with_autofix() {
         let skill = make_skill("test", "# No frontmatter\nBut has content.");
-        let options = SyncValidationOptions {
-            autofix: true,
-            ..Default::default()
-        };
+        let options = SyncValidationOptions { autofix: true };
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
         assert!(result.can_sync);

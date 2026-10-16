@@ -31,14 +31,15 @@ Implement trigram-based similarity matching using the `trigram` Rust crate
 
 2. **Similarity Module**: Create `crates/intelligence/src/recommend/similarity.rs`
    with functions for:
-   - `skill_similarity(skill: &SkillMeta, query: &str) -> f64`
+   - `compute_similarity(a, b) -> f64` and `match_skill(query, name, description)`
    - `find_similar_skills(skills, query, threshold) -> Vec<Match>`
 
-3. **MCP Tool**: Expose as `skill_search` tool with parameters:
+3. **MCP Tool**: Expose as the `search-skills-fuzzy` MCP tool (CLI:
+   `skrills search-skills`) with parameters:
    - `query` (required): Search string
    - `threshold` (optional): Minimum similarity score (default: 0.3)
    - `limit` (optional): Maximum results (default: 10)
-   - `include_description` (optional, deferred): Match against descriptions
+   - `include_description` (optional): Match against descriptions
 
 4. **Integration**: Weight trigram similarity alongside existing signals
    (dependency, usage, context) in `SmartRecommendation` scoring.
@@ -118,16 +119,15 @@ Semantic search via embeddings was deferred because:
 
 - O(n*m) complexity for each query (acceptable at current scale)
 - May need indexing if skill collections grow beyond 1000
-- `include_description` parameter deferred (tracked in Issue #68)
 
 ## Implementation Status
 
 - [x] Add `trigram` dependency
 - [x] Create `similarity.rs` module
-- [x] Implement `fuzzy_match_skills` function
-- [x] Add `skill_search` MCP tool
+- [x] Implement `find_similar_skills` function
+- [x] Add `search-skills-fuzzy` MCP tool and `search-skills` CLI command
 - [x] Input validation and error handling
-- [ ] Description matching (Issue #68)
+- [x] Description matching (`include_description`, Issue #68)
 - [ ] Trigram index for large collections (future)
 
 ## Related

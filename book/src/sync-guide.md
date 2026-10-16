@@ -29,9 +29,9 @@ skrills sync-all --from cursor --to claude
 
 Skills are copied between skill directories:
 - **Claude**: `~/.claude/skills/`
-- **Codex**: `~/.codex/skills/` (discovery root, skills must be `**/SKILL.md`)
+- **Codex**: `~/.agents/skills/{name}/SKILL.md`, the user skills directory Codex loads (frontmatter `name` set to the folder name, `description` required). Skills under the old `~/.codex/skills/` are still read as a source.
 - **Copilot**: `~/.copilot/skills/` (same SKILL.md format as Codex)
-- **Cursor**: `~/.cursor/skills/{name}/SKILL.md` (frontmatter stripped on write)
+- **Cursor**: `~/.cursor/skills/{name}/SKILL.md` (frontmatter cut to `name` and `description`, which Cursor requires)
 
 Codex skills are disabled by default. Enable them in `~/.codex/config.toml`:
 
@@ -61,7 +61,8 @@ skrills sync-commands --from claude --to codex --skip-existing-commands
 ### MCP Server Configurations
 
 MCP server definitions are synchronized between configuration files:
-- **Claude/Codex**: Share similar MCP configuration format
+- **Claude Code**: user-scope servers in `~/.claude.json` (not `settings.json`)
+- **Codex**: `[mcp_servers.*]` tables in `~/.codex/config.toml`
 - **Copilot**: Uses `mcp-config.json` (separate from main config)
 - **Cursor**: Uses `.cursor/mcp.json`
 
@@ -154,7 +155,8 @@ This shows:
 
 ## Mirror Command
 
-The `mirror` command syncs files and updates `AGENTS.md`:
+The `mirror` command syncs files and refreshes Codex's global
+`~/.codex/AGENTS.md` (never an `AGENTS.md` in the working directory):
 
 ```bash
 skrills mirror --skip-existing-commands
@@ -184,7 +186,7 @@ skrills sync-all --from cursor --to claude
 skrills sync-all --from claude --to cursor
 ```
 
-Cursor-only frontmatter fields (`globs`, `alwaysApply`) are preserved in content bytes during Cursor-to-Claude sync but have no effect in Claude. See [ADR 0006](../docs/adr/0006-cursor-rules-mapping.md) for the mapping rationale.
+Cursor-only frontmatter fields (`globs`, `alwaysApply`) are preserved in content bytes during Cursor-to-Claude sync but have no effect in Claude. See [ADR 0006](https://github.com/athola/skrills/blob/master/docs/adr/0006-cursor-rules-mapping.md) for the mapping rationale.
 
 ### Cursor Hooks
 
@@ -201,7 +203,11 @@ Hook event names are translated between Claude's PascalCase and Cursor's camelCa
 | `UserPromptSubmit` | `beforeSubmitPrompt` |
 | `PreCompact` | `preCompact` |
 
-The `Notification` event has no Cursor equivalent and is skipped during sync. See [ADR 0006](../docs/adr/0006-cursor-rules-mapping.md) for the full mapping rationale.
+The `Notification` event has no Cursor equivalent and is skipped during sync. See [ADR 0006](https://github.com/athola/skrills/blob/master/docs/adr/0006-cursor-rules-mapping.md) for the full mapping rationale.
+
+Claude-to-Cursor sync does not copy top-level hooks into `~/.cursor/hooks.json`. Cursor loads Claude Code hooks from `~/.claude/settings.json` itself and runs every matching hook from both files, so a copy would run each hook twice. The report lists hooks as skipped for that reason.
+
+A mirrored plugin's `hooks/hooks.json` is rewritten into Cursor's layout: event names become camelCase, each nested `hooks` list is flattened into entries that carry their group's `matcher`, and `${CLAUDE_PLUGIN_ROOT}` becomes the mirror's absolute path. Matchers are kept as written, so a hook that matches a Claude tool name Cursor does not use (such as `Skill`) never fires there.
 
 Cursor-only events (`afterFileEdit`, `beforeShellExecution`) are preserved in raw content during Cursor-to-Claude sync.
 
@@ -209,6 +215,7 @@ Cursor-only events (`afterFileEdit`, `beforeShellExecution`) are preserved in ra
 
 Agent fields are translated:
 - `background` (Claude) ↔ `is_background` (Cursor)
+- `tools` (Claude) has no Cursor equivalent. An agent whose list holds none of `Write`, `Edit`, `MultiEdit`, `NotebookEdit` or `Bash` is written with `readonly: true`, Cursor's only restriction. An agent that keeps a write tool can use every tool in Cursor, and the report names it.
 
 ## MCP Tools
 

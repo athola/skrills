@@ -4,6 +4,9 @@ use crate::{TomeError, TomeResult};
 use rusqlite::Connection;
 use std::path::PathBuf;
 
+/// Longest TTL `put` stores (ten years).
+const MAX_TTL_HOURS: u32 = 10 * 365 * 24;
+
 /// Cache for API responses and downloaded PDFs.
 pub struct ResearchCache {
     conn: std::sync::Mutex<Connection>,
@@ -101,6 +104,9 @@ impl ResearchCache {
     ) -> TomeResult<()> {
         let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(h) = ttl_hours {
+            // SQLite's datetime() returns NULL past year 9999, and a NULL
+            // expiry never expires; ten years is the longest TTL kept.
+            let h = h.min(MAX_TTL_HOURS);
             // Compute expiry in Rust and pass as a bound parameter to avoid SQL interpolation.
             let expires_at = format!("+{h} hours");
             conn.execute(
@@ -116,6 +122,15 @@ impl ResearchCache {
             )?;
         }
         Ok(())
+    }
+
+    /// Delete expired API responses; returns how many were removed.
+    pub fn purge_expired(&self) -> TomeResult<usize> {
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        Ok(conn.execute(
+            "DELETE FROM api_cache WHERE expires_at IS NOT NULL AND expires_at <= datetime('now')",
+            [],
+        )?)
     }
 
     /// Returns the PDF directory path.
@@ -193,5 +208,40 @@ mod tests {
         let dir = ResearchCache::cache_dir_in(temp.path()).unwrap();
         assert_eq!(dir, temp.path().join("skrills-tome"));
         assert!(dir.is_dir(), "cache_dir should create the directory");
+    }
+
+    #[test]
+    fn huge_ttl_still_stores_an_expiry() {
+        let (cache, _temp) = test_cache();
+        cache.put("k", "api", "q", "{}", Some(u32::MAX)).unwrap();
+        let conn = cache.conn.lock().unwrap();
+        let expires: Option<String> = conn
+            .query_row(
+                "SELECT expires_at FROM api_cache WHERE cache_key = 'k'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(expires.is_some());
+    }
+
+    #[test]
+    fn purge_expired_deletes_only_expired_rows() {
+        let (cache, _temp) = test_cache();
+        cache.put("fresh", "api", "q", "{}", Some(1)).unwrap();
+        cache.put("forever", "api", "q", "{}", None).unwrap();
+        cache
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO api_cache (cache_key, api, query, response_json, expires_at)
+                 VALUES ('stale', 'api', 'q', '{}', datetime('now', '-1 hours'))",
+                [],
+            )
+            .unwrap();
+        assert_eq!(cache.purge_expired().unwrap(), 1);
+        assert!(cache.get("fresh").unwrap().is_some());
+        assert!(cache.get("forever").unwrap().is_some());
     }
 }

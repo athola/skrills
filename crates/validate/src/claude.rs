@@ -14,11 +14,7 @@ const MAX_RECOMMENDED_SIZE: usize = 64 * 1024;
 
 /// Validate a skill for Claude Code compatibility.
 pub fn validate_claude(path: &Path, content: &str) -> ValidationResult {
-    let name = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unknown")
-        .to_string();
+    let name = crate::autofix::derive_name_from_path(path);
 
     let mut result = ValidationResult::new(path.to_path_buf(), name.clone());
 
@@ -106,13 +102,14 @@ fn validate_claude_content(result: &mut ValidationResult, parsed: &ParsedSkill, 
 fn check_markdown_quality(result: &mut ValidationResult, content: &str, start_line: usize) {
     // Check for very long lines (might indicate formatting issues)
     for (i, line) in content.lines().enumerate() {
-        if line.len() > 500 && !line.starts_with("```") && !line.starts_with("    ") {
+        let chars = line.chars().count();
+        if chars > 500 && !line.starts_with("```") && !line.starts_with("    ") {
             result.add_issue(
                 ValidationIssue::info(
                     ValidationTarget::Claude,
                     format!(
                         "Very long line ({} chars) may indicate formatting issues",
-                        line.len()
+                        chars
                     ),
                 )
                 .with_line(start_line + i),
@@ -121,8 +118,12 @@ fn check_markdown_quality(result: &mut ValidationResult, content: &str, start_li
         }
     }
 
-    // Check for unclosed code blocks
-    let code_fence_count = content.matches("```").count();
+    // Check for unclosed code blocks: only a line that starts with ``` is a
+    // fence; triple backticks inside a sentence are inline code.
+    let code_fence_count = content
+        .lines()
+        .filter(|line| line.trim_start().starts_with("```"))
+        .count();
     if !code_fence_count.is_multiple_of(2) {
         result.add_issue(
             ValidationIssue::warning(
@@ -180,5 +181,35 @@ mod tests {
             .issues
             .iter()
             .any(|i| i.message.contains("Unclosed code block")));
+    }
+
+    #[test]
+    fn inline_triple_backticks_do_not_count_as_a_fence() {
+        let content = "# T\nUse ```inline``` code and ``` again.\n```\ncode\n```\n";
+        let result = validate_claude(Path::new("x/SKILL.md"), content);
+        assert!(
+            !result
+                .issues
+                .iter()
+                .any(|i| i.message.contains("Unclosed code block")),
+            "{:?}",
+            result.issues
+        );
+    }
+
+    #[test]
+    fn long_line_check_counts_characters() {
+        let content = format!("# T\n{}\n", "é".repeat(300)); // 600 bytes, 300 chars
+        let result = validate_claude(Path::new("x/SKILL.md"), &content);
+        assert!(!result
+            .issues
+            .iter()
+            .any(|i| i.message.contains("Very long line")));
+    }
+
+    #[test]
+    fn skill_md_is_named_after_its_directory() {
+        let result = validate_claude(Path::new("/s/my-skill/SKILL.md"), "# T\nBody");
+        assert_eq!(result.name, "my-skill");
     }
 }

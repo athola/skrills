@@ -41,26 +41,37 @@ pub use error::DiscoveryError;
 
 /// Error type for discovery operations.
 ///
-/// Currently aliased to `anyhow::Error` for callers that propagate
-/// errors via `?` into `anyhow::Result` contexts (the workspace-wide
-/// convention). Internal call sites that surface
-/// structured failure modes return [`DiscoveryError`] directly; the
-/// `?` operator converts into `anyhow::Error`.
+/// Aliased to `anyhow::Error` for callers that propagate errors via `?`
+/// into `anyhow::Result` contexts (the workspace-wide convention). Every
+/// public function returns this alias. Where a failure has a structured
+/// form ([`AgentMeta::load_config`] reading or parsing an agent file) the
+/// error wraps a [`DiscoveryError`], which callers can recover with
+/// `downcast_ref`.
 pub type Error = anyhow::Error;
 /// Result type for discovery operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Skill and agent lookup driven by `HOME` and the `SKRILLS_*` switches,
+/// name resolution, and trigram similarity.
+pub mod lookup;
 /// Skill discovery and scanning functionality.
 pub mod scanner;
 /// Types for skill metadata and sources.
 pub mod types;
 
+pub use lookup::{
+    agent_roots, agents_manifest, collect_agents, collect_skills, cosine_similarity,
+    merge_extra_dirs, read_prefix, read_skill, relative_path, resolve_agent, resolve_skill,
+    skill_roots_from_env, tokenize_prompt, trigram_counts, trigram_similarity,
+    trigram_similarity_checked, DEFAULT_AGENT_RUN_TEMPLATE, DEFAULT_EMBED_PREVIEW_BYTES,
+    DEFAULT_EMBED_THRESHOLD,
+};
 pub use scanner::{
     default_priority, default_roots, default_roots_auto, discover_agents, discover_rules,
     discover_skills, discover_skills_with_depth, extra_skill_roots, extract_refs_from_agents,
     hash_file, is_skill_file, load_priority_override, priority_labels,
-    priority_labels_and_rank_map, priority_with_override, skill_roots_or_default, DiscoveryConfig,
-    DEFAULT_MAX_DEPTH,
+    priority_labels_and_rank_map, priority_with_override, skill_roots, skill_roots_or_default,
+    DiscoveryConfig, RootSettings, DEFAULT_MAX_DEPTH,
 };
 pub use types::{
     parse_agent_config, parse_source_key, AgentConfig, AgentMeta, AgentModel, Diagnostics,

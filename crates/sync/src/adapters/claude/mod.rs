@@ -29,6 +29,7 @@ mod skills;
 pub struct ClaudeAdapter {
     root: PathBuf,
     kill_switch: Option<skrills_snapshot::KillSwitch>,
+    marketplace_skills: bool,
 }
 
 impl ClaudeAdapter {
@@ -38,6 +39,7 @@ impl ClaudeAdapter {
         Ok(Self {
             root: home.join(".claude"),
             kill_switch: None,
+            marketplace_skills: false,
         })
     }
 
@@ -46,15 +48,25 @@ impl ClaudeAdapter {
         Self {
             root,
             kill_switch: None,
+            marketplace_skills: false,
         }
     }
 
     /// Attach a [`KillSwitch`](skrills_snapshot::KillSwitch) so that mutating
-    /// operations refuse with [`SyncError::TokenBudgetExceeded`](crate::SyncError)
+    /// operations refuse with [`SyncError::KillSwitchEngaged`](crate::SyncError)
     /// when the cold-window engine has engaged it (FR12).
     #[must_use]
     pub fn with_kill_switch(mut self, switch: skrills_snapshot::KillSwitch) -> Self {
         self.kill_switch = Some(switch);
+        self
+    }
+
+    /// Also read the skills of marketplace plugins that are not installed
+    /// (`plugins/marketplaces`). A skill of the same name in `skills/` or the
+    /// plugin cache wins.
+    #[must_use]
+    pub fn with_marketplace_skills(mut self, include: bool) -> Self {
+        self.marketplace_skills = include;
         self
     }
 
@@ -84,6 +96,16 @@ impl ClaudeAdapter {
 
     pub(super) fn settings_path(&self) -> PathBuf {
         self.root.join("settings.json")
+    }
+
+    /// Where Claude Code keeps user-scoped MCP servers: `~/.claude.json`,
+    /// beside `~/.claude` (code.claude.com/docs/en/mcp). A root that is not a
+    /// `.claude` directory (a test or mirror root) keeps the file inside it.
+    pub(super) fn mcp_config_path(&self) -> PathBuf {
+        match (self.root.file_name(), self.root.parent()) {
+            (Some(name), Some(parent)) if name == ".claude" => parent.join(".claude.json"),
+            _ => self.root.join(".claude.json"),
+        }
     }
 
     pub(super) fn instructions_path(&self) -> PathBuf {
@@ -345,10 +367,18 @@ mod tests {
         assert_eq!(report.skipped.len(), 1);
     }
 
+    /// Claude Code keeps user-scoped MCP servers in `~/.claude.json`
+    /// (code.claude.com/docs/en/mcp); it never reads `mcpServers` from
+    /// `~/.claude/settings.json`.
     #[test]
-    fn read_mcp_servers_from_settings() {
+    fn read_mcp_servers_from_claude_json() {
         let tmp = tempdir().unwrap();
-        let settings_path = tmp.path().join("settings.json");
+        fs::write(
+            tmp.path().join("settings.json"),
+            r#"{"mcpServers": {"ignored": {"command": "/bin/ignored"}}}"#,
+        )
+        .unwrap();
+        let settings_path = tmp.path().join(".claude.json");
         fs::write(
             &settings_path,
             r#"{
@@ -377,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn write_mcp_servers_creates_settings() {
+    fn write_mcp_servers_writes_claude_json_not_settings() {
         let tmp = tempdir().unwrap();
         let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
 
@@ -401,12 +431,29 @@ mod tests {
         let report = adapter.write_mcp_servers(&servers).unwrap();
         assert_eq!(report.written, 1);
 
-        let settings_path = tmp.path().join("settings.json");
-        assert!(settings_path.exists());
-
-        let content = fs::read_to_string(&settings_path).unwrap();
+        assert!(!tmp.path().join("settings.json").exists());
+        let config_path = tmp.path().join(".claude.json");
+        let content = fs::read_to_string(&config_path).unwrap();
         let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert!(settings["mcpServers"]["my-server"].is_object());
+    }
+
+    /// `~/.claude.json` sits beside `~/.claude`, not inside it.
+    #[test]
+    fn mcp_config_of_a_dot_claude_root_is_its_sibling_claude_json() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join(".claude");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            tmp.path().join(".claude.json"),
+            r#"{"mcpServers": {"user": {"command": "/bin/user"}}}"#,
+        )
+        .unwrap();
+
+        let adapter = ClaudeAdapter::with_root(root);
+        let servers = adapter.read_mcp_servers().unwrap();
+
+        assert_eq!(servers.keys().collect::<Vec<_>>(), vec!["user"]);
     }
 
     #[test]
@@ -514,7 +561,7 @@ mod tests {
     #[test]
     fn read_mcp_servers_invalid_json_returns_error() {
         let tmp = tempdir().unwrap();
-        let settings_path = tmp.path().join("settings.json");
+        let settings_path = tmp.path().join(".claude.json");
         fs::write(&settings_path, "{ invalid json }").unwrap();
 
         let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
@@ -536,7 +583,7 @@ mod tests {
     #[test]
     fn write_mcp_servers_invalid_existing_json_returns_error() {
         let tmp = tempdir().unwrap();
-        let settings_path = tmp.path().join("settings.json");
+        let settings_path = tmp.path().join(".claude.json");
         fs::write(&settings_path, "{ corrupted json }").unwrap();
 
         let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
@@ -581,7 +628,7 @@ mod tests {
     fn read_mcp_servers_http_type() {
         // Test reading HTTP-type MCP servers (issue #111)
         let tmp = tempdir().unwrap();
-        let settings_path = tmp.path().join("settings.json");
+        let settings_path = tmp.path().join(".claude.json");
         fs::write(
             &settings_path,
             r#"{
@@ -681,7 +728,7 @@ mod tests {
     #[test]
     fn read_mcp_servers_skips_a_transport_sync_cannot_carry() {
         let tmp = tempdir().unwrap();
-        let settings_path = tmp.path().join("settings.json");
+        let settings_path = tmp.path().join(".claude.json");
         fs::write(
             &settings_path,
             r#"{
@@ -703,7 +750,7 @@ mod tests {
     #[test]
     fn read_mcp_servers_with_tool_configs() {
         let tmp = tempdir().unwrap();
-        let settings_path = tmp.path().join("settings.json");
+        let settings_path = tmp.path().join(".claude.json");
         fs::write(
             &settings_path,
             r#"{
@@ -785,7 +832,7 @@ mod tests {
 
         adapter.write_mcp_servers(&servers).unwrap();
 
-        let content = fs::read_to_string(tmp.path().join("settings.json")).unwrap();
+        let content = fs::read_to_string(tmp.path().join(".claude.json")).unwrap();
         let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
         let server_json = &settings["mcpServers"]["clean-server"];
         // Empty tool configs should not appear in JSON output
@@ -813,6 +860,35 @@ mod tests {
             assets[0].relative_path,
             std::path::PathBuf::from("scripts/tool.py")
         );
+    }
+
+    /// Claude Code loads hooks only from the `hooks` key of its settings
+    /// files, plugin `hooks/hooks.json` and skill/agent frontmatter
+    /// (code.claude.com/docs/en/hooks), so a Markdown hook written to
+    /// `~/.claude/hooks/*.md` did nothing while reported as synced.
+    #[test]
+    fn write_hooks_writes_no_markdown_hook_files_claude_never_loads() {
+        let tmp = tempdir().unwrap();
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let hook = Command {
+            name: "PreToolUse".to_string(),
+            content: b"# Check before tools\n".to_vec(),
+            source_path: PathBuf::from("/c/hooks/PreToolUse.md"),
+            modified: SystemTime::now(),
+            hash: String::new(),
+            modules: Vec::new(),
+            content_format: ContentFormat::Markdown,
+            plugin_origin: None,
+        };
+
+        let report = adapter.write_hooks(&[hook]).unwrap();
+
+        assert_eq!(report.written, 0);
+        assert!(!tmp.path().join("hooks").exists());
+        assert!(matches!(
+            report.skipped.as_slice(),
+            [crate::report::SkipReason::AgentSpecificFeature { .. }]
+        ));
     }
 
     /// Cursor hooks are JSON entry lists; Claude reads hooks from
@@ -896,6 +972,137 @@ mod tests {
 
         assert_eq!(skill.content, b"new");
         assert_eq!(command.content, b"new");
+    }
+
+    /// The readers returned `HashMap` order, so which of two colliding items a
+    /// writer kept, and the report order, changed between runs.
+    #[test]
+    fn skills_agents_and_hooks_come_back_sorted_by_name() {
+        let tmp = tempdir().unwrap();
+        let names: Vec<String> = (0..16).map(|i| format!("item-{:02}", 15 - i)).collect();
+        for name in &names {
+            write_at(
+                &tmp.path().join(format!("skills/{name}/SKILL.md")),
+                "s",
+                1_000,
+            );
+            write_at(&tmp.path().join(format!("agents/{name}.md")), "a", 1_000);
+            write_at(&tmp.path().join(format!("hooks/{name}.md")), "h", 1_000);
+        }
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let mut sorted = names.clone();
+        sorted.sort();
+
+        for (kind, items) in [
+            ("skills", adapter.read_skills().unwrap()),
+            ("agents", adapter.read_agents().unwrap()),
+            ("hooks", adapter.read_hooks().unwrap()),
+        ] {
+            let got: Vec<String> = items.into_iter().map(|c| c.name).collect();
+            assert_eq!(got, sorted, "{kind}");
+        }
+    }
+
+    /// `commands/git/commit.md` and `commands/commit.md` are both `commit`;
+    /// the one kept depended on readdir order. The top-level file wins.
+    #[test]
+    fn a_top_level_command_wins_over_a_nested_one_of_the_same_name() {
+        let tmp = tempdir().unwrap();
+        write_at(&tmp.path().join("commands/a/commit.md"), "nested a", 1_000);
+        write_at(&tmp.path().join("commands/commit.md"), "top", 1_000);
+        write_at(&tmp.path().join("commands/z/commit.md"), "nested z", 1_000);
+
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let commands = adapter.read_commands(false).unwrap();
+
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].content, b"top");
+    }
+
+    /// `commands`/`agents` used to match anywhere in a plugin, so a README in
+    /// `docs/commands/` became a command and a skill's `agents/` module an
+    /// agent, both written into every target.
+    #[test]
+    fn plugin_cache_kinds_come_only_from_the_top_level_directory() {
+        let tmp = tempdir().unwrap();
+        let version = tmp.path().join("plugins/cache/market/plug/1.0.0");
+        write_at(&version.join("commands/real.md"), "c", 1_000);
+        write_at(&version.join("docs/commands/README.md"), "doc", 1_000);
+        write_at(&version.join("agents/real-agent.md"), "a", 1_000);
+        write_at(&version.join("skills/foo/SKILL.md"), "s", 1_000);
+        write_at(
+            &version.join("skills/foo/agents/helper.md"),
+            "module",
+            1_000,
+        );
+
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let commands: Vec<String> = adapter
+            .read_commands(false)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        let agents: Vec<String> = adapter
+            .read_agents()
+            .unwrap()
+            .into_iter()
+            .map(|a| a.name)
+            .collect();
+
+        assert_eq!(commands, vec!["real".to_string()]);
+        assert_eq!(agents, vec!["real-agent".to_string()]);
+    }
+
+    /// Plugin skills are keyed by their folder name, so a plugin shipping a
+    /// skill named like the user's own one replaced it whenever the plugin's
+    /// file was newer.
+    #[test]
+    fn read_skills_keeps_the_local_skill_over_a_newer_plugin_skill_of_the_same_name() {
+        let tmp = tempdir().unwrap();
+        write_at(&tmp.path().join("skills/review/SKILL.md"), "mine", 1_000);
+        write_at(
+            &tmp.path()
+                .join("plugins/cache/market/plug/1.0.0/skills/review/SKILL.md"),
+            "plugin",
+            2_000,
+        );
+
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let skills = adapter.read_skills().unwrap();
+
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].content, b"mine");
+        assert!(skills[0].plugin_origin.is_none());
+    }
+
+    /// Two plugins shipping a skill of the same name: the newer file wins
+    /// whichever plugin the cache walk meets first. Swapping the mtimes covers
+    /// both walk orders, since `read_dir` order is not fixed.
+    #[test]
+    fn read_skills_keeps_the_newer_of_two_plugin_skills_with_the_same_name() {
+        for (alpha_mtime, beta_mtime, newer) in [(1_000, 2_000, "beta"), (2_000, 1_000, "alpha")] {
+            let tmp = tempdir().unwrap();
+            write_at(
+                &tmp.path()
+                    .join("plugins/cache/market/alpha/1.0.0/skills/review/SKILL.md"),
+                "alpha",
+                alpha_mtime,
+            );
+            write_at(
+                &tmp.path()
+                    .join("plugins/cache/market/beta/1.0.0/skills/review/SKILL.md"),
+                "beta",
+                beta_mtime,
+            );
+
+            let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+            let skills = adapter.read_skills().unwrap();
+
+            assert_eq!(skills.len(), 1);
+            assert_eq!(skills[0].content, newer.as_bytes());
+            assert_eq!(skills[0].plugin_origin.as_ref().unwrap().plugin_name, newer);
+        }
     }
 
     /// A markdown file inside a skill directory is one of its modules, not a
@@ -1035,6 +1242,110 @@ mod tests {
         assert_eq!(
             assets[0].relative_path,
             std::path::PathBuf::from("scripts/new.py")
+        );
+    }
+
+    /// Every asset of every plugin was held in memory with only a per-file
+    /// cap. Past the total budget the read stops, and the batch carries no
+    /// manifest so the mirror does not prune what it did not get to.
+    #[test]
+    fn read_plugin_assets_stops_at_the_total_budget_without_an_authoritative_batch() {
+        let tmp = tempdir().unwrap();
+        for plugin in ["a", "b", "c"] {
+            let root = tmp
+                .path()
+                .join(format!("plugins/cache/market/{plugin}/1.0.0"));
+            fs::create_dir_all(root.join(".claude-plugin")).unwrap();
+            fs::write(root.join(".claude-plugin/plugin.json"), b"{}").unwrap();
+            fs::create_dir_all(root.join("bin")).unwrap();
+            fs::write(root.join("bin/tool"), vec![b'x'; 100]).unwrap();
+        }
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+
+        let assets = plugin_assets::read_plugin_assets_capped(&adapter, true, 150).unwrap();
+
+        let total: usize = assets.iter().map(|a| a.content.len()).sum();
+        assert!(total <= 150, "read {total} bytes");
+        assert!(
+            manifests_in(&assets).is_empty(),
+            "{:?}",
+            manifests_in(&assets)
+        );
+    }
+
+    fn manifests_in(assets: &[PluginAsset]) -> Vec<String> {
+        let manifest = std::path::Path::new(".claude-plugin").join("plugin.json");
+        let mut names: Vec<String> = assets
+            .iter()
+            .filter(|a| a.relative_path == manifest)
+            .map(|a| a.plugin_name.clone())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// The manifest is what lets the Cursor mirror sweep files the plugin no
+    /// longer ships. A file that could not be read this run is not "no longer
+    /// shipped", so that plugin's batch must not carry the manifest.
+    #[cfg(unix)]
+    #[test]
+    fn read_plugin_assets_full_mirror_drops_the_manifest_of_a_plugin_with_an_unreadable_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempdir().unwrap();
+        for plugin in ["broken", "fine"] {
+            let root = tmp
+                .path()
+                .join(format!("plugins/cache/market/{plugin}/1.0.0"));
+            fs::create_dir_all(root.join(".claude-plugin")).unwrap();
+            fs::write(root.join(".claude-plugin/plugin.json"), b"{}").unwrap();
+            fs::create_dir_all(root.join("hooks")).unwrap();
+            fs::write(root.join("hooks/run.sh"), b"echo\n").unwrap();
+        }
+        let unreadable = tmp
+            .path()
+            .join("plugins/cache/market/broken/1.0.0/hooks/run.sh");
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read(&unreadable).is_ok() {
+            return; // running as root: permissions do not apply
+        }
+
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let assets = adapter.read_plugin_assets(true).unwrap();
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert_eq!(manifests_in(&assets), vec!["fine".to_string()]);
+    }
+
+    /// A cache directory that could not be listed hides whole plugins, which
+    /// the mirror would then prune as uninstalled. No plugin in such a batch
+    /// may be authoritative.
+    #[cfg(unix)]
+    #[test]
+    fn read_plugin_assets_full_mirror_carries_no_manifest_when_the_cache_could_not_be_listed() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempdir().unwrap();
+        for publisher in ["locked", "open"] {
+            let root = tmp
+                .path()
+                .join(format!("plugins/cache/{publisher}/plug-{publisher}/1.0.0"));
+            fs::create_dir_all(root.join(".claude-plugin")).unwrap();
+            fs::write(root.join(".claude-plugin/plugin.json"), b"{}").unwrap();
+        }
+        let locked = tmp.path().join("plugins/cache/locked");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read_dir(&locked).is_ok() {
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+            return; // running as root: permissions do not apply
+        }
+
+        let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+        let assets = adapter.read_plugin_assets(true).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(
+            manifests_in(&assets).is_empty(),
+            "an incomplete listing must not produce an authoritative batch: {:?}",
+            manifests_in(&assets)
         );
     }
 

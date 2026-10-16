@@ -6,6 +6,7 @@ mod codex_toml;
 mod copilot;
 mod cursor;
 pub(crate) mod json_config;
+pub(crate) mod shared_skills;
 #[cfg(test)]
 mod tests_common;
 pub mod traits;

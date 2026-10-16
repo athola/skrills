@@ -12,7 +12,6 @@ use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use std::fs;
 use std::path::Path;
-use std::time::SystemTime;
 
 /// Reads all commands from `.cursor/commands/*.md`.
 pub fn read_commands(root: &Path) -> Result<Vec<Command>> {
@@ -24,10 +23,18 @@ pub fn read_commands(root: &Path) -> Result<Vec<Command>> {
     let mut commands = Vec::new();
 
     for entry in fs::read_dir(&dir)? {
-        let entry = entry?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                tracing::warn!(error = %e, "Skipping unreadable directory entry");
+                continue;
+            }
+        };
         let path = entry.path();
 
-        if !path.is_file() {
+        // `file_type` does not follow links: a linked file could be any file
+        // on disk, and it would be copied into every other tool.
+        if !entry.file_type().is_ok_and(|t| t.is_file()) {
             continue;
         }
         if path
@@ -48,16 +55,15 @@ pub fn read_commands(root: &Path) -> Result<Vec<Command>> {
             .unwrap_or("unknown")
             .to_string();
 
-        let content = fs::read(&path)?;
+        let Some((content, modified)) = crate::adapters::utils::read_item_file(&path) else {
+            continue;
+        };
         // A copy this crate wrote gets its original frontmatter back.
         let content = match std::str::from_utf8(&content).ok().and_then(restore_command) {
             Some(restored) => restored.into_bytes(),
             None => content,
         };
         let hash = hash_content(&content);
-        let modified = fs::metadata(&path)
-            .and_then(|m| m.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
 
         commands.push(Command {
             name,

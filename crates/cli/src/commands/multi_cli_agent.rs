@@ -3,13 +3,17 @@
 //! Routes agent execution across available CLI backends (Claude, Codex)
 //! with automatic fallback when the primary backend is unavailable.
 
-use super::agent::{run_with_codex, AgentPath};
+use super::agent::{
+    agent_timeout, codex_args, codex_sandbox, run_agent_cli, run_with_codex, AgentPath,
+};
 use crate::cli::AgentBackend;
 use anyhow::{anyhow, Result};
 use indexmap::IndexMap;
-use skrills_server::discovery::{collect_agents, merge_extra_dirs, resolve_agent};
+use skrills_discovery::{collect_agents, merge_extra_dirs, resolve_agent};
+use skrills_subagents::launch::{claude_print_args, display_command, CodexSandbox};
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::Duration;
 
 /// Whether `bin` names an executable file in one of the `$PATH` directories.
 ///
@@ -38,31 +42,53 @@ fn find_binary<'a>(candidates: &'a [&'a str]) -> Option<&'a str> {
     candidates.iter().copied().find(|bin| is_available(bin))
 }
 
-/// Launch an agent via the Claude CLI.
-fn run_with_claude(bin: &str, agent_path: &AgentPath) -> Result<()> {
-    let status = Command::new(bin)
-        .args(["--print", &agent_path.prompt()])
-        .status()
-        .map_err(|e| anyhow!("could not run {bin}: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(anyhow!(
-            "claude agent exited with {}",
-            status
-                .code()
-                .map(|c| format!("code {c}"))
-                .unwrap_or_else(|| "signal (killed)".to_string())
-        ))
+/// The arguments the Claude CLI is run with for the agent at `agent_path`.
+fn claude_args(agent_path: &AgentPath) -> Vec<String> {
+    claude_print_args(&agent_path.prompt())
+}
+
+/// The command line `backend` runs, for `--dry-run`: the Codex sandbox
+/// flags versus Claude's `--print` are the part worth seeing.
+pub(super) fn dry_run_command(
+    backend: AgentBackend,
+    bin: &str,
+    agent_path: &AgentPath,
+    sandbox: CodexSandbox,
+) -> String {
+    let args = match backend {
+        AgentBackend::Claude => claude_args(agent_path),
+        AgentBackend::Codex => codex_args(agent_path, sandbox),
+        AgentBackend::Auto => unreachable!("select_backend never returns Auto as a backend"),
+    };
+    display_command(bin, &args)
+}
+
+/// `--dangerously-bypass-sandbox` is a Codex flag. Running Claude instead
+/// would drop it without a word, so that combination is refused.
+fn check_bypass_backend(backend: AgentBackend, sandbox: CodexSandbox) -> Result<()> {
+    if sandbox == CodexSandbox::Bypass && backend != AgentBackend::Codex {
+        return Err(anyhow!(
+            "--dangerously-bypass-sandbox applies only to the Codex backend, \
+             but '{}' was selected; pass --backend codex",
+            backend.as_str()
+        ));
     }
+    Ok(())
+}
+
+/// Launch an agent via the Claude CLI.
+fn run_with_claude(bin: &str, agent_path: &AgentPath, timeout: Option<Duration>) -> Result<()> {
+    let mut cmd = Command::new(bin);
+    cmd.args(claude_args(agent_path));
+    run_agent_cli(cmd, "claude", timeout)
 }
 
 /// Picks the backend to run.
 ///
 /// `--backend auto` takes the first available backend in priority order. An
 /// explicit `--backend` is honoured or refused: falling back from `claude`,
-/// chosen for its permission prompts, to an approval-free `codex --yolo` run
-/// is not a substitution to make behind a warning.
+/// chosen for its permission prompts, to a Codex run is not a substitution
+/// to make behind a warning.
 fn select_backend<'a>(
     requested: AgentBackend,
     backends: &'a IndexMap<AgentBackend, &'a [&'a str]>,
@@ -101,6 +127,8 @@ pub(crate) fn handle_multi_cli_agent_command(
     backend: AgentBackend,
     skill_dirs: Vec<PathBuf>,
     dry_run: bool,
+    dangerously_bypass_sandbox: bool,
+    timeout_secs: u64,
 ) -> Result<()> {
     let agents = collect_agents(&merge_extra_dirs(&skill_dirs))?;
     let agent = resolve_agent(&agent_spec, &agents)?;
@@ -115,20 +143,26 @@ pub(crate) fn handle_multi_cli_agent_command(
 
     let backends = backend.backends();
     let (backend_kind, bin) = select_backend(backend, &backends, find_binary)?;
+    let sandbox = codex_sandbox(dangerously_bypass_sandbox);
+    check_bypass_backend(backend_kind, sandbox)?;
 
     let backend_label = backend_kind.as_str();
     println!("Backend: {backend_label} ({bin})");
 
     if dry_run {
         println!("Agent path: {}", agent_path.as_str());
-        println!("Would run with: {backend_label}");
+        println!(
+            "Would run: {}",
+            dry_run_command(backend_kind, bin, &agent_path, sandbox)
+        );
         return Ok(());
     }
 
+    let timeout = agent_timeout(timeout_secs);
     match backend_kind {
-        AgentBackend::Claude => run_with_claude(bin, &agent_path),
-        AgentBackend::Codex => run_with_codex(bin, &agent_path),
-        AgentBackend::Auto => unreachable!("resolve_backends never returns Auto as a backend"),
+        AgentBackend::Claude => run_with_claude(bin, &agent_path, timeout),
+        AgentBackend::Codex => run_with_codex(bin, &agent_path, sandbox, timeout),
+        AgentBackend::Auto => unreachable!("select_backend never returns Auto as a backend"),
     }
 }
 
@@ -175,6 +209,7 @@ mod tests {
         assert!(result.is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn find_binary_returns_first_available() {
         // "sh" should exist on any Unix system
@@ -187,6 +222,7 @@ mod tests {
         assert!(!is_available("absolutely-nonexistent-binary-12345"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn is_available_returns_true_for_sh() {
         assert!(is_available("sh"));
@@ -198,6 +234,7 @@ mod tests {
         assert!(result.is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn find_binary_returns_first_when_all_available() {
         // Both "sh" and "bash" should exist, first one wins
@@ -231,8 +268,8 @@ mod tests {
         move |candidates: &'a [&'a str]| candidates.iter().copied().find(|c| present.contains(c))
     }
 
-    /// SA-48: `--backend claude` with Claude missing ran `codex --yolo exec`
-    /// after a warning.
+    /// SA-48: `--backend claude` with Claude missing ran Codex without
+    /// sandbox or approvals after a warning.
     #[test]
     fn an_explicit_backend_that_is_missing_is_refused_not_replaced() {
         let backends = AgentBackend::Claude.backends();
@@ -264,5 +301,63 @@ mod tests {
     fn auto_with_nothing_installed_is_an_error() {
         let backends = AgentBackend::Auto.backends();
         assert!(select_backend(AgentBackend::Auto, &backends, only(&[])).is_err());
+    }
+
+    #[test]
+    fn dry_run_shows_each_backends_full_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("agent.md");
+        std::fs::write(&file, "x").unwrap();
+        let path = AgentPath::new(&file).unwrap();
+
+        let codex = dry_run_command(
+            AgentBackend::Codex,
+            "codex",
+            &path,
+            CodexSandbox::WorkspaceWrite,
+        );
+        let claude = dry_run_command(
+            AgentBackend::Claude,
+            "claude",
+            &path,
+            CodexSandbox::WorkspaceWrite,
+        );
+
+        // Rewritten for M453: this pinned `codex --yolo exec --timeout_ms`;
+        // the default is now a sandboxed run, and Codex has no timeout flag.
+        assert!(
+            codex.starts_with("codex exec --sandbox workspace-write \""),
+            "{codex}"
+        );
+        assert!(
+            !codex.contains("--yolo") && !codex.contains("timeout"),
+            "{codex}"
+        );
+        assert!(claude.starts_with("claude --print \""), "{claude}");
+    }
+
+    #[test]
+    fn dry_run_shows_the_bypass_only_when_asked_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("agent.md");
+        std::fs::write(&file, "x").unwrap();
+        let path = AgentPath::new(&file).unwrap();
+
+        let codex = dry_run_command(AgentBackend::Codex, "codex", &path, CodexSandbox::Bypass);
+
+        assert!(
+            codex.starts_with("codex exec --dangerously-bypass-approvals-and-sandbox \""),
+            "{codex}"
+        );
+    }
+
+    #[test]
+    fn bypass_with_the_claude_backend_is_refused() {
+        let err = check_bypass_backend(AgentBackend::Claude, CodexSandbox::Bypass)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("--backend codex"), "{err}");
+        assert!(check_bypass_backend(AgentBackend::Codex, CodexSandbox::Bypass).is_ok());
+        assert!(check_bypass_backend(AgentBackend::Claude, CodexSandbox::WorkspaceWrite).is_ok());
     }
 }

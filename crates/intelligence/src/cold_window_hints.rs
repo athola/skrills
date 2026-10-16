@@ -8,7 +8,6 @@
 //! score = (frequency * FREQUENCY_WEIGHT + impact * IMPACT_WEIGHT)
 //!         / (ease_score + 1.0)
 //!         * recency_factor
-//!         + user_pin_boost
 //!
 //! recency_factor = exp(-ln 2 * age_days / HALF_LIFE_DAYS)   (0.5 at one half-life)
 //! ```
@@ -87,13 +86,17 @@ impl std::error::Error for ScorerError {}
 /// Upper end of the documented `Hint::ease_score` range.
 const MAX_EASE_SCORE: f64 = 10.0;
 
+/// Ceiling for `impact` and `age_days`. Far above any real value, and small
+/// enough that `impact * weight` stays finite and `0 * impact` is 0, not NaN.
+const MAX_SIGNAL: f64 = 1.0e12;
+
 /// `value` if it is finite and non-negative, else the nearest valid value
-/// (NaN and negatives become 0, +inf becomes `f64::MAX`).
+/// (NaN and negatives become 0, +inf and huge values become `MAX_SIGNAL`).
 fn finite_non_negative(value: f64) -> f64 {
     if value.is_nan() {
         0.0
     } else {
-        value.clamp(0.0, f64::MAX)
+        value.clamp(0.0, MAX_SIGNAL)
     }
 }
 
@@ -204,7 +207,13 @@ impl MultiSignalScorer {
         // A true half-life: the factor is 0.5 when `age_days == half_life_days`.
         let recency =
             (-std::f64::consts::LN_2 * age_days / self.half_life_days.max(f64::MIN_POSITIVE)).exp();
-        (numerator / denominator) * recency
+        let score = (numerator / denominator) * recency;
+        // A non-finite score would sort first under `total_cmp`.
+        if score.is_finite() {
+            score
+        } else {
+            0.0
+        }
     }
 
     /// Rank `hints` by computed score, highest first. Pinned hints
@@ -540,5 +549,23 @@ mod tests {
         // Unpinned group second; within it, strong before weak.
         assert_eq!(ranked[2].hint.uri, "us");
         assert_eq!(ranked[3].hint.uri, "uw");
+    }
+
+    #[test]
+    fn huge_impact_with_full_decay_scores_zero_not_nan() {
+        let s = MultiSignalScorer::new();
+        for h in [
+            hint("max-impact-old", 1, f64::MAX, 0.0, 1.0e6),
+            hint("inf-impact-old", 1, f64::INFINITY, 0.0, f64::INFINITY),
+            hint("inf-impact-new", 1, f64::INFINITY, 0.0, 0.0),
+        ] {
+            let score = s.score_one(&h);
+            assert!(score.is_finite(), "{} scored {score}", h.uri);
+        }
+        let ranked = s.rank(vec![
+            hint("inf-impact-old", 1, f64::INFINITY, 0.0, f64::INFINITY),
+            hint("normal", 5, 5.0, 1.0, 0.0),
+        ]);
+        assert_eq!(ranked[0].hint.uri, "normal");
     }
 }

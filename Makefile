@@ -1,7 +1,9 @@
 # Common developer and demo tasks for skrills
 # Note: Use Git Bash on Windows; recipes assume a POSIX shell.
 # Set CARGO_HOME to a writable path to avoid sandbox/root perms issues.
-SHELL := /bin/bash
+# pipefail: a failing command piped into head/grep must fail the recipe.
+# Set here rather than in .SHELLFLAGS, which GNU make 3.81 (macOS) ignores.
+SHELL := /bin/bash -o pipefail
 .DEFAULT_GOAL := help
 .DELETE_ON_ERROR:
 
@@ -9,11 +11,18 @@ CARGO ?= cargo
 CARGO_HOME ?= .cargo
 HOME_DIR ?= $(CURDIR)/.home-tmp
 BIN ?= skrills
-BIN_PATH ?= target/release/$(BIN)
+# Follow CARGO_TARGET_DIR so the paths below match where cargo builds.
+TARGET_DIR ?= $(or $(CARGO_TARGET_DIR),target)
+BIN_PATH ?= $(TARGET_DIR)/release/$(BIN)
 MDBOOK ?= mdbook
-# Test thread count: defaults to 1 for isolation (tests share filesystem state).
-# Override with TEST_THREADS=4 for faster parallel runs if tests are independent.
-TEST_THREADS ?= 1
+# Test thread count: unset means cargo's default (parallel), the same as CI's
+# `cargo test`. Tests that touch HOME, cwd, env or git are serialized with
+# serial_test instead. Set TEST_THREADS=1 to run every test one at a time.
+TEST_THREADS ?=
+TEST_THREADS_FLAG = $(if $(TEST_THREADS),--test-threads=$(TEST_THREADS))
+# Point the suite's syncs at a kill-switch marker of their own, so a running
+# `skrills cold-window` with its switch engaged does not fail every test.
+TEST_ENV = SKRILLS_KILL_SWITCH_FILE=$(abspath $(TARGET_DIR))/test-kill-switch.pid
 CARGO_CMD = CARGO_HOME=$(CARGO_HOME) $(CARGO)
 DEMO_RUN = HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(BIN_PATH)
 
@@ -35,7 +44,7 @@ define open_file
 endef
 
 define ensure_mdbook
-	@if ! command -v $(MDBOOK) >/dev/null 2>&1; then \
+	@if ! PATH=$(CARGO_HOME)/bin:$$PATH command -v $(MDBOOK) >/dev/null 2>&1; then \
 	  echo "mdbook not found; installing to $(CARGO_HOME)/bin"; \
 	  $(CARGO_CMD) install mdbook --locked >/dev/null; \
 	fi
@@ -49,18 +58,28 @@ define assert_exec
 	@test -x "$(1)" || (echo "ERROR: $(2)" && exit 1)
 endef
 
+# setup registers Claude through `claude mcp add --scope user` (~/.claude.json)
+# when the claude CLI is installed, else in ~/.claude/.mcp.json.
+CLAUDE_MCP_FILES = $(HOME_DIR)/.claude/.mcp.json $(HOME_DIR)/.claude.json
+
+define assert_claude_registered
+	@for f in $(CLAUDE_MCP_FILES); do \
+	  [ -f "$$f" ] && jq -e '.mcpServers.skrills' "$$f" >/dev/null 2>&1 && exit 0; \
+	done; echo "ERROR: Claude MCP registration not found"; exit 1
+endef
+
 # Unified verification macro: $(1)=label, $(2)=checks (space-separated: mcp claude codex)
 # Examples: $(call verify_setup,Claude,mcp claude), $(call verify_setup,Codex,codex)
 define verify_setup
 	@echo "==> Verifying $(1) setup..."
-	$(if $(findstring mcp,$(2)),$(call assert_file,$(HOME_DIR)/.claude/.mcp.json,Claude MCP config not created))
+	$(if $(findstring mcp,$(2)),$(call assert_claude_registered))
 	$(if $(findstring claude,$(2)),$(call assert_exec,$(HOME_DIR)/.claude/bin/skrills,Claude binary not installed))
 	$(if $(findstring codex,$(2)),$(call assert_exec,$(HOME_DIR)/.codex/bin/skrills,Codex binary not installed))
 	@echo "==> $(1) setup verified successfully"
 endef
 
 # Phony targets: core developer flow
-.PHONY: all help version verify fmt fmt-check lint lint-md lint-prose lint-decoration lint-reachability lint-hygiene check test test-unit test-integration test-setup test-install \
+.PHONY: all help version verify fmt fmt-check lint lint-md lint-prose lint-decoration lint-reachability lint-shell lint-hygiene check test test-unit test-integration test-setup test-install \
 	release-consistency verify-publish test-scripts cold-window \
 	plugin-audit plugin-audit-fix plugin-validate plugin-modernize plugin-doctor \
 	build build-min serve-help install status coverage test-coverage dogfood dogfood-readme ci precommit \
@@ -79,6 +98,8 @@ endef
 	dogfood-tui dogfood-dashboard dogfood-skill-diff dogfood-all \
 	dogfood-validate-contract dogfood-tui-interactive dogfood-precommit \
 	plugin-validate-direct plugin-modernize-direct plugin-registrations-direct
+# Per-target .NOTPARALLEL needs GNU make 4.4+; older makes (macOS ships 3.81)
+# read it as "serialize everything", so `make -j` gains nothing there.
 .NOTPARALLEL: demo-all demo-setup-all
 .SILENT: demo-doctor demo-empirical demo-cli demo-all demo-setup-claude demo-setup-codex demo-setup-both \
 	demo-setup-uninstall demo-setup-reinstall demo-setup-universal demo-setup-first-run \
@@ -86,7 +107,9 @@ endef
 
 $(CARGO_GUARD_TARGETS): require-cargo
 
-all: fmt lint test build
+all:
+	$(MAKE) fmt
+	$(MAKE) lint test build
 	@echo "==> Full build complete"
 
 version:
@@ -98,19 +121,22 @@ verify: fmt-check lint lint-md lint-hygiene test test-scripts test-install
 help:
 	@printf "Usage: make <target>\n\n"
 	@printf "Core\n"
-	@printf "  %-23s %s\n" "all" "full build (fmt + lint + test + build)"
+	@printf "  %-23s %s\n" "all" "fmt, then lint + test + build"
 	@printf "  %-23s %s\n" "version" "print current version"
 	@printf "  %-23s %s\n" "verify" "run all verification checks"
 	@printf "  %-23s %s\n" "fmt | fmt-check" "format workspace or check only"
-	@printf "  %-23s %s\n" "lint" "clippy --all-features with -D warnings"
+	@printf "  %-23s %s\n" "lint" "clippy -D warnings, three passes (all/default/no features)"
 	@printf "  %-23s %s\n" "lint-md" "lint markdown files"
 	@printf "  %-23s %s\n" "lint-prose" "block AI-slop vocabulary in docs"
 	@printf "  %-23s %s\n" "lint-decoration" "block decorative // ─ separator comments"
-	@printf "  %-23s %s\n" "lint-hygiene" "run lint-prose + lint-decoration"
+	@printf "  %-23s %s\n" "lint-reachability" "fail on crate source files no module declares"
+	@printf "  %-23s %s\n" "lint-shell" "shellcheck + shfmt scripts/*.sh and githooks/pre-commit"
+	@printf "  %-23s %s\n" "lint-hygiene" "lint-prose + lint-decoration + lint-reachability + lint-shell"
 	@printf "  %-23s %s\n" "check" "cargo check all targets"
 	@printf "  %-23s %s\n" "test | test-unit | test-integration" "run tests"
 	@printf "  %-23s %s\n" "test-setup" "run setup module tests"
 	@printf "  %-23s %s\n" "test-install" "test install.sh helper functions"
+	@printf "  %-23s %s\n" "verify-publish" "check publish_crates.sh order against crate deps (bash 4+)"
 	@printf "  %-23s %s\n" "release-consistency" "verify Cargo.toml/plugin.json version + commands parity"
 	@printf "  %-23s %s\n" "plugin-audit" "audit plugin.json registrations vs disk"
 	@printf "  %-23s %s\n" "plugin-audit-fix" "rewrite plugin.json to match disk"
@@ -120,13 +146,15 @@ help:
 	@printf "  %-23s %s\n" "test-scripts" "pytest the ported script suite under tests/unit/"
 	@printf "  %-23s %s\n" "test-coverage" "coverage via cargo-llvm-cov (precise)"
 	@printf "  %-23s %s\n" "build | build-min" "release builds"
-	@printf "  %-23s %s\n" "install" "install skrills to $(CARGO_HOME)/bin"
+	@printf "  %-23s %s\n" "install" "cargo install skrills (to cargo's default bin dir)"
+	@printf "  %-23s %s\n" "cold-window" "build, then serve the cold-window dashboard on :8888"
 	@printf "  %-23s %s\n" "serve-help" "binary --help smoke check"
 	@printf "  %-23s %s\n" "status" "show project status and environment"
 	@printf "  %-23s %s\n" "coverage" "coverage via cargo-tarpaulin (fast)"
 	@printf "  %-23s %s\n" "dogfood" "full dogfood (doctor + README validation)"
 	@printf "  %-23s %s\n" "dogfood-readme" "validate README CLI examples only"
 	@printf "  %-23s %s\n" "ci | precommit" "run common pipelines"
+	@printf "  %-23s %s\n" "" "make -j needs GNU make 4.4+ (per-target .NOTPARALLEL)"
 	@printf "  %-23s %s\n" "quick" "fast check (fmt + check, no tests)"
 	@printf "  %-23s %s\n" "watch" "watch mode with cargo-watch"
 	@printf "  %-23s %s\n" "bench" "run benchmarks"
@@ -138,7 +166,7 @@ help:
 	@printf "  %-23s %s\n" "deny" "run cargo deny (licenses, bans, sources)"
 	@printf "  %-23s %s\n" "deps-update" "update dependencies"
 	@printf "  %-23s %s\n" "check-deps" "check optional tool availability"
-	@printf "  %-23s %s\n" "" "optional: mdbook, cargo-audit, cargo-deny, cargo-llvm-cov"
+	@printf "  %-23s %s\n" "" "also: npx, rg, jq, curl, tmux, timeout, python3/pytest, shellcheck, shfmt, bash 4+"
 	@printf "\nDocs\n"
 	@printf "  %-23s %s\n" "docs" "build rustdoc and open"
 	@printf "  %-23s %s\n" "book | book-serve" "build or serve mdBook"
@@ -188,41 +216,48 @@ fmt-check:
 # Three passes, because a warning can exist under one feature set only: an
 # import used solely behind `#[cfg(feature = "watch")]` is clean with
 # --all-features and a hard error in the default build CI and releases use.
+# The fourth pass is package-scoped: workspace feature unification re-enables
+# skrills-analyze's intelligence scorer, so only `-p` sees it off (ADR 0010).
 lint:
 	$(CARGO_CMD) clippy --workspace --all-targets --all-features -- -D warnings
 	$(CARGO_CMD) clippy --workspace --all-targets -- -D warnings
 	$(CARGO_CMD) clippy --workspace --all-targets --no-default-features -- -D warnings
+	$(CARGO_CMD) clippy -p skrills-analyze --all-targets --no-default-features -- -D warnings
 
 lint-md:
-	$(SHELL) ./scripts/lint-markdown.sh
+	./scripts/lint-markdown.sh
 
 # Block AI-slop vocabulary in user-facing prose.
 lint-prose:
-	$(SHELL) ./scripts/lint-prose-slop.sh
+	./scripts/lint-prose-slop.sh
 
 # Block decorative `// ─{20,}` separator comments in Rust source.
 lint-decoration:
-	$(SHELL) ./scripts/lint-rust-decoration.sh
+	./scripts/lint-rust-decoration.sh
 
 # Fail when a crate source file is not declared as a module: an undeclared
 # file is never compiled, so nothing else in the toolchain would notice.
 lint-reachability:
-	$(SHELL) ./scripts/lint-module-reachability.sh
+	./scripts/lint-module-reachability.sh
 
 # Aggregate AI hygiene lints (banned words + decorative comments).
-lint-hygiene: lint-prose lint-decoration lint-reachability
+# Shell scripts: shellcheck at warning level plus shfmt formatting.
+lint-shell:
+	./scripts/shellcheck.sh
+
+lint-hygiene: lint-prose lint-decoration lint-reachability lint-shell
 
 check:
 	$(CARGO_CMD) check --workspace --all-targets
 
 test:
-	$(CARGO_CMD) test --workspace --all-features -- --test-threads=$(TEST_THREADS)
+	$(TEST_ENV) $(CARGO_CMD) test --workspace --all-features -- $(TEST_THREADS_FLAG)
 
 test-unit:
-	$(CARGO_CMD) test --workspace --lib --all-features -- --test-threads=$(TEST_THREADS)
+	$(TEST_ENV) $(CARGO_CMD) test --workspace --lib --all-features -- $(TEST_THREADS_FLAG)
 
 test-integration:
-	$(CARGO_CMD) test --workspace --test '*' --all-features
+	$(TEST_ENV) $(CARGO_CMD) test --workspace --test '*' --all-features -- $(TEST_THREADS_FLAG)
 
 test-setup:
 	$(CARGO_CMD) test --package skrills-server --lib setup --all-features
@@ -233,7 +268,7 @@ test-install:
 
 release-consistency:
 	@echo "==> Verifying release-consistency invariants (Cargo.toml + plugin.json + commands/)"
-	$(CARGO_CMD) test -p skrills_test_utils --test release_consistency
+	$(CARGO_CMD) test -p skrills-test-utils --test release_consistency
 
 # Plugin audits (Phase 1 / 1b / 1c). Uses ~/claude-night-market upstream
 # scripts when present, else the in-tree ports under scripts/.
@@ -266,13 +301,12 @@ test-scripts:
 	fi
 
 test-coverage:
-	@if command -v cargo-llvm-cov >/dev/null 2>&1; then \
-		$(CARGO_CMD) llvm-cov --workspace --all-features --html; \
-		$(call open_file,$(CURDIR)/target/llvm-cov/html/index.html); \
-	else \
+	@if ! command -v cargo-llvm-cov >/dev/null 2>&1; then \
 		echo "cargo-llvm-cov not installed. Run: cargo install cargo-llvm-cov"; \
 		exit 1; \
 	fi
+	$(CARGO_CMD) llvm-cov --workspace --all-features --html
+	$(call open_file,$(abspath $(TARGET_DIR))/llvm-cov/html/index.html)
 
 build:
 	$(CARGO_CMD) build --workspace --all-features --release
@@ -292,8 +326,10 @@ status:
 	@echo "Commit: $$(git rev-parse --short HEAD)"
 	@echo "Binary: $(BIN_PATH) $$(test -f $(BIN_PATH) && echo '(exists)' || echo '(not built)')"
 
+# No CARGO_HOME override: the binary belongs in the user's own cargo bin
+# directory (on PATH), not the repo-local build cache.
 install:
-	$(CARGO_CMD) install --path crates/cli --locked
+	$(CARGO) install --path crates/cli --locked
 
 coverage:
 	$(CARGO_CMD) tarpaulin --workspace --all-features --out Html
@@ -331,7 +367,7 @@ dogfood-readme: build demo-fixtures
 
 docs:
 	RUSTDOCFLAGS="-D warnings" $(CARGO_CMD) doc --workspace --all-features --no-deps
-	$(call open_file,$(CURDIR)/target/doc/skrills/index.html)
+	$(call open_file,$(abspath $(TARGET_DIR))/doc/skrills/index.html)
 
 book:
 	$(call ensure_mdbook)
@@ -354,7 +390,8 @@ demo-cert: demo-fixtures build
 	@echo "--- cert status"
 	$(DEMO_RUN) cert status
 	@echo "--- cert status (json)"
-	$(DEMO_RUN) cert status --format json | head -5
+	$(DEMO_RUN) cert status --format json >$(HOME_DIR)/cert-status.json
+	@head -5 $(HOME_DIR)/cert-status.json
 	@echo "--- cert renew (skip if valid)"
 	$(DEMO_RUN) cert renew || true
 	@echo "--- cert renew --force"
@@ -398,21 +435,21 @@ demo-multi-cli-agent: demo-fixtures build
 	@echo "--- multi-cli-agent --help"
 	$(DEMO_RUN) multi-cli-agent --help >/dev/null
 	@echo "--- multi-cli-agent dry-run (agent not found expected)"
-	$(DEMO_RUN) multi-cli-agent test-agent --dry-run 2>&1 | grep -q "not found" || true
+	out=$$($(DEMO_RUN) multi-cli-agent test-agent --dry-run 2>&1); echo "$$out" | grep -qi "not found" || { echo "ERROR: expected 'not found'"; echo "$$out"; exit 1; }
 	@echo "--- multi-cli-agent unit tests"
-	$(CARGO_CMD) test --package skrills-server --lib multi_cli_agent --all-features -- --test-threads=1
+	$(CARGO_CMD) test --package skrills --lib multi_cli_agent --all-features -- --test-threads=1
 	@echo "==> Multi-CLI agent demo complete"
 
 demo-fixtures:
 	@mkdir -p $(HOME_DIR)/.codex/skills/demo
 	@mkdir -p $(HOME_DIR)/.codex/bin
-	@echo "demo skill content" > $(HOME_DIR)/.codex/skills/demo/SKILL.md
+	@printf -- '---\nname: demo\ndescription: Demo skill for the make demos\n---\ndemo skill content\n' > $(HOME_DIR)/.codex/skills/demo/SKILL.md
 	@echo "# Agents" > $(HOME_DIR)/.codex/AGENTS.md
 	@# Create MCP config files for doctor demo
 	@echo '{"mcpServers":{"skrills":{"type":"stdio","command":"$(HOME_DIR)/.codex/bin/skrills","args":["serve"]}}}' > $(HOME_DIR)/.codex/mcp_servers.json
 	@printf '[mcp_servers.skrills]\ntype = "stdio"\ncommand = "$(HOME_DIR)/.codex/bin/skrills"\nargs = ["serve"]\n' > $(HOME_DIR)/.codex/config.toml
 	@# Create symlink to release binary for doctor validation
-	@ln -sf $(CURDIR)/target/release/skrills $(HOME_DIR)/.codex/bin/skrills 2>/dev/null || cp $(CURDIR)/target/release/skrills $(HOME_DIR)/.codex/bin/skrills 2>/dev/null || true
+	@ln -sf $(abspath $(BIN_PATH)) $(HOME_DIR)/.codex/bin/skrills 2>/dev/null || cp $(abspath $(BIN_PATH)) $(HOME_DIR)/.codex/bin/skrills 2>/dev/null || true
 	@# Create mock Claude session data for empirical demo
 	@mkdir -p $(HOME_DIR)/.claude/projects/demo-project
 	@for i in 01 02 03 04 05 06 07 08 09 10 11 12; do \
@@ -441,7 +478,7 @@ demo-release-consistency:
 	@echo "--- Invariant 5: marketplace.json plugin entries + sources"
 	@jq -r '"    metadata.version: \(.metadata.version // "-")", (.plugins | to_entries[] | "    plugins[\(.key)] \(.value.name) v\(.value.version) source=\(.value.source)")' .claude-plugin/marketplace.json
 	@echo "--- Running parity test suite"
-	$(CARGO_CMD) test -p skrills_test_utils --test release_consistency
+	$(CARGO_CMD) test -p skrills-test-utils --test release_consistency
 	@echo "==> Release-consistency demo complete"
 
 demo-empirical: demo-fixtures build
@@ -456,9 +493,9 @@ demo-cli: demo-fixtures build
 	@echo "--- mirror"
 	$(DEMO_RUN) mirror
 	@echo "--- agent (no agents expected)"
-	$(DEMO_RUN) agent test-agent --dry-run 2>&1 | grep -q "not found" || true
+	out=$$($(DEMO_RUN) agent test-agent --dry-run 2>&1); echo "$$out" | grep -qi "not found" || { echo "ERROR: expected 'not found'"; echo "$$out"; exit 1; }
 	@echo "--- sync-agents"
-	$(DEMO_RUN) sync-agents
+	$(DEMO_RUN) sync-agents --path $(HOME_DIR)/AGENTS.md
 	@echo "--- sync"
 	$(DEMO_RUN) sync
 	@echo "--- sync-commands"
@@ -480,9 +517,9 @@ demo-cli: demo-fixtures build
 	@echo "--- metrics"
 	$(DEMO_RUN) metrics
 	@echo "--- recommend (no skills expected)"
-	$(DEMO_RUN) recommend test-skill 2>&1 | grep -q "No skills" || true
+	out=$$($(DEMO_RUN) recommend test-skill 2>&1); echo "$$out" | grep -qi "not found" || { echo "ERROR: expected 'not found'"; echo "$$out"; exit 1; }
 	@echo "--- resolve-dependencies (skill not found expected)"
-	$(DEMO_RUN) resolve-dependencies test-skill 2>&1 | grep -q "not found" || true
+	out=$$($(DEMO_RUN) resolve-dependencies test-skill 2>&1); echo "$$out" | grep -qi "not found" || { echo "ERROR: expected 'not found'"; echo "$$out"; exit 1; }
 	@echo "--- recommend-skills-smart"
 	$(DEMO_RUN) recommend-skills-smart
 	@echo "--- analyze-project-context"
@@ -501,7 +538,7 @@ demo-cli: demo-fixtures build
 	@echo "--- import-analytics (if export exists)"
 	@test -f $(HOME_DIR)/analytics-cli-test.json && $(DEMO_RUN) import-analytics $(HOME_DIR)/analytics-cli-test.json --overwrite || true
 	@echo "--- multi-cli-agent --dry-run (agent not found expected)"
-	$(DEMO_RUN) multi-cli-agent test-agent --dry-run 2>&1 | grep -q "not found" || true
+	out=$$($(DEMO_RUN) multi-cli-agent test-agent --dry-run 2>&1); echo "$$out" | grep -qi "not found" || { echo "ERROR: expected 'not found'"; echo "$$out"; exit 1; }
 	@echo "--- setup --help"
 	$(DEMO_RUN) setup --help >/dev/null
 	@echo "==> All CLI commands tested successfully"
@@ -514,7 +551,7 @@ demo-all: demo-fixtures build demo-doctor demo-empirical demo-cli demo-setup-all
 
 demo-setup-claude: demo-fixtures build
 	@echo "==> Demo: Setup for Claude Code (non-interactive)"
-	@rm -rf $(HOME_DIR)/.claude
+	@rm -rf $(HOME_DIR)/.claude $(HOME_DIR)/.claude.json
 	$(DEMO_RUN) setup --client claude --bin-dir $(HOME_DIR)/.claude/bin --yes
 	$(call verify_setup,Claude,mcp claude)
 
@@ -526,14 +563,19 @@ demo-setup-codex: demo-fixtures build
 
 demo-setup-both: demo-fixtures build
 	@echo "==> Demo: Setup for both Claude Code and Codex"
-	@rm -rf $(HOME_DIR)/.claude $(HOME_DIR)/.codex
+	@rm -rf $(HOME_DIR)/.claude $(HOME_DIR)/.claude.json $(HOME_DIR)/.codex
 	$(DEMO_RUN) setup --client both --bin-dir $(HOME_DIR)/.claude/bin --yes
 	$(call verify_setup,Both clients,mcp claude)
+	@grep -qF '[mcp_servers.skrills]' $(HOME_DIR)/.codex/config.toml || (echo "ERROR: Codex MCP registration not written" && exit 1)
+	@echo "==> Codex registration verified"
 
 demo-setup-uninstall: demo-setup-claude
 	@echo "==> Demo: Uninstall Claude setup"
 	$(DEMO_RUN) setup --uninstall --client claude --yes
 	@echo "==> Verifying uninstall..."
+	@for f in $(CLAUDE_MCP_FILES); do \
+	  [ -f "$$f" ] && jq -e '.mcpServers.skrills' "$$f" >/dev/null 2>&1 && { echo "ERROR: skrills still registered in $$f"; exit 1; }; \
+	done; true
 	@echo "==> Uninstall verified successfully"
 
 demo-setup-reinstall: demo-setup-claude
@@ -543,17 +585,17 @@ demo-setup-reinstall: demo-setup-claude
 
 demo-setup-universal: demo-fixtures build
 	@echo "==> Demo: Setup with universal sync"
-	@rm -rf $(HOME_DIR)/.claude $(HOME_DIR)/.agent
+	@rm -rf $(HOME_DIR)/.claude $(HOME_DIR)/.claude.json $(HOME_DIR)/.agents
 	@mkdir -p $(HOME_DIR)/.claude/skills
 	@echo "test skill" > $(HOME_DIR)/.claude/skills/test.md
 	$(DEMO_RUN) setup --client claude --bin-dir $(HOME_DIR)/.claude/bin --universal --yes
 	$(call verify_setup,Universal,mcp claude)
-	@test -d $(HOME_DIR)/.agent/skills || (echo "ERROR: Universal skills dir not created" && exit 1)
+	@test -d $(HOME_DIR)/.agents/skills || (echo "ERROR: Universal skills dir not created" && exit 1)
 	@echo "==> Universal skills directory verified"
 
 demo-setup-first-run: demo-fixtures build
 	@echo "==> Demo: First-run detection (simulated with doctor command)"
-	@rm -rf $(HOME_DIR)/.claude $(HOME_DIR)/.codex
+	@rm -rf $(HOME_DIR)/.claude $(HOME_DIR)/.claude.json $(HOME_DIR)/.codex
 	@echo "==> Running doctor command on fresh install (should NOT prompt for setup as it's not served by first-run logic)"
 	$(DEMO_RUN) doctor 2>&1 || true
 	@echo "==> First-run detection demo complete"
@@ -575,7 +617,7 @@ watch:
 bench:
 	$(CARGO_CMD) bench --workspace
 
-release: fmt lint test build
+release: fmt-check lint test build
 	@echo "==> Release validation complete"
 	@echo "    Binary: $(BIN_PATH)"
 	@$(BIN_PATH) --version
@@ -587,7 +629,7 @@ clean-demo:
 	@rm -rf $(HOME_DIR)
 	@echo "Removed demo HOME $(HOME_DIR)"
 
-ci: fmt lint lint-hygiene test
+ci: fmt-check lint lint-md lint-hygiene test test-scripts test-install
 
 # verify_publish_order.sh needs associative arrays, so it needs bash 4+.
 # Stock macOS /bin/bash is 3.2, so probe the usual Homebrew locations before
@@ -629,6 +671,14 @@ check-deps:
 	@command -v cargo-watch >/dev/null 2>&1 && echo "  cargo-watch: ok" || echo "  cargo-watch: missing"
 	@command -v $(MDBOOK) >/dev/null 2>&1 && echo "  mdbook: ok" || echo "  mdbook: missing"
 	@command -v cargo-tarpaulin >/dev/null 2>&1 && echo "  cargo-tarpaulin: ok" || echo "  cargo-tarpaulin: missing"
+	@echo "Checking tools precommit and dogfood call..."
+	@for tool in npx rg jq curl tmux python3 pytest shellcheck shfmt; do \
+	  command -v $$tool >/dev/null 2>&1 && echo "  $$tool: ok" || echo "  $$tool: missing"; \
+	done
+	@{ command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; } && echo "  timeout: ok" || echo "  timeout: missing (brew install coreutils)"
+	@for b in bash /opt/homebrew/bin/bash /usr/local/bin/bash; do \
+	  "$$b" -c 'declare -A probe' >/dev/null 2>&1 && { echo "  bash 4+: ok ($$b)"; exit 0; }; \
+	done; echo "  bash 4+: missing (brew install bash)"
 
 security:
 	@if command -v cargo-audit >/dev/null 2>&1; then \
@@ -659,7 +709,15 @@ deps-update:
 # Override-able port so a developer can run `make cold-window` (8888) and
 # `make dogfood-cold-window-browser` (18888) side-by-side.
 DOGFOOD_PORT ?= 18888
-DOGFOOD_TMP  := /tmp/skrills-dogfood-$$$$
+# A private, unpredictable scratch dir per recipe (honours TMPDIR); a fixed
+# /tmp/skrills-dogfood-<pid> path could be pre-created or symlinked by another user.
+DOGFOOD_TMP  = $$(mktemp -d "$${TMPDIR:-/tmp}/skrills-dogfood.XXXXXX")
+# GNU `timeout`; Homebrew coreutils installs it as `gtimeout` on macOS.
+TIMEOUT ?= $(shell command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null)
+
+define _require_timeout
+	@test -n "$(TIMEOUT)" || { echo "FAIL: GNU timeout not found (brew install coreutils, or set TIMEOUT=)"; exit 1; }
+endef
 
 # 124 = `timeout` fired (clean), 143 = 128+SIGTERM (clean). Anything else fails.
 # Note: callers MUST run the prior command under `set +e` so $$? is observable.
@@ -668,16 +726,18 @@ define _assert_clean_exit
 endef
 
 dogfood-cold-window-headless: build
+	$(_require_timeout)
 	@echo "==> [headless] engine ticks 3s @ 200ms cadence; expects graceful SIGTERM exit"
-	@set +e; HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) timeout --signal=TERM 3 \
+	@set +e; HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(TIMEOUT) --signal=TERM 3 \
 	  $(BIN_PATH) cold-window --tick-rate-ms 200 --alert-budget 100000 >/dev/null 2>&1 ; \
 	$(_assert_clean_exit)
 	@echo "==> [headless] OK"
 
 dogfood-cold-window-chaos: build
-	@echo "==> [chaos] --demo --no-adaptive + alert-budget=2 (the minimum) forces kill-switch path"
-	@set +e; HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) timeout --signal=TERM 3 \
-	  $(BIN_PATH) cold-window --demo --no-adaptive --tick-rate-ms 200 --alert-budget 2 >/dev/null 2>&1 ; \
+	$(_require_timeout)
+	@echo "==> [chaos] --demo --no-adaptive + alert-budget=3 (the minimum) forces kill-switch path"
+	@set +e; HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(TIMEOUT) --signal=TERM 3 \
+	  $(BIN_PATH) cold-window --demo --no-adaptive --tick-rate-ms 200 --alert-budget 3 >/dev/null 2>&1 ; \
 	$(_assert_clean_exit)
 	@echo "==> [chaos] OK"
 
@@ -731,9 +791,10 @@ dogfood-cold-window-browser: build
 # Without a TTY (CI, redirected stdio), exit cleanly with a "requires a TTY"
 # message, that graceful refusal is itself a contract worth testing.
 dogfood-tui: build demo-fixtures
+	$(_require_timeout)
 	@echo "==> [tui] TTY-or-graceful-refusal contract (skrills tui)"
-	@TMP=$(DOGFOOD_TMP).tui.err ; \
-	set +e; HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) timeout --signal=TERM 3 \
+	@TMPD=$(DOGFOOD_TMP) ; TMP=$$TMPD/tui.err ; trap 'rm -rf "$$TMPD"' EXIT ; \
+	set +e; HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(TIMEOUT) --signal=TERM 3 \
 	  $(BIN_PATH) tui --skill-dir $(HOME_DIR)/.codex/skills </dev/null >/dev/null 2>$$TMP ; \
 	rc=$$? ; \
 	case $$rc in \
@@ -745,9 +806,10 @@ dogfood-tui: build demo-fixtures
 	esac
 
 dogfood-dashboard: build demo-fixtures
+	$(_require_timeout)
 	@echo "==> [dashboard] TTY-or-graceful-refusal contract (skrills dashboard)"
-	@TMP=$(DOGFOOD_TMP).dash.err ; \
-	set +e; HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) timeout --signal=TERM 3 \
+	@TMPD=$(DOGFOOD_TMP) ; TMP=$$TMPD/dash.err ; trap 'rm -rf "$$TMPD"' EXIT ; \
+	set +e; HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) $(TIMEOUT) --signal=TERM 3 \
 	  $(BIN_PATH) dashboard --skill-dir $(HOME_DIR)/.codex/skills </dev/null >/dev/null 2>$$TMP ; \
 	rc=$$? ; \
 	case $$rc in \
@@ -761,7 +823,7 @@ dogfood-dashboard: build demo-fixtures
 dogfood-skill-diff: build demo-fixtures
 	@command -v jq >/dev/null 2>&1 || { echo "FAIL: jq required"; exit 1; }
 	@echo "==> [skill-diff] JSON output for the demo fixture skill"
-	@TMP=$(DOGFOOD_TMP).json ; \
+	@TMPD=$(DOGFOOD_TMP) ; TMP=$$TMPD/skill-diff.json ; trap 'rm -rf "$$TMPD"' EXIT ; \
 	HOME=$(HOME_DIR) CARGO_HOME=$(CARGO_HOME) \
 	  $(BIN_PATH) skill-diff demo --format json >$$TMP 2>/dev/null || true ; \
 	jq -e '. | has("skill") and has("found_in")' $$TMP >/dev/null \
@@ -774,13 +836,13 @@ dogfood-skill-diff: build demo-fixtures
 # selection). Drives the real binary through the real validate-skills action
 # entrypoint; see scripts/dogfood-contracts.sh for the Given/When/Then specs.
 dogfood-validate-contract: build
-	@BIN_PATH=$(BIN_PATH) $(SHELL) ./scripts/dogfood-contracts.sh
+	@BIN_PATH=$(BIN_PATH) ./scripts/dogfood-contracts.sh
 
 # Interactive TUI dogfood: drive the cold-window TUI under a real PTY (tmux)
 # and assert first paint, help overlay, command palette, and clean Ctrl-C
 # quit. Falls back to the no-TTY refusal contracts when tmux is unavailable.
 dogfood-tui-interactive: build
-	@BIN_PATH=$(BIN_PATH) $(SHELL) ./scripts/dogfood-tui.sh
+	@BIN_PATH=$(BIN_PATH) ./scripts/dogfood-tui.sh
 
 # Truncated dogfood for the pre-commit hook: the validate JSON output contract
 # and the TUI contracts, run against the release binary the `build`
@@ -792,8 +854,8 @@ dogfood-tui-interactive: build
 # somewhere `build` did not write, and the contracts must not be passed over.
 dogfood-precommit: build
 	@if [ -x "$(BIN_PATH)" ]; then \
-	  BIN_PATH=$(BIN_PATH) $(SHELL) ./scripts/dogfood-contracts.sh && \
-	  BIN_PATH=$(BIN_PATH) $(SHELL) ./scripts/dogfood-tui.sh ; \
+	  BIN_PATH=$(BIN_PATH) ./scripts/dogfood-contracts.sh && \
+	  BIN_PATH=$(BIN_PATH) ./scripts/dogfood-tui.sh ; \
 	else \
 	  echo "ERROR: [dogfood] $(BIN_PATH) is not executable after 'make build'" >&2 ; \
 	  echo "       check the BIN_PATH and CARGO_TARGET_DIR overrides in effect" >&2 ; \
@@ -809,7 +871,7 @@ plugin-validate-direct:
 
 plugin-modernize-direct:
 	@echo "==> [direct] check_hook_modernization.py --json --root ."
-	@TMP=$(DOGFOOD_TMP).hooks.json ; \
+	@TMPD=$(DOGFOOD_TMP) ; TMP=$$TMPD/hooks.json ; trap 'rm -rf "$$TMPD"' EXIT ; \
 	python3 scripts/check_hook_modernization.py --root . --json >$$TMP ; \
 	jq -e '.success == true and .errors == 0' $$TMP >/dev/null \
 	  || { echo "FAIL: hook modernization audit not clean:" ; jq . $$TMP ; rm -f $$TMP ; exit 1; } ; \

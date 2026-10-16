@@ -57,19 +57,32 @@ pub fn check_connectivity() -> NetworkStatus {
 
 /// Check connectivity with a custom timeout.
 pub fn check_connectivity_with_timeout(timeout: Duration) -> NetworkStatus {
-    for target in PROBE_TARGETS {
-        match target.to_socket_addrs() {
-            Ok(mut addrs) => {
-                if let Some(addr) = addrs.next() {
-                    if TcpStream::connect_timeout(&addr, timeout).is_ok() {
-                        return NetworkStatus::Online;
-                    }
-                }
-            }
+    probe(PROBE_TARGETS, timeout)
+}
+
+/// Probes `targets`: `Online` when one accepts a TCP connection, `Offline`
+/// when at least one resolved and none accepted, and `Unknown` when none
+/// resolved, since then nothing was actually tried.
+fn probe(targets: &[&str], timeout: Duration) -> NetworkStatus {
+    let mut tried = false;
+    for target in targets {
+        let addrs = match target.to_socket_addrs() {
+            Ok(addrs) => addrs,
+            // An unresolvable target was never tried; it decides nothing.
             Err(_) => continue,
+        };
+        for addr in addrs {
+            tried = true;
+            if TcpStream::connect_timeout(&addr, timeout).is_ok() {
+                return NetworkStatus::Online;
+            }
         }
     }
-    NetworkStatus::Offline
+    if tried {
+        NetworkStatus::Offline
+    } else {
+        NetworkStatus::Unknown
+    }
 }
 
 /// Returns true if the system appears to have network connectivity.
@@ -102,32 +115,35 @@ mod tests {
         assert!(!NetworkStatus::Unknown.is_offline());
     }
 
+    /// A reachable address is online.
     #[test]
-    fn check_connectivity_returns_valid_status() {
-        // We can't guarantee network state in CI, but the function should not panic.
-        let status = check_connectivity();
-        assert!(
-            status == NetworkStatus::Online
-                || status == NetworkStatus::Offline
-                || status == NetworkStatus::Unknown
-        );
+    fn a_reachable_target_is_online() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let target = listener.local_addr().unwrap().to_string();
+
+        let status = probe(&[target.as_str()], Duration::from_secs(2));
+
+        assert_eq!(status, NetworkStatus::Online);
     }
 
+    /// Resolved addresses that all refuse the connection are offline.
     #[test]
-    fn check_connectivity_with_zero_timeout_returns_offline() {
-        // A zero-duration timeout should always fail to connect.
-        let status = check_connectivity_with_timeout(Duration::from_nanos(1));
-        // With near-zero timeout, we expect Offline (connect will timeout).
-        assert!(
-            status == NetworkStatus::Offline || status == NetworkStatus::Online,
-            "should be offline or online, got {:?}",
-            status
-        );
+    fn resolved_targets_that_refuse_are_offline() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let target = listener.local_addr().unwrap().to_string();
+        drop(listener);
+
+        let status = probe(&[target.as_str()], Duration::from_secs(2));
+
+        assert_eq!(status, NetworkStatus::Offline);
     }
 
+    /// No target resolved, so nothing was probed: the status is unknown,
+    /// as the docs say, not offline.
     #[test]
-    fn is_online_returns_bool() {
-        // Just verify it doesn't panic and returns a bool.
-        let _result: bool = is_online();
+    fn targets_that_do_not_resolve_are_unknown() {
+        let status = probe(&["not a socket address"], Duration::from_secs(2));
+
+        assert_eq!(status, NetworkStatus::Unknown);
     }
 }

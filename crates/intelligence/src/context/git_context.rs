@@ -70,6 +70,12 @@ fn run_git_log(
             "--format=%s",
         ])
         .current_dir(root)
+        // Inherited from a git hook, these would point `git log` at the
+        // hook's repository instead of `root`.
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_COMMON_DIR")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -143,15 +149,16 @@ fn extract_keywords_from_commits(commits: &str) -> Vec<String> {
         // Extract words
         for word in line.split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_') {
             let word = word.to_lowercase();
-            if word.len() >= 3 && !is_commit_stop_word(&word) {
+            if word.chars().count() >= 3 && !is_commit_stop_word(&word) {
                 *word_counts.entry(word).or_insert(0) += 1;
             }
         }
     }
 
     // Sort by frequency and take top keywords
+    // Ties are ordered by word, so the cut-off below is the same every run.
     let mut keywords: Vec<_> = word_counts.into_iter().collect();
-    keywords.sort_by_key(|b| std::cmp::Reverse(b.1));
+    keywords.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     keywords
         .into_iter()
@@ -160,44 +167,37 @@ fn extract_keywords_from_commits(commits: &str) -> Vec<String> {
         .collect()
 }
 
-/// Strip conventional commit prefixes like "feat:", "fix:", etc.
+/// Strip conventional commit prefixes like "feat:", "fix(scope):", "feat!:".
+///
+/// The prefix is a lowercase type, an optional `(scope)`, an optional `!`
+/// (breaking change) and a colon.
 fn strip_conventional_prefix(line: &str) -> &str {
-    const PREFIXES: &[&str] = &[
-        "feat:",
-        "fix:",
-        "docs:",
-        "style:",
-        "refactor:",
-        "perf:",
-        "test:",
-        "build:",
-        "ci:",
-        "chore:",
-        "revert:",
-        "feat(",
-        "fix(",
-        "docs(",
-        "style(",
-        "refactor(",
-        "perf(",
-        "test(",
-        "build(",
-        "ci(",
-        "chore(",
-        "revert(",
+    const TYPES: &[&str] = &[
+        "feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore",
+        "revert",
     ];
-
-    for prefix in PREFIXES {
-        if line.to_lowercase().starts_with(prefix) {
-            let rest = &line[prefix.len()..];
-            // Handle scope like "feat(scope): message"
-            if let Some(idx) = rest.find("):") {
-                return rest[idx + 2..].trim_start();
-            }
-            return rest.trim_start_matches(':').trim();
+    let lowered = line.to_ascii_lowercase();
+    for kind in TYPES {
+        let Some(rest) = lowered.strip_prefix(kind) else {
+            continue;
+        };
+        let mut offset = kind.len();
+        let mut rest = rest;
+        if rest.starts_with('(') {
+            let Some(close) = rest.find(')') else {
+                continue;
+            };
+            offset += close + 1;
+            rest = &rest[close + 1..];
+        }
+        if let Some(after) = rest.strip_prefix('!') {
+            offset += 1;
+            rest = after;
+        }
+        if rest.starts_with(':') {
+            return line[offset + 1..].trim();
         }
     }
-
     line
 }
 
@@ -423,5 +423,51 @@ chore: update dependencies"#;
         assert!(is_commit_stop_word("the"));
         assert!(!is_commit_stop_word("authentication"));
         assert!(!is_commit_stop_word("database"));
+    }
+
+    #[test]
+    fn breaking_change_prefixes_are_stripped() {
+        assert_eq!(strip_conventional_prefix("feat!: drop api"), "drop api");
+        assert_eq!(
+            strip_conventional_prefix("feat(api)!: drop api"),
+            "drop api"
+        );
+        assert_eq!(strip_conventional_prefix("fix(core): mend"), "mend");
+        assert_eq!(strip_conventional_prefix("plain message"), "plain message");
+    }
+
+    #[test]
+    fn keyword_ties_are_ordered_by_name() {
+        // 35 distinct words, each once: the 30 kept are the first by name.
+        let words: Vec<String> = (0..35).map(|i| format!("word{i:02}")).collect();
+        let keywords = extract_keywords_from_commits(&words.join("\n"));
+        assert_eq!(keywords, words[..30].to_vec());
+    }
+
+    #[test]
+    fn keyword_length_counts_characters_not_bytes() {
+        let keywords = extract_keywords_from_commits("日本 rust");
+        assert_eq!(keywords, vec!["rust".to_string()]);
+    }
+
+    /// Invoked from a git hook, `git log` would follow the hook's GIT_DIR to
+    /// the hook's repository instead of `root`.
+    #[cfg(unix)]
+    #[test]
+    fn git_log_does_not_inherit_the_callers_repository_variables() {
+        use std::os::unix::fs::PermissionsExt;
+        let _g = crate::test_support::env_guard();
+        let _dir = crate::test_support::set_env_var("GIT_DIR", Some("/elsewhere/.git"));
+        let _tree = crate::test_support::set_env_var("GIT_WORK_TREE", Some("/elsewhere"));
+        let bin = tempfile::tempdir().unwrap();
+        let git = bin.path().join("git");
+        std::fs::write(
+            &git,
+            "#!/bin/sh\necho \"${GIT_DIR:-unset} ${GIT_WORK_TREE:-unset}\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let out = run_git_log(git.as_os_str(), bin.path(), 1, Duration::from_secs(10)).unwrap();
+        assert_eq!(out.trim(), "unset unset");
     }
 }

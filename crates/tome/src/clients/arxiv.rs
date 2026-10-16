@@ -28,8 +28,10 @@ impl ArxivClient {
 
     /// Search arXiv for papers. Returns parsed Atom XML results.
     pub async fn search(&self, query: &str, limit: usize) -> TomeResult<Vec<Paper>> {
-        let limit = limit.min(100);
         let sanitized = sanitize_query(query);
+        let Some(limit) = super::search_limit(&sanitized, limit, 100) else {
+            return Ok(Vec::new());
+        };
 
         let resp = self
             .http
@@ -55,17 +57,21 @@ fn parse_arxiv_atom(xml: &str) -> Vec<Paper> {
     let mut skipped = 0u32;
 
     for entry in xml.split("<entry>").skip(1) {
-        let title = extract_tag(entry, "title").map(|t| t.replace('\n', " ").trim().to_string());
+        let title = extract_tag(entry, "title").map(|t| xml_text(&t));
         let id = extract_tag(entry, "id");
-        let summary = extract_tag(entry, "summary").map(|s| s.trim().to_string());
+        let summary = extract_tag(entry, "summary").map(|s| xml_text(&s));
         let published = extract_tag(entry, "published");
 
         if let (Some(title), Some(id)) = (title, id) {
             let year = published.and_then(|p| p.get(..4).and_then(|y| y.parse().ok()));
-            let arxiv_id = id.rsplit('/').next().unwrap_or(&id).to_string();
+            // Old-style ids carry their archive (`hep-th/9901001`), so only
+            // the `/abs/` prefix is dropped. The version suffix is left off
+            // the id so two versions of one paper deduplicate.
+            let arxiv_id = id.split_once("/abs/").map_or(id.as_str(), |(_, rest)| rest);
+            let canonical_id = strip_arxiv_version(arxiv_id);
 
             papers.push(Paper {
-                id: arxiv_id.clone(),
+                id: canonical_id.to_string(),
                 title,
                 authors: extract_authors(entry),
                 abstract_text: summary,
@@ -88,6 +94,72 @@ fn parse_arxiv_atom(xml: &str) -> Vec<Paper> {
     papers
 }
 
+/// `2301.00001v2` -> `2301.00001`; an id without a `vN` suffix is unchanged.
+fn strip_arxiv_version(id: &str) -> &str {
+    match id.rsplit_once('v') {
+        Some((base, version))
+            if !base.is_empty()
+                && !version.is_empty()
+                && version.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            base
+        }
+        _ => id,
+    }
+}
+
+/// Element text as a reader sees it: CDATA unwrapped, the XML entities
+/// decoded, and line breaks and indentation runs collapsed to one space.
+fn xml_text(raw: &str) -> String {
+    let raw = raw.trim();
+    let decoded = match raw
+        .strip_prefix("<![CDATA[")
+        .and_then(|r| r.strip_suffix("]]>"))
+    {
+        Some(cdata) => cdata.to_string(),
+        None => decode_entities(raw),
+    };
+    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn decode_entities(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let after = &rest[amp..];
+        let decoded = after.find(';').and_then(|semi| {
+            let entity = &after[1..semi];
+            let ch = match entity {
+                "amp" => Some('&'),
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "quot" => Some('"'),
+                "apos" => Some('\''),
+                _ => entity
+                    .strip_prefix("#x")
+                    .or_else(|| entity.strip_prefix("#X"))
+                    .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+                    .or_else(|| entity.strip_prefix('#').and_then(|dec| dec.parse().ok()))
+                    .and_then(char::from_u32),
+            };
+            ch.map(|c| (c, semi + 1))
+        });
+        match decoded {
+            Some((c, len)) => {
+                out.push(c);
+                rest = &after[len..];
+            }
+            None => {
+                out.push('&');
+                rest = &after[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn extract_tag(xml: &str, tag: &str) -> Option<String> {
     let open = format!("<{tag}");
     let close = format!("</{tag}>");
@@ -102,6 +174,7 @@ fn extract_authors(entry: &str) -> Vec<String> {
         .split("<author>")
         .skip(1)
         .filter_map(|a| extract_tag(a, "name"))
+        .map(|name| xml_text(&name))
         .collect()
 }
 
@@ -175,7 +248,7 @@ mod tests {
         let papers = parse_arxiv_atom(xml);
         assert_eq!(papers.len(), 1);
         assert_eq!(papers[0].title, "Test Paper Title");
-        assert_eq!(papers[0].id, "2301.00001v1");
+        assert_eq!(papers[0].id, "2301.00001");
         assert_eq!(papers[0].authors, vec!["Test Author"]);
         assert_eq!(papers[0].year, Some(2023));
     }
@@ -248,5 +321,72 @@ mod tests {
             papers[0].pdf_url.as_deref(),
             Some("https://arxiv.org/pdf/2301.99999v2")
         );
+    }
+
+    #[test]
+    fn old_style_arxiv_id_keeps_its_archive_and_drops_the_version() {
+        let xml = r#"<feed>
+            <entry>
+                <id>http://arxiv.org/abs/hep-th/9901001v1</id>
+                <title>Old Style</title>
+            </entry>
+        </feed>"#;
+        let papers = parse_arxiv_atom(xml);
+        assert_eq!(papers[0].id, "hep-th/9901001");
+        assert_eq!(
+            papers[0].pdf_url.as_deref(),
+            Some("https://arxiv.org/pdf/hep-th/9901001v1")
+        );
+    }
+
+    #[test]
+    fn arxiv_text_is_entity_decoded_and_whitespace_collapsed() {
+        let xml = r#"<feed>
+            <entry>
+                <id>http://arxiv.org/abs/2301.00001v1</id>
+                <title>Q&amp;A   systems
+                    for &lt;code&gt;</title>
+                <summary><![CDATA[a & b]]></summary>
+                <author><name>O&apos;Brien</name></author>
+            </entry>
+        </feed>"#;
+        let papers = parse_arxiv_atom(xml);
+        assert_eq!(papers[0].title, "Q&A systems for <code>");
+        assert_eq!(papers[0].abstract_text.as_deref(), Some("a & b"));
+        assert_eq!(papers[0].authors, vec!["O'Brien"]);
+    }
+
+    #[test]
+    fn query_that_sanitizes_to_nothing_is_not_sent() {
+        assert_eq!(sanitize_query("ti: AND ()"), "");
+        assert!(super::super::search_limit("", 10, 100).is_none());
+    }
+
+    #[test]
+    fn search_with_zero_limit_or_empty_query_returns_empty_without_a_request() {
+        use super::super::tests::poll_ready;
+        let client = ArxivClient::new();
+        assert!(poll_ready(client.search("quantum", 0)).unwrap().is_empty());
+        assert!(poll_ready(client.search("ti: AND ()", 10))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn decode_entities_reads_hex_character_references() {
+        assert_eq!(decode_entities("&#x41;&#X42;&#x3b1;"), "ABα");
+    }
+
+    #[test]
+    fn decode_entities_reads_decimal_character_references() {
+        assert_eq!(decode_entities("&#65;&#945;"), "Aα");
+    }
+
+    #[test]
+    fn decode_entities_keeps_unknown_and_unterminated_ampersands_literally() {
+        assert_eq!(decode_entities("&bogus; x"), "&bogus; x");
+        assert_eq!(decode_entities("a &amp b"), "a &amp b");
+        assert_eq!(decode_entities("&#xZZ; &#1114112;"), "&#xZZ; &#1114112;");
+        assert_eq!(decode_entities("tail &"), "tail &");
     }
 }

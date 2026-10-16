@@ -22,7 +22,7 @@ pub fn generate_explanation(signals: &[RecommendationSignal]) -> String {
                 if matched.len() == 1 {
                     format!("Matches project technology: {}", matched[0])
                 } else {
-                    format!("Matches: {}", matched.join(", "))
+                    format!("Matches project technologies: {}", matched.join(", "))
                 }
             }
             RecommendationSignal::RecentlyUsed { last_used } => format_recency(*last_used),
@@ -30,7 +30,7 @@ pub fn generate_explanation(signals: &[RecommendationSignal]) -> String {
                 if keywords.len() == 1 {
                     format!("Matches your query: \"{}\"", keywords[0])
                 } else {
-                    format!("Matches: {}", keywords.join(", "))
+                    format!("Matches your query: {}", keywords.join(", "))
                 }
             }
             RecommendationSignal::HighQuality { score } => {
@@ -61,6 +61,13 @@ fn format_recency(timestamp: u64) -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
+    // Claude's history records milliseconds. A value that far past now is
+    // read as milliseconds rather than as "recent" forever.
+    let timestamp = if timestamp > now.saturating_mul(100) {
+        timestamp / 1000
+    } else {
+        timestamp
+    };
     if now == 0 || timestamp > now {
         return "Recently used".to_string();
     }
@@ -70,7 +77,11 @@ fn format_recency(timestamp: u64) -> String {
     let age_hours = age_minutes / 60;
     let age_days = age_hours / 24;
 
-    if age_days >= 60 {
+    if age_days >= 730 {
+        format!("Used {} years ago", age_days / 365)
+    } else if age_days >= 365 {
+        "Used a year ago".to_string()
+    } else if age_days >= 60 {
         format!("Used {} months ago", age_days / 30)
     } else if age_days > 30 {
         "Used over a month ago".to_string()
@@ -97,7 +108,12 @@ fn format_recency(timestamp: u64) -> String {
 pub fn summarize_recommendations(count: usize, has_usage: bool, has_context: bool) -> String {
     let mut parts = Vec::new();
 
-    parts.push(format!("Found {} recommendations", count));
+    let noun = if count == 1 {
+        "recommendation"
+    } else {
+        "recommendations"
+    };
+    parts.push(format!("Found {count} {noun}"));
 
     if has_usage {
         parts.push("including usage patterns".to_string());
@@ -152,7 +168,7 @@ mod tests {
             matched: vec!["Rust".to_string(), "Tokio".to_string()],
         }];
         let explanation = generate_explanation(&signals);
-        assert_eq!(explanation, "Matches: Rust, Tokio");
+        assert_eq!(explanation, "Matches project technologies: Rust, Tokio");
     }
 
     #[test]
@@ -184,5 +200,57 @@ mod tests {
             summarize_recommendations(3, false, false),
             "Found 3 recommendations"
         );
+    }
+
+    #[test]
+    fn format_recency_uses_years_for_very_old_usage() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(format_recency(now - 800 * 86_400), "Used 2 years ago");
+    }
+
+    #[test]
+    fn format_recency_says_a_year_ago_from_365_to_729_days() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let days_ago = |d: u64| format_recency(now - d * 86_400 - 60);
+        assert_eq!(days_ago(364), "Used 12 months ago");
+        assert_eq!(days_ago(365), "Used a year ago");
+        assert_eq!(days_ago(729), "Used a year ago");
+    }
+
+    #[test]
+    fn format_recency_reads_millisecond_timestamps() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(
+            format_recency((now - 10 * 86_400 - 60) * 1000),
+            "Used 10 days ago"
+        );
+    }
+
+    #[test]
+    fn summary_uses_the_singular_for_one_recommendation() {
+        assert_eq!(
+            summarize_recommendations(1, false, false),
+            "Found 1 recommendation"
+        );
+    }
+
+    #[test]
+    fn project_and_prompt_matches_read_differently() {
+        let project = generate_explanation(&[RecommendationSignal::ProjectMatch {
+            matched: vec!["Rust".into(), "Tokio".into()],
+        }]);
+        let prompt = generate_explanation(&[RecommendationSignal::PromptMatch {
+            keywords: vec!["Rust".into(), "Tokio".into()],
+        }]);
+        assert_ne!(project, prompt);
     }
 }

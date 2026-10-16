@@ -51,6 +51,69 @@ pub(super) fn skill_dir_name(meta: &SkillMeta) -> String {
         .unwrap_or_else(|| meta.name.clone())
 }
 
+/// Replaces the skill file at `path` with `content` through a synced sibling
+/// temp file and a rename, so a crash, SIGKILL or full disk mid-write leaves
+/// the old file whole rather than truncated. An existing file keeps its
+/// permission bits.
+pub(super) fn write_skill_file(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => std::path::Path::new("."),
+    };
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = parent.join(format!(".{file_name}.skrills-tmp-{}", std::process::id()));
+    let existing_perms = std::fs::metadata(path).ok().map(|m| m.permissions());
+
+    let written = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        file.write_all(content.as_bytes())?;
+        if let Some(perms) = existing_perms {
+            file.set_permissions(perms)?;
+        }
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&tmp, path)
+    })();
+    if let Err(e) = written {
+        // The temp file is ours; the write error is the one to report.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Whether a frontmatter line is the `deprecated` key.
+pub(super) fn is_deprecated_line(line: &str) -> bool {
+    line.split_once(':')
+        .is_some_and(|(key, _)| key.trim() == "deprecated")
+}
+
+/// Whether `content`'s frontmatter sets `deprecated` to true. `deprecated:
+/// false` is not deprecated; `skill-deprecate` and `skill-catalog` both ask
+/// this so they agree.
+pub(super) fn frontmatter_is_deprecated(content: &str) -> bool {
+    skrills_validate::frontmatter::parse_frontmatter(content)
+        .ok()
+        .and_then(|p| p.raw_frontmatter)
+        .is_some_and(|fm| {
+            fm.lines().filter(|l| is_deprecated_line(l)).any(|l| {
+                let value = l.split_once(':').map_or("", |(_, v)| v);
+                value
+                    .trim()
+                    .trim_matches(|c| c == '"' || c == '\'')
+                    .eq_ignore_ascii_case("true")
+            })
+        })
+}
+
 /// Finds the one discovered skill that `query` names.
 ///
 /// A skill matches when `query` equals, ignoring ASCII case, its discovery
@@ -210,82 +273,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn skill_version_serializes_correctly() {
-        let version = SkillVersion {
-            hash: "abc1234".to_string(),
-            date: "2024-01-15 10:30:00 -0500".to_string(),
-            message: "Initial commit".to_string(),
-        };
-
-        let json = serde_json::to_string(&version).unwrap();
-        assert!(json.contains("abc1234"));
-        assert!(json.contains("Initial commit"));
-    }
-
-    #[test]
-    fn rollback_result_default_state() {
-        let result = RollbackResult {
-            skill_name: "test-skill".to_string(),
-            skill_path: PathBuf::from("/path/to/skill.md"),
-            rolled_back: false,
-            from_version: None,
-            to_version: None,
-            available_versions: vec![],
-        };
-
-        let json = serde_json::to_string_pretty(&result).unwrap();
-        assert!(json.contains("\"rolled_back\": false"));
-        assert!(json.contains("\"available_versions\": []"));
-    }
-
-    #[test]
-    fn import_result_existing_skill_message() {
-        let result = ImportResult {
-            source: "/path/to/source.md".to_string(),
-            target_path: PathBuf::from("/home/user/.claude/skills/my-skill.md"),
-            imported: false,
-            skill_name: Some("my-skill".to_string()),
-            message: "Skill 'my-skill' already exists. Use --force to overwrite.".to_string(),
-        };
-
-        let json = serde_json::to_string(&result).unwrap();
-        assert!(json.contains("\"imported\":false"));
-        assert!(json.contains("--force"));
-    }
-
-    #[test]
     fn escape_yaml_string_handles_special_chars() {
         assert_eq!(escape_yaml_string("hello"), "hello");
         assert_eq!(escape_yaml_string(r#"say "hi""#), r#"say \"hi\""#);
         assert_eq!(escape_yaml_string(r"back\slash"), r"back\\slash");
-    }
-
-    #[test]
-    fn rollback_result_with_empty_available_versions() {
-        let result = RollbackResult {
-            skill_name: "test".to_string(),
-            skill_path: PathBuf::from("/tmp/skill.md"),
-            rolled_back: false,
-            from_version: None,
-            to_version: None,
-            available_versions: vec![],
-        };
-        let json = serde_json::to_string(&result).unwrap();
-        assert!(json.contains("\"available_versions\":[]"));
-        assert!(json.contains("\"rolled_back\":false"));
-    }
-
-    #[test]
-    fn deprecation_with_empty_string_message() {
-        let message = Some("".to_string());
-        let deprecation_msg = message.as_deref().unwrap_or("This skill is deprecated");
-        assert_eq!(deprecation_msg, "");
-        // Empty string is technically valid but produces empty deprecation_message
-        let formatted = format!(
-            "deprecation_message: \"{}\"\n",
-            escape_yaml_string(deprecation_msg)
-        );
-        assert_eq!(formatted, "deprecation_message: \"\"\n");
     }
 
     #[test]
@@ -300,17 +291,28 @@ mod tests {
         assert_eq!(escaped, r#"say \"hello\" and use back\\slash"#);
     }
 
+    /// A hard link still holding the old bytes shows the file was replaced
+    /// by a rename, not truncated and rewritten in place, where a crash
+    /// mid-write leaves the only copy cut short.
+    #[cfg(unix)]
     #[test]
-    fn catalog_entry_deprecated_flag() {
-        let entry = CatalogEntry {
-            name: "old-skill".to_string(),
-            source: "claude".to_string(),
-            description: Some("Deprecated skill".to_string()),
-            path: PathBuf::from("/skills/old.md"),
-            deprecated: true,
-        };
-        let json = serde_json::to_string(&entry).unwrap();
-        assert!(json.contains("\"deprecated\":true"));
+    fn write_skill_file_replaces_the_file_instead_of_rewriting_it_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("SKILL.md");
+        std::fs::write(&path, "old").unwrap();
+        let link = dir.path().join("link");
+        std::fs::hard_link(&path, &link).unwrap();
+
+        write_skill_file(&path, "new").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(&link).unwrap(), "old");
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|n| n != "SKILL.md" && n != "link")
+            .collect();
+        assert!(leftovers.is_empty(), "temp file left behind: {leftovers:?}");
     }
 
     fn meta(root: &str, rel: &str, fm_name: Option<&str>) -> SkillMeta {

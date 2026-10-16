@@ -131,6 +131,31 @@ pub(super) fn shutdown_signalled(
     changed.is_err() || *shutdown.borrow()
 }
 
+/// Pane states the live loop starts from.
+pub(super) fn initial_pane_states(
+    opts: TuiOptions,
+) -> (ColdWindowState, HintPaneState, ResearchPaneState) {
+    let mut snap_state = ColdWindowState::new();
+    snap_state.bell_enabled = opts.bell_enabled;
+    (
+        snap_state,
+        HintPaneState::with_default_persistence(),
+        ResearchPaneState::default(),
+    )
+}
+
+/// Hands one snapshot to every pane state that tracks it. Returns
+/// whether to ring the bell (see [`ColdWindowState::ingest`]).
+pub(super) fn ingest_snapshot(
+    snap: Arc<WindowSnapshot>,
+    snap_state: &mut ColdWindowState,
+    research_state: &mut ResearchPaneState,
+) -> bool {
+    let ring = snap_state.ingest(snap);
+    research_state.ingest(snap_state);
+    ring
+}
+
 /// The core select loop, split out from terminal setup/teardown so the
 /// `?`-propagated render errors still run through [`run`]'s restore.
 async fn event_loop(
@@ -141,10 +166,7 @@ async fn event_loop(
     opts: TuiOptions,
 ) -> Result<()> {
     let mut ui = UiState::new();
-    let mut snap_state = ColdWindowState::new();
-    snap_state.bell_enabled = opts.bell_enabled;
-    let mut hint_state = HintPaneState::new();
-    let mut research_state = ResearchPaneState::default();
+    let (mut snap_state, mut hint_state, mut research_state) = initial_pane_states(opts);
     let mut events = EventStream::new();
     // Repaint floor so the status bar's quota/clock stay fresh even
     // when no snapshot or key arrives.
@@ -196,7 +218,7 @@ async fn event_loop(
                         // should ring the bell (new WARNING and bell
                         // enabled); the `bell_enabled` gate is inside
                         // `ingest`, so we ring unconditionally here.
-                        if snap_state.ingest(snap) {
+                        if ingest_snapshot(snap, &mut snap_state, &mut research_state) {
                             // BEL is audio-only; it does not perturb the
                             // alternate-screen buffer ratatui owns.
                             let mut out = io::stdout();

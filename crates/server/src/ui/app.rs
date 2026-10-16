@@ -23,7 +23,7 @@ pub fn App() -> impl IntoView {
     }
 }
 
-/// Dashboard layout with skills panel, activity panel, metrics panel, and MCP servers panel.
+/// Dashboard layout with skills panel, metrics panel, activity panel, and MCP servers panel.
 #[component]
 pub fn Dashboard() -> impl IntoView {
     view! {
@@ -40,8 +40,8 @@ pub fn Dashboard() -> impl IntoView {
 
         <main>
             <SkillsPanel/>
-            <ActivityPanel/>
             <MetricsPanel/>
+            <ActivityPanel/>
             <McpServersPanel/>
         </main>
 
@@ -115,4 +115,27 @@ pub fn render_dashboard() -> String {
     let view = App();
     // App component already renders <!DOCTYPE html>, so no prefix needed.
     view.to_html()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_dashboard;
+
+    /// The three desktop columns read Skills, Metrics, Activity: metrics sits
+    /// next to the skills it describes and the activity feed takes the far right.
+    #[test]
+    fn dashboard_columns_are_skills_then_metrics_then_activity() {
+        let html = render_dashboard();
+        let at = |class: &str| {
+            html.find(class)
+                .unwrap_or_else(|| panic!("{class} missing from dashboard"))
+        };
+        let skills = at("panel skills-panel");
+        let metrics = at("panel metrics-panel");
+        let activity = at("panel activity-panel");
+        assert!(
+            skills < metrics && metrics < activity,
+            "expected skills < metrics < activity, got {skills} {metrics} {activity}"
+        );
+    }
 }

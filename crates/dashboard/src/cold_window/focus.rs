@@ -10,9 +10,11 @@
 //! focused pane's border is emphasized with a bold cyan border and a
 //! `>` marker prefixed to its title so focus reads without color.
 
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, ListItem};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
+use ratatui::Frame;
 
 /// Which body pane holds focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -82,6 +84,13 @@ pub fn select_row(mut line: Line<'_>, selected: bool) -> ListItem<'_> {
     } else {
         item
     }
+}
+
+/// Draw a pane's list scrolled so the `cursor` row is on screen; a plain
+/// `List` always starts at row 0 and hides a cursor past the pane height.
+pub fn render_list(frame: &mut Frame<'_>, list: List<'_>, area: Rect, cursor: Option<usize>) {
+    let mut state = ListState::default().with_selected(cursor);
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
 /// Clamp a stored selection index against the current list length.

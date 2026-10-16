@@ -13,13 +13,6 @@ use std::fs;
 use std::path::Path;
 use tracing::warn;
 
-/// Cursor's MCP config structure (mirrors Claude's format).
-#[derive(Debug, Serialize, Deserialize, Default)]
-struct CursorMcpConfig {
-    #[serde(rename = "mcpServers", default)]
-    mcp_servers: HashMap<String, McpServerEntry>,
-}
-
 /// A single MCP server entry in Cursor's config.
 #[derive(Debug, Serialize, Deserialize)]
 struct McpServerEntry {
@@ -58,6 +51,11 @@ fn is_true(v: &bool) -> bool {
 }
 
 /// Reads MCP server configs from `.cursor/mcp.json`.
+///
+/// Each entry is parsed on its own: one that does not fit (a numeric `env`
+/// value, a string `enabled`) is skipped with a warning instead of failing
+/// every server. An `sse` entry is skipped too: sync carries only stdio and
+/// http, and reading it as http would write it to targets as http.
 pub fn read_mcp_servers(root: &Path) -> Result<HashMap<String, McpServer>> {
     let path = mcp_config_path(root);
     if !path.exists() {
@@ -65,10 +63,26 @@ pub fn read_mcp_servers(root: &Path) -> Result<HashMap<String, McpServer>> {
     }
 
     let content = fs::read_to_string(&path)?;
-    let config: CursorMcpConfig = serde_json::from_str(&content)?;
+    let config: serde_json::Value = serde_json::from_str(&content)?;
+    let entries = match config.get("mcpServers") {
+        None => return Ok(HashMap::new()),
+        Some(serde_json::Value::Object(entries)) => entries.clone(),
+        Some(_) => anyhow::bail!("`mcpServers` in {} is not an object", path.display()),
+    };
 
     let mut servers = HashMap::new();
-    for (name, entry) in config.mcp_servers {
+    for (name, raw) in entries {
+        if raw.get("type").and_then(|t| t.as_str()) == Some("sse") {
+            warn!(name = %name, "Skipping SSE MCP server; sync carries only stdio and http");
+            continue;
+        }
+        let entry: McpServerEntry = match serde_json::from_value(raw) {
+            Ok(entry) => entry,
+            Err(e) => {
+                warn!(name = %name, error = %e, "Skipping MCP entry that does not parse");
+                continue;
+            }
+        };
         // Skip entries with neither command nor URL, they produce broken configs
         if entry.command.is_none() && entry.url.is_none() {
             warn!(
@@ -118,4 +132,56 @@ pub fn write_mcp_servers(root: &Path, servers: &HashMap<String, McpServer>) -> R
         json_config::write_json_config(&path, &config)?;
     }
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One malformed entry used to fail the whole MCP phase, and an SSE
+    /// endpoint was read as `http` and written that way to every target.
+    #[test]
+    fn read_mcp_servers_skips_malformed_and_sse_entries_and_keeps_the_rest() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            mcp_config_path(tmp.path()),
+            r#"{"mcpServers": {
+                "good": {"command": "/bin/good"},
+                "numeric-env": {"command": "/bin/x", "env": {"PORT": 8080}},
+                "bad-flag": {"command": "/bin/y", "enabled": "false"},
+                "stream": {"type": "sse", "url": "https://example.com/sse"},
+                "remote": {"url": "https://example.com/mcp"}
+            }}"#,
+        )
+        .unwrap();
+
+        let servers = read_mcp_servers(tmp.path()).unwrap();
+
+        let mut names: Vec<&str> = servers.keys().map(String::as_str).collect();
+        names.sort();
+        assert_eq!(names, vec!["good", "remote"]);
+        assert_eq!(servers["remote"].transport, McpTransport::Http);
+    }
+
+    #[test]
+    fn read_mcp_servers_empty_when_the_file_has_no_mcp_servers_key() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(mcp_config_path(tmp.path()), r#"{"other": {}}"#).unwrap();
+
+        let servers = read_mcp_servers(tmp.path()).unwrap();
+
+        assert!(servers.is_empty());
+    }
+
+    #[test]
+    fn read_mcp_servers_fails_naming_the_file_when_mcp_servers_is_not_an_object() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = mcp_config_path(tmp.path());
+        std::fs::write(&path, r#"{"mcpServers": ["good"]}"#).unwrap();
+
+        let err = read_mcp_servers(tmp.path()).unwrap_err().to_string();
+
+        assert!(err.contains("not an object"), "{err}");
+        assert!(err.contains(&path.display().to_string()), "{err}");
+    }
 }

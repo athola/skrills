@@ -4,20 +4,73 @@ use super::{CommandEntry, SkillUsageEvent};
 use anyhow::Result;
 use serde_json::Value;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use tracing::{debug, warn};
 
 /// Session files larger than this are skipped rather than scanned.
-const MAX_SESSION_FILE_BYTES: u64 = 256 * 1024 * 1024;
+pub(super) const MAX_SESSION_FILE_BYTES: u64 = 256 * 1024 * 1024;
 /// At most this many session files are scanned per build.
-const MAX_SESSION_FILES: usize = 20_000;
+pub(super) const MAX_SESSION_FILES: usize = 20_000;
+/// Command history files larger than this are skipped rather than read.
+pub(super) const MAX_HISTORY_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Calls `on_line` with each non-blank line of the JSONL file at `path`.
+///
+/// Session logs can run to hundreds of megabytes, so the file is streamed,
+/// and one invalid UTF-8 byte costs one line (decoded lossily), not the whole
+/// file. A file larger than `max_bytes` is skipped with a warning, and so is
+/// anything that is not a regular file: opening a FIFO blocks forever, and a
+/// link to `/dev/zero` reports size 0 yet never ends. At most `max_bytes` are
+/// read even if the file grows while it is read.
+pub(super) fn for_each_session_line(
+    path: &Path,
+    max_bytes: u64,
+    mut on_line: impl FnMut(&str),
+) -> Result<()> {
+    let meta = fs::metadata(path)?;
+    if !meta.is_file() {
+        warn!(path = %path.display(), "Skipping session path that is not a regular file");
+        return Ok(());
+    }
+    let size = meta.len();
+    if size > max_bytes {
+        warn!(
+            path = %path.display(),
+            size,
+            limit = max_bytes,
+            "Skipping oversized session file"
+        );
+        return Ok(());
+    }
+    let mut reader = BufReader::new(fs::File::open(path)?.take(max_bytes));
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        if reader.read_until(b'\n', &mut buf)? == 0 {
+            break;
+        }
+        let line = String::from_utf8_lossy(&buf);
+        if !line.trim().is_empty() {
+            on_line(&line);
+        }
+    }
+    Ok(())
+}
 
 /// Parse Claude Code session files from ~/.claude/projects/
 ///
 /// One unreadable project directory or session file is logged and skipped;
-/// it does not fail the whole parse.
+/// it does not fail the whole parse. Past `MAX_SESSION_FILES` the newest
+/// files are kept.
 pub fn parse_claude_sessions(projects_dir: &Path) -> Result<Vec<SkillUsageEvent>> {
+    parse_claude_sessions_with_limit(projects_dir, MAX_SESSION_FILES)
+}
+
+pub(super) fn parse_claude_sessions_with_limit(
+    projects_dir: &Path,
+    max_files: usize,
+) -> Result<Vec<SkillUsageEvent>> {
     let mut events = Vec::new();
 
     if !projects_dir.exists() {
@@ -28,7 +81,7 @@ pub fn parse_claude_sessions(projects_dir: &Path) -> Result<Vec<SkillUsageEvent>
         return Ok(events);
     }
 
-    let mut files_scanned = 0usize;
+    let mut sessions: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
     for project_entry in fs::read_dir(projects_dir)? {
         let project = match project_entry {
             Ok(p) => p,
@@ -42,14 +95,14 @@ pub fn parse_claude_sessions(projects_dir: &Path) -> Result<Vec<SkillUsageEvent>
             continue;
         }
 
-        let sessions = match fs::read_dir(&project_path) {
+        let entries = match fs::read_dir(&project_path) {
             Ok(s) => s,
             Err(e) => {
                 warn!(dir = %project_path.display(), error = %e, "Skipping unreadable project directory");
                 continue;
             }
         };
-        for session_entry in sessions {
+        for session_entry in entries {
             let Ok(session) = session_entry else {
                 continue;
             };
@@ -57,18 +110,29 @@ pub fn parse_claude_sessions(projects_dir: &Path) -> Result<Vec<SkillUsageEvent>
             if !path.extension().map(|e| e == "jsonl").unwrap_or(false) {
                 continue;
             }
-            if files_scanned >= MAX_SESSION_FILES {
-                warn!(
-                    limit = MAX_SESSION_FILES,
-                    "Session file limit reached; remaining Claude sessions not analyzed"
-                );
-                return Ok(events);
-            }
-            files_scanned += 1;
-            match parse_claude_session_file(&path) {
-                Ok(session_events) => events.extend(session_events),
-                Err(e) => debug!("Failed to parse session file {:?}: {}", path, e),
-            }
+            let mtime = session
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            sessions.push((mtime, path));
+        }
+    }
+
+    // Newest first, so a cap drops the oldest work rather than whatever the
+    // directory listing happened to return last.
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.0));
+    if sessions.len() > max_files {
+        warn!(
+            limit = max_files,
+            found = sessions.len(),
+            "Session file limit reached; oldest Claude sessions not analyzed"
+        );
+        sessions.truncate(max_files);
+    }
+    for (_, path) in sessions {
+        match parse_claude_session_file(&path) {
+            Ok(session_events) => events.extend(session_events),
+            Err(e) => debug!("Failed to parse session file {:?}: {}", path, e),
         }
     }
 
@@ -84,12 +148,9 @@ pub fn parse_claude_command_history(history_path: &Path) -> Result<Vec<CommandEn
         return Ok(entries);
     }
 
-    let content = fs::read_to_string(history_path)?;
-
-    for line in content.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
+    // Streamed like the session logs: one truncated multibyte paste costs one
+    // line, not the whole history.
+    for_each_session_line(history_path, MAX_HISTORY_FILE_BYTES, |line| {
         if let Ok(entry) = serde_json::from_str::<Value>(line) {
             let text = entry
                 .get("display")
@@ -119,24 +180,13 @@ pub fn parse_claude_command_history(history_path: &Path) -> Result<Vec<CommandEn
                 });
             }
         }
-    }
+    })?;
 
     Ok(entries)
 }
 
 fn parse_claude_session_file(path: &Path) -> Result<Vec<SkillUsageEvent>> {
     let mut events = Vec::new();
-
-    let size = fs::metadata(path)?.len();
-    if size > MAX_SESSION_FILE_BYTES {
-        warn!(
-            path = %path.display(),
-            size,
-            limit = MAX_SESSION_FILE_BYTES,
-            "Skipping oversized session file"
-        );
-        return Ok(events);
-    }
 
     let session_id = path
         .file_stem()
@@ -146,24 +196,12 @@ fn parse_claude_session_file(path: &Path) -> Result<Vec<SkillUsageEvent>> {
 
     let mut last_user_prompt: Option<String> = None;
 
-    // Stream line by line: session logs can run to hundreds of megabytes, and
-    // one invalid UTF-8 byte should cost one line, not the whole file.
-    let mut reader = BufReader::new(fs::File::open(path)?);
-    let mut buf = Vec::new();
-    loop {
-        buf.clear();
-        if reader.read_until(b'\n', &mut buf)? == 0 {
-            break;
-        }
-        let line = String::from_utf8_lossy(&buf);
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(entry) = serde_json::from_str::<Value>(&line) else {
-            continue;
+    for_each_session_line(path, MAX_SESSION_FILE_BYTES, |line| {
+        let Ok(entry) = serde_json::from_str::<Value>(line) else {
+            return;
         };
         let Some(message) = entry.get("message") else {
-            continue;
+            return;
         };
 
         // Track user prompts for context. Typed prompts are written as a
@@ -188,7 +226,7 @@ fn parse_claude_session_file(path: &Path) -> Result<Vec<SkillUsageEvent>> {
 
         // Look for tool_use content blocks
         let Some(contents) = message.get("content").and_then(|c| c.as_array()) else {
-            continue;
+            return;
         };
         for content_block in contents {
             if content_block.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
@@ -223,7 +261,7 @@ fn parse_claude_session_file(path: &Path) -> Result<Vec<SkillUsageEvent>> {
                 });
             }
         }
-    }
+    })?;
 
     Ok(events)
 }
@@ -254,12 +292,11 @@ fn extract_skill_path(input: &Value) -> Option<String> {
 }
 
 pub(super) fn parse_timestamp(s: Option<&str>) -> u64 {
-    s.and_then(|ts| {
-        chrono::DateTime::parse_from_rfc3339(ts)
-            .ok()
-            .map(|dt| dt.timestamp() as u64)
-    })
-    .unwrap_or(0)
+    // A pre-1970 time would wrap to near u64::MAX ("used just now", forever),
+    // so it reads as unknown (0) like an unparseable one.
+    s.and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+        .and_then(|dt| u64::try_from(dt.timestamp()).ok())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -788,5 +825,69 @@ mod tests {
         assert_eq!(events.len(), 1);
         // Prompt should be truncated to 200 chars
         assert_eq!(events[0].prompt_context.as_ref().unwrap().len(), 200);
+    }
+
+    #[test]
+    fn timestamp_before_1970_is_unknown() {
+        assert_eq!(parse_timestamp(Some("1960-01-01T00:00:00Z")), 0);
+    }
+
+    #[test]
+    fn command_history_with_an_invalid_utf8_line_keeps_its_other_lines() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("history.jsonl");
+        let mut content = b"{\"display\":\"\xff broken\"}\n".to_vec();
+        content.extend_from_slice(br#"{"display":"kept","timestamp":1000,"sessionId":"s"}"#);
+        fs::write(&path, content).unwrap();
+        let entries = parse_claude_command_history(&path).unwrap();
+        assert!(entries.iter().any(|e| e.text == "kept"), "{entries:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_line_reader_skips_a_fifo() {
+        let tmp = tempdir().unwrap();
+        let fifo = tmp.path().join("pipe.jsonl");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let mut lines = 0;
+        for_each_session_line(&fifo, MAX_SESSION_FILE_BYTES, |_| lines += 1).unwrap();
+        assert_eq!(lines, 0);
+    }
+
+    #[test]
+    fn session_file_limit_keeps_the_newest_files() {
+        let tmp = tempdir().unwrap();
+        let project = tmp.path().join("p");
+        fs::create_dir_all(&project).unwrap();
+        let line = |skill: &str| {
+            format!(
+                r#"{{"timestamp":"2024-01-01T12:00:00Z","message":{{"role":"assistant","content":[{{"type":"tool_use","name":"Skill","input":{{"skill":"{skill}"}}}}]}}}}"#
+            )
+        };
+        let now = std::time::SystemTime::now();
+        for (i, name) in ["old", "newest", "middle"].iter().enumerate() {
+            let path = project.join(format!("{name}.jsonl"));
+            fs::write(&path, line(name)).unwrap();
+            let age = match *name {
+                "old" => 3000,
+                "middle" => 2000,
+                _ => 1000,
+            };
+            let _ = i;
+            fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(now - std::time::Duration::from_secs(age))
+                .unwrap();
+        }
+        let events = parse_claude_sessions_with_limit(tmp.path(), 2).unwrap();
+        let mut skills: Vec<_> = events.iter().map(|e| e.skill_path.as_str()).collect();
+        skills.sort();
+        assert_eq!(skills, vec!["middle", "newest"]);
     }
 }

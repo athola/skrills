@@ -131,11 +131,11 @@ async fn dashboard_html_includes_javascript() {
     let body = dashboard_script().await;
 
     assert!(
-        body.contains("fetch('/api/skills"),
+        body.contains("apiFetch('/api/skills"),
         "Dashboard should include JS that fetches skills API"
     );
     assert!(
-        body.contains("fetch('/api/metrics/events')"),
+        body.contains("apiFetch('/api/metrics/events')"),
         "Dashboard should include JS that fetches metrics API"
     );
 }
@@ -1040,7 +1040,7 @@ async fn dashboard_js_fetches_mcp_servers() {
     let body = dashboard_script().await;
 
     assert!(
-        body.contains("fetch('/api/mcp-servers')"),
+        body.contains("apiFetch('/api/mcp-servers')"),
         "Dashboard JS should fetch MCP servers API"
     );
     assert!(

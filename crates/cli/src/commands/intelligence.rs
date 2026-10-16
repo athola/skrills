@@ -2,8 +2,8 @@ use crate::cli::{CreateSkillMethod, OutputFormat};
 use anyhow::Result;
 use rmcp::model::CallToolResult;
 use serde_json::{json, Map as JsonMap, Value};
+use skrills_discovery::merge_extra_dirs;
 use skrills_server::app::SkillService;
-use skrills_server::discovery::merge_extra_dirs;
 use skrills_state::{cache_ttl, load_manifest_settings};
 use std::path::PathBuf;
 
@@ -82,18 +82,16 @@ pub(crate) fn handle_recommend_skills_smart_command(options: SmartRecommendOptio
     };
     use skrills_state::env_auto_persist;
 
-    // Auto-persist analytics if requested via flag or env var
-    let should_persist = auto_persist || env_auto_persist();
-    if should_persist && include_usage {
-        // Build and persist analytics before making recommendations
-        let analytics = load_or_build_analytics(false, true)?;
-        if let Some(cache_path) = default_analytics_cache_path() {
-            if let Err(e) = save_analytics(&analytics, &cache_path) {
-                tracing::warn!(path = %cache_path.display(), error = %e, "Failed to auto-persist analytics");
-            } else {
-                tracing::debug!(path = %cache_path.display(), "Auto-persisted analytics");
-            }
-        }
+    // Auto-persist analytics if requested via flag or env var, whether or
+    // not usage feeds this recommendation: `--include-usage false` used to
+    // skip the save with no word. A failed save is a warning, not a failed
+    // recommendation.
+    if auto_persist || env_auto_persist() {
+        persist_analytics(
+            || load_or_build_analytics(false, true),
+            default_analytics_cache_path(),
+            save_analytics,
+        );
     }
 
     let service = build_service(skill_dirs)?;
@@ -313,6 +311,36 @@ pub(crate) fn handle_import_analytics_command(input: PathBuf, overwrite: bool) -
     println!("  Skills tracked: {}", analytics.frequency.len());
 
     Ok(())
+}
+
+/// Builds analytics and saves them to `path`, logging rather than returning
+/// a failure. Returns whether they were saved.
+fn persist_analytics<A>(
+    build: impl FnOnce() -> anyhow::Result<A>,
+    path: Option<std::path::PathBuf>,
+    save: impl FnOnce(&A, &std::path::Path) -> anyhow::Result<()>,
+) -> bool {
+    let Some(path) = path else {
+        tracing::warn!("Cannot auto-persist analytics: no cache path available");
+        return false;
+    };
+    let analytics = match build() {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to build analytics for auto-persist");
+            return false;
+        }
+    };
+    match save(&analytics, &path) {
+        Ok(()) => {
+            tracing::debug!(path = %path.display(), "Auto-persisted analytics");
+            true
+        }
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "Failed to auto-persist analytics");
+            false
+        }
+    }
 }
 
 #[cfg(test)]
@@ -556,5 +584,22 @@ A test skill.
             cache_path.exists(),
             "Cache should exist after env var auto-persist"
         );
+    }
+
+    #[test]
+    fn persist_analytics_warns_instead_of_failing() {
+        let path = Some(std::path::PathBuf::from("/tmp/cache.json"));
+        assert!(persist_analytics(|| Ok(1), path.clone(), |_, _| Ok(())));
+        assert!(!persist_analytics(
+            || Err::<i32, _>(anyhow::anyhow!("corrupt session log")),
+            path.clone(),
+            |_, _| Ok(())
+        ));
+        assert!(!persist_analytics(
+            || Ok(1),
+            path,
+            |_, _| Err(anyhow::anyhow!("disk full"))
+        ));
+        assert!(!persist_analytics(|| Ok(1), None, |_, _| Ok(())));
     }
 }

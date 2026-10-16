@@ -12,10 +12,9 @@
 //!   `alwaysApply`) in `.cursor/rules/`. No other adapter writes this format.
 //! - **Hooks**: Cursor supports 18+ lifecycle events (camelCase) vs Claude's 8
 //!   (PascalCase). Event name mapping is handled in the hooks module.
-//! - **Skills**: Cursor skills have no YAML frontmatter, Claude frontmatter is stripped
-//!   on write, but `description` is preserved as a plain-text first line and `model_hint`
-//!   as an HTML comment. **Partially lossy**: a Claude→Cursor→Claude roundtrip loses
-//!   most frontmatter metadata (name, dependencies, version, tags).
+//! - **Skills**: Cursor reads `name` and `description` frontmatter; the other Claude
+//!   fields ride in a trailing comment the reader restores, and `model_hint` becomes an
+//!   HTML comment. Trimmed body sections are not restored on a roundtrip.
 //! - **Agents**: Field translation: `background` ↔ `is_background`, model name
 //!   mapping, `tools`/`isolation` dropped (Cursor-only: `readonly`).
 //! - **Commands**: Near-identical to Claude format (`.cursor/commands/*.md`).
@@ -66,7 +65,7 @@ impl CursorAdapter {
     }
 
     /// Attach a [`KillSwitch`](skrills_snapshot::KillSwitch) so that mutating
-    /// operations refuse with [`SyncError::TokenBudgetExceeded`](crate::SyncError)
+    /// operations refuse with [`SyncError::KillSwitchEngaged`](crate::SyncError)
     /// when the cold-window engine has engaged it (FR12).
     #[must_use]
     pub fn with_kill_switch(mut self, switch: skrills_snapshot::KillSwitch) -> Self {
@@ -195,7 +194,8 @@ impl AgentAdapter for CursorAdapter {
     /// `plugins/local/<p>/` without one.
     ///
     /// Claude's `.claude-plugin/` manifest directory is renamed to the
-    /// `.cursor-plugin/` name Cursor reads.
+    /// `.cursor-plugin/` name Cursor reads, and `hooks/hooks.json` is rewritten
+    /// to Cursor's hook layout.
     fn write_plugin_assets(&self, assets: &[PluginAsset]) -> Result<WriteReport> {
         crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         use std::collections::HashSet;
@@ -214,10 +214,6 @@ impl AgentAdapter for CursorAdapter {
         let plan = plan_mirror(&local_dir, assets);
         report.warnings.extend(plan.refusals);
 
-        // Every accepted plugin, whether or not its batch was complete. Pruning
-        // must not remove a directory this run just wrote into.
-        let mut touched: HashSet<String> = HashSet::new();
-
         for (dir_name, batch) in &plan.accepted {
             let plugin_dir = local_dir.join(dir_name);
             if let Err(msg) = prepare_plugin_dir(&plugin_dir) {
@@ -225,17 +221,32 @@ impl AgentAdapter for CursorAdapter {
                 report.warnings.push(msg);
                 continue;
             }
-            touched.insert(dir_name.clone());
             // Read before this run writes anything: only a directory skrills
             // already owned may have files swept out of it.
-            let already_marked = plugin_dir.join(MIRROR_MARKER).exists();
+            let already_marked = has_mirror_marker(&plugin_dir);
+
+            // Ownership is settled before the first write. An unmarked
+            // directory that holds files this plugin does not ship belongs to
+            // the user, and a complete plugin is not written into it.
+            if !already_marked && plan.authoritative.contains(dir_name) {
+                let planned: HashSet<PathBuf> = batch
+                    .iter()
+                    .map(|asset| plugin_dir.join(mirror_relative_path(asset)))
+                    .collect();
+                if !adoptable(&plugin_dir, dir_name, &planned, &mut report) {
+                    continue;
+                }
+            }
 
             let mut kept: HashSet<PathBuf> = HashSet::new();
             for asset in batch {
-                if let Some(dest) = write_one_asset(&plugin_dir, dir_name, asset, &mut report) {
+                if let Some(dest) =
+                    write_one_asset(&plugin_dir, dir_name, asset, already_marked, &mut report)
+                {
                     kept.insert(dest);
                 }
             }
+            mark_skill_dirs(&plugin_dir, dir_name, &mut kept, &mut report);
 
             // Only a batch carrying the plugin's own manifest describes the whole
             // plugin, so only then can an absent file be read as "upstream
@@ -243,13 +254,17 @@ impl AgentAdapter for CursorAdapter {
             if plan.authoritative.contains(dir_name) {
                 if already_marked {
                     sweep_unreferenced(&plugin_dir, dir_name, &kept, &mut report);
-                } else if !adoptable(&plugin_dir, dir_name, &kept, &mut report) {
-                    continue;
                 }
-                if let Err(e) = crate::adapters::utils::write_file(
-                    plugin_dir.join(MIRROR_MARKER),
-                    MIRROR_MARKER_BODY,
-                ) {
+                let marker = plugin_dir.join(MIRROR_MARKER);
+                if crate::adapters::utils::symlink_below(&plugin_dir, &marker).is_some() {
+                    // Writing through it would replace the file it points to.
+                    report.warnings.push(format!(
+                        "plugins/local/{dir_name}/{MIRROR_MARKER} is a symlink, so the directory \
+                         was not marked as skrills-managed"
+                    ));
+                } else if let Err(e) =
+                    crate::adapters::utils::write_file(&marker, MIRROR_MARKER_BODY)
+                {
                     tracing::warn!(plugin = %dir_name, error = %e, "Could not stamp mirror marker");
                     report.warnings.push(format!(
                         "Could not mark plugins/local/{dir_name} as skrills-managed, so it will \
@@ -262,7 +277,7 @@ impl AgentAdapter for CursorAdapter {
         // A batch with no complete plugin in it says nothing about which plugins
         // are still installed, so it must not prune anything.
         if !plan.authoritative.is_empty() {
-            prune_stale_mirrors(&local_dir, &touched, &mut report);
+            prune_stale_mirrors(&local_dir, &plan.present, &mut report);
         }
 
         Ok(report)
@@ -280,12 +295,10 @@ impl AgentAdapter for CursorAdapter {
         report.written = plan.accepted.values().map(Vec::len).sum();
 
         if !plan.authoritative.is_empty() {
-            let touched: std::collections::HashSet<String> =
-                plan.accepted.keys().cloned().collect();
             let (marked, warnings) = marked_mirror_dirs(&local_dir);
             report.warnings.extend(warnings);
             for name in marked {
-                if !touched.contains(&name) {
+                if !plan.present.contains(&name) {
                     report
                         .warnings
                         .push(format!("Would prune stale plugin mirror: {name}"));
@@ -305,6 +318,12 @@ impl AgentAdapter for CursorAdapter {
 /// the next completed mirror of that plugin and is prunable from then on.
 pub(crate) const MIRROR_MARKER: &str = ".skrills-mirror";
 
+/// Whether `dir` carries [`MIRROR_MARKER`] as a regular file. A symlink there
+/// proves nothing about who made the directory.
+fn has_mirror_marker(dir: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(dir.join(MIRROR_MARKER)).is_ok_and(|meta| meta.is_file())
+}
+
 /// Body of [`MIRROR_MARKER`], so whoever finds the file knows what wrote it.
 const MIRROR_MARKER_BODY: &[u8] =
     b"Written by `skrills sync`. Deleting this file stops sync from pruning this directory.\n";
@@ -318,6 +337,9 @@ struct MirrorPlan<'a> {
     authoritative: std::collections::HashSet<String>,
     /// One message per refused plugin.
     refusals: Vec<String>,
+    /// Every directory some plugin in the batch maps to, refused or not. A
+    /// refused plugin is still installed, so pruning must leave its mirror.
+    present: std::collections::HashSet<String>,
 }
 
 /// Groups a batch by destination directory and refuses every plugin that cannot
@@ -355,6 +377,7 @@ fn plan_mirror<'a>(local_dir: &std::path::Path, assets: &'a [PluginAsset]) -> Mi
     let mut accepted = BTreeMap::new();
     let mut authoritative = HashSet::new();
     let mut refusals = Vec::new();
+    let present: HashSet<String> = grouped.keys().cloned().collect();
 
     for (dir_name, group) in grouped {
         let identities = group
@@ -411,6 +434,7 @@ fn plan_mirror<'a>(local_dir: &std::path::Path, assets: &'a [PluginAsset]) -> Mi
         accepted,
         authoritative,
         refusals,
+        present,
     }
 }
 
@@ -446,26 +470,34 @@ fn prepare_plugin_dir(plugin_dir: &std::path::Path) -> std::result::Result<(), S
     }
 }
 
+/// Where `asset` goes inside its plugin mirror: Claude's `.claude-plugin/`
+/// manifest directory becomes the `.cursor-plugin/` Cursor reads.
+fn mirror_relative_path(asset: &PluginAsset) -> std::path::PathBuf {
+    match asset.relative_path.strip_prefix(".claude-plugin") {
+        Ok(rest) => std::path::PathBuf::from(".cursor-plugin").join(rest),
+        Err(_) => asset.relative_path.clone(),
+    }
+}
+
 /// Writes one asset and returns its destination when the mirror should keep it.
 ///
 /// Per-asset failures become warnings and the batch continues: a single bad file
 /// used to abort `write_plugin_assets` through `?`, which threw away the whole
-/// report and failed again on every later sync.
+/// report and failed again on every later sync. `owned` says whether the
+/// directory carries the mirror marker; only then may a path in the asset's
+/// way be deleted.
 fn write_one_asset(
     plugin_dir: &std::path::Path,
     dir_name: &str,
     asset: &PluginAsset,
+    owned: bool,
     report: &mut WriteReport,
 ) -> Option<std::path::PathBuf> {
     use crate::adapters::utils::{hash_content, is_path_contained};
     use crate::report::SkipReason;
     use std::fs;
-    use std::path::PathBuf;
 
-    let relative = match asset.relative_path.strip_prefix(".claude-plugin") {
-        Ok(rest) => PathBuf::from(".cursor-plugin").join(rest),
-        Err(_) => asset.relative_path.clone(),
-    };
+    let relative = mirror_relative_path(asset);
     let dest = plugin_dir.join(&relative);
 
     if !is_path_contained(&dest, plugin_dir) {
@@ -482,7 +514,7 @@ fn write_one_asset(
         return None;
     }
 
-    if let Err(e) = clear_conflicting_path(plugin_dir, &dest) {
+    if let Err(e) = clear_conflicting_path(plugin_dir, &dest, owned) {
         tracing::warn!(
             plugin = %dir_name,
             path = %relative.display(),
@@ -496,6 +528,29 @@ fn write_one_asset(
         ));
         return None;
     }
+
+    // Cursor reads plugin hooks in its own layout, not Claude's.
+    let translated;
+    let content: &[u8] = if relative == std::path::Path::new("hooks/hooks.json") {
+        match hooks::plugin_hooks_for_cursor(&asset.content, plugin_dir) {
+            Ok((bytes, warnings)) => {
+                report
+                    .warnings
+                    .extend(warnings.into_iter().map(|w| format!("{dir_name}: {w}")));
+                translated = bytes;
+                &translated
+            }
+            Err(e) => {
+                report.warnings.push(format!(
+                    "{dir_name}: hooks/hooks.json could not be translated for Cursor ({e}), \
+                     so it was copied unchanged and its hooks may not run"
+                ));
+                &asset.content
+            }
+        }
+    } else {
+        &asset.content
+    };
 
     let existing = if dest.exists() {
         match fs::read(&dest) {
@@ -514,7 +569,7 @@ fn write_one_asset(
     };
     let content_matches = existing
         .as_deref()
-        .is_some_and(|bytes| hash_content(bytes) == hash_content(&asset.content));
+        .is_some_and(|bytes| hash_content(bytes) == hash_content(content));
 
     // The content hash says nothing about the mode, so an asset whose bytes are
     // unchanged but whose executable bit moved upstream must not take the
@@ -538,7 +593,7 @@ fn write_one_asset(
                 return None;
             }
         }
-        if let Err(e) = crate::adapters::utils::write_file(&dest, &asset.content) {
+        if let Err(e) = crate::adapters::utils::write_file(&dest, content) {
             tracing::warn!(plugin = %dir_name, error = %e, "Could not write plugin asset");
             report.warnings.push(format!(
                 "Skipped plugin asset {}/{}: {e}",
@@ -567,16 +622,64 @@ fn write_one_asset(
     Some(dest)
 }
 
+/// Stamps [`SYNCED_MARKER`](crate::adapters::utils::SYNCED_MARKER) into each
+/// mirrored skill directory (one whose `SKILL.md` is in `kept`), as flat skill
+/// copies get, and adds the marker to `kept` so the sweep leaves it.
+fn mark_skill_dirs(
+    plugin_dir: &std::path::Path,
+    dir_name: &str,
+    kept: &mut std::collections::HashSet<std::path::PathBuf>,
+    report: &mut WriteReport,
+) {
+    use crate::adapters::utils::{symlink_below, write_file, SYNCED_MARKER};
+
+    let markers: Vec<std::path::PathBuf> = kept
+        .iter()
+        .filter(|dest| dest.file_name() == Some(std::ffi::OsStr::new("SKILL.md")))
+        .filter_map(|skill| skill.parent().map(|dir| dir.join(SYNCED_MARKER)))
+        .collect();
+    for marker in markers {
+        if symlink_below(plugin_dir, &marker).is_some() {
+            report.warnings.push(format!(
+                "{} is a symlink, so the skill directory in plugins/local/{dir_name} was not \
+                 marked as a skrills copy",
+                marker.display()
+            ));
+            continue;
+        }
+        if !marker.exists() {
+            if let Err(e) = write_file(&marker, b"written by skrills sync\n") {
+                report.warnings.push(format!(
+                    "Could not mark {} as a skrills copy: {e}",
+                    marker.parent().unwrap_or(plugin_dir).display()
+                ));
+                continue;
+            }
+        }
+        kept.insert(marker);
+    }
+}
+
 /// Removes whatever sits where an asset now has to go.
 ///
 /// A plugin version can turn `scripts/helper` from a file into a directory or
 /// the reverse. Without this, `create_dir_all` or `fs::write` fails on that
-/// asset on this run and on every run after it.
+/// asset on this run and on every run after it. In a directory skrills does
+/// not own (`owned` false) whatever is in the way is the user's, so it is
+/// refused instead of removed.
 fn clear_conflicting_path(
     plugin_dir: &std::path::Path,
     dest: &std::path::Path,
+    owned: bool,
 ) -> std::io::Result<()> {
     use std::fs;
+
+    let refuse = |path: &std::path::Path| {
+        Err(std::io::Error::other(format!(
+            "{} is in the way and the directory has no {MIRROR_MARKER} marker, so it is left alone",
+            path.display()
+        )))
+    };
 
     if let Ok(relative) = dest.strip_prefix(plugin_dir) {
         let components: Vec<_> = relative.components().collect();
@@ -585,6 +688,7 @@ fn clear_conflicting_path(
             walked.push(component);
             match fs::symlink_metadata(&walked) {
                 Ok(meta) if meta.is_dir() => continue,
+                Ok(_) if !owned => return refuse(&walked),
                 // A file or a symlink: a symlinked parent would also steer the
                 // write out of the plugin directory.
                 Ok(_) => fs::remove_file(&walked)?,
@@ -595,8 +699,9 @@ fn clear_conflicting_path(
     }
 
     match fs::symlink_metadata(dest) {
-        Ok(meta) if meta.is_dir() => fs::remove_dir_all(dest),
         Ok(meta) if meta.is_file() => Ok(()),
+        Ok(_) if !owned => refuse(dest),
+        Ok(meta) if meta.is_dir() => fs::remove_dir_all(dest),
         Ok(_) => fs::remove_file(dest),
         Err(_) => Ok(()),
     }
@@ -689,6 +794,8 @@ fn sweep_unreferenced(
             continue;
         }
         match fs::remove_file(path) {
+            // A dropped skill's marker is not a file the plugin shipped.
+            Ok(()) if entry.file_name() == crate::adapters::utils::SYNCED_MARKER => {}
             Ok(()) => removed += 1,
             Err(e) => {
                 tracing::warn!(
@@ -718,8 +825,9 @@ fn sweep_unreferenced(
 /// An unmarked directory is either a mirror from a build that predates the
 /// marker or a hand-made Cursor plugin that shares its name with a Claude
 /// plugin. A legacy mirror holds only files the plugin ships, so it is adopted.
-/// Anything else is left unmarked: stamping it would let the next run sweep the
-/// user's own files out of it.
+/// Anything else is left unmarked and nothing is written into it: stamping it
+/// would let the next run sweep the user's own files out of it. An entry the
+/// walk cannot read counts as foreign, since it may hold the user's files.
 fn adoptable(
     plugin_dir: &std::path::Path,
     dir_name: &str,
@@ -732,9 +840,10 @@ fn adoptable(
         .min_depth(1)
         .follow_links(false)
         .into_iter()
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| !entry.file_type().is_dir())
-        .filter(|entry| !kept.contains(entry.path()))
+        .filter(|entry| match entry {
+            Ok(entry) => !entry.file_type().is_dir() && !kept.contains(entry.path()),
+            Err(_) => true,
+        })
         .count();
 
     if foreign == 0 {
@@ -743,9 +852,8 @@ fn adoptable(
     tracing::warn!(plugin = %dir_name, foreign, "Leaving an unmarked plugin directory unmanaged");
     report.warnings.push(format!(
         "plugins/local/{dir_name} has no {MIRROR_MARKER} marker and holds {foreign} file(s) the \
-         plugin does not ship, so sync wrote the plugin into it but will never remove anything \
-         there. If the directory is yours, rename it; if it is an old mirror, delete it so sync \
-         can manage it."
+         plugin does not ship (or that could not be read), so sync left it untouched. If the \
+         directory is yours, rename it; if it is an old mirror, delete it so sync can manage it."
     ));
     false
 }
@@ -791,7 +899,9 @@ fn marked_mirror_dirs(local_dir: &std::path::Path) -> (Vec<String>, Vec<String>)
             }
         };
         let path = entry.path();
-        if !path.is_dir() {
+        // `file_type` does not follow links: a symlinked entry (a dev
+        // checkout) is never a mirror, whatever its target holds.
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
             continue;
         }
         let name = match entry.file_name().into_string() {
@@ -806,7 +916,7 @@ fn marked_mirror_dirs(local_dir: &std::path::Path) -> (Vec<String>, Vec<String>)
         };
         // An unmarked directory is either a plugin the user installed by hand or
         // a mirror from a build that predates the marker. Never delete it.
-        if path.join(MIRROR_MARKER).exists() {
+        if has_mirror_marker(&path) {
             marked.push(name);
         }
     }

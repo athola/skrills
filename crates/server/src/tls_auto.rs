@@ -99,9 +99,24 @@ fn ensure_auto_tls_certs_in(tls_path: &Path) -> Result<(PathBuf, PathBuf)> {
     let cert_path = tls_path.join(CERT_FILENAME);
     let key_path = tls_path.join(KEY_FILENAME);
 
-    // Reuse an existing pair unless the certificate is near expiry.
+    // Reuse an existing pair unless the certificate is near expiry or the key
+    // is not the certificate's. A pair whose key cannot be read is kept: it
+    // may be one the user installed in a format this check does not parse.
     if cert_path.exists() && key_path.exists() {
-        if !cert_is_stale(&cert_path) {
+        let mismatched = match (
+            fs::read_to_string(&cert_path),
+            fs::read_to_string(&key_path),
+        ) {
+            (Ok(cert), Ok(key)) => pair_matches(&cert, &key) == Some(false),
+            _ => false,
+        };
+        if mismatched {
+            tracing::warn!(
+                target: "skrills::tls",
+                cert = %cert_path.display(),
+                "Auto-generated TLS key does not belong to the certificate; regenerating"
+            );
+        } else if !cert_is_stale(&cert_path) {
             restrict_key_permissions(&key_path)?;
             tracing::debug!(
                 target: "skrills::tls",
@@ -109,12 +124,13 @@ fn ensure_auto_tls_certs_in(tls_path: &Path) -> Result<(PathBuf, PathBuf)> {
                 "Reusing existing auto-generated TLS certificate"
             );
             return Ok((cert_path, key_path));
+        } else {
+            tracing::info!(
+                target: "skrills::tls",
+                cert = %cert_path.display(),
+                "Auto-generated TLS certificate has expired or is about to; regenerating"
+            );
         }
-        tracing::info!(
-            target: "skrills::tls",
-            cert = %cert_path.display(),
-            "Auto-generated TLS certificate has expired or is about to; regenerating"
-        );
     }
 
     // Create directory if it doesn't exist
@@ -130,35 +146,17 @@ fn ensure_auto_tls_certs_in(tls_path: &Path) -> Result<(PathBuf, PathBuf)> {
 
     let (cert_pem, key_pem) = generate_self_signed_cert()?;
 
-    // Write certificate
-    fs::write(&cert_path, &cert_pem)
+    // Each file is written to a temporary file and renamed into place, so a
+    // reader never sees a half-written one. The key goes first: a crash
+    // between the renames leaves a mismatched pair, which the reuse check
+    // above replaces on the next start.
+    write_atomically(tls_path, &key_path, key_pem.as_bytes())
+        .with_context(|| format!("Failed to write TLS private key to {}", key_path.display()))?;
+    write_atomically(tls_path, &cert_path, cert_pem.as_bytes())
         .with_context(|| format!("Failed to write TLS certificate to {}", cert_path.display()))?;
 
-    // Write private key with restricted permissions
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600) // Read/write for owner only
-            .open(&key_path)
-            .and_then(|mut f| std::io::Write::write_all(&mut f, key_pem.as_bytes()))
-            .with_context(|| {
-                format!("Failed to write TLS private key to {}", key_path.display())
-            })?;
-    }
-
-    #[cfg(not(unix))]
-    {
-        fs::write(&key_path, &key_pem).with_context(|| {
-            format!("Failed to write TLS private key to {}", key_path.display())
-        })?;
-    }
-
-    // `mode` above applies only when the file is created; an existing key
-    // file keeps whatever mode it had.
+    // Temporary files are created owner-only; this also covers platforms
+    // where that default differs.
     restrict_key_permissions(&key_path)?;
 
     tracing::info!(
@@ -181,6 +179,43 @@ fn ensure_auto_tls_certs_in(tls_path: &Path) -> Result<(PathBuf, PathBuf)> {
     eprintln!();
 
     Ok((cert_path, key_path))
+}
+
+#[cfg(feature = "http-transport")]
+/// Writes `bytes` to `dest` through a temporary file in `dir`, which is
+/// created owner-only.
+fn write_atomically(dir: &Path, dest: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    tmp.write_all(bytes)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(dest).map_err(|e| e.error)?;
+    Ok(())
+}
+
+#[cfg(feature = "http-transport")]
+/// Whether the private key in `key_pem` belongs to the certificate in
+/// `cert_pem`: the key's public half appears verbatim in the certificate's
+/// subject public key. `None` when either cannot be parsed.
+fn pair_matches(cert_pem: &str, key_pem: &str) -> Option<bool> {
+    use base64::Engine;
+    use rcgen::KeyPair;
+
+    let key = KeyPair::from_pem(key_pem).ok()?;
+    let public = key.public_key_raw();
+    let body: String = cert_pem
+        .lines()
+        .skip_while(|l| !l.starts_with("-----BEGIN CERTIFICATE-----"))
+        .skip(1)
+        .take_while(|l| !l.starts_with("-----END CERTIFICATE-----"))
+        .collect();
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(body.trim())
+        .ok()?;
+    if public.is_empty() || der.is_empty() {
+        return None;
+    }
+    Some(der.windows(public.len()).any(|w| w == public))
 }
 
 /// Generates a self-signed certificate and private key.
@@ -327,5 +362,34 @@ mod tests {
 
         let mode = std::fs::metadata(&key_path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    /// A crash or a concurrent start between the two writes leaves a
+    /// certificate from one generation beside the key of another; that pair
+    /// cannot serve TLS and must be replaced, not reused.
+    #[test]
+    #[cfg(feature = "http-transport")]
+    fn ensure_auto_tls_certs_replaces_a_mismatched_pair() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let tls_path = temp_dir.path().join("tls");
+        let (cert_path, key_path) = ensure_auto_tls_certs_in(&tls_path).unwrap();
+        let (_, other_key) = generate_self_signed_cert().unwrap();
+        std::fs::write(&key_path, &other_key).unwrap();
+
+        ensure_auto_tls_certs_in(&tls_path).unwrap();
+
+        let cert = std::fs::read_to_string(&cert_path).unwrap();
+        let key = std::fs::read_to_string(&key_path).unwrap();
+        assert_eq!(pair_matches(&cert, &key), Some(true));
+    }
+
+    #[test]
+    #[cfg(feature = "http-transport")]
+    fn pair_matches_tells_matching_and_mismatched_pairs_apart() {
+        let (cert, key) = generate_self_signed_cert().unwrap();
+        let (_, other_key) = generate_self_signed_cert().unwrap();
+        assert_eq!(pair_matches(&cert, &key), Some(true));
+        assert_eq!(pair_matches(&cert, &other_key), Some(false));
+        assert_eq!(pair_matches(&cert, "not a key"), None);
     }
 }

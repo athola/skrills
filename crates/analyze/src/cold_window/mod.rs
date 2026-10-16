@@ -30,7 +30,9 @@ pub mod plugin_health;
 pub mod skill_collector;
 pub mod traits;
 
-pub use engine::{ColdWindowEngine, DefaultHintScorer, TickInput};
+#[cfg(feature = "intelligence-scorer")]
+pub use engine::DefaultHintScorer;
+pub use engine::{default_hint_scorer, ColdWindowEngine, KeepOrderScorer, TickInput};
 pub use plugin_health::{CollectorOutput, MalformedPlugin, PluginHealthCollector};
 pub use skill_collector::{MalformedSkillEntry, SkillCollector, SkillCollectorOutput};
 

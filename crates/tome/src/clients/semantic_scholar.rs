@@ -28,7 +28,9 @@ impl SemanticScholarClient {
 
     /// Search for papers by query string.
     pub async fn search(&self, query: &str, limit: usize) -> TomeResult<Vec<Paper>> {
-        let limit = limit.min(100);
+        let Some(limit) = super::search_limit(query, limit, 100) else {
+            return Ok(Vec::new());
+        };
         let url = format!("{BASE_URL}/paper/search");
         let resp = self
             .http
@@ -174,5 +176,13 @@ mod tests {
         });
         let p = parse_s2_paper(&v).unwrap();
         assert!(p.abstract_text.is_none());
+    }
+
+    #[test]
+    fn search_with_zero_limit_or_blank_query_returns_empty_without_a_request() {
+        use super::super::tests::poll_ready;
+        let client = SemanticScholarClient::new();
+        assert!(poll_ready(client.search("rust", 0)).unwrap().is_empty());
+        assert!(poll_ready(client.search("   ", 10)).unwrap().is_empty());
     }
 }

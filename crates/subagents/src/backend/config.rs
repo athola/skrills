@@ -48,20 +48,70 @@ impl AdapterConfig {
     }
 }
 
+impl AdapterConfig {
+    /// Reads the configuration field by field, so one bad setting does not
+    /// discard the others. A missing key leaves `api_key` empty (the run
+    /// then fails with the adapter's own key message). A malformed base URL
+    /// falls back to `default_base` and is returned as the error the
+    /// adapter must fail its runs with, rather than silently calling the
+    /// default endpoint with the operator's key.
+    pub(crate) fn from_env_or_default(
+        prefix: &str,
+        default_model: &str,
+        default_base: &str,
+        default_timeout_ms: u64,
+    ) -> (Self, Option<String>) {
+        let api_key = std::env::var(format!("SKRILLS_{prefix}_API_KEY")).unwrap_or_default();
+        let base_var = format!("SKRILLS_{prefix}_BASE_URL");
+        let (base_url, error) = match std::env::var(&base_var) {
+            Err(_) => (Url::parse(default_base), None),
+            Ok(raw) => match Url::parse(&raw) {
+                Ok(url) => (Ok(url), None),
+                Err(e) => (
+                    Url::parse(default_base),
+                    Some(format!("invalid {base_var} url {raw:?}: {e}")),
+                ),
+            },
+        };
+        let base_url = base_url.expect("default API base must be a valid URL");
+        let model_var = format!("SKRILLS_{prefix}_MODEL");
+        let model = std::env::var(&model_var).unwrap_or_else(|_| default_model.to_string());
+        let timeout_var = format!("SKRILLS_{prefix}_TIMEOUT_MS");
+        let timeout_ms = parse_timeout_ms(
+            &timeout_var,
+            std::env::var(&timeout_var).ok(),
+            default_timeout_ms,
+        );
+        (
+            Self {
+                api_key,
+                base_url,
+                model,
+                timeout: Duration::from_millis(timeout_ms),
+            },
+            error,
+        )
+    }
+}
+
 /// Reads a millisecond timeout, warning when a set value does not parse so a
-/// setting such as `30s` is not ignored without a trace.
+/// setting such as `30s` is not ignored without a trace. Shared by every
+/// timeout variable; 0 is rejected because it would time a run out at once.
 pub(crate) fn parse_timeout_ms(var: &str, raw: Option<String>, default_ms: u64) -> u64 {
     match raw {
         None => default_ms,
-        Some(raw) => raw.trim().parse::<u64>().unwrap_or_else(|_| {
-            tracing::warn!(
-                variable = var,
-                value = %raw,
-                default_ms,
-                "invalid timeout (expected whole milliseconds); using the default"
-            );
-            default_ms
-        }),
+        Some(raw) => match raw.trim().parse::<u64>() {
+            Ok(ms) if ms > 0 => ms,
+            _ => {
+                tracing::warn!(
+                    variable = var,
+                    value = %raw,
+                    default_ms,
+                    "invalid timeout (expected a positive number of milliseconds); using the default"
+                );
+                default_ms
+            }
+        },
     }
 }
 
@@ -79,6 +129,51 @@ pub(crate) fn endpoint(base: &Url, path: &str) -> Result<Url> {
     }
     base.join(path)
         .with_context(|| format!("cannot join {path:?} onto API base {base}"))
+}
+
+#[cfg(test)]
+mod from_env_tests {
+    use super::*;
+    use skrills_test_utils::{env_guard, set_env_var};
+
+    /// M314: a malformed base URL keeps the key, model and timeout and is
+    /// reported, instead of a fallback that drops them all.
+    #[test]
+    fn malformed_base_url_keeps_the_other_settings_and_is_reported() {
+        let _lock = env_guard();
+        let _key = set_env_var("SKRILLS_TESTPFX_API_KEY", Some("k"));
+        let _base = set_env_var("SKRILLS_TESTPFX_BASE_URL", Some("not a url"));
+        let _model = set_env_var("SKRILLS_TESTPFX_MODEL", Some("m1"));
+        let _timeout = set_env_var("SKRILLS_TESTPFX_TIMEOUT_MS", Some("1234"));
+        let (config, error) =
+            AdapterConfig::from_env_or_default("TESTPFX", "dflt", "https://x.test/v1/", 5);
+        assert_eq!(config.api_key, "k");
+        assert_eq!(config.model, "m1");
+        assert_eq!(config.timeout, Duration::from_millis(1234));
+        assert!(error.unwrap().contains("SKRILLS_TESTPFX_BASE_URL"));
+    }
+
+    /// M319: one parser for every timeout: trimmed, and 0 is rejected
+    /// (it timed a CLI run out instantly).
+    #[test]
+    fn timeout_parser_trims_and_rejects_zero() {
+        assert_eq!(parse_timeout_ms("V", Some(" 500 ".into()), 7), 500);
+        assert_eq!(parse_timeout_ms("V", Some("0".into()), 7), 7);
+        assert_eq!(parse_timeout_ms("V", Some("30s".into()), 7), 7);
+        assert_eq!(parse_timeout_ms("V", None, 7), 7);
+    }
+
+    #[test]
+    fn missing_key_is_not_a_config_error() {
+        let _lock = env_guard();
+        let _key = set_env_var("SKRILLS_TESTPFX_API_KEY", None);
+        let _base = set_env_var("SKRILLS_TESTPFX_BASE_URL", None);
+        let (config, error) =
+            AdapterConfig::from_env_or_default("TESTPFX", "dflt", "https://x.test/v1/", 5);
+        assert!(config.api_key.is_empty());
+        assert_eq!(config.model, "dflt");
+        assert!(error.is_none());
+    }
 }
 
 #[cfg(test)]
@@ -248,13 +343,13 @@ mod tests {
         assert_eq!(config.timeout, Duration::from_millis(30000));
     }
 
-    /// BDD Test: Zero timeout value is accepted
+    /// BDD Test: Zero timeout value is rejected
     ///
     /// Given: Timeout environment variable is set to zero
     /// When: AdapterConfig::from_env is called
-    /// Then: Zero duration timeout is returned
+    /// Then: The default timeout is used
     #[test]
-    fn given_zero_timeout_when_from_env_then_zero_duration() {
+    fn given_zero_timeout_when_from_env_then_default_duration() {
         let _g = env_guard();
         // GIVEN: Zero timeout
         let _key = set_env_var("SKRILLS_CLAUDE_API_KEY", Some("test-key"));
@@ -264,9 +359,10 @@ mod tests {
         let result =
             AdapterConfig::from_env("CLAUDE", "claude-3.5", "https://api.anthropic.com", 30000);
 
-        // THEN: Zero timeout is accepted
-        let config = result.expect("zero timeout should be accepted");
-        assert_eq!(config.timeout, Duration::from_millis(0));
+        // THEN: Zero is rejected (it would time every request out at
+        // once) and the default applies (M319)
+        let config = result.expect("config still loads");
+        assert_eq!(config.timeout, Duration::from_millis(30000));
     }
 
     /// BDD Test: Different prefixes produce different variable names

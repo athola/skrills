@@ -443,6 +443,68 @@ fn create_skill_reports_a_tool_error_when_empirical_generation_finds_no_sessions
     assert_eq!(structured["success"], json!(false));
 }
 
+/// Session parsing in `create-skill` is blocking file I/O. Run inline on the
+/// only worker it starves every other task; through `run_blocking` the worker
+/// is handed over first. The session file here is a FIFO whose writer is a
+/// task queued on the same worker, so the read only finishes if that task
+/// gets to run while the parse is blocked.
+#[cfg(unix)]
+#[test]
+fn create_skill_lets_other_tasks_run_while_it_reads_sessions() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempdir().unwrap();
+    let _home_guard = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+    let project = temp.path().join(".claude/projects/p");
+    fs::create_dir_all(&project).unwrap();
+    let fifo = project.join("s.jsonl");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(status.success(), "mkfifo failed");
+
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
+    let args = json!({
+        "name": "fifo-sessions",
+        "description": "reads a session file another task writes",
+        "method": "empirical",
+        "dry_run": true
+    })
+    .as_object()
+    .cloned()
+    .unwrap();
+
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let writer_path = fifo.clone();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let outcome = runtime.block_on(async move {
+            tokio::spawn(async move {
+                tokio::spawn(async move {
+                    std::fs::write(&writer_path, "").unwrap();
+                });
+                service.create_skill_tool(args).await
+            })
+            .await
+            .unwrap()
+        });
+        let _ = done_tx.send(outcome.is_ok());
+    });
+
+    match done_rx.recv_timeout(Duration::from_secs(10)) {
+        Ok(ok) => assert!(ok, "create-skill returned an error"),
+        Err(_) => {
+            // Release the blocked reader so the runtime thread can finish.
+            let _ = std::fs::write(&fifo, "");
+            panic!("create-skill blocked the only worker while reading sessions");
+        }
+    }
+}
+
 // -------------------------------------------------------------------------
 // search_skills_github_tool Tests
 // -------------------------------------------------------------------------
@@ -1251,4 +1313,84 @@ fn project_roots_unset_leaves_project_dir_unrestricted() {
     service
         .analyze_project_context_tool(project_args(&anywhere))
         .expect("no allowlist, no refusal");
+}
+
+/// `recommend-skills-smart` re-parsed all session history on every call;
+/// within the TTL the parsed events are reused, per home directory, and the
+/// event count is capped.
+#[test]
+fn usage_events_are_parsed_once_per_ttl_and_capped() {
+    use skrills_intelligence::usage::SkillUsageEvent;
+    let event = |n: u64| SkillUsageEvent {
+        timestamp: n,
+        skill_path: format!("skill-{n}"),
+        session_id: "s".into(),
+        prompt_context: None,
+    };
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("cache-home");
+    let loads = std::cell::Cell::new(0);
+    let load = || {
+        loads.set(loads.get() + 1);
+        (0..(MAX_USAGE_EVENTS as u64 + 10)).map(event).collect()
+    };
+    let first = cached_usage_events(&home, load);
+    let second = cached_usage_events(&home, load);
+    assert_eq!(loads.get(), 1, "the second call re-parsed sessions");
+    assert_eq!(first.len(), MAX_USAGE_EVENTS);
+    assert_eq!(second.len(), MAX_USAGE_EVENTS);
+
+    let other = temp.path().join("other-home");
+    cached_usage_events(&other, load);
+    assert_eq!(loads.get(), 2, "another home must not reuse the cache");
+}
+
+/// With the default `method: "both"` and no working LLM, GitHub results
+/// made the call a success although nothing was created.
+#[test]
+fn create_skill_fails_when_requested_generation_produced_nothing() {
+    use super::super::intelligence::creation_succeeded;
+    // method both: GitHub found results, LLM failed.
+    assert!(!creation_succeeded(true, false, true, false));
+    // method github only: results are the product.
+    assert!(creation_succeeded(false, false, true, false));
+    // LLM produced content and it was written.
+    assert!(creation_succeeded(true, true, false, false));
+    // LLM produced content but the write failed.
+    assert!(!creation_succeeded(true, true, true, true));
+    // Nothing at all.
+    assert!(!creation_succeeded(false, false, false, false));
+}
+
+/// `ci`, `cd`, `doc`, `auth` matched inside "precision", "decide",
+/// "docker" and "author", flagging gaps for nearly every project.
+#[test]
+fn gap_patterns_match_whole_words_only() {
+    use super::super::intelligence::keyword_mentions;
+    for (keyword, pattern) in [
+        ("precision", "ci"),
+        ("decide", "cd"),
+        ("author", "auth"),
+        ("docker", "doc"),
+    ] {
+        assert!(!keyword_mentions(keyword, pattern), "{keyword} ~ {pattern}");
+    }
+    for (keyword, pattern) in [
+        ("ci", "ci"),
+        ("github-ci", "ci"),
+        ("testing", "test"),
+        ("docs", "doc"),
+        ("auth_service", "auth"),
+    ] {
+        assert!(keyword_mentions(keyword, pattern), "{keyword} !~ {pattern}");
+    }
+}
+
+#[test]
+fn suggested_skill_names_are_valid_directory_names() {
+    use super::super::intelligence::skill_slug;
+    assert_eq!(skill_slug("C++"), "cpp");
+    assert_eq!(skill_slug("C#"), "csharp");
+    assert_eq!(skill_slug("Objective C"), "objective-c");
+    assert_eq!(skill_slug("Node.js"), "node-js");
 }

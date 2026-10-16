@@ -1,0 +1,27 @@
+[package]
+name = "skrills-setup"
+version = "0.9.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "Installs, registers and uninstalls skrills for Claude Code, Codex, Copilot and Cursor."
+license = "MIT"
+repository = "https://github.com/athola/skrills"
+homepage = "https://github.com/athola/skrills"
+documentation = "https://athola.github.io/skrills/"
+readme = "../../README.md"
+keywords = ["mcp", "skills", "setup", "installer"]
+categories = ["development-tools"]
+
+[dependencies]
+anyhow.workspace = true
+dirs.workspace = true
+inquire.workspace = true
+serde_json.workspace = true
+shellexpand = "3"
+toml.workspace = true
+tracing.workspace = true
+skrills_sync = { path = "../sync", version = "0.9.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+skrills-test-utils = { path = "../test-utils" }

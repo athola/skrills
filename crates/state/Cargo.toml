@@ -1,8 +1,9 @@
 [package]
 name = "skrills-state"
-version = "0.9.0"
+version = "0.9.1"
 edition = "2021"
-description = "State management for skrills runtime options, pins, and persisted overrides."
+rust-version.workspace = true
+description = "Environment, manifest and runtime-override configuration for skrills, with a validation result cache."
 license = "MIT"
 repository = "https://github.com/athola/skrills"
 homepage = "https://github.com/athola/skrills"
@@ -18,11 +19,11 @@ path = "src/lib.rs"
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tempfile.workspace = true
 dirs.workspace = true
 rusqlite = { version = "0.40", features = ["bundled"] }
 sha2.workspace = true
 hex = "0.4.3"
 
 [dev-dependencies]
-skrills_test_utils = { path = "../test-utils" }
+tempfile.workspace = true
+skrills-test-utils = { path = "../test-utils" }

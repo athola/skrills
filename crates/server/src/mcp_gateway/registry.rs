@@ -72,9 +72,11 @@ impl McpToolRegistry {
         self.tools.get(name)
     }
 
-    /// List all tool entries.
+    /// List all tool entries, sorted by name so the listing is stable.
     pub fn list_all(&self) -> Vec<&McpToolEntry> {
-        self.tools.values().collect()
+        let mut entries: Vec<&McpToolEntry> = self.tools.values().collect();
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        entries
     }
 
     /// List tools from a specific source.

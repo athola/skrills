@@ -2,25 +2,12 @@
 
 use super::registry::McpToolEntry;
 use super::stats::ContextStatsSnapshot;
+use crate::handler::invalid_params;
 use crate::mcp_result::{tool_err, tool_ok};
 use anyhow::Result;
 use rmcp::model::{CallToolResult, ContentBlock, Tool, ToolAnnotations};
 use serde_json::{json, Map as JsonMap, Value};
 use std::sync::Arc;
-
-/// Tool names handled by the MCP gateway.
-#[deprecated(
-    since = "0.9.0",
-    note = "the gateway tools are dispatched by name in the handler, which does not read this list; unused, will be removed in a future release"
-)]
-pub const MCP_GATEWAY_TOOL_NAMES: &[&str] = &[
-    "list-mcp-tools",
-    "list_mcp_tools",
-    "describe-mcp-tool",
-    "describe_mcp_tool",
-    "get-context-stats",
-    "get_context_stats",
-];
 
 /// Helper to create an Arc-wrapped schema.
 fn schema(props: Value) -> Arc<JsonMap<String, Value>> {
@@ -163,7 +150,7 @@ pub fn describe_mcp_tool(
     let tool_name = args
         .and_then(|a| a.get("tool_name"))
         .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("tool_name is required"))?;
+        .ok_or_else(|| invalid_params("tool_name is required"))?;
 
     match tool_finder(tool_name) {
         Some(tool) => {

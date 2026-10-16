@@ -4,6 +4,7 @@
 //! to the LLM. Each handler processes arguments and returns a `CallToolResult`.
 
 use super::SkillService;
+use crate::handler::invalid_params;
 use crate::mcp_result::{tool_err, tool_ok};
 use crate::skill_trace::{self, ClientTarget as TraceTarget, TraceInstallOptions};
 use anyhow::Result;
@@ -27,9 +28,9 @@ impl SkillService {
             "claude" => Ok(TraceTarget::Claude),
             "codex" => Ok(TraceTarget::Codex),
             "both" => Ok(TraceTarget::Both),
-            other => Err(anyhow::anyhow!(
+            other => Err(invalid_params(format!(
                 "Unknown target '{other}': expected claude, codex or both"
-            )),
+            ))),
         }
     }
 
@@ -38,7 +39,7 @@ impl SkillService {
     /// # Arguments
     ///
     /// The `args` map accepts the following JSON keys:
-    /// - `target`: `"claude"`, `"codex"`, or `"both"` (default: `"both"`) - which clients to validate for
+    /// - `target`: `"claude"`, `"codex"`, `"copilot"`, `"both"` (claude+codex) or `"all"` (default: `"both"`) - which clients to validate for
     /// - `errors_only`: `bool` (default: `false`) - only return skills with errors
     /// - `autofix`: `bool` (default: `false`) - attempt to autofix frontmatter issues
     /// - `check_dependencies`: `bool` (default: `false`) - validate skill dependencies exist
@@ -76,13 +77,18 @@ impl SkillService {
         let validation_target = match target_str {
             "claude" => VT::Claude,
             "codex" => VT::Codex,
+            "copilot" => VT::Copilot,
             "both" => VT::Both,
+            "all" => VT::All,
             other => {
-                return Err(anyhow::anyhow!(
-                    "Unknown target '{other}': expected claude, codex or both"
-                ))
+                return Err(invalid_params(format!(
+                    "Unknown target '{other}': expected claude, codex, copilot, both or all"
+                )))
             }
         };
+        let checks_claude = matches!(validation_target, VT::Claude | VT::Both | VT::All);
+        let checks_codex = matches!(validation_target, VT::Codex | VT::Both | VT::All);
+        let checks_copilot = matches!(validation_target, VT::Copilot | VT::All);
 
         let (skills, _) = self.current_skills_with_dups()?;
 
@@ -100,6 +106,7 @@ impl SkillService {
         let mut validated = 0usize;
         let mut claude_valid = 0usize;
         let mut codex_valid = 0usize;
+        let mut copilot_valid = 0usize;
 
         for meta in &skills {
             let mut content = match fs::read_to_string(&meta.path) {
@@ -113,8 +120,8 @@ impl SkillService {
             let mut autofixed_skill = false;
 
             if autofix
-                && !result.codex_valid
-                && validation_target != VT::Claude
+                && ((checks_codex && !result.codex_valid)
+                    || (checks_copilot && !result.copilot_valid))
                 && autofix_may_write(&meta.source)
             {
                 // Keep a backup: this rewrites files in place on a tool call.
@@ -190,7 +197,7 @@ impl SkillService {
 
             let mut passed = Vec::new();
             let mut failed = Vec::new();
-            if validation_target != VT::Codex {
+            if checks_claude {
                 if result.claude_valid {
                     &mut passed
                 } else {
@@ -198,13 +205,21 @@ impl SkillService {
                 }
                 .push("claude");
             }
-            if validation_target != VT::Claude {
+            if checks_codex {
                 if result.codex_valid {
                     &mut passed
                 } else {
                     &mut failed
                 }
                 .push("codex");
+            }
+            if checks_copilot {
+                if result.copilot_valid {
+                    &mut passed
+                } else {
+                    &mut failed
+                }
+                .push("copilot");
             }
             if check_dependencies {
                 if dependency_issues.is_empty() {
@@ -221,6 +236,7 @@ impl SkillService {
             validated += 1;
             claude_valid += usize::from(result.claude_valid);
             codex_valid += usize::from(result.codex_valid);
+            copilot_valid += usize::from(result.copilot_valid);
 
             if !errors_only || result.has_errors() || !dependency_issues.is_empty() {
                 let mut skill_json = json!({
@@ -228,6 +244,7 @@ impl SkillService {
                     "path": meta.path.display().to_string(),
                     "claude_valid": result.claude_valid,
                     "codex_valid": result.codex_valid,
+                    "copilot_valid": result.copilot_valid,
                     "errors": result.error_count(),
                     "warnings": result.warning_count(),
                     "autofixed": autofixed_skill,
@@ -267,6 +284,9 @@ impl SkillService {
             let mut base = format!(
                 "Validated {validated} skills: {claude_valid} Claude-valid, {codex_valid} Codex-valid"
             );
+            if checks_copilot {
+                base = format!("{base}, {copilot_valid} Copilot-valid");
+            }
             if errors_only {
                 base = format!("{base}\nShowing {} with issues", results.len());
             }
@@ -284,6 +304,7 @@ impl SkillService {
             "validated": validated,
             "claude_valid": claude_valid,
             "codex_valid": codex_valid,
+            "copilot_valid": copilot_valid,
             "target": target_str,
             "autofix": autofix,
             "autofixed": autofixed,
@@ -313,37 +334,51 @@ impl SkillService {
     ///
     /// # Returns
     ///
-    /// A `CallToolResult` containing:
-    /// - Unified diff output
-    /// - Frontmatter comparison
-    /// - Token count differences
+    /// A `CallToolResult` containing unified diffs and token counts. Within
+    /// each client the first copy in root (priority) order is compared.
     pub(crate) fn skill_diff_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
         use skrills_discovery::SkillSource;
 
         let name = args
             .get("name")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("skill name is required"))?;
+            .ok_or_else(|| invalid_params("skill name is required"))?;
+        // No diff needs more context than this; the cap also keeps the value
+        // in range of `usize` on every target.
+        const MAX_CONTEXT_LINES: u64 = 1000;
         let context_lines = args
             .get("context_lines")
             .and_then(|v| v.as_u64())
-            .unwrap_or(3) as usize;
+            .unwrap_or(3)
+            .min(MAX_CONTEXT_LINES) as usize;
 
         // The cached list is de-duplicated by name, which keeps exactly one
         // copy of the skill this tool exists to compare. Scan each root on its
         // own so every copy is seen.
-        let roots = self.cache.lock().roots().to_vec();
-        let mut skills = Vec::new();
-        for root in &roots {
-            match skrills_discovery::discover_skills(std::slice::from_ref(root), None) {
-                Ok(found) => skills.extend(found),
-                Err(e) => tracing::warn!(
-                    root = %root.root.display(),
-                    error = %e,
-                    "skill-diff could not scan root"
-                ),
+        // The walk hashes every file, so its result is kept for one cache TTL
+        // and the lock is not held while it runs.
+        let (cached, roots) = {
+            let cache = self.cache.lock();
+            (cache.every_copy(), cache.roots().to_vec())
+        };
+        let skills = match cached {
+            Some(skills) => skills,
+            None => {
+                let mut skills = Vec::new();
+                for root in &roots {
+                    match skrills_discovery::discover_skills(std::slice::from_ref(root), None) {
+                        Ok(found) => skills.extend(found),
+                        Err(e) => tracing::warn!(
+                            root = %root.root.display(),
+                            error = %e,
+                            "skill-diff could not scan root"
+                        ),
+                    }
+                }
+                self.cache.lock().store_every_copy(skills.clone());
+                skills
             }
-        }
+        };
         let wanted = skill_dir_name(name);
 
         // Find matching skills across each source
@@ -362,7 +397,10 @@ impl SkillService {
                         {
                             claude_skill = Some((path_str, c));
                         }
-                        SkillSource::Codex | SkillSource::Mirror if codex_skill.is_none() => {
+                        // `~/.agents/skills` is where Codex loads user skills.
+                        SkillSource::Codex | SkillSource::Agent | SkillSource::Mirror
+                            if codex_skill.is_none() =>
+                        {
                             codex_skill = Some((path_str, c));
                         }
                         SkillSource::Copilot if copilot_skill.is_none() => {
@@ -557,17 +595,14 @@ impl SkillService {
     /// A `CallToolResult` with sync summary text and structured report including
     /// commands, skills, MCP servers, and preferences copied.
     pub(crate) fn sync_all_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
-        use crate::sync::mirror_source_root;
-        use skrills_sync::{default_target_for, sync_between, SyncParams};
+        use skrills_sync::{sync_between, SyncParams};
 
-        let from = args
-            .get("from")
-            .and_then(|v| v.as_str())
-            .unwrap_or("claude");
-        let to = args
-            .get("to")
-            .and_then(|v| v.as_str())
-            .unwrap_or_else(|| default_target_for(from));
+        let (from, to) = crate::handler::sync_pair(
+            args.get("from")
+                .and_then(|v| v.as_str())
+                .unwrap_or("claude"),
+            args.get("to").and_then(|v| v.as_str()),
+        )?;
         let dry_run = args
             .get("dry_run")
             .and_then(|v| v.as_bool())
@@ -576,36 +611,6 @@ impl SkillService {
             .get("include_marketplace")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-
-        let is_claude_to_codex = from == "claude" && to == "codex";
-
-        // Sync skills first (Codex discovery root) for Claude→Codex only.
-        let mut feature_flag_warning = String::new();
-        let skill_report = if is_claude_to_codex && !dry_run {
-            let home = home_dir()?;
-            let claude_root = mirror_source_root(&home);
-            let codex_skills_root = home.join(".codex/skills");
-            let report = crate::sync::sync_skills_only_from_claude(
-                &claude_root,
-                &codex_skills_root,
-                include_marketplace,
-            )?;
-            if let Err(err) =
-                crate::setup::ensure_codex_skills_feature_enabled(&home.join(".codex/config.toml"))
-            {
-                // Surface filesystem errors (read-only home, disk full, malformed
-                // TOML) so the caller learns why Codex loads nothing despite the
-                // skills landing on disk.
-                tracing::warn!(error = %err, "could not ensure codex skills feature flag");
-                feature_flag_warning = format!(
-                    "\nwarning: could not enable the codex skills feature in \
-                     ~/.codex/config.toml: {err}"
-                );
-            }
-            report
-        } else {
-            crate::sync::MirrorReport::default()
-        };
 
         let skip_existing_commands = args
             .get("skip_existing_commands")
@@ -631,15 +636,21 @@ impl SkillService {
         let report = sync_between(from, to, &params)?;
 
         let succeeded = report.success;
-        let content = vec![ContentBlock::text(format!(
-            "{}\nSkills: {} copied, {} skipped{}",
-            report.summary, skill_report.copied, skill_report.skipped, feature_flag_warning
-        ))];
+        let mut text = format!(
+            "{}\nSkills: {} copied, {} skipped",
+            report.summary,
+            report.skills.written,
+            report.skills.skipped.len()
+        );
+        for warning in &report.skills.warnings {
+            text.push_str(&format!("\nwarning: {warning}"));
+        }
+        let content = vec![ContentBlock::text(text)];
         let structured = Some(json!({
             "report": report,
             "skill_report": {
-                "copied": skill_report.copied,
-                "skipped": skill_report.skipped
+                "copied": report.skills.written,
+                "skipped": report.skills.skipped.len()
             },
             "dry_run": dry_run,
             "skip_existing_commands": skip_existing_commands
@@ -735,18 +746,10 @@ impl SkillService {
                 .get("dry_run")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
-            include_cache: args
-                .get("include_cache")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            include_marketplace: args
-                .get("include_marketplace")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            include_mirror: args
-                .get("include_mirror")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true),
+            // Third-party trees are never instrumented (see `enable_trace`).
+            include_cache: false,
+            include_marketplace: false,
+            include_mirror: false,
             include_agent: args
                 .get("include_agent")
                 .and_then(|v| v.as_bool())
@@ -872,7 +875,9 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
-        use skrills_sync::{ClaudeAdapter, CopilotAdapter, SyncOrchestrator, SyncParams};
+        use skrills_sync::{
+            create_adapter, CopilotAdapter, Platform, SyncOrchestrator, SyncParams,
+        };
 
         let to = args.get("to").and_then(|v| v.as_str()).unwrap_or("claude");
         let dry_run = args
@@ -892,16 +897,9 @@ impl SkillService {
             ..Default::default()
         };
 
-        check_sync_peer("to", to, &["claude", "codex"])?;
-        let source = CopilotAdapter::new()?;
-        let report = if to == "codex" {
-            use skrills_sync::CodexAdapter;
-            let target = CodexAdapter::new()?;
-            SyncOrchestrator::new(source, target).sync(&params)?
-        } else {
-            let target = ClaudeAdapter::new()?;
-            SyncOrchestrator::new(source, target).sync(&params)?
-        };
+        let to = check_sync_peer("to", to, &[Platform::Claude, Platform::Codex])?;
+        let report =
+            SyncOrchestrator::new(CopilotAdapter::new()?, create_adapter(to)?).sync(&params)?;
 
         let succeeded = report.success;
         let content = vec![ContentBlock::text(report.summary.clone())];
@@ -933,7 +931,9 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
-        use skrills_sync::{ClaudeAdapter, CopilotAdapter, SyncOrchestrator, SyncParams};
+        use skrills_sync::{
+            create_source_adapter, CopilotAdapter, Platform, SyncOrchestrator, SyncParams,
+        };
 
         let from = args
             .get("from")
@@ -956,20 +956,16 @@ impl SkillService {
             ..Default::default()
         };
 
-        check_sync_peer("from", from, &["claude", "codex", "cursor"])?;
-        let target = CopilotAdapter::new()?;
-        let report = if from == "codex" {
-            use skrills_sync::CodexAdapter;
-            let source = CodexAdapter::new()?;
-            SyncOrchestrator::new(source, target).sync(&params)?
-        } else if from == "cursor" {
-            use skrills_sync::CursorAdapter;
-            let source = CursorAdapter::new()?;
-            SyncOrchestrator::new(source, target).sync(&params)?
-        } else {
-            let source = ClaudeAdapter::new()?;
-            SyncOrchestrator::new(source, target).sync(&params)?
-        };
+        let from = check_sync_peer(
+            "from",
+            from,
+            &[Platform::Claude, Platform::Codex, Platform::Cursor],
+        )?;
+        let report = SyncOrchestrator::new(
+            create_source_adapter(from, &params)?,
+            CopilotAdapter::new()?,
+        )
+        .sync(&params)?;
 
         let succeeded = report.success;
         let content = vec![ContentBlock::text(report.summary.clone())];
@@ -991,10 +987,7 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
-        use skrills_sync::{
-            ClaudeAdapter, CodexAdapter, CopilotAdapter, CursorAdapter, SyncOrchestrator,
-            SyncParams,
-        };
+        use skrills_sync::{create_adapter, CursorAdapter, Platform, SyncOrchestrator, SyncParams};
 
         let to = args.get("to").and_then(|v| v.as_str()).unwrap_or("claude");
         let dry_run = args
@@ -1014,22 +1007,13 @@ impl SkillService {
             ..Default::default()
         };
 
-        check_sync_peer("to", to, &["claude", "codex", "copilot"])?;
-        let source = CursorAdapter::new()?;
-        let report = match to {
-            "codex" => {
-                let target = CodexAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            }
-            "copilot" => {
-                let target = CopilotAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            }
-            _ => {
-                let target = ClaudeAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            }
-        };
+        let to = check_sync_peer(
+            "to",
+            to,
+            &[Platform::Claude, Platform::Codex, Platform::Copilot],
+        )?;
+        let report =
+            SyncOrchestrator::new(CursorAdapter::new()?, create_adapter(to)?).sync(&params)?;
 
         let succeeded = report.success;
         let content = vec![ContentBlock::text(report.summary.clone())];
@@ -1052,8 +1036,7 @@ impl SkillService {
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
         use skrills_sync::{
-            ClaudeAdapter, CodexAdapter, CopilotAdapter, CursorAdapter, SyncOrchestrator,
-            SyncParams,
+            create_source_adapter, CursorAdapter, Platform, SyncOrchestrator, SyncParams,
         };
 
         let from = args
@@ -1065,7 +1048,12 @@ impl SkillService {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let delivery = skrills_sync::skill_delivery(from, "cursor");
+        let from = check_sync_peer(
+            "from",
+            from,
+            &[Platform::Claude, Platform::Codex, Platform::Copilot],
+        )?;
+        let delivery = skrills_sync::skill_delivery(from, Platform::Cursor);
         let params = SyncParams {
             from: Some(from.to_string()),
             dry_run,
@@ -1079,22 +1067,9 @@ impl SkillService {
             ..Default::default()
         };
 
-        check_sync_peer("from", from, &["claude", "codex", "copilot"])?;
-        let target = CursorAdapter::new()?;
-        let report = match from {
-            "codex" => {
-                let source = CodexAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            }
-            "copilot" => {
-                let source = CopilotAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            }
-            _ => {
-                let source = ClaudeAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            }
-        };
+        let report =
+            SyncOrchestrator::new(create_source_adapter(from, &params)?, CursorAdapter::new()?)
+                .sync(&params)?;
 
         let succeeded = report.success;
         let content = vec![ContentBlock::text(report.summary.clone())];
@@ -1125,21 +1100,14 @@ impl SkillService {
     ///
     /// A `CallToolResult` with sync summary and structured report.
     pub fn sync_skills_tool(&self, args: JsonMap<String, Value>) -> Result<CallToolResult> {
-        use skrills_sync::{
-            ClaudeAdapter, CodexAdapter, CopilotAdapter, CursorAdapter, SyncOrchestrator,
-            SyncParams,
-        };
+        use skrills_sync::{sync_between, SyncParams};
 
-        let from = args
-            .get("from")
-            .and_then(|v| v.as_str())
-            .unwrap_or("claude");
-        // Default target: codex for claude source, claude for others
-        let default_to = if from == "claude" { "codex" } else { "claude" };
-        let to = args
-            .get("to")
-            .and_then(|v| v.as_str())
-            .unwrap_or(default_to);
+        let (from, to) = crate::handler::sync_pair(
+            args.get("from")
+                .and_then(|v| v.as_str())
+                .unwrap_or("claude"),
+            args.get("to").and_then(|v| v.as_str()),
+        )?;
         let dry_run = args
             .get("dry_run")
             .and_then(|v| v.as_bool())
@@ -1148,14 +1116,6 @@ impl SkillService {
             .get("include_marketplace")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-
-        // Prevent syncing to self
-        if from == to {
-            return Err(anyhow::anyhow!(
-                "Source and target cannot be the same: {}",
-                from
-            ));
-        }
 
         let params = SyncParams {
             from: Some(from.to_string()),
@@ -1168,76 +1128,7 @@ impl SkillService {
             ..Default::default()
         };
 
-        // Create adapters and run sync based on from/to combination
-        let report = match (from, to) {
-            ("claude", "codex") => {
-                let source = ClaudeAdapter::new()?;
-                let target = CodexAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            }
-            ("claude", "copilot") => {
-                let source = ClaudeAdapter::new()?;
-                let target = CopilotAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            }
-            ("codex", "claude") => {
-                let source = CodexAdapter::new()?;
-                let target = ClaudeAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            }
-            ("codex", "copilot") => {
-                let source = CodexAdapter::new()?;
-                let target = CopilotAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            }
-            ("copilot", "claude") => {
-                let source = CopilotAdapter::new()?;
-                let target = ClaudeAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            }
-            ("copilot", "codex") => {
-                let source = CopilotAdapter::new()?;
-                let target = CodexAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            }
-            ("cursor", "claude") => {
-                let source = CursorAdapter::new()?;
-                let target = ClaudeAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            }
-            ("cursor", "codex") => {
-                let source = CursorAdapter::new()?;
-                let target = CodexAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            }
-            ("cursor", "copilot") => {
-                let source = CursorAdapter::new()?;
-                let target = CopilotAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            }
-            ("claude", "cursor") => {
-                let source = ClaudeAdapter::new()?;
-                let target = CursorAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            }
-            ("codex", "cursor") => {
-                let source = CodexAdapter::new()?;
-                let target = CursorAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            }
-            ("copilot", "cursor") => {
-                let source = CopilotAdapter::new()?;
-                let target = CursorAdapter::new()?;
-                SyncOrchestrator::new(source, target).sync(&params)?
-            }
-            _ => {
-                return Err(anyhow::anyhow!(
-                    "Invalid sync direction: {} -> {}. Valid options are: claude, codex, copilot, cursor",
-                    from,
-                    to
-                ));
-            }
-        };
+        let report = sync_between(from, to, &params)?;
 
         let succeeded = report.success;
         let content = vec![ContentBlock::text(report.summary.clone())];
@@ -1262,15 +1153,22 @@ impl SkillService {
 
 /// Refuse a sync peer this tool does not handle instead of quietly treating it
 /// as Claude, which would write to `~/.claude` while echoing the requested name.
-fn check_sync_peer(field: &str, value: &str, allowed: &[&str]) -> Result<()> {
-    if allowed.contains(&value) {
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!(
-            "Invalid '{field}' value '{value}': expected one of {}",
-            allowed.join(", ")
-        ))
-    }
+fn check_sync_peer(
+    field: &str,
+    value: &str,
+    allowed: &[skrills_sync::Platform],
+) -> Result<skrills_sync::Platform> {
+    allowed
+        .iter()
+        .copied()
+        .find(|p| p.as_str() == value)
+        .ok_or_else(|| {
+            let names: Vec<&str> = allowed.iter().map(|p| p.as_str()).collect();
+            invalid_params(format!(
+                "Invalid '{field}' value '{value}': expected one of {}",
+                names.join(", ")
+            ))
+        })
 }
 
 /// Whether autofix may rewrite skills from this source. Marketplace
@@ -1400,10 +1298,16 @@ pub(crate) fn unified_diff(
     let mut k = 0;
     while k < changes.len() {
         let start = changes[k].saturating_sub(context);
-        let mut end = (changes[k] + context + 1).min(ops.len());
+        let mut end = changes[k]
+            .saturating_add(context)
+            .saturating_add(1)
+            .min(ops.len());
         k += 1;
         while k < changes.len() && changes[k].saturating_sub(context) <= end {
-            end = (changes[k] + context + 1).min(ops.len());
+            end = changes[k]
+                .saturating_add(context)
+                .saturating_add(1)
+                .min(ops.len());
             k += 1;
         }
         let a_len = a_before[end] - a_before[start];

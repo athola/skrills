@@ -18,7 +18,7 @@ The installer:
 1. Downloads the correct binary for your system
 2. Installs it to `~/.skrills/bin` (override with `SKRILLS_BIN_DIR`)
 3. Runs `skrills setup --yes --client <client>` to register skrills as an MCP server, once for each client whose config directory (`~/.claude`, `~/.codex`, `~/.copilot`, `~/.cursor`) exists, or for Claude Code when none does
-4. With `SKRILLS_UNIVERSAL=1`, also syncs your Claude skills into `~/.agent/skills`
+4. With `SKRILLS_UNIVERSAL=1`, also syncs your Claude skills into `~/.agents/skills`
 
 ## Verify Installation
 
@@ -55,7 +55,7 @@ The installer accepts environment variables to customize behavior:
 | `SKRILLS_BIN_DIR` | Where to install the binary | `~/.skrills/bin` |
 | `SKRILLS_VERSION` | Install a specific version (tag without the leading `v`) | Latest |
 | `SKRILLS_NO_HOOK` | Set to `1` to skip `skrills setup` | Unset |
-| `SKRILLS_UNIVERSAL` | Set to `1` to also sync Claude skills into `~/.agent/skills` | Unset |
+| `SKRILLS_UNIVERSAL` | Set to `1` to also sync Claude skills into `~/.agents/skills` | Unset |
 | `SKRILLS_TARGET` | Target triple of the release asset | Detected from `uname` |
 | `SKRILLS_SKIP_CHECKSUM` | Set to `1` to install without verifying the release checksum | Unset |
 
@@ -88,7 +88,7 @@ The installer runs `skrills setup`, which registers Skrills as an MCP server so 
 
 - **Codex**: a `[mcp_servers.skrills]` table in `~/.codex/config.toml`. Setup does not write `~/.codex/mcp_servers.json`; `skrills doctor` checks `config.toml` and inspects a legacy `mcp_servers.json` only if one exists.
 - **Claude Code**: `claude mcp add --scope user`, which records the server in `~/.claude.json`. If the `claude` command is missing or fails, setup writes `~/.claude/.mcp.json` instead.
-- **Copilot**: `mcp_servers.json` in `~/.copilot`, or in the platform config directory (`~/.config/copilot` on Linux) when `~/.copilot` does not exist.
+- **Copilot**: `mcp_servers.json` in `COPILOT_HOME` when set, else in an existing `$XDG_CONFIG_HOME/copilot` (or `~/.config/copilot` on Linux), else in `~/.copilot`.
 - **Cursor**: `~/.cursor/mcp.json`.
 
 Set `SKRILLS_NO_HOOK=1` to skip this step.
@@ -97,7 +97,7 @@ Set `SKRILLS_NO_HOOK=1` to skip this step.
 Setup installs no hooks. `skrills setup --uninstall --client claude` removes the `~/.claude/hooks/prompt.on_user_prompt_submit` hook that older releases created.
 
 ### Skill Mirroring
-The installer does not copy skills between clients. Set `SKRILLS_UNIVERSAL=1` to have setup also sync your Claude skill directories into `~/.agent/skills`. Use `skrills sync-all` to sync skills, commands and settings between clients.
+The installer does not copy skills between clients. Set `SKRILLS_UNIVERSAL=1` to have setup also sync your Claude skill directories into `~/.agents/skills`. Use `skrills sync-all` to sync skills, commands and settings between clients.
 
 ## Troubleshooting
 

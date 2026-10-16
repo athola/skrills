@@ -20,7 +20,7 @@ skrills validate --format json --errors-only  # Machine-readable output
 | Option | Purpose |
 |--------|---------|
 | `--skill-dir <DIR>` | Check a specific directory (default: all discovered skills) |
-| `--target <TARGET>` | `claude`, `codex`, or `both` (default: `both`) |
+| `--target <TARGET>` | `claude`, `codex`, `copilot`, `all`, or `both` (Claude and Codex; default: `both`) |
 | `--autofix` | Add missing frontmatter automatically |
 | `--backup` | Create backups before autofix |
 | `--format <FORMAT>` | `text` or `json` (default: `text`) |
@@ -92,9 +92,12 @@ skrills sync-all --from claude --autofix --dry-run    # Check what autofix would
 
 | Option | Purpose |
 |--------|---------|
-| `--from` | Source side: `claude` or `codex` (default: `claude`) |
+| `--from` | Source CLI: `claude`, `codex`, `copilot`, or `cursor` (default: `claude`) |
+| `--to` | Target CLI, same values; omitted, syncs to every other CLI |
 | `--dry-run` | Preview changes without writing |
 | `--skip-existing-commands` | Keep existing commands on target side |
+| `--include-marketplace` | Include marketplace content from uninstalled plugins (`SKRILLS_INCLUDE_MARKETPLACE`) |
+| `--exclude-plugins <NAMES>` | Comma-separated plugin names whose skills and assets are not synced (`SKRILLS_EXCLUDE_PLUGINS`) |
 | `--validate` | Validate the source skills before any target is written |
 | `--autofix` | Add missing frontmatter to the source skills, then validate as `--validate` does |
 
@@ -131,7 +134,8 @@ skrills sync-preferences --from claude
 
 ### mirror
 
-Copy Claude assets to Codex defaults and refresh the agent list:
+Copy Claude assets to Codex defaults and refresh the agent list in
+`~/.codex/AGENTS.md`:
 
 ```bash
 skrills mirror                           # Full mirror
@@ -166,6 +170,17 @@ skrills serve --skill-dir ~/.custom/skills  # Custom skill directory
 | `--skill-dir <DIR>` | Additional skill directory to include |
 | `--cache-ttl-ms <N>` | Discovery cache TTL in milliseconds |
 | `--watch` | Enable live filesystem invalidation (stdio only; refused with `--http`, so restart an HTTP server to pick up skill changes) |
+| `--auth-token <TOKEN>` | Require `Authorization: Bearer <TOKEN>` on HTTP requests (`SKRILLS_AUTH_TOKEN`); unset, no auth |
+| `--tls-cert <PATH>` / `--tls-key <PATH>` | Serve HTTPS with this PEM certificate and key; each requires the other (`SKRILLS_TLS_CERT`, `SKRILLS_TLS_KEY`) |
+| `--cors-origins <ORIGINS>` | Comma-separated allowed CORS origins (`SKRILLS_CORS_ORIGINS`); unset, no CORS |
+| `--list-tools` | Print the available MCP tools and exit |
+| `--trace-wire` | Dump raw MCP initialize traffic as hex and UTF-8 for debugging (`SKRILLS_TRACE_WIRE`) |
+
+With `--auth-token`, the dashboard page and its static files load without
+the token, but every API call needs it. Open the dashboard as
+`http://127.0.0.1:3000/#token=<TOKEN>` (the fragment never leaves the
+browser), or enter the token when the page prompts after its first
+rejected request.
 
 The MCP transport validates the inbound `Host` header and accepts only
 `localhost`, `127.0.0.1` and `::1` unless told otherwise. That is what stops a
@@ -200,7 +215,7 @@ non-loopback address logs a warning at startup. The check applies only to a
 `project_dir` the client passes; when it passes none, the tools use the
 server's working directory.
 
-The MCP server exposes 36 core tools (49 with the default subagent and gateway features) for validation, analysis, sync, intelligence, and research directly to your AI assistant. The HTTP mode serves a browser dashboard with skills explorer, metrics, and activity feed.
+The MCP server exposes 36 core tools (48 with the default subagent and gateway features) for validation, analysis, sync, intelligence, and research directly to your AI assistant. The HTTP mode serves a browser dashboard with skills explorer, metrics, and activity feed.
 
 Skrills can generate a self-contained HTML portal (`skrills-portal.html`) via the `html-portal-generator` skill. It works offline without a running server and includes a skills browser, validator with autofix, token analyzer, cross-CLI converter, and full CLI/MCP reference. Open it directly in any browser or upload it into AI application portals. The file is git-ignored, so regenerate it as part of release prep.
 
@@ -208,7 +223,7 @@ Skrills can generate a self-contained HTML portal (`skrills-portal.html`) via th
 
 ### agent
 
-Launch a saved agent by name:
+Run a discovered agent by name with Codex:
 
 ```bash
 skrills agent codex-dev                   # Run the codex-dev agent
@@ -216,9 +231,26 @@ skrills agent my-agent --dry-run          # Preview without running
 skrills agent my-agent --skill-dir ~/.custom/skills  # Include custom skills
 ```
 
-**Execution mode configuration:**
+The agent runs as `codex exec --sandbox workspace-write "<prompt>"`: it can
+write only inside the current directory, and Codex refuses to start outside
+a git repository or trusted directory. Agent files can come from third-party
+plugin caches, so the sandbox stays on unless you pass
+`--dangerously-bypass-sandbox`, which runs Codex with
+`--dangerously-bypass-approvals-and-sandbox` (no sandbox, no approvals). Use
+it only for agent files you trust, in an environment that is sandboxed
+already.
 
-Subagent behavior comes from multiple sources (in priority order):
+| Option | Purpose |
+|--------|---------|
+| `--skill-dir <DIR>` | Additional agent directory (repeatable) |
+| `--dry-run` | Print the resolved command without running it |
+| `--dangerously-bypass-sandbox` | Run Codex with no sandbox and no approvals |
+| `--timeout <SECONDS>` | Kill the agent after this many seconds (default: 1800; `0` = no limit) |
+
+**Execution mode configuration (`run-subagent` MCP tool):**
+
+The settings below apply to subagents run through the MCP server, not to
+`skrills agent`. Subagent behavior comes from multiple sources (in priority order):
 1. `SKRILLS_SUBAGENTS_EXECUTION_MODE` environment variable
 2. `execution_mode` in `~/.claude/subagents.toml` or `~/.codex/subagents.toml`
 3. Default: `cli`
@@ -228,7 +260,34 @@ When `execution_mode=api` and no backend is specified, skrills checks:
 2. `SKRILLS_SUBAGENTS_DEFAULT_BACKEND` environment variable
 3. Default: `codex`
 
-In `cli` mode, skrills uses `cli_binary` (or `SKRILLS_CLI_BINARY`), auto-detecting the current client via CLI env or server path (fallback: `claude`).
+In `cli` mode, when the run names no backend, skrills picks the binary in this order:
+1. `cli_binary` (or `SKRILLS_CLI_BINARY`) when it names a binary rather than `auto`
+2. The configured default backend (`SKRILLS_SUBAGENTS_DEFAULT_BACKEND` or `default_backend`): `codex` or `claude`
+3. The current client, detected from `SKRILLS_CLIENT` or the CLI environment, then the server binary path
+4. Default: `claude`
+
+### multi-cli-agent
+
+Launch an agent through Claude Code or Codex, falling back to the other
+when the first choice is not installed:
+
+```bash
+skrills multi-cli-agent my-agent                    # Auto-detect the backend
+skrills multi-cli-agent my-agent --backend codex    # Prefer Codex
+skrills multi-cli-agent my-agent --dry-run          # Print the resolved command only
+```
+
+| Option | Purpose |
+|--------|---------|
+| `--backend <BACKEND>` | `auto`, `claude`, or `codex` (default: `auto`) |
+| `--skill-dir <DIR>` | Additional skill directory (repeatable) |
+| `--dry-run` | Print the resolved command without running it |
+| `--dangerously-bypass-sandbox` | Codex backend only: run with no sandbox and no approvals (refused when Claude is selected) |
+| `--timeout <SECONDS>` | Kill the agent after this many seconds (default: 1800; `0` = no limit) |
+
+Codex runs with the same sandboxed command as `skrills agent`; Claude runs
+as `claude --print "<prompt>"`. On timeout the command kills the CLI it started
+(not processes that CLI spawned) and exits with an error naming the limit.
 
 ### sync-agents
 
@@ -383,6 +442,157 @@ skrills analyze-project-context --include-git true --commit-limit 100
 
 Returns languages, frameworks, and keywords detected in your project.
 
+### search-skills
+
+Fuzzy-search installed skills by name, and optionally by description:
+
+```bash
+skrills search-skills commit
+skrills search-skills review --include-description --threshold 0.2 --limit 5
+```
+
+| Option | Purpose |
+|--------|---------|
+| `-t`, `--threshold <N>` | Similarity threshold from 0.0 to 1.0; lower returns more (default: `0.3`) |
+| `-l`, `--limit <N>` | Maximum results (default: `10`) |
+| `--include-description` | Also match descriptions |
+| `--skill-dir <DIR>` | Search this directory instead of all discovered skills |
+| `--format <FORMAT>` | `text` or `json` |
+
+## Managing Skill Lifecycle
+
+These commands share `--format text|json` and, where they read skills,
+`--skill-dir <DIR>` to limit them to one directory.
+
+### skill-diff
+
+Compare one skill across Claude, Codex, Copilot, and Cursor:
+
+```bash
+skrills skill-diff commit
+skrills skill-diff commit --format json -C 5
+```
+
+`-C`, `--context <N>` sets the context lines around each difference (default: `3`).
+
+### skill-catalog
+
+Browse every available skill:
+
+```bash
+skrills skill-catalog --search git --source codex --limit 20
+```
+
+Filters: `--search <TEXT>`, `--source claude|codex|copilot|cursor`,
+`--category <TAG>`, and `--limit <N>` (default: `50`).
+
+### skill-import
+
+Import a skill from a URL, git repository, or local path:
+
+```bash
+skrills skill-import https://github.com/org/skills.git --target codex --dry-run
+skrills skill-import ./my-skill --force
+```
+
+`--target` is `claude`, `codex`, `copilot`, or `cursor` (default: `claude`).
+`--force` overwrites an existing skill; `--dry-run` writes nothing.
+
+### sync-pull
+
+Pull skill updates from a remote source:
+
+```bash
+skrills sync-pull --source https://github.com/org/skills.git --skill commit --dry-run
+```
+
+`--source` is a git repository, HTTP endpoint, or registry; `--skill`
+limits the pull to one skill; `--target` takes the same values as
+`skill-import` (default: `claude`).
+
+### skill-deprecate
+
+Mark a skill as deprecated:
+
+```bash
+skrills skill-deprecate old-skill --message "Merged into new-skill" --replacement new-skill
+```
+
+### skill-rollback
+
+Revert a skill to an earlier version:
+
+```bash
+skrills skill-rollback commit                  # List available versions
+skrills skill-rollback commit --version abc123 # Roll back to that version hash
+```
+
+### skill-score
+
+Score skills on validation, completeness, and metrics:
+
+```bash
+skrills skill-score                            # Score every discovered skill
+skrills skill-score commit
+skrills skill-score --below-threshold 60       # Only skills scoring under 60
+```
+
+### skill-profile
+
+Show execution statistics for one skill, or overall when no name is given:
+
+```bash
+skrills skill-profile commit --period 7
+```
+
+`--period <DAYS>` sets the window (default: `30`).
+
+### skill-usage-report
+
+Generate a usage report:
+
+```bash
+skrills skill-usage-report --period 7 --format json --output usage.json
+```
+
+`--format` is `text` or `json`; `--output` writes to a file instead of
+stdout; `--period <DAYS>` defaults to `30`.
+
+### pre-commit-validate
+
+Validate skill files from a git pre-commit hook:
+
+```bash
+skrills pre-commit-validate --staged
+skrills pre-commit-validate --target codex --skill-dir skills/
+```
+
+`--staged` checks only staged files. `--target` is `claude`, `codex`,
+`copilot`, `all`, or `both` (default: `all`).
+
+## Usage Analytics
+
+### export-analytics
+
+Write usage analytics to a file:
+
+```bash
+skrills export-analytics                         # ~/.skrills/analytics_cache.json
+skrills export-analytics --output backup.json --force-rebuild
+```
+
+`--force-rebuild` rebuilds from session data even when a cache exists.
+
+### import-analytics
+
+Load analytics from an earlier export:
+
+```bash
+skrills import-analytics backup.json --overwrite
+```
+
+`--overwrite` replaces an existing cache file.
+
 ## Setup and Diagnostics
 
 ### doctor
@@ -402,22 +612,24 @@ Configure skrills for a specific client:
 ```bash
 skrills setup --client codex              # Configure for Codex
 skrills setup --client claude             # Configure for Claude
-skrills setup --client both               # Configure for both
+skrills setup --client both               # Configure for Claude and Codex
+skrills setup --client all                # Configure every supported client
 skrills setup --reinstall                 # Reconfigure from scratch
 skrills setup --uninstall                 # Remove configuration
-skrills setup --universal                 # Also sync to ~/.agent/skills
+skrills setup --universal                 # Also sync to ~/.agents/skills
 ```
 
 **Options:**
 
 | Option | Purpose |
 |--------|---------|
-| `--client` | `claude`, `codex`, or `both` |
+| `--client` | `claude`, `codex`, `copilot`, `cursor`, `both` (Claude and Codex), or `all`. Prompts when omitted |
 | `--bin-dir` | Override install location |
 | `--reinstall` / `--uninstall` / `--add` | Control lifecycle |
 | `--yes` | Skip confirmation prompts |
-| `--universal` | Also mirror skills to `~/.agent/skills` |
+| `--universal` | Also sync skills to `~/.agents/skills` |
 | `--mirror-source` | Override source directory for mirroring (default: `~/.claude`) |
+| `--include-marketplace` | With `--universal`, also copy skills from `~/.claude/plugins/marketplaces` (uninstalled plugins). Off by default; `SKRILLS_INCLUDE_MARKETPLACE` sets it too |
 
 ### tui
 
@@ -430,6 +642,30 @@ skrills tui --skill-dir ~/.custom/skills
 
 Provides a visual interface for sync management.
 
+### dashboard
+
+Real-time terminal dashboard for skill monitoring. Requires a TTY:
+
+```bash
+skrills dashboard --skill-dir ~/.custom/skills
+```
+
+### cold-window
+
+Run the cold-window real-time analysis surface, as a TUI, a browser
+dashboard, or both:
+
+```bash
+skrills cold-window --tui
+skrills cold-window --browser --port 8888
+skrills cold-window --browser --demo        # Built-in demo data
+```
+
+Options include `--alert-budget <N>` (default `100000`, minimum 3),
+`--research-rate <N>`, `--tick-rate-ms <MILLIS>`, `--no-adaptive`,
+`--no-bell`, `--skill-dir <DIR>`, and `--plugins-dir <DIR>`. See
+[Cold-Window Real-Time Analysis](cold-window.md) for the full reference.
+
 ### cert
 
 Manage TLS certificates for HTTPS transport:
@@ -437,7 +673,7 @@ Manage TLS certificates for HTTPS transport:
 ```bash
 skrills cert status                       # Show certificate validity and expiry
 skrills cert renew                        # Regenerate self-signed certificate
-skrills cert install --cert my.pem --key my-key.pem  # Install custom certificate
+skrills cert install my.pem --key my-key.pem        # Install custom certificate
 ```
 
 **Subcommands:**
@@ -574,16 +810,12 @@ skrills sync-all --from claude
 
 ### Debug skill loading
 
-```bash
-# Check status
-skrills skill-loading-status
+These are MCP tools, not CLI subcommands. Ask the assistant to call them
+from a Claude Code or Codex session connected to `skrills serve`:
 
-# Enable tracing
-skrills enable-skill-trace
-
-# Restart session, then validate
-skrills skill-loading-selftest
-```
+1. Call `skill-loading-status` to check which roots were scanned.
+2. Call `enable-skill-trace` to install the trace and probe skills.
+3. Restart the session, then call `skill-loading-selftest`.
 
 ### CI-friendly validation
 

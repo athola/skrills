@@ -9,7 +9,6 @@ use crate::Result;
 use anyhow::Context;
 use std::fs;
 use std::path::Path;
-use std::time::SystemTime;
 use tracing::warn;
 use walkdir::WalkDir;
 
@@ -40,7 +39,9 @@ pub fn read_agents(root: &Path) -> Result<Vec<Command>> {
         };
         let path = entry.path();
 
-        if !path.is_file() {
+        // `file_type` does not follow links: a linked file could be any file
+        // on disk, and it would be copied into every other tool.
+        if !entry.file_type().is_file() {
             continue;
         }
 
@@ -66,9 +67,9 @@ pub fn read_agents(root: &Path) -> Result<Vec<Command>> {
                 .to_string()
         };
 
-        let content = fs::read(path)?;
-        let metadata = fs::metadata(path)?;
-        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let Some((content, modified)) = crate::adapters::utils::read_item_file(path) else {
+            continue;
+        };
         let hash = hash_content(&content);
 
         agents.push(Command {
@@ -96,7 +97,9 @@ pub fn write_agents(root: &Path, agents: &[Command]) -> Result<WriteReport> {
 
     let mut writer = crate::adapters::utils::BatchWriter::new(&dir);
     for agent in agents {
-        let safe_name = sanitize_name_segments(&agent.name);
+        // Flat, like the reader: a nested `team/reviewer` becomes
+        // `team-reviewer.agent.md` rather than a file it never reads back.
+        let safe_name = sanitize_name_segments(&agent.name).replace('/', "-");
 
         // Transform the content: Claude format -> Copilot format
         let transformed_content = transform_agent_for_copilot(&agent.content);
@@ -123,7 +126,8 @@ pub fn read_instructions(root: &Path) -> Result<Vec<Command>> {
     let mut instructions = Vec::new();
     for entry in WalkDir::new(&dir)
         .min_depth(1)
-        .max_depth(1) // Flat directory structure
+        // Copilot CLI loads `instructions/**/*.instructions.md`.
+        .max_depth(8)
         .follow_links(false)
     {
         let entry = match entry {
@@ -139,7 +143,9 @@ pub fn read_instructions(root: &Path) -> Result<Vec<Command>> {
         };
         let path = entry.path();
 
-        if !path.is_file() {
+        // `file_type` does not follow links: a linked file could be any file
+        // on disk, and it would be copied into every other tool.
+        if !entry.file_type().is_file() {
             continue;
         }
 
@@ -153,17 +159,23 @@ pub fn read_instructions(root: &Path) -> Result<Vec<Command>> {
             continue;
         }
 
-        // Extract name: strip .instructions.md suffix
-        let Some(name) = file_name
-            .strip_suffix(".instructions.md")
-            .map(str::to_owned)
+        // Name: the path below the directory without .instructions.md, so a
+        // nested file reads back under the name it was written with.
+        let Some(name) = path
+            .strip_prefix(&dir)
+            .ok()
+            .and_then(|rel| rel.to_str())
+            .and_then(|rel| rel.strip_suffix(".instructions.md"))
+            .map(|rel| rel.replace(std::path::MAIN_SEPARATOR, "/"))
         else {
             continue;
         };
 
-        let content = fs::read(path)?;
-        let metadata = fs::metadata(path)?;
-        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let Some((content, modified)) = crate::adapters::utils::read_item_file(path) else {
+            continue;
+        };
+        // Copilot scopes with `applyTo`; the other tools call it `globs`.
+        let content = rename_frontmatter_key(content, "applyTo", "globs");
         let hash = hash_content(&content);
 
         instructions.push(Command {
@@ -181,11 +193,9 @@ pub fn read_instructions(root: &Path) -> Result<Vec<Command>> {
     Ok(instructions)
 }
 
-/// Writes instructions to the instructions directory.
+/// Writes instructions to `~/.copilot/instructions/`, which Copilot CLI loads
+/// as `**/*.instructions.md`, scoped by an `applyTo` glob.
 pub fn write_instructions(root: &Path, instructions: &[Command]) -> Result<WriteReport> {
-    // Note: ~/.copilot/instructions/ is a staging location, not a standard Copilot path.
-    // Copilot uses repository-level instructions at .github/instructions/*.instructions.md
-    // or IDE-specific global paths (e.g., ~/.config/github-copilot/intellij/).
     let dir = instructions_dir(root);
     fs::create_dir_all(&dir)
         .with_context(|| format!("Failed to create instructions directory: {}", dir.display()))?;
@@ -196,26 +206,46 @@ pub fn write_instructions(root: &Path, instructions: &[Command]) -> Result<Write
     for instruction in instructions {
         let safe_name = sanitize_name_segments(&instruction.name);
 
+        let content = rename_frontmatter_key(instruction.content.clone(), "globs", "applyTo");
         writer.write_single(
             &instruction.name,
             &safe_name,
             ".instructions.md",
-            &instruction.content,
+            &content,
             &mut report,
         )?;
     }
 
-    // Add warning about the staging location
-    if report.written > 0 {
-        report.warnings.push(format!(
-            "Instructions written to {} (staging). \
-             Copy to .github/instructions/ in your repository for Copilot to use them, \
-             or to ~/.config/github-copilot/intellij/global-copilot-instructions.md for JetBrains IDEs.",
-            dir.display()
-        ));
-    }
-
     Ok(report)
+}
+
+/// `content` with the top-level frontmatter key `from` renamed to `to`. Left
+/// as it is when it is not UTF-8, has no frontmatter, or already has `to`.
+fn rename_frontmatter_key(content: Vec<u8>, from: &str, to: &str) -> Vec<u8> {
+    let Ok(text) = std::str::from_utf8(&content) else {
+        return content;
+    };
+    let Some(rest) = text.strip_prefix("---\n") else {
+        return content;
+    };
+    let Some(end) = rest.find("\n---") else {
+        return content;
+    };
+    let frontmatter = &rest[..end];
+    let (from_key, to_key) = (format!("{from}:"), format!("{to}:"));
+    if frontmatter.lines().any(|l| l.starts_with(&to_key))
+        || !frontmatter.lines().any(|l| l.starts_with(&from_key))
+    {
+        return content;
+    }
+    let renamed: Vec<String> = frontmatter
+        .lines()
+        .map(|line| match line.strip_prefix(&from_key) {
+            Some(value) => format!("{to_key}{value}"),
+            None => line.to_string(),
+        })
+        .collect();
+    format!("---\n{}{}", renamed.join("\n"), &rest[end..]).into_bytes()
 }
 
 /// Reads hooks - Copilot does not support hooks.

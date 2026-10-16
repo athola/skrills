@@ -161,11 +161,12 @@ impl<'de> Deserialize<'de> for HintCategory {
 
 // ---------- ResearchChannel ----------
 
-const RESEARCH_CHANNEL_VARIANTS: &[&str] = &["git-hub", "hacker-news", "lobsters", "paper", "triz"];
+const RESEARCH_CHANNEL_VARIANTS: &[&str] = &["github", "hacker-news", "lobsters", "paper", "triz"];
 
 fn research_channel_from_str(s: &str) -> Option<ResearchChannel> {
     match s {
-        "git-hub" => Some(ResearchChannel::GitHub),
+        // `git-hub` is what earlier versions wrote; still read it.
+        "github" | "git-hub" => Some(ResearchChannel::GitHub),
         "hacker-news" => Some(ResearchChannel::HackerNews),
         "lobsters" => Some(ResearchChannel::Lobsters),
         "paper" => Some(ResearchChannel::Paper),

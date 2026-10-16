@@ -7,19 +7,34 @@ use std::time::Duration;
 const DEFAULT_CACHE_TTL_MS: u64 = 43_200_000; // 12 hours
 
 /// Returns extra skill directories specified via `SKRILLS_SKILL_DIR` environment variable.
+///
+/// The value is split with the platform's path-list separator (`:`, or `;`
+/// on Windows). Empty entries are dropped: an empty value or a stray
+/// separator would otherwise add the working directory as a skill root.
 pub fn extra_dirs_from_env() -> Vec<PathBuf> {
-    std::env::var("SKRILLS_SKILL_DIR")
-        .map(|s| s.split(':').map(PathBuf::from).collect::<Vec<PathBuf>>())
+    std::env::var_os("SKRILLS_SKILL_DIR")
+        .map(|s| {
+            std::env::split_paths(&s)
+                .filter(|p| !p.as_os_str().is_empty())
+                .collect::<Vec<PathBuf>>()
+        })
         .unwrap_or_default()
 }
 
 /// Returns the user's home directory.
+///
+/// An empty or relative `HOME` counts as unset: used as is, it put every
+/// home path (skills, caches, mirror root) under the working directory.
 pub fn home_dir() -> Result<PathBuf> {
     #[cfg(unix)]
-    if let Ok(home) = std::env::var("HOME") {
-        return Ok(PathBuf::from(home));
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        if home.is_absolute() {
+            return Ok(home);
+        }
     }
-    dirs::home_dir().ok_or_else(|| anyhow::anyhow!("home directory not found"))
+    dirs::home_dir().filter(|h| h.is_absolute()).ok_or_else(|| {
+        anyhow::anyhow!("home directory not found (HOME is unset, empty or relative)")
+    })
 }
 
 /// Checks if `SKRILLS_INCLUDE_CLAUDE` environment variable is set to true.
@@ -95,24 +110,58 @@ pub fn load_manifest_settings() -> Result<ManifestSettings> {
     if !path.exists() {
         return Ok(ManifestSettings::default());
     }
-    let text = fs::read_to_string(path)?;
-    if let Ok(settings) = serde_json::from_str::<ManifestSettings>(&text) {
-        return Ok(settings);
+    let text = fs::read_to_string(&path)?;
+    match parse_manifest(&text) {
+        Ok(settings) => Ok(settings),
+        Err(e) => {
+            // The defaults still apply, as before, but no longer silently:
+            // `{"cache_ttl_ms":"60000"}` used to vanish with no word.
+            eprintln!(
+                "Warning: ignoring {}: {e}; using default manifest settings",
+                path.display()
+            );
+            Ok(ManifestSettings::default())
+        }
     }
-    if let Ok(priority) = serde_json::from_str::<Vec<String>>(&text) {
+}
+
+/// Parses a manifest: a settings object, or a bare priority list.
+fn parse_manifest(text: &str) -> std::result::Result<ManifestSettings, String> {
+    let settings_err = match serde_json::from_str::<ManifestSettings>(text) {
+        Ok(settings) => return Ok(settings),
+        Err(e) => e,
+    };
+    if let Ok(priority) = serde_json::from_str::<Vec<String>>(text) {
         return Ok(ManifestSettings {
             priority: Some(priority),
             ..Default::default()
         });
     }
-    Ok(ManifestSettings::default())
+    Err(settings_err.to_string())
+}
+
+/// Parses a `SKRILLS_CACHE_TTL_MS` value: whole milliseconds. `0` is
+/// accepted and means every lookup rediscovers skills (no caching).
+fn parse_ttl_ms(raw: &str) -> std::result::Result<u64, String> {
+    raw.trim()
+        .parse::<u64>()
+        .map_err(|e| format!("SKRILLS_CACHE_TTL_MS={raw:?} is not whole milliseconds: {e}"))
 }
 
 /// Computes the discovery cache TTL using env var or manifest settings.
+///
+/// An unparsable `SKRILLS_CACHE_TTL_MS` is reported on stderr and ignored,
+/// so the manifest or default applies. A TTL of 0 disables caching.
 pub fn cache_ttl(settings: &dyn Fn() -> Result<ManifestSettings>) -> Duration {
     let env_ttl = std::env::var("SKRILLS_CACHE_TTL_MS")
         .ok()
-        .and_then(|v| v.parse::<u64>().ok());
+        .and_then(|v| match parse_ttl_ms(&v) {
+            Ok(ms) => Some(ms),
+            Err(e) => {
+                eprintln!("Warning: {e}; ignoring it");
+                None
+            }
+        });
     let manifest_ttl = settings().ok().and_then(|s| s.cache_ttl_ms);
     Duration::from_millis(env_ttl.or(manifest_ttl).unwrap_or(DEFAULT_CACHE_TTL_MS))
 }
@@ -122,6 +171,66 @@ mod tests {
     use super::*;
     use skrills_test_utils::{env_guard, set_env_var};
     use tempfile::tempdir;
+
+    #[test]
+    fn manifest_with_a_wrongly_typed_field_is_an_error_not_defaults() {
+        let err = parse_manifest(r#"{"cache_ttl_ms":"60000"}"#).unwrap_err();
+        assert!(
+            err.contains("cache_ttl_ms") || err.contains("invalid type"),
+            "{err}"
+        );
+        assert_eq!(
+            parse_manifest(r#"["codex","claude"]"#).unwrap().priority,
+            Some(vec!["codex".to_string(), "claude".to_string()])
+        );
+        assert_eq!(
+            parse_manifest(r#"{"cache_ttl_ms":60000}"#)
+                .unwrap()
+                .cache_ttl_ms,
+            Some(60000)
+        );
+    }
+
+    #[test]
+    fn ttl_env_value_must_be_whole_milliseconds() {
+        assert!(parse_ttl_ms("5m")
+            .unwrap_err()
+            .contains("SKRILLS_CACHE_TTL_MS"));
+        assert_eq!(parse_ttl_ms("0"), Ok(0));
+        assert_eq!(parse_ttl_ms("1500"), Ok(1500));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn empty_or_relative_home_is_treated_as_unset() {
+        let _guard = env_guard();
+        let _empty = set_env_var("HOME", Some(""));
+        assert!(home_dir().map_or(true, |h| h.is_absolute()));
+        let _relative = set_env_var("HOME", Some("relative/home"));
+        assert!(home_dir().map_or(true, |h| h.is_absolute()));
+        let _absolute = set_env_var("HOME", Some("/abs/home"));
+        assert_eq!(home_dir().unwrap(), PathBuf::from("/abs/home"));
+    }
+
+    #[test]
+    fn extra_dirs_from_env_drops_empty_entries() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let first = temp.path().join("skills_a");
+        let second = temp.path().join("skills_b");
+
+        let _empty = set_env_var("SKRILLS_SKILL_DIR", Some(""));
+        assert!(extra_dirs_from_env().is_empty(), "empty value adds cwd");
+
+        let _colon = set_env_var("SKRILLS_SKILL_DIR", Some(":"));
+        assert!(extra_dirs_from_env().is_empty(), "lone separator adds cwd");
+
+        let _padded = set_env_var(
+            "SKRILLS_SKILL_DIR",
+            Some(&format!(":{}::{}:", first.display(), second.display())),
+        );
+        assert_eq!(extra_dirs_from_env(), vec![first, second]);
+    }
 
     #[test]
     fn extra_dirs_from_env_splits_colon_paths() {
@@ -208,6 +317,36 @@ mod tests {
         });
 
         assert_eq!(ttl, Duration::from_millis(2048));
+    }
+
+    #[test]
+    fn cache_ttl_ignores_an_unparsable_env_value_and_uses_the_manifest() {
+        let _guard = env_guard();
+        let _prev = set_env_var("SKRILLS_CACHE_TTL_MS", Some("5m"));
+
+        let ttl = cache_ttl(&|| {
+            Ok(ManifestSettings {
+                cache_ttl_ms: Some(2048),
+                ..Default::default()
+            })
+        });
+
+        assert_eq!(ttl, Duration::from_millis(2048));
+    }
+
+    #[test]
+    fn malformed_manifest_file_loads_default_settings_instead_of_failing() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let manifest_path = temp.path().join("manifest.json");
+        fs::write(&manifest_path, r#"{"cache_ttl_ms":"60000"}"#).unwrap();
+        let _prev_manifest = set_env_var("SKRILLS_MANIFEST", Some(manifest_path.to_str().unwrap()));
+
+        let settings = load_manifest_settings().expect("malformed manifest is not an error");
+
+        assert_eq!(settings.cache_ttl_ms, None);
+        assert_eq!(settings.priority, None);
+        assert_eq!(settings.expose_agents, None);
     }
 
     #[test]

@@ -1,8 +1,11 @@
-//! Setup and installation logic.
+//! Setup and installation logic for `skrills setup`. Its own crate because
+//! both the CLI and the MCP server (which reports whether setup ran) use it.
 //!
 //! Handles first-run detection, interactive setup, reinstallation, and uninstallation
 //! for Claude Code, Codex, and GitHub Copilot clients, and supports a universal
-//! `~/.agent/skills` directory.
+//! `~/.agents/skills` directory.
+
+#![deny(unsafe_code)]
 
 use anyhow::{anyhow, Context, Result};
 use inquire::{Confirm, Select, Text};
@@ -23,24 +26,16 @@ pub enum Client {
 impl Client {
     /// Returns the default base directory for this client.
     ///
-    /// For Copilot, follows XDG Base Directory Specification:
-    /// 1. If `~/.copilot` exists → use it (legacy compatibility)
-    /// 2. Otherwise → `$XDG_CONFIG_HOME/copilot` or `~/.config/copilot`
+    /// For Copilot, the directory the sync adapter resolves, so setup and
+    /// sync write to the same place Copilot CLI reads.
     pub fn base_dir(&self) -> Result<PathBuf> {
         let home = dirs::home_dir().ok_or_else(|| anyhow!("Cannot determine home directory"))?;
         Ok(match self {
             Client::Claude => home.join(".claude"),
             Client::Codex => home.join(".codex"),
             Client::Copilot => {
-                // XDG-compliant path resolution for Copilot
-                let legacy_path = home.join(".copilot");
-                if legacy_path.exists() {
-                    legacy_path
-                } else if let Some(config_dir) = dirs::config_dir() {
-                    config_dir.join("copilot")
-                } else {
-                    legacy_path // Fallback to legacy if XDG unavailable
-                }
+                use skrills_sync::adapters::traits::AgentAdapter;
+                skrills_sync::CopilotAdapter::new()?.config_root()
             }
             Client::Cursor => home.join(".cursor"),
         })
@@ -87,6 +82,10 @@ pub struct SetupConfig {
     pub yes: bool,
     pub universal: bool,
     pub mirror_source: Option<PathBuf>,
+    /// Also copy skills from `~/.claude/plugins/marketplaces` in the
+    /// universal sync. Off by default: those belong to plugins that are not
+    /// installed.
+    pub include_marketplace: bool,
 }
 
 /// Checks if skrills is already set up for a given client.
@@ -190,6 +189,7 @@ pub fn interactive_setup(
     yes: bool,
     universal: bool,
     mirror_source: Option<PathBuf>,
+    include_marketplace: bool,
 ) -> Result<SetupConfig> {
     let clients = if let Some(ref client_str) = client_arg {
         parse_clients(client_str)?
@@ -211,7 +211,7 @@ pub fn interactive_setup(
 
     // Prompt for universal sync if not specified
     let universal = if !yes && !universal {
-        Confirm::new("Sync skills to universal ~/.agent/skills directory?")
+        Confirm::new("Sync skills to universal ~/.agents/skills directory?")
             .with_default(false)
             .prompt()?
     } else {
@@ -227,6 +227,7 @@ pub fn interactive_setup(
         yes,
         universal,
         mirror_source,
+        include_marketplace,
     })
 }
 
@@ -900,14 +901,14 @@ fn copy_to_cargo_bin(source_bin: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Syncs skills to universal ~/.agent/skills directory.
+/// Syncs skills to the universal `~/.agents/skills` directory.
 ///
-/// Runs the same in-process skill mirror as `skrills sync`, so only
-/// `SKILL.md` trees (minus hidden files and symlinks) are copied, never the
-/// rest of the mirror source such as credentials or session transcripts.
+/// Runs the same skill sync as `skrills sync`, so only skills are copied,
+/// never the rest of the mirror source such as credentials or session
+/// transcripts.
 fn sync_universal(config: &SetupConfig) -> Result<()> {
     let home = dirs::home_dir().ok_or_else(|| anyhow!("Cannot determine home directory"))?;
-    let agent_skills = home.join(".agent/skills");
+    let agent_skills = home.join(".agents/skills");
 
     // Determine mirror source (default: ~/.claude)
     let mirror_source = config
@@ -930,11 +931,19 @@ fn sync_universal(config: &SetupConfig) -> Result<()> {
     );
     println!("Source: {}", mirror_source.display());
 
-    fs::create_dir_all(&agent_skills)?;
-    let report = crate::sync::sync_skills_only_from_claude(&mirror_source, &agent_skills, false)?;
+    let report = skrills_sync::sync_claude_skills_to_codex(
+        &mirror_source,
+        &home,
+        config.include_marketplace,
+        false,
+    )?;
+    for warning in &report.skills.warnings {
+        println!("  Warning: {warning}");
+    }
     println!(
         "  Sync complete: {} copied, {} unchanged",
-        report.copied, report.skipped
+        report.skills.written,
+        report.skills.skipped.len()
     );
 
     Ok(())
@@ -996,7 +1005,7 @@ fn run_uninstall(config: &SetupConfig) -> Result<()> {
     println!("Note: The skrills binary was not removed. To remove it:");
     println!("  rm $(which skrills)");
     println!("\nTo also remove universal skills:");
-    println!("  rm -rf ~/.agent/skills");
+    println!("  rm -rf ~/.agents/skills");
 
     Ok(())
 }
@@ -1078,7 +1087,7 @@ pub(crate) fn remove_marked_section(
 
 /// Uninstalls Codex configuration.
 fn uninstall_codex() -> Result<()> {
-    use crate::discovery::{
+    use skrills_sync::{
         AGENTS_AGENT_SECTION_END, AGENTS_AGENT_SECTION_START, AGENTS_SECTION_END,
         AGENTS_SECTION_START,
     };
@@ -1190,7 +1199,7 @@ fn print_next_steps(config: &SetupConfig) -> Result<()> {
 
     if config.universal {
         println!("\n  Universal Skills:");
-        println!("    - Skills synced to ~/.agent/skills");
+        println!("    - Skills synced to ~/.agents/skills");
         println!("    - Run 'skrills sync' to update mirrored skills");
     }
 

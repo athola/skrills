@@ -47,6 +47,20 @@ mod tests {
     use super::replace_home;
     use std::path::Path;
 
+    /// The page said "Auto-refreshes every 30s" but only the count changed:
+    /// the refresh must reload the skill list it shows.
+    #[test]
+    fn dashboard_refresh_reloads_the_shown_skills() {
+        let script = crate::ui::DASHBOARD_JS;
+        let refresh = &script[script.find("async function refresh()").unwrap()..];
+        let refresh = &refresh[..refresh.find("async function loadMoreSkills").unwrap()];
+        assert!(
+            refresh.contains("Math.max(PAGE_SIZE, skills.length)"),
+            "{refresh}"
+        );
+        assert!(!refresh.contains("if (!initialized)"), "{refresh}");
+    }
+
     #[test]
     fn home_prefix_matches_whole_components() {
         let home = Path::new("/home/al");

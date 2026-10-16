@@ -16,7 +16,7 @@ use std::fs;
 
 use walkdir::WalkDir;
 
-use super::plugin_cache::latest_plugin_versions;
+use super::plugin_cache::latest_plugin_versions_listing;
 use super::ClaudeAdapter;
 use crate::adapters::utils::is_hidden_path;
 
@@ -29,6 +29,22 @@ use crate::adapters::utils::is_hidden_path;
 pub(super) fn read_plugin_assets_impl(
     adapter: &ClaudeAdapter,
     full_mirror: bool,
+) -> Result<Vec<PluginAsset>> {
+    read_plugin_assets_capped(adapter, full_mirror, MAX_PLUGIN_ASSET_TOTAL_BYTES)
+}
+
+/// Most bytes of plugin assets one read holds in memory. A full mirror loads
+/// every cached plugin (bundled binaries, wheels) at once, in a server that
+/// runs for a long time.
+const MAX_PLUGIN_ASSET_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
+
+/// [`read_plugin_assets_impl`] with the total budget as a parameter. Past
+/// `max_total_bytes` the read stops and, in `full_mirror` mode, the batch
+/// carries no manifest, so the mirror removes nothing it did not receive.
+pub(super) fn read_plugin_assets_capped(
+    adapter: &ClaudeAdapter,
+    full_mirror: bool,
+    max_total_bytes: u64,
 ) -> Result<Vec<PluginAsset>> {
     let cache_dir = adapter.config_root_ref().join("plugins/cache");
     if !cache_dir.exists() {
@@ -59,9 +75,13 @@ pub(super) fn read_plugin_assets_impl(
     };
 
     let mut assets = Vec::new();
+    let manifest_rel_path = std::path::Path::new(".claude-plugin").join("plugin.json");
 
     // One version per plugin, picked by the same rule as every other reader.
-    for version_dir in latest_plugin_versions(&cache_dir) {
+    let (versions, listing_complete) = latest_plugin_versions_listing(&cache_dir);
+    let mut total_bytes: u64 = 0;
+    let mut over_budget = false;
+    'plugins: for version_dir in versions {
         let version_path = version_dir.path;
         let crate::common::PluginOrigin {
             plugin_name,
@@ -69,6 +89,9 @@ pub(super) fn read_plugin_assets_impl(
             version,
         } = version_dir.origin;
         let assets_before = assets.len();
+        // Set when a file of this plugin could not be read, so the batch no
+        // longer describes the whole plugin.
+        let mut incomplete = false;
 
         // Walk the version directory collecting asset files
         for entry in WalkDir::new(&version_path)
@@ -84,6 +107,7 @@ pub(super) fn read_plugin_assets_impl(
                         error = %e,
                         "Failed to read directory entry while scanning plugin assets"
                     );
+                    incomplete = true;
                     continue;
                 }
             };
@@ -155,8 +179,17 @@ pub(super) fn read_plugin_assets_impl(
                 continue;
             }
 
-            let content = match fs::read(path) {
-                Ok(c) => c,
+            // Bounded: a file that grew since the size check is not read whole.
+            let content = match read_bounded(path, crate::adapters::utils::MAX_MODULE_FILE_BYTES) {
+                Ok(Some(c)) => c,
+                Ok(None) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        plugin = %plugin_name,
+                        "Skipping plugin asset over the size limit"
+                    );
+                    continue;
+                }
                 Err(e) => {
                     tracing::warn!(
                         path = %path.display(),
@@ -164,9 +197,20 @@ pub(super) fn read_plugin_assets_impl(
                         error = %e,
                         "Failed to read plugin asset file, skipping"
                     );
+                    incomplete = true;
                     continue;
                 }
             };
+
+            total_bytes += content.len() as u64;
+            if total_bytes > max_total_bytes {
+                tracing::warn!(
+                    limit = max_total_bytes,
+                    "Plugin assets exceed the total size budget; the rest are not read this run"
+                );
+                over_budget = true;
+                break 'plugins;
+            }
 
             let executable = {
                 #[cfg(unix)]
@@ -192,13 +236,26 @@ pub(super) fn read_plugin_assets_impl(
             ));
         }
 
-        if full_mirror {
+        if full_mirror && incomplete {
+            // The manifest is what lets the mirror delete files the plugin no
+            // longer ships. A file that failed to read this run is not one of
+            // those, so this batch must not be taken as the whole plugin.
+            tracing::warn!(
+                plugin = %plugin_name,
+                "Some plugin files could not be read; the mirror will not remove anything from this plugin this run"
+            );
+            let plugin_assets = assets.split_off(assets_before);
+            assets.extend(
+                plugin_assets
+                    .into_iter()
+                    .filter(|a| a.relative_path != manifest_rel_path),
+            );
+        } else if full_mirror {
             // Use a structurally-built path so the comparison is correct on
             // Windows (where `strip_prefix` produces backslash separators)
             // as well as Unix. A `to_string_lossy().contains("/")` check
             // would silently miss real Windows manifests and double-emit a
             // synthetic one.
-            let manifest_rel_path = std::path::Path::new(".claude-plugin").join("plugin.json");
             let has_manifest = assets[assets_before..]
                 .iter()
                 .any(|a| a.relative_path == manifest_rel_path);
@@ -214,7 +271,7 @@ pub(super) fn read_plugin_assets_impl(
                     plugin_name.clone(),
                     publisher.clone(),
                     version.clone(),
-                    manifest_rel_path,
+                    manifest_rel_path.clone(),
                     manifest,
                     false,
                 ));
@@ -222,7 +279,27 @@ pub(super) fn read_plugin_assets_impl(
         }
     }
 
+    if full_mirror && (!listing_complete || over_budget) {
+        // A plugin cache directory that could not be listed hides plugins that
+        // may still be installed; with no manifest in the batch, the mirror
+        // neither sweeps nor prunes anything this run.
+        tracing::warn!(
+            "Part of the plugin cache could not be listed; the mirror will not remove anything this run"
+        );
+        assets.retain(|a| a.relative_path != manifest_rel_path);
+    }
+
     Ok(assets)
+}
+
+/// Reads at most `limit` bytes of `path`; `None` when the file is longer.
+fn read_bounded(path: &std::path::Path, limit: u64) -> std::io::Result<Option<Vec<u8>>> {
+    use std::io::Read;
+    let mut content = Vec::new();
+    fs::File::open(path)?
+        .take(limit + 1)
+        .read_to_end(&mut content)?;
+    Ok((content.len() as u64 <= limit).then_some(content))
 }
 
 /// Build a minimal `plugin.json` body for plugins that ship without one.

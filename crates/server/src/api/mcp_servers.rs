@@ -69,8 +69,9 @@ fn looks_secret(name: &str) -> bool {
 
 /// Redact secret-looking values in a command line.
 ///
-/// Handles `--flag value`, `--flag=value`, `NAME=value`, and header-style
-/// arguments such as `Authorization: Bearer ...`.
+/// Handles `--flag value`, `--flag=value`, `NAME=value`, header-style
+/// arguments such as `Authorization: Bearer ...`, and URLs (bare or as the
+/// value of `name=`), whose user info and query values are removed.
 fn redact_args(args: &[String]) -> Vec<String> {
     let mut out = Vec::with_capacity(args.len());
     let mut redact_next = false;
@@ -80,11 +81,22 @@ fn redact_args(args: &[String]) -> Vec<String> {
             redact_next = false;
             continue;
         }
-        if let Some((name, _)) = arg.split_once('=') {
+        // A `=` inside a URL (a query string) does not make it `name=value`.
+        if let Some((name, value)) = arg.split_once('=').filter(|(n, _)| !n.contains("://")) {
             if looks_secret(name) {
                 out.push(format!("{name}={REDACTED}"));
                 continue;
             }
+            if value.contains("://") {
+                out.push(format!("{name}={}", redact_url(value)));
+                continue;
+            }
+        }
+        if arg.contains("://") {
+            // A bare URL or DSN carries its credentials in user info or the
+            // query, which `redact_url` strips.
+            out.push(redact_url(arg));
+            continue;
         }
         if let Some((name, _)) = arg.split_once(':') {
             if !arg.contains("://") && looks_secret(name) {
@@ -95,9 +107,24 @@ fn redact_args(args: &[String]) -> Vec<String> {
         if arg.starts_with('-') && !arg.contains('=') && looks_secret(arg) {
             redact_next = true;
         }
+        // An auth scheme split from its credential: `Bearer <token>`.
+        if arg.eq_ignore_ascii_case("bearer") || arg.eq_ignore_ascii_case("basic") {
+            redact_next = true;
+        }
         out.push(arg.clone());
     }
     out
+}
+
+/// Redacts a shell command line the way [`redact_args`] redacts argv. The
+/// line is split on whitespace with quotes dropped, so the result is for
+/// display, not for running.
+pub(crate) fn redact_command_line(command: &str) -> String {
+    let words: Vec<String> = command
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c| c == '\'' || c == '"').to_string())
+        .collect();
+    redact_args(&words).join(" ")
 }
 
 /// Strip credentials from a URL: user info, and the value of every query
@@ -257,6 +284,22 @@ mod tests {
         assert!(joined.contains("--port 8080"), "{joined}");
         assert!(joined.contains("https://example.com/mcp"), "{joined}");
         assert!(joined.contains("@modelcontextprotocol/server-github"));
+    }
+
+    #[test]
+    fn url_shaped_args_lose_their_credentials() {
+        let args = strings(&[
+            "postgresql://user:hunter2@db/app",
+            "--url=https://h/mcp?token=abc",
+            "DATABASE_URL=postgres://u:pw@h/db?sslmode=require",
+        ]);
+        let out = redact_args(&args);
+        let joined = out.join(" ");
+        for secret in ["hunter2", "abc", "pw@", "u:pw"] {
+            assert!(!joined.contains(secret), "{secret} leaked: {joined}");
+        }
+        assert_eq!(out[0], "postgresql://db/app", "{joined}");
+        assert!(out[1].starts_with("--url=https://h/mcp?token="), "{joined}");
     }
 
     #[test]

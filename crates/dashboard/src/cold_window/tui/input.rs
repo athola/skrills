@@ -29,8 +29,8 @@ pub enum KeyOutcome {
 ///
 /// 1. `Ctrl-C` always quits.
 /// 2. `q` closes the topmost overlay; at the base surface it quits.
-/// 3. `Esc` closes the topmost overlay; at the base surface it does
-///    nothing (BREAKING since 0.8.x: `Esc` no longer quits).
+/// 3. `Esc` closes the topmost overlay, else clears zoom, else clears
+///    the hint filter; at the bare base surface it quits.
 /// 4. An open overlay consumes every other key.
 /// 5. Globals: `Tab`/`Shift-Tab` move focus.
 /// 6. Everything else is forwarded to all three pane handlers; their
@@ -66,10 +66,16 @@ pub fn handle_key(
             };
         }
         KeyCode::Esc => {
-            // Pops the topmost overlay; with none open it unzooms;
-            // harmless no-op at the bare base surface.
+            // Backs out one level: the topmost overlay, then zoom, then
+            // the hint filter. With none of them open it quits.
             if ui.overlays.pop().is_none() {
-                ui.zoomed = false;
+                if ui.zoomed {
+                    ui.zoomed = false;
+                } else if hint_state.filter.is_some() {
+                    hint_state.set_filter(None);
+                } else {
+                    return KeyOutcome::Quit;
+                }
             }
             return KeyOutcome::Redraw;
         }
@@ -137,8 +143,8 @@ pub fn handle_key(
 
     // Disjoint keymaps: forwarding the same code to each handler is
     // safe because at most one will act on it.
-    let _ = AlertPane::handle_key(snap_state, key.code);
-    let _ = HintPane::handle_key(snap_state, hint_state, key.code);
+    let _ = AlertPane::handle_key(snap_state, key.code, ui.selected.alerts);
+    let _ = HintPane::handle_key(snap_state, hint_state, key.code, ui.selected.hints);
     let _ = ResearchPane::handle_key(snap_state, research_state, key.code);
     KeyOutcome::Redraw
 }

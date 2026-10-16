@@ -1,6 +1,6 @@
 # ADR 0006: Cursor Rules Mapping Strategy
 
-- Status: Accepted
+- Status: Accepted; amended by [ADR 0008](0008-plugin-asset-mirroring-and-shared-skills-dir.md)
 - Date: 2026-03-18
 
 ## Context

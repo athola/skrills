@@ -4,11 +4,12 @@
 //! per ADR-0001. These methods provide smart recommendations, project context analysis,
 //! skill gap detection, and skill creation capabilities.
 
+use crate::handler::{invalid_params, run_blocking};
 use crate::mcp_result::{tool_err, tool_ok};
-use crate::setup;
 use anyhow::{anyhow, Result};
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::{json, Map as JsonMap, Value};
+use skrills_setup as setup;
 use skrills_state::home_dir;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -29,10 +30,7 @@ impl SkillService {
         use crate::metrics_types::RecommendationRelationship;
         use skrills_analyze::analyze_skill;
         use skrills_intelligence::recommend::{RecommendationScorer, Scorer};
-        use skrills_intelligence::usage::{
-            parse_claude_sessions, parse_codex_sessions, parse_codex_skills_history,
-            SkillUsageEvent,
-        };
+        use skrills_intelligence::usage::SkillUsageEvent;
         use skrills_intelligence::{analyze_project, build_analytics, RecommendationSignal};
 
         let uri = args.get("uri").and_then(|v| v.as_str());
@@ -89,65 +87,15 @@ impl SkillService {
 
         // Load usage analytics if requested
         if include_usage {
-            let mut events = Vec::new();
-            let mut load_errors: Vec<String> = Vec::new();
-
-            if let Some(home) = dirs::home_dir() {
-                let claude_projects = home.join(".claude/projects");
-                if claude_projects.exists() {
-                    match parse_claude_sessions(&claude_projects) {
-                        Ok(claude_events) => events.extend(claude_events),
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                path = %claude_projects.display(),
-                                "Failed to parse Claude session data"
-                            );
-                            load_errors.push(format!("Claude sessions: {}", e));
-                        }
-                    }
+            let events = match dirs::home_dir() {
+                Some(home) => {
+                    run_blocking(|| cached_usage_events(&home, || load_usage_events(&home)))
                 }
-
-                let codex_skills_history = home.join(".codex/skills-history.json");
-                let mut codex_events = Vec::new();
-
-                match parse_codex_skills_history(&codex_skills_history) {
-                    Ok(history_events) => codex_events = history_events,
-                    Err(e) => {
-                        tracing::debug!(
-                            error = %e,
-                            path = %codex_skills_history.display(),
-                            "Could not parse Codex skills history, trying sessions"
-                        );
-                    }
+                None => {
+                    tracing::warn!("Could not determine home directory for usage analytics");
+                    Vec::new()
                 }
-
-                if codex_events.is_empty() {
-                    let codex_sessions = home.join(".codex/sessions");
-                    match parse_codex_sessions(&codex_sessions) {
-                        Ok(session_events) => codex_events = session_events,
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                path = %codex_sessions.display(),
-                                "Failed to parse Codex session data"
-                            );
-                            load_errors.push(format!("Codex sessions: {}", e));
-                        }
-                    }
-                }
-                events.extend(codex_events);
-            } else {
-                tracing::warn!("Could not determine home directory for usage analytics");
-            }
-
-            if !load_errors.is_empty() {
-                tracing::info!(
-                    errors = ?load_errors,
-                    events_loaded = events.len(),
-                    "Usage analytics loaded with some errors"
-                );
-            }
+            };
 
             if !events.is_empty() {
                 let analytics = build_analytics(normalize_usage_events(events, &path_to_uri));
@@ -404,7 +352,7 @@ impl SkillService {
                         )],
                         priority: "high".to_string(),
                     });
-                    suggestions.push(format!("{}-best-practices", lang_lower));
+                    suggestions.push(format!("{}-best-practices", skill_slug(&lang_lower)));
                 }
             }
         }
@@ -419,7 +367,7 @@ impl SkillService {
                     evidence: vec![format!("{} detected in project", framework)],
                     priority: "medium".to_string(),
                 });
-                suggestions.push(format!("{}-patterns", fw_lower));
+                suggestions.push(format!("{}-patterns", skill_slug(&fw_lower)));
             }
         }
 
@@ -433,7 +381,7 @@ impl SkillService {
                     evidence: vec!["Requested focus area".to_string()],
                     priority: "high".to_string(),
                 });
-                suggestions.push(format!("{}-workflow", area_lower));
+                suggestions.push(format!("{}-workflow", skill_slug(&area_lower)));
             }
         }
 
@@ -451,17 +399,14 @@ impl SkillService {
             }
             let has_area_skill = skill_names
                 .iter()
-                .any(|n| name_tokens(n).any(|token| patterns.iter().any(|p| token.starts_with(p))));
+                .any(|n| patterns.iter().any(|p| keyword_mentions(n, p)));
             if !has_area_skill {
                 // Check if this area is relevant to the project
                 let relevant = profile
                     .git_keywords
                     .iter()
-                    .any(|kw| patterns.iter().any(|p| kw.contains(p)))
-                    || profile
-                        .keywords
-                        .iter()
-                        .any(|kw| patterns.iter().any(|p| kw.contains(p)));
+                    .chain(profile.keywords.iter())
+                    .any(|kw| patterns.iter().any(|p| keyword_mentions(kw, p)));
                 if relevant || focus_areas.iter().any(|f| f.to_lowercase() == area) {
                     gaps.push(SkillGap {
                         area: area.to_string(),
@@ -549,17 +494,17 @@ impl SkillService {
         let name = args
             .get("name")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: name"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: name"))?;
 
         // Security: Reject path traversal attempts and hidden files
         if name.contains("..") {
-            return Err(anyhow!(
-                "Invalid name: path traversal sequences ('..') are not allowed"
+            return Err(invalid_params(
+                "Invalid name: path traversal sequences ('..') are not allowed",
             ));
         }
         if name.starts_with('.') {
-            return Err(anyhow!(
-                "Invalid name: hidden files (starting with '.') are not allowed"
+            return Err(invalid_params(
+                "Invalid name: hidden files (starting with '.') are not allowed",
             ));
         }
 
@@ -569,14 +514,14 @@ impl SkillService {
             Some(std::path::Component::Normal(_))
         ) && name_components.next().is_none();
         if !is_simple_name {
-            return Err(anyhow!(
-                "Invalid name: use a simple directory name without path separators"
+            return Err(invalid_params(
+                "Invalid name: use a simple directory name without path separators",
             ));
         }
         let description = args
             .get("description")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: description"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: description"))?;
         let method_str = args
             .get("method")
             .and_then(|v| v.as_str())
@@ -586,20 +531,22 @@ impl SkillService {
             .get("dry_run")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        // Path resolution, the project walk and session parsing below are
+        // blocking file I/O; only the GitHub and LLM calls are awaited.
         let project_dir = match args.get("project_dir").and_then(|v| v.as_str()) {
-            Some(dir) => self.client_project_dir(Some(dir), "create_skill")?,
+            Some(dir) => run_blocking(|| self.client_project_dir(Some(dir), "create_skill"))?,
             None => None,
         };
 
         let method: CreationMethod = method_str
             .parse()
-            .map_err(|err| anyhow!("Invalid creation method: {}", err))?;
+            .map_err(|err| invalid_params(format!("Invalid creation method: {}", err)))?;
 
         // Check containment before any search or generation runs, so a refused
         // request costs nothing and creates nothing.
         if let (Some(dir), TargetDirPolicy::WithinSkillRoots) = (target_dir, policy) {
             let expanded = PathBuf::from(shellexpand::tilde(dir).as_ref());
-            ensure_within_roots(&expanded, &self.writable_skill_roots())?;
+            run_blocking(|| ensure_within_roots(&expanded, &self.writable_skill_roots()))?;
         }
 
         // Build request with optional project context
@@ -613,7 +560,7 @@ impl SkillService {
 
         // Add project context if available
         if let Some(dir) = project_dir {
-            if let Ok(profile) = analyze_project(&dir) {
+            if let Ok(profile) = run_blocking(|| analyze_project(&dir)) {
                 request = request.with_context(profile);
             }
         }
@@ -678,7 +625,7 @@ impl SkillService {
             };
 
             if claude_projects.exists() {
-                match parse_claude_sessions(&claude_projects) {
+                match run_blocking(|| parse_claude_sessions(&claude_projects)) {
                     Ok(events) if events.len() >= 10 => {
                         // Empirical generation requires BehavioralEvent data with tool
                         // sequences and file accesses. Currently we only have basic
@@ -727,10 +674,9 @@ impl SkillService {
             }
         }
 
-        // Determine success
         let has_github = !github_results.is_empty();
         let has_llm = llm_content.is_some();
-        let mut success = has_github || has_llm;
+        let llm_requested = method == CreationMethod::LLMGenerate || method == CreationMethod::Both;
 
         // Write skill file if not dry run and we have content
         let mut written_path: Option<String> = None;
@@ -740,15 +686,18 @@ impl SkillService {
                 let target = target_dir
                     .map(|s| shellexpand::tilde(s).to_string())
                     .unwrap_or_else(|| default_skill_target_dir().display().to_string());
-                match write_generated_skill(Path::new(&target), name, content) {
+                match run_blocking(|| write_generated_skill(Path::new(&target), name, content)) {
                     Ok(path) => written_path = Some(path.display().to_string()),
                     Err(e) => errors.push(format!("{e:#}")),
                 }
             }
         }
-        if write_attempted && written_path.is_none() {
-            success = false;
-        }
+        let success = creation_succeeded(
+            llm_requested,
+            has_llm,
+            has_github,
+            write_attempted && written_path.is_none(),
+        );
 
         let text = if success {
             let mut parts = Vec::new();
@@ -765,6 +714,12 @@ impl SkillService {
                 parts.push("(dry run)".to_string());
             }
             parts.join(". ")
+        } else if has_github {
+            format!(
+                "Failed to create skill: {}. Found {} GitHub results (see github_results)",
+                errors.join("; "),
+                github_results.len()
+            )
         } else {
             format!("Failed to create skill: {}", errors.join("; "))
         };
@@ -797,7 +752,7 @@ impl SkillService {
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: query"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: query"))?;
         let limit = clamp_limit(args.get("limit").and_then(|v| v.as_u64()), 10);
 
         let results = search_github_skills(query, limit).await?;
@@ -859,7 +814,7 @@ impl SkillService {
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing required parameter: query"))?;
+            .ok_or_else(|| invalid_params("Missing required parameter: query"))?;
 
         // Validate and clamp threshold to valid range [0.0, 1.0]
         let threshold = args
@@ -993,6 +948,30 @@ fn name_tokens(name: &str) -> impl Iterator<Item = String> + '_ {
         .map(|t| t.to_ascii_lowercase())
 }
 
+/// Whether `keyword` mentions `pattern` as a word: a token equal to it or the
+/// pattern plus a common inflection ("tests", "testing", "deployment"), so
+/// "ci" does not match "precision" nor "doc" match "docker".
+pub(crate) fn keyword_mentions(keyword: &str, pattern: &str) -> bool {
+    const SUFFIXES: [&str; 8] = ["s", "es", "ing", "ed", "er", "ers", "ment", "ments"];
+    name_tokens(keyword).any(|token| {
+        token == pattern
+            || token
+                .strip_prefix(pattern)
+                .is_some_and(|rest| SUFFIXES.contains(&rest))
+    })
+}
+
+/// A directory-safe skill name for `term`: `C++` becomes `cpp`, `C#`
+/// `csharp`, and other runs of punctuation or spaces a single `-`.
+pub(crate) fn skill_slug(term: &str) -> String {
+    let spelled = term
+        .to_ascii_lowercase()
+        .replace("++", "pp")
+        .replace('+', "plus")
+        .replace('#', "sharp");
+    name_tokens(&spelled).collect::<Vec<_>>().join("-")
+}
+
 /// Whether a skill name covers `term` as whole tokens, so "go" matches
 /// `go-testing` but not `django`, and "c" does not match every name with a c.
 pub(crate) fn name_covers(name: &str, term: &str) -> bool {
@@ -1002,6 +981,124 @@ pub(crate) fn name_covers(name: &str, term: &str) -> bool {
     }
     let have: HashSet<String> = name_tokens(name).collect();
     wanted.iter().all(|t| have.contains(t))
+}
+
+/// How long parsed session history is reused before it is read again.
+const USAGE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Most usage events kept from session history.
+pub(crate) const MAX_USAGE_EVENTS: usize = 200_000;
+
+type UsageCache = Option<(
+    PathBuf,
+    std::time::Instant,
+    Vec<skrills_intelligence::usage::SkillUsageEvent>,
+)>;
+
+/// Session-history usage events for `home`, parsed by `load` at most once
+/// per [`USAGE_CACHE_TTL`] and capped at [`MAX_USAGE_EVENTS`]. Shared by every
+/// session in the process.
+pub(crate) fn cached_usage_events(
+    home: &Path,
+    load: impl FnOnce() -> Vec<skrills_intelligence::usage::SkillUsageEvent>,
+) -> Vec<skrills_intelligence::usage::SkillUsageEvent> {
+    static CACHE: std::sync::Mutex<UsageCache> = std::sync::Mutex::new(None);
+    let mut cache = CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((cached_home, at, events)) = cache.as_ref() {
+        if cached_home == home && at.elapsed() < USAGE_CACHE_TTL {
+            return events.clone();
+        }
+    }
+    let mut events = load();
+    events.truncate(MAX_USAGE_EVENTS);
+    *cache = Some((
+        home.to_path_buf(),
+        std::time::Instant::now(),
+        events.clone(),
+    ));
+    events
+}
+
+/// Parses Claude and Codex session history under `home` into usage events.
+fn load_usage_events(home: &Path) -> Vec<skrills_intelligence::usage::SkillUsageEvent> {
+    use skrills_intelligence::usage::{
+        parse_claude_sessions, parse_codex_sessions, parse_codex_skills_history,
+    };
+    let mut events = Vec::new();
+    let mut load_errors: Vec<String> = Vec::new();
+    let claude_projects = home.join(".claude/projects");
+    if claude_projects.exists() {
+        match parse_claude_sessions(&claude_projects) {
+            Ok(claude_events) => events.extend(claude_events),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    path = %claude_projects.display(),
+                    "Failed to parse Claude session data"
+                );
+                load_errors.push(format!("Claude sessions: {}", e));
+            }
+        }
+    }
+
+    let codex_skills_history = home.join(".codex/skills-history.json");
+    let mut codex_events = Vec::new();
+
+    match parse_codex_skills_history(&codex_skills_history) {
+        Ok(history_events) => codex_events = history_events,
+        Err(e) => {
+            tracing::debug!(
+                error = %e,
+                path = %codex_skills_history.display(),
+                "Could not parse Codex skills history, trying sessions"
+            );
+        }
+    }
+
+    if codex_events.is_empty() {
+        let codex_sessions = home.join(".codex/sessions");
+        match parse_codex_sessions(&codex_sessions) {
+            Ok(session_events) => codex_events = session_events,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    path = %codex_sessions.display(),
+                    "Failed to parse Codex session data"
+                );
+                load_errors.push(format!("Codex sessions: {}", e));
+            }
+        }
+    }
+    events.extend(codex_events);
+    if !load_errors.is_empty() {
+        tracing::info!(
+            errors = ?load_errors,
+            events_loaded = events.len(),
+            "Usage analytics loaded with some errors"
+        );
+    }
+    events
+}
+
+/// Whether `create-skill` did what was asked: when generation was requested
+/// it must have produced content (and the write, if attempted, succeeded);
+/// otherwise GitHub results are the product.
+pub(crate) fn creation_succeeded(
+    llm_requested: bool,
+    has_llm: bool,
+    has_github: bool,
+    write_failed: bool,
+) -> bool {
+    if write_failed {
+        return false;
+    }
+    if llm_requested {
+        has_llm
+    } else {
+        has_github
+    }
 }
 
 /// Who supplied `target_dir`, and therefore how far it is trusted.
@@ -1048,7 +1145,7 @@ fn resolve_for_containment(path: &Path) -> Result<PathBuf> {
 /// Refuse a `target_dir` that does not resolve inside one of `roots`.
 fn ensure_within_roots(target: &Path, roots: &[PathBuf]) -> Result<()> {
     let resolved = resolve_for_containment(target)
-        .map_err(|e| anyhow!("Invalid target_dir {}: {e}", target.display()))?;
+        .map_err(|e| invalid_params(format!("Invalid target_dir {}: {e}", target.display())))?;
     let inside = roots.iter().any(|root| {
         resolve_for_containment(root)
             .map(|r| resolved.starts_with(r))
@@ -1057,7 +1154,7 @@ fn ensure_within_roots(target: &Path, roots: &[PathBuf]) -> Result<()> {
     if inside {
         Ok(())
     } else {
-        Err(anyhow!(
+        Err(invalid_params(format!(
             "Invalid target_dir {}: it must be inside a skill directory ({})",
             target.display(),
             roots
@@ -1065,7 +1162,7 @@ fn ensure_within_roots(target: &Path, roots: &[PathBuf]) -> Result<()> {
                 .map(|r| r.display().to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
-        ))
+        )))
     }
 }
 
@@ -1144,7 +1241,8 @@ pub(crate) fn select_default_skill_root(
     if claude_setup || !codex_setup {
         home.join(".claude/skills")
     } else {
-        home.join(".codex/skills")
+        // Codex loads user skills from ~/.agents/skills.
+        home.join(".agents/skills")
     }
 }
 

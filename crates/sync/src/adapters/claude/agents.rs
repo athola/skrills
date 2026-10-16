@@ -9,7 +9,7 @@ use crate::common::{Command, ContentFormat};
 use crate::report::WriteReport;
 use crate::Result;
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs;
 use std::time::SystemTime;
 
@@ -20,7 +20,7 @@ use super::ClaudeAdapter;
 
 pub(super) fn read_agents_impl(adapter: &ClaudeAdapter) -> Result<Vec<Command>> {
     // Track agents by name, keeping the most recently modified version
-    let mut agents_map: HashMap<String, Command> = HashMap::new();
+    let mut agents_map: BTreeMap<String, Command> = BTreeMap::new();
 
     // Helper to process an agent and update the map if it's newer
     let mut process_agent =

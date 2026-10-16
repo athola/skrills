@@ -8,7 +8,7 @@
 //!   directories with companion module files alongside.
 
 use crate::adapters::utils::{
-    collect_module_files, hash_content, inside_skill_dir, is_hidden_path, sanitize_name,
+    collect_module_files, hash_content, inside_skill_dir, is_hidden_path,
 };
 
 use super::plugin_cache::plugin_cache_files;
@@ -16,7 +16,7 @@ use crate::common::{Command, ContentFormat, ModuleFile};
 use crate::report::WriteReport;
 use crate::Result;
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs;
 use std::time::SystemTime;
 
@@ -26,11 +26,11 @@ use super::ClaudeAdapter;
 
 pub(super) fn read_skills_impl(adapter: &ClaudeAdapter) -> Result<Vec<Command>> {
     // Track skills by name, keeping the most recently modified version
-    let mut skills_map: HashMap<String, Command> = HashMap::new();
+    let mut skills_map: BTreeMap<String, Command> = BTreeMap::new();
 
     // Helper to process a skill and update the map if it's newer
     let process_skill =
-        |skills_map: &mut HashMap<String, Command>,
+        |skills_map: &mut BTreeMap<String, Command>,
          name: String,
          path: &std::path::Path,
          modules: Vec<ModuleFile>,
@@ -57,8 +57,31 @@ pub(super) fn read_skills_impl(adapter: &ClaudeAdapter) -> Result<Vec<Command>> 
                 plugin_origin,
             };
 
-            // Keep the most recently modified version
+            // The user's own skill always wins over a plugin skill of the same
+            // name; between two plugin skills the newer file wins.
             match skills_map.get(&name) {
+                Some(existing)
+                    if existing.plugin_origin.is_none() && skill.plugin_origin.is_some() =>
+                {
+                    tracing::warn!(
+                        skill = %name,
+                        path = %path.display(),
+                        "Plugin skill shares its name with a local skill; keeping the local one"
+                    );
+                }
+                Some(existing)
+                    if existing.plugin_origin.is_some() && skill.plugin_origin.is_some() =>
+                {
+                    tracing::warn!(
+                        skill = %name,
+                        first = %existing.source_path.display(),
+                        second = %path.display(),
+                        "Two plugins ship a skill with the same name; only the newer file is synced"
+                    );
+                    if existing.modified < modified {
+                        skills_map.insert(name, skill);
+                    }
+                }
                 Some(existing) if existing.modified >= modified => {
                     // Existing is newer or same, skip
                 }
@@ -161,7 +184,77 @@ pub(super) fn read_skills_impl(adapter: &ClaudeAdapter) -> Result<Vec<Command>> 
         process_skill(&mut skills_map, name, &path, modules, Some(origin));
     }
 
+    // 3) Marketplaces (plugins not installed), on request. Lowest priority:
+    // a name already taken by a local or installed skill is kept.
+    if adapter.marketplace_skills {
+        let marketplaces = adapter.config_root_ref().join("plugins/marketplaces");
+        for path in marketplace_skill_files(&marketplaces) {
+            let Some(skill_dir) = path.parent() else {
+                continue;
+            };
+            let Some(name) = skill_dir
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            if skills_map.contains_key(&name) {
+                continue;
+            }
+            process_skill(
+                &mut skills_map,
+                name,
+                &path,
+                collect_module_files(skill_dir),
+                None,
+            );
+        }
+    }
+
     Ok(skills_map.into_values().collect())
+}
+
+/// `SKILL.md` files in a `skills/<name>/` directory below the marketplaces
+/// checkout, skipping hidden paths and symlinks.
+fn marketplace_skill_files(base: &std::path::Path) -> Vec<std::path::PathBuf> {
+    if !base.exists() {
+        return Vec::new();
+    }
+    let mut files = Vec::new();
+    for entry in WalkDir::new(base)
+        .min_depth(1)
+        .max_depth(10)
+        .follow_links(false)
+    {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                tracing::warn!(error = %e, "Skipping unreadable entry under plugin marketplaces");
+                continue;
+            }
+        };
+        if !entry.file_type().is_file() || entry.file_name() != "SKILL.md" {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(rel) = path.strip_prefix(base) else {
+            continue;
+        };
+        if is_hidden_path(rel) {
+            continue;
+        }
+        let in_skills_dir = path
+            .parent()
+            .and_then(|dir| dir.parent())
+            .and_then(|dir| dir.file_name())
+            .is_some_and(|n| n == "skills");
+        if in_skills_dir {
+            files.push(path.to_path_buf());
+        }
+    }
+    files.sort();
+    files
 }
 
 pub(super) fn write_skills_impl(
@@ -176,7 +269,7 @@ pub(super) fn write_skills_impl(
     let mut writer = crate::adapters::utils::BatchWriter::new(&dir);
     for skill in skills {
         // Claude is permissive, but writing Codex-style SKILL.md keeps skills portable.
-        let safe_rel_dir = sanitize_name(&crate::adapters::utils::skill_dir_name(skill));
+        let safe_rel_dir = crate::adapters::utils::skill_folder_name(skill);
         writer.write(
             &skill.name,
             &safe_rel_dir,

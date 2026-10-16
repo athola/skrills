@@ -6,7 +6,7 @@ This document details `skrills`'s persistence mechanisms: what data is persisted
 
 ### Codex Skills (Discovery Root)
 
-Codex discovers skills from `~/.codex/skills/**/SKILL.md` (recursive). When you run `skrills sync` or `skrills mirror`, skrills copies `SKILL.md` skills (and their adjacent supporting files) into `~/.codex/skills/` so Codex can load them.
+Codex loads user skills from `~/.agents/skills/<name>/SKILL.md`. When you run `skrills sync` or `skrills mirror`, skrills copies `SKILL.md` skills (and their adjacent supporting files) into `~/.agents/skills/` so Codex can load them, and writes each Claude agent there as an `agent-<name>` skill. Skills that older releases wrote under `~/.codex/skills/` are still read but not removed.
 
 Codex skills are behind an experimental feature flag in `~/.codex/config.toml`:
 
@@ -17,7 +17,7 @@ skills = true
 
 ### Skill Mirrors (Optional)
 
-`~/.codex/skills-mirror/` is a legacy/optional directory used by older versions of `skrills` to keep a full, byte-for-byte mirror of Claude assets. Current `skrills` releases sync skills into `~/.codex/skills/` and agents into `~/.codex/agents/` without creating `~/.codex/skills-mirror/` by default.
+`~/.codex/skills-mirror/` is a legacy/optional directory used by older versions of `skrills` to keep a full, byte-for-byte mirror of Claude assets. Current `skrills` releases sync skills and agents into `~/.agents/skills/` without creating `~/.codex/skills-mirror/` by default.
 
 ### Discovery Cache
 
@@ -48,7 +48,7 @@ cli_binary = "auto"
 default_backend = "codex"
 ```
 
-`cli_binary = "auto"` selects `claude` or `codex` using `SKRILLS_CLIENT`, CLI env (CLAUDE/CODEX), or the server binary path (fallback is `claude`).
+With no backend named on the run, a `cli_binary` other than `"auto"` wins; otherwise a configured `default_backend` (or `SKRILLS_SUBAGENTS_DEFAULT_BACKEND`) picks `codex` or `claude`, then `SKRILLS_CLIENT`, CLI env (CLAUDE/CODEX), or the server binary path decide (fallback is `claude`).
 
 ## What Is NOT Persisted
 

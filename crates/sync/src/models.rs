@@ -1,10 +1,8 @@
-//! Model mapping between Claude and Codex/OpenAI platforms.
+//! Model mapping between agent platforms.
 //!
-//! When syncing configurations between agents, model names need to be
-//! transformed to their equivalents on the target platform.
-
-use std::collections::HashMap;
-use std::sync::LazyLock;
+//! When syncing configurations between agents, a model name is carried over
+//! only where the target is known to accept it; otherwise the target keeps
+//! its own model.
 
 /// Claude model shorthand names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -82,28 +80,6 @@ impl OpenAiModel {
     }
 }
 
-// Model Mapping Tables
-
-/// Claude → OpenAI mapping table.
-static CLAUDE_TO_OPENAI: LazyLock<HashMap<ClaudeModel, OpenAiModel>> = LazyLock::new(|| {
-    HashMap::from([
-        (ClaudeModel::Opus, OpenAiModel::Gpt4o),
-        (ClaudeModel::Sonnet, OpenAiModel::Gpt4oMini),
-        (ClaudeModel::Haiku, OpenAiModel::Gpt4oMini),
-    ])
-});
-
-/// OpenAI → Claude mapping table.
-static OPENAI_TO_CLAUDE: LazyLock<HashMap<OpenAiModel, ClaudeModel>> = LazyLock::new(|| {
-    HashMap::from([
-        (OpenAiModel::Gpt4o, ClaudeModel::Opus),
-        (OpenAiModel::Gpt4oMini, ClaudeModel::Sonnet),
-        (OpenAiModel::O1, ClaudeModel::Opus),
-        (OpenAiModel::O1Mini, ClaudeModel::Haiku),
-        (OpenAiModel::O3Mini, ClaudeModel::Haiku),
-    ])
-});
-
 // Public API
 
 /// Transform a model name from source platform to target platform.
@@ -121,16 +97,14 @@ pub fn transform_model(model: &str, source: &str, target: &str) -> Option<String
     }
 
     match (source, target) {
-        ("claude", "codex") | ("claude", "copilot") => {
-            let claude_model = ClaudeModel::parse(model)?;
-            let openai_model = CLAUDE_TO_OPENAI.get(&claude_model)?;
-            Some(openai_model.as_str().to_string())
-        }
-        ("codex", "claude") | ("copilot", "claude") => {
-            let openai_model = OpenAiModel::parse(model)?;
-            let claude_model = OPENAI_TO_CLAUDE.get(&openai_model)?;
-            Some(claude_model.as_str().to_string())
-        }
+        // No current, tested table maps between Claude and OpenAI models:
+        // Codex has moved past the `gpt-4o` family the old table produced, and
+        // Copilot names Claude models with its own ids. `None` leaves the
+        // target's model as it is.
+        ("claude", "codex") | ("claude", "copilot") => None,
+        ("codex", "claude") | ("copilot", "claude") => None,
+        // Both take OpenAI model ids.
+        ("codex", "copilot") | ("copilot", "codex") => Some(model.to_string()),
         // Cursor accepts Claude model IDs directly, pass through
         ("claude", "cursor") => Some(model.to_string()),
         // Cursor special values: "inherit" = use parent model, "fast" = lightweight model
@@ -146,19 +120,9 @@ pub fn transform_model(model: &str, source: &str, target: &str) -> Option<String
                 }
             }
         },
-        // Cursor ↔ Codex: route through Claude as intermediate
-        ("cursor", "codex") | ("cursor", "copilot") => {
-            // First try to parse as Claude model (Cursor often uses Claude IDs)
-            if let Some(claude_model) = ClaudeModel::parse(model) {
-                let openai_model = CLAUDE_TO_OPENAI.get(&claude_model)?;
-                Some(openai_model.as_str().to_string())
-            } else {
-                match model {
-                    "fast" => Some("gpt-4o-mini".to_string()),
-                    _ => None,
-                }
-            }
-        }
+        // Cursor uses Claude ids and its own `fast`/`inherit`; none of them
+        // has a known Codex or Copilot id.
+        ("cursor", "codex") | ("cursor", "copilot") => None,
         ("codex", "cursor") | ("copilot", "cursor") => {
             // OpenAI model → pass through (Cursor accepts various model IDs)
             Some(model.to_string())
@@ -171,53 +135,25 @@ pub fn transform_model(model: &str, source: &str, target: &str) -> Option<String
 mod tests {
     use super::*;
 
+    /// The old table wrote `gpt-4o`/`gpt-4o-mini` into Codex and Copilot:
+    /// neither is a current Codex model (learn.chatgpt.com/docs/models), and
+    /// Copilot runs Claude models under its own ids (`claude-haiku-4.5`), so
+    /// a Claude shorthand or dashed id is not one either. With no tested
+    /// cross-vendor table, the target keeps its own model.
     #[test]
-    fn claude_to_openai_mappings() {
-        assert_eq!(
-            transform_model("opus", "claude", "codex"),
-            Some("gpt-4o".to_string())
-        );
-        assert_eq!(
-            transform_model("sonnet", "claude", "codex"),
-            Some("gpt-4o-mini".to_string())
-        );
-        assert_eq!(
-            transform_model("haiku", "claude", "codex"),
-            Some("gpt-4o-mini".to_string())
-        );
+    fn claude_models_have_no_codex_or_copilot_equivalent() {
+        for model in ["opus", "sonnet", "haiku", "claude-sonnet-4-6"] {
+            assert_eq!(transform_model(model, "claude", "codex"), None, "{model}");
+            assert_eq!(transform_model(model, "claude", "copilot"), None, "{model}");
+        }
     }
 
     #[test]
-    fn openai_to_claude_mappings() {
-        assert_eq!(
-            transform_model("gpt-4o", "codex", "claude"),
-            Some("opus".to_string())
-        );
-        assert_eq!(
-            transform_model("gpt-4o-mini", "codex", "claude"),
-            Some("sonnet".to_string())
-        );
-        assert_eq!(
-            transform_model("o1", "codex", "claude"),
-            Some("opus".to_string())
-        );
-        assert_eq!(
-            transform_model("o1-mini", "codex", "claude"),
-            Some("haiku".to_string())
-        );
-    }
-
-    #[test]
-    fn full_model_ids_are_recognized() {
-        // Claude full IDs
-        assert_eq!(
-            transform_model("claude-3-5-sonnet-20240620", "claude", "codex"),
-            Some("gpt-4o-mini".to_string())
-        );
-        assert_eq!(
-            transform_model("claude-3-opus-20240229", "claude", "codex"),
-            Some("gpt-4o".to_string())
-        );
+    fn openai_models_have_no_claude_equivalent() {
+        for model in ["gpt-4o", "gpt-4o-mini", "o1", "o1-mini", "gpt-6.1-sol"] {
+            assert_eq!(transform_model(model, "codex", "claude"), None, "{model}");
+            assert_eq!(transform_model(model, "copilot", "claude"), None, "{model}");
+        }
     }
 
     #[test]
@@ -268,17 +204,25 @@ mod tests {
     }
 
     #[test]
-    fn cursor_to_codex_routes_through_claude() {
-        // Cursor with Claude model → OpenAI equivalent
+    fn cursor_models_have_no_codex_or_copilot_equivalent() {
+        for model in ["opus", "fast", "inherit"] {
+            assert_eq!(transform_model(model, "cursor", "codex"), None, "{model}");
+            assert_eq!(transform_model(model, "cursor", "copilot"), None, "{model}");
+        }
+    }
+
+    /// Codex and Copilot both take OpenAI ids; only the orchestrator knew
+    /// that, so other callers got `None`.
+    #[test]
+    fn codex_and_copilot_pass_models_through_to_each_other() {
         assert_eq!(
-            transform_model("opus", "cursor", "codex"),
-            Some("gpt-4o".to_string())
+            transform_model("gpt-5.3-codex", "codex", "copilot"),
+            Some("gpt-5.3-codex".to_string())
         );
         assert_eq!(
-            transform_model("fast", "cursor", "codex"),
-            Some("gpt-4o-mini".to_string())
+            transform_model("gpt-5.3-codex", "copilot", "codex"),
+            Some("gpt-5.3-codex".to_string())
         );
-        assert_eq!(transform_model("inherit", "cursor", "codex"), None);
     }
 
     #[test]

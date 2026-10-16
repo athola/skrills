@@ -22,39 +22,10 @@ use crate::adapters::utils::hash_content;
 use crate::common::{Command, ContentFormat};
 use crate::report::{SkipReason, WriteReport};
 use crate::Result;
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
 use tracing::{debug, warn};
-
-/// Cursor hooks.json top-level structure.
-#[derive(Debug, Serialize, Deserialize, Default)]
-struct CursorHooksConfig {
-    #[serde(default)]
-    version: u32,
-    #[serde(default)]
-    hooks: BTreeMap<String, Vec<HookEntry>>,
-}
-
-/// A single hook entry within an event.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct HookEntry {
-    command: String,
-    #[serde(default = "default_command_type")]
-    r#type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    timeout: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    matcher: Option<String>,
-    #[serde(rename = "failClosed", skip_serializing_if = "Option::is_none")]
-    fail_closed: Option<bool>,
-}
-
-fn default_command_type() -> String {
-    "command".to_string()
-}
 
 /// Bidirectional event name mapping between Claude (PascalCase) and Cursor (camelCase).
 static CLAUDE_TO_CURSOR_EVENTS: &[(&str, &str)] = &[
@@ -88,6 +59,11 @@ pub fn cursor_to_claude_event(cursor_event: &str) -> Option<&'static str> {
 ///
 /// Each event group becomes a separate Command entry, with the event name
 /// as the Command name and the JSON-serialized hook entries as content.
+///
+/// Entries are kept as JSON values, as the writer handles them: Cursor entry
+/// types without a `command` (a `prompt` hook) and fields this crate does not
+/// name survive the trip. An entry that is not an object, or an event whose
+/// value is not a list, is skipped with a warning instead of failing the phase.
 pub fn read_hooks(root: &Path) -> Result<Vec<Command>> {
     let path = hooks_path(root);
     if !path.exists() {
@@ -95,15 +71,34 @@ pub fn read_hooks(root: &Path) -> Result<Vec<Command>> {
     }
 
     let content = fs::read_to_string(&path)?;
-    let config: CursorHooksConfig = serde_json::from_str(&content)?;
+    let config: serde_json::Value = serde_json::from_str(&content)?;
+    let events = match config.get("hooks") {
+        None => return Ok(vec![]),
+        Some(serde_json::Value::Object(events)) => events,
+        Some(_) => anyhow::bail!("`hooks` in {} is not an object", path.display()),
+    };
 
     let mut hooks = Vec::new();
     let modified = fs::metadata(&path)
         .and_then(|m| m.modified())
         .unwrap_or(SystemTime::UNIX_EPOCH);
 
-    for (event_name, entries) in &config.hooks {
-        let entries_json = serde_json::to_string_pretty(entries)?;
+    for (event_name, entries) in events {
+        let Some(entries) = entries.as_array() else {
+            warn!(event = %event_name, "Skipping hooks.json event whose value is not a list");
+            continue;
+        };
+        let entries: Vec<&serde_json::Value> = entries
+            .iter()
+            .filter(|entry| {
+                let keep = entry.is_object();
+                if !keep {
+                    warn!(event = %event_name, "Skipping hooks.json entry that is not an object");
+                }
+                keep
+            })
+            .collect();
+        let entries_json = serde_json::to_string_pretty(&entries)?;
         let content_bytes = entries_json.into_bytes();
         let hash = hash_content(&content_bytes);
 
@@ -198,22 +193,24 @@ pub fn write_hooks(root: &Path, hooks: &[Command]) -> Result<WriteReport> {
             continue;
         };
 
-        // Both JSON and Markdown sources must hold a JSON array of entries.
+        // Both JSON and Markdown sources must hold a JSON array of entry
+        // objects. Their fields are Cursor's to judge: a `prompt` hook has no
+        // `command`.
         let content_str = String::from_utf8_lossy(&hook.content);
-        let entries: Vec<serde_json::Value> =
-            match serde_json::from_str::<Vec<HookEntry>>(&content_str)
-                .and_then(|_| serde_json::from_str(&content_str))
-            {
-                Ok(entries) => entries,
-                Err(e) => {
-                    warn!(event = %hook.name, error = %e, "Skipping hook with non-JSON content");
-                    report.skipped.push(SkipReason::ParseError {
-                        item: hook.name.clone(),
-                        error: format!("hook content must be a JSON array of hook entries: {e}"),
-                    });
-                    continue;
-                }
-            };
+        let entries: Vec<serde_json::Value> = match serde_json::from_str::<
+            Vec<serde_json::Map<String, serde_json::Value>>,
+        >(&content_str)
+        {
+            Ok(entries) => entries.into_iter().map(serde_json::Value::Object).collect(),
+            Err(e) => {
+                warn!(event = %hook.name, error = %e, "Skipping hook with non-JSON content");
+                report.skipped.push(SkipReason::ParseError {
+                    item: hook.name.clone(),
+                    error: format!("hook content must be a JSON array of hook entries: {e}"),
+                });
+                continue;
+            }
+        };
 
         if entries.is_empty() {
             debug!(event = %cursor_event, "Skipping hook with empty entry list");
@@ -254,6 +251,139 @@ pub fn write_hooks(root: &Path, hooks: &[Command]) -> Result<WriteReport> {
     }
 
     Ok(report)
+}
+
+/// Rewrites a plugin's `hooks/hooks.json` from Claude's layout
+/// (`{"PostToolUse": [{"matcher", "hooks": [entry]}]}`) to Cursor's flat
+/// camelCase one (`{"postToolUse": [entry + matcher]}`).
+///
+/// `${CLAUDE_PLUGIN_ROOT}` in a command becomes `plugin_root`, the mirror's
+/// absolute path: Cursor documents plugin-root expansion for `mcp.json` only.
+/// An event already in camelCase is taken as Cursor's and kept; a Claude event
+/// with no Cursor equivalent is dropped and named in the returned warnings.
+/// `Err` when the file is not a JSON object with a `hooks` object.
+pub(super) fn plugin_hooks_for_cursor(
+    content: &[u8],
+    plugin_root: &Path,
+) -> std::result::Result<(Vec<u8>, Vec<String>), String> {
+    use serde_json::Value;
+
+    let mut config: Value = serde_json::from_slice(content).map_err(|e| e.to_string())?;
+    let root_obj = config
+        .as_object_mut()
+        .ok_or("the top level is not an object")?;
+    let events = root_obj
+        .get("hooks")
+        .and_then(Value::as_object)
+        .ok_or("it has no `hooks` object")?;
+
+    // The root is pasted into a shell command unquoted (it often sits inside
+    // the command's own quotes), so only a path with no shell syntax in it is
+    // substituted; any other leaves the variable for the user to set.
+    let root = plugin_root.to_str().filter(|root| {
+        root.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-+@%:,~".contains(c))
+    });
+    let mut root_left_unset = false;
+    let mut point_at_mirror = |entry: &mut Value| {
+        if let Some(command) = entry.get_mut("command") {
+            if let Some(text) = command.as_str() {
+                if !text.contains("$CLAUDE_PLUGIN_ROOT") && !text.contains("${CLAUDE_PLUGIN_ROOT}")
+                {
+                    return;
+                }
+                match root {
+                    Some(root) => *command = Value::from(replace_plugin_root(text, root)),
+                    None => root_left_unset = true,
+                }
+            }
+        }
+    };
+
+    let mut cursor_events = serde_json::Map::new();
+    let mut dropped = Vec::new();
+    for (event, groups) in events {
+        let cursor_event = match claude_to_cursor_event(event) {
+            Some(mapped) => mapped.to_string(),
+            None if event.starts_with(|c: char| c.is_ascii_lowercase()) => event.clone(),
+            None => {
+                dropped.push(event.clone());
+                continue;
+            }
+        };
+        let groups = groups
+            .as_array()
+            .ok_or_else(|| format!("`hooks.{event}` is not an array"))?;
+        let mut entries = Vec::new();
+        for group in groups {
+            match group.get("hooks").and_then(Value::as_array) {
+                Some(nested) => {
+                    let matcher = group.get("matcher").filter(|m| m.as_str() != Some(""));
+                    for entry in nested {
+                        let mut entry = entry.clone();
+                        if let (Some(matcher), Some(fields)) = (matcher, entry.as_object_mut()) {
+                            fields.entry("matcher").or_insert_with(|| matcher.clone());
+                        }
+                        point_at_mirror(&mut entry);
+                        entries.push(entry);
+                    }
+                }
+                None => {
+                    let mut entry = group.clone();
+                    point_at_mirror(&mut entry);
+                    entries.push(entry);
+                }
+            }
+        }
+        cursor_events
+            .entry(cursor_event)
+            .or_insert_with(|| Value::Array(Vec::new()))
+            .as_array_mut()
+            .expect("inserted as an array")
+            .extend(entries);
+    }
+
+    root_obj.insert("hooks".to_string(), Value::Object(cursor_events));
+    root_obj.entry("version").or_insert_with(|| Value::from(1));
+
+    let mut json = serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?;
+    json.push(b'\n');
+    let mut warnings = Vec::new();
+    if !dropped.is_empty() {
+        warnings.push(format!(
+            "hooks.json events with no Cursor equivalent were dropped: {}",
+            dropped.join(", ")
+        ));
+    }
+    if root_left_unset {
+        warnings.push(format!(
+            "{} contains characters a shell would interpret, so ${{CLAUDE_PLUGIN_ROOT}} was \
+             left in the hook commands; set it in Cursor's environment for them to run",
+            plugin_root.display()
+        ));
+    }
+    Ok((json, warnings))
+}
+
+/// `text` with `${CLAUDE_PLUGIN_ROOT}`, and `$CLAUDE_PLUGIN_ROOT` not followed
+/// by another name character, replaced by `root`.
+fn replace_plugin_root(text: &str, root: &str) -> String {
+    const NAME: &str = "$CLAUDE_PLUGIN_ROOT";
+    let text = text.replace("${CLAUDE_PLUGIN_ROOT}", root);
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find(NAME) {
+        let after = &rest[at + NAME.len()..];
+        out.push_str(&rest[..at]);
+        if after.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+            out.push_str(NAME);
+        } else {
+            out.push_str(root);
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// What makes two hook entries the same hook: the command it runs and the
@@ -371,6 +501,140 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let hooks = read_hooks(tmp.path()).unwrap();
         assert!(hooks.is_empty());
+    }
+
+    /// A prompt-type entry has no `command`, and a fractional `timeout` is
+    /// not a `u32`; either used to fail the whole hooks phase, and fields the
+    /// struct did not name (`loop_limit`) were lost on the way through.
+    #[test]
+    fn read_hooks_keeps_entries_of_any_shape_and_skips_non_objects() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let config = serde_json::json!({
+            "version": 1,
+            "hooks": {
+                "stop": [
+                    {"type": "prompt", "prompt": "Summarise the session"},
+                    {"command": "./run.sh", "timeout": 1.5, "loop_limit": 3},
+                    "not an entry"
+                ]
+            }
+        });
+        std::fs::write(hooks_path(root), serde_json::to_string(&config).unwrap()).unwrap();
+
+        let hooks = read_hooks(root).unwrap();
+
+        assert_eq!(hooks.len(), 1);
+        let entries: Vec<serde_json::Value> = serde_json::from_slice(&hooks[0].content).unwrap();
+        assert_eq!(
+            entries,
+            vec![
+                serde_json::json!({"type": "prompt", "prompt": "Summarise the session"}),
+                serde_json::json!({"command": "./run.sh", "timeout": 1.5, "loop_limit": 3}),
+            ]
+        );
+    }
+
+    #[test]
+    fn read_hooks_empty_when_the_file_has_no_hooks_key() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(hooks_path(tmp.path()), r#"{"version": 1}"#).unwrap();
+
+        let hooks = read_hooks(tmp.path()).unwrap();
+
+        assert!(hooks.is_empty());
+    }
+
+    #[test]
+    fn read_hooks_fails_naming_the_file_when_hooks_is_not_an_object() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = hooks_path(tmp.path());
+        std::fs::write(&path, r#"{"hooks": ["stop"]}"#).unwrap();
+
+        let err = read_hooks(tmp.path()).unwrap_err().to_string();
+
+        assert!(err.contains("not an object"), "{err}");
+        assert!(err.contains(&path.display().to_string()), "{err}");
+    }
+
+    #[test]
+    fn read_hooks_skips_an_event_whose_value_is_not_a_list() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config = serde_json::json!({
+            "hooks": {
+                "stop": {"command": "./not-in-a-list.sh"},
+                "afterFileEdit": [{"command": "./fmt.sh"}]
+            }
+        });
+        std::fs::write(
+            hooks_path(tmp.path()),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+
+        let hooks = read_hooks(tmp.path()).unwrap();
+
+        let names: Vec<&str> = hooks.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, vec!["afterFileEdit"]);
+    }
+
+    /// The same entries must survive being written back to Cursor.
+    #[test]
+    fn write_hooks_accepts_entries_without_a_command() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let hook = Command {
+            name: "Stop".to_string(),
+            content: br#"[{"type": "prompt", "prompt": "p"}, {"command": "x", "timeout": 1.5}]"#
+                .to_vec(),
+            source_path: tmp.path().join("hooks.json"),
+            modified: SystemTime::UNIX_EPOCH,
+            hash: String::new(),
+            modules: vec![],
+            content_format: ContentFormat::Json,
+            plugin_origin: None,
+        };
+
+        let report = write_hooks(tmp.path(), &[hook]).unwrap();
+
+        assert_eq!(report.written, 1, "skipped: {:?}", report.skipped);
+    }
+
+    fn translated_command(hooks_json: &str, root: &Path) -> (String, Vec<String>) {
+        let (bytes, warnings) = plugin_hooks_for_cursor(hooks_json.as_bytes(), root).unwrap();
+        let config: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let command = config["hooks"]["stop"][0]["command"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        (command, warnings)
+    }
+
+    /// `$CLAUDE_PLUGIN_ROOT_DIR` is another variable; replacing its prefix
+    /// produced `<root>_DIR`.
+    #[test]
+    fn plugin_root_is_replaced_only_as_a_whole_variable() {
+        let (command, _) = translated_command(
+            r#"{"hooks": {"Stop": [{"hooks": [{"command": "$CLAUDE_PLUGIN_ROOT/run.sh $CLAUDE_PLUGIN_ROOT_DIR"}]}]}}"#,
+            Path::new("/home/u/.cursor/plugins/local/p"),
+        );
+        assert_eq!(
+            command,
+            "/home/u/.cursor/plugins/local/p/run.sh $CLAUDE_PLUGIN_ROOT_DIR"
+        );
+    }
+
+    /// A root with shell syntax in it would change the command Cursor runs.
+    #[test]
+    fn a_plugin_root_with_shell_syntax_is_not_pasted_into_commands() {
+        let (command, warnings) = translated_command(
+            r#"{"hooks": {"Stop": [{"hooks": [{"command": "${CLAUDE_PLUGIN_ROOT}/run.sh"}]}]}}"#,
+            Path::new("/home/u;rm -rf ~/.cursor/plugins/local/p"),
+        );
+        assert_eq!(command, "${CLAUDE_PLUGIN_ROOT}/run.sh");
+        assert!(
+            warnings.iter().any(|w| w.contains("CLAUDE_PLUGIN_ROOT")),
+            "{warnings:?}"
+        );
     }
 
     #[test]

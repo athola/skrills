@@ -1,9 +1,7 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use reqwest::Url;
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -11,9 +9,7 @@ use crate::backend::{
     config::{endpoint, AdapterConfig},
     run_http_adapter, spawn_run, AdapterCapabilities, BackendAdapter, HttpProvider,
 };
-use crate::store::{
-    BackendKind, RunId, RunRecord, RunRequest, RunStatus, RunStore, SubagentTemplate,
-};
+use crate::store::{BackendKind, RunId, RunRequest, RunStore, SubagentTemplate};
 
 const DEFAULT_BASE: &str = "https://api.anthropic.com/v1/";
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
@@ -27,6 +23,9 @@ const API_KEY_ERROR: &str = "Claude API key not set. Set SKRILLS_CLAUDE_API_KEY 
 pub struct ClaudeAdapter {
     config: AdapterConfig,
     client: reqwest::Client,
+    /// A setting that could not be read (such as a malformed base URL);
+    /// every run fails with it rather than calling a default endpoint.
+    config_error: Option<String>,
     max_tokens: u32,
 }
 
@@ -51,21 +50,14 @@ fn max_tokens_from_env() -> u32 {
 
 impl ClaudeAdapter {
     pub fn new(model: String) -> Result<Self> {
-        let config =
-            match AdapterConfig::from_env("CLAUDE", &model, DEFAULT_BASE, DEFAULT_TIMEOUT_MS) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!(error = %e, "adapter config unavailable; API calls will fail");
-                    AdapterConfig {
-                        api_key: String::new(),
-                        base_url: Url::parse(DEFAULT_BASE)
-                            .expect("DEFAULT_BASE constant must be a valid URL"),
-                        model,
-                        timeout: Duration::from_millis(DEFAULT_TIMEOUT_MS),
-                    }
-                }
-            };
-        Self::with_config(config)
+        let (config, config_error) =
+            AdapterConfig::from_env_or_default("CLAUDE", &model, DEFAULT_BASE, DEFAULT_TIMEOUT_MS);
+        if let Some(ref e) = config_error {
+            tracing::warn!(error = %e, "adapter config invalid; API calls will fail");
+        }
+        let mut adapter = Self::with_config(config)?;
+        adapter.config_error = config_error;
+        Ok(adapter)
     }
 
     pub fn with_config(config: AdapterConfig) -> Result<Self> {
@@ -77,6 +69,7 @@ impl ClaudeAdapter {
             config,
             client,
             max_tokens: max_tokens_from_env(),
+            config_error: None,
         })
     }
 
@@ -86,8 +79,15 @@ impl ClaudeAdapter {
         request: RunRequest,
         store: Arc<dyn RunStore>,
     ) -> Result<()> {
+        if let Some(ref e) = self.config_error {
+            return Err(anyhow::anyhow!("{e}"));
+        }
         let url = endpoint(&self.config.base_url, "messages")?;
-        let body = build_anthropic_body(&self.config.model, self.max_tokens, &request);
+        let body = build_anthropic_body(
+            request.model.as_deref().unwrap_or(&self.config.model),
+            self.max_tokens,
+            &request,
+        );
         let api_key = self.config.api_key.clone();
 
         run_http_adapter(run_id, &store, &self.config.api_key, &PROVIDER, || {
@@ -218,24 +218,13 @@ impl BackendAdapter for ClaudeAdapter {
         )
         .await
     }
-
-    async fn status(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<Option<RunStatus>> {
-        store.status(run_id).await
-    }
-
-    async fn stop(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<bool> {
-        store.stop(run_id).await
-    }
-
-    async fn history(&self, limit: usize, store: Arc<dyn RunStore>) -> Result<Vec<RunStatus>> {
-        let runs: Vec<RunRecord> = store.history(limit).await?;
-        Ok(runs.into_iter().map(|r| r.status).collect())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reqwest::Url;
+    use std::time::Duration;
 
     #[test]
     fn test_claude_adapter_new() {
@@ -304,6 +293,7 @@ mod tests {
             output_schema: None,
             tracing: false,
             async_mode: false,
+            model: None,
         };
 
         let body = build_anthropic_body("claude-3-haiku-20240307", DEFAULT_MAX_TOKENS, &request);
@@ -332,6 +322,7 @@ mod tests {
             output_schema: Some(serde_json::Value::Object(schema)),
             tracing: true,
             async_mode: true,
+            model: None,
         };
 
         let body = build_anthropic_body("claude-3-haiku-20240307", 512, &request);
@@ -474,6 +465,7 @@ mod tests {
             output_schema: None,
             tracing: false,
             async_mode: false,
+            model: None,
         };
 
         // The run method would:

@@ -1,7 +1,8 @@
 [package]
 name = "skrills_sync"
-version = "0.9.0"
+version = "0.9.1"
 edition.workspace = true
+rust-version.workspace = true
 description = "Preference synchronization and validation sync utilities for skrills"
 license = "MIT"
 repository = "https://github.com/athola/skrills"
@@ -23,14 +24,19 @@ hex = "0.4.3"
 walkdir.workspace = true
 dirs.workspace = true
 tracing.workspace = true
-similar = "3"
-inquire.workspace = true
-skrills-snapshot = { path = "../snapshot", version = "0.9.0" }
-skrills-validate = { path = "../validate", version = "0.9.0" }
+skrills-snapshot = { path = "../snapshot", version = "0.9.1" }
+skrills-discovery = { path = "../discovery", version = "0.9.1" }
+skrills-validate = { path = "../validate", version = "0.9.1" }
+clap = { workspace = true, optional = true }
+
+[features]
+# `clap::ValueEnum` for `Platform`, so the CLI parses it directly.
+clap = ["dep:clap"]
 
 [dev-dependencies]
 tempfile.workspace = true
+serde_norway.workspace = true
 mockall = "0.15"
 tokio = { version = "1", features = ["full"] }
 proptest = "1.4"
-skrills_test_utils = { path = "../test-utils" }
+skrills-test-utils = { path = "../test-utils" }

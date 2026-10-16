@@ -351,6 +351,24 @@ Content."#,
 mod smart_routing_tests {
     use super::*;
 
+    /// The run's status message from a synchronous `run-subagent` result.
+    fn status_message(result: &rmcp::model::CallToolResult) -> String {
+        result.structured_content.as_ref().unwrap()["status"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// The `binary` a CLI run's `start` event names.
+    fn started_binary(result: &rmcp::model::CallToolResult) -> String {
+        result.structured_content.as_ref().unwrap()["events"]
+            .as_array()
+            .and_then(|events| events.iter().find(|e| e["kind"] == "start"))
+            .and_then(|e| e["data"]["binary"].as_str())
+            .unwrap_or_default()
+            .to_string()
+    }
+
     #[tokio::test]
     async fn test_agent_without_tools_routes_to_api_adapter() {
         /*
@@ -393,8 +411,8 @@ You are an API-only agent."#,
             "agent without tools should not require CLI"
         );
 
-        // Run the agent
-        let args = json!({"prompt": "test", "agent_id": "api-only-agent"})
+        // Run the agent in API mode
+        let args = json!({"prompt": "test", "agent_id": "api-only-agent", "execution_mode": "api"})
             .as_object()
             .cloned();
         let result = service
@@ -402,14 +420,13 @@ You are an API-only agent."#,
             .await
             .unwrap();
 
-        // Should succeed with a run_id
-        let run_id = result
-            .structured_content
-            .as_ref()
-            .and_then(|v| v.get("run_id"))
-            .and_then(|v| v.as_str());
-
-        assert!(run_id.is_some(), "should have run_id from API adapter");
+        // The Codex API adapter ran (model gpt-4): it fails on the missing
+        // key, which no CLI run reports.
+        assert!(
+            status_message(&result).contains("Codex API key not set"),
+            "{:?}",
+            result.structured_content
+        );
     }
 
     #[tokio::test]
@@ -465,12 +482,14 @@ You are a CLI agent with full tool access."#,
             .cloned();
         let result = service.handle_call("run-subagent", args.as_ref()).await;
 
-        // Should succeed (routing works even if CLI spawn fails)
+        // The CLI child ran: SKRILLS_CLI_BINARY points every CLI run at `true`.
         let result = result.expect("routing should succeed");
-        let run_id = result
-            .structured_content
-            .and_then(|v| v.get("run_id").and_then(|v| v.as_str()).map(String::from));
-        assert!(run_id.is_some(), "should have run_id from CLI adapter");
+        assert_eq!(
+            started_binary(&result),
+            "true",
+            "{:?}",
+            result.structured_content
+        );
     }
 
     #[tokio::test]
@@ -516,32 +535,35 @@ Sonnet agent."#,
 
         let service = fixture.create_service().unwrap();
 
-        // All agents should work (routed to appropriate backend based on model)
-        for agent_name in [
-            "claude-model-agent",
-            "gpt-model-agent",
-            "sonnet-model-agent",
+        // Each agent reaches the API backend its model names; with no keys
+        // set, the adapter's missing-key message shows which one ran.
+        for (agent_name, expected) in [
+            ("claude-model-agent", "Claude API key not set"),
+            ("gpt-model-agent", "Codex API key not set"),
+            ("sonnet-model-agent", "Claude API key not set"),
         ] {
-            let args = json!({"prompt": "test", "agent_id": agent_name})
+            let args = json!({"prompt": "test", "agent_id": agent_name, "execution_mode": "api"})
                 .as_object()
                 .cloned();
-            let result = service.handle_call("run-subagent", args.as_ref()).await;
+            let result = service
+                .handle_call("run-subagent", args.as_ref())
+                .await
+                .unwrap();
 
             assert!(
-                result.is_ok(),
-                "agent {} should route successfully: {:?}",
-                agent_name,
-                result
+                status_message(&result).contains(expected),
+                "agent {agent_name}: {:?}",
+                result.structured_content
             );
         }
     }
 
     #[tokio::test]
-    async fn test_agent_id_takes_precedence_over_backend_param() {
+    async fn test_backend_param_takes_precedence_over_agent_model() {
         /*
-        GIVEN an agent with a specific model
-        WHEN running with both agent_id and explicit backend parameter
-        THEN agent_id routing should take precedence
+        GIVEN an agent whose model names Claude
+        WHEN running it in API mode with an explicit backend parameter
+        THEN the backend parameter picks the API backend
         */
         let fixture = IntegrationTestFixture::with_agents(&[(
             "specific-agent.md",
@@ -557,11 +579,11 @@ Content."#,
 
         let service = fixture.create_service().unwrap();
 
-        // Run with both agent_id and backend (agent_id should win)
         let args = json!({
             "prompt": "test",
             "agent_id": "specific-agent",
-            "backend": "codex"  // This should be ignored
+            "backend": "codex",
+            "execution_mode": "api"
         })
         .as_object()
         .cloned();
@@ -571,8 +593,11 @@ Content."#,
             .await
             .unwrap();
 
-        // Should succeed - agent_id routing used
-        assert!(result.structured_content.is_some());
+        assert!(
+            status_message(&result).contains("Codex API key not set"),
+            "{:?}",
+            result.structured_content
+        );
     }
 
     #[tokio::test]
@@ -585,16 +610,20 @@ Content."#,
         let fixture = IntegrationTestFixture::new().unwrap();
         let service = fixture.create_service().unwrap();
 
-        // Run without agent_id - should use default backend
-        let args = json!({"prompt": "test"}).as_object().cloned();
+        // Run without agent_id in API mode - the service's default backend
+        // (Codex, from create_service) handles it.
+        let args = json!({"prompt": "test", "execution_mode": "api"})
+            .as_object()
+            .cloned();
         let result = service
             .handle_call("run-subagent", args.as_ref())
             .await
             .unwrap();
 
         assert!(
-            result.structured_content.is_some(),
-            "should succeed with default backend"
+            status_message(&result).contains("Codex API key not set"),
+            "{:?}",
+            result.structured_content
         );
     }
 }
@@ -623,6 +652,7 @@ mod event_streaming_tests {
                 output_schema: None,
                 async_mode: false,
                 tracing: false,
+                model: None,
             })
             .await
             .unwrap();
@@ -696,6 +726,7 @@ mod event_streaming_tests {
                 output_schema: None,
                 async_mode: false,
                 tracing: false,
+                model: None,
             })
             .await
             .unwrap();
@@ -774,6 +805,7 @@ mod event_streaming_tests {
                 output_schema: None,
                 async_mode: false,
                 tracing: false,
+                model: None,
             })
             .await
             .unwrap();
@@ -876,6 +908,7 @@ mod event_streaming_tests {
                 output_schema: None,
                 async_mode: false,
                 tracing: false,
+                model: None,
             })
             .await
             .unwrap();
@@ -1053,7 +1086,7 @@ mod error_handling_tests {
     #[tokio::test]
     async fn test_download_transcript_secure_reports_unimplemented_as_tool_error() {
         /*
-        GIVEN download-transcript-secure is advertised in the tool list
+        GIVEN download-transcript-secure is still dispatched though no longer advertised
         WHEN a caller invokes it
         THEN the result is a tool-level error carrying status "unimplemented",
              so a caller branching on is_error never mistakes it for a transcript
@@ -1138,10 +1171,21 @@ mod error_handling_tests {
         let args = json!({"run_id": "11111111-1111-1111-1111-111111111111"})
             .as_object()
             .cloned();
-        let result = service.handle_call("stop-run", args.as_ref()).await;
+        let result = service
+            .handle_call("stop-run", args.as_ref())
+            .await
+            .unwrap();
 
-        // Store returns NotFound error for non-existent runs
-        assert!(result.is_err(), "should return error for nonexistent run");
+        // A tool-level error, the same as get-run-status and get-run-events
+        assert_eq!(result.is_error, Some(true), "should be error response");
+        assert!(
+            result
+                .structured_content
+                .as_ref()
+                .and_then(|v| v.get("error"))
+                .is_some(),
+            "should have error field"
+        );
     }
 }
 
@@ -1173,6 +1217,7 @@ mod cli_adapter_integration_tests {
             output_schema: None,
             async_mode: false,
             tracing: false,
+            model: None,
         };
 
         let run_id = adapter
@@ -1231,6 +1276,7 @@ mod cli_adapter_integration_tests {
             output_schema: None,
             async_mode: false,
             tracing: false,
+            model: None,
         };
 
         let run_id = adapter
@@ -1285,6 +1331,7 @@ mod cli_adapter_integration_tests {
             output_schema: None,
             async_mode: false,
             tracing: false,
+            model: None,
         };
 
         let run_id = adapter
@@ -1322,7 +1369,12 @@ mod cli_adapter_integration_tests {
             .get("text")
             .and_then(|v| v.as_str())
             .expect("completion should have text");
-        assert!(!text.is_empty(), "text should not be empty");
+        // The child inherits this process's working directory.
+        let cwd = std::env::current_dir().expect("cwd");
+        assert_eq!(
+            std::fs::canonicalize(text).expect("pwd printed a path"),
+            std::fs::canonicalize(cwd).expect("cwd resolves")
+        );
     }
 
     #[tokio::test]
@@ -1348,6 +1400,7 @@ mod cli_adapter_integration_tests {
             output_schema: None,
             async_mode: false,
             tracing: false,
+            model: None,
         };
 
         let run_id = store
@@ -1482,6 +1535,7 @@ Content."#,
                 output_schema: None,
                 async_mode: false,
                 tracing: false,
+                model: None,
             })
             .await
             .unwrap();

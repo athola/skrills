@@ -1,10 +1,132 @@
 use anyhow::{bail, Result};
-use skrills_discovery::discover_skills;
+use skrills_discovery::{discover_skills, SkillMeta};
 use std::path::PathBuf;
 
 use crate::cli::OutputFormat;
 
 use super::{ScoreBreakdown, SkillScoreResult};
+
+/// The skills `skill-score` scores: every skill, or the one `name` names.
+///
+/// A name is resolved with [`super::find_skill`], so it matches a skill's
+/// key, directory or frontmatter name exactly; a substring of the absolute
+/// path (`test` in `/home/u/test-projects/`) no longer selects every skill
+/// under that directory.
+fn select_skills<'a>(skills: &'a [SkillMeta], name: Option<&str>) -> Result<Vec<&'a SkillMeta>> {
+    match name {
+        Some(target_name) => Ok(vec![super::find_skill(skills, target_name)?]),
+        None if skills.is_empty() => bail!("No skills found to score"),
+        None => Ok(skills.iter().collect()),
+    }
+}
+
+/// Scores one skill out of 100, 25 per component.
+fn score_skill(skill: &SkillMeta, content: &str) -> SkillScoreResult {
+    use skrills_validate::frontmatter::parse_frontmatter;
+
+    let parsed = parse_frontmatter(content);
+
+    let mut suggestions = Vec::new();
+
+    let frontmatter_score = match &parsed {
+        Ok(p) if p.frontmatter.is_some() => {
+            let fm = p.frontmatter.as_ref().unwrap();
+            let mut score = 10u8;
+
+            if fm.name.is_some() {
+                score += 5;
+            } else {
+                suggestions.push("Add 'name' field to frontmatter".to_string());
+            }
+
+            if fm.description.is_some() {
+                score += 10;
+            } else {
+                suggestions.push("Add 'description' field to frontmatter".to_string());
+            }
+
+            score
+        }
+        Ok(_) => {
+            suggestions.push("Add YAML frontmatter with name and description".to_string());
+            0
+        }
+        Err(_) => {
+            suggestions.push("Fix frontmatter YAML syntax errors".to_string());
+            0
+        }
+    };
+
+    // Validated for every target, the strictest: a parse that finds no
+    // frontmatter is `Ok`, so it says nothing about validity.
+    let validation_score = if skrills_validate::validate_skill(
+        &skill.path,
+        content,
+        skrills_validate::ValidationTarget::All,
+    )
+    .has_errors()
+    {
+        suggestions.push("Fix the errors `skrills validate --target all` reports".to_string());
+        0u8
+    } else {
+        25u8
+    };
+
+    let description_score = skill
+        .description
+        .as_ref()
+        .map(|d| {
+            let len = d.len();
+            if len >= 100 {
+                25u8
+            } else if len >= 50 {
+                20u8
+            } else if len >= 20 {
+                15u8
+            } else if len > 0 {
+                10u8
+            } else {
+                0u8
+            }
+        })
+        .unwrap_or(0);
+
+    if description_score < 20 {
+        suggestions.push("Improve description (aim for 100+ characters)".to_string());
+    }
+
+    let token_score = {
+        let estimated_tokens = skrills_analyze::estimate_tokens(content.len());
+        if estimated_tokens < 500 {
+            25u8
+        } else if estimated_tokens < 1000 {
+            20u8
+        } else if estimated_tokens < 2000 {
+            15u8
+        } else if estimated_tokens < 5000 {
+            10u8
+        } else {
+            5u8
+        }
+    };
+
+    if token_score < 15 {
+        suggestions.push("Consider splitting into smaller skills for token efficiency".to_string());
+    }
+
+    SkillScoreResult {
+        name: skill.name.clone(),
+        path: skill.path.clone(),
+        total_score: frontmatter_score + validation_score + description_score + token_score,
+        breakdown: ScoreBreakdown {
+            frontmatter_completeness: frontmatter_score,
+            validation_score,
+            description_quality: description_score,
+            token_efficiency: token_score,
+        },
+        suggestions,
+    }
+}
 
 /// Handle the skill-score command.
 pub(crate) fn handle_skill_score_command(
@@ -13,137 +135,32 @@ pub(crate) fn handle_skill_score_command(
     format: OutputFormat,
     below_threshold: Option<u8>,
 ) -> Result<()> {
-    use skrills_validate::frontmatter::parse_frontmatter;
-
-    let roots = crate::commands::skill_roots_for(&skill_dirs);
+    let roots = crate::commands::skill_roots_for(&skill_dirs)?;
     let skills = discover_skills(&roots, None)?;
-
-    let skills_to_score: Vec<_> = if let Some(ref target_name) = name {
-        skills
-            .iter()
-            .filter(|s| {
-                s.name.eq_ignore_ascii_case(target_name)
-                    || s.path.to_string_lossy().contains(target_name)
-            })
-            .collect()
-    } else {
-        skills.iter().collect()
-    };
-
-    if skills_to_score.is_empty() {
-        if let Some(ref n) = name {
-            bail!("Skill '{}' not found", n);
-        } else {
-            bail!("No skills found to score");
-        }
-    }
+    let skills_to_score = select_skills(&skills, name.as_deref())?;
 
     let mut results: Vec<SkillScoreResult> = Vec::new();
 
     for skill in skills_to_score {
         let content = match std::fs::read_to_string(&skill.path) {
             Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        let parsed = parse_frontmatter(&content);
-
-        let mut suggestions = Vec::new();
-
-        let frontmatter_score = match &parsed {
-            Ok(p) if p.frontmatter.is_some() => {
-                let fm = p.frontmatter.as_ref().unwrap();
-                let mut score = 10u8;
-
-                if fm.name.is_some() {
-                    score += 5;
-                } else {
-                    suggestions.push("Add 'name' field to frontmatter".to_string());
-                }
-
-                if fm.description.is_some() {
-                    score += 10;
-                } else {
-                    suggestions.push("Add 'description' field to frontmatter".to_string());
-                }
-
-                score
-            }
-            Ok(_) => {
-                suggestions.push("Add YAML frontmatter with name and description".to_string());
-                0
-            }
-            Err(_) => {
-                suggestions.push("Fix frontmatter YAML syntax errors".to_string());
-                0
+            Err(e) => {
+                // Named on stderr rather than dropped, so a skill missing
+                // from the scores is not mistaken for one that was fine.
+                tracing::warn!(path = %skill.path.display(), error = %e, "skipping unreadable skill");
+                continue;
             }
         };
 
-        let validation_score = if parsed.is_ok() { 25u8 } else { 0u8 };
-
-        let description_score = skill
-            .description
-            .as_ref()
-            .map(|d| {
-                let len = d.len();
-                if len >= 100 {
-                    25u8
-                } else if len >= 50 {
-                    20u8
-                } else if len >= 20 {
-                    15u8
-                } else if len > 0 {
-                    10u8
-                } else {
-                    0u8
-                }
-            })
-            .unwrap_or(0);
-
-        if description_score < 20 {
-            suggestions.push("Improve description (aim for 100+ characters)".to_string());
-        }
-
-        let token_score = {
-            let estimated_tokens = skrills_analyze::estimate_tokens(content.len());
-            if estimated_tokens < 500 {
-                25u8
-            } else if estimated_tokens < 1000 {
-                20u8
-            } else if estimated_tokens < 2000 {
-                15u8
-            } else if estimated_tokens < 5000 {
-                10u8
-            } else {
-                5u8
-            }
-        };
-
-        if token_score < 15 {
-            suggestions
-                .push("Consider splitting into smaller skills for token efficiency".to_string());
-        }
-
-        let total_score = frontmatter_score + validation_score + description_score + token_score;
+        let result = score_skill(skill, &content);
 
         if let Some(threshold) = below_threshold {
-            if total_score >= threshold {
+            if result.total_score >= threshold {
                 continue;
             }
         }
 
-        results.push(SkillScoreResult {
-            name: skill.name.clone(),
-            path: skill.path.clone(),
-            total_score,
-            breakdown: ScoreBreakdown {
-                frontmatter_completeness: frontmatter_score,
-                validation_score,
-                description_quality: description_score,
-                token_efficiency: token_score,
-            },
-            suggestions,
-        });
+        results.push(result);
     }
 
     results.sort_by_key(|a| a.total_score);
@@ -286,5 +303,188 @@ mod tests {
         );
 
         result.expect("score filter by threshold should succeed");
+    }
+
+    fn discovered_under(dir: &std::path::Path) -> Vec<skrills_discovery::SkillMeta> {
+        discover_skills(
+            &[skrills_discovery::SkillRoot {
+                root: dir.to_path_buf(),
+                source: skrills_discovery::SkillSource::Extra(0),
+            }],
+            None,
+        )
+        .unwrap()
+    }
+
+    fn write_skill(root: &std::path::Path, name: &str, content: &str) {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), content).unwrap();
+    }
+
+    #[test]
+    fn score_name_does_not_match_a_substring_of_the_absolute_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("test-projects");
+        write_skill(
+            &root,
+            "alpha",
+            "---\nname: alpha\ndescription: A\n---\nBody\n",
+        );
+        write_skill(
+            &root,
+            "beta",
+            "---\nname: beta\ndescription: B\n---\nBody\n",
+        );
+        let skills = discovered_under(&root);
+
+        assert!(select_skills(&skills, Some("test")).is_err());
+        let picked = select_skills(&skills, Some("alpha")).unwrap();
+        assert_eq!(picked.len(), 1);
+        assert_eq!(picked[0].name, "alpha/SKILL.md");
+    }
+
+    #[test]
+    fn score_gives_no_validation_points_to_a_skill_without_frontmatter() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_skill(tmp.path(), "bare", "no frontmatter here\n");
+        let skills = discovered_under(tmp.path());
+
+        let scored = score_skill(&skills[0], "no frontmatter here\n");
+
+        assert_eq!(scored.breakdown.validation_score, 0);
+        assert_eq!(scored.breakdown.frontmatter_completeness, 0);
+    }
+
+    #[test]
+    fn score_gives_full_validation_points_to_a_valid_skill() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = "---\nname: good\ndescription: A skill that passes validation\n---\n# Good\n";
+        write_skill(tmp.path(), "good", content);
+        let skills = discovered_under(tmp.path());
+
+        let scored = score_skill(&skills[0], content);
+
+        assert_eq!(scored.breakdown.validation_score, 25);
+        assert_eq!(scored.breakdown.frontmatter_completeness, 25);
+    }
+
+    /// One discovered skill to score varied contents against: the token and
+    /// frontmatter components read only the content passed in.
+    fn scored_with(content: &str) -> SkillScoreResult {
+        let tmp = tempfile::tempdir().unwrap();
+        write_skill(
+            tmp.path(),
+            "probe",
+            "---\nname: probe\ndescription: P\n---\n",
+        );
+        let skills = discovered_under(tmp.path());
+        score_skill(&skills[0], content)
+    }
+
+    /// Content of exactly `chars` characters behind a valid header.
+    fn content_of_length(chars: usize) -> String {
+        let header = "---\nname: probe\ndescription: P\n---\n";
+        format!("{header}{}", "x".repeat(chars - header.len()))
+    }
+
+    #[test]
+    fn score_suggests_a_name_when_frontmatter_lacks_one() {
+        let scored = scored_with("---\ndescription: d\n---\nBody\n");
+
+        assert_eq!(scored.breakdown.frontmatter_completeness, 20);
+        assert!(
+            scored
+                .suggestions
+                .contains(&"Add 'name' field to frontmatter".to_string()),
+            "{:?}",
+            scored.suggestions
+        );
+    }
+
+    #[test]
+    fn score_suggests_a_description_when_frontmatter_lacks_one() {
+        let scored = scored_with("---\nname: n\n---\nBody\n");
+
+        assert_eq!(scored.breakdown.frontmatter_completeness, 15);
+        assert!(
+            scored
+                .suggestions
+                .contains(&"Add 'description' field to frontmatter".to_string()),
+            "{:?}",
+            scored.suggestions
+        );
+    }
+
+    #[test]
+    fn score_gives_no_frontmatter_points_to_invalid_yaml() {
+        let scored = scored_with("---\nname: a: b\n---\nBody\n");
+
+        assert_eq!(scored.breakdown.frontmatter_completeness, 0);
+        assert!(
+            scored
+                .suggestions
+                .contains(&"Fix frontmatter YAML syntax errors".to_string()),
+            "{:?}",
+            scored.suggestions
+        );
+    }
+
+    #[test]
+    fn score_gives_twenty_five_points_below_five_hundred_tokens() {
+        assert_eq!(
+            scored_with(&content_of_length(1996))
+                .breakdown
+                .token_efficiency,
+            25
+        );
+    }
+
+    #[test]
+    fn score_gives_twenty_points_from_five_hundred_to_below_one_thousand_tokens() {
+        assert_eq!(
+            scored_with(&content_of_length(2000))
+                .breakdown
+                .token_efficiency,
+            20
+        );
+        assert_eq!(
+            scored_with(&content_of_length(3996))
+                .breakdown
+                .token_efficiency,
+            20
+        );
+    }
+
+    #[test]
+    fn score_gives_fifteen_points_from_one_thousand_to_below_two_thousand_tokens() {
+        let at_start = scored_with(&content_of_length(4000));
+        let at_end = scored_with(&content_of_length(7996));
+
+        assert_eq!(at_start.breakdown.token_efficiency, 15);
+        assert_eq!(at_end.breakdown.token_efficiency, 15);
+        assert!(!at_end.suggestions.iter().any(|s| s.contains("splitting")));
+    }
+
+    #[test]
+    fn score_gives_ten_points_below_five_thousand_tokens() {
+        let at_start = scored_with(&content_of_length(8000));
+        let at_end = scored_with(&content_of_length(19996));
+
+        assert_eq!(at_start.breakdown.token_efficiency, 10);
+        assert_eq!(at_end.breakdown.token_efficiency, 10);
+        assert!(at_start
+            .suggestions
+            .contains(&"Consider splitting into smaller skills for token efficiency".to_string()));
+    }
+
+    #[test]
+    fn score_gives_five_points_and_suggests_splitting_at_five_thousand_tokens() {
+        let scored = scored_with(&content_of_length(20000));
+
+        assert_eq!(scored.breakdown.token_efficiency, 5);
+        assert!(scored
+            .suggestions
+            .contains(&"Consider splitting into smaller skills for token efficiency".to_string()));
     }
 }

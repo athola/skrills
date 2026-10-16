@@ -4,13 +4,13 @@ This guide provides development information for contributors.
 
 ## Toolchain
 
-- **Rust**: Install Rust 1.78+, preferably with `rustup`.
+- **Rust**: Install Rust 1.89+, preferably with `rustup`. 1.89 builds the libraries and binaries (the workspace sets `rust-version = "1.89"`). Running the tests needs Rust 1.93.1+, because the `serial_test` 4 dev-dependency requires it.
 - **Formatting and Linting**: Use `cargo fmt` for formatting and `clippy` for linting to maintain code quality.
 - **Documentation**: This project uses `mdbook` for documentation. Install it with `cargo install mdbook --locked`.
 
 ## Make Targets
 
-The project's [`Makefile`](Makefile) provides targets for development workflows:
+The project's [`Makefile`](https://github.com/athola/skrills/blob/master/Makefile) provides targets for development workflows:
 
 ```bash
 # Code quality checks
@@ -46,12 +46,18 @@ To run all tests, use:
 cargo test --workspace --all-features
 ```
 
-This command is aliased by `make test` and is part of the Continuous Integration (CI) pipeline, managed by `make ci`.
+`make test` runs this command. `make ci` runs, locally, the checks the CI
+workflow (`.github/workflows/ci.yml`) gates on: `fmt-check`, `lint`,
+`lint-md`, `lint-hygiene`, `test`, `test-scripts` and `test-install`. CI
+itself calls cargo and the scripts directly, so keep the two in step.
+`make precommit` adds the dogfood contracts and `verify-publish`.
 
 ### Release-Consistency Checks
 
 Before tagging a release, run `make release-consistency` to verify
-five parity invariants across the workspace:
+five parity invariants across the workspace. Crates are versioned in
+lock-step; [ADR 0004](https://github.com/athola/skrills/blob/master/docs/adr/0004-intelligence-crate-versioning.md)
+(independent intelligence versioning) is superseded.
 
 1. All `crates/*/Cargo.toml` versions agree.
 2. `plugins/skrills/.claude-plugin/plugin.json` version matches the
@@ -69,6 +75,19 @@ versions and command counts before invoking the test suite.
 The same tests are picked up by `make test` and `make test-integration`
 via the `--test '*'` filter, so CI also enforces the invariants.
 
+### Crate-Boundary Checks
+
+`crates/test-utils/tests/crate_boundaries.rs` reads the workspace sources
+and fails when a recorded crate boundary is crossed: `skrills-server`
+exports a module outside its server set or re-exports another crate, a
+crate other than `skrills_sync` defines `enum Platform`
+([ADR 0009](https://github.com/athola/skrills/blob/master/docs/adr/0009-one-sync-engine-and-crate-boundaries.md)),
+or `skrills-analyze` depends on `skrills-intelligence` without
+`optional = true`
+([ADR 0010](https://github.com/athola/skrills/blob/master/docs/adr/0010-analyze-independent-of-intelligence.md)).
+If one fails, either undo the coupling or revise the ADR along with the test.
+Run them alone with `cargo test -p skrills-test-utils --test crate_boundaries`.
+
 ### Public API Guardrails
 
 The `skrills-server` crate is currently in its pre-1.0 development phase. Refer to the SemVer guidance in [Public API and SemVer Policy](semver.md) and perform local public API checks before submitting changes. This verifies compliance with the API evolution policy.
@@ -76,4 +95,4 @@ The `skrills-server` crate is currently in its pre-1.0 development phase. Refer 
 ### Coverage
 
 - **Local Coverage**: For local analysis, generate an HTML report with `cargo llvm-cov --workspace --html`, or an LCOV report for CI export with `cargo llvm-cov --workspace --lcov --output-path lcov.info`.
-- **CI Coverage**: The [`coverage.yml`](.github/workflows/coverage.yml) workflow within our CI/CD pipeline runs the same coverage command and uploads the results to Codecov.
+- **CI Coverage**: The [`coverage.yml`](https://github.com/athola/skrills/blob/master/.github/workflows/coverage.yml) workflow within our CI/CD pipeline runs the same coverage command and uploads the results to Codecov.

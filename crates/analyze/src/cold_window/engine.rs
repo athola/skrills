@@ -9,8 +9,10 @@
 //!
 //! State carried across ticks:
 //!
-//! - **Last snapshot**, used as `prev` by [`SnapshotDiff`] and
-//!   [`AlertPolicy`].
+//! - **Last snapshot**, used as `prev` by [`AlertPolicy`] (and by
+//!   [`ColdWindowEngine::diff_snapshots`] for callers that ask). The
+//!   [`SnapshotDiff`] strategy does not gate alert evaluation: every
+//!   tick runs the policy, so dwell counters advance on unchanged ticks.
 //! - **Alert history**, per-fingerprint dwell counters that drive
 //!   the min-dwell timer in `LayeredAlertPolicy`.
 //! - **Snapshot version**, monotonic, increments per tick.
@@ -25,6 +27,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
+#[cfg(feature = "intelligence-scorer")]
 use skrills_intelligence::cold_window_hints::MultiSignalScorer;
 use skrills_snapshot::{
     Alert, AlertBand, Hint, KillSwitch, LoadSample, PluginHealth, ResearchFinding, ScoredHint,
@@ -159,12 +162,40 @@ impl TickInput {
 ///
 /// The intelligence crate cannot depend on analyze (would create a
 /// cycle), so the trait shape is duplicated there and bridged here.
+#[cfg(feature = "intelligence-scorer")]
 pub struct DefaultHintScorer(pub MultiSignalScorer);
 
+#[cfg(feature = "intelligence-scorer")]
 impl HintScorer for DefaultHintScorer {
     fn rank(&self, hints: Vec<Hint>) -> Vec<ScoredHint> {
         self.0.rank(hints)
     }
+}
+
+/// Scorer for builds without the `intelligence-scorer` feature: hints keep
+/// the order their collector produced, so token-counting users need not
+/// compile `skrills-intelligence` (ADR 0010).
+pub struct KeepOrderScorer;
+
+impl HintScorer for KeepOrderScorer {
+    fn rank(&self, hints: Vec<Hint>) -> Vec<ScoredHint> {
+        hints
+            .into_iter()
+            .map(|hint| ScoredHint {
+                hint,
+                score: 0.0,
+                pinned: false,
+            })
+            .collect()
+    }
+}
+
+/// The scorer [`ColdWindowEngine::with_defaults`] wires in.
+pub fn default_hint_scorer() -> Box<dyn HintScorer> {
+    #[cfg(feature = "intelligence-scorer")]
+    return Box::new(DefaultHintScorer(MultiSignalScorer::new()));
+    #[cfg(not(feature = "intelligence-scorer"))]
+    return Box::new(KeepOrderScorer);
 }
 
 /// Per-tick state carried across calls to [`ColdWindowEngine::tick`].
@@ -244,16 +275,17 @@ impl ColdWindowEngine {
         Self::with_strategies(
             Box::new(LoadAwareCadence::new()),
             Box::new(LayeredAlertPolicy::for_budget(budget_ceiling)),
-            Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+            default_hint_scorer(),
             Box::new(FieldwiseDiff::new()),
         )
         .with_budget_ceiling(budget_ceiling)
     }
 
     /// Construct an engine with caller-provided strategies. The token
-    /// budget ceiling defaults to `u64::MAX` (kill-switch never
-    /// engages); chain [`ColdWindowEngine::with_budget_ceiling`] when
-    /// the alert policy uses a real ceiling.
+    /// budget ceiling is the alert policy's
+    /// [`AlertPolicy::budget_ceiling`]; a policy without one leaves it
+    /// at `u64::MAX` (kill-switch never engages) unless
+    /// [`ColdWindowEngine::with_budget_ceiling`] sets it.
     pub fn with_strategies(
         cadence: Box<dyn CadenceStrategy>,
         alert_policy: Box<dyn AlertPolicy>,
@@ -261,6 +293,7 @@ impl ColdWindowEngine {
         diff: Box<dyn SnapshotDiff>,
     ) -> Self {
         let (tx, _) = broadcast::channel(SNAPSHOT_CHANNEL_CAPACITY);
+        let budget_ceiling = alert_policy.budget_ceiling().unwrap_or(u64::MAX);
         Self {
             tx,
             activity: Arc::new(Mutex::new(ActivityRing::with_capacity(
@@ -273,7 +306,7 @@ impl ColdWindowEngine {
             state: Arc::new(Mutex::new(EngineState::default())),
             tick_budget: DEFAULT_TICK_BUDGET,
             kill_switch: KillSwitch::new(),
-            budget_ceiling: u64::MAX,
+            budget_ceiling,
         }
     }
 
@@ -353,8 +386,9 @@ impl ColdWindowEngine {
     }
 
     /// Run a single tick: produce a `WindowSnapshot` from the input,
-    /// run alert policy, hint scorer, and diff against the carried
-    /// state, broadcast, and return the new snapshot.
+    /// run the alert policy and hint scorer against the carried state,
+    /// broadcast, and return the new snapshot. No snapshot diff is
+    /// computed here.
     pub fn tick(&self, input: TickInput) -> Arc<WindowSnapshot> {
         let tick_start = Instant::now();
         let TickInput {
@@ -529,15 +563,22 @@ mod tests {
     #[test]
     fn tick_under_typical_input_completes_under_50ms() {
         // Median tick budget per spec SC1. This is a smoke test on
-        // the integration path, not the full benchmark.
+        // the integration path, not the full benchmark. The median of
+        // several ticks, so one scheduler hiccup cannot fail it.
         let engine = ColdWindowEngine::with_defaults(100_000);
-        let input = input_from_snapshot(&standard_snapshot());
-        let start = std::time::Instant::now();
-        let _ = engine.tick(input);
-        let elapsed = start.elapsed();
+        let mut samples: Vec<std::time::Duration> = (0..21)
+            .map(|_| {
+                let input = input_from_snapshot(&standard_snapshot());
+                let start = std::time::Instant::now();
+                let _ = engine.tick(input);
+                start.elapsed()
+            })
+            .collect();
+        samples.sort();
+        let median = samples[samples.len() / 2];
         assert!(
-            elapsed < std::time::Duration::from_millis(50),
-            "tick took {elapsed:?}, expected <50ms"
+            median < std::time::Duration::from_millis(50),
+            "median tick took {median:?}, expected <50ms"
         );
     }
 
@@ -558,7 +599,7 @@ mod tests {
         let engine = ColdWindowEngine::with_strategies(
             Box::new(LoadAwareCadence::new().with_cores(4)),
             Box::new(LayeredAlertPolicy::new(100_000)),
-            Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+            default_hint_scorer(),
             Box::new(FieldwiseDiff::new()),
         );
         let input = TickInput::empty().with_load_sample(high_load_sample());
@@ -567,6 +608,7 @@ mod tests {
         assert_eq!(snap.next_tick_ms, 8_000);
     }
 
+    #[cfg(feature = "intelligence-scorer")]
     #[test]
     fn hints_are_scored_and_ranked() {
         let engine = ColdWindowEngine::with_defaults(100_000);
@@ -592,7 +634,7 @@ mod tests {
         let engine = ColdWindowEngine::with_strategies(
             Box::new(LoadAwareCadence::new()),
             Box::new(LayeredAlertPolicy::new(80_000).with_min_dwell(1)),
-            Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+            default_hint_scorer(),
             Box::new(FieldwiseDiff::new()),
         );
         let mut warning_fired = false;
@@ -617,7 +659,7 @@ mod tests {
         let engine = ColdWindowEngine::with_strategies(
             Box::new(LoadAwareCadence::new()),
             Box::new(LayeredAlertPolicy::new(100_000).with_min_dwell(2)),
-            Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+            default_hint_scorer(),
             Box::new(FieldwiseDiff::new()),
         );
 
@@ -674,6 +716,18 @@ mod tests {
         assert_eq!(last.version, 1);
     }
 
+    #[test]
+    fn keep_order_scorer_keeps_the_input_order() {
+        let ranked = KeepOrderScorer.rank(vec![
+            sample_hint("a", HintCategory::Token, 1, 1.0, 5.0, 0.0),
+            sample_hint("b", HintCategory::Token, 10, 9.0, 1.0, 0.0),
+        ]);
+        let uris: Vec<&str> = ranked.iter().map(|s| s.hint.uri.as_str()).collect();
+        assert_eq!(uris, ["a", "b"]);
+        assert!(ranked.iter().all(|s| !s.pinned));
+    }
+
+    #[cfg(feature = "intelligence-scorer")]
     #[test]
     fn default_hint_scorer_adapts_intelligence_scorer() {
         // Compile-time and behavioral guard: DefaultHintScorer impls
@@ -822,7 +876,7 @@ mod tests {
         let engine = ColdWindowEngine::with_strategies(
             Box::new(LoadAwareCadence::new()),
             Box::new(LayeredAlertPolicy::new(100_000)),
-            Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+            default_hint_scorer(),
             Box::new(CountingDiff(Arc::clone(&calls))),
         );
         let first = engine.tick(TickInput::empty());
@@ -867,7 +921,7 @@ mod tests {
             Box::new(SlowPolicy {
                 sleep: Duration::from_millis(5),
             }),
-            Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+            default_hint_scorer(),
             Box::new(FieldwiseDiff::new()),
         )
         .with_tick_budget(Duration::from_millis(1));
@@ -891,7 +945,7 @@ mod tests {
             Box::new(SlowPolicy {
                 sleep: Duration::from_millis(3),
             }),
-            Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+            default_hint_scorer(),
             Box::new(FieldwiseDiff::new()),
         )
         .with_tick_budget(Duration::from_millis(1));
@@ -941,6 +995,25 @@ mod tests {
         assert!(
             switch.is_engaged(),
             "switch must engage at or above budget ceiling"
+        );
+    }
+
+    #[test]
+    fn with_strategies_takes_kill_switch_ceiling_from_alert_policy() {
+        let engine = ColdWindowEngine::with_strategies(
+            Box::new(LoadAwareCadence::new()),
+            Box::new(LayeredAlertPolicy::new(80_000)),
+            default_hint_scorer(),
+            Box::new(FieldwiseDiff::new()),
+        );
+        let switch = engine.kill_switch();
+        let _ = engine.tick(TickInput::empty().with_token_ledger(TokenLedger {
+            total: 80_000,
+            ..Default::default()
+        }));
+        assert!(
+            switch.is_engaged(),
+            "the alert policy's ceiling must engage the kill switch"
         );
     }
 

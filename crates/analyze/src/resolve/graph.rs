@@ -44,6 +44,10 @@ pub struct DependencyGraph {
     options: ResolveOptions,
     /// Warnings produced while building the graph (e.g., duplicate skill names).
     build_warnings: Vec<String>,
+    /// Per skill, the error that makes it unresolvable (a missing required
+    /// dependency or unparsable dependencies), so one broken skill fails
+    /// only the resolutions that reach it.
+    skill_errors: Vec<Option<ResolveError>>,
 }
 
 /// Traversal state for one `DependencyGraph::compute_resolution` call.
@@ -143,8 +147,16 @@ impl DependencyGraph {
             });
         }
 
-        // Already resolved
+        if let Some(err) = &self.skill_errors[idx] {
+            return Err(err.clone());
+        }
+
+        // Already resolved. A required path to a node first reached through
+        // an optional edge makes it, and what it requires, required.
         if walk.visited.contains(&idx) {
+            if !optional {
+                self.mark_required(walk, idx);
+            }
             return Ok(());
         }
 
@@ -187,6 +199,18 @@ impl DependencyGraph {
                 }
             }
 
+            // An optional dependency that cannot itself resolve is skipped,
+            // like one that is missing.
+            if edge.optional && !self.options.strict_optional {
+                if let Some(err) = &self.skill_errors[edge.target] {
+                    walk.result.warnings.push(format!(
+                        "Skipped optional dependency '{}': {err}",
+                        self.skills[edge.target].name
+                    ));
+                    continue;
+                }
+            }
+
             let child_optional = optional || edge.optional;
             self.visit_index(walk, edge.target, child_optional, depth + 1)?;
         }
@@ -202,6 +226,24 @@ impl DependencyGraph {
         walk.result.optionals.push(optional);
 
         Ok(())
+    }
+
+    /// Clears the optional flag on a resolved node and on every node it
+    /// reaches through required edges. Recursion stops at nodes already
+    /// required, so each node is cleared at most once.
+    fn mark_required(&self, walk: &mut IndexWalk, idx: usize) {
+        let Some(pos) = walk.result.order.iter().position(|&i| i == idx) else {
+            return;
+        };
+        if !walk.result.optionals[pos] {
+            return;
+        }
+        walk.result.optionals[pos] = false;
+        for edge in &self.edges[idx] {
+            if !edge.optional && edge.target < self.skills.len() {
+                self.mark_required(walk, edge.target);
+            }
+        }
     }
 
     /// Build ResolutionResult from cached data.
@@ -305,7 +347,10 @@ impl GraphBuilder {
 
     /// Build the dependency graph.
     ///
-    /// This pre-computes the adjacency list and validates all edges.
+    /// This pre-computes the adjacency list and validates all edges. A
+    /// skill with a missing required dependency or unparsable dependencies
+    /// does not fail the build: resolving it, or a skill that requires it,
+    /// returns that error. The `Result` is kept for API stability.
     #[must_use = "builder pattern returns the constructed graph"]
     pub fn build(self) -> Result<DependencyGraph, ResolveError> {
         let mut name_index: HashMap<String, usize> = HashMap::new();
@@ -343,15 +388,20 @@ impl GraphBuilder {
 
         // Build adjacency list
         let mut edges: Vec<Vec<Edge>> = vec![Vec::new(); self.skills.len()];
+        let mut skill_errors: Vec<Option<ResolveError>> = vec![None; self.skills.len()];
 
         for (idx, skill) in self.skills.iter().enumerate() {
             if let Some(ref fm) = skill.frontmatter {
-                let deps = fm
-                    .normalized_dependencies()
-                    .map_err(|e| ResolveError::ParseError {
-                        skill: skill.name.clone(),
-                        message: e,
-                    })?;
+                let deps = match fm.normalized_dependencies() {
+                    Ok(deps) => deps,
+                    Err(e) => {
+                        skill_errors[idx] = Some(ResolveError::ParseError {
+                            skill: skill.name.clone(),
+                            message: e,
+                        });
+                        continue;
+                    }
+                };
 
                 for dep in deps {
                     // Look up target
@@ -367,10 +417,11 @@ impl GraphBuilder {
                             optional: dep.optional,
                         });
                     } else if !dep.optional || self.options.strict_optional {
-                        return Err(ResolveError::NotFound {
+                        skill_errors[idx] = Some(ResolveError::NotFound {
                             name: dep.name,
                             required_by: skill.name.clone(),
                         });
+                        break;
                     } else {
                         // Optional dependency not found - add warning
                         build_warnings.push(format!(
@@ -389,6 +440,7 @@ impl GraphBuilder {
             cache: RwLock::new(HashMap::new()),
             options: self.options,
             build_warnings,
+            skill_errors,
         })
     }
 }
