@@ -336,7 +336,7 @@ to the 50 K tier.
   ([anthropics/claude-code#28728](https://github.com/anthropics/claude-code/issues/28728),
   [#46695](https://github.com/anthropics/claude-code/issues/46695))
   suggests 75 % may be safer for sessions you intend to compact.
-  v0.9.0 is expected to make this configurable per-tier.
+  Per-tier thresholds are not configurable yet.
 - **Kill-switch override**: there is no "ignore the kill-switch"
   flag in v0.8.0. If you hit 100 %, raise `--alert-budget` and
   restart. This matches the safer-than-sorry posture of cockpit
@@ -420,7 +420,7 @@ the matching signal in the snapshot:
   against real discovery output, covering MCP and conversation tokens
   as well as `--skill-dir` skills.
 - Per-tier configurable thresholds (community evidence supports
-  75 % Warning, deferred to v0.9.0).
+  75 % Warning; not yet scheduled).
 - Clippy-style `Applicability` axis for hints (MachineApplicable /
   MaybeIncorrect / HasPlaceholders / Unspecified) orthogonal to
   severity ([rust-clippy precedent](https://github.com/rust-lang/rust-clippy/blob/master/clippy_lints/src/needless_late_init.rs)).
@@ -433,6 +433,6 @@ the matching signal in the snapshot:
 
 ## Reference
 
-- [ADR 0007: Cold-Window Architecture](../docs/adr/0007-cold-window-architecture.md)
-- [architecture.md](../docs/architecture.md)
+- [ADR 0007: Cold-Window Architecture](https://github.com/athola/skrills/blob/master/docs/adr/0007-cold-window-architecture.md)
+- [architecture.md](https://github.com/athola/skrills/blob/master/docs/architecture.md)
 - War-room decision: [`docs/archive/2026-04-26-cold-window-war-room.md`](https://github.com/athola/skrills/blob/master/docs/archive/2026-04-26-cold-window-war-room.md)

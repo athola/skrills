@@ -661,7 +661,7 @@ skrills cold-window --browser --port 8888
 skrills cold-window --browser --demo        # Built-in demo data
 ```
 
-Options include `--alert-budget <N>` (default `100000`, minimum 2),
+Options include `--alert-budget <N>` (default `100000`, minimum 3),
 `--research-rate <N>`, `--tick-rate-ms <MILLIS>`, `--no-adaptive`,
 `--no-bell`, `--skill-dir <DIR>`, and `--plugins-dir <DIR>`. See
 [Cold-Window Real-Time Analysis](cold-window.md) for the full reference.

@@ -23,7 +23,7 @@
 - **Setup**: `skrills setup --universal --include-marketplace` also copies marketplace skills; off by default.
 - **Crates**: skrills-server no longer exports `discovery`, `sync`, `setup` or `config`. They moved to `skrills-discovery`, `skrills_sync`, the new `skrills-setup` crate and the CLI (ADR 0009).
 
-## 0.9.0 (Unreleased)
+## 0.9.0 (2026-10-13)
 
 - **Security**: `Host` is validated on every HTTP route, not only `/mcp`. `setup --universal` syncs skill directories only, instead of copying all of `~/.claude` (credentials and transcripts included) into `~/.agent`. `serve --http` reads `auth_token` from the config file itself, subagent CLI children no longer inherit server secrets, and skill generation sends the GitHub token only to GitHub. `fetch-pdf`, the tome clients and MCP `create-skill` are bounded. Third-party GitHub Actions are pinned to commit SHAs, and rustls, h2, quinn-proto and crossbeam-epoch advisories are closed.
 - **BREAKING: `cold-window` shows only real data unless `--demo` is passed**. `--alert-budget` must be at least 2, and a ceiling at or below 50K scales the Advisory and Caution tiers to 20% and 50% of it. See [Cold-Window Real-Time Analysis](cold-window.md).

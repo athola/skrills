@@ -27,7 +27,7 @@ Shared test utilities are available in the test modules for managing temporary d
 
 ## CI Pipeline Notes
 
-The [integration-tests.yml](.github/workflows/integration-tests.yml) workflow in our CI pipeline runs the test suite with path-based filtering, parallel job execution, cached builds, scheduled daily runs, and Codecov reporting.
+The [integration-tests.yml](https://github.com/athola/skrills/blob/master/.github/workflows/integration-tests.yml) workflow in our CI pipeline runs the test suite with path-based filtering, parallel job execution, cached builds, scheduled daily runs, and Codecov reporting.
 
 ## Adding New Coverage
 

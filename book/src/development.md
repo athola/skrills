@@ -10,7 +10,7 @@ This guide provides development information for contributors.
 
 ## Make Targets
 
-The project's [`Makefile`](Makefile) provides targets for development workflows:
+The project's [`Makefile`](https://github.com/athola/skrills/blob/master/Makefile) provides targets for development workflows:
 
 ```bash
 # Code quality checks
@@ -95,4 +95,4 @@ The `skrills-server` crate is currently in its pre-1.0 development phase. Refer 
 ### Coverage
 
 - **Local Coverage**: For local analysis, generate an HTML report with `cargo llvm-cov --workspace --html`, or an LCOV report for CI export with `cargo llvm-cov --workspace --lcov --output-path lcov.info`.
-- **CI Coverage**: The [`coverage.yml`](.github/workflows/coverage.yml) workflow within our CI/CD pipeline runs the same coverage command and uploads the results to Codecov.
+- **CI Coverage**: The [`coverage.yml`](https://github.com/athola/skrills/blob/master/.github/workflows/coverage.yml) workflow within our CI/CD pipeline runs the same coverage command and uploads the results to Codecov.

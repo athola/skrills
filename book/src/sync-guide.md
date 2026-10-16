@@ -186,7 +186,7 @@ skrills sync-all --from cursor --to claude
 skrills sync-all --from claude --to cursor
 ```
 
-Cursor-only frontmatter fields (`globs`, `alwaysApply`) are preserved in content bytes during Cursor-to-Claude sync but have no effect in Claude. See [ADR 0006](../docs/adr/0006-cursor-rules-mapping.md) for the mapping rationale.
+Cursor-only frontmatter fields (`globs`, `alwaysApply`) are preserved in content bytes during Cursor-to-Claude sync but have no effect in Claude. See [ADR 0006](https://github.com/athola/skrills/blob/master/docs/adr/0006-cursor-rules-mapping.md) for the mapping rationale.
 
 ### Cursor Hooks
 
@@ -203,7 +203,7 @@ Hook event names are translated between Claude's PascalCase and Cursor's camelCa
 | `UserPromptSubmit` | `beforeSubmitPrompt` |
 | `PreCompact` | `preCompact` |
 
-The `Notification` event has no Cursor equivalent and is skipped during sync. See [ADR 0006](../docs/adr/0006-cursor-rules-mapping.md) for the full mapping rationale.
+The `Notification` event has no Cursor equivalent and is skipped during sync. See [ADR 0006](https://github.com/athola/skrills/blob/master/docs/adr/0006-cursor-rules-mapping.md) for the full mapping rationale.
 
 Claude-to-Cursor sync does not copy top-level hooks into `~/.cursor/hooks.json`. Cursor loads Claude Code hooks from `~/.claude/settings.json` itself and runs every matching hook from both files, so a copy would run each hook twice. The report lists hooks as skipped for that reason.
 
