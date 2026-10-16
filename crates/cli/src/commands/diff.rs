@@ -409,6 +409,48 @@ mod tests {
     }
 
     #[test]
+    fn diff_roots_include_the_project_cursor_rules_when_present() {
+        let _g = skrills_test_utils::env_guard();
+        let home = tempfile::tempdir().unwrap();
+        let _h = skrills_test_utils::set_env_var("HOME", Some(home.path().to_str().unwrap()));
+        let cwd = tempfile::tempdir().unwrap();
+        let rules = cwd.path().join(".cursor/rules");
+
+        let without = diff_roots(home.path(), cwd.path());
+        std::fs::create_dir_all(&rules).unwrap();
+        let with = diff_roots(home.path(), cwd.path());
+
+        assert!(!without.iter().any(|r| r.root == rules), "{without:?}");
+        assert!(
+            with.iter()
+                .any(|r| r.root == rules && r.source == SkillSource::Cursor),
+            "{with:?}"
+        );
+    }
+
+    #[test]
+    fn diff_ops_falls_back_to_delete_all_insert_all_above_the_cell_limit() {
+        let a = vec!["x"; 4000];
+        let b = vec!["x"; 4001];
+
+        let ops = diff_ops(&a, &b);
+
+        assert_eq!(ops.len(), 8001);
+        assert!(ops[..4000].iter().all(|op| *op == Op::Delete("x")));
+        assert!(ops[4000..].iter().all(|op| *op == Op::Insert("x")));
+    }
+
+    #[test]
+    fn diff_ops_uses_the_lcs_at_the_cell_limit() {
+        let lines = vec!["x"; 4000];
+
+        let ops = diff_ops(&lines, &lines);
+
+        assert_eq!(ops.len(), 4000);
+        assert!(ops.iter().all(|op| *op == Op::Keep("x")));
+    }
+
+    #[test]
     fn token_diff_uses_the_analyzer_estimate() {
         let a = "x".repeat(10);
         let b = "x".repeat(20);

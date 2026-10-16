@@ -368,4 +368,123 @@ mod tests {
         assert_eq!(scored.breakdown.validation_score, 25);
         assert_eq!(scored.breakdown.frontmatter_completeness, 25);
     }
+
+    /// One discovered skill to score varied contents against: the token and
+    /// frontmatter components read only the content passed in.
+    fn scored_with(content: &str) -> SkillScoreResult {
+        let tmp = tempfile::tempdir().unwrap();
+        write_skill(
+            tmp.path(),
+            "probe",
+            "---\nname: probe\ndescription: P\n---\n",
+        );
+        let skills = discovered_under(tmp.path());
+        score_skill(&skills[0], content)
+    }
+
+    /// Content of exactly `chars` characters behind a valid header.
+    fn content_of_length(chars: usize) -> String {
+        let header = "---\nname: probe\ndescription: P\n---\n";
+        format!("{header}{}", "x".repeat(chars - header.len()))
+    }
+
+    #[test]
+    fn score_suggests_a_name_when_frontmatter_lacks_one() {
+        let scored = scored_with("---\ndescription: d\n---\nBody\n");
+
+        assert_eq!(scored.breakdown.frontmatter_completeness, 20);
+        assert!(
+            scored
+                .suggestions
+                .contains(&"Add 'name' field to frontmatter".to_string()),
+            "{:?}",
+            scored.suggestions
+        );
+    }
+
+    #[test]
+    fn score_suggests_a_description_when_frontmatter_lacks_one() {
+        let scored = scored_with("---\nname: n\n---\nBody\n");
+
+        assert_eq!(scored.breakdown.frontmatter_completeness, 15);
+        assert!(
+            scored
+                .suggestions
+                .contains(&"Add 'description' field to frontmatter".to_string()),
+            "{:?}",
+            scored.suggestions
+        );
+    }
+
+    #[test]
+    fn score_gives_no_frontmatter_points_to_invalid_yaml() {
+        let scored = scored_with("---\nname: a: b\n---\nBody\n");
+
+        assert_eq!(scored.breakdown.frontmatter_completeness, 0);
+        assert!(
+            scored
+                .suggestions
+                .contains(&"Fix frontmatter YAML syntax errors".to_string()),
+            "{:?}",
+            scored.suggestions
+        );
+    }
+
+    #[test]
+    fn score_gives_twenty_five_points_below_five_hundred_tokens() {
+        assert_eq!(
+            scored_with(&content_of_length(1996))
+                .breakdown
+                .token_efficiency,
+            25
+        );
+    }
+
+    #[test]
+    fn score_gives_twenty_points_from_five_hundred_to_below_one_thousand_tokens() {
+        assert_eq!(
+            scored_with(&content_of_length(2000))
+                .breakdown
+                .token_efficiency,
+            20
+        );
+        assert_eq!(
+            scored_with(&content_of_length(3996))
+                .breakdown
+                .token_efficiency,
+            20
+        );
+    }
+
+    #[test]
+    fn score_gives_fifteen_points_from_one_thousand_to_below_two_thousand_tokens() {
+        let at_start = scored_with(&content_of_length(4000));
+        let at_end = scored_with(&content_of_length(7996));
+
+        assert_eq!(at_start.breakdown.token_efficiency, 15);
+        assert_eq!(at_end.breakdown.token_efficiency, 15);
+        assert!(!at_end.suggestions.iter().any(|s| s.contains("splitting")));
+    }
+
+    #[test]
+    fn score_gives_ten_points_below_five_thousand_tokens() {
+        let at_start = scored_with(&content_of_length(8000));
+        let at_end = scored_with(&content_of_length(19996));
+
+        assert_eq!(at_start.breakdown.token_efficiency, 10);
+        assert_eq!(at_end.breakdown.token_efficiency, 10);
+        assert!(at_start
+            .suggestions
+            .contains(&"Consider splitting into smaller skills for token efficiency".to_string()));
+    }
+
+    #[test]
+    fn score_gives_five_points_and_suggests_splitting_at_five_thousand_tokens() {
+        let scored = scored_with(&content_of_length(20000));
+
+        assert_eq!(scored.breakdown.token_efficiency, 5);
+        assert!(scored
+            .suggestions
+            .contains(&"Consider splitting into smaller skills for token efficiency".to_string()));
+    }
 }

@@ -473,6 +473,76 @@ mod tests {
     }
 
     #[test]
+    fn sync_agents_rejects_an_end_marker_without_a_start_marker() -> Result<()> {
+        let tmp = tempdir()?;
+        let path = tmp.path().join("AGENTS.md");
+        let original = format!("# T\nnotes\n{AGENTS_SECTION_END}\n");
+        fs::write(&path, &original)?;
+
+        let err = sync_agents_with_assets(&path, &[], &[]).expect_err("orphan end marker");
+        assert!(err.to_string().contains("fix the markers"), "{err}");
+        assert_eq!(fs::read_to_string(&path)?, original);
+        Ok(())
+    }
+
+    #[test]
+    fn resyncing_an_unchanged_agent_counts_it_as_skipped() -> Result<()> {
+        let tmp = tempdir()?;
+        let claude_root = tmp.path().join("claude");
+        let agent_dir = claude_root.join("agents");
+        fs::create_dir_all(&agent_dir)?;
+        fs::write(agent_dir.join("helper.md"), "agent content")?;
+        let agents_root = tmp.path().join("agents");
+
+        sync_agents_only_from_claude(&claude_root, &agents_root, false)?;
+        let again = sync_agents_only_from_claude(&claude_root, &agents_root, false)?;
+
+        assert_eq!(again.copied, 0);
+        assert_eq!(again.skipped, 1);
+        assert!(again.copied_names.is_empty());
+        Ok(())
+    }
+
+    /// Two files larger than one 8192-byte read buffer that differ only in
+    /// their last byte, so the first buffer compares equal.
+    fn same_length_pair(dir: &Path, last_src: u8, last_dest: u8) -> Result<(PathBuf, PathBuf)> {
+        let mut src_bytes = vec![b'a'; 8192 + 100];
+        let mut dest_bytes = src_bytes.clone();
+        *src_bytes.last_mut().unwrap() = last_src;
+        *dest_bytes.last_mut().unwrap() = last_dest;
+        let (src, dest) = (dir.join("src.md"), dir.join("dest.md"));
+        fs::write(&src, src_bytes)?;
+        fs::write(&dest, dest_bytes)?;
+        Ok((src, dest))
+    }
+
+    #[test]
+    fn same_length_files_differing_after_the_first_buffer_need_a_copy() -> Result<()> {
+        let tmp = tempdir()?;
+        let (src, dest) = same_length_pair(tmp.path(), b'x', b'y')?;
+        assert!(should_copy_by_content(&src, &dest)?);
+        Ok(())
+    }
+
+    #[test]
+    fn identical_files_larger_than_one_buffer_need_no_copy() -> Result<()> {
+        let tmp = tempdir()?;
+        let (src, dest) = same_length_pair(tmp.path(), b'x', b'x')?;
+        assert!(!should_copy_by_content(&src, &dest)?);
+        Ok(())
+    }
+
+    #[test]
+    fn files_of_different_length_need_a_copy() -> Result<()> {
+        let tmp = tempdir()?;
+        let (src, dest) = (tmp.path().join("src.md"), tmp.path().join("dest.md"));
+        fs::write(&src, "agent content")?;
+        fs::write(&dest, "agent")?;
+        assert!(should_copy_by_content(&src, &dest)?);
+        Ok(())
+    }
+
+    #[test]
     fn sync_agents_replaces_an_existing_section_in_place() -> Result<()> {
         let tmp = tempdir()?;
         let path = tmp.path().join("AGENTS.md");

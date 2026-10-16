@@ -320,6 +320,36 @@ mod tests {
     }
 
     #[test]
+    fn cache_ttl_ignores_an_unparsable_env_value_and_uses_the_manifest() {
+        let _guard = env_guard();
+        let _prev = set_env_var("SKRILLS_CACHE_TTL_MS", Some("5m"));
+
+        let ttl = cache_ttl(&|| {
+            Ok(ManifestSettings {
+                cache_ttl_ms: Some(2048),
+                ..Default::default()
+            })
+        });
+
+        assert_eq!(ttl, Duration::from_millis(2048));
+    }
+
+    #[test]
+    fn malformed_manifest_file_loads_default_settings_instead_of_failing() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let manifest_path = temp.path().join("manifest.json");
+        fs::write(&manifest_path, r#"{"cache_ttl_ms":"60000"}"#).unwrap();
+        let _prev_manifest = set_env_var("SKRILLS_MANIFEST", Some(manifest_path.to_str().unwrap()));
+
+        let settings = load_manifest_settings().expect("malformed manifest is not an error");
+
+        assert_eq!(settings.cache_ttl_ms, None);
+        assert_eq!(settings.priority, None);
+        assert_eq!(settings.expose_agents, None);
+    }
+
+    #[test]
     #[should_panic(expected = "forced panic during settings load")]
     fn cache_ttl_propagates_settings_panic() {
         let _guard = env_guard();

@@ -304,4 +304,40 @@ mod tests {
         assert_eq!(report.written, 0);
         assert!(matches!(report.skipped[0], SkipReason::ParseError { .. }));
     }
+
+    #[test]
+    fn a_missing_name_is_inserted_with_the_files_crlf_line_ending() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("skills");
+        let src = "---\r\ndescription: A\r\n---\r\n\r\nBody\r\n";
+        write_shared_skills(
+            &dir,
+            &[skill("alpha", PathBuf::from("/x/alpha/SKILL.md"), src)],
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.join("alpha/SKILL.md")).unwrap(),
+            "---\r\nname: alpha\r\ndescription: A\r\n---\r\n\r\nBody\r\n"
+        );
+    }
+
+    #[test]
+    fn preview_reports_a_skill_that_is_not_utf8_as_a_parse_error() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("skills");
+        let mut bad = skill("bad", PathBuf::from("/x/bad/SKILL.md"), "");
+        bad.content = vec![0xff, 0xfe];
+
+        let report = preview_shared_skills(&dir, &[bad]);
+
+        assert_eq!(report.written, 0);
+        assert_eq!(report.skipped.len(), 1);
+        match &report.skipped[0] {
+            SkipReason::ParseError { item, error } => {
+                assert_eq!(item, "bad");
+                assert!(error.contains("not valid UTF-8"), "{error}");
+            }
+            other => panic!("expected ParseError, got {other:?}"),
+        }
+    }
 }

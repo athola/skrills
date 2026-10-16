@@ -361,4 +361,32 @@ mod tests {
         assert_eq!(sanitize_query("ti: AND ()"), "");
         assert!(super::super::search_limit("", 10, 100).is_none());
     }
+
+    #[test]
+    fn search_with_zero_limit_or_empty_query_returns_empty_without_a_request() {
+        use super::super::tests::poll_ready;
+        let client = ArxivClient::new();
+        assert!(poll_ready(client.search("quantum", 0)).unwrap().is_empty());
+        assert!(poll_ready(client.search("ti: AND ()", 10))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn decode_entities_reads_hex_character_references() {
+        assert_eq!(decode_entities("&#x41;&#X42;&#x3b1;"), "ABα");
+    }
+
+    #[test]
+    fn decode_entities_reads_decimal_character_references() {
+        assert_eq!(decode_entities("&#65;&#945;"), "Aα");
+    }
+
+    #[test]
+    fn decode_entities_keeps_unknown_and_unterminated_ampersands_literally() {
+        assert_eq!(decode_entities("&bogus; x"), "&bogus; x");
+        assert_eq!(decode_entities("a &amp b"), "a &amp b");
+        assert_eq!(decode_entities("&#xZZ; &#1114112;"), "&#xZZ; &#1114112;");
+        assert_eq!(decode_entities("tail &"), "tail &");
+    }
 }

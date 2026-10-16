@@ -600,6 +600,33 @@ mod tests {
     }
 
     #[test]
+    fn yaml_scalar_escapes_tab_and_carriage_return() {
+        assert_eq!(yaml_scalar("a\tb\rc"), "\"a\\tb\\rc\"");
+        for text in ["tab\there", "cr\rhere"] {
+            let generated = generate_frontmatter(text, text);
+            let fm = parse_frontmatter(&generated)
+                .unwrap_or_else(|e| panic!("{text:?} -> {generated:?}: {e}"))
+                .frontmatter
+                .unwrap();
+            assert_eq!(fm.name.as_deref(), Some(text), "{generated:?}");
+        }
+    }
+
+    #[test]
+    fn frontmatter_key_line_is_none_when_the_first_line_is_not_a_fence() {
+        assert_eq!(
+            frontmatter_key_line("# not a fence\nname: x\n", "name"),
+            None
+        );
+    }
+
+    #[test]
+    fn frontmatter_key_line_is_none_when_an_unclosed_block_lacks_the_key() {
+        assert_eq!(frontmatter_key_line("---\nname: x\n", "description"), None);
+        assert_eq!(frontmatter_key_line("---\nname: x\n", "name"), Some(2));
+    }
+
+    #[test]
     fn frontmatter_after_a_utf8_bom_is_recognized() {
         let content = "\u{feff}---\nname: a\ndescription: b\n---\n# Body";
         assert!(has_frontmatter(content));

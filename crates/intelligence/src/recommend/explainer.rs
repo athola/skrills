@@ -212,6 +212,18 @@ mod tests {
     }
 
     #[test]
+    fn format_recency_says_a_year_ago_from_365_to_729_days() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let days_ago = |d: u64| format_recency(now - d * 86_400 - 60);
+        assert_eq!(days_ago(364), "Used 12 months ago");
+        assert_eq!(days_ago(365), "Used a year ago");
+        assert_eq!(days_ago(729), "Used a year ago");
+    }
+
+    #[test]
     fn format_recency_reads_millisecond_timestamps() {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -1268,3 +1268,76 @@ fn pdf_cache_evicts_the_oldest_files_past_its_budget() {
     assert!(!dir.join("old.pdf").exists());
     assert!(dir.join("mid.pdf").exists() && dir.join("new.pdf").exists());
 }
+
+/// Edge metadata had no size limit either; it is refused before the
+/// database is opened, so no nodes are needed.
+#[test]
+fn link_knowledge_refuses_oversized_metadata() {
+    let _guard = crate::test_support::env_guard();
+    let temp = tempfile::tempdir().unwrap();
+    let cache_base = temp.path().join("cache");
+    let _home = crate::test_support::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+    let _xdg = crate::test_support::set_env_var("XDG_CACHE_HOME", cache_base.to_str());
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
+    let big = "x".repeat(super::super::research::MAX_KNOWLEDGE_FIELD_BYTES + 1);
+    let args = json!({
+        "source_id": "a",
+        "target_id": "b",
+        "kind": "cites",
+        "metadata": {"note": big},
+    });
+    let err = service
+        .link_knowledge_tool(args.as_object().cloned().unwrap())
+        .expect_err("oversized metadata accepted");
+    assert!(err.to_string().contains("too large"), "{err}");
+}
+
+fn run_search_papers(args: serde_json::Value) -> rmcp::model::CallToolResult {
+    let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(service.search_papers_tool(args.as_object().cloned().unwrap()))
+        .unwrap()
+}
+
+fn result_text(result: &rmcp::model::CallToolResult) -> String {
+    result
+        .content
+        .iter()
+        .filter_map(|block| block.as_text().map(|t| t.text.clone()))
+        .collect()
+}
+
+/// Only unknown sources requested: nothing is searched and the result is
+/// an error that names every failure.
+#[test]
+fn search_papers_with_only_unknown_sources_reports_all_sources_failed() {
+    let result = run_search_papers(json!({"query": "rust", "sources": ["bogus"]}));
+    assert_eq!(result.is_error, Some(true));
+    let text = result_text(&result);
+    assert_eq!(
+        text,
+        "Found 0 papers (1 source errors: Unknown source: bogus): all sources failed"
+    );
+    let structured = result.structured_content.unwrap();
+    assert_eq!(structured["errors"], json!(["Unknown source: bogus"]));
+    assert_eq!(structured["count"], 0);
+}
+
+/// A zero limit makes every client return early, so known sources succeed
+/// with no papers and no request; that is not a failure.
+#[test]
+fn search_papers_with_zero_limit_returns_no_papers_and_no_errors() {
+    let result = run_search_papers(json!({
+        "query": "rust",
+        "limit": 0,
+        "sources": ["arxiv", "semantic_scholar", "openalex"],
+    }));
+    assert_ne!(result.is_error, Some(true));
+    assert_eq!(result_text(&result), "Found 0 papers");
+    let structured = result.structured_content.unwrap();
+    assert_eq!(structured["errors"], json!([]));
+    assert_eq!(structured["papers"], json!([]));
+}

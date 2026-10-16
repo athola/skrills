@@ -134,6 +134,17 @@ mod tests {
     use super::*;
     use reqwest::header::HeaderValue;
 
+    /// Polls `fut` once with no runtime. A client that reaches its HTTP
+    /// call returns `Pending` (or panics for want of a reactor), so a
+    /// future that is ready on the first poll made no request.
+    pub(super) fn poll_ready<F: std::future::Future>(fut: F) -> F::Output {
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        match std::future::Future::poll(std::pin::pin!(fut), &mut cx) {
+            std::task::Poll::Ready(output) => output,
+            std::task::Poll::Pending => panic!("future awaited I/O instead of returning early"),
+        }
+    }
+
     #[test]
     fn too_many_requests_maps_to_rate_limited_with_retry_after() {
         let mut headers = HeaderMap::new();

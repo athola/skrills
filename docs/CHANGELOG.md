@@ -26,6 +26,7 @@ Follow-up to the review: items that needed a decision rather than a fix.
 - **Dependencies**: YAML frontmatter is parsed with `serde_norway` instead of the deprecated `serde_yaml`, whose `unsafe-libyaml` backend is unmaintained (RUSTSEC-2024-0449).
 - **Build**: the unpublished test helper package is named `skrills-test-utils` to match the other crates; run its tests with `cargo test -p skrills-test-utils`.
 - **Build**: `make test`, `make test-unit` and `make test-integration` now run tests in parallel by default, as CI does; set `TEST_THREADS=1` to serialize.
+- **Build**: `crates/test-utils/tests/crate_boundaries.rs` fails when skrills-server exports a non-server module or re-exports another crate, when a crate other than skrills_sync defines `enum Platform` (ADR 0009), or when skrills-analyze depends on skrills-intelligence without `optional = true` (ADR 0010).
 - **Build**: the workspace declares `rust-version = "1.89"` (std `File::lock`), so older compilers stop with an MSRV message instead of dependency errors; running the tests needs Rust 1.93.1+ (`serial_test` 4).
 - **Cold-window TUI**: Breaking: `Esc` quits again when nothing is open to back out of. It closes the topmost overlay, then clears zoom, then clears the hint filter, and only then quits, matching the skill dashboard.
 - **Dashboard**: `Esc` closes the help overlay instead of quitting while help is open; with help closed it still quits.

@@ -177,4 +177,12 @@ mod tests {
         let p = parse_s2_paper(&v).unwrap();
         assert!(p.abstract_text.is_none());
     }
+
+    #[test]
+    fn search_with_zero_limit_or_blank_query_returns_empty_without_a_request() {
+        use super::super::tests::poll_ready;
+        let client = SemanticScholarClient::new();
+        assert!(poll_ready(client.search("rust", 0)).unwrap().is_empty());
+        assert!(poll_ready(client.search("   ", 10)).unwrap().is_empty());
+    }
 }

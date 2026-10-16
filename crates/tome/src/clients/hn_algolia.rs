@@ -162,4 +162,12 @@ mod tests {
         assert!(d.comment_count.is_none());
         assert!(d.created_at.is_none());
     }
+
+    #[test]
+    fn search_with_zero_limit_or_blank_query_returns_empty_without_a_request() {
+        use super::super::tests::poll_ready;
+        let client = HnAlgoliaClient::new();
+        assert!(poll_ready(client.search("rust", 0)).unwrap().is_empty());
+        assert!(poll_ready(client.search("   ", 10)).unwrap().is_empty());
+    }
 }

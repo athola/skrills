@@ -259,6 +259,35 @@ mod tests {
         cmd
     }
 
+    /// Claude accepts a skill without frontmatter; Codex and Copilot do not,
+    /// so each target must be checked against its own verdict.
+    #[test]
+    fn skill_without_frontmatter_syncs_to_claude_only() {
+        let skill = make_skill("plain", "# No frontmatter");
+        let options = SyncValidationOptions::default();
+        let can_sync = |target| validate_skill_for_sync(&skill, target, &options).can_sync;
+
+        assert!(can_sync(ValidationTarget::Claude));
+        assert!(!can_sync(ValidationTarget::Copilot));
+        assert!(!can_sync(ValidationTarget::All));
+    }
+
+    #[test]
+    fn fully_valid_skill_syncs_to_copilot_and_all() {
+        let skill = make_skill(
+            "test",
+            "---\nname: test\ndescription: A test skill\n---\n# Content",
+        );
+        let options = SyncValidationOptions::default();
+
+        for target in [ValidationTarget::Copilot, ValidationTarget::All] {
+            assert!(
+                validate_skill_for_sync(&skill, target, &options).can_sync,
+                "{target:?}"
+            );
+        }
+    }
+
     #[test]
     fn test_validate_valid_skill() {
         let skill = make_skill(

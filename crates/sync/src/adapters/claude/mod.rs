@@ -1076,6 +1076,35 @@ mod tests {
         assert!(skills[0].plugin_origin.is_none());
     }
 
+    /// Two plugins shipping a skill of the same name: the newer file wins
+    /// whichever plugin the cache walk meets first. Swapping the mtimes covers
+    /// both walk orders, since `read_dir` order is not fixed.
+    #[test]
+    fn read_skills_keeps_the_newer_of_two_plugin_skills_with_the_same_name() {
+        for (alpha_mtime, beta_mtime, newer) in [(1_000, 2_000, "beta"), (2_000, 1_000, "alpha")] {
+            let tmp = tempdir().unwrap();
+            write_at(
+                &tmp.path()
+                    .join("plugins/cache/market/alpha/1.0.0/skills/review/SKILL.md"),
+                "alpha",
+                alpha_mtime,
+            );
+            write_at(
+                &tmp.path()
+                    .join("plugins/cache/market/beta/1.0.0/skills/review/SKILL.md"),
+                "beta",
+                beta_mtime,
+            );
+
+            let adapter = ClaudeAdapter::with_root(tmp.path().to_path_buf());
+            let skills = adapter.read_skills().unwrap();
+
+            assert_eq!(skills.len(), 1);
+            assert_eq!(skills[0].content, newer.as_bytes());
+            assert_eq!(skills[0].plugin_origin.as_ref().unwrap().plugin_name, newer);
+        }
+    }
+
     /// A markdown file inside a skill directory is one of its modules, not a
     /// second skill named after the file.
     #[test]

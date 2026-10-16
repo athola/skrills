@@ -75,6 +75,19 @@ versions and command counts before invoking the test suite.
 The same tests are picked up by `make test` and `make test-integration`
 via the `--test '*'` filter, so CI also enforces the invariants.
 
+### Crate-Boundary Checks
+
+`crates/test-utils/tests/crate_boundaries.rs` reads the workspace sources
+and fails when a recorded crate boundary is crossed: `skrills-server`
+exports a module outside its server set or re-exports another crate, a
+crate other than `skrills_sync` defines `enum Platform`
+([ADR 0009](https://github.com/athola/skrills/blob/master/docs/adr/0009-one-sync-engine-and-crate-boundaries.md)),
+or `skrills-analyze` depends on `skrills-intelligence` without
+`optional = true`
+([ADR 0010](https://github.com/athola/skrills/blob/master/docs/adr/0010-analyze-independent-of-intelligence.md)).
+If one fails, either undo the coupling or revise the ADR along with the test.
+Run them alone with `cargo test -p skrills-test-utils --test crate_boundaries`.
+
 ### Public API Guardrails
 
 The `skrills-server` crate is currently in its pre-1.0 development phase. Refer to the SemVer guidance in [Public API and SemVer Policy](semver.md) and perform local public API checks before submitting changes. This verifies compliance with the API evolution policy.

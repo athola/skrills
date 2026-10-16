@@ -385,6 +385,14 @@ mod tests {
     }
 
     #[test]
+    fn non_finite_band_error_displays_the_finite_requirement() {
+        assert_eq!(
+            BandError::NonFinite.to_string(),
+            "AlertBand: thresholds must be finite"
+        );
+    }
+
+    #[test]
     fn alert_band_new_rejects_low_greater_than_high() {
         let err = AlertBand::new(100.0, 100.0, 50.0, 50.0).expect_err("inverted");
         assert_eq!(err, BandError::MisorderedThresholds);

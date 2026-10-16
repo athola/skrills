@@ -2017,4 +2017,87 @@ mod tests {
         });
         assert_eq!(app.activity[0].status, ActivityStatus::Ok);
     }
+
+    fn sync_event(id: i64, status: skrills_metrics::SyncStatus) -> MetricEvent {
+        MetricEvent::Sync {
+            id,
+            operation: skrills_metrics::SyncOperation::Push,
+            files_count: 2,
+            status,
+            created_at: String::new(),
+        }
+    }
+
+    fn rule_event(id: i64, outcome: skrills_metrics::RuleOutcome) -> MetricEvent {
+        MetricEvent::RuleTrigger {
+            id,
+            rule_name: "no-secrets".into(),
+            category: None,
+            outcome,
+            duration_ms: None,
+            created_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn failed_sync_shows_fail_tag_and_fail_status() {
+        let mut app = App::new();
+        app.on_metric_event(sync_event(1, skrills_metrics::SyncStatus::Failed));
+        assert!(
+            app.activity[0].message.ends_with("- FAIL"),
+            "{:?}",
+            app.activity[0]
+        );
+        assert_eq!(app.activity[0].status, ActivityStatus::Fail);
+    }
+
+    #[test]
+    fn in_progress_sync_shows_ellipsis_and_pending_status() {
+        let mut app = App::new();
+        app.on_metric_event(sync_event(1, skrills_metrics::SyncStatus::InProgress));
+        assert!(
+            app.activity[0].message.ends_with("- ..."),
+            "{:?}",
+            app.activity[0]
+        );
+        assert_eq!(app.activity[0].status, ActivityStatus::Pending);
+    }
+
+    #[test]
+    fn skipped_rule_shows_skip_tag_and_info_status() {
+        let mut app = App::new();
+        app.on_metric_event(rule_event(1, skrills_metrics::RuleOutcome::Skip));
+        assert!(
+            app.activity[0].message.ends_with("- SKIP"),
+            "{:?}",
+            app.activity[0]
+        );
+        assert_eq!(app.activity[0].status, ActivityStatus::Info);
+    }
+
+    #[test]
+    fn errored_rule_shows_err_tag_and_fail_status() {
+        let mut app = App::new();
+        app.on_metric_event(rule_event(1, skrills_metrics::RuleOutcome::Error));
+        assert!(
+            app.activity[0].message.ends_with("- ERR"),
+            "{:?}",
+            app.activity[0]
+        );
+        assert_eq!(app.activity[0].status, ActivityStatus::Fail);
+    }
+
+    #[test]
+    fn sync_and_rule_events_keep_separate_watermarks() {
+        let mut app = App::new();
+        let synced = sync_event(5, skrills_metrics::SyncStatus::Success);
+        assert!(app.is_new_event(&synced));
+        assert!(!app.is_new_event(&synced), "same sync id is not new twice");
+        assert!(
+            app.is_new_event(&rule_event(3, skrills_metrics::RuleOutcome::Pass)),
+            "a rule id below the sync watermark is still new"
+        );
+        assert!(!app.is_new_event(&rule_event(3, skrills_metrics::RuleOutcome::Pass)));
+        assert!(app.is_new_event(&sync_event(6, skrills_metrics::SyncStatus::Success)));
+    }
 }

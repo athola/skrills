@@ -535,6 +535,49 @@ mod tests {
         );
     }
 
+    #[test]
+    fn read_hooks_empty_when_the_file_has_no_hooks_key() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(hooks_path(tmp.path()), r#"{"version": 1}"#).unwrap();
+
+        let hooks = read_hooks(tmp.path()).unwrap();
+
+        assert!(hooks.is_empty());
+    }
+
+    #[test]
+    fn read_hooks_fails_naming_the_file_when_hooks_is_not_an_object() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = hooks_path(tmp.path());
+        std::fs::write(&path, r#"{"hooks": ["stop"]}"#).unwrap();
+
+        let err = read_hooks(tmp.path()).unwrap_err().to_string();
+
+        assert!(err.contains("not an object"), "{err}");
+        assert!(err.contains(&path.display().to_string()), "{err}");
+    }
+
+    #[test]
+    fn read_hooks_skips_an_event_whose_value_is_not_a_list() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config = serde_json::json!({
+            "hooks": {
+                "stop": {"command": "./not-in-a-list.sh"},
+                "afterFileEdit": [{"command": "./fmt.sh"}]
+            }
+        });
+        std::fs::write(
+            hooks_path(tmp.path()),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+
+        let hooks = read_hooks(tmp.path()).unwrap();
+
+        let names: Vec<&str> = hooks.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, vec!["afterFileEdit"]);
+    }
+
     /// The same entries must survive being written back to Cursor.
     #[test]
     fn write_hooks_accepts_entries_without_a_command() {

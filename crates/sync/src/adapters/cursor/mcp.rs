@@ -162,4 +162,26 @@ mod tests {
         assert_eq!(names, vec!["good", "remote"]);
         assert_eq!(servers["remote"].transport, McpTransport::Http);
     }
+
+    #[test]
+    fn read_mcp_servers_empty_when_the_file_has_no_mcp_servers_key() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(mcp_config_path(tmp.path()), r#"{"other": {}}"#).unwrap();
+
+        let servers = read_mcp_servers(tmp.path()).unwrap();
+
+        assert!(servers.is_empty());
+    }
+
+    #[test]
+    fn read_mcp_servers_fails_naming_the_file_when_mcp_servers_is_not_an_object() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = mcp_config_path(tmp.path());
+        std::fs::write(&path, r#"{"mcpServers": ["good"]}"#).unwrap();
+
+        let err = read_mcp_servers(tmp.path()).unwrap_err().to_string();
+
+        assert!(err.contains("not an object"), "{err}");
+        assert!(err.contains(&path.display().to_string()), "{err}");
+    }
 }

@@ -33,3 +33,6 @@ scorer that keeps hint order, and callers can still pass their own
 - Default builds behave as before.
 - A build with `--no-default-features` gets plain hint ordering in the
   cold-window view.
+- `crates/test-utils/tests/crate_boundaries.rs` fails if
+  `skrills-intelligence` stops being an optional dependency of
+  `skrills-analyze`.

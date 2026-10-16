@@ -328,4 +328,35 @@ args = ["--flag"]
         assert_eq!(problem_count(&lines), 1);
         assert_eq!(problem_count(&lines[..2]), 0);
     }
+
+    #[test]
+    fn doctor_fails_naming_the_problem_count_when_a_problem_is_found() {
+        let _guard = skrills_test_utils::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = skrills_test_utils::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+        let codex_dir = temp.path().join(".codex");
+        fs::create_dir_all(&codex_dir).unwrap();
+        // An existing command path, so the wrong type is the only problem.
+        fs::write(
+            codex_dir.join("config.toml"),
+            format!(
+                "[mcp_servers.skrills]\ntype = \"http\"\ncommand = \"{}\"\n",
+                temp.path().display()
+            ),
+        )
+        .unwrap();
+
+        let err = doctor_report().unwrap_err();
+
+        assert_eq!(err.to_string(), "doctor found 1 problem(s)");
+    }
+
+    #[test]
+    fn doctor_succeeds_when_no_line_is_marked_as_a_problem() {
+        let _guard = skrills_test_utils::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = skrills_test_utils::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+
+        doctor_report().expect("a missing config.toml is reported, not a problem");
+    }
 }

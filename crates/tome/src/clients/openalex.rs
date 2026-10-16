@@ -154,4 +154,12 @@ mod tests {
         let p = parse_work(&v).unwrap();
         assert!(p.authors.is_empty());
     }
+
+    #[test]
+    fn search_with_zero_limit_or_blank_query_returns_empty_without_a_request() {
+        use super::super::tests::poll_ready;
+        let client = OpenAlexClient::new();
+        assert!(poll_ready(client.search("rust", 0)).unwrap().is_empty());
+        assert!(poll_ready(client.search("   ", 10)).unwrap().is_empty());
+    }
 }

@@ -874,6 +874,55 @@ mod tests {
         assert!(!home.tls().join("cert.pem").exists());
     }
 
+    #[test]
+    #[cfg(feature = "http-transport")]
+    fn install_without_a_key_refuses_when_no_key_is_installed() {
+        let home = Home::new();
+        let cert = home.source("c.pem", &test_pair().0);
+
+        let err = handle_cert_install_command(cert, None, OutputFormat::Text)
+            .unwrap_err()
+            .to_string();
+
+        assert_eq!(
+            err,
+            "No key is installed for this certificate; pass it with --key"
+        );
+        assert!(!home.tls().join("cert.pem").exists());
+    }
+
+    #[test]
+    fn install_refuses_a_certificate_file_that_is_not_pem() {
+        let home = Home::new();
+        let cert = home.source("c.pem", "hello");
+        let key = home.source("k.pem", &test_pair().1);
+
+        let err = handle_cert_install_command(cert, Some(key), OutputFormat::Text)
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            err.contains("does not appear to be valid PEM format"),
+            "{err}"
+        );
+        assert!(!home.tls().join("cert.pem").exists());
+    }
+
+    #[test]
+    fn install_refuses_a_missing_certificate_file() {
+        let home = Home::new();
+
+        let err = handle_cert_install_command(
+            home.dir.path().join("absent.pem"),
+            None,
+            OutputFormat::Text,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("Certificate file not found"), "{err}");
+    }
+
     /// A failed certificate rename used to leave the new key beside the old
     /// certificate, and the temp files behind.
     #[test]

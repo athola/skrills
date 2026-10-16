@@ -1364,6 +1364,31 @@ Content."#,
     }
 
     #[tokio::test]
+    async fn cli_binary_follows_configured_default_backend_over_client_env() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let _home_guard = set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+        let _cli_guard = set_env_var("SKRILLS_CLI_BINARY", None);
+        let _claude_session = set_env_var("CLAUDE_CODE_SESSION", None);
+        let _claude_cli = set_env_var("CLAUDE_CLI", None);
+        let _claude_mcp = set_env_var("__CLAUDE_MCP_SERVER", None);
+        let _claude_entry = set_env_var("CLAUDE_CODE_ENTRYPOINT", None);
+        let _codex_session = set_env_var("CODEX_SESSION_ID", None);
+        let _codex_cli = set_env_var("CODEX_CLI", None);
+        let _codex_home = set_env_var("CODEX_HOME", None);
+
+        for (backend, client, expected) in
+            [("claude", "codex", "claude"), ("codex", "claude", "codex")]
+        {
+            let _backend_guard = set_env_var("SKRILLS_SUBAGENTS_DEFAULT_BACKEND", Some(backend));
+            let _client_guard = set_env_var("SKRILLS_CLIENT", Some(client));
+            let service =
+                hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+            assert_eq!(service.default_cli_binary(), expected, "backend={backend}");
+        }
+    }
+
+    #[tokio::test]
     async fn cli_binary_defaults_to_codex_when_codex_session_env_present() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
@@ -2127,6 +2152,26 @@ Content."#,
 
         // Should return error response
         assert_eq!(result.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn get_run_events_rejects_limit_outside_one_to_max_page() {
+        let service = hermetic_service(Arc::new(MemRunStore::new()), BackendKind::Codex).unwrap();
+
+        for limit in [json!(0), json!(MAX_EVENTS_PAGE + 1), json!(-1), json!("10")] {
+            let args = json!({"run_id": "00000000-0000-0000-0000-000000000000", "limit": limit})
+                .as_object()
+                .cloned();
+            let err = service
+                .handle_call("get-run-events", args.as_ref())
+                .await
+                .expect_err("out-of-range limit must be rejected");
+            assert!(
+                err.to_string()
+                    .contains("limit must be an integer from 1 to 1000"),
+                "limit={limit}: {err}"
+            );
+        }
     }
 
     #[tokio::test]

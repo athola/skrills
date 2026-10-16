@@ -432,6 +432,59 @@ fn instructions_use_apply_to_and_read_back_nested_files() {
     assert!(text.contains("globs: \"**/*.ts\""), "{text}");
 }
 
+/// Each instruction here must reach disk byte for byte: renaming `globs`
+/// is skipped when it is not UTF-8, has no closed frontmatter, lacks
+/// `globs`, or already has `applyTo`.
+#[test]
+fn instructions_that_need_no_apply_to_rename_are_written_unchanged() {
+    let tmp = tempdir().unwrap();
+    let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+    let mut not_utf8 = make_command("not-utf8", "");
+    not_utf8.content = b"---\nglobs: \xFF\n---\n".to_vec();
+    let cases = [
+        not_utf8,
+        make_command("no-frontmatter", "globs: \"*.ts\"\nBody\n"),
+        make_command("unclosed", "---\nglobs: \"*.ts\"\nBody\n"),
+        make_command("no-globs", "---\ndescription: d\n---\nBody\n"),
+        make_command(
+            "has-apply-to",
+            "---\napplyTo: \"*.rs\"\nglobs: \"*.ts\"\n---\nBody\n",
+        ),
+    ];
+
+    adapter.write_instructions(&cases).unwrap();
+
+    for case in &cases {
+        let path = tmp
+            .path()
+            .join(format!("instructions/{}.instructions.md", case.name));
+        assert_eq!(fs::read(&path).unwrap(), case.content, "{}", case.name);
+    }
+}
+
+#[test]
+fn read_mcp_servers_skips_sse_and_keeps_stdio_and_http() {
+    let tmp = tempdir().unwrap();
+    fs::write(
+        tmp.path().join("mcp-config.json"),
+        r#"{
+        "mcpServers": {
+            "local": { "command": "/usr/bin/local" },
+            "remote": { "type": "http", "url": "https://example.com/mcp" },
+            "legacy": { "type": "sse", "url": "https://example.com/sse" }
+        }
+    }"#,
+    )
+    .unwrap();
+
+    let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
+    let servers = adapter.read_mcp_servers().unwrap();
+
+    let mut names: Vec<_> = servers.keys().map(String::as_str).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["local", "remote"]);
+}
+
 #[test]
 fn read_mcp_servers_empty_when_no_file() {
     let tmp = tempdir().unwrap();

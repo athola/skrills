@@ -2967,6 +2967,76 @@ fn plugin_assets_does_not_write_the_marker_through_a_symlink() {
     );
 }
 
+/// A plugin that ships a file at the marker's path makes the symlinked marker
+/// count as one of its own files, so the directory is adopted and the marker
+/// step itself has to refuse the link.
+#[cfg(unix)]
+#[test]
+fn plugin_assets_warns_and_leaves_the_target_when_an_adopted_dir_has_a_symlinked_marker() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let outside = tmp.path().join("outside.txt");
+    std::fs::write(&outside, b"precious").unwrap();
+    let plugin_dir = tmp.path().join("plugins/local/linked");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    std::os::unix::fs::symlink(&outside, plugin_dir.join(super::MIRROR_MARKER)).unwrap();
+    let shipped_marker = crate::common::PluginAsset::new(
+        "linked".to_string(),
+        "market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from(super::MIRROR_MARKER),
+        b"from the plugin".to_vec(),
+        false,
+    );
+
+    let report = adapter
+        .write_plugin_assets(&[plugin_manifest("linked"), shipped_marker])
+        .unwrap();
+
+    assert_eq!(std::fs::read(&outside).unwrap(), b"precious");
+    assert!(
+        report.warnings.iter().any(|w| w.contains(&format!(
+            "plugins/local/linked/{} is a symlink",
+            super::MIRROR_MARKER
+        ))),
+        "warnings were {:?}",
+        report.warnings
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn plugin_assets_warns_and_leaves_the_target_when_a_skill_marker_is_a_symlink() {
+    use crate::adapters::utils::SYNCED_MARKER;
+
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let outside = tmp.path().join("outside.txt");
+    std::fs::write(&outside, b"precious").unwrap();
+    let plugin_dir = tmp.path().join("plugins/local/my-plugin");
+    mark_as_mirrored(&plugin_dir);
+    let skill_dir = plugin_dir.join("skills/alpha");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::os::unix::fs::symlink(&outside, skill_dir.join(SYNCED_MARKER)).unwrap();
+
+    let report = adapter
+        .write_plugin_assets(&[
+            plugin_manifest("my-plugin"),
+            plugin_skill("my-plugin", "alpha"),
+        ])
+        .unwrap();
+
+    assert_eq!(std::fs::read(&outside).unwrap(), b"precious");
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("is a symlink, so the skill directory")),
+        "warnings were {:?}",
+        report.warnings
+    );
+}
+
 /// A symlinked `plugins/local` entry (a dev checkout) is the user's, even
 /// when its target carries a marker from an earlier mirror.
 #[cfg(unix)]

@@ -72,3 +72,8 @@ a published crate's API.
 - One place to change when a tool moves its skill directory.
 - `skrills-server` loses public items as modules move; each move is listed
   as breaking in the changelog.
+- `crates/test-utils/tests/crate_boundaries.rs` fails when `skrills-server`
+  exports a module outside its server set or re-exports another crate
+  (decision 2), or when a crate other than `skrills_sync` defines
+  `enum Platform` (decision 3). Changing either means revising this ADR,
+  not only the test.
