@@ -554,7 +554,7 @@ pub enum Commands {
         /// Skip confirmation prompts (non-interactive mode).
         #[arg(long, short = 'y')]
         yes: bool,
-        /// Also sync skills to universal ~/.agent/skills directory for cross-agent reuse.
+        /// Also sync skills to universal ~/.agents/skills directory for cross-agent reuse.
         #[arg(long)]
         universal: bool,
         /// Source directory for mirroring skills (default: ~/.claude).
@@ -1757,6 +1757,13 @@ mod tests {
         assert!(!tui.contains("pin"), "{tui}");
         let agent = help_of("multi-cli-agent");
         assert!(agent.contains("backend: Primary backend"), "{agent}");
+    }
+
+    #[test]
+    fn setup_universal_help_names_the_directory_setup_writes() {
+        let setup = help_of("setup");
+        assert!(setup.contains("~/.agents/skills"), "{setup}");
+        assert!(!setup.contains("~/.agent/skills"), "{setup}");
     }
 
     #[test]

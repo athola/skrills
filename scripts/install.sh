@@ -10,7 +10,7 @@
 #   SKRILLS_TARGET    explicit target triple override
 #   SKRILLS_SKIP_PATH_MESSAGE  set to 1 to silence PATH reminder
 #   SKRILLS_NO_HOOK   set to 1 to skip hook/MCP registration
-#   SKRILLS_UNIVERSAL set to 1 to also sync ~/.agent/skills
+#   SKRILLS_UNIVERSAL set to 1 to also sync ~/.agents/skills
 #   SKRILLS_CLIENT    client to set up: claude, codex, copilot, cursor, both
 #                     or all (default: each client whose ~/.<client>
 #                     directory exists, else claude)
@@ -318,7 +318,7 @@ usage() {
     "SKRILLS_TARGET" "explicit target triple override" \
     "SKRILLS_SKIP_PATH_MESSAGE" "1 silences the PATH reminder" \
     "SKRILLS_NO_HOOK" "1 skips hook/MCP registration" \
-    "SKRILLS_UNIVERSAL" "1 also syncs ~/.agent/skills" \
+    "SKRILLS_UNIVERSAL" "1 also syncs ~/.agents/skills" \
     "SKRILLS_CLIENT" "claude, codex, copilot, cursor, both or all" \
     "SKRILLS_SKIP_CHECKSUM" "1 installs without verifying the checksum" \
     "LOG_LEVEL" "message threshold, 0-7 (default: 6)"

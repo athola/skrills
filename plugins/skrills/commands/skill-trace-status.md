@@ -11,7 +11,7 @@ Check skill tracing status using the skrills MCP server.
 Use the `mcp__plugin_skrills_skrills__skill-loading-status` tool with:
 - `target`: claude, codex, or both (default: both)
 - `include_mirror`: Include ~/.codex/skills-mirror
-- `include_agent`: Include ~/.agent/skills
+- `include_agent`: Include ~/.agents/skills
 
 Parse `$ARGUMENTS` for:
 - `--target <target>` or `-t <target>`: Target CLI (default: both)
