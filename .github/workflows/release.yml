@@ -53,7 +53,7 @@ jobs:
         run: echo "Release is already published; skipping uploads."
       - uses: actions/checkout@v7
         if: needs.create-release.outputs.is-draft == 'true'
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, resolved 2026-10-02
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, resolved 2026-10-02
         if: needs.create-release.outputs.is-draft == 'true'
         with:
           toolchain: stable
@@ -61,7 +61,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: needs.create-release.outputs.is-draft == 'true'
-      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
         if: needs.create-release.outputs.is-draft == 'true'
         with:
           tool: cross
@@ -93,7 +93,7 @@ jobs:
         run: echo "Release is already published; skipping uploads."
       - uses: actions/checkout@v7
         if: needs.create-release.outputs.is-draft == 'true'
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, resolved 2026-10-02
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, resolved 2026-10-02
         if: needs.create-release.outputs.is-draft == 'true'
         with:
           toolchain: stable
@@ -127,7 +127,7 @@ jobs:
         run: echo "Release is already published; skipping uploads."
       - uses: actions/checkout@v7
         if: needs.create-release.outputs.is-draft == 'true'
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, resolved 2026-10-02
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, resolved 2026-10-02
         if: needs.create-release.outputs.is-draft == 'true'
         with:
           toolchain: stable
@@ -179,7 +179,7 @@ jobs:
       CARGO_NET_RETRY: "5"
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, resolved 2026-10-02
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, resolved 2026-10-02
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
