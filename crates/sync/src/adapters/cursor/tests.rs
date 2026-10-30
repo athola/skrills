@@ -3243,3 +3243,34 @@ fn plugin_assets_prune_keeps_files_a_ledgered_mirror_never_wrote() {
     assert!(!gone.join(".cursor-plugin/plugin.json").exists());
     assert!(gone.join("notes.md").exists());
 }
+
+/// Cursor names its tools `Shell` and `Write` (cursor.com/docs/hooks), so a
+/// mirrored `Bash` or `Edit|MultiEdit` matcher never fired in a plugin hook.
+#[test]
+fn plugin_hooks_json_maps_claude_tool_matchers_to_cursor_tools() {
+    let tmp = TempDir::new().unwrap();
+    let body = r#"{"hooks": {
+      "PreToolUse": [
+        {"matcher": "Write|Edit|MultiEdit", "hooks": [{"type": "command", "command": "a"}]},
+        {"matcher": "Bash", "hooks": [{"type": "command", "command": "b"}]},
+        {"matcher": "Read|Grep|Glob", "hooks": [{"type": "command", "command": "c"}]},
+        {"matcher": "mcp__.*", "hooks": [{"type": "command", "command": "d"}]}
+      ],
+      "SessionStart": [
+        {"matcher": "startup|clear", "hooks": [{"type": "command", "command": "e"}]}
+      ]
+    }}"#;
+    let (hooks, _) = mirrored_plugin_hooks(&tmp, body);
+
+    let pre = hooks["hooks"]["preToolUse"].as_array().unwrap();
+    let matchers: Vec<&str> = pre.iter().map(|e| e["matcher"].as_str().unwrap()).collect();
+    assert_eq!(
+        matchers,
+        ["Write", "Shell", "Read|Grep|Glob", "mcp__.*"],
+        "{hooks:#}"
+    );
+    assert_eq!(
+        hooks["hooks"]["sessionStart"][0]["matcher"],
+        "startup|clear"
+    );
+}

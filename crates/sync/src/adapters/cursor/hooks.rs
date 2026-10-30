@@ -253,12 +253,39 @@ pub fn write_hooks(root: &Path, hooks: &[Command]) -> Result<WriteReport> {
     Ok(report)
 }
 
+/// Claude tool names in a plain `A|B` matcher renamed to Cursor's (`Bash` is
+/// `Shell`, the edit tools are `Write`). `None` for a regex or when nothing
+/// changes, so such matchers pass through as written.
+fn cursor_tool_matcher(matcher: &str) -> Option<String> {
+    let names: Vec<&str> = matcher.split('|').collect();
+    if names
+        .iter()
+        .any(|name| name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+    {
+        return None;
+    }
+    let mut mapped: Vec<&str> = Vec::new();
+    for name in names {
+        let cursor_name = match name {
+            "Bash" => "Shell",
+            "Edit" | "MultiEdit" => "Write",
+            other => other,
+        };
+        if !mapped.contains(&cursor_name) {
+            mapped.push(cursor_name);
+        }
+    }
+    let joined = mapped.join("|");
+    (joined != matcher).then_some(joined)
+}
+
 /// Rewrites a plugin's `hooks/hooks.json` from Claude's layout
 /// (`{"PostToolUse": [{"matcher", "hooks": [entry]}]}`) to Cursor's flat
 /// camelCase one (`{"postToolUse": [entry + matcher]}`).
 ///
 /// `${CLAUDE_PLUGIN_ROOT}` in a command becomes `plugin_root`, the mirror's
 /// absolute path: Cursor documents plugin-root expansion for `mcp.json` only.
+/// Tool-event matchers get Cursor's tool names ([`cursor_tool_matcher`]).
 /// An event already in camelCase is taken as Cursor's and kept; a Claude event
 /// with no Cursor equivalent is dropped and named in the returned warnings.
 /// `Err` when the file is not a JSON object with a `hooks` object.
@@ -332,6 +359,18 @@ pub(super) fn plugin_hooks_for_cursor(
                     let mut entry = group.clone();
                     point_at_mirror(&mut entry);
                     entries.push(entry);
+                }
+            }
+        }
+        if matches!(
+            cursor_event.as_str(),
+            "preToolUse" | "postToolUse" | "postToolUseFailure"
+        ) {
+            for entry in &mut entries {
+                if let Some(matcher) = entry.get_mut("matcher") {
+                    if let Some(mapped) = matcher.as_str().and_then(cursor_tool_matcher) {
+                        *matcher = Value::from(mapped);
+                    }
                 }
             }
         }
