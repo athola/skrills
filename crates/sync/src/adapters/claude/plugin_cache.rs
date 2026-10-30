@@ -25,16 +25,15 @@ pub(super) struct PluginVersion {
 
 /// Orders version directory names numerically by their dot-separated leading
 /// integers, so `1.10.0` sorts after `1.9.0`. A pre-release or build suffix
-/// (`-beta`, `+sha`) is ignored and non-numeric parts count as 0, so such
-/// names tie and fall through to the mtime tie-break.
+/// (`-beta`, `+sha`) is ignored. A name with any non-numeric part (a commit
+/// hash such as `921c90ff926e`) gets the empty key: it ranks below every
+/// release, and such names tie and fall through to the mtime tie-break.
 fn version_key(name: &str) -> Vec<u64> {
     let core = name.split(['-', '+']).next().unwrap_or(name);
     core.split('.')
-        .map(|part| {
-            let digits: String = part.chars().take_while(char::is_ascii_digit).collect();
-            digits.parse().unwrap_or(0)
-        })
-        .collect()
+        .map(|part| part.parse::<u64>().ok())
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_default()
 }
 
 fn utf8_name(path: &Path) -> Option<String> {
@@ -179,6 +178,30 @@ mod tests {
         assert!(version_key("1.10.0") > version_key("1.9.0"));
         assert!(version_key("2.0.0") > version_key("1.99.99"));
         assert_eq!(version_key("1.2.3"), version_key("1.2.3-beta"));
-        assert_eq!(version_key("abc1234"), vec![0]);
+        assert!(version_key("1.10.0") > version_key("1.9.21"));
+    }
+
+    /// A commit-hash directory used to rank by its leading digits, so
+    /// `921c90ff926e` read as version 921 and beat `1.0.1`.
+    #[test]
+    fn version_key_ranks_hash_names_below_every_release() {
+        assert!(version_key("921c90ff926e") < version_key("1.0.1"));
+        assert!(version_key("41f619d61b99") < version_key("0.0.1"));
+        assert_eq!(version_key("921c90ff926e"), version_key("abc1234"));
+    }
+
+    #[test]
+    fn latest_plugin_versions_picks_the_newest_hash_dir_by_mtime() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plugin = tmp.path().join("official/github");
+        let (old, new) = (plugin.join("921c90ff926e"), plugin.join("41f619d61b99"));
+        fs::create_dir_all(&old).unwrap();
+        fs::create_dir_all(&new).unwrap();
+        let past = SystemTime::now() - std::time::Duration::from_secs(3600);
+        fs::File::open(&old).unwrap().set_modified(past).unwrap();
+
+        let picked = latest_plugin_versions(tmp.path());
+        assert_eq!(picked.len(), 1);
+        assert_eq!(picked[0].origin.version, "41f619d61b99");
     }
 }

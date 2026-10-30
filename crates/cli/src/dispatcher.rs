@@ -270,6 +270,7 @@ pub fn run() -> Result<()> {
             exclude_plugins,
             validate,
             autofix,
+            keep_versions,
         } => handle_sync_all_command(SyncAllArgs {
             from,
             to,
@@ -279,6 +280,7 @@ pub fn run() -> Result<()> {
             exclude_plugins,
             validate,
             autofix,
+            keep_versions,
         }),
         Commands::SyncStatus { from, to } => handle_sync_status_command(from, to),
         Commands::Doctor => doctor_report(),

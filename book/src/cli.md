@@ -97,6 +97,7 @@ skrills sync-all --from claude --autofix --dry-run    # Check what autofix would
 | `--dry-run` | Preview changes without writing |
 | `--skip-existing-commands` | Keep existing commands on target side |
 | `--include-marketplace` | Include marketplace content from uninstalled plugins (`SKRILLS_INCLUDE_MARKETPLACE`) |
+| `--keep-versions` | Keep files an older plugin version wrote and flat skill copies the plugin mirror supersedes; by default sync mirrors the newest version and removes what it no longer ships |
 | `--exclude-plugins <NAMES>` | Comma-separated plugin names whose skills and assets are not synced (`SKRILLS_EXCLUDE_PLUGINS`) |
 | `--validate` | Validate the source skills before any target is written |
 | `--autofix` | Add missing frontmatter to the source skills, then validate as `--validate` does |

@@ -98,7 +98,7 @@ fn cache_manifest_for(source_path: &Path, origin: &PluginOrigin) -> Option<std::
 fn mark_as_mirror(plugin_dir: &Path, plugin_name: &str) {
     if let Err(e) = crate::adapters::utils::write_file(
         plugin_dir.join(super::MIRROR_MARKER),
-        super::MIRROR_MARKER_BODY,
+        format!("{}\n", super::MIRROR_MARKER_BODY),
     ) {
         tracing::warn!(plugin = %plugin_name, error = %e, "Could not stamp mirror marker");
     }
@@ -254,6 +254,52 @@ pub fn read_skills(root: &Path) -> Result<Vec<Command>> {
 
     skills.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(skills)
+}
+
+/// Removes `skills/<folder>` for each of `folders` that sync wrote: it carries
+/// the `.skrills-synced` marker, or its SKILL.md has no frontmatter, the shape
+/// builds before 0.9.1 wrote and that Cursor cannot load. Anything else is the
+/// user's and stays. With `dry_run` the folders are only named.
+pub(super) fn remove_flat_copies(root: &Path, folders: &[String], dry_run: bool) -> WriteReport {
+    use crate::adapters::utils::{symlink_below, SYNCED_MARKER};
+
+    let flat_dir = skills_dir(root);
+    let mut report = WriteReport::default();
+    let mut removed = Vec::new();
+    for folder in folders {
+        let dir = flat_dir.join(folder);
+        if folder.is_empty()
+            || symlink_below(root, &dir).is_some()
+            || !fs::symlink_metadata(&dir).is_ok_and(|meta| meta.is_dir())
+        {
+            continue;
+        }
+        let ours = dir.join(SYNCED_MARKER).is_file()
+            || fs::read(dir.join("SKILL.md")).is_ok_and(|body| !body.starts_with(b"---"));
+        if !ours {
+            continue;
+        }
+        if dry_run {
+            removed.push(folder.as_str());
+            continue;
+        }
+        match fs::remove_dir_all(&dir) {
+            Ok(()) => removed.push(folder.as_str()),
+            Err(e) => report.warnings.push(format!(
+                "Could not remove the flat copy {} of a plugin skill: {e}",
+                dir.display()
+            )),
+        }
+    }
+    if !removed.is_empty() {
+        let verb = if dry_run { "Would remove" } else { "Removed" };
+        report.warnings.push(format!(
+            "{verb} {} flat skill cop(ies) the plugin mirror now carries: {}",
+            removed.len(),
+            removed.join(", ")
+        ));
+    }
+    report
 }
 
 /// Writes skills to `.cursor/skills/{name}/SKILL.md` or, when the skill has

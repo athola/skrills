@@ -16,4 +16,4 @@ pub use claude::ClaudeAdapter;
 pub use codex::CodexAdapter;
 pub use copilot::CopilotAdapter;
 pub use cursor::CursorAdapter;
-pub use traits::{AgentAdapter, FieldSupport};
+pub use traits::{AgentAdapter, FieldSupport, MirrorOptions};

@@ -264,6 +264,11 @@ pub enum Commands {
         /// validate as --validate does. With --dry-run, nothing is rewritten.
         #[arg(long)]
         autofix: bool,
+        /// Keep files from older plugin versions and superseded skill copies
+        /// in the target. By default sync overwrites with the latest cached
+        /// version and removes what that version no longer ships.
+        #[arg(long)]
+        keep_versions: bool,
     },
     /// Shows sync status and configuration differences.
     SyncStatus {
@@ -1343,6 +1348,7 @@ mod tests {
                 exclude_plugins,
                 validate,
                 autofix,
+                keep_versions,
             }) => {
                 assert!(matches!(from, Platform::Codex));
                 assert_eq!(to, Some(Platform::Copilot));
@@ -1352,7 +1358,18 @@ mod tests {
                 assert!(exclude_plugins.is_empty());
                 assert!(validate);
                 assert!(autofix);
+                assert!(!keep_versions);
             }
+            _ => unreachable!("expected SyncAll command"),
+        }
+    }
+
+    #[test]
+    fn parse_sync_all_keep_versions() {
+        let cli = Cli::try_parse_from(["skrills", "sync-all", "--to", "cursor", "--keep-versions"])
+            .expect("--keep-versions should parse");
+        match cli.command {
+            Some(Commands::SyncAll { keep_versions, .. }) => assert!(keep_versions),
             _ => unreachable!("expected SyncAll command"),
         }
     }

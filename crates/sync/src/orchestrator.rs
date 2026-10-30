@@ -76,6 +76,10 @@ pub struct SyncParams {
     /// Used when the target needs a complete plugin mirror (e.g., Cursor).
     #[serde(default)]
     pub full_plugin_mirror: bool,
+    /// Keep target files that a newer plugin version no longer ships, and
+    /// flat skill copies the plugin mirror now carries, instead of removing them.
+    #[serde(default)]
+    pub keep_versions: bool,
 }
 
 impl Default for SyncParams {
@@ -98,6 +102,7 @@ impl Default for SyncParams {
             interactive: false,
             exclude_plugins: Vec::new(),
             full_plugin_mirror: false,
+            keep_versions: false,
         }
     }
 }
@@ -526,8 +531,18 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
         {
             run_phase("skills", &mut report.skills, &mut failed, |slot| {
                 let mut skills = self.source.read_skills()?;
+                let mut in_mirror_names = Vec::new();
                 if mirror_carries_plugin_skills {
                     let before = skills.len();
+                    in_mirror_names = skills
+                        .iter()
+                        .filter(|s| {
+                            s.plugin_origin
+                                .as_ref()
+                                .is_some_and(|o| !params.is_plugin_excluded(&o.plugin_name))
+                        })
+                        .map(crate::adapters::utils::skill_folder_name)
+                        .collect();
                     skills.retain(|s| s.plugin_origin.is_none());
                     let in_mirror = before - skills.len();
                     if in_mirror > 0 {
@@ -556,6 +571,12 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                     *slot = self.target.write_skills(&skills)?;
                 } else {
                     *slot = self.target.preview_skills(&skills)?;
+                }
+                if !params.keep_versions && !in_mirror_names.is_empty() {
+                    let removed = self
+                        .target
+                        .remove_flat_skill_copies(&in_mirror_names, params.dry_run)?;
+                    slot.warnings.extend(removed.warnings);
                 }
                 slot.duplicates = skill_dups;
                 // Report excluded plugins as skipped
@@ -785,7 +806,10 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                             .collect();
                         let excluded_asset_count = before - assets.len();
                         if !params.dry_run {
-                            *slot = self.target.write_plugin_assets(&assets)?;
+                            let options = crate::adapters::MirrorOptions {
+                                keep_versions: params.keep_versions,
+                            };
+                            *slot = self.target.write_plugin_assets_with(&assets, &options)?;
                         } else {
                             // The writer also deletes, so the preview has to come from
                             // the adapter rather than from the batch length alone.
@@ -2015,6 +2039,70 @@ mod tests {
                 .join("plugins/local/my-plugin/skills/deep-work/SKILL.md")
                 .exists(),
             "the plugin mirror must carry the plugin skill body"
+        );
+    }
+
+    /// Runs a skills-and-mirror sync of the seeded root into a Cursor target
+    /// whose flat `skills/deep-work/SKILL.md` already holds `flat_copy`.
+    fn sync_over_flat_copy(
+        flat_copy: &str,
+        keep_versions: bool,
+        dry_run: bool,
+    ) -> (bool, SyncReport) {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        seed_claude_root_with_plugin_and_local_skill(src_dir.path());
+        let flat = tgt_dir.path().join("skills/deep-work");
+        fs::create_dir_all(&flat).unwrap();
+        fs::write(flat.join("SKILL.md"), flat_copy).unwrap();
+
+        let params = SyncParams {
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_agents: false,
+            sync_hooks: false,
+            sync_instructions: false,
+            full_plugin_mirror: true,
+            keep_versions,
+            dry_run,
+            ..Default::default()
+        };
+        let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
+        let target = crate::adapters::CursorAdapter::with_root(tgt_dir.path().to_path_buf());
+        let report = SyncOrchestrator::new(source, target).sync(&params).unwrap();
+        (flat.exists(), report)
+    }
+
+    /// Builds before 0.9.1 copied plugin skills flat with the frontmatter
+    /// stripped. Cursor cannot load those, and the mirror now carries the skill.
+    #[test]
+    fn full_mirror_sync_removes_a_legacy_flat_copy_of_a_plugin_skill() {
+        let (exists, report) = sync_over_flat_copy("Old description\n# Deep work\n", false, false);
+        assert!(!exists, "{:?}", report.skills.warnings);
+    }
+
+    #[test]
+    fn full_mirror_sync_keeps_a_flat_skill_the_user_wrote() {
+        let mine = "---\nname: deep-work\ndescription: Mine\n---\n# Mine\n";
+        let (exists, report) = sync_over_flat_copy(mine, false, false);
+        assert!(exists, "{:?}", report.skills.warnings);
+    }
+
+    #[test]
+    fn full_mirror_sync_keeps_superseded_flat_copies_with_keep_versions_or_dry_run() {
+        let legacy = "Old description\n# Deep work\n";
+        assert!(sync_over_flat_copy(legacy, true, false).0);
+        let (exists, report) = sync_over_flat_copy(legacy, false, true);
+        assert!(exists, "a dry run removes nothing");
+        assert!(
+            report
+                .skills
+                .warnings
+                .iter()
+                .any(|w| w.contains("deep-work")),
+            "the preview must name the copy it would remove: {:?}",
+            report.skills.warnings
         );
     }
 

@@ -207,6 +207,7 @@ pub(crate) struct SyncAllArgs {
     pub exclude_plugins: Vec<String>,
     pub validate: bool,
     pub autofix: bool,
+    pub keep_versions: bool,
 }
 
 /// Validates (and with `--autofix`, repairs) the source skills before any
@@ -298,6 +299,7 @@ pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
             include_marketplace: args.include_marketplace,
             exclude_plugins: args.exclude_plugins.clone(),
             full_plugin_mirror: delivery.full_plugin_mirror,
+            keep_versions: args.keep_versions,
             ..Default::default()
         };
 

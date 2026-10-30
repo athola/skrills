@@ -238,6 +238,7 @@ mod basic_sync_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -283,6 +284,7 @@ mod basic_sync_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -330,6 +332,7 @@ mod basic_sync_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -374,6 +377,7 @@ mod basic_sync_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -420,6 +424,7 @@ mod basic_sync_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -465,6 +470,7 @@ mod basic_sync_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -1342,6 +1348,7 @@ mod case_sensitivity_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);

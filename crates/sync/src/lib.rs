@@ -155,6 +155,7 @@ pub use skrills_snapshot::KillSwitch;
 
 pub use adapters::{
     AgentAdapter, ClaudeAdapter, CodexAdapter, CopilotAdapter, CursorAdapter, FieldSupport,
+    MirrorOptions,
 };
 pub use common::{
     Artifact, Command, CommonConfig, ContentFormat, McpServer, PluginAsset, Preferences,

@@ -217,6 +217,7 @@ mod copilot_to_claude_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -272,6 +273,7 @@ mod copilot_to_claude_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -320,6 +322,7 @@ mod copilot_to_claude_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -372,6 +375,7 @@ mod claude_to_copilot_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -426,6 +430,7 @@ mod claude_to_copilot_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -480,6 +485,7 @@ mod claude_to_copilot_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -536,6 +542,7 @@ mod copilot_to_codex_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -584,6 +591,7 @@ mod copilot_to_codex_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -637,6 +645,7 @@ mod copilot_dry_run_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -913,6 +922,7 @@ This is a test agent for Copilot.
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -987,6 +997,7 @@ This is a test agent for Copilot.
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -1044,6 +1055,7 @@ This is a test agent for Copilot.
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -1099,6 +1111,7 @@ This is a test agent for Copilot.
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -1154,6 +1167,7 @@ This is a test agent for Copilot.
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -1214,6 +1228,7 @@ This is a test agent for Copilot.
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);

@@ -3124,3 +3124,122 @@ fn write_skills_writes_no_manifest_through_a_symlinked_plugin_dir() {
 
     assert!(!checkout.join(".cursor-plugin").exists());
 }
+
+fn shipped(plugin: &str, path: &str) -> crate::common::PluginAsset {
+    crate::common::PluginAsset::new(
+        plugin.to_string(),
+        "market".to_string(),
+        "1.0.0".to_string(),
+        std::path::PathBuf::from(path),
+        format!("# {path}\n").into_bytes(),
+        false,
+    )
+}
+
+/// memory-palace hooks write session files into their own mirror. The sweep
+/// removed every file the new batch lacked, so an upgrade deleted them.
+#[test]
+fn plugin_assets_sweep_keeps_files_the_mirror_never_wrote() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let plugin_dir = tmp.path().join("plugins/local/p");
+    adapter
+        .write_plugin_assets(&[plugin_manifest("p"), shipped("p", "skills/old/SKILL.md")])
+        .unwrap();
+    std::fs::create_dir_all(plugin_dir.join("data/sessions")).unwrap();
+    std::fs::write(plugin_dir.join("data/sessions/s.json"), b"{}").unwrap();
+
+    let report = adapter
+        .write_plugin_assets(&[plugin_manifest("p")])
+        .unwrap();
+
+    assert!(
+        !plugin_dir.join("skills/old").exists(),
+        "{:?}",
+        report.warnings
+    );
+    assert!(
+        plugin_dir.join("data/sessions/s.json").exists(),
+        "{:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn plugin_assets_keep_versions_keeps_files_a_newer_version_dropped() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let old = tmp.path().join("plugins/local/p/skills/old/SKILL.md");
+    adapter
+        .write_plugin_assets(&[plugin_manifest("p"), shipped("p", "skills/old/SKILL.md")])
+        .unwrap();
+
+    let keep = crate::adapters::MirrorOptions {
+        keep_versions: true,
+    };
+    adapter
+        .write_plugin_assets_with(&[plugin_manifest("p")], &keep)
+        .unwrap();
+    assert!(old.exists(), "--keep-versions must keep the dropped file");
+
+    adapter
+        .write_plugin_assets(&[plugin_manifest("p")])
+        .unwrap();
+    assert!(!old.exists(), "a later default sync must still remove it");
+}
+
+/// Mirrors written before the marker existed hold files of older plugin
+/// versions, so the foreign-file check refused them and they never got the
+/// latest version.
+#[test]
+fn plugin_assets_adopts_a_legacy_mirror_whose_manifest_names_the_plugin() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let plugin_dir = tmp.path().join("plugins/local/legacy");
+    std::fs::create_dir_all(plugin_dir.join(".cursor-plugin")).unwrap();
+    std::fs::write(
+        plugin_dir.join(".cursor-plugin/plugin.json"),
+        b"{\"name\": \"legacy\", \"version\": \"0.9.0\"}",
+    )
+    .unwrap();
+    std::fs::write(plugin_dir.join("leftover.md"), b"from 0.9.0\n").unwrap();
+
+    adapter
+        .write_plugin_assets(&[
+            plugin_manifest("legacy"),
+            shipped("legacy", "scripts/run.sh"),
+        ])
+        .unwrap();
+    assert!(plugin_dir.join("scripts/run.sh").exists());
+    assert!(plugin_dir.join(super::MIRROR_MARKER).exists());
+
+    adapter
+        .write_plugin_assets(&[plugin_manifest("legacy")])
+        .unwrap();
+    assert!(
+        !plugin_dir.join("scripts/run.sh").exists(),
+        "dropped upstream"
+    );
+    assert!(
+        plugin_dir.join("leftover.md").exists(),
+        "never written by sync"
+    );
+}
+
+#[test]
+fn plugin_assets_prune_keeps_files_a_ledgered_mirror_never_wrote() {
+    let tmp = TempDir::new().unwrap();
+    let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+    let gone = tmp.path().join("plugins/local/gone");
+    adapter
+        .write_plugin_assets(&[plugin_manifest("gone"), plugin_manifest("stays")])
+        .unwrap();
+    std::fs::write(gone.join("notes.md"), b"mine\n").unwrap();
+
+    adapter
+        .write_plugin_assets(&[plugin_manifest("stays")])
+        .unwrap();
+
+    assert!(!gone.join(".cursor-plugin/plugin.json").exists());
+    assert!(gone.join("notes.md").exists());
+}

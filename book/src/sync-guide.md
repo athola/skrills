@@ -88,6 +88,10 @@ skrills sync-preferences --from claude --to copilot
 
 Full-mirror sync copies each plugin's tree into `~/.cursor/plugins/local/<plugin>/`, keeping every file at its path within the plugin so skills resolve companion scripts at the relative paths they document. Claude's `.claude-plugin/` manifest directory is renamed to the `.cursor-plugin/` name Cursor reads, so the plugin registers as installed. Skill bodies travel this path too: `sync_skills` is off for Cursor targets, because the flat `~/.cursor/skills` copy it produces would duplicate plugin content. Unchanged files are skipped by content hash, a path that escapes its plugin directory is refused with a warning, and the executable bit is preserved on Unix. Stale entries under `~/.cursor/plugins/local/` are pruned automatically on each sync.
 
+Each sync mirrors the newest cached version of a plugin (`1.10.0` beats `1.9.21`) over the previous one. The `.skrills-mirror` marker in each mirrored plugin lists the files sync wrote, and only those are ever removed: a file the new version no longer ships goes, while files the plugin creates at runtime stay. A flat `~/.cursor/skills/<name>` copy of a skill the mirror now carries is removed when sync wrote it. Pass `--keep-versions` to keep both; `--dry-run` lists what would be removed. Plugin hook matchers are renamed to Cursor's tool names (`Bash` to `Shell`, `Edit` and `MultiEdit` to `Write`).
+
+Cursor also runs Claude plugin hooks from `~/.claude/plugins` itself when **Include Third-Party Plugins, Skills, and Other Configs** is on, so each hook then runs twice, once from the Claude install and once from the mirror. Turn that setting off to run only the mirrored, newest version.
+
 When a Claude plugin ships without `.claude-plugin/plugin.json` (some upstream plugins, including `typescript-lsp` and `pyright-lsp` from `claude-plugins-official`, ship only a README and source tree), full-mirror sync now synthesizes a minimal manifest instead of dropping the plugin from the target. Synthesis follows a fixed contract:
 
 | Field | Source |
